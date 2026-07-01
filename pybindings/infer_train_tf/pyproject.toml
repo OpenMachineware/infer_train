@@ -1,0 +1,35 @@
+[project]
+name = "infer-train-tf"
+version = "0.1.0"
+description = "InferTrain Engine for TensorFlow - Unified Inference & Training"
+authors = [
+    { name = "Jia Liu", email = "proljc@gmail.com" }
+]
+license = {text = "Apache-2.0"}
+requires-python = ">=3.8"
+dependencies = [
+    "tensorflow>=2.13.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+manifest-path = "../../Cargo.toml"
+python-source = "."
+module-name = "infer_train_tf._rust"
+features = ["tensorflow"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0",
+    "pytest-benchmark>=4.0",
+]

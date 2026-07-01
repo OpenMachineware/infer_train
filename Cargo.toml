@@ -1,0 +1,39 @@
+[workspace]
+members = ["."]
+resolver = "2"
+
+[workspace.package]
+name = "infer_train"
+version = "0.1.0"
+edition = "2021"
+authors = ["My Name <email@gmail.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/myname/infer_train"
+
+[workspace.dependencies]
+pyo3 = { version = "0.23.2", features = ["extension-module", "abi3-py38"] }
+log = "0.4.33"
+env_logger = "0.11.11"
+
+[package]
+name = "infer_train"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "infer_train_torch"
+crate-type = ["cdylib"]
+
+[dependencies]
+log = { workspace = true }
+env_logger = { workspace = true }
+pyo3 = { workspace = true }
+
+[features]
+default = ["torch"]
+torch = []
+tensorflow = []
+jax = []
