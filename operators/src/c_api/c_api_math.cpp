@@ -1,6 +1,5 @@
-#include "infer_train/c_interface.h"
+#include "c_api_common.h"
 #include "infer_train/math.hpp"
-#include "c_api_common.h"  // 内部辅助函数
 
 using namespace infer_train;
 
@@ -98,6 +97,18 @@ extern "C" it_tensor* it_sqrt(const it_tensor* input) {
     DISPATCH_MATH_UNARY(sqrt);
 }
 
+extern "C" it_tensor* it_log(const it_tensor* input) {
+    DISPATCH_MATH_UNARY(log);
+}
+
+extern "C" it_tensor* it_log2(const it_tensor* input) {
+    DISPATCH_MATH_UNARY(log2);
+}
+
+extern "C" it_tensor* it_log10(const it_tensor* input) {
+    DISPATCH_MATH_UNARY(log10);
+}
+
 extern "C" it_tensor* it_abs(const it_tensor* input) {
     DISPATCH_MATH_UNARY(abs);
 }
@@ -130,6 +141,18 @@ extern "C" it_tensor* it_clamp(const it_tensor* input, float min_val, float max_
         }
         default: return nullptr;
     }
+}
+
+extern "C" it_tensor* it_floor(const it_tensor* input) {
+    DISPATCH_MATH_UNARY(floor);
+}
+
+extern "C" it_tensor* it_ceil(const it_tensor* input) {
+    DISPATCH_MATH_UNARY(ceil);
+}
+
+extern "C" it_tensor* it_round(const it_tensor* input) {
+    DISPATCH_MATH_UNARY(round);
 }
 
 // ============================================================

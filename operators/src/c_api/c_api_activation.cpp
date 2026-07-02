@@ -1,6 +1,5 @@
-#include "infer_train/c_interface.h"
-#include "infer_train/nn.hpp"
 #include "c_api_common.h"
+#include "infer_train/nn.hpp"
 
 using namespace infer_train;
 
@@ -76,6 +75,11 @@ extern "C" it_tensor* it_gelu(const it_tensor* input) {
     DISPATCH_ACTIVATION_UNARY(gelu);
 }
 
+extern "C" it_tensor* it_relu6(const it_tensor* input) {
+    DISPATCH_ACTIVATION_UNARY(relu6);
+}
+
+
 extern "C" it_tensor* it_sigmoid(const it_tensor* input) {
     DISPATCH_ACTIVATION_UNARY(sigmoid);
 }
@@ -94,6 +98,40 @@ extern "C" it_tensor* it_hard_swish(const it_tensor* input) {
 
 extern "C" it_tensor* it_hard_sigmoid(const it_tensor* input) {
     DISPATCH_ACTIVATION_UNARY(hard_sigmoid);
+}
+
+extern "C" it_tensor* it_softplus(const it_tensor* input, float beta, float threshold) {
+    switch (input->dtype) {
+        case IT_DTYPE_F32: {
+            auto t = to_cpp_tensor<F32>(input);
+            auto result = softplus(t, beta, threshold);
+            return from_cpp_tensor(result, IT_DTYPE_F32);
+        }
+        case IT_DTYPE_F64: {
+            auto t = to_cpp_tensor<F64>(input);
+            auto result = softplus(t, (double)beta, (double)threshold);
+            return from_cpp_tensor(result, IT_DTYPE_F64);
+        }
+        case IT_DTYPE_F16: {
+            auto t = to_cpp_tensor<F16>(input);
+            auto result = softplus(t, beta, threshold);
+            return from_cpp_tensor(result, IT_DTYPE_F16);
+        }
+        case IT_DTYPE_BF16: {
+            auto t = to_cpp_tensor<BF16>(input);
+            auto result = softplus(t, beta, threshold);
+            return from_cpp_tensor(result, IT_DTYPE_BF16);
+        }
+        default: return nullptr;
+    }
+}
+
+extern "C" it_tensor* it_softshrink(const it_tensor* input, float lambda) {
+    DISPATCH_ACTIVATION_UNARY_WITH(softshrink, lambda);
+}
+
+extern "C" it_tensor* it_celu(const it_tensor* input, float alpha) {
+    DISPATCH_ACTIVATION_UNARY_WITH(celu, alpha);
 }
 
 // ============================================================

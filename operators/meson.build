@@ -113,6 +113,11 @@ sources = files(
     'src/c_api/c_api_nn_q.cpp',
     'src/c_api/c_api_activation.cpp',
     'src/c_api/c_api_activation_q.cpp',
+    'src/c_api/c_api_attention.cpp',
+    'src/c_api/c_api_attention_q.cpp',
+    'src/c_api/c_api_loss.cpp',
+    'src/c_api/c_api_optimizer.cpp',
+    'src/c_api/c_api_extra.cpp'
 )
 
 lib = static_library('infer_train_cpp',

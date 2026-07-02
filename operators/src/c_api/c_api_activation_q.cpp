@@ -1,6 +1,5 @@
-#include "infer_train/c_interface.h"
-#include "infer_train/nn_q.hpp"
 #include "c_api_common.h"
+#include "infer_train/nn_q.hpp"
 
 using namespace infer_train;
 
@@ -33,6 +32,10 @@ extern "C" it_tensor* it_quantized_elu(const it_tensor* input, float alpha) {
 
 extern "C" it_tensor* it_quantized_gelu(const it_tensor* input) {
     DISPATCH_QUANTIZED_ACTIVATION_UNARY(quantized_gelu);
+}
+
+extern "C" it_tensor* it_quantized_relu6(const it_tensor* input) {
+    DISPATCH_QUANTIZED_ACTIVATION_UNARY(quantized_relu6);
 }
 
 extern "C" it_tensor* it_quantized_sigmoid(const it_tensor* input) {

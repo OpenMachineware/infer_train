@@ -1,7 +1,5 @@
-#include "infer_train/c_interface.h"
-#include "infer_train/math.hpp"
-#include "infer_train/math_q.hpp"
 #include "c_api_common.h"
+#include "infer_train/math.hpp"
 
 using namespace infer_train;
 
