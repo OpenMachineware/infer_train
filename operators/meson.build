@@ -91,6 +91,8 @@ sources = files(
 
     # 优化器
     'src/optimizer/adam.cpp',
+    'src/optimizer/adamw.cpp',
+    'src/optimizer/sgd.cpp',
 
     # C API
     'src/c_api/c_api_common.cpp',
