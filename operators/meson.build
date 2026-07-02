@@ -44,6 +44,8 @@ sources = files(
     'src/math/std_var_q.cpp',
     'src/math/matmul_q.cpp',
     'src/math/compare.cpp',
+    'src/math/slice.cpp',
+    'src/math/cat.cpp',
 
     # 浮点 NN
     'src/nn/activation.cpp',
@@ -59,6 +61,10 @@ sources = files(
     'src/nn/norm.cpp',
     'src/nn/dropout.cpp',
     'src/nn/embedding.cpp',
+    'src/nn/attention.cpp',
+    'src/nn/rotary_embedding.cpp',
+    'src/nn/rmsnorm.cpp',
+    'src/nn/swiglu.cpp',
 
     # 量化 NN
     'src/nn/activation_q.cpp',
@@ -73,6 +79,9 @@ sources = files(
     'src/nn/linear_q.cpp',
     'src/nn/norm_q.cpp',
     'src/nn/embedding_q.cpp',
+    'src/nn/attention_q.cpp',
+    'src/nn/rotary_embedding_q.cpp',
+    'src/nn/rmsnorm_q.cpp',
 
     # C API
     'src/c_api/c_api_common.cpp',

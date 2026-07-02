@@ -12,3 +12,7 @@
 #include "infer_train/nn/norm.hpp"
 #include "infer_train/nn/dropout.hpp"
 #include "infer_train/nn/embedding.hpp"
+#include "infer_train/nn/attention.hpp"
+#include "infer_train/nn/rotary_embedding.hpp"
+#include "infer_train/nn/rmsnorm.hpp"
+#include "infer_train/nn/swiglu.hpp"

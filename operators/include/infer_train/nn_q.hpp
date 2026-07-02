@@ -10,3 +10,6 @@
 #include "infer_train/nn/layernorm_q.hpp"
 #include "infer_train/nn/linear_q.hpp"
 #include "infer_train/nn/norm_q.hpp"
+#include "infer_train/nn/attention_q.hpp"
+#include "infer_train/nn/rotary_embedding_q.hpp"
+#include "infer_train/nn/rmsnorm_q.hpp"
