@@ -11,6 +11,7 @@
 #include "infer_train/math/clamp.hpp"
 #include "infer_train/math/round.hpp"
 #include "infer_train/math/reduce.hpp"
-// #include "infer_train/math/arg.hpp"
+#include "infer_train/math/arg.hpp"
 #include "infer_train/math/std_var.hpp"
 #include "infer_train/math/matmul.hpp"
+#include "infer_train/math/compare.hpp"

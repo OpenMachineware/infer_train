@@ -24,7 +24,7 @@ sources = files(
     'src/math/clamp.cpp',
     'src/math/round.cpp',
     'src/math/reduce.cpp',
-#    'src/math/arg.cpp',
+    'src/math/arg.cpp',
     'src/math/std_var.cpp',
     'src/math/matmul.cpp',
 
@@ -41,10 +41,9 @@ sources = files(
     'src/math/clamp_q.cpp',
     'src/math/round_q.cpp',
     'src/math/reduce_q.cpp',
-#    'src/math/arg_q.cpp',
     'src/math/std_var_q.cpp',
     'src/math/matmul_q.cpp',
-
+    'src/math/compare.cpp',
 
     # 浮点 NN
     'src/nn/activation.cpp',
@@ -73,6 +72,7 @@ sources = files(
     'src/nn/layernorm_q.cpp',
     'src/nn/linear_q.cpp',
     'src/nn/norm_q.cpp',
+    'src/nn/embedding_q.cpp',
 
     # C API
     'src/c_api/c_api_common.cpp',
