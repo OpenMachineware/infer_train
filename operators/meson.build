@@ -83,6 +83,15 @@ sources = files(
     'src/nn/rotary_embedding_q.cpp',
     'src/nn/rmsnorm_q.cpp',
 
+    # 损失函数
+    'src/loss/cross_entropy.cpp',
+    'src/loss/mse.cpp',
+    'src/loss/l1.cpp',
+    'src/loss/bce.cpp',
+
+    # 优化器
+    'src/optimizer/adam.cpp',
+
     # C API
     'src/c_api/c_api_common.cpp',
     'src/c_api/c_api_math.cpp',
