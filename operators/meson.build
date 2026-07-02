@@ -11,18 +11,86 @@ project('infer_train_operators', 'cpp',
 inc = include_directories('include')
 
 sources = files(
+    # 浮点数学
     'src/math/add.cpp',
+    'src/math/sub.cpp',
+    'src/math/mul.cpp',
+    'src/math/div.cpp',
+    'src/math/pow.cpp',
+    'src/math/sqrt.cpp',
+    'src/math/exp.cpp',
+    'src/math/log.cpp',
+    'src/math/abs.cpp',
+    'src/math/clamp.cpp',
+    'src/math/round.cpp',
+    'src/math/reduce.cpp',
+#    'src/math/arg.cpp',
+    'src/math/std_var.cpp',
     'src/math/matmul.cpp',
-    'src/math/quantized.cpp',
+
+    # 量化数学
+    'src/math/add_q.cpp',
+    'src/math/sub_q.cpp',
+    'src/math/mul_q.cpp',
+    'src/math/div_q.cpp',
+    'src/math/pow_q.cpp',
+    'src/math/sqrt_q.cpp',
+    'src/math/exp_q.cpp',
+    'src/math/log_q.cpp',
+    'src/math/abs_q.cpp',
+    'src/math/clamp_q.cpp',
+    'src/math/round_q.cpp',
+    'src/math/reduce_q.cpp',
+#    'src/math/arg_q.cpp',
+    'src/math/std_var_q.cpp',
+    'src/math/matmul_q.cpp',
+
+
+    # 浮点 NN
+    'src/nn/activation.cpp',
     'src/nn/relu.cpp',
     'src/nn/softmax.cpp',
-    'src/nn/quantized.cpp',
-    'src/c_interface.cpp'
+    'src/nn/conv2d.cpp',
+    'src/nn/conv.cpp',
+    'src/nn/pooling.cpp',
+    'src/nn/pool.cpp',
+    'src/nn/batchnorm.cpp',
+    'src/nn/layernorm.cpp',
+    'src/nn/linear.cpp',
+    'src/nn/norm.cpp',
+    'src/nn/dropout.cpp',
+    'src/nn/embedding.cpp',
+
+    # 量化 NN
+    'src/nn/activation_q.cpp',
+    'src/nn/relu_q.cpp',
+    'src/nn/softmax_q.cpp',
+    'src/nn/conv2d_q.cpp',
+    'src/nn/conv_q.cpp',
+    'src/nn/pooling_q.cpp',
+    'src/nn/pool_q.cpp',
+    'src/nn/batchnorm_q.cpp',
+    'src/nn/layernorm_q.cpp',
+    'src/nn/linear_q.cpp',
+    'src/nn/norm_q.cpp',
+
+    # C API
+    'src/c_api/c_api_common.cpp',
+    'src/c_api/c_api_math.cpp',
+    'src/c_api/c_api_math_q.cpp',
+    'src/c_api/c_api_reduce.cpp',
+    'src/c_api/c_api_reduce_q.cpp',
+    'src/c_api/c_api_matmul.cpp',
+    'src/c_api/c_api_matmul_q.cpp',
+    'src/c_api/c_api_nn.cpp',
+    'src/c_api/c_api_nn_q.cpp',
+    'src/c_api/c_api_activation.cpp',
+    'src/c_api/c_api_activation_q.cpp',
 )
 
 lib = static_library('infer_train_cpp',
-                     sources,
-                     include_directories: inc
+    sources,
+    include_directories: inc
 )
 
 infer_train_dep = declare_dependency(

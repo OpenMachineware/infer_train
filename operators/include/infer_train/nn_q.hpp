@@ -1,0 +1,12 @@
+#pragma once
+#include "infer_train/nn/activation_q.hpp"
+#include "infer_train/nn/relu_q.hpp"
+#include "infer_train/nn/softmax_q.hpp"
+#include "infer_train/nn/conv2d_q.hpp"
+#include "infer_train/nn/conv_q.hpp"
+#include "infer_train/nn/pooling_q.hpp"
+#include "infer_train/nn/pool_q.hpp"
+#include "infer_train/nn/batchnorm_q.hpp"
+#include "infer_train/nn/layernorm_q.hpp"
+#include "infer_train/nn/linear_q.hpp"
+#include "infer_train/nn/norm_q.hpp"

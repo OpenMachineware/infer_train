@@ -3,10 +3,10 @@
 #include "infer_train/dtype.hpp"
 #include "infer_train/math/add.hpp"
 #include "infer_train/math/matmul.hpp"
-#include "infer_train/math/quantized.hpp"
+#include "infer_train/math_q.hpp"
 #include "infer_train/nn/relu.hpp"
 #include "infer_train/nn/softmax.hpp"
-#include "infer_train/nn/quantized.hpp"
+#include "infer_train/nn_q.hpp"
 #include <cstdlib>
 #include <cstring>
 #include <vector>

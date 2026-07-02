@@ -1,98 +1,12 @@
 #pragma once
-#include "infer_train/tensor.hpp"
-#include "infer_train/dtype.hpp"
-#include "infer_train/math/add.hpp"
+#include "infer_train/quantized/core.hpp"
 #include "infer_train/math/matmul.hpp"
-#include <algorithm>
-#include <cmath>
 #include <vector>
 
 namespace infer_train {
 
 // ============================================================
-// 反量化
-// ============================================================
-template<typename T>
-Tensor<F32> dequantize(const Tensor<T>& input) {
-    using Conv = QuantizedConverter<T>;
-    Tensor<F32> result(input.shape);
-
-    for (size_t i = 0; i < result.size(); ++i) {
-        result.data[i] = Conv::dequantize(
-            input.data[i],
-            input.scale,
-            input.zero_point
-        );
-    }
-    return result;
-}
-
-// ============================================================
-// 量化
-// ============================================================
-template<typename T>
-Tensor<T> quantize(const Tensor<F32>& input, float scale, float zero_point) {
-    using Conv = QuantizedConverter<T>;
-    Tensor<T> result(input.shape);
-    result.scale = scale;
-    result.zero_point = zero_point;
-
-    for (size_t i = 0; i < result.size(); ++i) {
-        result.data[i] = Conv::quantize(
-            input.data[i],
-            scale,
-            zero_point
-        );
-    }
-    return result;
-}
-
-// ============================================================
-// 动态计算 scale/zero_point（普通函数，不是模板）
-// ============================================================
-inline void compute_scale_zero_point(
-    const Tensor<F32>& input,
-    float& scale,
-    float& zero_point
-) {
-    float min_val = input.data[0];
-    float max_val = input.data[0];
-    for (size_t i = 1; i < input.size(); ++i) {
-        min_val = std::min(min_val, input.data[i]);
-        max_val = std::max(max_val, input.data[i]);
-    }
-
-    scale = (max_val - min_val) / 255.0f;
-    if (scale < 1e-7f) scale = 1e-7f;
-    zero_point = -min_val / scale - 128.0f;
-    zero_point = std::max(-128.0f, std::min(127.0f, zero_point));
-}
-
-// ============================================================
-// 量化加法
-// ============================================================
-template<typename T>
-Tensor<T> quantized_add(const Tensor<T>& a, const Tensor<T>& b) {
-    static_assert(is_quantized<T>::value,
-                  "quantized_add only works with quantized types");
-
-    if (a.shape != b.shape) {
-        return Tensor<T>();
-    }
-
-    Tensor<F32> a_fp32 = dequantize(a);
-    Tensor<F32> b_fp32 = dequantize(b);
-
-    Tensor<F32> result_fp32 = add<F32>(a_fp32, b_fp32);
-
-    float scale, zero_point;
-    compute_scale_zero_point(result_fp32, scale, zero_point);
-
-    return quantize<T>(result_fp32, scale, zero_point);
-}
-
-// ============================================================
-// 量化矩阵乘法（INT32 累加）
+// quantized_matmul（INT32 累加）
 // ============================================================
 template<typename T>
 Tensor<T> quantized_matmul(const Tensor<T>& a, const Tensor<T>& b) {
@@ -107,15 +21,12 @@ Tensor<T> quantized_matmul(const Tensor<T>& a, const Tensor<T>& b) {
         return Tensor<T>();
     }
 
-    using Conv = QuantizedConverter<T>;
-
     size_t M = a.shape[0];
     size_t K = a.shape[1];
     size_t N = b.shape[1];
 
-    // 用 std::vector 代替 Tensor<int32_t>
+    // INT32 累加
     std::vector<int32_t> acc(M * N, 0);
-
     int32_t a_zp = static_cast<int32_t>(a.zero_point);
     int32_t b_zp = static_cast<int32_t>(b.zero_point);
 
@@ -138,15 +49,13 @@ Tensor<T> quantized_matmul(const Tensor<T>& a, const Tensor<T>& b) {
         result_fp32.data[i] = static_cast<float>(acc[i]) * scale_factor;
     }
 
-    // 量化
     float out_scale, out_zero_point;
     compute_scale_zero_point(result_fp32, out_scale, out_zero_point);
-
     return quantize<T>(result_fp32, out_scale, out_zero_point);
 }
 
 // ============================================================
-// 量化向量 × 矩阵
+// quantized_vec_matmul
 // ============================================================
 template<typename T>
 Tensor<T> quantized_vec_matmul(const Tensor<T>& vec, const Tensor<T>& mat) {
@@ -185,6 +94,22 @@ Tensor<T> quantized_vec_matmul(const Tensor<T>& vec, const Tensor<T>& mat) {
     float out_scale, out_zero_point;
     compute_scale_zero_point(result_fp32, out_scale, out_zero_point);
     return quantize<T>(result_fp32, out_scale, out_zero_point);
+}
+
+// ============================================================
+// quantized_transpose
+// ============================================================
+template<typename T>
+Tensor<T> quantized_transpose(const Tensor<T>& input) {
+    static_assert(is_quantized<T>::value,
+                  "quantized_transpose only works with quantized types");
+
+    Tensor<F32> fp32_input = dequantize(input);
+    Tensor<F32> result_fp32 = transpose<F32>(fp32_input);
+
+    float scale, zero_point;
+    compute_scale_zero_point(result_fp32, scale, zero_point);
+    return quantize<T>(result_fp32, scale, zero_point);
 }
 
 } // namespace infer_train

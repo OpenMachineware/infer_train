@@ -1,0 +1,7 @@
+#pragma once
+#include "infer_train/tensor.hpp"
+#include "infer_train/dtype.hpp"
+#include "infer_train/math.hpp"
+#include "infer_train/math_q.hpp"
+#include "infer_train/nn.hpp"
+#include "infer_train/nn_q.hpp"
