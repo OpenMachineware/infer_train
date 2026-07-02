@@ -46,6 +46,13 @@ sources = files(
     'src/math/compare.cpp',
     'src/math/slice.cpp',
     'src/math/cat.cpp',
+    'src/math/cumsum.cpp',
+    'src/math/cumprod.cpp',
+    'src/math/where.cpp',
+    'src/math/gather.cpp',
+    'src/math/scatter.cpp',
+    'src/math/topk.cpp',
+    'src/math/sort.cpp',
 
     # 浮点 NN
     'src/nn/activation.cpp',
