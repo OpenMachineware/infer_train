@@ -1239,6 +1239,25 @@ def quantized_linear(input, weight, bias=None):
     return torch.nn.functional.linear(input, weight, bias)
 
 # ============================================================
+# cat 算子
+# ============================================================
+_original_cat = torch.cat
+
+def _it_cat(tensors, dim=0):
+    if all(t.device.type == "cpu" for t in tensors):
+        try:
+            # 将所有张量转成 PyTensor
+            pytensors = [torch_to_pytensor(t) for t in tensors]
+            # 调用 PyTensor.cat（静态方法）
+            result = PyTensor.cat(pytensors, dim)
+            return pytensor_to_torch(result)
+        except Exception:
+            return _original_cat(tensors, dim)
+    return _original_cat(tensors, dim)
+
+torch.cat = _it_cat
+
+# ============================================================
 # 导出量化函数
 # ============================================================
 
@@ -1338,7 +1357,7 @@ __all__ = [
 # ============================================================
 # 打印欢迎信息
 # ============================================================
-print("🧠 InferTrain Engine activated!")
+print("🧠 InferTrain Engine activated for PyTorch!!")
 print("   Supported ops: add, sub, mul, div, matmul, bmm, pow, exp, sqrt, log, log2, log10")
 print("   abs, neg, clamp, floor, ceil, round")
 print("   conv1d/2d/3d, maxpool1d/2d/3d, avgpool1d/2d/3d, batchnorm2d, layernorm, linear, embedding")

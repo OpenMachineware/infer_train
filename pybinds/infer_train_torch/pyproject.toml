@@ -1,14 +1,14 @@
 [project]
-name = "infer-train-tf"
+name = "infer-train-torch"
 version = "0.1.0"
-description = "InferTrain Engine for TensorFlow - Unified Inference & Training"
+description = "InferTrain Engine for PyTorch - Unified Inference & Training"
 authors = [
     { name = "Jia Liu", email = "proljc@gmail.com" }
 ]
 license = {text = "Apache-2.0"}
 requires-python = ">=3.8"
 dependencies = [
-    "tensorflow>=2.13.0",
+    "torch>=2.0.0",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -24,9 +24,8 @@ build-backend = "maturin"
 
 [tool.maturin]
 manifest-path = "../../Cargo.toml"
-python-source = "."
-module-name = "infer_train_tf._rust"
-features = ["tensorflow"]
+module-name = "infer_train_torch"
+features = ["torch"]
 
 [tool.uv]
 dev-dependencies = [
