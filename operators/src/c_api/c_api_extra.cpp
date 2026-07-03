@@ -1,5 +1,6 @@
 #include "c_api_common.h"
 #include "infer_train/math.hpp"
+#include "infer_train/math/cat.hpp"
 #include "infer_train/nn.hpp"
 #include <vector>
 
@@ -60,6 +61,7 @@ extern "C" it_tensor* it_cat(const it_tensor** tensors, size_t n, int dim) {
         case IT_DTYPE_F32: {
             std::vector<const Tensor<F32>*> vec;
             std::vector<Tensor<F32>> storage;
+            storage.reserve(n);
             for (size_t i = 0; i < n; ++i) {
                 storage.push_back(to_cpp_tensor<F32>(tensors[i]));
                 vec.push_back(&storage.back());
@@ -70,6 +72,7 @@ extern "C" it_tensor* it_cat(const it_tensor** tensors, size_t n, int dim) {
         case IT_DTYPE_F64: {
             std::vector<const Tensor<F64>*> vec;
             std::vector<Tensor<F64>> storage;
+            storage.reserve(n);
             for (size_t i = 0; i < n; ++i) {
                 storage.push_back(to_cpp_tensor<F64>(tensors[i]));
                 vec.push_back(&storage.back());
@@ -80,6 +83,7 @@ extern "C" it_tensor* it_cat(const it_tensor** tensors, size_t n, int dim) {
         case IT_DTYPE_F16: {
             std::vector<const Tensor<F16>*> vec;
             std::vector<Tensor<F16>> storage;
+            storage.reserve(n);
             for (size_t i = 0; i < n; ++i) {
                 storage.push_back(to_cpp_tensor<F16>(tensors[i]));
                 vec.push_back(&storage.back());
@@ -90,6 +94,7 @@ extern "C" it_tensor* it_cat(const it_tensor** tensors, size_t n, int dim) {
         case IT_DTYPE_BF16: {
             std::vector<const Tensor<BF16>*> vec;
             std::vector<Tensor<BF16>> storage;
+            storage.reserve(n);
             for (size_t i = 0; i < n; ++i) {
                 storage.push_back(to_cpp_tensor<BF16>(tensors[i]));
                 vec.push_back(&storage.back());
@@ -100,6 +105,7 @@ extern "C" it_tensor* it_cat(const it_tensor** tensors, size_t n, int dim) {
         case IT_DTYPE_I8: {
             std::vector<const Tensor<I8>*> vec;
             std::vector<Tensor<I8>> storage;
+            storage.reserve(n);
             for (size_t i = 0; i < n; ++i) {
                 storage.push_back(to_cpp_tensor<I8>(tensors[i]));
                 vec.push_back(&storage.back());

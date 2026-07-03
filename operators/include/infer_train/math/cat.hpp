@@ -47,7 +47,7 @@ Tensor<T> cat(const std::vector<const Tensor<T>*>& tensors, int dim) {
             // 计算在 output 中的位置
             size_t out_idx = 0;
             size_t tmp = i;
-            size_t stride_factor = 1;
+            // size_t stride_factor = 1;
             for (int d = ndim - 1; d >= 0; --d) {
                 size_t pos = tmp % t->shape[d];
                 tmp /= t->shape[d];

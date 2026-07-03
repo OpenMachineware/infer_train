@@ -1,6 +1,9 @@
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
+use pyo3::Py;
 use crate::ffi::Tensor;
+use crate::ffi::it_tensor;
+use crate::ffi::it_cat;
 
 // ============================================================
 // 辅助转换函数
@@ -142,7 +145,7 @@ impl PyTensor {
     }
 
     // ============================================================
-    // 已实现的算子
+    // 数学算子
     // ============================================================
     fn add(&self, other: &PyTensor) -> PyTensor {
         PyTensor {
@@ -150,109 +153,100 @@ impl PyTensor {
         }
     }
 
-    fn matmul(&self, other: &PyTensor) -> PyTensor {
+    fn sub(&self, other: &PyTensor) -> PyTensor {
         PyTensor {
-            inner: self.inner.matmul(&other.inner),
+            inner: self.inner.sub(&other.inner),
         }
     }
 
-    fn relu(&self) -> PyTensor {
+    fn mul(&self, other: &PyTensor) -> PyTensor {
         PyTensor {
-            inner: self.inner.relu(),
+            inner: self.inner.mul(&other.inner),
         }
     }
 
-    fn softmax(&self, dim: i32) -> PyTensor {
+    fn div(&self, other: &PyTensor) -> PyTensor {
         PyTensor {
-            inner: self.inner.softmax(dim),
+            inner: self.inner.div(&other.inner),
         }
     }
 
-    #[pyo3(signature = (weight, bias=None, stride=1, padding=0, dilation=1, groups=1))]
-    fn conv2d(
-        &self,
-        weight: &PyTensor,
-        bias: Option<&PyTensor>,
-        stride: i32,
-        padding: i32,
-        dilation: i32,
-        groups: i32,
-    ) -> PyTensor {
-        let bias_ref = bias.map(|b| &b.inner);
+    fn pow(&self, other: &PyTensor) -> PyTensor {
         PyTensor {
-            inner: self.inner.conv2d(&weight.inner, bias_ref, stride, padding, dilation, groups),
+            inner: self.inner.pow(&other.inner),
         }
     }
 
-    #[pyo3(signature = (kernel_size, stride=-1, padding=0))]
-    fn maxpool2d(&self, kernel_size: i32, stride: i32, padding: i32) -> PyTensor {
+    fn exp(&self) -> PyTensor {
         PyTensor {
-            inner: self.inner.maxpool2d(kernel_size, stride, padding),
+            inner: self.inner.exp(),
         }
     }
 
-    #[pyo3(signature = (kernel_size, stride=-1, padding=0))]
-    fn avgpool2d(&self, kernel_size: i32, stride: i32, padding: i32) -> PyTensor {
+    fn sqrt(&self) -> PyTensor {
         PyTensor {
-            inner: self.inner.avgpool2d(kernel_size, stride, padding),
+            inner: self.inner.sqrt(),
         }
     }
 
-    #[pyo3(signature = (weight, bias, running_mean, running_var, eps=1e-5))]
-    fn batchnorm2d(
-        &self,
-        weight: &PyTensor,
-        bias: &PyTensor,
-        running_mean: &PyTensor,
-        running_var: &PyTensor,
-        eps: f32,
-    ) -> PyTensor {
+    fn log(&self) -> PyTensor {
         PyTensor {
-            inner: self.inner.batchnorm2d(
-                &weight.inner,
-                &bias.inner,
-                &running_mean.inner,
-                &running_var.inner,
-                eps,
-            ),
+            inner: self.inner.log(),
         }
     }
 
-    #[pyo3(signature = (weight, bias, eps=1e-5))]
-    fn layernorm(&self, weight: &PyTensor, bias: &PyTensor, eps: f32) -> PyTensor {
+    fn log2(&self) -> PyTensor {
         PyTensor {
-            inner: self.inner.layernorm(&weight.inner, &bias.inner, eps),
+            inner: self.inner.log2(),
         }
     }
 
-    #[pyo3(signature = (weight, eps=1e-6))]
-    fn rmsnorm(&self, weight: &PyTensor, eps: f32) -> PyTensor {
+    fn log10(&self) -> PyTensor {
         PyTensor {
-            inner: self.inner.rmsnorm(&weight.inner, eps),
+            inner: self.inner.log10(),
         }
     }
 
-    #[pyo3(signature = (weight, bias=None))]
-    fn linear(&self, weight: &PyTensor, bias: Option<&PyTensor>) -> PyTensor {
-        let bias_ref = bias.map(|b| &b.inner);
+    fn abs(&self) -> PyTensor {
         PyTensor {
-            inner: self.inner.linear(&weight.inner, bias_ref),
+            inner: self.inner.abs(),
         }
     }
 
-    fn transpose(&self) -> PyTensor {
+    fn neg(&self) -> PyTensor {
         PyTensor {
-            inner: self.inner.transpose(),
+            inner: self.inner.neg(),
         }
     }
 
-    #[pyo3(signature = (dim, start, end, step=1))]
-    fn slice(&self, dim: i32, start: i32, end: i32, step: i32) -> PyTensor {
+    #[pyo3(signature = (min_val, max_val))]
+    fn clamp(&self, min_val: f32, max_val: f32) -> PyTensor {
         PyTensor {
-            inner: self.inner.slice(dim, start, end, step),
+            inner: self.inner.clamp(min_val, max_val),
         }
     }
 
+    fn floor(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.floor(),
+        }
+    }
+
+    fn ceil(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.ceil(),
+        }
+    }
+
+    fn round(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.round(),
+        }
+    }
+
+    // ============================================================
+    // 规约算子
+    // ============================================================
     #[pyo3(signature = (dims=Vec::new(), keepdim=false))]
     fn sum(&self, dims: Vec<i32>, keepdim: bool) -> PyTensor {
         PyTensor {
@@ -299,6 +293,351 @@ impl PyTensor {
         }
     }
 
+    // ============================================================
+    // 矩阵算子
+    // ============================================================
+    fn matmul(&self, other: &PyTensor) -> PyTensor {
+        PyTensor {
+            inner: self.inner.matmul(&other.inner),
+        }
+    }
+
+    fn batch_matmul(&self, other: &PyTensor) -> PyTensor {
+        PyTensor {
+            inner: self.inner.batch_matmul(&other.inner),
+        }
+    }
+
+    fn vec_matmul(&self, mat: &PyTensor) -> PyTensor {
+        PyTensor {
+            inner: self.inner.vec_matmul(&mat.inner),
+        }
+    }
+
+    fn transpose(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.transpose(),
+        }
+    }
+
+    // ============================================================
+    // NN 算子
+    // ============================================================
+    #[pyo3(signature = (weight, bias=None, stride=1, padding=0, dilation=1, groups=1))]
+    fn conv1d(
+        &self,
+        weight: &PyTensor,
+        bias: Option<&PyTensor>,
+        stride: i32,
+        padding: i32,
+        dilation: i32,
+        groups: i32,
+    ) -> PyTensor {
+        let bias_ref = bias.map(|b| &b.inner);
+        PyTensor {
+            inner: self.inner.conv1d(&weight.inner, bias_ref, stride, padding, dilation, groups),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias=None, stride=1, padding=0, dilation=1, groups=1))]
+    fn conv2d(
+        &self,
+        weight: &PyTensor,
+        bias: Option<&PyTensor>,
+        stride: i32,
+        padding: i32,
+        dilation: i32,
+        groups: i32,
+    ) -> PyTensor {
+        let bias_ref = bias.map(|b| &b.inner);
+        PyTensor {
+            inner: self.inner.conv2d(&weight.inner, bias_ref, stride, padding, dilation, groups),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias=None, stride=1, padding=0, dilation=1, groups=1))]
+    fn conv3d(
+        &self,
+        weight: &PyTensor,
+        bias: Option<&PyTensor>,
+        stride: i32,
+        padding: i32,
+        dilation: i32,
+        groups: i32,
+    ) -> PyTensor {
+        let bias_ref = bias.map(|b| &b.inner);
+        PyTensor {
+            inner: self.inner.conv3d(&weight.inner, bias_ref, stride, padding, dilation, groups),
+        }
+    }
+
+    #[pyo3(signature = (kernel_size, stride=-1, padding=0))]
+    fn maxpool1d(&self, kernel_size: i32, stride: i32, padding: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.maxpool1d(kernel_size, stride, padding),
+        }
+    }
+
+    #[pyo3(signature = (kernel_size, stride=-1, padding=0))]
+    fn maxpool2d(&self, kernel_size: i32, stride: i32, padding: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.maxpool2d(kernel_size, stride, padding),
+        }
+    }
+
+    #[pyo3(signature = (kernel_size, stride=-1, padding=0))]
+    fn maxpool3d(&self, kernel_size: i32, stride: i32, padding: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.maxpool3d(kernel_size, stride, padding),
+        }
+    }
+
+    #[pyo3(signature = (kernel_size, stride=-1, padding=0))]
+    fn avgpool1d(&self, kernel_size: i32, stride: i32, padding: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.avgpool1d(kernel_size, stride, padding),
+        }
+    }
+
+    #[pyo3(signature = (kernel_size, stride=-1, padding=0))]
+    fn avgpool2d(&self, kernel_size: i32, stride: i32, padding: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.avgpool2d(kernel_size, stride, padding),
+        }
+    }
+
+    #[pyo3(signature = (kernel_size, stride=-1, padding=0))]
+    fn avgpool3d(&self, kernel_size: i32, stride: i32, padding: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.avgpool3d(kernel_size, stride, padding),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias, running_mean, running_var, eps=1e-5))]
+    fn batchnorm1d(
+        &self,
+        weight: &PyTensor,
+        bias: &PyTensor,
+        running_mean: &PyTensor,
+        running_var: &PyTensor,
+        eps: f32,
+    ) -> PyTensor {
+        PyTensor {
+            inner: self.inner.batchnorm1d(
+                &weight.inner,
+                &bias.inner,
+                &running_mean.inner,
+                &running_var.inner,
+                eps,
+            ),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias, running_mean, running_var, eps=1e-5))]
+    fn batchnorm2d(
+        &self,
+        weight: &PyTensor,
+        bias: &PyTensor,
+        running_mean: &PyTensor,
+        running_var: &PyTensor,
+        eps: f32,
+    ) -> PyTensor {
+        PyTensor {
+            inner: self.inner.batchnorm2d(
+                &weight.inner,
+                &bias.inner,
+                &running_mean.inner,
+                &running_var.inner,
+                eps,
+            ),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias, eps=1e-5))]
+    fn layernorm(&self, weight: &PyTensor, bias: &PyTensor, eps: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.layernorm(&weight.inner, &bias.inner, eps),
+        }
+    }
+
+    #[pyo3(signature = (weight, eps=1e-6))]
+    fn rmsnorm(&self, weight: &PyTensor, eps: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.rmsnorm(&weight.inner, eps),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias, eps=1e-5))]
+    fn instancenorm2d(&self, weight: &PyTensor, bias: &PyTensor, eps: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.instancenorm2d(&weight.inner, &bias.inner, eps),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias, num_groups, eps=1e-5))]
+    fn groupnorm(&self, weight: &PyTensor, bias: &PyTensor, num_groups: i32, eps: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.groupnorm(&weight.inner, &bias.inner, num_groups, eps),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias=None))]
+    fn linear(&self, weight: &PyTensor, bias: Option<&PyTensor>) -> PyTensor {
+        let bias_ref = bias.map(|b| &b.inner);
+        PyTensor {
+            inner: self.inner.linear(&weight.inner, bias_ref),
+        }
+    }
+
+    #[pyo3(signature = (indices, padding_idx=-1))]
+    fn embedding(&self, indices: Vec<i64>, padding_idx: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.embedding(&indices, padding_idx),
+        }
+    }
+
+    #[pyo3(signature = (p=0.5))]
+    fn dropout(&self, p: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.dropout(p),
+        }
+    }
+
+    // ============================================================
+    // 激活函数
+    // ============================================================
+    fn relu(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.relu(),
+        }
+    }
+
+    #[pyo3(signature = (alpha=0.01))]
+    fn leaky_relu(&self, alpha: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.leaky_relu(alpha),
+        }
+    }
+
+    #[pyo3(signature = (alpha=1.0))]
+    fn elu(&self, alpha: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.elu(alpha),
+        }
+    }
+
+    fn gelu(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.gelu(),
+        }
+    }
+
+    fn relu6(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.relu6(),
+        }
+    }
+
+    fn sigmoid(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.sigmoid(),
+        }
+    }
+
+    fn tanh(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.tanh(),
+        }
+    }
+
+    fn silu(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.silu(),
+        }
+    }
+
+    fn hard_swish(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.hard_swish(),
+        }
+    }
+
+    fn hard_sigmoid(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.hard_sigmoid(),
+        }
+    }
+
+    #[pyo3(signature = (beta=1.0, threshold=20.0))]
+    fn softplus(&self, beta: f32, threshold: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.softplus(beta, threshold),
+        }
+    }
+
+    #[pyo3(signature = (lambda=0.5))]
+    fn softshrink(&self, lambda: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.softshrink(lambda),
+        }
+    }
+
+    #[pyo3(signature = (alpha=1.0))]
+    fn celu(&self, alpha: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.celu(alpha),
+        }
+    }
+
+    #[pyo3(signature = (dim=-1))]
+    fn softmax(&self, dim: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.softmax(dim),
+        }
+    }
+
+    #[pyo3(signature = (dim=-1))]
+    fn log_softmax(&self, dim: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.log_softmax(dim),
+        }
+    }
+
+    // ============================================================
+    // 张量操作
+    // ============================================================
+    #[pyo3(signature = (dim, start, end, step=1))]
+    fn slice(&self, dim: i32, start: i32, end: i32, step: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.slice(dim, start, end, step),
+        }
+    }
+
+    // ============================================================
+    // cat（静态方法）
+    // ============================================================
+    #[staticmethod]
+    fn cat(tensors: Vec<Py<PyTensor>>, dim: i32, py: Python) -> PyResult<PyTensor> {
+        let mut ptrs: Vec<*const it_tensor> = Vec::new();
+        for t in tensors.iter() {
+            let pytensor = t.borrow(py);
+            ptrs.push(pytensor.inner.as_ptr());
+        }
+        let ptr = unsafe {
+            it_cat(
+                ptrs.as_ptr(),
+                ptrs.len(),
+                dim,
+            )
+        };
+        if ptr.is_null() {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err("cat failed"));
+        }
+        Ok(PyTensor {
+            inner: unsafe { Tensor::from_ptr(ptr) },
+        })
+    }
+
     #[pyo3(signature = (dim=-1))]
     fn cumsum(&self, dim: i32) -> PyTensor {
         PyTensor {
@@ -314,17 +653,220 @@ impl PyTensor {
     }
 
     // ============================================================
-    // 量化算子（已实现）
+    // 量化算子
     // ============================================================
+
     fn quantized_add(&self, other: &PyTensor) -> PyTensor {
         PyTensor {
             inner: self.inner.quantized_add(&other.inner),
         }
     }
 
-    fn quantized_matmul(&self, other: &PyTensor) -> PyTensor {
+    fn quantized_sub(&self, other: &PyTensor) -> PyTensor {
         PyTensor {
-            inner: self.inner.quantized_matmul(&other.inner),
+            inner: self.inner.quantized_sub(&other.inner),
+        }
+    }
+
+    fn quantized_mul(&self, other: &PyTensor) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_mul(&other.inner),
+        }
+    }
+
+    fn quantized_div(&self, other: &PyTensor) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_div(&other.inner),
+        }
+    }
+
+    fn quantized_exp(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_exp(),
+        }
+    }
+
+    fn quantized_sqrt(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_sqrt(),
+        }
+    }
+
+    fn quantized_abs(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_abs(),
+        }
+    }
+
+    fn quantized_neg(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_neg(),
+        }
+    }
+
+    #[pyo3(signature = (min_val, max_val))]
+    fn quantized_clamp(&self, min_val: f32, max_val: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_clamp(min_val, max_val),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias=None, stride=1, padding=0, dilation=1, groups=1))]
+    fn quantized_conv1d(
+        &self,
+        weight: &PyTensor,
+        bias: Option<&PyTensor>,
+        stride: i32,
+        padding: i32,
+        dilation: i32,
+        groups: i32,
+    ) -> PyTensor {
+        let bias_ref = bias.map(|b| &b.inner);
+        PyTensor {
+            inner: self.inner.quantized_conv1d(&weight.inner, bias_ref, stride, padding, dilation, groups),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias=None, stride=1, padding=0, dilation=1, groups=1))]
+    fn quantized_conv2d(
+        &self,
+        weight: &PyTensor,
+        bias: Option<&PyTensor>,
+        stride: i32,
+        padding: i32,
+        dilation: i32,
+        groups: i32,
+    ) -> PyTensor {
+        let bias_ref = bias.map(|b| &b.inner);
+        PyTensor {
+            inner: self.inner.quantized_conv2d(&weight.inner, bias_ref, stride, padding, dilation, groups),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias=None, stride=1, padding=0, dilation=1, groups=1))]
+    fn quantized_conv3d(
+        &self,
+        weight: &PyTensor,
+        bias: Option<&PyTensor>,
+        stride: i32,
+        padding: i32,
+        dilation: i32,
+        groups: i32,
+    ) -> PyTensor {
+        let bias_ref = bias.map(|b| &b.inner);
+        PyTensor {
+            inner: self.inner.quantized_conv3d(&weight.inner, bias_ref, stride, padding, dilation, groups),
+        }
+    }
+
+    #[pyo3(signature = (kernel_size, stride=-1, padding=0))]
+    fn quantized_maxpool1d(&self, kernel_size: i32, stride: i32, padding: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_maxpool1d(kernel_size, stride, padding),
+        }
+    }
+
+    #[pyo3(signature = (kernel_size, stride=-1, padding=0))]
+    fn quantized_maxpool2d(&self, kernel_size: i32, stride: i32, padding: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_maxpool2d(kernel_size, stride, padding),
+        }
+    }
+
+    #[pyo3(signature = (kernel_size, stride=-1, padding=0))]
+    fn quantized_maxpool3d(&self, kernel_size: i32, stride: i32, padding: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_maxpool3d(kernel_size, stride, padding),
+        }
+    }
+
+    #[pyo3(signature = (kernel_size, stride=-1, padding=0))]
+    fn quantized_avgpool1d(&self, kernel_size: i32, stride: i32, padding: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_avgpool1d(kernel_size, stride, padding),
+        }
+    }
+
+    #[pyo3(signature = (kernel_size, stride=-1, padding=0))]
+    fn quantized_avgpool2d(&self, kernel_size: i32, stride: i32, padding: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_avgpool2d(kernel_size, stride, padding),
+        }
+    }
+
+    #[pyo3(signature = (kernel_size, stride=-1, padding=0))]
+    fn quantized_avgpool3d(&self, kernel_size: i32, stride: i32, padding: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_avgpool3d(kernel_size, stride, padding),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias, running_mean, running_var, eps=1e-5))]
+    fn quantized_batchnorm1d(
+        &self,
+        weight: &PyTensor,
+        bias: &PyTensor,
+        running_mean: &PyTensor,
+        running_var: &PyTensor,
+        eps: f32,
+    ) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_batchnorm1d(
+                &weight.inner,
+                &bias.inner,
+                &running_mean.inner,
+                &running_var.inner,
+                eps,
+            ),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias, running_mean, running_var, eps=1e-5))]
+    fn quantized_batchnorm2d(
+        &self,
+        weight: &PyTensor,
+        bias: &PyTensor,
+        running_mean: &PyTensor,
+        running_var: &PyTensor,
+        eps: f32,
+    ) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_batchnorm2d(
+                &weight.inner,
+                &bias.inner,
+                &running_mean.inner,
+                &running_var.inner,
+                eps,
+            ),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias, eps=1e-5))]
+    fn quantized_layernorm(&self, weight: &PyTensor, bias: &PyTensor, eps: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_layernorm(&weight.inner, &bias.inner, eps),
+        }
+    }
+
+    #[pyo3(signature = (weight, eps=1e-6))]
+    fn quantized_rmsnorm(&self, weight: &PyTensor, eps: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_rmsnorm(&weight.inner, eps),
+        }
+    }
+
+    #[pyo3(signature = (weight, bias=None))]
+    fn quantized_linear(&self, weight: &PyTensor, bias: Option<&PyTensor>) -> PyTensor {
+        let bias_ref = bias.map(|b| &b.inner);
+        PyTensor {
+            inner: self.inner.quantized_linear(&weight.inner, bias_ref),
+        }
+    }
+
+    #[pyo3(signature = (indices, padding_idx=-1))]
+    fn quantized_embedding(&self, indices: Vec<i64>, padding_idx: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_embedding(&indices, padding_idx),
         }
     }
 
@@ -334,9 +876,217 @@ impl PyTensor {
         }
     }
 
+    #[pyo3(signature = (alpha=0.01))]
+    fn quantized_leaky_relu(&self, alpha: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_leaky_relu(alpha),
+        }
+    }
+
+    #[pyo3(signature = (alpha=1.0))]
+    fn quantized_elu(&self, alpha: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_elu(alpha),
+        }
+    }
+
+    fn quantized_gelu(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_gelu(),
+        }
+    }
+
+    fn quantized_relu6(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_relu6(),
+        }
+    }
+
     fn quantized_sigmoid(&self) -> PyTensor {
         PyTensor {
             inner: self.inner.quantized_sigmoid(),
+        }
+    }
+
+    fn quantized_tanh(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_tanh(),
+        }
+    }
+
+    fn quantized_silu(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_silu(),
+        }
+    }
+
+    fn quantized_hard_swish(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_hard_swish(),
+        }
+    }
+
+    fn quantized_hard_sigmoid(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_hard_sigmoid(),
+        }
+    }
+
+    #[pyo3(signature = (dim=-1))]
+    fn quantized_softmax(&self, dim: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_softmax(dim),
+        }
+    }
+
+    #[pyo3(signature = (dim=-1))]
+    fn quantized_log_softmax(&self, dim: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_log_softmax(dim),
+        }
+    }
+
+    // ============================================================
+    // 注意力算子
+    // ============================================================
+    #[pyo3(signature = (key, value, mask=None, scale=-1.0, is_causal=false, dropout_p=0.0))]
+    fn scaled_dot_product_attention(
+        &self,
+        key: &PyTensor,
+        value: &PyTensor,
+        mask: Option<&PyTensor>,
+        scale: f32,
+        is_causal: bool,
+        dropout_p: f32,
+    ) -> PyTensor {
+        let mask_ref = mask.map(|m| &m.inner);
+        PyTensor {
+            inner: self.inner.scaled_dot_product_attention(
+                &key.inner,
+                &value.inner,
+                mask_ref,
+                scale,
+                is_causal,
+                dropout_p,
+            ),
+        }
+    }
+
+    #[pyo3(signature = (key, value, mask=None, num_heads=8, scale=-1.0, is_causal=false, dropout_p=0.0))]
+    fn multi_head_attention(
+        &self,
+        key: &PyTensor,
+        value: &PyTensor,
+        mask: Option<&PyTensor>,
+        num_heads: i32,
+        scale: f32,
+        is_causal: bool,
+        dropout_p: f32,
+    ) -> PyTensor {
+        let mask_ref = mask.map(|m| &m.inner);
+        PyTensor {
+            inner: self.inner.multi_head_attention(
+                &key.inner,
+                &value.inner,
+                mask_ref,
+                num_heads,
+                scale,
+                is_causal,
+                dropout_p,
+            ),
+        }
+    }
+
+    #[pyo3(signature = (cos, sin))]
+    fn rotary_embedding(&self, cos: &PyTensor, sin: &PyTensor) -> PyTensor {
+        PyTensor {
+            inner: self.inner.rotary_embedding(&cos.inner, &sin.inner),
+        }
+    }
+
+    #[pyo3(signature = (key, value, mask=None, scale=-1.0, is_causal=false, dropout_p=0.0))]
+    fn quantized_scaled_dot_product_attention(
+        &self,
+        key: &PyTensor,
+        value: &PyTensor,
+        mask: Option<&PyTensor>,
+        scale: f32,
+        is_causal: bool,
+        dropout_p: f32,
+    ) -> PyTensor {
+        let mask_ref = mask.map(|m| &m.inner);
+        PyTensor {
+            inner: self.inner.quantized_scaled_dot_product_attention(
+                &key.inner,
+                &value.inner,
+                mask_ref,
+                scale,
+                is_causal,
+                dropout_p,
+            ),
+        }
+    }
+
+    #[pyo3(signature = (key, value, mask=None, num_heads=8, scale=-1.0, is_causal=false, dropout_p=0.0))]
+    fn quantized_multi_head_attention(
+        &self,
+        key: &PyTensor,
+        value: &PyTensor,
+        mask: Option<&PyTensor>,
+        num_heads: i32,
+        scale: f32,
+        is_causal: bool,
+        dropout_p: f32,
+    ) -> PyTensor {
+        let mask_ref = mask.map(|m| &m.inner);
+        PyTensor {
+            inner: self.inner.quantized_multi_head_attention(
+                &key.inner,
+                &value.inner,
+                mask_ref,
+                num_heads,
+                scale,
+                is_causal,
+                dropout_p,
+            ),
+        }
+    }
+
+    #[pyo3(signature = (cos, sin))]
+    fn quantized_rotary_embedding(&self, cos: &PyTensor, sin: &PyTensor) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_rotary_embedding(&cos.inner, &sin.inner),
+        }
+    }
+
+    // ============================================================
+    // 损失函数
+    // ============================================================
+    #[pyo3(signature = (target, reduction=true))]
+    fn cross_entropy_loss(&self, target: Vec<i64>, reduction: bool) -> PyTensor {
+        PyTensor {
+            inner: self.inner.cross_entropy_loss(&target, reduction),
+        }
+    }
+
+    #[pyo3(signature = (target, reduction=true))]
+    fn mse_loss(&self, target: &PyTensor, reduction: bool) -> PyTensor {
+        PyTensor {
+            inner: self.inner.mse_loss(&target.inner, reduction),
+        }
+    }
+
+    #[pyo3(signature = (target, reduction=true))]
+    fn l1_loss(&self, target: &PyTensor, reduction: bool) -> PyTensor {
+        PyTensor {
+            inner: self.inner.l1_loss(&target.inner, reduction),
+        }
+    }
+
+    #[pyo3(signature = (target, reduction=true, eps=1e-7))]
+    fn bce_loss(&self, target: &PyTensor, reduction: bool, eps: f32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.bce_loss(&target.inner, reduction, eps),
         }
     }
 }

@@ -646,7 +646,7 @@ impl Tensor {
     }
 
     // ============================================================
-    // 算子
+    // 数学算子
     // ============================================================
     pub fn add(&self, other: &Tensor) -> Tensor {
         let ptr = unsafe { it_add(self.ptr, other.ptr) };
@@ -668,28 +668,99 @@ impl Tensor {
         Tensor { ptr }
     }
 
+    pub fn pow(&self, other: &Tensor) -> Tensor {
+        let ptr = unsafe { it_pow(self.ptr, other.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn exp(&self) -> Tensor {
+        let ptr = unsafe { it_exp(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn sqrt(&self) -> Tensor {
+        let ptr = unsafe { it_sqrt(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn log(&self) -> Tensor {
+        let ptr = unsafe { it_log(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn log2(&self) -> Tensor {
+        let ptr = unsafe { it_log2(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn log10(&self) -> Tensor {
+        let ptr = unsafe { it_log10(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn abs(&self) -> Tensor {
+        let ptr = unsafe { it_abs(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn neg(&self) -> Tensor {
+        let ptr = unsafe { it_neg(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn clamp(&self, min_val: f32, max_val: f32) -> Tensor {
+        let ptr = unsafe { it_clamp(self.ptr, min_val, max_val) };
+        Tensor { ptr }
+    }
+
+    pub fn floor(&self) -> Tensor {
+        let ptr = unsafe { it_floor(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn ceil(&self) -> Tensor {
+        let ptr = unsafe { it_ceil(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn round(&self) -> Tensor {
+        let ptr = unsafe { it_round(self.ptr) };
+        Tensor { ptr }
+    }
+
+    // ============================================================
+    // 矩阵算子
+    // ============================================================
     pub fn matmul(&self, other: &Tensor) -> Tensor {
         let ptr = unsafe { it_matmul(self.ptr, other.ptr) };
         Tensor { ptr }
     }
 
+    pub fn batch_matmul(&self, other: &Tensor) -> Tensor {
+        let ptr = unsafe { it_batch_matmul(self.ptr, other.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn vec_matmul(&self, mat: &Tensor) -> Tensor {
+        let ptr = unsafe { it_vec_matmul(self.ptr, mat.ptr) };
+        Tensor { ptr }
+    }
+
+    // ============================================================
+    // 激活函数
+    // ============================================================
     pub fn relu(&self) -> Tensor {
         let ptr = unsafe { it_relu(self.ptr) };
         Tensor { ptr }
     }
 
-    pub fn sigmoid(&self) -> Tensor {
-        let ptr = unsafe { it_sigmoid(self.ptr) };
-        Tensor { ptr }
+    pub fn leaky_relu(&self, alpha: f32) -> Tensor {
+    let ptr = unsafe { it_leaky_relu(self.ptr, alpha) };
+    Tensor { ptr }
     }
 
-    pub fn tanh(&self) -> Tensor {
-        let ptr = unsafe { it_tanh(self.ptr) };
-        Tensor { ptr }
-    }
-
-    pub fn softmax(&self, dim: i32) -> Tensor {
-        let ptr = unsafe { it_softmax(self.ptr, dim) };
+    pub fn elu(&self, alpha: f32) -> Tensor {
+        let ptr = unsafe { it_elu(self.ptr, alpha) };
         Tensor { ptr }
     }
 
@@ -698,23 +769,84 @@ impl Tensor {
         Tensor { ptr }
     }
 
-    pub fn silu(&self) -> Tensor {
-        let ptr = unsafe { it_silu(self.ptr) };
-        Tensor { ptr }
-    }
-
     pub fn relu6(&self) -> Tensor {
         let ptr = unsafe { it_relu6(self.ptr) };
         Tensor { ptr }
     }
 
-    pub fn leaky_relu(&self, alpha: f32) -> Tensor {
-        let ptr = unsafe { it_leaky_relu(self.ptr, alpha) };
+    pub fn sigmoid(&self) -> Tensor {
+        let ptr = unsafe { it_sigmoid(self.ptr) };
         Tensor { ptr }
     }
 
-    pub fn elu(&self, alpha: f32) -> Tensor {
-        let ptr = unsafe { it_elu(self.ptr, alpha) };
+    pub fn softmax(&self, dim: i32) -> Tensor {
+        let ptr = unsafe { it_softmax(self.ptr, dim) };
+        Tensor { ptr }
+    }
+    pub fn tanh(&self) -> Tensor {
+        let ptr = unsafe { it_tanh(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn silu(&self) -> Tensor {
+        let ptr = unsafe { it_silu(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn hard_swish(&self) -> Tensor {
+        let ptr = unsafe { it_hard_swish(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn hard_sigmoid(&self) -> Tensor {
+        let ptr = unsafe { it_hard_sigmoid(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn softplus(&self, beta: f32, threshold: f32) -> Tensor {
+        let ptr = unsafe { it_softplus(self.ptr, beta, threshold) };
+        Tensor { ptr }
+    }
+
+    pub fn softshrink(&self, lambda: f32) -> Tensor {
+        let ptr = unsafe { it_softshrink(self.ptr, lambda) };
+        Tensor { ptr }
+    }
+
+    pub fn celu(&self, alpha: f32) -> Tensor {
+        let ptr = unsafe { it_celu(self.ptr, alpha) };
+        Tensor { ptr }
+    }
+
+    pub fn log_softmax(&self, dim: i32) -> Tensor {
+        let ptr = unsafe { it_log_softmax(self.ptr, dim) };
+        Tensor { ptr }
+    }
+
+    // ============================================================
+    // NN 算子 1D/3D
+    // ============================================================
+    pub fn conv1d(
+        &self,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        stride: i32,
+        padding: i32,
+        dilation: i32,
+        groups: i32,
+    ) -> Tensor {
+        let bias_ptr = bias.map_or(std::ptr::null(), |b| b.ptr);
+        let ptr = unsafe {
+            it_conv1d(
+                self.ptr,
+                weight.ptr,
+                bias_ptr,
+                stride,
+                padding,
+                dilation,
+                groups,
+            )
+        };
         Tensor { ptr }
     }
 
@@ -742,13 +874,78 @@ impl Tensor {
         Tensor { ptr }
     }
 
+    pub fn conv3d(
+        &self,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        stride: i32,
+        padding: i32,
+        dilation: i32,
+        groups: i32,
+    ) -> Tensor {
+        let bias_ptr = bias.map_or(std::ptr::null(), |b| b.ptr);
+        let ptr = unsafe {
+            it_conv3d(
+                self.ptr,
+                weight.ptr,
+                bias_ptr,
+                stride,
+                padding,
+                dilation,
+                groups,
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn maxpool1d(&self, kernel_size: i32, stride: i32, padding: i32) -> Tensor {
+        let ptr = unsafe { it_maxpool1d(self.ptr, kernel_size, stride, padding) };
+        Tensor { ptr }
+    }
+
     pub fn maxpool2d(&self, kernel_size: i32, stride: i32, padding: i32) -> Tensor {
         let ptr = unsafe { it_maxpool2d(self.ptr, kernel_size, stride, padding) };
         Tensor { ptr }
     }
 
+    pub fn maxpool3d(&self, kernel_size: i32, stride: i32, padding: i32) -> Tensor {
+        let ptr = unsafe { it_maxpool3d(self.ptr, kernel_size, stride, padding) };
+        Tensor { ptr }
+    }
+
+    pub fn avgpool1d(&self, kernel_size: i32, stride: i32, padding: i32) -> Tensor {
+        let ptr = unsafe { it_avgpool1d(self.ptr, kernel_size, stride, padding) };
+        Tensor { ptr }
+    }
+
     pub fn avgpool2d(&self, kernel_size: i32, stride: i32, padding: i32) -> Tensor {
         let ptr = unsafe { it_avgpool2d(self.ptr, kernel_size, stride, padding) };
+        Tensor { ptr }
+    }
+
+    pub fn avgpool3d(&self, kernel_size: i32, stride: i32, padding: i32) -> Tensor {
+        let ptr = unsafe { it_avgpool3d(self.ptr, kernel_size, stride, padding) };
+        Tensor { ptr }
+    }
+
+    pub fn batchnorm1d(
+        &self,
+        weight: &Tensor,
+        bias: &Tensor,
+        running_mean: &Tensor,
+        running_var: &Tensor,
+        eps: f32,
+    ) -> Tensor {
+        let ptr = unsafe {
+            it_batchnorm1d_inference(
+                self.ptr,
+                weight.ptr,
+                bias.ptr,
+                running_mean.ptr,
+                running_var.ptr,
+                eps,
+            )
+        };
         Tensor { ptr }
     }
 
@@ -770,6 +967,33 @@ impl Tensor {
                 eps,
             )
         };
+        Tensor { ptr }
+    }
+
+    pub fn instancenorm2d(&self, weight: &Tensor, bias: &Tensor, eps: f32) -> Tensor {
+        let ptr = unsafe { it_instancenorm2d(self.ptr, weight.ptr, bias.ptr, eps) };
+        Tensor { ptr }
+    }
+
+    pub fn groupnorm(&self, weight: &Tensor, bias: &Tensor, num_groups: i32, eps: f32) -> Tensor {
+        let ptr = unsafe { it_groupnorm(self.ptr, weight.ptr, bias.ptr, num_groups, eps) };
+        Tensor { ptr }
+    }
+
+    pub fn embedding(&self, indices: &[i64], padding_idx: i32) -> Tensor {
+        let ptr = unsafe {
+            it_embedding(
+                indices.as_ptr(),
+                indices.len(),
+                self.ptr,
+                padding_idx,
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn dropout(&self, p: f32) -> Tensor {
+        let ptr = unsafe { it_dropout(self.ptr, p) };
         Tensor { ptr }
     }
 
@@ -858,9 +1082,70 @@ impl Tensor {
         Tensor { ptr }
     }
 
-    // 量化版本
+    // ============================================================
+    // cat（静态方法）
+    // ============================================================
+    pub fn as_ptr(&self) -> *const it_tensor {
+        self.ptr as *const it_tensor
+    }
+
+    pub fn cat(tensors: &[&Tensor], dim: i32) -> Tensor {
+        let mut ptrs: Vec<*const it_tensor> = tensors.iter().map(|t| t.ptr as *const it_tensor).collect();
+        let ptr = unsafe {
+            it_cat(
+                ptrs.as_mut_ptr(),
+                tensors.len(),
+                dim,
+            )
+        };
+        Tensor { ptr }
+    }
+
+    // ============================================================
+    // 量化算子
+    // ============================================================
     pub fn quantized_add(&self, other: &Tensor) -> Tensor {
         let ptr = unsafe { it_quantized_add(self.ptr, other.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_sub(&self, other: &Tensor) -> Tensor {
+        let ptr = unsafe { it_quantized_sub(self.ptr, other.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_mul(&self, other: &Tensor) -> Tensor {
+        let ptr = unsafe { it_quantized_mul(self.ptr, other.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_div(&self, other: &Tensor) -> Tensor {
+        let ptr = unsafe { it_quantized_div(self.ptr, other.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_exp(&self) -> Tensor {
+        let ptr = unsafe { it_quantized_exp(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_sqrt(&self) -> Tensor {
+        let ptr = unsafe { it_quantized_sqrt(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_abs(&self) -> Tensor {
+        let ptr = unsafe { it_quantized_abs(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_neg(&self) -> Tensor {
+        let ptr = unsafe { it_quantized_neg(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_clamp(&self, min_val: f32, max_val: f32) -> Tensor {
+        let ptr = unsafe { it_quantized_clamp(self.ptr, min_val, max_val) };
         Tensor { ptr }
     }
 
@@ -869,13 +1154,397 @@ impl Tensor {
         Tensor { ptr }
     }
 
+    pub fn quantized_conv1d(
+        &self,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        stride: i32,
+        padding: i32,
+        dilation: i32,
+        groups: i32,
+    ) -> Tensor {
+        let bias_ptr = bias.map_or(std::ptr::null(), |b| b.ptr);
+        let ptr = unsafe {
+            it_quantized_conv1d(
+                self.ptr,
+                weight.ptr,
+                bias_ptr,
+                stride,
+                padding,
+                dilation,
+                groups,
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_conv2d(
+        &self,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        stride: i32,
+        padding: i32,
+        dilation: i32,
+        groups: i32,
+    ) -> Tensor {
+        let bias_ptr = bias.map_or(std::ptr::null(), |b| b.ptr);
+        let ptr = unsafe {
+            it_quantized_conv2d(
+                self.ptr,
+                weight.ptr,
+                bias_ptr,
+                stride,
+                padding,
+                dilation,
+                groups,
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_conv3d(
+        &self,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        stride: i32,
+        padding: i32,
+        dilation: i32,
+        groups: i32,
+    ) -> Tensor {
+        let bias_ptr = bias.map_or(std::ptr::null(), |b| b.ptr);
+        let ptr = unsafe {
+            it_quantized_conv3d(
+                self.ptr,
+                weight.ptr,
+                bias_ptr,
+                stride,
+                padding,
+                dilation,
+                groups,
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_maxpool1d(&self, kernel_size: i32, stride: i32, padding: i32) -> Tensor {
+        let ptr = unsafe { it_quantized_maxpool1d(self.ptr, kernel_size, stride, padding) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_maxpool2d(&self, kernel_size: i32, stride: i32, padding: i32) -> Tensor {
+        let ptr = unsafe { it_quantized_maxpool2d(self.ptr, kernel_size, stride, padding) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_maxpool3d(&self, kernel_size: i32, stride: i32, padding: i32) -> Tensor {
+        let ptr = unsafe { it_quantized_maxpool3d(self.ptr, kernel_size, stride, padding) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_avgpool1d(&self, kernel_size: i32, stride: i32, padding: i32) -> Tensor {
+        let ptr = unsafe { it_quantized_avgpool1d(self.ptr, kernel_size, stride, padding) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_avgpool2d(&self, kernel_size: i32, stride: i32, padding: i32) -> Tensor {
+        let ptr = unsafe { it_quantized_avgpool2d(self.ptr, kernel_size, stride, padding) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_avgpool3d(&self, kernel_size: i32, stride: i32, padding: i32) -> Tensor {
+        let ptr = unsafe { it_quantized_avgpool3d(self.ptr, kernel_size, stride, padding) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_batchnorm1d(
+        &self,
+        weight: &Tensor,
+        bias: &Tensor,
+        running_mean: &Tensor,
+        running_var: &Tensor,
+        eps: f32,
+    ) -> Tensor {
+        let ptr = unsafe {
+            it_quantized_batchnorm1d_inference(
+                self.ptr,
+                weight.ptr,
+                bias.ptr,
+                running_mean.ptr,
+                running_var.ptr,
+                eps,
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_batchnorm2d(
+        &self,
+        weight: &Tensor,
+        bias: &Tensor,
+        running_mean: &Tensor,
+        running_var: &Tensor,
+        eps: f32,
+    ) -> Tensor {
+        let ptr = unsafe {
+            it_quantized_batchnorm2d_inference(
+                self.ptr,
+                weight.ptr,
+                bias.ptr,
+                running_mean.ptr,
+                running_var.ptr,
+                eps,
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_layernorm(&self, weight: &Tensor, bias: &Tensor, eps: f32) -> Tensor {
+        let ptr = unsafe { it_quantized_layernorm(self.ptr, weight.ptr, bias.ptr, eps) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_rmsnorm(&self, weight: &Tensor, eps: f32) -> Tensor {
+        let ptr = unsafe { it_quantized_rmsnorm(self.ptr, weight.ptr, eps) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_linear(&self, weight: &Tensor, bias: Option<&Tensor>) -> Tensor {
+        let bias_ptr = bias.map_or(std::ptr::null(), |b| b.ptr);
+        let ptr = unsafe { it_quantized_linear(self.ptr, weight.ptr, bias_ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_embedding(&self, indices: &[i64], padding_idx: i32) -> Tensor {
+        let ptr = unsafe {
+            it_quantized_embedding(
+                indices.as_ptr(),
+                indices.len(),
+                self.ptr,
+                padding_idx,
+            )
+        };
+        Tensor { ptr }
+    }
+
     pub fn quantized_relu(&self) -> Tensor {
         let ptr = unsafe { it_quantized_relu(self.ptr) };
         Tensor { ptr }
     }
 
+    pub fn quantized_leaky_relu(&self, alpha: f32) -> Tensor {
+        let ptr = unsafe { it_quantized_leaky_relu(self.ptr, alpha) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_elu(&self, alpha: f32) -> Tensor {
+        let ptr = unsafe { it_quantized_elu(self.ptr, alpha) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_gelu(&self) -> Tensor {
+        let ptr = unsafe { it_quantized_gelu(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_relu6(&self) -> Tensor {
+        let ptr = unsafe { it_quantized_relu6(self.ptr) };
+        Tensor { ptr }
+    }
+
     pub fn quantized_sigmoid(&self) -> Tensor {
         let ptr = unsafe { it_quantized_sigmoid(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_tanh(&self) -> Tensor {
+        let ptr = unsafe { it_quantized_tanh(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_silu(&self) -> Tensor {
+        let ptr = unsafe { it_quantized_silu(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_hard_swish(&self) -> Tensor {
+        let ptr = unsafe { it_quantized_hard_swish(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_hard_sigmoid(&self) -> Tensor {
+        let ptr = unsafe { it_quantized_hard_sigmoid(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_softmax(&self, dim: i32) -> Tensor {
+        let ptr = unsafe { it_quantized_softmax(self.ptr, dim) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_log_softmax(&self, dim: i32) -> Tensor {
+        let ptr = unsafe { it_quantized_log_softmax(self.ptr, dim) };
+        Tensor { ptr }
+    }
+
+    // ============================================================
+    // 注意力算子（追加）
+    // ============================================================
+    pub fn scaled_dot_product_attention(
+        &self,
+        key: &Tensor,
+        value: &Tensor,
+        mask: Option<&Tensor>,
+        scale: f32,
+        is_causal: bool,
+        dropout_p: f32,
+    ) -> Tensor {
+        let mask_ptr = mask.map_or(std::ptr::null(), |m| m.ptr);
+        let ptr = unsafe {
+            it_scaled_dot_product_attention(
+                self.ptr,
+                key.ptr,
+                value.ptr,
+                mask_ptr,
+                scale,
+                if is_causal { 1 } else { 0 },
+                dropout_p,
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn multi_head_attention(
+        &self,
+        key: &Tensor,
+        value: &Tensor,
+        mask: Option<&Tensor>,
+        num_heads: i32,
+        scale: f32,
+        is_causal: bool,
+        dropout_p: f32,
+    ) -> Tensor {
+        let mask_ptr = mask.map_or(std::ptr::null(), |m| m.ptr);
+        let ptr = unsafe {
+            it_multi_head_attention(
+                self.ptr,
+                key.ptr,
+                value.ptr,
+                mask_ptr,
+                num_heads,
+                scale,
+                if is_causal { 1 } else { 0 },
+                dropout_p,
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn rotary_embedding(&self, cos: &Tensor, sin: &Tensor) -> Tensor {
+        let ptr = unsafe { it_rotary_embedding(self.ptr, cos.ptr, sin.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_scaled_dot_product_attention(
+        &self,
+        key: &Tensor,
+        value: &Tensor,
+        mask: Option<&Tensor>,
+        scale: f32,
+        is_causal: bool,
+        dropout_p: f32,
+    ) -> Tensor {
+        let mask_ptr = mask.map_or(std::ptr::null(), |m| m.ptr);
+        let ptr = unsafe {
+            it_quantized_scaled_dot_product_attention(
+                self.ptr,
+                key.ptr,
+                value.ptr,
+                mask_ptr,
+                scale,
+                if is_causal { 1 } else { 0 },
+                dropout_p,
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_multi_head_attention(
+        &self,
+        key: &Tensor,
+        value: &Tensor,
+        mask: Option<&Tensor>,
+        num_heads: i32,
+        scale: f32,
+        is_causal: bool,
+        dropout_p: f32,
+    ) -> Tensor {
+        let mask_ptr = mask.map_or(std::ptr::null(), |m| m.ptr);
+        let ptr = unsafe {
+            it_quantized_multi_head_attention(
+                self.ptr,
+                key.ptr,
+                value.ptr,
+                mask_ptr,
+                num_heads,
+                scale,
+                if is_causal { 1 } else { 0 },
+                dropout_p,
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_rotary_embedding(&self, cos: &Tensor, sin: &Tensor) -> Tensor {
+        let ptr = unsafe { it_quantized_rotary_embedding(self.ptr, cos.ptr, sin.ptr) };
+        Tensor { ptr }
+    }
+
+    // ============================================================
+    // 损失函数（追加）
+    // ============================================================
+    pub fn cross_entropy_loss(&self, target: &[i64], reduction: bool) -> Tensor {
+        let ptr = unsafe {
+            it_cross_entropy_loss(
+                self.ptr,
+                target.as_ptr(),
+                target.len(),
+                if reduction { 1 } else { 0 },
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn mse_loss(&self, target: &Tensor, reduction: bool) -> Tensor {
+        let ptr = unsafe {
+            it_mse_loss(
+                self.ptr,
+                target.ptr,
+                if reduction { 1 } else { 0 },
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn l1_loss(&self, target: &Tensor, reduction: bool) -> Tensor {
+        let ptr = unsafe {
+            it_l1_loss(
+                self.ptr,
+                target.ptr,
+                if reduction { 1 } else { 0 },
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn bce_loss(&self, target: &Tensor, reduction: bool, eps: f32) -> Tensor {
+        let ptr = unsafe {
+            it_bce_loss(
+                self.ptr,
+                target.ptr,
+                if reduction { 1 } else { 0 },
+                eps,
+            )
+        };
         Tensor { ptr }
     }
 
