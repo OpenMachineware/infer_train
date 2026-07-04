@@ -4,6 +4,8 @@ use pyo3::Py;
 use crate::ffi::Tensor;
 use crate::ffi::it_tensor;
 use crate::ffi::it_cat;
+use pyo3::pyclass;
+use pyo3::types::PyList;
 
 // ============================================================
 // 辅助转换函数
@@ -294,7 +296,6 @@ impl PyTensor {
         }
     }
 
-
     // ============================================================
     // 规约算子
     // ============================================================
@@ -346,6 +347,10 @@ impl PyTensor {
 
     fn argmax(&self) -> Vec<i64> {
         self.inner.argmax()
+    }
+
+    fn argmin(&self) -> Vec<i64> {
+        self.inner.argmin()
     }
 
     #[pyo3(signature = (k, dim=-1, largest=true))]
@@ -686,11 +691,42 @@ impl PyTensor {
         }
     }
 
+    // FIXME: 非常奇怪的问题，不知道怎么修
+    // #[pyo3(signature = (condition, condition_shape, true_val, false_val))]
+    // fn where_op(
+    //     condition: Vec<u8>,
+    //     condition_shape: Vec<usize>,
+    //     true_val: &PyTensor,
+    //     false_val: &PyTensor,
+    // ) -> PyTensor {
+    //     PyTensor {
+    //         inner: Tensor::where_(
+    //             &condition,
+    //             &condition_shape,
+    //             &true_val.inner,
+    //             &false_val.inner,
+    //         ),
+    //     }
+    // }
+
     #[pyo3(signature = (indices, indices_shape, dim=0))]
     fn gather(&self, indices: Vec<i64>, indices_shape: Vec<usize>, dim: i32) -> PyTensor {
         PyTensor {
             inner: self.inner.gather(&indices, &indices_shape, dim),
         }
+    }
+
+    #[pyo3(signature = (indices, indices_shape, src, dim=0))]
+    fn scatter(&self, indices: Vec<i64>, indices_shape: Vec<usize>, src: &PyTensor, dim: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.scatter(&indices, &indices_shape, &src.inner, dim),
+        }
+    }
+
+    #[pyo3(signature = (dim=-1, ascending=true))]
+    fn sort(&self, dim: i32, ascending: bool) -> (PyTensor, PyTensor) {
+        let (values, indices) = self.inner.sort(dim, ascending);
+        (PyTensor { inner: values }, PyTensor { inner: indices })
     }
 
     // ============================================================

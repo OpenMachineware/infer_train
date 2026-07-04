@@ -136,6 +136,7 @@ it_tensor_t* it_prod_all(const it_tensor_t* input);
 it_tensor_t* it_var(const it_tensor_t* input, int unbiased);
 it_tensor_t* it_std(const it_tensor_t* input, int unbiased);
 it_tensor_t* it_argmax(const it_tensor_t* input);
+it_tensor_t* it_argmin(const it_tensor_t* input);
 void it_topk(
     const it_tensor_t* input,
     size_t k,
@@ -169,6 +170,22 @@ it_tensor_t* it_quantized_transpose(const it_tensor_t* input);
 it_tensor_t* it_slice(const it_tensor_t* input, int dim, int start, int end, int step);
 it_tensor_t* it_cat(const it_tensor_t** tensors, size_t n, int dim);
 it_tensor_t* it_gather(const it_tensor_t* input, const int64_t* indices, size_t indices_len, const size_t* indices_shape, size_t indices_ndim, int dim);
+it_tensor_t* it_scatter(
+    const it_tensor_t* input,
+    const int64_t* indices,
+    size_t indices_len,
+    const size_t* indices_shape,
+    size_t indices_ndim,
+    const it_tensor_t* src,
+    int dim
+);
+void it_sort(
+    const it_tensor_t* input,
+    int dim,
+    int ascending,
+    it_tensor_t** values,
+    it_tensor_t** indices
+);
 
 // ============================================================
 // 复杂算子
@@ -182,7 +199,6 @@ it_tensor_t* it_where(
     const it_tensor_t* true_val,
     const it_tensor_t* false_val
 );
-// topk/sort/gather/scatter 返回复杂结构，先用简单版本
 
 // ============================================================
 // NN 算子（浮点）

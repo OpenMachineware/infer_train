@@ -135,6 +135,7 @@ extern "C" {
     pub fn it_quantized_min_all(input: *const it_tensor) -> *mut it_tensor;
 
     pub fn it_argmax(input: *const it_tensor) -> *mut it_tensor;
+    pub fn it_argmin(input: *const it_tensor) -> *mut it_tensor;
     pub fn it_topk(
         input: *const it_tensor,
         k: usize,
@@ -513,6 +514,24 @@ extern "C" {
         indices_ndim: usize,
         dim: i32,
     ) -> *mut it_tensor;
+
+    pub fn it_scatter(
+        input: *const it_tensor,
+        indices: *const i64,
+        indices_len: usize,
+        indices_shape: *const usize,
+        indices_ndim: usize,
+        src: *const it_tensor,
+        dim: i32,
+    ) -> *mut it_tensor;
+
+    pub fn it_sort(
+        input: *const it_tensor,
+        dim: i32,
+        ascending: i32,
+        values: *mut *mut it_tensor,
+        indices: *mut *mut it_tensor,
+    );
 }
 
 // ============================================================
@@ -1134,6 +1153,24 @@ impl Tensor {
         Tensor { ptr }
     }
 
+    pub fn where_(
+        condition: &[u8],
+        condition_shape: &[usize],
+        true_val: &Tensor,
+        false_val: &Tensor,
+    ) -> Tensor {
+        let ptr = unsafe {
+            it_where(
+                condition.as_ptr(),
+                condition_shape.as_ptr(),
+                condition_shape.len(),
+                true_val.as_ptr(),
+                false_val.as_ptr(),
+            )
+        };
+        Tensor { ptr }
+    }
+
     pub fn gather(&self, indices: &[i64], indices_shape: &[usize], dim: i32) -> Tensor {
         let ptr = unsafe {
             it_gather(
@@ -1146,6 +1183,36 @@ impl Tensor {
             )
         };
         Tensor { ptr }
+    }
+
+    pub fn scatter(&self, indices: &[i64], indices_shape: &[usize], src: &Tensor, dim: i32) -> Tensor {
+        let ptr = unsafe {
+            it_scatter(
+                self.ptr,
+                indices.as_ptr(),
+                indices.len(),
+                indices_shape.as_ptr(),
+                indices_shape.len(),
+                src.ptr,
+                dim,
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn sort(&self, dim: i32, ascending: bool) -> (Tensor, Tensor) {
+        let mut values_ptr: *mut it_tensor = std::ptr::null_mut();
+        let mut indices_ptr: *mut it_tensor = std::ptr::null_mut();
+        unsafe {
+            it_sort(
+                self.ptr,
+                dim,
+                if ascending { 1 } else { 0 },
+                &mut values_ptr,
+                &mut indices_ptr,
+            );
+        }
+        (Tensor { ptr: values_ptr }, Tensor { ptr: indices_ptr })
     }
 
     pub fn cumsum(&self, dim: i32) -> Tensor {
@@ -1214,6 +1281,13 @@ impl Tensor {
         let data = unsafe { it_tensor_data(ptr) as *const i64 };
         let slice = unsafe { std::slice::from_raw_parts(data, size) };
         slice.to_vec()
+    }
+
+    pub fn argmin(&self) -> Vec<i64> {
+        let ptr = unsafe { it_argmin(self.ptr) };
+        let size = unsafe { it_tensor_size(ptr) };
+        let data = unsafe { it_tensor_data(ptr) as *const i64 };
+        unsafe { std::slice::from_raw_parts(data, size).to_vec() }
     }
 
     pub fn topk(&self, k: usize, dim: i32, largest: bool) -> (Tensor, Tensor) {

@@ -185,6 +185,7 @@ extern "C" it_tensor* it_where(
     const it_tensor* true_val,
     const it_tensor* false_val
 ) {
+    if (!condition || !true_val || !false_val) return nullptr;
     if (true_val->dtype != false_val->dtype) return nullptr;
 
     std::vector<uint8_t> cond(condition, condition + it_tensor_size(true_val));
@@ -214,6 +215,12 @@ extern "C" it_tensor* it_where(
             auto fv = to_cpp_tensor<BF16>(false_val);
             auto result = where(cond, shape, tv, fv);
             return from_cpp_tensor(result, IT_DTYPE_BF16);
+        }
+        case IT_DTYPE_I8: {
+            auto tv = to_cpp_tensor<I8>(true_val);
+            auto fv = to_cpp_tensor<I8>(false_val);
+            auto result = where(cond, shape, tv, fv);
+            return from_cpp_tensor(result, IT_DTYPE_I8);
         }
         default: return nullptr;
     }
@@ -321,9 +328,99 @@ extern "C" it_tensor* it_argmax(const it_tensor* input) {
 }
 
 // ============================================================
+// argmin
+// ============================================================
+extern "C" it_tensor* it_argmin(const it_tensor* input) {
+    if (!input || input->ndim == 0) return nullptr;
+
+    switch (input->dtype) {
+        case IT_DTYPE_F32: {
+            auto t = to_cpp_tensor<F32>(input);
+            auto result = argmin(t);
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor));
+            ct->ndim = 1;
+            ct->shape = (size_t*)malloc(sizeof(size_t));
+            ct->shape[0] = result.size();
+            ct->data = malloc(result.size() * sizeof(int64_t));
+            memcpy(ct->data, result.data(), result.size() * sizeof(int64_t));
+            ct->elem_size = sizeof(int64_t);
+            ct->dtype = IT_DTYPE_I64;
+            ct->scale = 1.0f;
+            ct->zero_point = 0.0f;
+            ct->owns_memory = true;
+            return ct;
+        }
+        case IT_DTYPE_F64: {
+            auto t = to_cpp_tensor<F64>(input);
+            auto result = argmin(t);
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor));
+            ct->ndim = 1;
+            ct->shape = (size_t*)malloc(sizeof(size_t));
+            ct->shape[0] = result.size();
+            ct->data = malloc(result.size() * sizeof(int64_t));
+            memcpy(ct->data, result.data(), result.size() * sizeof(int64_t));
+            ct->elem_size = sizeof(int64_t);
+            ct->dtype = IT_DTYPE_I64;
+            ct->scale = 1.0f;
+            ct->zero_point = 0.0f;
+            ct->owns_memory = true;
+            return ct;
+        }
+        case IT_DTYPE_F16: {
+            auto t = to_cpp_tensor<F16>(input);
+            auto result = argmin(t);
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor));
+            ct->ndim = 1;
+            ct->shape = (size_t*)malloc(sizeof(size_t));
+            ct->shape[0] = result.size();
+            ct->data = malloc(result.size() * sizeof(int64_t));
+            memcpy(ct->data, result.data(), result.size() * sizeof(int64_t));
+            ct->elem_size = sizeof(int64_t);
+            ct->dtype = IT_DTYPE_I64;
+            ct->scale = 1.0f;
+            ct->zero_point = 0.0f;
+            ct->owns_memory = true;
+            return ct;
+        }
+        case IT_DTYPE_BF16: {
+            auto t = to_cpp_tensor<BF16>(input);
+            auto result = argmin(t);
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor));
+            ct->ndim = 1;
+            ct->shape = (size_t*)malloc(sizeof(size_t));
+            ct->shape[0] = result.size();
+            ct->data = malloc(result.size() * sizeof(int64_t));
+            memcpy(ct->data, result.data(), result.size() * sizeof(int64_t));
+            ct->elem_size = sizeof(int64_t);
+            ct->dtype = IT_DTYPE_I64;
+            ct->scale = 1.0f;
+            ct->zero_point = 0.0f;
+            ct->owns_memory = true;
+            return ct;
+        }
+        case IT_DTYPE_I8: {
+            auto t = to_cpp_tensor<I8>(input);
+            auto result = argmin(t);
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor));
+            ct->ndim = 1;
+            ct->shape = (size_t*)malloc(sizeof(size_t));
+            ct->shape[0] = result.size();
+            ct->data = malloc(result.size() * sizeof(int64_t));
+            memcpy(ct->data, result.data(), result.size() * sizeof(int64_t));
+            ct->elem_size = sizeof(int64_t);
+            ct->dtype = IT_DTYPE_I64;
+            ct->scale = 1.0f;
+            ct->zero_point = 0.0f;
+            ct->owns_memory = true;
+            return ct;
+        }
+        default: return nullptr;
+    }
+}
+
+// ============================================================
 // topk
 // ============================================================
-// c_api_extra.cpp
 extern "C" void it_topk(
     const it_tensor* input,
     size_t k,
@@ -436,5 +533,116 @@ extern "C" it_tensor* it_gather(
             return from_cpp_tensor(result, IT_DTYPE_I8);
         }
         default: return nullptr;
+    }
+}
+
+// ============================================================
+// scatter
+// ============================================================
+extern "C" it_tensor* it_scatter(
+    const it_tensor* input,
+    const int64_t* indices,
+    size_t indices_len,
+    const size_t* indices_shape,
+    size_t indices_ndim,
+    const it_tensor* src,
+    int dim
+) {
+    if (!input || !indices || !src) return nullptr;
+
+    std::vector<int64_t> idx_vec(indices, indices + indices_len);
+    std::vector<size_t> shape_vec(indices_shape, indices_shape + indices_ndim);
+
+    switch (input->dtype) {
+        case IT_DTYPE_F32: {
+            auto t = to_cpp_tensor<F32>(input);
+            auto s = to_cpp_tensor<F32>(src);
+            auto result = scatter(t, idx_vec, shape_vec, s, dim);
+            return from_cpp_tensor(result, IT_DTYPE_F32);
+        }
+        case IT_DTYPE_F64: {
+            auto t = to_cpp_tensor<F64>(input);
+            auto s = to_cpp_tensor<F64>(src);
+            auto result = scatter(t, idx_vec, shape_vec, s, dim);
+            return from_cpp_tensor(result, IT_DTYPE_F64);
+        }
+        case IT_DTYPE_F16: {
+            auto t = to_cpp_tensor<F16>(input);
+            auto s = to_cpp_tensor<F16>(src);
+            auto result = scatter(t, idx_vec, shape_vec, s, dim);
+            return from_cpp_tensor(result, IT_DTYPE_F16);
+        }
+        case IT_DTYPE_BF16: {
+            auto t = to_cpp_tensor<BF16>(input);
+            auto s = to_cpp_tensor<BF16>(src);
+            auto result = scatter(t, idx_vec, shape_vec, s, dim);
+            return from_cpp_tensor(result, IT_DTYPE_BF16);
+        }
+        case IT_DTYPE_I8: {
+            auto t = to_cpp_tensor<I8>(input);
+            auto s = to_cpp_tensor<I8>(src);
+            auto result = scatter(t, idx_vec, shape_vec, s, dim);
+            return from_cpp_tensor(result, IT_DTYPE_I8);
+        }
+        default: return nullptr;
+    }
+}
+
+// ============================================================
+// sort
+// ============================================================
+extern "C" void it_sort(
+    const it_tensor* input,
+    int dim,
+    int ascending,
+    it_tensor** values,
+    it_tensor** indices
+) {
+    if (!input || !values || !indices) {
+        *values = nullptr;
+        *indices = nullptr;
+        return;
+    }
+
+    switch (input->dtype) {
+        case IT_DTYPE_F32: {
+            auto t = to_cpp_tensor<F32>(input);
+            auto result = sort(t, dim, ascending != 0);
+            *values = from_cpp_tensor(result.first, IT_DTYPE_F32);
+            *indices = from_vector_to_tensor(result.second, t.shape, IT_DTYPE_I64);
+            return;
+        }
+        case IT_DTYPE_F64: {
+            auto t = to_cpp_tensor<F64>(input);
+            auto result = sort(t, dim, ascending != 0);
+            *values = from_cpp_tensor(result.first, IT_DTYPE_F64);
+            *indices = from_vector_to_tensor(result.second, t.shape, IT_DTYPE_I64);
+            return;
+        }
+        case IT_DTYPE_F16: {
+            auto t = to_cpp_tensor<F16>(input);
+            auto result = sort(t, dim, ascending != 0);
+            *values = from_cpp_tensor(result.first, IT_DTYPE_F16);
+            *indices = from_vector_to_tensor(result.second, t.shape, IT_DTYPE_I64);
+            return;
+        }
+        case IT_DTYPE_BF16: {
+            auto t = to_cpp_tensor<BF16>(input);
+            auto result = sort(t, dim, ascending != 0);
+            *values = from_cpp_tensor(result.first, IT_DTYPE_BF16);
+            *indices = from_vector_to_tensor(result.second, t.shape, IT_DTYPE_I64);
+            return;
+        }
+        case IT_DTYPE_I8: {
+            auto t = to_cpp_tensor<I8>(input);
+            auto result = sort(t, dim, ascending != 0);
+            *values = from_cpp_tensor(result.first, IT_DTYPE_I8);
+            *indices = from_vector_to_tensor(result.second, t.shape, IT_DTYPE_I64);
+            return;
+        }
+        default:
+            *values = nullptr;
+            *indices = nullptr;
+            return;
     }
 }
