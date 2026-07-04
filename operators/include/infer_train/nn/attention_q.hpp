@@ -17,6 +17,9 @@ Tensor<T> quantized_scaled_dot_product_attention(
     bool is_causal = false,
     float dropout_p = 0.0f
 ) {
+    // Remove warning
+    (void)dropout_p;
+
     static_assert(is_quantized<T>::value,
                   "quantized_scaled_dot_product_attention only works with quantized types");
 
@@ -56,6 +59,9 @@ Tensor<T> quantized_multi_head_attention(
     bool is_causal = false,
     float dropout_p = 0.0f
 ) {
+    // Remove warning
+    (void)dropout_p;
+
     static_assert(is_quantized<T>::value,
                   "quantized_multi_head_attention only works with quantized types");
 

@@ -13,6 +13,7 @@ pub struct it_tensor {
 unsafe impl Send for it_tensor {}
 unsafe impl Sync for it_tensor {}
 
+#[allow(non_camel_case_types)]
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum it_dtype_t {

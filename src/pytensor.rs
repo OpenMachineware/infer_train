@@ -16,7 +16,7 @@ fn f32_to_f16(x: f32) -> u16 {
     let bits = x.to_bits();
     let sign = (bits >> 16) & 0x8000;
     let exp = ((bits >> 23) & 0xFF) - 127 + 15;
-    let exp = if exp > 31 { 31 } else if exp < 0 { 0 } else { exp };
+    let exp = exp.clamp(0, 31);
     let mant = (bits >> 13) & 0x3FF;
     (sign | (exp << 10) | mant) as u16
 }
@@ -1371,10 +1371,10 @@ pub fn sgd_update(
     py: Python,
     params: Vec<Py<PyTensor>>,
     grads: Vec<Py<PyTensor>>,
-    lr: f32,
-    momentum: f32,
-    weight_decay: f32,
-    nesterov: bool,
+    _lr: f32,
+    _momentum: f32,
+    _weight_decay: f32,
+    _esterov: bool,
 ) -> PyResult<()> {
     let mut param_tensors: Vec<Tensor> = Vec::new();
     let mut grad_tensors: Vec<Tensor> = Vec::new();

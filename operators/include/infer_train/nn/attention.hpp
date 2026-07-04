@@ -40,6 +40,9 @@ Tensor<T> scaled_dot_product_attention(
     bool is_causal = false,
     float dropout_p = 0.0f
 ) {
+    // Remove warning
+    (void)dropout_p;
+
     if (query.shape.size() != 3 || key.shape.size() != 3 || value.shape.size() != 3) {
         return Tensor<T>();
     }
@@ -145,6 +148,9 @@ Tensor<T> multi_head_attention(
     bool is_causal = false,
     float dropout_p = 0.0f
 ) {
+    // Remove warning
+    (void)dropout_p;
+
     // 输入: (batch, seq_len, embed_dim)
     if (query.shape.size() != 3 || key.shape.size() != 3 || value.shape.size() != 3) {
         return Tensor<T>();
@@ -152,14 +158,14 @@ Tensor<T> multi_head_attention(
 
     size_t batch = query.shape[0];
     size_t seq_len_q = query.shape[1];
-    size_t seq_len_k = key.shape[1];
+    // size_t seq_len_k = key.shape[1];
     size_t embed_dim = query.shape[2];
 
     if (embed_dim % num_heads != 0) {
         return Tensor<T>();
     }
 
-    size_t head_dim = embed_dim / num_heads;
+    // size_t head_dim = embed_dim / num_heads;
 
     // 如果单头，直接调用
     if (num_heads == 1) {
@@ -184,105 +190,5 @@ Tensor<T> multi_head_attention(
 
     return output;
 }
-
-
-// template<typename T>
-// Tensor<T> multi_head_attention(
-//     const Tensor<T>& query,
-//     const Tensor<T>& key,
-//     const Tensor<T>& value,
-//     const Tensor<T>* mask = nullptr,
-//     int num_heads = 8,
-//     float scale = -1.0f,
-//     bool is_causal = false,
-//     float dropout_p = 0.0f
-// ) {
-//     // 输入: (batch, seq_len, embed_dim)
-//     if (query.shape.size() != 3 || key.shape.size() != 3 || value.shape.size() != 3) {
-//         return Tensor<T>();
-//     }
-//
-//     size_t batch = query.shape[0];
-//     size_t seq_len_q = query.shape[1];
-//     size_t seq_len_k = key.shape[1];
-//     size_t seq_len_v = value.shape[1];
-//     size_t embed_dim = query.shape[2];
-//
-//     if (embed_dim % num_heads != 0) {
-//         return Tensor<T>();
-//     }
-//
-//     size_t head_dim = embed_dim / num_heads;
-//
-//     // 如果单头，直接用原来的实现
-//     if (num_heads == 1) {
-//         return scaled_dot_product_attention(query, key, value, mask, scale, is_causal, dropout_p);
-//     }
-//
-//     // 多头：reshape + 循环处理每个头
-//     Tensor<T> output({batch, seq_len_q, embed_dim});
-//
-//     // 对每个 batch 和每个 head 处理
-//     for (size_t b = 0; b < batch; ++b) {
-//         for (int h = 0; h < num_heads; ++h) {
-//             // 提取 Q_head: (seq_len_q, head_dim)
-//             // 需要从 query 中切出当前 batch 和当前 head
-//             // 先用 slice 切出 (seq_len_q, embed_dim)
-//             // 再用 reshape 成 (seq_len_q, num_heads, head_dim)
-//             // 再取第 h 个 head
-//
-//             // 提取当前 batch 的 Q: (1, seq_len_q, embed_dim)
-//             Tensor<T> q_batch = slice(query, 0, b, b + 1);  // (1, seq_len_q, embed_dim)
-//             // 去掉 batch 维度: (seq_len_q, embed_dim)
-//             // 但 reshape 不能去掉维度，需要先 reshape 成 (seq_len_q, embed_dim)
-//             // 实际上 q_batch 是 3D，需要先转成 2D
-//             // 用 reshape: (1, seq_len_q, embed_dim) -> (seq_len_q, embed_dim)
-//             Tensor<T> q_2d = reshape(q_batch, {seq_len_q, embed_dim});
-//
-//             // 重新塑造成 (seq_len_q, num_heads, head_dim)
-//             Tensor<T> q_heads = reshape(q_2d, {seq_len_q, static_cast<size_t>(num_heads), head_dim});
-//             // 提取第 h 个 head: (seq_len_q, head_dim)
-//             // 用 slice 沿第1维切
-//             Tensor<T> q_head = slice(q_heads, 1, h, h + 1);  // (seq_len_q, 1, head_dim)
-//             // 去掉中间维度: (seq_len_q, head_dim)
-//             Tensor<T> q_head_2d = reshape(q_head, {seq_len_q, head_dim});
-//
-//             // 同样处理 K
-//             Tensor<T> k_batch = slice(key, 0, b, b + 1);
-//             Tensor<T> k_2d = reshape(k_batch, {seq_len_k, embed_dim});
-//             Tensor<T> k_heads = reshape(k_2d, {seq_len_k, static_cast<size_t>(num_heads), head_dim});
-//             Tensor<T> k_head = slice(k_heads, 1, h, h + 1);
-//             Tensor<T> k_head_2d = reshape(k_head, {seq_len_k, head_dim});
-//
-//             // 同样处理 V
-//             Tensor<T> v_batch = slice(value, 0, b, b + 1);
-//             Tensor<T> v_2d = reshape(v_batch, {seq_len_v, embed_dim});
-//             Tensor<T> v_heads = reshape(v_2d, {seq_len_v, static_cast<size_t>(num_heads), head_dim});
-//             Tensor<T> v_head = slice(v_heads, 1, h, h + 1);
-//             Tensor<T> v_head_2d = reshape(v_head, {seq_len_v, head_dim});
-//
-//             // 对当前 head 做注意力
-//             Tensor<T> out_head = scaled_dot_product_attention(
-//                 q_head_2d, k_head_2d, v_head_2d, mask, scale, is_causal, dropout_p
-//             );
-//             // out_head: (seq_len_q, head_dim)
-//
-//             // 写回 output: (batch, seq_len_q, embed_dim)
-//             // 需要展开成 (seq_len_q, 1, head_dim) 再 reshape 回去
-//             Tensor<T> out_expand = reshape(out_head, {seq_len_q, 1, head_dim});
-//             // 写回 output 的对应位置
-//             // 这里需要按 batch 和 head 写入
-//             // 可以用循环或切片
-//             for (size_t i = 0; i < seq_len_q; ++i) {
-//                 for (size_t j = 0; j < head_dim; ++j) {
-//                     output.data[b * seq_len_q * embed_dim + i * embed_dim + h * head_dim + j] =
-//                         out_head.data[i * head_dim + j];
-//                 }
-//             }
-//         }
-//     }
-//
-//     return output;
-// }
 
 } // namespace infer_train

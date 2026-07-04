@@ -16,7 +16,7 @@ std::pair<Tensor<T>, std::vector<int64_t>> topk(
     size_t k,
     int dim = -1,
     bool largest = true,
-    bool sorted = true
+    bool /* sorted */ = true
 ) {
     if (input.shape.empty()) {
         return {Tensor<T>(), std::vector<int64_t>()};
@@ -95,7 +95,7 @@ inline std::pair<Tensor<I8>, std::vector<int64_t>> topk(
     size_t k,
     int dim = -1,
     bool largest = true,
-    bool sorted = true
+    bool /* sorted */ = true
 ) {
     if (input.shape.empty()) {
         return {Tensor<I8>(), std::vector<int64_t>()};
