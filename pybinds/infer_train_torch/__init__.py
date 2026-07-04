@@ -1098,6 +1098,51 @@ def _it_cumprod(input, dim, dtype=None):
 
 torch.cumprod = _it_cumprod
 
+
+# ============================================================
+# 优化器覆盖
+# ============================================================
+
+# Adam
+_original_adam = torch.optim.Adam
+
+def _it_adam(params, lr=0.001, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, amsgrad=False):
+    # 我们只支持 CPU，不支持 amsgrad
+    if amsgrad:
+        return _original_adam(params, lr, betas, eps, weight_decay, amsgrad)
+
+    # 检查参数是否在 CPU 上
+    all_cpu = True
+    for param_group in params:
+        for p in param_group['params']:
+            if p.device.type != "cpu":
+                all_cpu = False
+                break
+        if not all_cpu:
+            break
+
+    if all_cpu:
+        try:
+            # 创建 AdamState
+            # 需要从 params 提取 tensors 和 shapes
+            tensors = []
+            shapes = []
+            ndims = []
+            for param_group in params:
+                for p in param_group['params']:
+                    tensors.append(torch_to_pytensor(p))
+                    shapes.extend(p.shape)
+                    ndims.append(len(p.shape))
+
+            # 但是 AdamState 的接口需要适配...
+            # 这里先 fallback，后面再完善
+            return _original_adam(params, lr, betas, eps, weight_decay, amsgrad)
+        except Exception:
+            return _original_adam(params, lr, betas, eps, weight_decay, amsgrad)
+    return _original_adam(params, lr, betas, eps, weight_decay, amsgrad)
+
+torch.optim.Adam = _it_adam
+
 # ============================================================
 # 损失函数
 # ============================================================

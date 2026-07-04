@@ -6,6 +6,7 @@ use crate::ffi::it_tensor;
 use crate::ffi::it_cat;
 use pyo3::pyclass;
 use pyo3::types::PyList;
+use crate::ffi::it_where;
 
 // ============================================================
 // 辅助转换函数
@@ -691,23 +692,30 @@ impl PyTensor {
         }
     }
 
-    // FIXME: 非常奇怪的问题，不知道怎么修
-    // #[pyo3(signature = (condition, condition_shape, true_val, false_val))]
-    // fn where_op(
-    //     condition: Vec<u8>,
-    //     condition_shape: Vec<usize>,
-    //     true_val: &PyTensor,
-    //     false_val: &PyTensor,
-    // ) -> PyTensor {
-    //     PyTensor {
-    //         inner: Tensor::where_(
-    //             &condition,
-    //             &condition_shape,
-    //             &true_val.inner,
-    //             &false_val.inner,
-    //         ),
-    //     }
-    // }
+    #[staticmethod]
+    #[pyo3(signature = (condition, condition_shape, true_val, false_val))]
+    fn where_op(
+        condition: Vec<u8>,
+        condition_shape: Vec<usize>,
+        true_val: &PyTensor,
+        false_val: &PyTensor,
+    ) -> PyResult<PyTensor> {
+        let ptr = unsafe {
+            it_where(
+                condition.as_ptr(),
+                condition_shape.as_ptr(),
+                condition_shape.len(),
+                true_val.inner.as_ptr(),
+                false_val.inner.as_ptr(),
+            )
+        };
+        if ptr.is_null() {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err("where failed"));
+        }
+        Ok(PyTensor {
+            inner: unsafe { Tensor::from_ptr(ptr) },
+        })
+    }
 
     #[pyo3(signature = (indices, indices_shape, dim=0))]
     fn gather(&self, indices: Vec<i64>, indices_shape: Vec<usize>, dim: i32) -> PyTensor {
