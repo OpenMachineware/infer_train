@@ -495,6 +495,25 @@ def infer_train_slice(input, dim, start, end, step=1):
     out = t.slice(dim, start, end, step)
     return pytensor_to_torch(out)
 
+
+# ---------- where ----------
+_original_where = torch.where
+
+def _it_where(condition, x, y):
+    if condition.device.type == "cpu":
+        try:
+            cond = condition.detach().numpy().flatten().tolist()
+            cond_shape = list(condition.shape)
+            t = torch_to_pytensor(x)
+            f = torch_to_pytensor(y)
+            out = t.where_(cond, cond_shape, f)
+            return pytensor_to_torch(out)
+        except Exception:
+            return _original_where(condition, x, y)
+    return _original_where(condition, x, y)
+
+torch.where = _it_where
+
 # ============================================================
 # NN 算子
 # ============================================================
@@ -1015,6 +1034,40 @@ def _it_gather(input, dim, index, *, sparse_grad=False):
 
 torch.gather = _it_gather
 
+# ---------- scatter ----------
+_original_scatter = torch.scatter
+
+def _it_scatter(input, dim, index, src):
+    if input.device.type == "cpu":
+        try:
+            t = torch_to_pytensor(input)
+            idx = index.detach().numpy().flatten().tolist()
+            idx_shape = list(index.shape)
+            s = torch_to_pytensor(src)
+            out = t.scatter(idx, idx_shape, s, dim)
+            return pytensor_to_torch(out)
+        except Exception:
+            return _original_scatter(input, dim, index, src)
+    return _original_scatter(input, dim, index, src)
+
+torch.scatter = _it_scatter
+
+# ---------- sort ----------
+_original_sort = torch.sort
+
+def _it_sort(input, dim=-1, descending=False, stable=False):
+    if input.device.type == "cpu":
+        try:
+            t = torch_to_pytensor(input)
+            ascending = not descending
+            values, indices = t.sort(dim, ascending)
+            return pytensor_to_torch(values), pytensor_to_torch(indices)
+        except Exception:
+            return _original_sort(input, dim, descending, stable)
+    return _original_sort(input, dim, descending, stable)
+
+torch.sort = _it_sort
+
 # ---------- cumsum ----------
 _original_cumsum = torch.cumsum
 
@@ -1244,6 +1297,21 @@ def _it_argmax(input, dim=None, keepdim=False):
     return _original_argmax(input, dim, keepdim)
 
 torch.argmax = _it_argmax
+
+# ---------- argmin ----------
+_original_argmin = torch.argmin
+
+def _it_argmin(input, dim=None, keepdim=False):
+    if input.device.type == "cpu":
+        try:
+            t = torch_to_pytensor(input)
+            out = t.argmin()
+            return pytensor_to_torch(out)
+        except Exception:
+            return _original_argmin(input, dim, keepdim)
+    return _original_argmin(input, dim, keepdim)
+
+torch.argmin = _it_argmin
 
 # ---------- topk ----------
 _original_topk = torch.topk
