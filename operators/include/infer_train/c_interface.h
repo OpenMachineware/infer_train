@@ -291,7 +291,12 @@ it_tensor_t* it_embedding(
     const it_tensor_t* weight,
     int padding_idx
 );
-it_tensor_t* it_dropout(const it_tensor_t* input, float p);
+it_tensor_t* it_dropout(
+    const it_tensor_t* input,
+    float p,
+    int training,
+    uint32_t seed
+);
 
 // ============================================================
 // NN 算子（量化）
@@ -538,11 +543,45 @@ void it_adamw_update(
 // ============================================================
 // 优化器状态管理
 // ============================================================
-void* it_adam_state_new(size_t num_params, const size_t* param_shapes, const size_t* param_ndims);
+void* it_adam_state_new(
+    size_t num_params,
+    const size_t* param_shapes,
+    const size_t* param_ndims
+);
+
 void it_adam_state_free(void* state);
 
-void* it_adamw_state_new(size_t num_params, const size_t* param_shapes, const size_t* param_ndims);
+void it_adam_update(
+    it_tensor_t** params,
+    it_tensor_t** grads,
+    size_t num_params,
+    void* state,
+    float lr,
+    float beta1,
+    float beta2,
+    float eps,
+    float weight_decay
+);
+
+void* it_adamw_state_new(
+    size_t num_params,
+    const size_t* param_shapes,
+    const size_t* param_ndims
+);
+
 void it_adamw_state_free(void* state);
+
+void it_adamw_update(
+    it_tensor_t** params,
+    it_tensor_t** grads,
+    size_t num_params,
+    void* state,
+    float lr,
+    float beta1,
+    float beta2,
+    float eps,
+    float weight_decay
+);
 
 #ifdef __cplusplus
 }

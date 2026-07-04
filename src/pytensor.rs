@@ -574,10 +574,10 @@ impl PyTensor {
         }
     }
 
-    #[pyo3(signature = (p=0.5))]
-    fn dropout(&self, p: f32) -> PyTensor {
+    #[pyo3(signature = (p=0.5, training=false, seed=0))]
+    fn dropout(&self, p: f32, training: bool, seed: u32) -> PyTensor {
         PyTensor {
-            inner: self.inner.dropout(p),
+            inner: self.inner.dropout(p, training, seed),
         }
     }
 
@@ -1203,6 +1203,146 @@ impl PyTensor {
     fn bce_loss(&self, target: &PyTensor, reduction: bool, eps: f32) -> PyTensor {
         PyTensor {
             inner: self.inner.bce_loss(&target.inner, reduction, eps),
+        }
+    }
+}
+
+// ============================================================
+// 优化器 Python 绑定
+// ============================================================
+// ---------- AdamState ----------
+unsafe impl Send for AdamState {}
+unsafe impl Sync for AdamState {}
+
+#[pyclass]
+pub struct AdamState {
+    inner: crate::ffi::AdamState,
+}
+
+#[pymethods]
+impl AdamState {
+    #[new]
+    fn new(
+        py: Python,
+        params: Vec<Py<PyTensor>>,
+        param_shapes: Vec<usize>,
+        param_ndims: Vec<usize>,
+    ) -> Self {
+        let mut tensors: Vec<Tensor> = Vec::new();
+        for p in params.iter() {
+            let pytensor = p.borrow(py);
+            tensors.push(pytensor.inner.clone());
+        }
+        AdamState {
+            inner: crate::ffi::AdamState::new(&tensors, &param_shapes, &param_ndims),
+        }
+    }
+
+    fn update(
+        &mut self,
+        py: Python,
+        params: Vec<Py<PyTensor>>,
+        grads: Vec<Py<PyTensor>>,
+        lr: f32,
+        beta1: f32,
+        beta2: f32,
+        eps: f32,
+        weight_decay: f32,
+    ) {
+        let mut param_tensors: Vec<Tensor> = Vec::new();
+        let mut grad_tensors: Vec<Tensor> = Vec::new();
+
+        for p in params.iter() {
+            let pytensor = p.borrow(py);
+            param_tensors.push(pytensor.inner.clone());
+        }
+        for g in grads.iter() {
+            let grad_tensor = g.borrow(py);
+            grad_tensors.push(grad_tensor.inner.clone());
+        }
+
+        self.inner.update(
+            &mut param_tensors,
+            &grad_tensors,
+            lr,
+            beta1,
+            beta2,
+            eps,
+            weight_decay,
+        );
+
+        // 写回 params
+        for (i, p) in params.iter().enumerate() {
+            let mut pytensor = p.borrow_mut(py);
+            pytensor.inner = param_tensors[i].clone();
+        }
+    }
+}
+
+// ---------- AdamWState ----------
+unsafe impl Send for AdamWState {}
+unsafe impl Sync for AdamWState {}
+
+#[pyclass]
+pub struct AdamWState {
+    inner: crate::ffi::AdamWState,
+}
+
+#[pymethods]
+impl AdamWState {
+    #[new]
+    fn new(
+        py: Python,
+        params: Vec<Py<PyTensor>>,
+        param_shapes: Vec<usize>,
+        param_ndims: Vec<usize>,
+    ) -> Self {
+        let mut tensors: Vec<Tensor> = Vec::new();
+        for p in params.iter() {
+            let pytensor = p.borrow(py);
+            tensors.push(pytensor.inner.clone());
+        }
+        AdamWState {
+            inner: crate::ffi::AdamWState::new(&tensors, &param_shapes, &param_ndims),
+        }
+    }
+
+    fn update(
+        &mut self,
+        py: Python,
+        params: Vec<Py<PyTensor>>,
+        grads: Vec<Py<PyTensor>>,
+        lr: f32,
+        beta1: f32,
+        beta2: f32,
+        eps: f32,
+        weight_decay: f32,
+    ) {
+        let mut param_tensors: Vec<Tensor> = Vec::new();
+        let mut grad_tensors: Vec<Tensor> = Vec::new();
+
+        for p in params.iter() {
+            let pytensor = p.borrow(py);
+            param_tensors.push(pytensor.inner.clone());
+        }
+        for g in grads.iter() {
+            let grad_tensor = g.borrow(py);
+            grad_tensors.push(grad_tensor.inner.clone());
+        }
+
+        self.inner.update(
+            &mut param_tensors,
+            &grad_tensors,
+            lr,
+            beta1,
+            beta2,
+            eps,
+            weight_decay,
+        );
+
+        for (i, p) in params.iter().enumerate() {
+            let mut pytensor = p.borrow_mut(py);
+            pytensor.inner = param_tensors[i].clone();
         }
     }
 }

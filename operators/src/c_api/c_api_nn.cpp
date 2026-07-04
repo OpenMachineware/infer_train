@@ -550,28 +550,59 @@ extern "C" it_tensor* it_embedding(
 // ============================================================
 // dropout（推理模式）
 // ============================================================
-extern "C" it_tensor* it_dropout(const it_tensor* input, float p) {
-    switch (input->dtype) {
-        case IT_DTYPE_F32: {
-            auto t = to_cpp_tensor<F32>(input);
-            auto result = dropout_inference(t, p);
-            return from_cpp_tensor(result, IT_DTYPE_F32);
+extern "C" it_tensor* it_dropout(
+    const it_tensor* input,
+    float p,
+    int training,
+    uint32_t seed
+) {
+    if (training) {
+        switch (input->dtype) {
+            case IT_DTYPE_F32: {
+                auto t = to_cpp_tensor<F32>(input);
+                auto result = dropout_training(t, p, seed);
+                return from_cpp_tensor(result, IT_DTYPE_F32);
+            }
+            case IT_DTYPE_F64: {
+                auto t = to_cpp_tensor<F64>(input);
+                auto result = dropout_training(t, p, seed);
+                return from_cpp_tensor(result, IT_DTYPE_F64);
+            }
+            case IT_DTYPE_F16: {
+                auto t = to_cpp_tensor<F16>(input);
+                auto result = dropout_training(t, p, seed);
+                return from_cpp_tensor(result, IT_DTYPE_F16);
+            }
+            case IT_DTYPE_BF16: {
+                auto t = to_cpp_tensor<BF16>(input);
+                auto result = dropout_training(t, p, seed);
+                return from_cpp_tensor(result, IT_DTYPE_BF16);
+            }
+            default: return nullptr;
         }
-        case IT_DTYPE_F64: {
-            auto t = to_cpp_tensor<F64>(input);
-            auto result = dropout_inference(t, p);
-            return from_cpp_tensor(result, IT_DTYPE_F64);
+    } else {
+        switch (input->dtype) {
+            case IT_DTYPE_F32: {
+                auto t = to_cpp_tensor<F32>(input);
+                auto result = dropout_inference(t, p);
+                return from_cpp_tensor(result, IT_DTYPE_F32);
+            }
+            case IT_DTYPE_F64: {
+                auto t = to_cpp_tensor<F64>(input);
+                auto result = dropout_inference(t, p);
+                return from_cpp_tensor(result, IT_DTYPE_F64);
+            }
+            case IT_DTYPE_F16: {
+                auto t = to_cpp_tensor<F16>(input);
+                auto result = dropout_inference(t, p);
+                return from_cpp_tensor(result, IT_DTYPE_F16);
+            }
+            case IT_DTYPE_BF16: {
+                auto t = to_cpp_tensor<BF16>(input);
+                auto result = dropout_inference(t, p);
+                return from_cpp_tensor(result, IT_DTYPE_BF16);
+            }
+            default: return nullptr;
         }
-        case IT_DTYPE_F16: {
-            auto t = to_cpp_tensor<F16>(input);
-            auto result = dropout_inference(t, p);
-            return from_cpp_tensor(result, IT_DTYPE_F16);
-        }
-        case IT_DTYPE_BF16: {
-            auto t = to_cpp_tensor<BF16>(input);
-            auto result = dropout_inference(t, p);
-            return from_cpp_tensor(result, IT_DTYPE_BF16);
-        }
-        default: return nullptr;
     }
 }

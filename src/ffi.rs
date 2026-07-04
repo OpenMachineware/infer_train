@@ -256,7 +256,12 @@ extern "C" {
         padding_idx: c_int,
     ) -> *mut it_tensor;
 
-    pub fn it_dropout(input: *const it_tensor, p: c_float) -> *mut it_tensor;
+    pub fn it_dropout(
+    input: *const it_tensor,
+    p: f32,
+    training: i32,
+    seed: u32,
+) -> *mut it_tensor;
 
     // 量化 NN
     pub fn it_quantized_conv1d(
@@ -457,6 +462,49 @@ extern "C" {
         reduction: c_int,
         eps: c_float,
     ) -> *mut it_tensor;
+
+    // ============================================================
+    // 优化器状态管理
+    // ============================================================
+    pub fn it_adam_state_new(
+        num_params: usize,
+        param_shapes: *const usize,
+        param_ndims: *const usize,
+    ) -> *mut c_void;
+
+    pub fn it_adam_state_free(state: *mut c_void);
+
+    pub fn it_adam_update(
+        params: *mut *mut it_tensor,
+        grads: *mut *mut it_tensor,
+        num_params: usize,
+        state: *mut c_void,
+        lr: c_float,
+        beta1: c_float,
+        beta2: c_float,
+        eps: c_float,
+        weight_decay: c_float,
+    );
+
+    pub fn it_adamw_state_new(
+        num_params: usize,
+        param_shapes: *const usize,
+        param_ndims: *const usize,
+    ) -> *mut c_void;
+
+    pub fn it_adamw_state_free(state: *mut c_void);
+
+    pub fn it_adamw_update(
+        params: *mut *mut it_tensor,
+        grads: *mut *mut it_tensor,
+        num_params: usize,
+        state: *mut c_void,
+        lr: c_float,
+        beta1: c_float,
+        beta2: c_float,
+        eps: c_float,
+        weight_decay: c_float,
+    );
 
     // ============================================================
     // 优化器
@@ -1122,8 +1170,8 @@ impl Tensor {
         Tensor { ptr }
     }
 
-    pub fn dropout(&self, p: f32) -> Tensor {
-        let ptr = unsafe { it_dropout(self.ptr, p) };
+    pub fn dropout(&self, p: f32, training: bool, seed: u32) -> Tensor {
+        let ptr = unsafe { it_dropout(self.ptr, p, if training { 1 } else { 0 }, seed) };
         Tensor { ptr }
     }
 
@@ -1838,6 +1886,150 @@ impl Drop for Tensor {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             unsafe { it_tensor_free(self.ptr) };
+        }
+    }
+}
+
+impl Clone for Tensor {
+    fn clone(&self) -> Self {
+        let shape = self.shape();
+        match self.dtype() {
+            it_dtype_t::IT_DTYPE_F32 => {
+                let data = self.data_as_f32();
+                Tensor::new_f32(data, &shape)
+            }
+            it_dtype_t::IT_DTYPE_F64 => {
+                let data = self.data_as_f64();
+                Tensor::new_f64(data, &shape)
+            }
+            it_dtype_t::IT_DTYPE_F16 => {
+                let data = self.data_as_f16();
+                Tensor::new_f16(data, &shape)
+            }
+            it_dtype_t::IT_DTYPE_BF16 => {
+                let data = self.data_as_bf16();
+                Tensor::new_bf16(data, &shape)
+            }
+            it_dtype_t::IT_DTYPE_I8 => {
+                let data = self.data_as_i8();
+                Tensor::new_quantized(data, &shape, self.scale(), self.zero_point())
+            }
+        }
+    }
+}
+
+// ============================================================
+// 优化器（不直接属于 Tensor，单独实现）
+// ============================================================
+pub struct AdamState {
+    ptr: *mut c_void,
+}
+
+impl AdamState {
+    pub fn new(
+        params: &[Tensor],
+        param_shapes: &[usize],
+        param_ndims: &[usize],
+    ) -> Self {
+        let ptr = unsafe {
+            it_adam_state_new(
+                params.len(),
+                param_shapes.as_ptr(),
+                param_ndims.as_ptr(),
+            )
+        };
+        AdamState { ptr }
+    }
+
+    pub fn update(
+        &mut self,
+        params: &mut [Tensor],
+        grads: &[Tensor],
+        lr: f32,
+        beta1: f32,
+        beta2: f32,
+        eps: f32,
+        weight_decay: f32,
+    ) {
+        let mut param_ptrs: Vec<*mut it_tensor> = params.iter_mut().map(|p| p.ptr).collect();
+        let mut grad_ptrs: Vec<*mut it_tensor> = grads.iter().map(|g| g.ptr).collect();
+        unsafe {
+            it_adam_update(
+                param_ptrs.as_mut_ptr(),
+                grad_ptrs.as_mut_ptr(),
+                params.len(),
+                self.ptr,
+                lr,
+                beta1,
+                beta2,
+                eps,
+                weight_decay,
+            );
+        }
+    }
+}
+
+impl Drop for AdamState {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { it_adam_state_free(self.ptr) };
+        }
+    }
+}
+
+// 同样实现 AdamWState
+pub struct AdamWState {
+    ptr: *mut c_void,
+}
+
+impl AdamWState {
+    pub fn new(
+        params: &[Tensor],
+        param_shapes: &[usize],
+        param_ndims: &[usize],
+    ) -> Self {
+        let ptr = unsafe {
+            it_adamw_state_new(
+                params.len(),
+                param_shapes.as_ptr(),
+                param_ndims.as_ptr(),
+            )
+        };
+        AdamWState { ptr }
+    }
+
+    pub fn update(
+        &mut self,
+        params: &mut [Tensor],
+        grads: &[Tensor],
+        lr: f32,
+        beta1: f32,
+        beta2: f32,
+        eps: f32,
+        weight_decay: f32,
+    ) {
+        let mut param_ptrs: Vec<*mut it_tensor> = params.iter_mut().map(|p| p.ptr).collect();
+        let mut grad_ptrs: Vec<*mut it_tensor> = grads.iter().map(|g| g.ptr).collect();
+        unsafe {
+            it_adamw_update(
+                param_ptrs.as_mut_ptr(),
+                grad_ptrs.as_mut_ptr(),
+                params.len(),
+                self.ptr,
+                lr,
+                beta1,
+                beta2,
+                eps,
+                weight_decay,
+            );
+        }
+    }
+}
+
+impl Drop for AdamWState {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { it_adamw_state_free(self.ptr) };
         }
     }
 }
