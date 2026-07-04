@@ -6,6 +6,7 @@ import math
 
 # 导入 Rust 引擎
 from .infer_train_torch import PyTensor
+from .infer_train_torch import AdamState, AdamWState
 
 # 引擎激活标志
 _ENGINE_ACTIVATED = False
@@ -1103,45 +1104,174 @@ torch.cumprod = _it_cumprod
 # 优化器覆盖
 # ============================================================
 
-# Adam
 _original_adam = torch.optim.Adam
+_original_adamw = torch.optim.AdamW
 
-def _it_adam(params, lr=0.001, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, amsgrad=False):
-    # 我们只支持 CPU，不支持 amsgrad
-    if amsgrad:
-        return _original_adam(params, lr, betas, eps, weight_decay, amsgrad)
 
-    # 检查参数是否在 CPU 上
-    all_cpu = True
-    for param_group in params:
-        for p in param_group['params']:
-            if p.device.type != "cpu":
-                all_cpu = False
-                break
-        if not all_cpu:
-            break
+class _InferTrainAdam(torch.optim.Optimizer):
+    """InferTrain 引擎的 Adam 优化器（简化版）"""
 
-    if all_cpu:
-        try:
-            # 创建 AdamState
-            # 需要从 params 提取 tensors 和 shapes
-            tensors = []
-            shapes = []
-            ndims = []
-            for param_group in params:
-                for p in param_group['params']:
-                    tensors.append(torch_to_pytensor(p))
-                    shapes.extend(p.shape)
-                    ndims.append(len(p.shape))
+    def __init__(self, params, lr=0.001, betas=(0.9, 0.999), eps=1e-8,
+                 weight_decay=0, amsgrad=False, *, foreach=None, maximize=False,
+                 capturable=False, differentiable=False, fused=None):
 
-            # 但是 AdamState 的接口需要适配...
-            # 这里先 fallback，后面再完善
-            return _original_adam(params, lr, betas, eps, weight_decay, amsgrad)
-        except Exception:
-            return _original_adam(params, lr, betas, eps, weight_decay, amsgrad)
-    return _original_adam(params, lr, betas, eps, weight_decay, amsgrad)
+        # 不支持的功能 fallback
+        if amsgrad or foreach or maximize or capturable or differentiable or fused:
+            self._fallback = _original_adam(
+                params, lr, betas, eps, weight_decay, amsgrad,
+                foreach=foreach, maximize=maximize,
+                capturable=capturable, differentiable=differentiable, fused=fused
+            )
+            self._use_fallback = True
+            return
 
-torch.optim.Adam = _it_adam
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        super().__init__(params, defaults)
+        self._use_fallback = False
+        self._param_list = []
+        self._state = None
+        self._param_tensors = []
+
+        # 收集参数
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.device.type != "cpu":
+                    self._use_fallback = True
+                    self._fallback = _original_adam(params, lr, betas, eps, weight_decay, amsgrad)
+                    return
+                self._param_list.append(p)
+
+        if self._param_list:
+            param_shapes = []
+            param_ndims = []
+            self._param_tensors = []
+            for p in self._param_list:
+                pt = torch_to_pytensor(p)
+                self._param_tensors.append(pt)
+                param_shapes.extend(p.shape)
+                param_ndims.append(len(p.shape))
+
+            # 需要导入 AdamState
+            from .pytensor import AdamState
+            self._state = AdamState(self._param_tensors, param_shapes, param_ndims)
+
+    def step(self, closure=None):
+        if self._use_fallback:
+            return self._fallback.step(closure)
+
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        else:
+            loss = None
+
+        if not self._param_list:
+            return loss
+
+        grads = []
+        params = []
+        for p, pt in zip(self._param_list, self._param_tensors):
+            if p.grad is not None:
+                grads.append(torch_to_pytensor(p.grad))
+                params.append(pt)
+
+        if grads and self._state:
+            group = self.param_groups[0]
+            lr = group.get('lr', 0.001)
+            beta1, beta2 = group.get('betas', (0.9, 0.999))
+            eps = group.get('eps', 1e-8)
+            weight_decay = group.get('weight_decay', 0)
+
+            self._state.update(params, grads, lr, beta1, beta2, eps, weight_decay)
+
+            # 写回
+            for p, pt in zip(self._param_list, self._param_tensors):
+                p.data = pytensor_to_torch(pt)
+
+        return loss
+
+
+# AdamW 同理，只是用 AdamWState
+class _InferTrainAdamW(torch.optim.Optimizer):
+    def __init__(self, params, lr=0.001, betas=(0.9, 0.999), eps=1e-8,
+                 weight_decay=0.01, amsgrad=False, *, foreach=None, maximize=False,
+                 capturable=False, differentiable=False, fused=None):
+
+        if amsgrad or foreach or maximize or capturable or differentiable or fused:
+            self._fallback = _original_adamw(
+                params, lr, betas, eps, weight_decay, amsgrad,
+                foreach=foreach, maximize=maximize,
+                capturable=capturable, differentiable=differentiable, fused=fused
+            )
+            self._use_fallback = True
+            return
+
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        super().__init__(params, defaults)
+        self._use_fallback = False
+        self._param_list = []
+        self._state = None
+        self._param_tensors = []
+
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.device.type != "cpu":
+                    self._use_fallback = True
+                    self._fallback = _original_adamw(params, lr, betas, eps, weight_decay, amsgrad)
+                    return
+                self._param_list.append(p)
+
+        if self._param_list:
+            param_shapes = []
+            param_ndims = []
+            self._param_tensors = []
+            for p in self._param_list:
+                pt = torch_to_pytensor(p)
+                self._param_tensors.append(pt)
+                param_shapes.extend(p.shape)
+                param_ndims.append(len(p.shape))
+
+            from .pytensor import AdamWState
+            self._state = AdamWState(self._param_tensors, param_shapes, param_ndims)
+
+    def step(self, closure=None):
+        if self._use_fallback:
+            return self._fallback.step(closure)
+
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        else:
+            loss = None
+
+        if not self._param_list:
+            return loss
+
+        grads = []
+        params = []
+        for p, pt in zip(self._param_list, self._param_tensors):
+            if p.grad is not None:
+                grads.append(torch_to_pytensor(p.grad))
+                params.append(pt)
+
+        if grads and self._state:
+            group = self.param_groups[0]
+            lr = group.get('lr', 0.001)
+            beta1, beta2 = group.get('betas', (0.9, 0.999))
+            eps = group.get('eps', 1e-8)
+            weight_decay = group.get('weight_decay', 0.01)
+
+            self._state.update(params, grads, lr, beta1, beta2, eps, weight_decay)
+
+            for p, pt in zip(self._param_list, self._param_tensors):
+                p.data = pytensor_to_torch(pt)
+
+        return loss
+
+
+# 覆盖
+torch.optim.Adam = _InferTrainAdam
+torch.optim.AdamW = _InferTrainAdamW
 
 # ============================================================
 # 损失函数
