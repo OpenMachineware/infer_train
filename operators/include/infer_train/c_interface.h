@@ -15,6 +15,8 @@ typedef enum {
     IT_DTYPE_F16 = 2,
     IT_DTYPE_BF16 = 3,
     IT_DTYPE_I8 = 4,
+    IT_DTYPE_I64 = 5,
+    IT_DTYPE_U8 = 6,
 } it_dtype_t;
 
 // ============================================================
@@ -95,6 +97,12 @@ it_tensor_t* it_clamp(const it_tensor_t* input, float min_val, float max_val);
 it_tensor_t* it_floor(const it_tensor_t* input);
 it_tensor_t* it_ceil(const it_tensor_t* input);
 it_tensor_t* it_round(const it_tensor_t* input);
+it_tensor_t* it_eq(const it_tensor_t* a, const it_tensor_t* b);
+it_tensor_t* it_ne(const it_tensor_t* a, const it_tensor_t* b);
+it_tensor_t* it_gt(const it_tensor_t* a, const it_tensor_t* b);
+it_tensor_t* it_lt(const it_tensor_t* a, const it_tensor_t* b);
+it_tensor_t* it_ge(const it_tensor_t* a, const it_tensor_t* b);
+it_tensor_t* it_le(const it_tensor_t* a, const it_tensor_t* b);
 
 it_tensor_t* it_add_scalar(const it_tensor_t* a, float scalar);
 it_tensor_t* it_sub_scalar(const it_tensor_t* a, float scalar);
@@ -127,6 +135,15 @@ it_tensor_t* it_min_all(const it_tensor_t* input);
 it_tensor_t* it_prod_all(const it_tensor_t* input);
 it_tensor_t* it_var(const it_tensor_t* input, int unbiased);
 it_tensor_t* it_std(const it_tensor_t* input, int unbiased);
+it_tensor_t* it_argmax(const it_tensor_t* input);
+void it_topk(
+    const it_tensor_t* input,
+    size_t k,
+    int dim,
+    int largest,
+    it_tensor_t** values,
+    it_tensor_t** indices
+);
 
 it_tensor_t* it_quantized_sum(const it_tensor_t* input, const int* dims, size_t ndim, int keepdim);
 it_tensor_t* it_quantized_mean(const it_tensor_t* input, const int* dims, size_t ndim, int keepdim);
@@ -151,6 +168,7 @@ it_tensor_t* it_quantized_transpose(const it_tensor_t* input);
 // ============================================================
 it_tensor_t* it_slice(const it_tensor_t* input, int dim, int start, int end, int step);
 it_tensor_t* it_cat(const it_tensor_t** tensors, size_t n, int dim);
+it_tensor_t* it_gather(const it_tensor_t* input, const int64_t* indices, size_t indices_len, const size_t* indices_shape, size_t indices_ndim, int dim);
 
 // ============================================================
 // 复杂算子

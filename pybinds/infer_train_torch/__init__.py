@@ -328,6 +328,96 @@ def _it_round(input):
 
 torch.round = _it_round
 
+# ---------- compare ----------
+_original_eq = torch.eq
+
+def _it_eq(input, other):
+    if input.device.type == "cpu":
+        try:
+            t = torch_to_pytensor(input)
+            o = torch_to_pytensor(other)
+            out = t.eq(o)
+            return torch.tensor(out, dtype=torch.bool).reshape(t.shape())
+        except Exception:
+            return _original_eq(input, other)
+    return _original_eq(input, other)
+
+torch.eq = _it_eq
+
+_original_ne = torch.ne
+
+def _it_ne(input, other):
+    if input.device.type == "cpu":
+        try:
+            t = torch_to_pytensor(input)
+            o = torch_to_pytensor(other)
+            out = t.ne(o)
+            return torch.tensor(out, dtype=torch.bool).reshape(t.shape())
+        except Exception:
+            return _original_ne(input, other)
+    return _original_ne(input, other)
+
+torch.ne = _it_ne
+
+_original_gt = torch.gt
+
+def _it_gt(input, other):
+    if input.device.type == "cpu":
+        try:
+            t = torch_to_pytensor(input)
+            o = torch_to_pytensor(other)
+            out = t.gt(o)
+            return torch.tensor(out, dtype=torch.bool).reshape(t.shape())
+        except Exception:
+            return _original_gt(input, other)
+    return _original_gt(input, other)
+
+torch.gt = _it_gt
+
+_original_lt = torch.lt
+
+def _it_lt(input, other):
+    if input.device.type == "cpu":
+        try:
+            t = torch_to_pytensor(input)
+            o = torch_to_pytensor(other)
+            out = t.lt(o)
+            return torch.tensor(out, dtype=torch.bool).reshape(t.shape())
+        except Exception:
+            return _original_lt(input, other)
+    return _original_lt(input, other)
+
+torch.lt = _it_lt
+
+_original_ge = torch.ge
+
+def _it_ge(input, other):
+    if input.device.type == "cpu":
+        try:
+            t = torch_to_pytensor(input)
+            o = torch_to_pytensor(other)
+            out = t.ge(o)
+            return torch.tensor(out, dtype=torch.bool).reshape(t.shape())
+        except Exception:
+            return _original_ge(input, other)
+    return _original_ge(input, other)
+
+torch.ge = _it_ge
+
+_original_le = torch.le
+
+def _it_le(input, other):
+    if input.device.type == "cpu":
+        try:
+            t = torch_to_pytensor(input)
+            o = torch_to_pytensor(other)
+            out = t.le(o)
+            return torch.tensor(out, dtype=torch.bool).reshape(t.shape())
+        except Exception:
+            return _original_le(input, other)
+    return _original_le(input, other)
+
+torch.le = _it_le
 
 # ============================================================
 # 矩阵算子
@@ -908,6 +998,23 @@ torch.transpose = _it_torch_transpose
 # ---------- slice ----------
 # torch 的 slice 是通过索引实现的，不需要覆盖
 
+# ---------- gather ----------
+_original_gather = torch.gather
+
+def _it_gather(input, dim, index, *, sparse_grad=False):
+    if input.device.type == "cpu":
+        try:
+            t = torch_to_pytensor(input)
+            idx = index.detach().numpy().flatten().tolist()
+            idx_shape = list(index.shape)
+            out = t.gather(idx, idx_shape, dim)
+            return pytensor_to_torch(out)
+        except Exception:
+            return _original_gather(input, dim, index, sparse_grad=sparse_grad)
+    return _original_gather(input, dim, index, sparse_grad=sparse_grad)
+
+torch.gather = _it_gather
+
 # ---------- cumsum ----------
 _original_cumsum = torch.cumsum
 
@@ -1122,6 +1229,36 @@ def _it_var(self, unbiased=True):
     return _original_var(self, unbiased)
 
 Tensor.var = _it_var
+
+# ---------- argmax ----------
+_original_argmax = torch.argmax
+
+def _it_argmax(input, dim=None, keepdim=False):
+    if input.device.type == "cpu":
+        try:
+            t = torch_to_pytensor(input)
+            out = t.argmax()
+            return pytensor_to_torch(out)
+        except Exception:
+            return _original_argmax(input, dim, keepdim)
+    return _original_argmax(input, dim, keepdim)
+
+torch.argmax = _it_argmax
+
+# ---------- topk ----------
+_original_topk = torch.topk
+
+def _it_topk(input, k, dim=None, largest=True, sorted=True):
+    if input.device.type == "cpu":
+        try:
+            t = torch_to_pytensor(input)
+            values, indices = t.topk(k, dim if dim is not None else -1, largest)
+            return pytensor_to_torch(values), pytensor_to_torch(indices)
+        except Exception:
+            return _original_topk(input, k, dim, largest, sorted)
+    return _original_topk(input, k, dim, largest, sorted)
+
+torch.topk = _it_topk
 
 # ---------- prod ----------
 _original_prod = Tensor.prod

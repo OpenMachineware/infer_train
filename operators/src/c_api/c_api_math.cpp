@@ -339,3 +339,105 @@ extern "C" it_tensor* it_scalar_div(float scalar, const it_tensor* a) {
         default: return nullptr;
     }
 }
+
+#define IMPL_COMPARE_OP(OP_NAME) \
+extern "C" it_tensor* it_##OP_NAME(const it_tensor* a, const it_tensor* b) { \
+    if (!a || !b) return nullptr; \
+    if (a->dtype != b->dtype) return nullptr; \
+    switch (a->dtype) { \
+        case IT_DTYPE_F32: { \
+            auto ta = to_cpp_tensor<F32>(a); \
+            auto tb = to_cpp_tensor<F32>(b); \
+            auto result = OP_NAME(ta, tb); \
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor)); \
+            ct->ndim = a->ndim; \
+            ct->shape = (size_t*)malloc(a->ndim * sizeof(size_t)); \
+            memcpy(ct->shape, a->shape, a->ndim * sizeof(size_t)); \
+            ct->data = malloc(result.size() * sizeof(uint8_t)); \
+            memcpy(ct->data, result.data(), result.size() * sizeof(uint8_t)); \
+            ct->elem_size = sizeof(uint8_t); \
+            ct->dtype = IT_DTYPE_U8; \
+            ct->scale = 1.0f; \
+            ct->zero_point = 0.0f; \
+            ct->owns_memory = true; \
+            return ct; \
+        } \
+        case IT_DTYPE_F64: { \
+            auto ta = to_cpp_tensor<F64>(a); \
+            auto tb = to_cpp_tensor<F64>(b); \
+            auto result = OP_NAME(ta, tb); \
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor)); \
+            ct->ndim = a->ndim; \
+            ct->shape = (size_t*)malloc(a->ndim * sizeof(size_t)); \
+            memcpy(ct->shape, a->shape, a->ndim * sizeof(size_t)); \
+            ct->data = malloc(result.size() * sizeof(uint8_t)); \
+            memcpy(ct->data, result.data(), result.size() * sizeof(uint8_t)); \
+            ct->elem_size = sizeof(uint8_t); \
+            ct->dtype = IT_DTYPE_U8; \
+            ct->scale = 1.0f; \
+            ct->zero_point = 0.0f; \
+            ct->owns_memory = true; \
+            return ct; \
+        } \
+        case IT_DTYPE_F16: { \
+            auto ta = to_cpp_tensor<F16>(a); \
+            auto tb = to_cpp_tensor<F16>(b); \
+            auto result = OP_NAME(ta, tb); \
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor)); \
+            ct->ndim = a->ndim; \
+            ct->shape = (size_t*)malloc(a->ndim * sizeof(size_t)); \
+            memcpy(ct->shape, a->shape, a->ndim * sizeof(size_t)); \
+            ct->data = malloc(result.size() * sizeof(uint8_t)); \
+            memcpy(ct->data, result.data(), result.size() * sizeof(uint8_t)); \
+            ct->elem_size = sizeof(uint8_t); \
+            ct->dtype = IT_DTYPE_U8; \
+            ct->scale = 1.0f; \
+            ct->zero_point = 0.0f; \
+            ct->owns_memory = true; \
+            return ct; \
+        } \
+        case IT_DTYPE_BF16: { \
+            auto ta = to_cpp_tensor<BF16>(a); \
+            auto tb = to_cpp_tensor<BF16>(b); \
+            auto result = OP_NAME(ta, tb); \
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor)); \
+            ct->ndim = a->ndim; \
+            ct->shape = (size_t*)malloc(a->ndim * sizeof(size_t)); \
+            memcpy(ct->shape, a->shape, a->ndim * sizeof(size_t)); \
+            ct->data = malloc(result.size() * sizeof(uint8_t)); \
+            memcpy(ct->data, result.data(), result.size() * sizeof(uint8_t)); \
+            ct->elem_size = sizeof(uint8_t); \
+            ct->dtype = IT_DTYPE_U8; \
+            ct->scale = 1.0f; \
+            ct->zero_point = 0.0f; \
+            ct->owns_memory = true; \
+            return ct; \
+        } \
+        case IT_DTYPE_I8: { \
+            auto ta = to_cpp_tensor<I8>(a); \
+            auto tb = to_cpp_tensor<I8>(b); \
+            auto result = OP_NAME(ta, tb); \
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor)); \
+            ct->ndim = a->ndim; \
+            ct->shape = (size_t*)malloc(a->ndim * sizeof(size_t)); \
+            memcpy(ct->shape, a->shape, a->ndim * sizeof(size_t)); \
+            ct->data = malloc(result.size() * sizeof(uint8_t)); \
+            memcpy(ct->data, result.data(), result.size() * sizeof(uint8_t)); \
+            ct->elem_size = sizeof(uint8_t); \
+            ct->dtype = IT_DTYPE_U8; \
+            ct->scale = 1.0f; \
+            ct->zero_point = 0.0f; \
+            ct->owns_memory = true; \
+            return ct; \
+        } \
+        default: return nullptr; \
+    } \
+}
+
+// 展开六个比较函数
+IMPL_COMPARE_OP(eq)
+IMPL_COMPARE_OP(ne)
+IMPL_COMPARE_OP(gt)
+IMPL_COMPARE_OP(lt)
+IMPL_COMPARE_OP(ge)
+IMPL_COMPARE_OP(le)

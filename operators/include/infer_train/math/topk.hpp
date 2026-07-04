@@ -87,4 +87,75 @@ std::pair<Tensor<T>, std::vector<int64_t>> topk(
     return {values, indices};
 }
 
+// ============================================================
+// I8 专用版本（直接比较存储值）
+// ============================================================
+inline std::pair<Tensor<I8>, std::vector<int64_t>> topk(
+    const Tensor<I8>& input,
+    size_t k,
+    int dim = -1,
+    bool largest = true,
+    bool sorted = true
+) {
+    if (input.shape.empty()) {
+        return {Tensor<I8>(), std::vector<int64_t>()};
+    }
+
+    int ndim = static_cast<int>(input.shape.size());
+    if (dim < 0) dim += ndim;
+    if (dim < 0 || dim >= ndim) {
+        return {Tensor<I8>(), std::vector<int64_t>()};
+    }
+
+    size_t dim_size = input.shape[dim];
+    if (k > dim_size) k = dim_size;
+    if (k == 0) {
+        return {Tensor<I8>(), std::vector<int64_t>()};
+    }
+
+    std::vector<size_t> out_shape = input.shape;
+    out_shape[dim] = k;
+
+    Tensor<I8> values(out_shape);
+    std::vector<int64_t> indices(input.size(), 0);
+
+    std::vector<size_t> strides(ndim, 1);
+    for (int i = ndim - 2; i >= 0; --i) {
+        strides[i] = strides[i + 1] * input.shape[i + 1];
+    }
+
+    size_t dim_stride = strides[dim];
+    size_t outer_size = input.size() / (dim_size * dim_stride);
+
+    for (size_t outer = 0; outer < outer_size; ++outer) {
+        size_t base = outer * dim_size * dim_stride;
+
+        std::vector<std::pair<int8_t, size_t>> items;
+        for (size_t d = 0; d < dim_size; ++d) {
+            size_t pos = base + d * dim_stride;
+            for (size_t s = 0; s < dim_stride; ++s) {
+                items.push_back({input.data[pos + s], d});
+            }
+        }
+
+        if (largest) {
+            std::sort(items.begin(), items.end(),
+                [](const auto& a, const auto& b) { return a.first > b.first; });
+        } else {
+            std::sort(items.begin(), items.end(),
+                [](const auto& a, const auto& b) { return a.first < b.first; });
+        }
+
+        for (size_t i = 0; i < k; ++i) {
+            size_t out_pos = base + i * dim_stride;
+            for (size_t s = 0; s < dim_stride; ++s) {
+                values.data[out_pos + s] = items[i].first;
+                indices[out_pos + s] = static_cast<int64_t>(items[i].second);
+            }
+        }
+    }
+
+    return {values, indices};
+}
+
 } // namespace infer_train

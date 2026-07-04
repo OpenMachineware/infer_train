@@ -24,6 +24,8 @@ extern "C" it_tensor* it_tensor_new(
         case IT_DTYPE_F16:
         case IT_DTYPE_BF16: elem_size = sizeof(uint16_t); break;
         case IT_DTYPE_I8: elem_size = sizeof(int8_t); break;
+        case IT_DTYPE_I64: elem_size = sizeof(int64_t); break;
+        case IT_DTYPE_U8: elem_size = sizeof(uint8_t); break;
         default: free(ct->shape); free(ct); return nullptr;
     }
 
@@ -57,6 +59,8 @@ extern "C" it_tensor* it_tensor_empty(
         case IT_DTYPE_F16:
         case IT_DTYPE_BF16: elem_size = sizeof(uint16_t); break;
         case IT_DTYPE_I8: elem_size = sizeof(int8_t); break;
+        case IT_DTYPE_I64: elem_size = sizeof(int64_t); break;
+        case IT_DTYPE_U8: elem_size = sizeof(uint8_t); break;
         default: free(ct->shape); free(ct); return nullptr;
     }
 

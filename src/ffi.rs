@@ -100,6 +100,12 @@ extern "C" {
     pub fn it_floor(input: *const it_tensor) -> *mut it_tensor;
     pub fn it_ceil(input: *const it_tensor) -> *mut it_tensor;
     pub fn it_round(input: *const it_tensor) -> *mut it_tensor;
+    pub fn it_eq(a: *const it_tensor, b: *const it_tensor) -> *mut it_tensor;
+    pub fn it_ne(a: *const it_tensor, b: *const it_tensor) -> *mut it_tensor;
+    pub fn it_gt(a: *const it_tensor, b: *const it_tensor) -> *mut it_tensor;
+    pub fn it_lt(a: *const it_tensor, b: *const it_tensor) -> *mut it_tensor;
+    pub fn it_ge(a: *const it_tensor, b: *const it_tensor) -> *mut it_tensor;
+    pub fn it_le(a: *const it_tensor, b: *const it_tensor) -> *mut it_tensor;
 
     // 量化数学
     pub fn it_quantized_add(a: *const it_tensor, b: *const it_tensor) -> *mut it_tensor;
@@ -127,6 +133,16 @@ extern "C" {
     pub fn it_quantized_mean(input: *const it_tensor, dims: *const c_int, ndim: usize, keepdim: c_int) -> *mut it_tensor;
     pub fn it_quantized_max_all(input: *const it_tensor) -> *mut it_tensor;
     pub fn it_quantized_min_all(input: *const it_tensor) -> *mut it_tensor;
+
+    pub fn it_argmax(input: *const it_tensor) -> *mut it_tensor;
+    pub fn it_topk(
+        input: *const it_tensor,
+        k: usize,
+        dim: i32,
+        largest: i32,
+        values: *mut *mut it_tensor,
+        indices: *mut *mut it_tensor,
+    );
 
     // ============================================================
     // 矩阵算子
@@ -488,6 +504,15 @@ extern "C" {
         true_val: *const it_tensor,
         false_val: *const it_tensor,
     ) -> *mut it_tensor;
+
+    pub fn it_gather(
+        input: *const it_tensor,
+        indices: *const i64,
+        indices_len: usize,
+        indices_shape: *const usize,
+        indices_ndim: usize,
+        dim: i32,
+    ) -> *mut it_tensor;
 }
 
 // ============================================================
@@ -728,6 +753,82 @@ impl Tensor {
         Tensor { ptr }
     }
 
+    pub fn quantized_sum(&self, dims: &[i32], keepdim: bool) -> Tensor {
+        let ptr = unsafe {
+            it_quantized_sum(
+                self.ptr,
+                dims.as_ptr(),
+                dims.len(),
+                if keepdim { 1 } else { 0 },
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_mean(&self, dims: &[i32], keepdim: bool) -> Tensor {
+        let ptr = unsafe {
+            it_quantized_mean(
+                self.ptr,
+                dims.as_ptr(),
+                dims.len(),
+                if keepdim { 1 } else { 0 },
+            )
+        };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_max_all(&self) -> Tensor {
+        let ptr = unsafe { it_quantized_max_all(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_min_all(&self) -> Tensor {
+        let ptr = unsafe { it_quantized_min_all(self.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn eq(&self, other: &Tensor) -> Vec<u8> {
+        let ptr = unsafe { it_eq(self.ptr, other.ptr) };
+        let size = unsafe { it_tensor_size(ptr) };
+        let data = unsafe { it_tensor_data(ptr) as *const u8 };
+        unsafe { std::slice::from_raw_parts(data, size).to_vec() }
+    }
+
+    pub fn ne(&self, other: &Tensor) -> Vec<u8> {
+        let ptr = unsafe { it_ne(self.ptr, other.ptr) };
+        let size = unsafe { it_tensor_size(ptr) };
+        let data = unsafe { it_tensor_data(ptr) as *const u8 };
+        unsafe { std::slice::from_raw_parts(data, size).to_vec() }
+    }
+
+    pub fn gt(&self, other: &Tensor) -> Vec<u8> {
+        let ptr = unsafe { it_gt(self.ptr, other.ptr) };
+        let size = unsafe { it_tensor_size(ptr) };
+        let data = unsafe { it_tensor_data(ptr) as *const u8 };
+        unsafe { std::slice::from_raw_parts(data, size).to_vec() }
+    }
+
+    pub fn lt(&self, other: &Tensor) -> Vec<u8> {
+        let ptr = unsafe { it_lt(self.ptr, other.ptr) };
+        let size = unsafe { it_tensor_size(ptr) };
+        let data = unsafe { it_tensor_data(ptr) as *const u8 };
+        unsafe { std::slice::from_raw_parts(data, size).to_vec() }
+    }
+
+    pub fn ge(&self, other: &Tensor) -> Vec<u8> {
+        let ptr = unsafe { it_ge(self.ptr, other.ptr) };
+        let size = unsafe { it_tensor_size(ptr) };
+        let data = unsafe { it_tensor_data(ptr) as *const u8 };
+        unsafe { std::slice::from_raw_parts(data, size).to_vec() }
+    }
+
+    pub fn le(&self, other: &Tensor) -> Vec<u8> {
+        let ptr = unsafe { it_le(self.ptr, other.ptr) };
+        let size = unsafe { it_tensor_size(ptr) };
+        let data = unsafe { it_tensor_data(ptr) as *const u8 };
+        unsafe { std::slice::from_raw_parts(data, size).to_vec() }
+    }
+
     // ============================================================
     // 矩阵算子
     // ============================================================
@@ -743,6 +844,16 @@ impl Tensor {
 
     pub fn vec_matmul(&self, mat: &Tensor) -> Tensor {
         let ptr = unsafe { it_vec_matmul(self.ptr, mat.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_vec_matmul(&self, mat: &Tensor) -> Tensor {
+        let ptr = unsafe { it_quantized_vec_matmul(self.ptr, mat.ptr) };
+        Tensor { ptr }
+    }
+
+    pub fn quantized_transpose(&self) -> Tensor {
+        let ptr = unsafe { it_quantized_transpose(self.ptr) };
         Tensor { ptr }
     }
 
@@ -1023,6 +1134,20 @@ impl Tensor {
         Tensor { ptr }
     }
 
+    pub fn gather(&self, indices: &[i64], indices_shape: &[usize], dim: i32) -> Tensor {
+        let ptr = unsafe {
+            it_gather(
+                self.ptr,
+                indices.as_ptr(),
+                indices.len(),
+                indices_shape.as_ptr(),
+                indices_shape.len(),
+                dim,
+            )
+        };
+        Tensor { ptr }
+    }
+
     pub fn cumsum(&self, dim: i32) -> Tensor {
         let ptr = unsafe { it_cumsum(self.ptr, dim) };
         Tensor { ptr }
@@ -1080,6 +1205,31 @@ impl Tensor {
     pub fn std(&self, unbiased: bool) -> Tensor {
         let ptr = unsafe { it_std(self.ptr, if unbiased { 1 } else { 0 }) };
         Tensor { ptr }
+    }
+
+    pub fn argmax(&self) -> Vec<i64> {
+        let ptr = unsafe { it_argmax(self.ptr) };
+        // 从 C 指针提取数据
+        let size = unsafe { it_tensor_size(ptr) };
+        let data = unsafe { it_tensor_data(ptr) as *const i64 };
+        let slice = unsafe { std::slice::from_raw_parts(data, size) };
+        slice.to_vec()
+    }
+
+    pub fn topk(&self, k: usize, dim: i32, largest: bool) -> (Tensor, Tensor) {
+        let mut values_ptr: *mut it_tensor = std::ptr::null_mut();
+        let mut indices_ptr: *mut it_tensor = std::ptr::null_mut();
+        unsafe {
+            it_topk(
+                self.ptr,
+                k,
+                dim,
+                if largest { 1 } else { 0 },
+                &mut values_ptr,
+                &mut indices_ptr,
+            );
+        }
+        (Tensor { ptr: values_ptr }, Tensor { ptr: indices_ptr })
     }
 
     // ============================================================

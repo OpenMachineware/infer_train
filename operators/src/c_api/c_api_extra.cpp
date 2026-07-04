@@ -218,3 +218,223 @@ extern "C" it_tensor* it_where(
         default: return nullptr;
     }
 }
+
+// ============================================================
+// argmax
+// ============================================================
+extern "C" it_tensor* it_argmax(const it_tensor* input) {
+    // 检查输入是否有效
+    if (!input) return nullptr;
+    if (input->ndim == 0) return nullptr;
+
+    // 将 C 张量转换为 C++ 张量
+    // 返回的 it_tensor 需要包含 int64_t 数据
+
+    // 遍历所有元素，找最大值
+    // 根据类型分派
+    switch (input->dtype) {
+        case IT_DTYPE_F32: {
+            auto t = to_cpp_tensor<F32>(input);
+            auto result = argmax(t);
+            // result 是 std::vector<int64_t>
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor));
+            ct->ndim = 1;
+            ct->shape = (size_t*)malloc(sizeof(size_t));
+            ct->shape[0] = result.size();
+            ct->data = malloc(result.size() * sizeof(int64_t));
+            memcpy(ct->data, result.data(), result.size() * sizeof(int64_t));
+            ct->elem_size = sizeof(int64_t);
+            ct->dtype = IT_DTYPE_I64;
+            ct->scale = 1.0f;
+            ct->zero_point = 0.0f;
+            ct->owns_memory = true;
+            return ct;
+        }
+        case IT_DTYPE_F64: {
+            auto t = to_cpp_tensor<F64>(input);
+            auto result = argmax(t);
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor));
+            ct->ndim = 1;
+            ct->shape = (size_t*)malloc(sizeof(size_t));
+            ct->shape[0] = result.size();
+            ct->data = malloc(result.size() * sizeof(int64_t));
+            memcpy(ct->data, result.data(), result.size() * sizeof(int64_t));
+            ct->elem_size = sizeof(int64_t);
+            ct->dtype = IT_DTYPE_I64;
+            ct->scale = 1.0f;
+            ct->zero_point = 0.0f;
+            ct->owns_memory = true;
+            return ct;
+        }
+        // I8 直接用存储值比较
+        case IT_DTYPE_I8: {
+            auto t = to_cpp_tensor<I8>(input);
+            auto result = argmax(t);
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor));
+            ct->ndim = 1;
+            ct->shape = (size_t*)malloc(sizeof(size_t));
+            ct->shape[0] = result.size();
+            ct->data = malloc(result.size() * sizeof(int64_t));
+            memcpy(ct->data, result.data(), result.size() * sizeof(int64_t));
+            ct->elem_size = sizeof(int64_t);
+            ct->dtype = IT_DTYPE_I64;
+            ct->scale = 1.0f;
+            ct->zero_point = 0.0f;
+            ct->owns_memory = true;
+            return ct;
+        }
+        // F16, BF16 类似
+        case IT_DTYPE_F16: {
+            auto t = to_cpp_tensor<F16>(input);
+            auto result = argmax(t);
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor));
+            ct->ndim = 1;
+            ct->shape = (size_t*)malloc(sizeof(size_t));
+            ct->shape[0] = result.size();
+            ct->data = malloc(result.size() * sizeof(int64_t));
+            memcpy(ct->data, result.data(), result.size() * sizeof(int64_t));
+            ct->elem_size = sizeof(int64_t);
+            ct->dtype = IT_DTYPE_I64;
+            ct->scale = 1.0f;
+            ct->zero_point = 0.0f;
+            ct->owns_memory = true;
+            return ct;
+        }
+        case IT_DTYPE_BF16: {
+            auto t = to_cpp_tensor<BF16>(input);
+            auto result = argmax(t);
+            it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor));
+            ct->ndim = 1;
+            ct->shape = (size_t*)malloc(sizeof(size_t));
+            ct->shape[0] = result.size();
+            ct->data = malloc(result.size() * sizeof(int64_t));
+            memcpy(ct->data, result.data(), result.size() * sizeof(int64_t));
+            ct->elem_size = sizeof(int64_t);
+            ct->dtype = IT_DTYPE_I64;
+            ct->scale = 1.0f;
+            ct->zero_point = 0.0f;
+            ct->owns_memory = true;
+            return ct;
+        }
+        default: return nullptr;
+    }
+}
+
+// ============================================================
+// topk
+// ============================================================
+// c_api_extra.cpp
+extern "C" void it_topk(
+    const it_tensor* input,
+    size_t k,
+    int dim,
+    int largest,
+    it_tensor** values,
+    it_tensor** indices
+) {
+    if (!input || k == 0 || !values || !indices) {
+        *values = nullptr;
+        *indices = nullptr;
+        return;
+    }
+
+    switch (input->dtype) {
+        case IT_DTYPE_F32: {
+            auto t = to_cpp_tensor<F32>(input);
+            auto result = topk(t, k, dim, largest != 0, true);
+            *values = from_cpp_tensor(result.first, IT_DTYPE_F32);
+            // 索引转成 Tensor<I64>
+            std::vector<size_t> out_shape = t.shape;
+            out_shape[dim] = k;
+            *indices = from_vector_to_tensor(result.second, out_shape, IT_DTYPE_I64);
+            return;
+        }
+        case IT_DTYPE_F64: {
+            auto t = to_cpp_tensor<F64>(input);
+            auto result = topk(t, k, dim, largest != 0, true);
+            *values = from_cpp_tensor(result.first, IT_DTYPE_F64);
+            std::vector<size_t> out_shape = t.shape;
+            out_shape[dim] = k;
+            *indices = from_vector_to_tensor(result.second, out_shape, IT_DTYPE_I64);
+            return;
+        }
+        case IT_DTYPE_F16: {
+            auto t = to_cpp_tensor<F16>(input);
+            auto result = topk(t, k, dim, largest != 0, true);
+            *values = from_cpp_tensor(result.first, IT_DTYPE_F16);
+            std::vector<size_t> out_shape = t.shape;
+            out_shape[dim] = k;
+            *indices = from_vector_to_tensor(result.second, out_shape, IT_DTYPE_I64);
+            return;
+        }
+        case IT_DTYPE_BF16: {
+            auto t = to_cpp_tensor<BF16>(input);
+            auto result = topk(t, k, dim, largest != 0, true);
+            *values = from_cpp_tensor(result.first, IT_DTYPE_BF16);
+            std::vector<size_t> out_shape = t.shape;
+            out_shape[dim] = k;
+            *indices = from_vector_to_tensor(result.second, out_shape, IT_DTYPE_I64);
+            return;
+        }
+        case IT_DTYPE_I8: {
+            auto t = to_cpp_tensor<I8>(input);
+            auto result = topk(t, k, dim, largest != 0, true);
+            *values = from_cpp_tensor(result.first, IT_DTYPE_I8);
+            std::vector<size_t> out_shape = t.shape;
+            out_shape[dim] = k;
+            *indices = from_vector_to_tensor(result.second, out_shape, IT_DTYPE_I64);
+            return;
+        }
+        default:
+            *values = nullptr;
+            *indices = nullptr;
+            return;
+    }
+}
+
+// ============================================================
+// gather
+// ============================================================
+extern "C" it_tensor* it_gather(
+    const it_tensor* input,
+    const int64_t* indices,
+    size_t indices_len,
+    const size_t* indices_shape,
+    size_t indices_ndim,
+    int dim
+) {
+    if (!input || !indices || indices_len == 0) return nullptr;
+
+    // 将 indices 和 indices_shape 转换为 std::vector
+    std::vector<int64_t> idx_vec(indices, indices + indices_len);
+    std::vector<size_t> shape_vec(indices_shape, indices_shape + indices_ndim);
+
+    switch (input->dtype) {
+        case IT_DTYPE_F32: {
+            auto t = to_cpp_tensor<F32>(input);
+            auto result = gather(t, idx_vec, shape_vec, dim);
+            return from_cpp_tensor(result, IT_DTYPE_F32);
+        }
+        case IT_DTYPE_F64: {
+            auto t = to_cpp_tensor<F64>(input);
+            auto result = gather(t, idx_vec, shape_vec, dim);
+            return from_cpp_tensor(result, IT_DTYPE_F64);
+        }
+        case IT_DTYPE_F16: {
+            auto t = to_cpp_tensor<F16>(input);
+            auto result = gather(t, idx_vec, shape_vec, dim);
+            return from_cpp_tensor(result, IT_DTYPE_F16);
+        }
+        case IT_DTYPE_BF16: {
+            auto t = to_cpp_tensor<BF16>(input);
+            auto result = gather(t, idx_vec, shape_vec, dim);
+            return from_cpp_tensor(result, IT_DTYPE_BF16);
+        }
+        case IT_DTYPE_I8: {
+            auto t = to_cpp_tensor<I8>(input);
+            auto result = gather(t, idx_vec, shape_vec, dim);
+            return from_cpp_tensor(result, IT_DTYPE_I8);
+        }
+        default: return nullptr;
+    }
+}

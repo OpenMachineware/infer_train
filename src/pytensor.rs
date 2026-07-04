@@ -244,6 +244,57 @@ impl PyTensor {
         }
     }
 
+    fn eq(&self, other: &PyTensor) -> Vec<u8> {
+        self.inner.eq(&other.inner)
+    }
+
+    fn ne(&self, other: &PyTensor) -> Vec<u8> {
+        self.inner.ne(&other.inner)
+    }
+
+    fn gt(&self, other: &PyTensor) -> Vec<u8> {
+        self.inner.gt(&other.inner)
+    }
+
+    fn lt(&self, other: &PyTensor) -> Vec<u8> {
+        self.inner.lt(&other.inner)
+    }
+
+    fn ge(&self, other: &PyTensor) -> Vec<u8> {
+        self.inner.ge(&other.inner)
+    }
+
+    fn le(&self, other: &PyTensor) -> Vec<u8> {
+        self.inner.le(&other.inner)
+    }
+
+    #[pyo3(signature = (dims=Vec::new(), keepdim=false))]
+    fn quantized_sum(&self, dims: Vec<i32>, keepdim: bool) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_sum(&dims, keepdim),
+        }
+    }
+
+    #[pyo3(signature = (dims=Vec::new(), keepdim=false))]
+    fn quantized_mean(&self, dims: Vec<i32>, keepdim: bool) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_mean(&dims, keepdim),
+        }
+    }
+
+    fn quantized_max_all(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_max_all(),
+        }
+    }
+
+    fn quantized_min_all(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_min_all(),
+        }
+    }
+
+
     // ============================================================
     // 规约算子
     // ============================================================
@@ -293,6 +344,16 @@ impl PyTensor {
         }
     }
 
+    fn argmax(&self) -> Vec<i64> {
+        self.inner.argmax()
+    }
+
+    #[pyo3(signature = (k, dim=-1, largest=true))]
+    fn topk(&self, k: usize, dim: i32, largest: bool) -> (PyTensor, PyTensor) {
+        let (values, indices) = self.inner.topk(k, dim, largest);
+        (PyTensor { inner: values }, PyTensor { inner: indices })
+    }
+
     // ============================================================
     // 矩阵算子
     // ============================================================
@@ -317,6 +378,18 @@ impl PyTensor {
     fn transpose(&self) -> PyTensor {
         PyTensor {
             inner: self.inner.transpose(),
+        }
+    }
+
+    fn quantized_vec_matmul(&self, mat: &PyTensor) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_vec_matmul(&mat.inner),
+        }
+    }
+
+    fn quantized_transpose(&self) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_transpose(),
         }
     }
 
@@ -610,6 +683,13 @@ impl PyTensor {
     fn slice(&self, dim: i32, start: i32, end: i32, step: i32) -> PyTensor {
         PyTensor {
             inner: self.inner.slice(dim, start, end, step),
+        }
+    }
+
+    #[pyo3(signature = (indices, indices_shape, dim=0))]
+    fn gather(&self, indices: Vec<i64>, indices_shape: Vec<usize>, dim: i32) -> PyTensor {
+        PyTensor {
+            inner: self.inner.gather(&indices, &indices_shape, dim),
         }
     }
 

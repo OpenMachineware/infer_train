@@ -63,7 +63,11 @@ it_tensor* from_cpp_tensor(const Tensor<T>& t, it_dtype_t dtype) {
 
 // 特化：从 std::vector 创建 it_tensor（用于 where/embedding 等）
 template<typename T>
-it_tensor* from_vector_to_tensor(const std::vector<T>& data, const std::vector<size_t>& shape, it_dtype_t dtype) {
+it_tensor* from_vector_to_tensor(
+    const std::vector<T>& data,
+    const std::vector<size_t>& shape,
+    it_dtype_t dtype
+) {
     it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor));
     ct->ndim = shape.size();
     ct->shape = (size_t*)malloc(ct->ndim * sizeof(size_t));
