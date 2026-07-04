@@ -3,7 +3,6 @@ members = ["."]
 resolver = "2"
 
 [workspace.package]
-name = "infer_train"
 version = "0.1.0"
 edition = "2021"
 authors = ["My Name <email@gmail.com>"]
