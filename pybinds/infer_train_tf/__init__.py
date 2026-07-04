@@ -47,3 +47,4 @@ __all__ = [
 print("🧠 InferTrain Engine activated for TensorFlow!")
 print("   Use PyTensor class for tensor operations")
 print("   Convert: tf_to_pytensor() / pytensor_to_tf()")
+print("   GPU tensors fallback to TensorFlow native")

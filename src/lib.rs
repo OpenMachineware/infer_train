@@ -9,6 +9,7 @@ fn infer_train_torch(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<pytensor::PyTensor>()?;
     m.add_class::<pytensor::AdamState>()?;
     m.add_class::<pytensor::AdamWState>()?;
+    m.add_function(wrap_pyfunction!(pytensor::sgd_update, m)?)?;
     Ok(())
 }
 

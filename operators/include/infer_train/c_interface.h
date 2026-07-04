@@ -103,6 +103,11 @@ it_tensor_t* it_gt(const it_tensor_t* a, const it_tensor_t* b);
 it_tensor_t* it_lt(const it_tensor_t* a, const it_tensor_t* b);
 it_tensor_t* it_ge(const it_tensor_t* a, const it_tensor_t* b);
 it_tensor_t* it_le(const it_tensor_t* a, const it_tensor_t* b);
+it_tensor_t* it_reshape(
+    const it_tensor_t* input,
+    const size_t* new_shape,
+    size_t ndim
+);
 
 it_tensor_t* it_add_scalar(const it_tensor_t* a, float scalar);
 it_tensor_t* it_sub_scalar(const it_tensor_t* a, float scalar);

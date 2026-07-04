@@ -27,6 +27,7 @@ sources = files(
     'src/math/arg.cpp',
     'src/math/std_var.cpp',
     'src/math/matmul.cpp',
+    'src/math/reshape.cpp',
 
     # 量化数学
     'src/math/add_q.cpp',

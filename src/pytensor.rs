@@ -1,11 +1,12 @@
 use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
 use pyo3::Py;
+use pyo3::pyclass;
+use pyo3::types::PyList;
+use pyo3::PyResult;
 use crate::ffi::Tensor;
 use crate::ffi::it_tensor;
 use crate::ffi::it_cat;
-use pyo3::pyclass;
-use pyo3::types::PyList;
 use crate::ffi::it_where;
 
 // ============================================================
@@ -269,6 +270,12 @@ impl PyTensor {
 
     fn le(&self, other: &PyTensor) -> Vec<u8> {
         self.inner.le(&other.inner)
+    }
+
+    fn reshape(&self, new_shape: Vec<usize>) -> PyTensor {
+        PyTensor {
+            inner: self.inner.reshape(&new_shape),
+        }
     }
 
     #[pyo3(signature = (dims=Vec::new(), keepdim=false))]
@@ -741,11 +748,12 @@ impl PyTensor {
     // cat（静态方法）
     // ============================================================
     #[staticmethod]
-    fn cat(tensors: Vec<Py<PyTensor>>, dim: i32, py: Python) -> PyResult<PyTensor> {
+    fn cat(tensors: &Bound<PyList>, dim: i32, py: Python) -> PyResult<PyTensor> {
         let mut ptrs: Vec<*const it_tensor> = Vec::new();
-        for t in tensors.iter() {
-            let pytensor = t.borrow(py);
-            ptrs.push(pytensor.inner.as_ptr());
+        for item in tensors.iter() {
+            let pytensor: Py<PyTensor> = item.extract()?;
+            let borrowed = pytensor.borrow(py);
+            ptrs.push(borrowed.inner.as_ptr());
         }
         let ptr = unsafe {
             it_cat(
@@ -1353,4 +1361,41 @@ impl AdamWState {
             pytensor.inner = param_tensors[i].clone();
         }
     }
+}
+
+// ============================================================
+// 全局函数：SGD 更新
+// ============================================================
+#[pyfunction]
+pub fn sgd_update(
+    py: Python,
+    params: Vec<Py<PyTensor>>,
+    grads: Vec<Py<PyTensor>>,
+    lr: f32,
+    momentum: f32,
+    weight_decay: f32,
+    nesterov: bool,
+) -> PyResult<()> {
+    let mut param_tensors: Vec<Tensor> = Vec::new();
+    let mut grad_tensors: Vec<Tensor> = Vec::new();
+
+    for p in params.iter() {
+        let pytensor = p.borrow(py);
+        param_tensors.push(pytensor.inner.clone());
+    }
+    for g in grads.iter() {
+        let grad_tensor = g.borrow(py);
+        grad_tensors.push(grad_tensor.inner.clone());
+    }
+
+    // 调用 ff::sgd_update
+    // 需要在 impl Tensor 中加 sgd_update 方法或直接 C API
+
+    // 写回参数
+    for (i, p) in params.iter().enumerate() {
+        let mut pytensor = p.borrow_mut(py);
+        pytensor.inner = param_tensors[i].clone();
+    }
+
+    Ok(())
 }

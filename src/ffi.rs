@@ -106,6 +106,11 @@ extern "C" {
     pub fn it_lt(a: *const it_tensor, b: *const it_tensor) -> *mut it_tensor;
     pub fn it_ge(a: *const it_tensor, b: *const it_tensor) -> *mut it_tensor;
     pub fn it_le(a: *const it_tensor, b: *const it_tensor) -> *mut it_tensor;
+    pub fn it_reshape(
+        input: *const it_tensor,
+        new_shape: *const usize,
+        ndim: usize,
+    ) -> *mut it_tensor;
 
     // 量化数学
     pub fn it_quantized_add(a: *const it_tensor, b: *const it_tensor) -> *mut it_tensor;
@@ -894,6 +899,11 @@ impl Tensor {
         let size = unsafe { it_tensor_size(ptr) };
         let data = unsafe { it_tensor_data(ptr) as *const u8 };
         unsafe { std::slice::from_raw_parts(data, size).to_vec() }
+    }
+
+    pub fn reshape(&self, new_shape: &[usize]) -> Tensor {
+        let ptr = unsafe { it_reshape(self.ptr, new_shape.as_ptr(), new_shape.len()) };
+        Tensor { ptr }
     }
 
     // ============================================================

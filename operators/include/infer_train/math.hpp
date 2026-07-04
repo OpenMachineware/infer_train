@@ -14,6 +14,7 @@
 #include "infer_train/math/arg.hpp"
 #include "infer_train/math/std_var.hpp"
 #include "infer_train/math/matmul.hpp"
+#include "infer_train/math/reshape.hpp"
 #include "infer_train/math/compare.hpp"
 #include "infer_train/math/slice.hpp"
 #include "infer_train/math/cat.hpp"

@@ -441,3 +441,42 @@ IMPL_COMPARE_OP(gt)
 IMPL_COMPARE_OP(lt)
 IMPL_COMPARE_OP(ge)
 IMPL_COMPARE_OP(le)
+
+extern "C" it_tensor* it_reshape(
+    const it_tensor* input,
+    const size_t* new_shape,
+    size_t ndim
+) {
+    if (!input || !new_shape || ndim == 0) return nullptr;
+
+    std::vector<size_t> shape_vec(new_shape, new_shape + ndim);
+
+    switch (input->dtype) {
+        case IT_DTYPE_F32: {
+            auto t = to_cpp_tensor<F32>(input);
+            auto result = reshape(t, shape_vec);
+            return from_cpp_tensor(result, IT_DTYPE_F32);
+        }
+        case IT_DTYPE_F64: {
+            auto t = to_cpp_tensor<F64>(input);
+            auto result = reshape(t, shape_vec);
+            return from_cpp_tensor(result, IT_DTYPE_F64);
+        }
+        case IT_DTYPE_F16: {
+            auto t = to_cpp_tensor<F16>(input);
+            auto result = reshape(t, shape_vec);
+            return from_cpp_tensor(result, IT_DTYPE_F16);
+        }
+        case IT_DTYPE_BF16: {
+            auto t = to_cpp_tensor<BF16>(input);
+            auto result = reshape(t, shape_vec);
+            return from_cpp_tensor(result, IT_DTYPE_BF16);
+        }
+        case IT_DTYPE_I8: {
+            auto t = to_cpp_tensor<I8>(input);
+            auto result = reshape(t, shape_vec);
+            return from_cpp_tensor(result, IT_DTYPE_I8);
+        }
+        default: return nullptr;
+    }
+}

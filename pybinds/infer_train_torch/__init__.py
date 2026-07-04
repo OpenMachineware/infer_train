@@ -7,6 +7,7 @@ import math
 # 导入 Rust 引擎
 from .infer_train_torch import PyTensor
 from .infer_train_torch import AdamState, AdamWState
+from .infer_train_torch import sgd_update
 
 # 引擎激活标志
 _ENGINE_ACTIVATED = False
@@ -419,6 +420,21 @@ def _it_le(input, other):
     return _original_le(input, other)
 
 torch.le = _it_le
+
+# ---------- reshape ----------
+_original_reshape = torch.reshape
+
+def _it_reshape(input, shape):
+    if input.device.type == "cpu":
+        try:
+            t = torch_to_pytensor(input)
+            out = t.reshape(shape)
+            return pytensor_to_torch(out)
+        except Exception:
+            return _original_reshape(input, shape)
+    return _original_reshape(input, shape)
+
+torch.reshape = _it_reshape
 
 # ============================================================
 # 矩阵算子
@@ -1274,6 +1290,14 @@ torch.optim.Adam = _InferTrainAdam
 torch.optim.AdamW = _InferTrainAdamW
 
 # ============================================================
+# SGD
+# ============================================================
+class _InferTrainSGD(torch.optim.Optimizer):
+    def step(self, closure=None):
+        # ...
+        sgd_update(params, grads, lr, momentum, weight_decay, nesterov)
+
+# ============================================================
 # 损失函数
 # ============================================================
 
@@ -1738,12 +1762,17 @@ __all__ = [
 # 打印欢迎信息
 # ============================================================
 print("🧠 InferTrain Engine activated for PyTorch!!")
-print("   Supported ops: add, sub, mul, div, matmul, bmm, pow, exp, sqrt, log, log2, log10")
-print("   abs, neg, clamp, floor, ceil, round")
-print("   conv1d/2d/3d, maxpool1d/2d/3d, avgpool1d/2d/3d, batchnorm2d, layernorm, linear, embedding")
+print("   Core: add, sub, mul, div, matmul, bmm, pow, exp, sqrt, log, log2, log10")
+print("   abs, neg, clamp, floor, ceil, round, transpose, slice, cat, reshape")
+print("   conv1d/2d/3d, maxpool1d/2d/3d, avgpool1d/2d/3d")
+print("   batchnorm1d/2d, layernorm, rmsnorm, instancenorm2d, groupnorm")
+print("   linear, embedding, dropout")
 print("   relu, sigmoid, tanh, gelu, silu, leaky_relu, elu, relu6, softmax, log_softmax")
-print("   sum, mean, max, min, std, var, prod")
+print("   softplus, softshrink, celu, hard_swish, hard_sigmoid")
+print("   sum, mean, max, min, std, var, prod, argmax, argmin, topk")
+print("   gather, scatter, sort, where")
+print("   scaled_dot_product_attention, multi_head_attention, rotary_embedding")
 print("   cross_entropy_loss, mse_loss, l1_loss, bce_loss")
-print("   Quantized ops: quantized_add, quantized_matmul, quantized_relu, quantized_sigmoid")
-print("   quantized_conv2d, quantized_linear")
+print("   Optimizers: SGD, Adam, AdamW")
+print("   Quantized ops: quantized_* (all operators)")
 print("   GPU tensors fallback to PyTorch native")
