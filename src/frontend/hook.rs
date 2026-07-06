@@ -5,27 +5,25 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::ir::cfg::{CfgGraph, CfgOp};
+use crate::ir::cfg::{CfgGraph, CfgOp, BranchInfo};
 use crate::ir::dag::{AttrValue, DataType, TensorType};
-use crate::transform::cfg_to_dag::CfgToDagConverter;
 use crate::ir::dag::DagGraph;
+use crate::transform::FullOptimizer;
+use crate::ir::serialize::ModelFile;
 
 /// Hook 追踪器 - 捕获 PyTorch 模型执行
 #[pyclass]
 pub struct HookTracer {
-    // CFG 图
     cfg: Arc<Mutex<CfgGraph>>,
-    // 当前块栈
     block_stack: Vec<u64>,
     current_block: u64,
-    // 值映射: Python object id -> CFG value id
     value_map: HashMap<u64, u64>,
-    // 算子计数器
     op_counter: u64,
-    // 是否在追踪
     is_tracing: bool,
-    // 块名称计数器
     block_counter: u64,
+    // 记录模型信息
+    model_name: String,
+    framework: String,
 }
 
 #[pymethods]
@@ -44,10 +42,15 @@ impl HookTracer {
             op_counter: 0,
             is_tracing: false,
             block_counter: 1,
+            model_name: "model".to_string(),
+            framework: "torch".to_string(),
         }
     }
 
-    /// 开始追踪
+    // ============================================================
+    // 基础追踪 API
+    // ============================================================
+
     pub fn start_tracing(&mut self) {
         self.is_tracing = true;
         self.value_map.clear();
@@ -56,14 +59,42 @@ impl HookTracer {
         println!("[HookTracer] Tracing started");
     }
 
-    /// 停止追踪
     pub fn stop_tracing(&mut self) -> PyResult<()> {
         self.is_tracing = false;
         println!("[HookTracer] Tracing stopped");
         Ok(())
     }
 
-    /// 记录算子调用（由 Python hook 调用）
+    pub fn is_tracing(&self) -> bool {
+        self.is_tracing
+    }
+
+    pub fn reset(&mut self) {
+        let mut cfg = CfgGraph::new("traced_model");
+        let entry = cfg.add_block("entry");
+        cfg.set_entry(entry);
+
+        *self.cfg.lock().unwrap() = cfg;
+        self.block_stack = vec![entry];
+        self.current_block = entry;
+        self.value_map.clear();
+        self.op_counter = 0;
+        self.is_tracing = false;
+        self.block_counter = 1;
+    }
+
+    pub fn set_model_name(&mut self, name: String) {
+        self.model_name = name;
+    }
+
+    pub fn set_framework(&mut self, framework: String) {
+        self.framework = framework;
+    }
+
+    // ============================================================
+    // 记录算子（由 Python hook 调用）
+    // ============================================================
+
     pub fn record_op(
         &mut self,
         op_type: String,
@@ -76,22 +107,18 @@ impl HookTracer {
             return Ok(());
         }
 
-        // 提取输入 IDs
         let input_ids: Result<Vec<u64>, PyErr> = inputs.iter()
             .map(|obj| self.extract_value_id(obj))
             .collect();
         let input_ids = input_ids?;
 
-        // 提取输出 IDs
         let output_ids: Result<Vec<u64>, PyErr> = outputs.iter()
             .map(|obj| self.extract_value_id(obj))
             .collect();
         let output_ids = output_ids?;
 
-        // 转换 attrs
         let rust_attrs = self.convert_attrs(&attrs)?;
 
-        // 添加算子到当前块
         let op_id = self.op_counter;
         self.op_counter += 1;
 
@@ -111,15 +138,13 @@ impl HookTracer {
             cfg.add_op(self.current_block, cfg_op)?;
         }
 
-        // 更新 value 映射
+        // 更新 value 映射和类型信息
         for (i, out_id) in output_ids.iter().enumerate() {
             self.value_map.insert(*out_id, *out_id);
-
-            // 提取 shape 和 dtype（从 Python 对象）
             if i < outputs.len() {
-                if let Ok(info) = self.extract_tensor_info(&outputs[i]) {
+                if let Ok((dtype, shape)) = self.extract_tensor_info(&outputs[i]) {
                     let mut cfg = self.cfg.lock().unwrap();
-                    cfg.value_types.insert(*out_id, info);
+                    cfg.value_types.insert(*out_id, (dtype, shape));
                 }
             }
         }
@@ -127,7 +152,10 @@ impl HookTracer {
         Ok(())
     }
 
-    /// 开始一个新块（用于控制流）
+    // ============================================================
+    // 控制流记录
+    // ============================================================
+
     pub fn begin_block(&mut self, name: Option<String>) -> PyResult<u64> {
         if !self.is_tracing {
             return Ok(0);
@@ -144,7 +172,6 @@ impl HookTracer {
         Ok(block_id)
     }
 
-    /// 结束当前块
     pub fn end_block(&mut self) -> PyResult<()> {
         if !self.is_tracing {
             return Ok(());
@@ -158,7 +185,6 @@ impl HookTracer {
         Ok(())
     }
 
-    /// 记录条件分支
     pub fn record_branch(
         &mut self,
         condition: Py<PyAny>,
@@ -171,223 +197,216 @@ impl HookTracer {
 
         let cond_id = self.extract_value_id(&condition)?;
 
-        // 创建合并块
         let merge_name = format!("merge_{}", self.block_counter);
         self.block_counter += 1;
 
         let mut cfg = self.cfg.lock().unwrap();
         let merge_id = cfg.add_block(&merge_name);
 
-        // 设置分支信息
         cfg.set_branch(self.current_block, cond_id, true_block, false_block, merge_id)?;
-
-        // 添加边
         cfg.add_edge(self.current_block, true_block)?;
         cfg.add_edge(self.current_block, false_block)?;
         cfg.add_edge(true_block, merge_id)?;
         cfg.add_edge(false_block, merge_id)?;
 
-        // 切换到合并块
         self.current_block = merge_id;
         self.block_stack.push(merge_id);
 
         Ok(())
     }
 
-    /// 获取追踪结果（CFG）
-    pub fn get_cfg(&self) -> PyResult<Py<PyAny>> {
-        let cfg = self.cfg.lock().unwrap();
-        Python::with_gil(|py| {
-            // 转换为 Python 可读的格式
-            let dict = PyDict::new(py);
-            dict.set_item("name", cfg.name.clone())?;
+    // ============================================================
+    // 高层 API：用户直接调用
+    // ============================================================
 
-            // 返回 CFG 对象
-            Ok(Py::new(py, PyCfgGraph { inner: cfg.clone() })?)
-        })
-    }
+    /// 追踪模型并返回优化后的 DAG
+    pub fn trace_to_dag(
+        &mut self,
+        model: Py<PyAny>,
+        inputs: Vec<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        // 1. 追踪
+        self.start_tracing();
 
-    /// 转换为 DAG
-    pub fn into_dag(&mut self) -> PyResult<Py<PyAny>> {
-        // 停止追踪
-        self.is_tracing = false;
+        let result = Python::with_gil(|py| {
+            let model = model.as_ref(py);
+            let inputs: Vec<&PyAny> = inputs.iter().map(|x| x.as_ref(py)).collect();
 
-        let cfg = self.cfg.lock().unwrap();
-        let dag = CfgToDagConverter::convert(&cfg)
+            let outputs = model.call_method("forward", &inputs, None)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+            self.stop_tracing()?;
+            Ok::<_, PyErr>(outputs)
+        });
+
+        if let Err(e) = result {
+            self.is_tracing = false;
+            return Err(e);
+        }
+
+        // 2. CFG → DAG（含优化）
+        let cfg = self.cfg.lock().unwrap().clone();
+        let dag = FullOptimizer::optimize_full(&mut cfg.clone())
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
 
         Python::with_gil(|py| {
-            // 创建 PyDagGraph
-            let py_dag = PyDagGraph { inner: dag };
+            let py_dag = crate::ir::serialize::PyDagGraph { inner: dag };
             Ok(Py::new(py, py_dag)?)
         })
     }
 
-    /// 重置追踪器
-    pub fn reset(&mut self) {
-        let mut cfg = CfgGraph::new("traced_model");
-        let entry = cfg.add_block("entry");
-        cfg.set_entry(entry);
-
-        *self.cfg.lock().unwrap() = cfg;
-        self.block_stack = vec![entry];
-        self.current_block = entry;
-        self.value_map.clear();
-        self.op_counter = 0;
-        self.is_tracing = false;
-        self.block_counter = 1;
+    /// 追踪、优化并导出为 ITM 文件（推理模式）
+    pub fn trace_and_export(
+        &mut self,
+        model: Py<PyAny>,
+        inputs: Vec<Py<PyAny>>,
+        path: String,
+        model_name: Option<String>,
+    ) -> PyResult<()> {
+        self.trace_and_export_with_config(
+            model,
+            inputs,
+            path,
+            model_name,
+            false,  // trainable
+            "adam".to_string(),
+            0.001,
+        )
     }
 
-    /// 转换为 DAG 并自动优化
-    pub fn into_optimized_dag(&mut self) -> PyResult<Py<PyAny>> {
-        let dag = self.into_dag()?;
+    /// 追踪、优化并导出为 ITM 文件（可训练模式）
+    pub fn trace_and_export_trainable(
+        &mut self,
+        model: Py<PyAny>,
+        inputs: Vec<Py<PyAny>>,
+        path: String,
+        model_name: Option<String>,
+        optimizer: String,
+        learning_rate: f32,
+    ) -> PyResult<()> {
+        self.trace_and_export_with_config(
+            model,
+            inputs,
+            path,
+            model_name,
+            true,  // trainable
+            optimizer,
+            learning_rate,
+        )
+    }
 
-        // 获取 PyDagGraph
+    /// 完整配置导出
+    pub fn trace_and_export_with_config(
+        &mut self,
+        model: Py<PyAny>,
+        inputs: Vec<Py<PyAny>>,
+        path: String,
+        model_name: Option<String>,
+        trainable: bool,
+        optimizer: String,
+        learning_rate: f32,
+    ) -> PyResult<()> {
+        // 1. 更新名称
+        if let Some(name) = model_name {
+            self.model_name = name;
+        }
+
+        // 2. 追踪
+        self.start_tracing();
+
+        let result = Python::with_gil(|py| {
+            let model = model.as_ref(py);
+            let inputs: Vec<&PyAny> = inputs.iter().map(|x| x.as_ref(py)).collect();
+
+            let _outputs = model.call_method("forward", &inputs, None)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+            self.stop_tracing()?;
+            Ok::<_, PyErr>(())
+        });
+
+        if let Err(e) = result {
+            self.is_tracing = false;
+            return Err(e);
+        }
+
+        // 3. 获取 CFG 并优化
+        let cfg = self.cfg.lock().unwrap().clone();
+        let dag = FullOptimizer::optimize_full(&mut cfg.clone())
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+
+        // 4. 创建 ModelFile
+        let model_file = if trainable {
+            ModelFile::new_trainable(
+                &self.model_name,
+                &self.framework,
+                dag,
+                &optimizer,
+                learning_rate,
+            )
+        } else {
+            ModelFile::new(&self.model_name, &self.framework, dag)
+        };
+
+        // 5. 导出
+        model_file.export(&path)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+
+        println!("[HookTracer] Model exported to: {}", path);
+        if trainable {
+            println!("[HookTracer] Trainable mode: optimizer={}, lr={}", optimizer, learning_rate);
+        }
+
+        Ok(())
+    }
+
+    /// 获取 CFG（用于调试）
+    pub fn get_cfg(&self) -> PyResult<Py<PyAny>> {
+        let cfg = self.cfg.lock().unwrap();
         Python::with_gil(|py| {
-            let py_dag = dag.extract::<PyDagGraph>(py)?;
-
-            // 优化
-            let mut inner = py_dag.inner.clone();
-            crate::transform::Optimizer::optimize(&mut inner)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-
-            let optimized = PyDagGraph { inner };
-            Ok(Py::new(py, optimized)?)
+            let py_cfg = PyCfgGraph { inner: cfg.clone() };
+            Ok(Py::new(py, py_cfg)?)
         })
     }
 
-    /// 一步到位：追踪 + 转换 + 优化 + 保存
-    pub fn trace_and_save(
-        &mut self,
-        model: Py<PyAny>,
-        inputs: Vec<Py<PyAny>>,
-        path: String,
-        model_name: String,
-        trainable: bool,
-    ) -> PyResult<()> {
-        // 1. 追踪
-        self.start_tracing();
-
-        Python::with_gil(|py| {
-            let model = model.as_ref(py);
-            let inputs: Vec<&PyAny> = inputs.iter().map(|x| x.as_ref(py)).collect();
-
-            // 执行模型
-            let _outputs = model.call_method("forward", &inputs, None)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-
-            self.stop_tracing()?;
-            Ok(())
-        })?;
-
-        // 2. 获取 CFG
+    /// 获取统计信息
+    pub fn stats(&self) -> PyResult<HashMap<String, usize>> {
         let cfg = self.cfg.lock().unwrap();
-
-        // 3. 转换 → DAG
-        let mut dag = crate::transform::cfg_to_dag::CfgToDagConverter::convert(&cfg)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-
-        // 4. 优化
-        crate::transform::Optimizer::optimize(&mut dag)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-
-        // 5. 保存
-        let model_file = if trainable {
-            crate::ir::serialize::ModelFile::new_trainable(
-                &model_name,
-                "torch",
-                dag,
-                "adam",
-                0.001,
-            )
-        } else {
-            crate::ir::serialize::ModelFile::new(&model_name, "torch", dag)
-        };
-
-        model_file.export(&path)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-
-        Ok(())
-    }
-
-    /// 追踪并完整优化（CFG + DAG）
-    pub fn trace_optimize_and_export(
-        &mut self,
-        model: Py<PyAny>,
-        inputs: Vec<Py<PyAny>>,
-        path: String,
-        model_name: String,
-        trainable: bool,
-    ) -> PyResult<()> {
-        // 1. 追踪
-        self.start_tracing();
-
-        Python::with_gil(|py| {
-            let model = model.as_ref(py);
-            let inputs: Vec<&PyAny> = inputs.iter().map(|x| x.as_ref(py)).collect();
-
-            let _outputs = model.call_method("forward", &inputs, None)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-
-            self.stop_tracing()?;
-            Ok(())
-        })?;
-
-        // 2. 获取 CFG
-        let mut cfg = self.cfg.lock().unwrap().clone();
-
-        // 3. CFG 优化 + DAG 转换 + DAG 优化
-        let dag = crate::transform::FullOptimizer::optimize_full(&mut cfg)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-
-        // 4. 保存
-        let model_file = if trainable {
-            crate::ir::serialize::ModelFile::new_trainable(
-                &model_name,
-                "torch",
-                dag,
-                "adam",
-                0.001,
-            )
-        } else {
-            crate::ir::serialize::ModelFile::new(&model_name, "torch", dag)
-        };
-
-        model_file.export(&path)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-
-        Ok(())
+        let mut stats = HashMap::new();
+        stats.insert("blocks".to_string(), cfg.blocks.len());
+        stats.insert("ops".to_string(), cfg.blocks.values().map(|b| b.ops.len()).sum());
+        stats.insert("values".to_string(), cfg.value_types.len());
+        stats.insert("inputs".to_string(), cfg.inputs.len());
+        stats.insert("outputs".to_string(), cfg.outputs.len());
+        Ok(stats)
     }
 
     // ============================================================
-    // 辅助方法
+    // 辅助方法（私有）
     // ============================================================
 
-    /// 从 Python 对象提取 value ID
     fn extract_value_id(&self, obj: &Py<PyAny>) -> PyResult<u64> {
         Python::with_gil(|py| {
             let obj = obj.as_ref(py);
 
-            // 如果是 PyTensor，使用其内部指针
+            // 如果是 PyTensor
             if let Ok(pytensor) = obj.downcast::<crate::pytensor::PyTensor>() {
                 let tensor = pytensor.borrow().inner.as_ref();
                 return Ok(tensor as *const _ as u64);
             }
 
-            // 如果是 torch.Tensor，使用 Python id()
+            // 如果是 torch.Tensor，用 id()
             if let Ok(py_id) = obj.call_method0("__hash__") {
                 if let Ok(id_val) = py_id.extract::<u64>() {
                     return Ok(id_val);
                 }
             }
 
-            // Fallback: 使用对象地址
-            let ptr = obj as *const _ as u64;
-            Ok(ptr)
+            // Fallback: 对象地址
+            Ok(obj as *const _ as u64)
         })
     }
 
-    /// 提取 tensor 信息（shape + dtype）
     fn extract_tensor_info(&self, obj: &Py<PyAny>) -> PyResult<(DataType, Vec<i64>)> {
         Python::with_gil(|py| {
             let obj = obj.as_ref(py);
@@ -414,10 +433,9 @@ impl HookTracer {
                 return Ok((rust_dtype, rust_shape));
             }
 
-            // 如果是 torch.Tensor，通过 Python 获取
+            // 如果是 torch.Tensor
             if let Ok(shape) = obj.call_method0("shape") {
                 if let Ok(shape_list) = shape.extract::<Vec<i64>>() {
-                    // 获取 dtype
                     let dtype_str = if let Ok(dtype) = obj.getattr("dtype") {
                         if let Ok(str_val) = dtype.call_method0("__str__") {
                             str_val.extract::<String>().unwrap_or("f32".to_string())
@@ -448,7 +466,6 @@ impl HookTracer {
         })
     }
 
-    /// 转换 Python attrs 到 Rust AttrValue
     fn convert_attrs(&self, attrs: &HashMap<String, PyObject>) -> PyResult<HashMap<String, AttrValue>> {
         let mut result = HashMap::new();
 
@@ -456,7 +473,6 @@ impl HookTracer {
             for (key, value) in attrs {
                 let val = value.as_ref(py);
 
-                // 尝试各种类型转换
                 if let Ok(i) = val.extract::<i64>() {
                     result.insert(key.clone(), AttrValue::Int(i));
                 } else if let Ok(f) = val.extract::<f64>() {
@@ -471,15 +487,6 @@ impl HookTracer {
                     result.insert(key.clone(), AttrValue::FloatList(list));
                 } else if let Ok(shape) = val.extract::<Vec<i64>>() {
                     result.insert(key.clone(), AttrValue::Shape(shape));
-                } else if let Ok(tuple) = val.extract::<(i64, i64)>() {
-                    result.insert(key.clone(), AttrValue::IntList(vec![tuple.0, tuple.1]));
-                } else if let Ok(tuple) = val.extract::<(i64, i64, i64)>() {
-                    result.insert(key.clone(), AttrValue::IntList(vec![tuple.0, tuple.1, tuple.2]));
-                } else if let Ok(tuple) = val.extract::<(i64, i64, i64, i64)>() {
-                    result.insert(key.clone(), AttrValue::IntList(vec![tuple.0, tuple.1, tuple.2, tuple.3]));
-                } else {
-                    // 跳过无法转换的属性
-                    eprintln!("[HookTracer] Warning: Cannot convert attribute: {}", key);
                 }
             }
             Ok(())
@@ -488,7 +495,7 @@ impl HookTracer {
 }
 
 // ============================================================
-// Python 可用的 CFG 包装
+// CFG 的 Python 包装
 // ============================================================
 
 #[pyclass]
@@ -503,16 +510,32 @@ impl PyCfgGraph {
     }
 
     pub fn num_ops(&self) -> usize {
-        self.inner.blocks.values()
-            .map(|b| b.ops.len())
-            .sum()
+        self.inner.blocks.values().map(|b| b.ops.len()).sum()
+    }
+
+    pub fn num_values(&self) -> usize {
+        self.inner.value_types.len()
+    }
+
+    pub fn to_dag(&self) -> PyResult<Py<PyAny>> {
+        use crate::transform::FullOptimizer;
+
+        let mut cfg = self.inner.clone();
+        let dag = FullOptimizer::optimize_full(&mut cfg)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+
+        Python::with_gil(|py| {
+            let py_dag = crate::ir::serialize::PyDagGraph { inner: dag };
+            Ok(Py::new(py, py_dag)?)
+        })
     }
 
     pub fn __repr__(&self) -> String {
-        format!("CfgGraph(name={}, blocks={}, ops={})",
-                self.inner.name,
-                self.inner.blocks.len(),
-                self.num_ops()
+        format!(
+            "PyCfgGraph(blocks={}, ops={}, values={})",
+            self.num_blocks(),
+            self.num_ops(),
+            self.num_values()
         )
     }
 }
