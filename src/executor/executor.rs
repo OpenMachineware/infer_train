@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
-use crate::ir::dag::DagGraph;
+use crate::ir::dag::{DagGraph, DataType, TensorType, AttrValue};
 use crate::pytensor::PyTensor;
 use crate::ffi::Tensor;
 
@@ -51,28 +51,45 @@ impl Executor {
         // 加载权重（constants）
         for (&id, data) in &self.graph.constants {
             if let Some(value) = self.graph.values.get(&id) {
-                let len = data.len() / 4;
-                let final_shape = if id == 6 {
-                    vec![16, 3, 3, 3]
-                } else if id == 5 {
-                    vec![16]
-                } else {
-                    value.ty.shape.iter().map(|&x| x as usize).collect()
-                };
+                let dtype = value.ty.dtype;
+                let shape: Vec<usize> = value.ty.shape.iter().map(|&x| x as usize).collect();
 
-                let float_data: Vec<f32> = data.chunks(4)
-                    .map(|chunk| {
-                        if chunk.len() == 4 {
-                            f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
-                        } else {
-                            0.0
-                        }
-                    })
-                    .collect();
-                let tensor = Tensor::new_f32(&float_data, &final_shape);
+                let tensor = match dtype {
+                    DataType::F32 => {
+                        let float_data: Vec<f32> = data.chunks(4)
+                            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                            .collect();
+                        Tensor::new_f32(&float_data, &shape)
+                    }
+                    DataType::F64 => {
+                        let double_data: Vec<f64> = data.chunks(8)
+                            .map(|chunk| f64::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7]]))
+                            .collect();
+                        Tensor::new_f64(&double_data, &shape)
+                    }
+                    DataType::F16 => {
+                        let u16_data: Vec<u16> = data.chunks(2)
+                            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                            .collect();
+                        Tensor::new_f16(&u16_data, &shape)
+                    }
+                    DataType::BF16 => {
+                        let u16_data: Vec<u16> = data.chunks(2)
+                            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                            .collect();
+                        Tensor::new_bf16(&u16_data, &shape)
+                    }
+                    DataType::I8 => {
+                        let i8_data: Vec<i8> = data.iter().map(|&b| b as i8).collect();
+                        let scale = value.scale.unwrap_or(1.0);
+                        let zero_point = value.zero_point.unwrap_or(0.0);
+                        Tensor::new_quantized(&i8_data, &shape, scale, zero_point)
+                    }
+                    _ => {
+                        return Err(format!("Unsupported dtype for weight: {:?}", dtype));
+                    }
+                };
                 self.values.insert(id, tensor);
-            } else {
-                return Err(format!("Constant value {} has no type info", id));
             }
         }
 

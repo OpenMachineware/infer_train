@@ -6,7 +6,7 @@ use serde::{Serialize, Deserialize};
 // ============================================================
 // 数据类型
 // ============================================================
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DataType {
     F32,
     F64,
@@ -50,6 +50,27 @@ pub struct Value {
     pub name: String,
     pub ty: TensorType,
     pub producer: Option<u64>,  // 哪个 Op 产生的
+    pub scale: Option<f32>,
+    pub zero_point: Option<f32>,
+}
+
+impl Value {
+    pub fn new(id: u64, name: &str, ty: TensorType) -> Self {
+        Value {
+            id,
+            name: name.to_string(),
+            ty,
+            producer: None,
+            scale: None,
+            zero_point: None,
+        }
+    }
+
+    pub fn with_quant_params(mut self, scale: f32, zero_point: f32) -> Self {
+        self.scale = Some(scale);
+        self.zero_point = Some(zero_point);
+        self
+    }
 }
 
 // ============================================================
@@ -95,12 +116,20 @@ impl DagGraph {
     pub fn add_value(&mut self, name: &str, ty: TensorType) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.values.insert(id, Value {
-            id,
-            name: name.to_string(),
-            ty,
-            producer: None,
-        });
+        self.values.insert(id, Value::new(id, name, ty));
+        id
+    }
+
+    pub fn add_value_with_quant(
+        &mut self,
+        name: &str,
+        ty: TensorType,
+        scale: f32,
+        zero_point: f32,
+    ) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.values.insert(id, Value::new(id, name, ty).with_quant_params(scale, zero_point));
         id
     }
 
