@@ -1,5 +1,3 @@
-// src/transform/mod.rs
-
 pub mod constant_fold;
 pub mod cse;
 pub mod dce;
@@ -40,13 +38,8 @@ impl CfgOptimizer {
         loop {
             let mut changed = false;
 
-            // 1. 函数内联
             changed |= CfgInlinePass::apply(cfg);
-
-            // 2. 死基本块删除
             changed |= CfgDCEPass::apply(cfg);
-
-            // 3. 跨基本块公共子表达式消除
             changed |= CfgCSEPass::apply(cfg);
 
             iteration += 1;
@@ -55,7 +48,6 @@ impl CfgOptimizer {
             }
         }
 
-        // 最后再做一次 DCE 清理
         CfgDCEPass::apply(cfg);
 
         Ok(())
@@ -69,7 +61,6 @@ pub struct DagOptimizer;
 
 impl DagOptimizer {
     pub fn optimize(graph: &mut DagGraph) -> Result<(), String> {
-        // 1. 验证初始图
         VerifyPass::verify(graph)?;
 
         let mut iteration = 0;
@@ -78,22 +69,12 @@ impl DagOptimizer {
         loop {
             let mut changed = false;
 
-            // 2. 常量折叠
             changed |= ConstantFoldingPass::apply(graph);
-
-            // 3. 代数化简
             changed |= AlgebraicSimplifyPass::apply(graph);
-
-            // 4. 公共子表达式消除
             changed |= CommonSubexpressionEliminationPass::apply(graph);
-
-            // 5. 算子融合
             changed |= FusionPass::apply(graph);
-
-            // 6. 死代码消除
             changed |= DCEPass::apply(graph);
 
-            // 7. 验证中间状态
             VerifyPass::verify(graph)?;
 
             iteration += 1;
@@ -102,13 +83,8 @@ impl DagOptimizer {
             }
         }
 
-        // 8. 最后再做一次 DCE 清理
         DCEPass::apply(graph);
-
-        // 9. Shape 推导（必须在所有优化之后）
         ShapeInferencePass::apply(graph)?;
-
-        // 10. 最终验证
         VerifyPass::verify(graph)?;
 
         Ok(())
@@ -130,15 +106,9 @@ impl FullOptimizer {
     }
 
     pub fn optimize_full(cfg: &mut CfgGraph) -> Result<DagGraph, String> {
-        // 1. 优化 CFG
         CfgOptimizer::optimize(cfg)?;
-
-        // 2. CFG → DAG
         let mut dag = CfgToDagConverter::convert(cfg)?;
-
-        // 3. 优化 DAG
         DagOptimizer::optimize(&mut dag)?;
-
         Ok(dag)
     }
 }

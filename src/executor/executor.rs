@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 use pyo3::prelude::*;
-use pyo3::types::PyList;
+use pyo3::types::{PyDict, PyList};
 
 use crate::ir::dag::{DagGraph, DataType};
-use crate::pytensor::PyTensor;
 use crate::ffi::Tensor;
+use crate::pytensor::PyTensor;
 
 use super::math;
 use super::nn;
@@ -161,28 +161,37 @@ impl Executor {
             }
             DataType::I8 => {
                 let i8_data: Vec<i8> = data.iter().map(|&b| b as i8).collect();
-                let scale = scale.unwrap_or(1.0);
-                let zero_point = zero_point.unwrap_or(0.0);
-                Ok(Tensor::new_quantized(&i8_data, shape, scale, zero_point))
+                let scale_val = scale.unwrap_or(1.0);
+                let zero_point_val = zero_point.unwrap_or(0.0);
+                Ok(Tensor::new_quantized(&i8_data, shape, scale_val, zero_point_val))
             }
             DataType::I32 => {
-                let i32_data: Vec<i32> = data.chunks(4)
-                    .map(|chunk| i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                // 将 i32 数据转为 f32（保持数值）
+                let float_data: Vec<f32> = data.chunks(4)
+                    .map(|chunk| {
+                        let val = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                        val as f32
+                    })
                     .collect();
-                Ok(Tensor::new_i32(&i32_data, shape))
+                Ok(Tensor::new_f32(&float_data, shape))
             }
             DataType::I64 => {
-                let i64_data: Vec<i64> = data.chunks(8)
-                    .map(|chunk| i64::from_le_bytes([
-                        chunk[0], chunk[1], chunk[2], chunk[3],
-                        chunk[4], chunk[5], chunk[6], chunk[7]
-                    ]))
+                let float_data: Vec<f32> = data.chunks(8)
+                    .map(|chunk| {
+                        let val = i64::from_le_bytes([
+                            chunk[0], chunk[1], chunk[2], chunk[3],
+                            chunk[4], chunk[5], chunk[6], chunk[7]
+                        ]);
+                        val as f32
+                    })
                     .collect();
-                Ok(Tensor::new_i64(&i64_data, shape))
+                Ok(Tensor::new_f32(&float_data, shape))
             }
             DataType::Bool => {
-                let bool_data: Vec<bool> = data.iter().map(|&b| b != 0).collect();
-                Ok(Tensor::new_bool(&bool_data, shape))
+                let float_data: Vec<f32> = data.iter()
+                    .map(|&b| if b != 0 { 1.0 } else { 0.0 })
+                    .collect();
+                Ok(Tensor::new_f32(&float_data, shape))
             }
         }
     }
@@ -301,7 +310,7 @@ impl Executor {
             ("control", control::dispatch_control),
         ];
 
-        for (name, dispatcher) in dispatchers {
+        for (_name, dispatcher) in dispatchers {
             if let Ok(result) = dispatcher(op_type, inputs, attrs) {
                 return Ok(result);
             }
@@ -322,3 +331,87 @@ impl Executor {
         Ok(result)
     }
 }
+
+// ============================================================
+// Python 绑定
+// ============================================================
+
+#[pyclass]
+pub struct PyExecutor {
+    inner: Executor,
+}
+
+#[pymethods]
+impl PyExecutor {
+    #[new]
+    pub fn new(graph: Py<PyAny>) -> PyResult<Self> {
+        Python::with_gil(|py| {
+            let graph_obj = graph.bind(py);
+            if let Ok(py_dag) = graph_obj.downcast::<crate::ir::serialize::PyDagGraph>() {
+                let dag = py_dag.borrow().inner.clone();
+                Ok(PyExecutor {
+                    inner: Executor::new(dag),
+                })
+            } else {
+                Err(pyo3::exceptions::PyTypeError::new_err(
+                    "Expected PyDagGraph"
+                ))
+            }
+        })
+    }
+
+    #[staticmethod]
+    pub fn from_model_file(model_file: &crate::ir::serialize::PyModelFile) -> Self {
+        let graph = model_file.inner.graph.clone();
+        PyExecutor {
+            inner: Executor::new(graph),
+        }
+    }
+
+    // ✅ 修复：参数类型改为 Py<PyList>，手动提取
+    pub fn execute(&mut self, inputs: Py<PyList>) -> PyResult<Vec<PyTensor>> {
+        Python::with_gil(|py| {
+            let inputs_list = inputs.bind(py);
+
+            let mut input_tensors = Vec::new();
+            for item in inputs_list.iter() {
+                let pytensor = item.downcast::<PyTensor>()
+                    .map_err(|_| pyo3::exceptions::PyTypeError::new_err("Expected PyTensor"))?;
+                input_tensors.push(pytensor.borrow().inner.clone());
+            }
+
+            let result = self.inner.execute(&input_tensors)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+
+            Ok(result.into_iter().map(|t| PyTensor { inner: t }).collect())
+        })
+    }
+
+    pub fn set_parallel(&mut self, parallel: bool) {
+        self.inner.parallel = parallel;
+    }
+
+    pub fn set_threads(&mut self, threads: usize) {
+        self.inner.num_threads = threads;
+    }
+
+    pub fn memory_stats(&self) -> PyResult<HashMap<String, usize>> {
+        let (allocations, reuse_count) = self.inner.memory_pool.stats();
+        let mut stats = HashMap::new();
+        stats.insert("allocations".to_string(), allocations);
+        stats.insert("reuses".to_string(), reuse_count);
+        Ok(stats)
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "PyExecutor(ops={}, parallel={})",
+            self.inner.graph.ops.len(),
+            self.inner.parallel
+        )
+    }
+}
+
+
+/// 导出 dispatch_op 供其他模块使用
+pub use super::parallel::dispatch_op;

@@ -382,7 +382,7 @@ impl ShapeInferencePass {
             // ============================================================
             "gather" => {
                 Self::check_input_count(input_shapes, 2)?;
-                let dim = Self::get_int_attr(attrs, "dim", 0) as usize;
+                let _dim = Self::get_int_attr(attrs, "dim", 0) as usize;
 
                 // 输出 shape 与 indices 相同
                 Ok(vec![input_shapes[1].clone()])
@@ -443,7 +443,7 @@ impl ShapeInferencePass {
             // ============================================================
             "sort" => {
                 Self::check_input_count(input_shapes, 1)?;
-                let dim = Self::get_int_attr(attrs, "dim", -1) as usize;
+                let _dim = Self::get_int_attr(attrs, "dim", -1) as usize;
                 let mut out_shape = input_shapes[0].clone();
                 // Sort 返回 values 和 indices
                 Ok(vec![out_shape.clone(), out_shape])

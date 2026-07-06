@@ -5,13 +5,111 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::ir::cfg::{CfgGraph, CfgOp, BranchInfo};
+use crate::ir::cfg::{CfgGraph, CfgOp};
 use crate::ir::dag::{AttrValue, DataType, TensorType};
 use crate::ir::dag::DagGraph;
 use crate::transform::FullOptimizer;
 use crate::ir::serialize::ModelFile;
 
-/// Hook 追踪器 - 捕获 PyTorch 模型执行
+// ============================================================
+// 辅助函数（在 impl HookTracer 外面，避开 #[pymethods]）
+// ============================================================
+
+fn extract_value_id(py: Python<'_>, obj: &Py<PyAny>) -> Result<u64, String> {
+    let obj = obj.bind(py);
+
+    if let Ok(pytensor) = obj.downcast::<crate::pytensor::PyTensor>() {
+        let tensor = &pytensor.borrow().inner;
+        return Ok(tensor as *const _ as u64);
+    }
+
+    if let Ok(py_id) = obj.call_method0("__hash__") {
+        if let Ok(id_val) = py_id.extract::<u64>() {
+            return Ok(id_val);
+        }
+    }
+
+    Ok(obj.as_ptr() as u64)
+}
+
+fn extract_tensor_info(py: Python<'_>, obj: &Py<PyAny>) -> Result<(DataType, Vec<i64>), String> {
+    let obj = obj.bind(py);
+
+    if let Ok(pytensor) = obj.downcast::<crate::pytensor::PyTensor>() {
+        let tensor = &pytensor.borrow().inner;
+        let dtype = tensor.dtype();
+        let shape = tensor.shape();
+
+        let rust_dtype = match dtype {
+            crate::ffi::it_dtype_t::IT_DTYPE_F32 => DataType::F32,
+            crate::ffi::it_dtype_t::IT_DTYPE_F64 => DataType::F64,
+            crate::ffi::it_dtype_t::IT_DTYPE_F16 => DataType::F16,
+            crate::ffi::it_dtype_t::IT_DTYPE_BF16 => DataType::BF16,
+            crate::ffi::it_dtype_t::IT_DTYPE_I8 => DataType::I8,
+        };
+
+        let rust_shape: Vec<i64> = shape.iter().map(|&x| x as i64).collect();
+        return Ok((rust_dtype, rust_shape));
+    }
+
+    if let Ok(shape) = obj.call_method0("shape") {
+        if let Ok(shape_list) = shape.extract::<Vec<i64>>() {
+            let dtype_str = if let Ok(dtype) = obj.getattr("dtype") {
+                if let Ok(str_val) = dtype.call_method0("__str__") {
+                    str_val.extract::<String>().unwrap_or("f32".to_string())
+                } else {
+                    "f32".to_string()
+                }
+            } else {
+                "f32".to_string()
+            };
+
+            let rust_dtype = match dtype_str.as_str() {
+                s if s.contains("float32") || s.contains("f32") => DataType::F32,
+                s if s.contains("float64") || s.contains("f64") => DataType::F64,
+                s if s.contains("float16") || s.contains("f16") => DataType::F16,
+                s if s.contains("bfloat16") || s.contains("bf16") => DataType::BF16,
+                s if s.contains("int8") || s.contains("i8") => DataType::I8,
+                _ => DataType::F32,
+            };
+
+            return Ok((rust_dtype, shape_list));
+        }
+    }
+
+    Ok((DataType::F32, Vec::new()))
+}
+
+fn convert_attrs(py: Python<'_>, attrs: &HashMap<String, PyObject>) -> Result<HashMap<String, AttrValue>, String> {
+    let mut result = HashMap::new();
+
+    for (key, value) in attrs {
+        let val = value.bind(py);
+
+        if let Ok(i) = val.extract::<i64>() {
+            result.insert(key.clone(), AttrValue::Int(i));
+        } else if let Ok(f) = val.extract::<f64>() {
+            result.insert(key.clone(), AttrValue::Float(f));
+        } else if let Ok(b) = val.extract::<bool>() {
+            result.insert(key.clone(), AttrValue::Bool(b));
+        } else if let Ok(s) = val.extract::<String>() {
+            result.insert(key.clone(), AttrValue::String(s));
+        } else if let Ok(list) = val.extract::<Vec<i64>>() {
+            result.insert(key.clone(), AttrValue::IntList(list));
+        } else if let Ok(list) = val.extract::<Vec<f64>>() {
+            result.insert(key.clone(), AttrValue::FloatList(list));
+        } else if let Ok(shape) = val.extract::<Vec<i64>>() {
+            result.insert(key.clone(), AttrValue::Shape(shape));
+        }
+    }
+
+    Ok(result)
+}
+
+// ============================================================
+// HookTracer
+// ============================================================
+
 #[pyclass]
 pub struct HookTracer {
     cfg: Arc<Mutex<CfgGraph>>,
@@ -21,7 +119,6 @@ pub struct HookTracer {
     op_counter: u64,
     is_tracing: bool,
     block_counter: u64,
-    // 记录模型信息
     model_name: String,
     framework: String,
 }
@@ -47,10 +144,6 @@ impl HookTracer {
         }
     }
 
-    // ============================================================
-    // 基础追踪 API
-    // ============================================================
-
     pub fn start_tracing(&mut self) {
         self.is_tracing = true;
         self.value_map.clear();
@@ -73,7 +166,6 @@ impl HookTracer {
         let mut cfg = CfgGraph::new("traced_model");
         let entry = cfg.add_block("entry");
         cfg.set_entry(entry);
-
         *self.cfg.lock().unwrap() = cfg;
         self.block_stack = vec![entry];
         self.current_block = entry;
@@ -92,9 +184,10 @@ impl HookTracer {
     }
 
     // ============================================================
-    // 记录算子（由 Python hook 调用）
+    // 记录算子
     // ============================================================
 
+    #[pyo3(signature = (op_type, inputs, outputs, attrs, name=None))]
     pub fn record_op(
         &mut self,
         op_type: String,
@@ -107,55 +200,67 @@ impl HookTracer {
             return Ok(());
         }
 
-        let input_ids: Result<Vec<u64>, PyErr> = inputs.iter()
-            .map(|obj| self.extract_value_id(obj))
-            .collect();
-        let input_ids = input_ids?;
+        Python::with_gil(|py| {
+            // --- 提取 input IDs ---
+            let mut input_ids = Vec::new();
+            for obj in &inputs {
+                let id = extract_value_id(py, obj)
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+                input_ids.push(id);
+            }
 
-        let output_ids: Result<Vec<u64>, PyErr> = outputs.iter()
-            .map(|obj| self.extract_value_id(obj))
-            .collect();
-        let output_ids = output_ids?;
+            // --- 提取 output IDs ---
+            let mut output_ids = Vec::new();
+            for obj in &outputs {
+                let id = extract_value_id(py, obj)
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+                output_ids.push(id);
+            }
 
-        let rust_attrs = self.convert_attrs(&attrs)?;
+            // --- 转换 attrs ---
+            let rust_attrs = convert_attrs(py, &attrs)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
 
-        let op_id = self.op_counter;
-        self.op_counter += 1;
+            let op_id = self.op_counter;
+            self.op_counter += 1;
 
-        let op_name = name.unwrap_or_else(|| format!("{}_{}", op_type, op_id));
+            let op_name = name.clone().unwrap_or_else(|| format!("{}_{}", op_type, op_id));
 
-        let cfg_op = CfgOp {
-            id: op_id,
-            op_type: op_type.clone(),
-            inputs: input_ids.clone(),
-            outputs: output_ids.clone(),
-            attrs: rust_attrs,
-            name: op_name,
-        };
+            let cfg_op = CfgOp {
+                id: op_id,
+                op_type: op_type.clone(),
+                inputs: input_ids.clone(),
+                outputs: output_ids.clone(),
+                attrs: rust_attrs,
+                name: op_name,
+            };
 
-        {
-            let mut cfg = self.cfg.lock().unwrap();
-            cfg.add_op(self.current_block, cfg_op)?;
-        }
+            {
+                let mut cfg = self.cfg.lock().unwrap();
+                cfg.add_op(self.current_block, cfg_op)
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+            }
 
-        // 更新 value 映射和类型信息
-        for (i, out_id) in output_ids.iter().enumerate() {
-            self.value_map.insert(*out_id, *out_id);
-            if i < outputs.len() {
-                if let Ok((dtype, shape)) = self.extract_tensor_info(&outputs[i]) {
-                    let mut cfg = self.cfg.lock().unwrap();
-                    cfg.value_types.insert(*out_id, (dtype, shape));
+            // --- 提取 tensor info ---
+            for (i, out_id) in output_ids.iter().enumerate() {
+                self.value_map.insert(*out_id, *out_id);
+                if i < outputs.len() {
+                    if let Ok((dtype, shape)) = extract_tensor_info(py, &outputs[i]) {
+                        let mut cfg = self.cfg.lock().unwrap();
+                        cfg.value_types.insert(*out_id, (dtype, shape));
+                    }
                 }
             }
-        }
 
-        Ok(())
+            Ok(())
+        })
     }
 
     // ============================================================
-    // 控制流记录
+    // 控制流
     // ============================================================
 
+    #[pyo3(signature = (name=None))]
     pub fn begin_block(&mut self, name: Option<String>) -> PyResult<u64> {
         if !self.is_tracing {
             return Ok(0);
@@ -195,7 +300,10 @@ impl HookTracer {
             return Ok(());
         }
 
-        let cond_id = self.extract_value_id(&condition)?;
+        let cond_id = Python::with_gil(|py| {
+            extract_value_id(py, &condition)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+        })?;
 
         let merge_name = format!("merge_{}", self.block_counter);
         self.block_counter += 1;
@@ -203,11 +311,16 @@ impl HookTracer {
         let mut cfg = self.cfg.lock().unwrap();
         let merge_id = cfg.add_block(&merge_name);
 
-        cfg.set_branch(self.current_block, cond_id, true_block, false_block, merge_id)?;
-        cfg.add_edge(self.current_block, true_block)?;
-        cfg.add_edge(self.current_block, false_block)?;
-        cfg.add_edge(true_block, merge_id)?;
-        cfg.add_edge(false_block, merge_id)?;
+        cfg.set_branch(self.current_block, cond_id, true_block, false_block, merge_id)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        cfg.add_edge(self.current_block, true_block)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        cfg.add_edge(self.current_block, false_block)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        cfg.add_edge(true_block, merge_id)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        cfg.add_edge(false_block, merge_id)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
 
         self.current_block = merge_id;
         self.block_stack.push(merge_id);
@@ -216,27 +329,22 @@ impl HookTracer {
     }
 
     // ============================================================
-    // 高层 API：用户直接调用
+    // 高层 API
     // ============================================================
 
-    /// 追踪模型并返回优化后的 DAG
     pub fn trace_to_dag(
         &mut self,
         model: Py<PyAny>,
         inputs: Vec<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        // 1. 追踪
         self.start_tracing();
 
         let result = Python::with_gil(|py| {
-            let model = model.as_ref(py);
-            let inputs: Vec<&PyAny> = inputs.iter().map(|x| x.as_ref(py)).collect();
-
-            let outputs = model.call_method("forward", &inputs, None)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-
+            let model = model.bind(py);
+            let args = PyTuple::new(py, inputs.iter().map(|x| x.bind(py)))?;
+            let _outputs = model.call_method("forward", args, None)?;
             self.stop_tracing()?;
-            Ok::<_, PyErr>(outputs)
+            Ok::<_, PyErr>(())
         });
 
         if let Err(e) = result {
@@ -244,18 +352,17 @@ impl HookTracer {
             return Err(e);
         }
 
-        // 2. CFG → DAG（含优化）
         let cfg = self.cfg.lock().unwrap().clone();
         let dag = FullOptimizer::optimize_full(&mut cfg.clone())
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
 
         Python::with_gil(|py| {
             let py_dag = crate::ir::serialize::PyDagGraph { inner: dag };
-            Ok(Py::new(py, py_dag)?)
+            Ok(Py::new(py, py_dag)?.into_any())
         })
     }
 
-    /// 追踪、优化并导出为 ITM 文件（推理模式）
+    #[pyo3(signature = (model, inputs, path, model_name=None))]
     pub fn trace_and_export(
         &mut self,
         model: Py<PyAny>,
@@ -268,13 +375,13 @@ impl HookTracer {
             inputs,
             path,
             model_name,
-            false,  // trainable
+            false,
             "adam".to_string(),
             0.001,
         )
     }
 
-    /// 追踪、优化并导出为 ITM 文件（可训练模式）
+    #[pyo3(signature = (model, inputs, path, model_name=None, optimizer="adam".to_string(), learning_rate=0.001))]
     pub fn trace_and_export_trainable(
         &mut self,
         model: Py<PyAny>,
@@ -289,13 +396,13 @@ impl HookTracer {
             inputs,
             path,
             model_name,
-            true,  // trainable
+            true,
             optimizer,
             learning_rate,
         )
     }
 
-    /// 完整配置导出
+    #[pyo3(signature = (model, inputs, path, model_name=None, trainable=false, optimizer="adam".to_string(), learning_rate=0.001))]
     pub fn trace_and_export_with_config(
         &mut self,
         model: Py<PyAny>,
@@ -306,21 +413,16 @@ impl HookTracer {
         optimizer: String,
         learning_rate: f32,
     ) -> PyResult<()> {
-        // 1. 更新名称
         if let Some(name) = model_name {
             self.model_name = name;
         }
 
-        // 2. 追踪
         self.start_tracing();
 
         let result = Python::with_gil(|py| {
-            let model = model.as_ref(py);
-            let inputs: Vec<&PyAny> = inputs.iter().map(|x| x.as_ref(py)).collect();
-
-            let _outputs = model.call_method("forward", &inputs, None)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-
+            let model = model.bind(py);
+            let args = PyTuple::new(py, inputs.iter().map(|x| x.bind(py)))?;
+            let _outputs = model.call_method("forward", args, None)?;
             self.stop_tracing()?;
             Ok::<_, PyErr>(())
         });
@@ -330,12 +432,10 @@ impl HookTracer {
             return Err(e);
         }
 
-        // 3. 获取 CFG 并优化
         let cfg = self.cfg.lock().unwrap().clone();
         let dag = FullOptimizer::optimize_full(&mut cfg.clone())
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
 
-        // 4. 创建 ModelFile
         let model_file = if trainable {
             ModelFile::new_trainable(
                 &self.model_name,
@@ -348,28 +448,20 @@ impl HookTracer {
             ModelFile::new(&self.model_name, &self.framework, dag)
         };
 
-        // 5. 导出
         model_file.export(&path)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-
-        println!("[HookTracer] Model exported to: {}", path);
-        if trainable {
-            println!("[HookTracer] Trainable mode: optimizer={}, lr={}", optimizer, learning_rate);
-        }
 
         Ok(())
     }
 
-    /// 获取 CFG（用于调试）
     pub fn get_cfg(&self) -> PyResult<Py<PyAny>> {
         let cfg = self.cfg.lock().unwrap();
         Python::with_gil(|py| {
             let py_cfg = PyCfgGraph { inner: cfg.clone() };
-            Ok(Py::new(py, py_cfg)?)
+            Ok(Py::new(py, py_cfg)?.into_any())
         })
     }
 
-    /// 获取统计信息
     pub fn stats(&self) -> PyResult<HashMap<String, usize>> {
         let cfg = self.cfg.lock().unwrap();
         let mut stats = HashMap::new();
@@ -380,122 +472,10 @@ impl HookTracer {
         stats.insert("outputs".to_string(), cfg.outputs.len());
         Ok(stats)
     }
-
-    // ============================================================
-    // 辅助方法（私有）
-    // ============================================================
-
-    fn extract_value_id(&self, obj: &Py<PyAny>) -> PyResult<u64> {
-        Python::with_gil(|py| {
-            let obj = obj.as_ref(py);
-
-            // 如果是 PyTensor
-            if let Ok(pytensor) = obj.downcast::<crate::pytensor::PyTensor>() {
-                let tensor = pytensor.borrow().inner.as_ref();
-                return Ok(tensor as *const _ as u64);
-            }
-
-            // 如果是 torch.Tensor，用 id()
-            if let Ok(py_id) = obj.call_method0("__hash__") {
-                if let Ok(id_val) = py_id.extract::<u64>() {
-                    return Ok(id_val);
-                }
-            }
-
-            // Fallback: 对象地址
-            Ok(obj as *const _ as u64)
-        })
-    }
-
-    fn extract_tensor_info(&self, obj: &Py<PyAny>) -> PyResult<(DataType, Vec<i64>)> {
-        Python::with_gil(|py| {
-            let obj = obj.as_ref(py);
-
-            // 如果是 PyTensor
-            if let Ok(pytensor) = obj.downcast::<crate::pytensor::PyTensor>() {
-                let tensor = pytensor.borrow().inner.as_ref();
-                let dtype = tensor.dtype();
-                let shape = tensor.shape();
-
-                let rust_dtype = match dtype.as_str() {
-                    "f32" => DataType::F32,
-                    "f64" => DataType::F64,
-                    "f16" => DataType::F16,
-                    "bf16" => DataType::BF16,
-                    "i8" => DataType::I8,
-                    "i32" => DataType::I32,
-                    "i64" => DataType::I64,
-                    "bool" => DataType::Bool,
-                    _ => DataType::F32,
-                };
-
-                let rust_shape: Vec<i64> = shape.iter().map(|&x| x as i64).collect();
-                return Ok((rust_dtype, rust_shape));
-            }
-
-            // 如果是 torch.Tensor
-            if let Ok(shape) = obj.call_method0("shape") {
-                if let Ok(shape_list) = shape.extract::<Vec<i64>>() {
-                    let dtype_str = if let Ok(dtype) = obj.getattr("dtype") {
-                        if let Ok(str_val) = dtype.call_method0("__str__") {
-                            str_val.extract::<String>().unwrap_or("f32".to_string())
-                        } else {
-                            "f32".to_string()
-                        }
-                    } else {
-                        "f32".to_string()
-                    };
-
-                    let rust_dtype = match dtype_str.as_str() {
-                        s if s.contains("float32") || s.contains("f32") => DataType::F32,
-                        s if s.contains("float64") || s.contains("f64") => DataType::F64,
-                        s if s.contains("float16") || s.contains("f16") => DataType::F16,
-                        s if s.contains("bfloat16") || s.contains("bf16") => DataType::BF16,
-                        s if s.contains("int8") || s.contains("i8") => DataType::I8,
-                        s if s.contains("int32") || s.contains("i32") => DataType::I32,
-                        s if s.contains("int64") || s.contains("i64") => DataType::I64,
-                        s if s.contains("bool") => DataType::Bool,
-                        _ => DataType::F32,
-                    };
-
-                    return Ok((rust_dtype, shape_list));
-                }
-            }
-
-            Ok((DataType::F32, Vec::new()))
-        })
-    }
-
-    fn convert_attrs(&self, attrs: &HashMap<String, PyObject>) -> PyResult<HashMap<String, AttrValue>> {
-        let mut result = HashMap::new();
-
-        Python::with_gil(|py| {
-            for (key, value) in attrs {
-                let val = value.as_ref(py);
-
-                if let Ok(i) = val.extract::<i64>() {
-                    result.insert(key.clone(), AttrValue::Int(i));
-                } else if let Ok(f) = val.extract::<f64>() {
-                    result.insert(key.clone(), AttrValue::Float(f));
-                } else if let Ok(b) = val.extract::<bool>() {
-                    result.insert(key.clone(), AttrValue::Bool(b));
-                } else if let Ok(s) = val.extract::<String>() {
-                    result.insert(key.clone(), AttrValue::String(s));
-                } else if let Ok(list) = val.extract::<Vec<i64>>() {
-                    result.insert(key.clone(), AttrValue::IntList(list));
-                } else if let Ok(list) = val.extract::<Vec<f64>>() {
-                    result.insert(key.clone(), AttrValue::FloatList(list));
-                } else if let Ok(shape) = val.extract::<Vec<i64>>() {
-                    result.insert(key.clone(), AttrValue::Shape(shape));
-                }
-            }
-            Ok(())
-        })
-    }
 }
 
 // ============================================================
-// CFG 的 Python 包装
+// PyCfgGraph
 // ============================================================
 
 #[pyclass]
@@ -526,7 +506,7 @@ impl PyCfgGraph {
 
         Python::with_gil(|py| {
             let py_dag = crate::ir::serialize::PyDagGraph { inner: dag };
-            Ok(Py::new(py, py_dag)?)
+            Ok(Py::new(py, py_dag)?.into_any())
         })
     }
 
@@ -541,7 +521,7 @@ impl PyCfgGraph {
 }
 
 // ============================================================
-// DAG 的 Python 包装
+// PyDagGraph
 // ============================================================
 
 #[pyclass]
@@ -560,10 +540,11 @@ impl PyDagGraph {
     }
 
     pub fn __repr__(&self) -> String {
-        format!("DagGraph(name={}, ops={}, values={})",
-                self.inner.name,
-                self.inner.ops.len(),
-                self.inner.values.len()
+        format!(
+            "DagGraph(name={}, ops={}, values={})",
+            self.inner.name,
+            self.inner.ops.len(),
+            self.inner.values.len()
         )
     }
 }

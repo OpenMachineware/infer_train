@@ -1,6 +1,6 @@
 // src/executor/memory_reuse.rs
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use crate::ffi::Tensor;
 
 /// 内存池 - 实现 tensor 内存复用

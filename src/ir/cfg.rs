@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
-use crate::ir::dag::{AttrValue, DataType, TensorType};
+use crate::ir::dag::{AttrValue, DataType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CfgOp {

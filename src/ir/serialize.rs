@@ -227,6 +227,7 @@ impl ModelFile {
 // ============================================================
 
 #[pyclass]
+#[derive(Clone)]
 pub struct PyModelFile {
     pub(crate) inner: ModelFile,
 }
@@ -297,17 +298,26 @@ impl PyModelFile {
 
     pub fn get_graph(&self) -> PyResult<Py<PyAny>> {
         Python::with_gil(|py| {
-            // 返回 DAG 的 Python 表示
             let py_dag = PyDagGraph { inner: self.inner.graph.clone() };
-            Ok(Py::new(py, py_dag)?)
+            Ok(Py::new(py, py_dag)?.into_any())  // 转换为 PyAny
         })
     }
 
-    pub fn set_graph(&mut self, dag: PyDagGraph) {
-        self.inner.graph = dag.inner;
-        // 更新 header 统计
-        self.inner.header.num_ops = self.inner.graph.ops.len() as u64;
-        self.inner.header.num_constants = self.inner.graph.constants.len() as u64;
+    pub fn set_graph(&mut self, dag: Py<PyAny>) -> PyResult<()> {
+        Python::with_gil(|py| {
+            let dag_obj = dag.bind(py);
+            if let Ok(py_dag) = dag_obj.downcast::<PyDagGraph>() {
+                self.inner.graph = py_dag.borrow().inner.clone();
+                // 更新 header 统计
+                self.inner.header.num_ops = self.inner.graph.ops.len() as u64;
+                self.inner.header.num_constants = self.inner.graph.constants.len() as u64;
+                Ok(())
+            } else {
+                Err(pyo3::exceptions::PyTypeError::new_err(
+                    "Expected PyDagGraph"
+                ))
+            }
+        })
     }
 
     pub fn graph_string(&self) -> String {
@@ -331,6 +341,7 @@ impl PyModelFile {
 // ============================================================
 
 #[pyclass]
+#[derive(Clone)]
 pub struct PyDagGraph {
     pub inner: DagGraph,
 }

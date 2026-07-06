@@ -6,7 +6,7 @@ use crate::ir::dag::DagGraph;
 pub struct DCEPass;
 
 impl DCEPass {
-    pub fn apply(&self, graph: &mut DagGraph) -> bool {
+    pub fn apply(graph: &mut DagGraph) -> bool {
         let mut changed = false;
 
         // 1. 标记所有需要保留的节点（从输出反向遍历）

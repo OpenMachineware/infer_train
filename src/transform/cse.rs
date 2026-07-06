@@ -7,7 +7,7 @@ use crate::ir::dag::{DagGraph, Op, AttrValue};
 pub struct CommonSubexpressionEliminationPass;
 
 impl CommonSubexpressionEliminationPass {
-    pub fn apply(&self, graph: &mut DagGraph) -> bool {
+    pub fn apply(graph: &mut DagGraph) -> bool {
         let mut changed = false;
         // let mut seen: HashMap<u64, String> = HashMap::new();  // op_id -> hash
         let mut hash_to_op: HashMap<String, u64> = HashMap::new();  // hash -> op_id
@@ -24,8 +24,8 @@ impl CommonSubexpressionEliminationPass {
             };
 
             // 只处理纯函数算子（没有副作用的）
-            if self.is_pure_operator(&op.op_type) {
-                let hash = self.hash_op(op);
+            if Self::is_pure_operator(&op.op_type) {
+                let hash = Self::hash_op(op);
 
                 if let Some(&existing_id) = hash_to_op.get(&hash) {
                     // 找到重复的算子
@@ -89,7 +89,7 @@ impl CommonSubexpressionEliminationPass {
         changed
     }
 
-    fn is_pure_operator(&self, op_type: &str) -> bool {
+    fn is_pure_operator(op_type: &str) -> bool {
         // 纯函数算子：没有副作用，相同输入产生相同输出
         match op_type {
             // 数学算子
@@ -119,19 +119,19 @@ impl CommonSubexpressionEliminationPass {
         }
     }
 
-    fn hash_op(&self, op: &Op) -> String {
+    fn hash_op(op: &Op) -> String {
         // 计算算子的哈希：op_type + inputs + attrs
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         op.op_type.hash(&mut hasher);
         op.inputs.hash(&mut hasher);
         for (key, value) in &op.attrs {
             key.hash(&mut hasher);
-            self.hash_attr(value, &mut hasher);
+            Self::hash_attr(value, &mut hasher);
         }
         format!("{:016x}", hasher.finish())
     }
 
-    fn hash_attr(&self, attr: &AttrValue, hasher: &mut std::collections::hash_map::DefaultHasher) {
+    fn hash_attr(attr: &AttrValue, hasher: &mut std::collections::hash_map::DefaultHasher) {
         match attr {
             AttrValue::Int(i) => i.hash(hasher),
             AttrValue::Float(f) => {

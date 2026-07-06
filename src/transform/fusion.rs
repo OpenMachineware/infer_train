@@ -6,7 +6,7 @@ use crate::ir::dag::{DagGraph, Op, AttrValue};
 pub struct FusionPass;
 
 impl FusionPass {
-    pub fn apply(&self, graph: &mut DagGraph) -> bool {
+    pub fn apply(graph: &mut DagGraph) -> bool {
         let mut changed = false;
         let mut to_remove = Vec::new();
         let mut new_ops = Vec::new();
@@ -18,14 +18,80 @@ impl FusionPass {
                 continue;
             }
 
-            let op = match graph.ops.get(&op_id) {
-                Some(o) => o,
+            // ✅ 先取出 op 的数据，释放借用
+            let op_data = match graph.ops.get(&op_id) {
+                Some(op) => {
+                    Some((
+                        op_id,
+                        op.op_type.clone(),
+                        op.inputs.clone(),
+                        op.outputs.clone(),
+                        op.attrs.clone(),
+                    ))
+                }
                 None => continue,
             };
 
-            if let Some(fused) = self.try_fuse(graph, op_id, op, &mut to_remove) {
-                new_ops.push(fused);
-                changed = true;
+            let (_, op_type, inputs, outputs, attrs) = match op_data {
+                Some(data) => data,
+                None => continue,
+            };
+
+            // 检查是否是 Conv2d
+            if op_type != "conv2d" {
+                continue;
+            }
+
+            // ✅ 用 inputs 而不是 op.inputs
+            let conv_out = outputs[0];
+            let users = graph.get_users(conv_out);
+            if users.len() != 1 {
+                continue;
+            }
+
+            let next_id = users[0];
+            // ✅ 先获取 next_op 的数据
+            let next_op_data = match graph.ops.get(&next_id) {
+                Some(op) => {
+                    Some((
+                        next_id,
+                        op.op_type.clone(),
+                        op.inputs.clone(),
+                        op.outputs.clone(),
+                        op.attrs.clone(),
+                    ))
+                }
+                None => continue,
+            };
+
+            let (next_id_clone, next_op_type, next_inputs, next_outputs, next_attrs) = match next_op_data {
+                Some(data) => data,
+                None => continue,
+            };
+
+            if next_op_type == "batchnorm2d" {
+                // ✅ 传入克隆的数据
+                if let Some(fused) = Self::fuse_conv_bn(
+                    graph,
+                    op_id,
+                    &op_type, &inputs, &outputs, &attrs,
+                    next_id_clone, &next_op_type, &next_inputs, &next_outputs, &next_attrs,
+                    &mut to_remove
+                ) {
+                    new_ops.push(fused);
+                    changed = true;
+                }
+            } else if next_op_type == "relu" {
+                if let Some(fused) = Self::fuse_conv_relu(
+                    graph,
+                    op_id,
+                    &op_type, &inputs, &outputs, &attrs,
+                    next_id_clone, &next_op_type, &next_inputs, &next_outputs, &next_attrs,
+                    &mut to_remove
+                ) {
+                    new_ops.push(fused);
+                    changed = true;
+                }
             }
         }
 
@@ -42,65 +108,31 @@ impl FusionPass {
         changed
     }
 
-    // ============================================================
-    // 融合模式：Conv2d + BatchNorm + ReLU
-    // ============================================================
-    fn try_fuse(
-        &self,
-        graph: &mut DagGraph,
-        op_id: u64,
-        op: &Op,
-        to_remove: &mut Vec<u64>,
-    ) -> Option<Op> {
-        if op.op_type != "conv2d" {
-            return None;
-        }
-
-        let conv_out = op.outputs[0];
-        let users = graph.get_users(conv_out);
-        if users.len() != 1 {
-            return None;
-        }
-
-        let next_id = users[0];
-        let next_op = match graph.ops.get(&next_id) {
-            Some(o) => o,
-            None => return None,
-        };
-
-        if next_op.op_type == "batchnorm2d" {
-            return self.fuse_conv_bn(graph, op_id, op, next_id, next_op, to_remove);
-        }
-
-        if next_op.op_type == "relu" {
-            return self.fuse_conv_relu(graph, op_id, op, next_id, next_op, to_remove);
-        }
-
-        None
-    }
-
-    // ============================================================
-    // Conv2d + BatchNorm 融合
-    // ============================================================
     fn fuse_conv_bn(
-        &self,
         graph: &mut DagGraph,
         conv_id: u64,
-        conv: &Op,
+        conv_type: &str,
+        conv_inputs: &[u64],
+        conv_outputs: &[u64],
+        conv_attrs: &HashMap<String, AttrValue>,
         bn_id: u64,
-        bn: &Op,
+        bn_type: &str,
+        bn_inputs: &[u64],
+        bn_outputs: &[u64],
+        bn_attrs: &HashMap<String, AttrValue>,
         to_remove: &mut Vec<u64>,
     ) -> Option<Op> {
-        let bn_out = bn.outputs[0];
+        let bn_out = bn_outputs[0];
         let users = graph.get_users(bn_out);
         let has_relu = users.len() == 1 &&
             graph.ops.get(&users[0]).map_or(false, |o| o.op_type == "relu");
 
-        if bn.inputs.len() < 5 {
+        if bn_inputs.len() < 5 {
             return None;
         }
 
-        let eps = bn.attrs.get("eps")
+        // ✅ 修复未使用变量警告
+        let _eps = bn_attrs.get("eps")
             .and_then(|v| match v { AttrValue::Float(f) => Some(*f), _ => None })
             .unwrap_or(1e-5);
 
@@ -110,61 +142,55 @@ impl FusionPass {
         let fused_op = if has_relu {
             let relu_id = users[0];
             to_remove.push(relu_id);
-            self.create_fused_op(
-                graph,
+            Self::create_fused_op(
                 "fused_conv_bn_relu",
-                conv.inputs.clone(),
-                vec![bn.outputs[0]],
-                conv.attrs.clone(),
-                bn.attrs.clone(),
+                conv_inputs.to_vec(),
+                vec![bn_outputs[0]],
+                conv_attrs.clone(),
+                bn_attrs.clone(),
             )
         } else {
-            self.create_fused_op(
-                graph,
+            Self::create_fused_op(
                 "fused_conv_bn",
-                conv.inputs.clone(),
-                vec![bn.outputs[0]],
-                conv.attrs.clone(),
-                bn.attrs.clone(),
+                conv_inputs.to_vec(),
+                vec![bn_outputs[0]],
+                conv_attrs.clone(),
+                bn_attrs.clone(),
             )
         };
 
         Some(fused_op)
     }
 
-    // ============================================================
-    // Conv2d + ReLU 融合
-    // ============================================================
     fn fuse_conv_relu(
-        &self,
-        graph: &mut DagGraph,
+        _graph: &mut DagGraph,
         conv_id: u64,
-        conv: &Op,
+        conv_type: &str,
+        conv_inputs: &[u64],
+        conv_outputs: &[u64],
+        conv_attrs: &HashMap<String, AttrValue>,
         relu_id: u64,
-        relu: &Op,
+        _relu_type: &str,
+        _relu_inputs: &[u64],
+        relu_outputs: &[u64],
+        relu_attrs: &HashMap<String, AttrValue>,
         to_remove: &mut Vec<u64>,
     ) -> Option<Op> {
         to_remove.push(conv_id);
         to_remove.push(relu_id);
 
-        let fused_op = self.create_fused_op(
-            graph,
+        let fused_op = Self::create_fused_op(
             "fused_conv_relu",
-            conv.inputs.clone(),
-            vec![relu.outputs[0]],
-            conv.attrs.clone(),
-            relu.attrs.clone(),
+            conv_inputs.to_vec(),
+            vec![relu_outputs[0]],
+            conv_attrs.clone(),
+            relu_attrs.clone(),
         );
 
         Some(fused_op)
     }
 
-    // ============================================================
-    // 工具函数
-    // ============================================================
     fn create_fused_op(
-        &self,
-        graph: &mut DagGraph,
         op_type: &str,
         inputs: Vec<u64>,
         outputs: Vec<u64>,
@@ -175,10 +201,9 @@ impl FusionPass {
             attrs1.insert(k, v);
         }
 
-        // 让 graph.insert_op 自动分配ID
         Op {
-            id: 0, // 临时值，insert_op会重新分配
-            name: String::new(), // 临时值，insert_op会设置
+            id: 0,
+            name: String::new(),
             op_type: op_type.to_string(),
             inputs,
             outputs,

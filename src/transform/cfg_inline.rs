@@ -28,38 +28,49 @@ impl CfgInlinePass {
     }
 
     fn inline_call(cfg: &mut CfgGraph, call_op_id: u64) -> bool {
-        // 1. 找到调用算子所在的块
-        let (block_id, call_op) = cfg.blocks.iter_mut()
+        // 使用 match 或 if let 替代 ? 操作符
+        let (block_id, call_op) = match cfg.blocks.iter_mut()
             .find_map(|(id, block)| {
                 block.ops.iter()
                     .find(|op| op.id == call_op_id)
                     .map(|op| (*id, op.clone()))
-            })?;
+            }) {
+            Some(found) => found,
+            None => return false,
+        };
 
-        // 2. 获取被调用的函数名（从 attrs 中）
-        let func_name = call_op.attrs.get("function_name")
-            .and_then(|v| match v {
-                crate::ir::dag::AttrValue::String(s) => Some(s.clone()),
-                _ => None,
-            })?;
+        // 获取被调用的函数名
+        let func_name = match call_op.attrs.get("function_name") {
+            Some(crate::ir::dag::AttrValue::String(s)) => s.clone(),
+            _ => return false,
+        };
 
-        // 3. 查找被调用的函数（简化：从 metadata 中查找）
-        // TODO: 实现函数查找机制
-        // 这里假设函数已经作为独立 CFG 存储
-        let func_cfg = Self::find_function(cfg, &func_name)?;
+        // 查找被调用的函数
+        let func_cfg = match Self::find_function(cfg, &func_name) {
+            Some(cfg) => cfg,
+            None => return false,
+        };
 
-        // 4. 内联函数体
-        let block = cfg.blocks.get_mut(&block_id)?;
-        let pos = block.ops.iter().position(|op| op.id == call_op_id)?;
+        // 获取 block
+        let block = match cfg.blocks.get_mut(&block_id) {
+            Some(b) => b,
+            None => return false,
+        };
 
-        // 替换调用为函数体
+        // 找到 call_op 的位置
+        let pos = match block.ops.iter().position(|op| op.id == call_op_id) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        // 内联函数体
         let mut inline_ops = func_cfg.blocks.values()
             .flat_map(|b| b.ops.clone())
             .collect::<Vec<CfgOp>>();
 
         // 重映射 Value ID
         let mut value_map = HashMap::new();
-        for (i, op) in inline_ops.iter_mut().enumerate() {
+        for op in &mut inline_ops {
             op.id = cfg.next_id;
             cfg.next_id += 1;
 
@@ -79,7 +90,7 @@ impl CfgInlinePass {
             }
         }
 
-        // 5. 替换原始 call_op
+        // 替换原始 call_op
         block.ops.splice(pos..pos+1, inline_ops);
 
         true
@@ -88,6 +99,7 @@ impl CfgInlinePass {
     fn find_function(cfg: &CfgGraph, name: &str) -> Option<CfgGraph> {
         // TODO: 从函数注册表中查找
         // 这里返回 None，需要实现函数存储
+        // 可以添加一个 HashMap 存储所有函数
         None
     }
 }
@@ -96,6 +108,7 @@ impl CfgInlinePass {
 mod tests {
     use super::*;
     use crate::ir::cfg::CfgGraph;
+    use crate::ir::dag::AttrValue;
 
     #[test]
     fn test_inline_detection() {
@@ -103,10 +116,9 @@ mod tests {
         let block = cfg.add_block("entry");
         cfg.set_entry(block);
 
-        // 添加 call 算子
         let mut attrs = HashMap::new();
         attrs.insert("function_name".to_string(),
-                     crate::ir::dag::AttrValue::String("matmul".to_string()));
+                     AttrValue::String("matmul".to_string()));
 
         let op = CfgOp {
             id: 0,

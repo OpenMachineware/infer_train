@@ -13,4 +13,4 @@ pub mod parallel;
 
 pub use executor::{Executor, PyExecutor};
 pub use memory_reuse::MemoryPool;
-pub use parallel::ParallelExecutor;
+pub use parallel::{ParallelExecutor, dispatch_op};

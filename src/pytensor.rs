@@ -40,6 +40,7 @@ fn bf16_to_f32(x: u16) -> f32 {
 // Python Tensor 类
 // ============================================================
 #[pyclass]
+#[derive(Clone)]
 pub struct PyTensor {
     pub inner: Tensor,
 }
