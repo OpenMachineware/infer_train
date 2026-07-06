@@ -93,7 +93,10 @@ impl PyTensor {
     // 基础属性
     // ============================================================
     fn data(&self) -> Vec<f32> {
-        match self.inner.dtype() {
+        if self.inner.as_ptr().is_null() {
+            return Vec::new();
+        }
+        let result = match self.inner.dtype() {
             crate::ffi::it_dtype_t::IT_DTYPE_F32 => self.inner.data_as_f32().to_vec(),
             crate::ffi::it_dtype_t::IT_DTYPE_F64 => {
                 self.inner.data_as_f64().iter().map(|&x| x as f32).collect()
@@ -107,7 +110,8 @@ impl PyTensor {
             crate::ffi::it_dtype_t::IT_DTYPE_I8 => {
                 self.inner.data_as_i8().iter().map(|&x| x as f32).collect()
             }
-        }
+        };
+        result
     }
 
     fn shape(&self) -> Vec<usize> {
@@ -126,7 +130,8 @@ impl PyTensor {
 
     fn scale(&self) -> Option<f32> {
         if self.inner.is_quantized() {
-            Some(self.inner.scale())
+            let s = self.inner.scale();
+            Some(s)
         } else {
             None
         }
@@ -134,7 +139,8 @@ impl PyTensor {
 
     fn zero_point(&self) -> Option<f32> {
         if self.inner.is_quantized() {
-            Some(self.inner.zero_point())
+            let z = self.inner.zero_point();
+            Some(z)
         } else {
             None
         }
@@ -301,6 +307,12 @@ impl PyTensor {
     fn quantized_min_all(&self) -> PyTensor {
         PyTensor {
             inner: self.inner.quantized_min_all(),
+        }
+    }
+
+    fn quantized_matmul(&self, other: &PyTensor) -> PyTensor {
+        PyTensor {
+            inner: self.inner.quantized_matmul(&other.inner),
         }
     }
 

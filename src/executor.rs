@@ -5,5 +5,6 @@ pub mod activation;
 pub mod tensor;
 pub mod index;
 pub mod control;
+pub mod quantized;
 
 pub use executor::{Executor, PyExecutor};

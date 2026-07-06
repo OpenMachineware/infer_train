@@ -81,10 +81,12 @@ pub fn dispatch_nn(
                 return Err("embedding requires 2 inputs (indices, weight)".to_string());
             }
             let padding_idx = get_int(attrs, "padding_idx", -1);
-            // 需要从 Tensor 提取索引数据（i64）
-            // 简化：暂时用空数组
-            let indices: Vec<i64> = vec![];
-            let result = inputs[0].embedding(&indices, padding_idx);
+
+            // inputs[0] 是索引张量，inputs[1] 是权重张量
+            let indices_f32 = inputs[0].data_as_f32();
+            let indices: Vec<i64> = indices_f32.iter().map(|&x| x as i64).collect();
+
+            let result = inputs[1].embedding(&indices, padding_idx);
             Ok(vec![result])
         }
         _ => Err(format!("Unknown nn op: {}", op_type)),

@@ -209,11 +209,6 @@ pub fn trace_from_torch(
     // 3. 获取图
     let graph = frozen.getattr("graph")?;
     let graph_str = graph.call_method("__str__", (), None)?.extract::<String>()?;
-    // println!("Graph str:\n{}", graph_str);
-
-    // let traced = jit.call_method("trace", (model, example_input), None)?;
-    // let graph = traced.getattr("graph")?;
-    // let graph_str = graph.call_method("__str__", (), None)?.extract::<String>()?;
 
     let mut ir_graph = DagGraph::new("traced_model");
     let mut value_map: HashMap<String, u64> = HashMap::new();

@@ -14,6 +14,7 @@ use super::activation;
 use super::tensor;
 use super::index;
 use super::control;
+use super::quantized;
 
 // ============================================================
 // 真正的执行器
@@ -135,7 +136,10 @@ impl Executor {
     }
 
     fn dispatch_op(&self, op_type: &str, inputs: &[Tensor], attrs: &HashMap<String, crate::ir::dag::AttrValue>) -> Result<Vec<Tensor>, String> {
-        // 按类别分派到子模块
+        // 按类别分派到子模块 先检查是否是量化算子
+        if op_type.starts_with("quantized_") {
+            return quantized::dispatch_quantized(op_type, inputs, attrs);
+        }
         if let Ok(result) = math::dispatch_math(op_type, inputs, attrs) {
             return Ok(result);
         }

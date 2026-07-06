@@ -14,10 +14,18 @@ pub fn dispatch_control(
             if inputs.len() < 3 {
                 return Err("where requires 3 inputs (condition, true_val, false_val)".to_string());
             }
-            // 需要从 condition Tensor 提取数据
-            // 当前 condition 是 Tensor，需要转为 Vec<u8>
-            // TODO: 实现条件提取
-            Err(format!("where not fully implemented yet"))
+
+            // 从 inputs[0] 提取条件数据
+            let condition: Vec<u8> = if inputs[0].is_quantized() {
+                inputs[0].data_as_i8().iter().map(|&x| if x != 0 { 1 } else { 0 }).collect()
+            } else {
+                inputs[0].data_as_f32().iter().map(|&x| if x != 0.0 { 1 } else { 0 }).collect()
+            };
+            let condition_shape = inputs[0].shape();
+
+            // 关联函数调用
+            let result = Tensor::where_(&condition, &condition_shape, &inputs[1], &inputs[2]);
+            Ok(vec![result])
         }
         "sort" => {
             if inputs.is_empty() {
@@ -29,9 +37,10 @@ pub fn dispatch_control(
             let ascending = attrs.get("ascending")
                 .and_then(|v| match v { AttrValue::Bool(b) => Some(*b), _ => None })
                 .unwrap_or(true);
-            let (values, indices) = inputs[0].sort(dim, ascending);
-            // TODO: indices -> Tensor
-            Ok(vec![values])  // 暂时只返回值
+
+            let (values_tensor, indices_tensor) = inputs[0].sort(dim, ascending);
+
+            Ok(vec![values_tensor, indices_tensor])
         }
         _ => Err(format!("Unknown control op: {}", op_type)),
     }

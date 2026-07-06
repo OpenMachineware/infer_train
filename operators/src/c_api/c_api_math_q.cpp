@@ -8,9 +8,15 @@ using namespace infer_train;
 // ============================================================
 #define DISPATCH_QUANTIZED_BINARY(op) \
     if (a->dtype != IT_DTYPE_I8 || b->dtype != IT_DTYPE_I8) return nullptr; \
+    /* 检查形状是否匹配 */ \
+    if (a->ndim != b->ndim) return nullptr; \
+    for (size_t i = 0; i < a->ndim; ++i) { \
+        if (a->shape[i] != b->shape[i]) return nullptr; \
+    } \
     auto ta = to_cpp_tensor_with_params<I8>(a); \
     auto tb = to_cpp_tensor_with_params<I8>(b); \
     auto result = op(ta, tb); \
+    if (result.size() == 0) return nullptr; \
     return from_cpp_tensor(result, IT_DTYPE_I8);
 
 #define DISPATCH_QUANTIZED_UNARY(op) \

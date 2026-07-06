@@ -10,11 +10,12 @@ Tensor<T> quantized_relu(const Tensor<T>& input) {
                   "quantized_relu only works with quantized types");
 
     Tensor<F32> fp32_input = dequantize(input);
-    Tensor<F32> result_fp32 = relu<F32>(fp32_input);
+    Tensor<F32> fp32_output = relu<F32>(fp32_input);
 
     float scale, zero_point;
-    compute_scale_zero_point(result_fp32, scale, zero_point);
-    return quantize<T>(result_fp32, scale, zero_point);
+    compute_scale_zero_point(fp32_output, scale, zero_point);
+    auto result = quantize<T>(fp32_output, scale, zero_point);
+    return result;
 }
 
 template<typename T>

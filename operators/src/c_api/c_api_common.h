@@ -44,6 +44,9 @@ Tensor<T> to_cpp_tensor_with_params(const it_tensor* ct) {
 
 template<typename T>
 it_tensor* from_cpp_tensor(const Tensor<T>& t, it_dtype_t dtype) {
+    if (t.size() == 0) {
+        return nullptr;
+    }
     it_tensor* ct = (it_tensor*)malloc(sizeof(it_tensor));
     ct->ndim = t.shape.size();
     ct->shape = (size_t*)malloc(ct->ndim * sizeof(size_t));

@@ -1623,8 +1623,10 @@ impl Tensor {
         Tensor { ptr }
     }
 
+    // TODO: 其他算子也都加上assert
     pub fn quantized_relu(&self) -> Tensor {
         let ptr = unsafe { it_quantized_relu(self.ptr) };
+        assert!(!ptr.is_null(), "quantized_relu returned null pointer");
         Tensor { ptr }
     }
 
@@ -1911,6 +1913,7 @@ impl Drop for Tensor {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             unsafe { it_tensor_free(self.ptr) };
+            self.ptr = std::ptr::null_mut();
         }
     }
 }
