@@ -1,5 +1,3 @@
-// src/ir/serialize.rs
-
 use std::fs;
 use std::path::Path;
 use serde::{Serialize, Deserialize};
@@ -47,10 +45,6 @@ impl PyModelFile {
         model.inner.export(path)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
     }
-
-    // pub fn graph(&self) -> DagGraph {
-    //     self.inner.graph.clone()
-    // }
 
     pub fn graph_string(&self) -> String {
         format!("{:#?}", self.inner.graph)

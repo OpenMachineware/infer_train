@@ -1,6 +1,7 @@
 pub mod ffi;
 pub mod pytensor;
 pub mod ir;
+pub mod executor;
 pub mod transform;
 pub mod frontend;
 
@@ -22,7 +23,7 @@ fn infer_train_torch(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(frontend::jit_trace::trace_with_weights_py, m)?)?;
 
     // 模型加载 + 执行
-    m.add_class::<ir::executor::PyExecutor>()?;
+    m.add_class::<executor::PyExecutor>()?;
     m.add_class::<ir::serialize::PyModelFile>()?;
     Ok(())
 }
@@ -48,7 +49,7 @@ pub fn execute_graph(py: Python, model: &Bound<PyAny>, x: &Bound<PyAny>) -> PyRe
     let graph = frontend::jit_trace::trace_from_torch(py, model, x)?;
 
     // 2. 执行图
-    let mut executor = ir::Executor::new(graph);
+    let mut executor = executor::Executor::new(graph);
 
     // 3. 将输入转为 Tensor
     let input_tensor = ffi::Tensor::new_f32(&[], &[1, 10]); // TODO: 从 PyAny 提取数据
