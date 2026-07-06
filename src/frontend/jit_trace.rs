@@ -28,80 +28,19 @@ pub fn trace_from_torch_with_weights(
 ) -> PyResult<DagGraph> {
     let mut graph = trace_from_torch(py, model, example_input)?;
 
-    // 收集 conv2d 节点的权重输入
-    let mut weight_infos: Vec<(u64, &WeightInfo)> = Vec::new();
-
-    for (op_id, op) in &graph.ops {
-        if op.op_type == "conv2d" {
-            // conv2d inputs: [input, weight, bias, stride, padding, dilation, groups]
-            if op.inputs.len() >= 3 {
-                let weight_id = op.inputs[1];
-                let bias_id = op.inputs[2];
-
-                // 从 weights 中按名称匹配
-                for (name, weight) in weights {
-                    if name.contains("weight") {
-                        weight_infos.push((weight_id, weight));
-                    } else if name.contains("bias") {
-                        weight_infos.push((bias_id, weight));
-                    }
-                }
+    for (name, weight) in weights {
+        for (value_id, value) in &mut graph.values {
+            if value.name == *name || value.name == format!("%self.{}", name) {
+                // 更新 shape
+                value.ty.shape = weight.shape.clone();
+                // 存数据
+                graph.constants.insert(*value_id, weight.data.clone());
+                break;
             }
         }
     }
 
-    for (value_id, weight) in weight_infos {
-        graph.constants.insert(value_id, weight.data.clone());
-    }
-
     Ok(graph)
-}
-
-// ============================================================
-// 测试函数：接收 Python 字典（测试通过后删除）
-// ============================================================
-#[pyfunction]
-pub fn test_trace_with_weights(
-    py: Python,
-    model: &Bound<PyAny>,
-    example_input: &Bound<PyAny>,
-    weights: &Bound<PyDict>,
-) -> PyResult<String> {
-    let mut weight_map = HashMap::new();
-
-    for item in weights.iter() {
-        let key = item.0;
-        let value = item.1;
-
-        let name: String = key.extract()?;
-        let value_dict = value.downcast::<PyDict>()?;
-
-        // 先处理 PyResult，再处理 Option
-        let data_bytes: Vec<u8> = value_dict
-            .get_item("data")?
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'data'"))?
-            .extract()?;
-
-        let dtype_str: String = value_dict
-            .get_item("dtype")?
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'dtype'"))?
-            .extract()?;
-
-        let shape_list: Vec<i64> = value_dict
-            .get_item("shape")?
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'shape'"))?
-            .extract()?;
-
-        let dtype = parse_python_dtype(&dtype_str);
-        weight_map.insert(name, WeightInfo {
-            data: data_bytes,
-            dtype,
-            shape: shape_list,
-        });
-    }
-
-    let graph = trace_from_torch_with_weights(py, model, example_input, &weight_map)?;
-    Ok(format!("{:#?}", graph))
 }
 
 fn parse_python_dtype(dtype: &str) -> DataType {
@@ -148,6 +87,7 @@ fn extract_weights_from_model(
 }
 
 // ============================================================
+// 测试函数（Python 调用）
 // Python 导出的 trace_with_weights
 // ============================================================
 #[pyfunction]
@@ -196,8 +136,6 @@ pub fn trace_with_weights_py(
 // ============================================================
 // 导出模型文件
 // ============================================================
-// src/frontend/jit_trace.rs
-
 #[pyfunction]
 pub fn trace_and_save(
     py: Python,
@@ -206,7 +144,6 @@ pub fn trace_and_save(
     weights: &Bound<PyDict>,
     path: &str,
 ) -> PyResult<()> {
-    // 复制 trace_with_weights_py 中的权重提取逻辑
     let mut weight_map = HashMap::new();
 
     for item in weights.iter() {
@@ -241,7 +178,10 @@ pub fn trace_and_save(
 
     let graph = trace_from_torch_with_weights(py, model, example_input, &weight_map)?;
 
-    // 创建 ModelFile 并保存
+    // 额外存储 shape 信息到 constants
+    // 在 trace_from_torch_with_weights 中已经插入了 data，但没有 shape
+    // 需要把 shape 存到 graph 的某个地方
+    // 暂时先保持现状，后面再优化
     let model_file = ModelFile::new("traced_model", "torch", graph);
     model_file.export(path)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
@@ -364,45 +304,56 @@ pub fn trace_from_torch(
         if let Some((out_name, rest_line)) = parse_output_name(line) {
             let op_type = parse_aten_op(&rest_line);
             if op_type != "unknown" {
-                // println!("conv2d rest_line: {}", rest_line);
                 let inputs = extract_inputs(&rest_line);
-                // println!("conv2d inputs: {:?}", inputs);
                 let input_ids = resolve_inputs(&inputs, &value_map);
 
-                // 创建输出 Value
                 let out_id = create_value(&mut ir_graph, &out_name, DataType::F32, vec![1, 10]);
-                value_map.insert(out_name.clone(), out_id);
 
-                // 提取属性
                 let mut attrs = HashMap::new();
 
                 // ============================================================
-                // 特殊处理：conv2d 从 constant_map 提取属性
+                // conv2d 特殊处理：前 3 个是输入，后 4 个是属性
                 // ============================================================
-                // println!("constant_map keys: {:?}", constant_map.keys().collect::<Vec<_>>());
-                if op_type == "conv2d" && inputs.len() >= 7 {
-                    // 用 trim 处理查找 key
-                    let key_stride = inputs[3].trim();
-                    let key_padding = inputs[4].trim();
-                    let key_dilation = inputs[5].trim();
-                    let key_groups = inputs[6].trim();
+                if op_type == "conv2d" {
+                    let inputs = extract_inputs(&rest_line);
+                    // inputs: ["%x.1", "%self.conv.weight", "%self.conv.bias", "%16", "%17", "%17", "%5"]
 
-                    if let Some(attr) = constant_map.get(key_stride) {
-                        attrs.insert("stride".to_string(), attr.clone());
+                    // 前 3 个是数据输入：输入、权重、bias
+                    let data_inputs: Vec<String> = inputs.iter().take(3).cloned().collect();
+                    let data_input_ids = resolve_inputs(&data_inputs, &value_map);
+
+                    // 后 4 个是属性：stride, padding, dilation, groups
+                    // 从 constant_map 获取值
+                    let stride = constant_map.get(inputs[3].trim())
+                        .cloned()
+                        .unwrap_or(AttrValue::IntList(vec![1, 1]));
+                    let padding = constant_map.get(inputs[4].trim())
+                        .cloned()
+                        .unwrap_or(AttrValue::IntList(vec![0, 0]));
+                    let dilation = constant_map.get(inputs[5].trim())
+                        .cloned()
+                        .unwrap_or(AttrValue::IntList(vec![1, 1]));
+                    let groups = constant_map.get(inputs[6].trim())
+                        .cloned()
+                        .unwrap_or(AttrValue::Int(1));
+
+                    let mut attrs = HashMap::new();
+                    attrs.insert("stride".to_string(), stride);
+                    attrs.insert("padding".to_string(), padding);
+                    attrs.insert("dilation".to_string(), dilation);
+                    attrs.insert("groups".to_string(), groups);
+
+                    let out_id = create_value(&mut ir_graph, &out_name, DataType::F32, vec![1, 16, 16, 16]);
+                    if !data_input_ids.is_empty() {
+                        ir_graph.add_op("conv2d", data_input_ids, vec![out_id], attrs);
                     }
-                    if let Some(attr) = constant_map.get(key_padding) {
-                        attrs.insert("padding".to_string(), attr.clone());
-                    }
-                    if let Some(attr) = constant_map.get(key_dilation) {
-                        attrs.insert("dilation".to_string(), attr.clone());
-                    }
-                    if let Some(attr) = constant_map.get(key_groups) {
-                        attrs.insert("groups".to_string(), attr.clone());
-                    }
+                    last_output = out_name;
+                    continue;  // 跳过后面的通用处理
                 }
 
-                // println!("constant_map: {:?}", constant_map);
-
+                // ============================================================
+                // 通用处理
+                // ============================================================
                 if !input_ids.is_empty() {
                     ir_graph.add_op(op_type, input_ids, vec![out_id], attrs);
                 }

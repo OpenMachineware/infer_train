@@ -13,10 +13,16 @@ fn infer_train_torch(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<pytensor::AdamState>()?;
     m.add_class::<pytensor::AdamWState>()?;
     m.add_function(wrap_pyfunction!(pytensor::sgd_update, m)?)?;
-    m.add_function(wrap_pyfunction!(frontend::jit_trace::test_trace_from_torch, m)?)?;
-    m.add_function(wrap_pyfunction!(frontend::jit_trace::test_trace_with_weights, m)?)?;
-    m.add_function(wrap_pyfunction!(frontend::jit_trace::trace_with_weights_py, m)?)?;
+
+    // JIT Trace 导出
     m.add_function(wrap_pyfunction!(frontend::jit_trace::trace_and_save, m)?)?;
+
+    // 调试工具（开发者使用）
+    m.add_function(wrap_pyfunction!(frontend::jit_trace::test_trace_from_torch, m)?)?;
+    m.add_function(wrap_pyfunction!(frontend::jit_trace::trace_with_weights_py, m)?)?;
+
+    // 模型加载 + 执行
+    m.add_class::<ir::executor::PyExecutor>()?;
     m.add_class::<ir::serialize::PyModelFile>()?;
     Ok(())
 }

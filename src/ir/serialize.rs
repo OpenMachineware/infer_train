@@ -10,7 +10,7 @@ use crate::ir::dag::DagGraph;
 
 #[pyclass]
 pub struct PyModelFile {
-    inner: ModelFile,
+    pub(crate) inner: ModelFile,
 }
 
 #[pymethods]
@@ -47,6 +47,10 @@ impl PyModelFile {
         model.inner.export(path)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
     }
+
+    // pub fn graph(&self) -> DagGraph {
+    //     self.inner.graph.clone()
+    // }
 
     pub fn graph_string(&self) -> String {
         format!("{:#?}", self.inner.graph)

@@ -599,6 +599,20 @@ unsafe impl Send for Tensor {}
 unsafe impl Sync for Tensor {}
 
 impl Tensor {
+    pub fn from_bytes(data: &[u8], shape: &[usize]) -> Self {
+        // 将字节数据转换为 f32 张量
+        let float_data: Vec<f32> = data.chunks(4)
+            .map(|chunk| {
+                if chunk.len() == 4 {
+                    f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        Tensor::new_f32(&float_data, shape)
+    }
+
     // ============================================================
     // 创建
     // ============================================================
@@ -1048,7 +1062,7 @@ impl Tensor {
         dilation: i32,
         groups: i32,
     ) -> Tensor {
-        let bias_ptr = bias.map_or(ptr::null(), |b| b.ptr);
+        let bias_ptr = bias.map_or(std::ptr::null(), |b| b.ptr);
         let ptr = unsafe {
             it_conv2d(
                 self.ptr,
