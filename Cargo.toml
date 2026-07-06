@@ -30,6 +30,8 @@ crate-type = ["cdylib"]
 log = { workspace = true }
 env_logger = { workspace = true }
 pyo3 = { workspace = true }
+bincode = "1.3.3"
+serde = { version = "1.0.228", features = ["derive"] }
 
 [features]
 default = ["torch"]
