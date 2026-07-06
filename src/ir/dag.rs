@@ -1,5 +1,3 @@
-// src/ir/dag.rs
-
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 
@@ -111,6 +109,155 @@ impl DagGraph {
             outputs: Vec::new(),
             next_id: 0,
         }
+    }
+
+    // ============================================================
+    // 新增：分配算子ID
+    // ============================================================
+    pub fn allocate_op_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    // ============================================================
+    // 新增：安全插入算子（自动分配ID）
+    // ============================================================
+    pub fn insert_op(&mut self, mut op: Op) -> u64 {
+        let id = self.allocate_op_id();
+        op.id = id;
+        op.name = format!("{}_{}", op.op_type, id);
+
+        // 更新outputs的producer
+        for &out_id in &op.outputs {
+            if let Some(v) = self.values.get_mut(&out_id) {
+                v.producer = Some(id);
+            }
+        }
+
+        self.ops.insert(id, op);
+        id
+    }
+
+    // ============================================================
+    // 新增：查找Value的使用者
+    // ============================================================
+    pub fn get_users(&self, value_id: u64) -> Vec<u64> {
+        self.ops.iter()
+            .filter(|(_, op)| op.inputs.contains(&value_id))
+            .map(|(&id, _)| id)
+            .collect()
+    }
+
+    // ============================================================
+    // 新增：检查是否是常量0
+    // ============================================================
+    pub fn is_zero_constant(&self, value_id: u64) -> bool {
+        if let Some(data) = self.constants.get(&value_id) {
+            if let Some(val) = self.values.get(&value_id) {
+                match val.ty.dtype {
+                    crate::ir::dag::DataType::F32 => {
+                        let floats: Vec<f32> = data.chunks(4)
+                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect();
+                        return floats.iter().all(|&x| x == 0.0);
+                    }
+                    crate::ir::dag::DataType::I32 => {
+                        let ints: Vec<i32> = data.chunks(4)
+                            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect();
+                        return ints.iter().all(|&x| x == 0);
+                    }
+                    crate::ir::dag::DataType::I8 => {
+                        return data.iter().all(|&x| x == 0);
+                    }
+                    _ => return false,
+                }
+            }
+        }
+        false
+    }
+
+    // ============================================================
+    // 新增：检查是否是常量1
+    // ============================================================
+    pub fn is_one_constant(&self, value_id: u64) -> bool {
+        if let Some(data) = self.constants.get(&value_id) {
+            if let Some(val) = self.values.get(&value_id) {
+                match val.ty.dtype {
+                    crate::ir::dag::DataType::F32 => {
+                        let floats: Vec<f32> = data.chunks(4)
+                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect();
+                        return floats.iter().all(|&x| x == 1.0);
+                    }
+                    crate::ir::dag::DataType::I32 => {
+                        let ints: Vec<i32> = data.chunks(4)
+                            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect();
+                        return ints.iter().all(|&x| x == 1);
+                    }
+                    _ => return false,
+                }
+            }
+        }
+        false
+    }
+
+    // ============================================================
+    // 新增：获取或创建常量0
+    // ============================================================
+    pub fn get_or_create_zero(&mut self, dtype: crate::ir::dag::DataType) -> u64 {
+        // 先查找现有的0常量
+        for (&id, data) in &self.constants {
+            if let Some(val) = self.values.get(&id) {
+                if val.ty.dtype == dtype && self.is_zero_constant(id) {
+                    return id;
+                }
+            }
+        }
+
+        // 创建新的0常量
+        let name = format!("zero_{}", self.next_id);
+        let shape = vec![1];
+        let ty = crate::ir::dag::TensorType { dtype, shape };
+        let id = self.add_value(&name, ty);
+
+        let data = match dtype {
+            crate::ir::dag::DataType::F32 => vec![0u8; 4],
+            crate::ir::dag::DataType::I32 => vec![0u8; 4],
+            crate::ir::dag::DataType::I8 => vec![0u8; 1],
+            _ => vec![0u8; 4], // 默认
+        };
+        self.constants.insert(id, data);
+        id
+    }
+
+    // ============================================================
+    // 新增：获取或创建常量1
+    // ============================================================
+    pub fn get_or_create_one(&mut self, dtype: crate::ir::dag::DataType) -> u64 {
+        for (&id, data) in &self.constants {
+            if let Some(val) = self.values.get(&id) {
+                if val.ty.dtype == dtype && self.is_one_constant(id) {
+                    return id;
+                }
+            }
+        }
+
+        let name = format!("one_{}", self.next_id);
+        let shape = vec![1];
+        let ty = crate::ir::dag::TensorType { dtype, shape };
+        let id = self.add_value(&name, ty);
+
+        let data = match dtype {
+            crate::ir::dag::DataType::F32 => 1.0f32.to_le_bytes().to_vec(),
+            crate::ir::dag::DataType::I32 => 1i32.to_le_bytes().to_vec(),
+            crate::ir::dag::DataType::I8 => vec![1u8; 1],
+            _ => 1.0f32.to_le_bytes().to_vec(),
+        };
+        self.constants.insert(id, data);
+        id
     }
 
     pub fn add_value(&mut self, name: &str, ty: TensorType) -> u64 {

@@ -2,10 +2,10 @@
 
 use std::collections::HashMap;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyBytes, PyList};
+use pyo3::types::{PyDict, PyList};
 
 use crate::ir::dag::{DagGraph, DataType, TensorType, AttrValue};
-use crate::ir::serialize::{ModelFile, ModelHeader, PyModelFile};
+use crate::ir::serialize::{ModelFile};
 
 // ============================================================
 // 权重信息

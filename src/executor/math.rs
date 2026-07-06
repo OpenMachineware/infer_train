@@ -7,7 +7,7 @@ use crate::ir::dag::AttrValue;
 pub fn dispatch_math(
     op_type: &str,
     inputs: &[Tensor],
-    attrs: &HashMap<String, AttrValue>,
+    _attrs: &HashMap<String, AttrValue>,
 ) -> Result<Vec<Tensor>, String> {
     match op_type {
         "add" => {

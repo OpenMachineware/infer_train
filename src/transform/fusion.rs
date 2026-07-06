@@ -11,7 +11,6 @@ impl FusionPass {
         let mut to_remove = Vec::new();
         let mut new_ops = Vec::new();
 
-        // 收集所有算子 ID
         let op_ids: Vec<u64> = graph.ops.keys().cloned().collect();
 
         for &op_id in &op_ids {
@@ -24,7 +23,6 @@ impl FusionPass {
                 None => continue,
             };
 
-            // 检查是否可以被融合
             if let Some(fused) = self.try_fuse(graph, op_id, op, &mut to_remove) {
                 new_ops.push(fused);
                 changed = true;
@@ -38,7 +36,7 @@ impl FusionPass {
 
         // 添加新算子
         for op in new_ops {
-            graph.ops.insert(op.id, op);
+            graph.insert_op(op);
         }
 
         changed
@@ -49,19 +47,17 @@ impl FusionPass {
     // ============================================================
     fn try_fuse(
         &self,
-        graph: &DagGraph,
+        graph: &mut DagGraph,
         op_id: u64,
         op: &Op,
         to_remove: &mut Vec<u64>,
     ) -> Option<Op> {
-        // 检查是否是 Conv2d
         if op.op_type != "conv2d" {
             return None;
         }
 
-        // 检查 Conv2d 的输出是否只有一个使用者
         let conv_out = op.outputs[0];
-        let mut users = self.find_users(graph, conv_out);
+        let users = graph.get_users(conv_out);
         if users.len() != 1 {
             return None;
         }
@@ -72,12 +68,10 @@ impl FusionPass {
             None => return None,
         };
 
-        // 检查下一个是否是 BatchNorm
         if next_op.op_type == "batchnorm2d" {
             return self.fuse_conv_bn(graph, op_id, op, next_id, next_op, to_remove);
         }
 
-        // 检查下一个是否是 ReLU
         if next_op.op_type == "relu" {
             return self.fuse_conv_relu(graph, op_id, op, next_id, next_op, to_remove);
         }
@@ -90,47 +84,43 @@ impl FusionPass {
     // ============================================================
     fn fuse_conv_bn(
         &self,
-        graph: &DagGraph,
+        graph: &mut DagGraph,
         conv_id: u64,
         conv: &Op,
         bn_id: u64,
         bn: &Op,
         to_remove: &mut Vec<u64>,
     ) -> Option<Op> {
-        // 检查 BN 的输出是否只有一个使用者
         let bn_out = bn.outputs[0];
-        let users = self.find_users(graph, bn_out);
-        let has_relu = users.len() == 1 && graph.ops.get(&users[0]).map_or(false, |o| o.op_type == "relu");
+        let users = graph.get_users(bn_out);
+        let has_relu = users.len() == 1 &&
+            graph.ops.get(&users[0]).map_or(false, |o| o.op_type == "relu");
 
-        // 收集 BN 的参数
-        // bn 的输入: [x, weight, bias, running_mean, running_var]
         if bn.inputs.len() < 5 {
             return None;
         }
 
-        // 获取 eps
         let eps = bn.attrs.get("eps")
             .and_then(|v| match v { AttrValue::Float(f) => Some(*f), _ => None })
             .unwrap_or(1e-5);
 
-        // 标记删除 Conv 和 BN
         to_remove.push(conv_id);
         to_remove.push(bn_id);
 
         let fused_op = if has_relu {
-            // Conv + BN + ReLU
             let relu_id = users[0];
             to_remove.push(relu_id);
             self.create_fused_op(
+                graph,
                 "fused_conv_bn_relu",
                 conv.inputs.clone(),
-                vec![bn.outputs[0]],  // 输出是 BN 的输出
+                vec![bn.outputs[0]],
                 conv.attrs.clone(),
                 bn.attrs.clone(),
             )
         } else {
-            // Conv + BN
             self.create_fused_op(
+                graph,
                 "fused_conv_bn",
                 conv.inputs.clone(),
                 vec![bn.outputs[0]],
@@ -147,7 +137,7 @@ impl FusionPass {
     // ============================================================
     fn fuse_conv_relu(
         &self,
-        graph: &DagGraph,
+        graph: &mut DagGraph,
         conv_id: u64,
         conv: &Op,
         relu_id: u64,
@@ -158,6 +148,7 @@ impl FusionPass {
         to_remove.push(relu_id);
 
         let fused_op = self.create_fused_op(
+            graph,
             "fused_conv_relu",
             conv.inputs.clone(),
             vec![relu.outputs[0]],
@@ -171,33 +162,23 @@ impl FusionPass {
     // ============================================================
     // 工具函数
     // ============================================================
-    fn find_users(&self, graph: &DagGraph, value_id: u64) -> Vec<u64> {
-        let mut users = Vec::new();
-        for (&id, op) in &graph.ops {
-            if op.inputs.contains(&value_id) {
-                users.push(id);
-            }
-        }
-        users
-    }
-
     fn create_fused_op(
         &self,
+        graph: &mut DagGraph,
         op_type: &str,
         inputs: Vec<u64>,
         outputs: Vec<u64>,
         mut attrs1: HashMap<String, AttrValue>,
         attrs2: HashMap<String, AttrValue>,
     ) -> Op {
-        // 合并属性（后面的覆盖前面的）
         for (k, v) in attrs2 {
             attrs1.insert(k, v);
         }
 
-        let id = 0; // 实际 ID 由 Graph 分配
+        // 让 graph.insert_op 自动分配ID
         Op {
-            id,
-            name: format!("{}_{}", op_type, 0),
+            id: 0, // 临时值，insert_op会重新分配
+            name: String::new(), // 临时值，insert_op会设置
             op_type: op_type.to_string(),
             inputs,
             outputs,

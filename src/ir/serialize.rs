@@ -2,7 +2,6 @@ use std::fs;
 use std::path::Path;
 use serde::{Serialize, Deserialize};
 use pyo3::prelude::*;
-use pyo3::exceptions::PyRuntimeError;
 use crate::ir::dag::DagGraph;
 
 

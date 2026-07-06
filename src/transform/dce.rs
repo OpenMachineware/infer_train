@@ -1,6 +1,6 @@
 // src/transform/dce.rs
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet};
 use crate::ir::dag::DagGraph;
 
 pub struct DCEPass;
