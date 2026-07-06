@@ -1,9 +1,7 @@
 pub mod dag;
+pub mod cfg;
 pub mod serialize;
 
-pub use dag::DagGraph;
-pub use dag::DataType;
-pub use dag::TensorType;
-pub use dag::AttrValue;
-pub use serialize::ModelFile;
-pub use serialize::ModelHeader;
+pub use dag::{DagGraph, DataType, TensorType, AttrValue};
+pub use cfg::CfgGraph;
+pub use serialize::{ModelFile, PyModelFile, PyDagGraph, ModelType};
