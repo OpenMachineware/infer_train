@@ -88,7 +88,7 @@ pub fn dispatch_nn(
             if inputs.is_empty() {
                 return Err("dropout requires 1 input".to_string());
             }
-            let p = get_float(attrs, "p", 0.5);
+            let _p = get_float(attrs, "p", 0.5);
             let training = get_bool(attrs, "training", false);
             // 推理模式下 dropout 是 identity
             if training {

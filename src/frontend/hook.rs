@@ -5,7 +5,7 @@ use pyo3::types::{PyTuple};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::ir::cfg::{CfgGraph, CfgOp, BranchInfo};
+use crate::ir::cfg::{CfgGraph, CfgOp};
 use crate::ir::dag::{AttrValue, DataType, DagGraph};
 use crate::transform::FullOptimizer;
 use crate::ir::serialize::ModelFile;

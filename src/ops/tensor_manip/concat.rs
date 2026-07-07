@@ -47,7 +47,7 @@ pub fn concat<T: DType + Send + Sync>(inputs: &[&Tensor<T>], dim: usize) -> Tens
 pub fn concat_backward<T: DType>(
     grad_output: &Tensor<T>,
     input_shapes: &[&[usize]],
-    dim: usize,
+    _dim: usize,
 ) -> Vec<Tensor<T>> {
     let mut result = Vec::new();
     let mut offset = 0;
@@ -105,7 +105,7 @@ pub fn quantized_concat(inputs: &[&Tensor<i8>], dim: usize) -> Tensor<i8> {
 pub fn quantized_concat_backward(
     grad_output: &Tensor<i8>,
     input_shapes: &[&[usize]],
-    dim: usize,
+    _dim: usize,
 ) -> Vec<Tensor<i8>> {
     let scale = grad_output.scale().unwrap_or(1.0);
     let zero_point = grad_output.zero_point().unwrap_or(0.0);

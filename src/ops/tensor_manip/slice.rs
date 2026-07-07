@@ -59,7 +59,7 @@ pub fn slice_backward<T: DType>(
     let outer = original_shape[..dim].iter().product::<usize>();
     let dim_size = original_shape[dim] as i64;
     let start = if start < 0 { dim_size + start } else { start };
-    let end = if end < 0 { dim_size + end } else { end.min(dim_size) };
+    let _end = if end < 0 { dim_size + end } else { end.min(dim_size) };
     let step = step.abs();
 
     for o in 0..outer {
@@ -130,7 +130,7 @@ pub fn quantized_slice_backward(
     let outer = original_shape[..dim].iter().product::<usize>();
     let dim_size = original_shape[dim] as i64;
     let start = if start < 0 { dim_size + start } else { start };
-    let end = if end < 0 { dim_size + end } else { end.min(dim_size) };
+    let _end = if end < 0 { dim_size + end } else { end.min(dim_size) };
     let step = step.abs();
 
     let scale = grad_output.scale().unwrap_or(1.0);

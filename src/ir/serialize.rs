@@ -1,8 +1,7 @@
 use std::fs::{self, File};
 use std::io::{Read, Write, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::collections::HashMap;
-use std::mem::ManuallyDrop;
 
 use memmap2::{Mmap, MmapOptions};
 use serde::{Serialize, Deserialize};

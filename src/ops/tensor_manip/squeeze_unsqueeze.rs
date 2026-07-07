@@ -201,7 +201,7 @@ impl<T: DType + Send + Sync> Operator<T> for UnsqueezeOp {
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         unsqueeze(inputs[0], dim)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(&self, grad: &Tensor<T>, _inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         unsqueeze_backward(grad, dim)
     }
@@ -236,7 +236,7 @@ impl Operator<i8> for QuantizedUnsqueezeOp {
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         quantized_unsqueeze(inputs[0], dim)
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(&self, grad: &Tensor<i8>, _inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Vec<Tensor<i8>> {
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         quantized_unsqueeze_backward(grad, dim)
     }

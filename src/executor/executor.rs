@@ -4,9 +4,8 @@ use std::collections::HashMap;
 use pyo3::prelude::*;
 use pyo3::types::{PyList};
 
-use crate::ir::dag::{DagGraph, DataType};
+use crate::ir::dag::DagGraph;
 use crate::tensor::Tensor;
-use crate::ir::serialize::ModelFile;
 
 use super::math;
 use super::nn;

@@ -1,7 +1,6 @@
 // src/frontend/gguf.rs
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use gguf_rs_lib::reader::file_reader::open_gguf_file;
 use gguf_rs_lib::reader::GGUFFileReader;
@@ -10,7 +9,6 @@ use gguf_rs_lib::format::types::GGUFTensorType;
 use gguf_rs_lib::format::metadata::Metadata;
 use gguf_rs_lib::format::metadata::MetadataValue;
 use gguf_rs_lib::builder::GGUFBuilder;
-use gguf_rs_lib::tensor::TensorData;
 
 use half::{f16, bf16};
 

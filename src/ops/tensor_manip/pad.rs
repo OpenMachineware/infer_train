@@ -23,7 +23,7 @@ pub fn pad<T: DType + Send + Sync>(
 
     let mut data = vec![T::from_f32(value); new_shape.iter().product()];
     // 简化版：复制数据到中间位置
-    let inner_stride = shape[shape.len() - 1];
+    let _inner_stride = shape[shape.len() - 1];
     let outer = shape[..shape.len() - 1].iter().product::<usize>();
     let input_data = input.data();
 
@@ -79,7 +79,7 @@ pub fn quantized_pad(
     }
 
     let mut data = vec![value as i8; new_shape.iter().product()];
-    let inner_stride = shape[shape.len() - 1];
+    let _inner_stride = shape[shape.len() - 1];
     let outer = shape[..shape.len() - 1].iter().product::<usize>();
     let input_data = input.data();
 

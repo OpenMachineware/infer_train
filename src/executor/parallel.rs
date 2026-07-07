@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use crate::tensor::Tensor;
-use crate::ir::dag::{DagGraph, Op, AttrValue};
+use crate::ir::dag::{DagGraph, Op};
 use super::memory_reuse::MemoryPool;
 
 pub struct ParallelExecutor<'a> {

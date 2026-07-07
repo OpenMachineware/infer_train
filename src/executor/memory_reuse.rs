@@ -203,7 +203,7 @@ impl BytePool {
             self.allocated_size -= size;
 
             // 合并相邻的空闲块
-            let mut new_free = FreeBlock { offset, size };
+            let new_free = FreeBlock { offset, size };
 
             // 收集所有空闲块
             let mut blocks: Vec<FreeBlock> = self.free_blocks.drain().collect();
@@ -377,7 +377,7 @@ impl MemoryPool {
         let id = self.next_tensor_id;
         self.next_tensor_id += 1;
 
-        let (offset, size) = self.pool.allocate(data.len())?;
+        let (_offset, _size) = self.pool.allocate(data.len())?;
         let arena = self.pool.get_data_mut(id)?;
         arena[..data.len()].copy_from_slice(data);
 
@@ -435,7 +435,7 @@ impl MemoryPool {
         }
     }
 
-    pub fn mark_reusable(&mut self, tensor: &Tensor<f32>) {
+    pub fn mark_reusable(&mut self, _tensor: &Tensor<f32>) {
         // 找到对应的 tensor 并释放
         // 注意：这里需要维护 tensor 到 id 的映射
         // 目前简化：不做复杂映射
