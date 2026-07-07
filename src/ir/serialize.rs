@@ -88,11 +88,13 @@ pub struct WeightsBlock {
 // ============================================================
 // ModelFile (新设计)
 // ============================================================
+
 pub struct ModelFile {
     header: ModelHeader,
     graph: DagGraph,
     weights: WeightsBlock,
     training_state: Option<TrainingState>,
+    #[allow(dead_code)]
     mmap: Option<Mmap>,          // 如果 mmap 加载，保持映射存活
 }
 

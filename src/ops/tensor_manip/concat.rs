@@ -1,6 +1,6 @@
 // src/ops/tensor_manip/concat.rs
 
-use rayon::prelude::*;
+// use rayon::prelude::*;
 use crate::dtype::DType;
 use crate::tensor::Tensor;
 use crate::ops::registry::{Operator, OpAttrs};

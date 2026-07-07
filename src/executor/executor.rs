@@ -386,6 +386,7 @@ pub trait OptimizerState: Send + Sync {
 // SGD 优化器状态
 // ============================================================
 pub struct SGDOptimizerState {
+    #[allow(dead_code)]
     momentum: Vec<Tensor<f32>>,
     step: u64,
 }

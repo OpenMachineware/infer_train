@@ -802,6 +802,7 @@ fn build_transformer_dag(
     };
     dag.ops.insert(op_counter, lm_op);
     op_counter += 1;
+    let _ = op_counter;
 
     dag.outputs = vec![output];
     Ok(dag)
