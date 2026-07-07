@@ -1,0 +1,87 @@
+use crate::dtype::DType;
+use crate::tensor::Tensor;
+use crate::ops::registry::{Operator, OpAttrs};
+
+// ============================================================
+// 1. While Loop (条件循环)
+// ============================================================
+
+pub fn while_loop<T: DType + Send + Sync>(
+    condition: &[i8],
+    body: &[T],
+) -> T {
+    // 简化版：将 body 中的值迭代直到 condition 为 false
+    // 实际实现需要配合图执行
+    let mut result = T::from_f32(0.0);
+    for (i, &cond) in condition.iter().enumerate() {
+        if cond != 0 {
+            if i < body.len() {
+                result = body[i];
+            }
+        } else {
+            break;
+        }
+    }
+    result
+}
+
+// ============================================================
+// 2. For Loop
+// ============================================================
+
+pub fn for_loop<T: DType + Send + Sync>(
+    start: i64,
+    end: i64,
+    step: i64,
+    body: &[T],
+) -> T {
+    // 简化版：迭代指定次数
+    let mut result = T::from_f32(0.0);
+    let mut idx = 0;
+    let mut i = start;
+    while i < end {
+        if idx < body.len() {
+            result = body[idx];
+        }
+        idx += 1;
+        i += step;
+    }
+    result
+}
+
+// ============================================================
+// 3. Loop Op (占位)
+// ============================================================
+
+pub struct LoopOp;
+
+impl<T: DType + Send + Sync> Operator<T> for LoopOp {
+    fn name(&self) -> &'static str { "loop" }
+    fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
+        // 简化版：直接返回第一个输入
+        inputs[0].clone()
+    }
+    fn backward(&self, grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+        vec![grad.clone()]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_while_loop() {
+        let condition = vec![1, 1, 1, 0, 1];
+        let body = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let c = while_loop(&condition, &body);
+        assert_eq!(c, 3.0);
+    }
+
+    #[test]
+    fn test_for_loop() {
+        let body = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let c = for_loop(0, 3, 1, &body);
+        assert_eq!(c, 3.0);
+    }
+}

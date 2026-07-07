@@ -1,0 +1,90 @@
+// use rayon::prelude::*;
+use crate::dtype::DType;
+use crate::tensor::Tensor;
+use crate::ops::registry::{Operator, OpAttrs};
+
+// ============================================================
+// 1. 浮点泛型 Forward (RoPE)
+// ============================================================
+
+pub fn rotary_embedding<T: DType + Send + Sync>(
+    x: &Tensor<T>,
+    cos: &Tensor<T>,
+    sin: &Tensor<T>,
+) -> Tensor<T> {
+    let shape = x.shape();
+    assert!(shape.len() >= 2, "rotary_embedding: input must be at least 2D");
+
+    let last_dim = shape[shape.len() - 1];
+    let half_dim = last_dim / 2;
+    let outer: usize = shape[..shape.len() - 1].iter().product();
+
+    let x_data = x.data();
+    let cos_data = cos.data();
+    let sin_data = sin.data();
+
+    let mut out_data = vec![T::from_f32(0.0); x.len()];
+
+    for o in 0..outer {
+        let base = o * last_dim;
+        let cos_val = cos_data[o % cos.len()].to_f32();
+        let sin_val = sin_data[o % sin.len()].to_f32();
+
+        for i in 0..half_dim {
+            let idx1 = base + i;
+            let idx2 = base + i + half_dim;
+            let x1 = x_data[idx1].to_f32();
+            let x2 = x_data[idx2].to_f32();
+
+            // 旋转: [x1, x2] -> [x1*cos - x2*sin, x1*sin + x2*cos]
+            out_data[idx1] = T::from_f32(x1 * cos_val - x2 * sin_val);
+            out_data[idx2] = T::from_f32(x1 * sin_val + x2 * cos_val);
+        }
+    }
+
+    Tensor::new(out_data, shape)
+}
+
+// ============================================================
+// 2. 浮点泛型 Backward (简化版)
+// ============================================================
+
+pub fn rotary_embedding_backward<T: DType>(
+    grad_output: &Tensor<T>,
+    _x: &Tensor<T>,
+    _cos: &Tensor<T>,
+    _sin: &Tensor<T>,
+) -> Vec<Tensor<T>> {
+    vec![grad_output.clone()]
+}
+
+// ============================================================
+// 3. Operator Trait 实现
+// ============================================================
+
+pub struct RotaryOp;
+
+impl<T: DType + Send + Sync> Operator<T> for RotaryOp {
+    fn name(&self) -> &'static str { "rotary_embedding" }
+    fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
+        assert_eq!(inputs.len(), 3);
+        rotary_embedding(inputs[0], inputs[1], inputs[2])
+    }
+    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+        rotary_embedding_backward(grad, inputs[0], inputs[1], inputs[2])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rotary_embedding() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], &[1, 4]);
+        let cos = Tensor::new(vec![0.5, 0.5], &[2]);
+        let sin = Tensor::new(vec![0.8, 0.8], &[2]);
+        let c = rotary_embedding(&x, &cos, &sin);
+        assert_eq!(c.shape(), &[1, 4]);
+    }
+}

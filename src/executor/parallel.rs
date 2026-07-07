@@ -1,15 +1,13 @@
 // src/executor/parallel.rs
 
 use std::collections::HashMap;
-// use std::sync::{Arc, Mutex};
-// use rayon::prelude::*;
-use crate::ffi::Tensor;
+use crate::tensor::Tensor;
 use crate::ir::dag::{DagGraph, Op, AttrValue};
 use super::memory_reuse::MemoryPool;
 
 pub struct ParallelExecutor<'a> {
     graph: &'a DagGraph,
-    values: &'a mut HashMap<u64, Tensor>,
+    values: &'a mut HashMap<u64, Tensor<f32>>,
     memory_pool: &'a mut MemoryPool,
     _num_threads: usize,
 }
@@ -17,7 +15,7 @@ pub struct ParallelExecutor<'a> {
 impl<'a> ParallelExecutor<'a> {
     pub fn new(
         graph: &'a DagGraph,
-        values: &'a mut HashMap<u64, Tensor>,
+        values: &'a mut HashMap<u64, Tensor<f32>>,
         memory_pool: &'a mut MemoryPool,
         num_threads: usize,
     ) -> Self {
@@ -97,7 +95,6 @@ impl<'a> ParallelExecutor<'a> {
         levels
     }
 
-    // TODO: 改并行
     fn execute_level(&mut self, level: &[u64]) -> Result<(), String> {
         for &op_id in level {
             if let Some(op) = self.graph.get_op(op_id) {
@@ -107,10 +104,9 @@ impl<'a> ParallelExecutor<'a> {
         Ok(())
     }
 
-    // 直接执行算子（不需要 Arc/Mutex）
     fn execute_op_direct(
         graph: &DagGraph,
-        values: &mut HashMap<u64, Tensor>,
+        values: &mut HashMap<u64, Tensor<f32>>,
         memory_pool: &mut MemoryPool,
         op: &Op,
     ) -> Result<(), String> {
@@ -123,7 +119,7 @@ impl<'a> ParallelExecutor<'a> {
             }
         }
 
-        let outputs = crate::executor::dispatch_op(&op.op_type, &input_tensors, &op.attrs)?;
+        let outputs = dispatch_op(&op.op_type, &input_tensors, &op.attrs)?;
 
         for (i, &out_id) in op.outputs.iter().enumerate() {
             if i < outputs.len() {
@@ -136,7 +132,7 @@ impl<'a> ParallelExecutor<'a> {
             let users = graph.get_users(in_id);
             if users.len() == 1 && users[0] == op.id {
                 if let Some(tensor) = values.get(&in_id) {
-                    memory_pool.mark_reusable(tensor.clone());
+                    memory_pool.mark_reusable(tensor);
                 }
             }
         }
@@ -145,38 +141,4 @@ impl<'a> ParallelExecutor<'a> {
     }
 }
 
-// ============================================================
-// dispatch_op 函数（导出供并行使用）
-// ============================================================
-
-pub fn dispatch_op(
-    op_type: &str,
-    inputs: &[Tensor],
-    attrs: &HashMap<String, AttrValue>,
-) -> Result<Vec<Tensor>, String> {
-    if op_type.starts_with("quantized_") {
-        return super::quantized::dispatch_quantized(op_type, inputs, attrs);
-    }
-
-    // 按顺序尝试各个 dispatcher
-    if let Ok(result) = super::math::dispatch_math(op_type, inputs, attrs) {
-        return Ok(result);
-    }
-    if let Ok(result) = super::nn::dispatch_nn(op_type, inputs, attrs) {
-        return Ok(result);
-    }
-    if let Ok(result) = super::activation::dispatch_activation(op_type, inputs, attrs) {
-        return Ok(result);
-    }
-    if let Ok(result) = super::tensor::dispatch_tensor(op_type, inputs, attrs) {
-        return Ok(result);
-    }
-    if let Ok(result) = super::index::dispatch_index(op_type, inputs, attrs) {
-        return Ok(result);
-    }
-    if let Ok(result) = super::control::dispatch_control(op_type, inputs, attrs) {
-        return Ok(result);
-    }
-
-    Err(format!("Unknown operator: {}", op_type))
-}
+pub use super::executor::dispatch_op;

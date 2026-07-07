@@ -11,6 +11,10 @@ pub mod quantized;
 pub mod memory_reuse;
 pub mod parallel;
 
-pub use executor::{Executor, PyExecutor};
-pub use memory_reuse::MemoryPool;
-pub use parallel::{ParallelExecutor, dispatch_op};
+pub use executor::{
+    Executor, PyExecutor,
+    Trainer, TrainerConfig, OptimizerType, TrainingState,
+    OptimizerState, SGDOptimizerState, AdamWOptimizerState,
+};
+pub use parallel::dispatch_op;
+pub use memory_reuse::{MemoryPool, MemoryConfig};

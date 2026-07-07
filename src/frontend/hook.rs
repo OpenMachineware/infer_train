@@ -5,9 +5,8 @@ use pyo3::types::{PyTuple};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::ir::cfg::{CfgGraph, CfgOp};
-use crate::ir::dag::{AttrValue, DataType};
-use crate::ir::dag::DagGraph;
+use crate::ir::cfg::{CfgGraph, CfgOp, BranchInfo};
+use crate::ir::dag::{AttrValue, DataType, DagGraph};
 use crate::transform::FullOptimizer;
 use crate::ir::serialize::ModelFile;
 
@@ -18,10 +17,11 @@ use crate::ir::serialize::ModelFile;
 fn extract_value_id(py: Python<'_>, obj: &Py<PyAny>) -> Result<u64, String> {
     let obj = obj.bind(py);
 
-    if let Ok(pytensor) = obj.downcast::<crate::pytensor::PyTensor>() {
-        let tensor = &pytensor.borrow().inner;
-        return Ok(tensor as *const _ as u64);
-    }
+    // ✅ 暂时注释 pytensor 依赖
+    // if let Ok(pytensor) = obj.downcast::<crate::pytensor::PyTensor>() {
+    //     let tensor = &pytensor.borrow().inner;
+    //     return Ok(tensor as *const _ as u64);
+    // }
 
     if let Ok(py_id) = obj.call_method0("__hash__") {
         if let Ok(id_val) = py_id.extract::<u64>() {
@@ -35,22 +35,23 @@ fn extract_value_id(py: Python<'_>, obj: &Py<PyAny>) -> Result<u64, String> {
 fn extract_tensor_info(py: Python<'_>, obj: &Py<PyAny>) -> Result<(DataType, Vec<i64>), String> {
     let obj = obj.bind(py);
 
-    if let Ok(pytensor) = obj.downcast::<crate::pytensor::PyTensor>() {
-        let tensor = &pytensor.borrow().inner;
-        let dtype = tensor.dtype();
-        let shape = tensor.shape();
-
-        let rust_dtype = match dtype {
-            crate::ffi::it_dtype_t::IT_DTYPE_F32 => DataType::F32,
-            crate::ffi::it_dtype_t::IT_DTYPE_F64 => DataType::F64,
-            crate::ffi::it_dtype_t::IT_DTYPE_F16 => DataType::F16,
-            crate::ffi::it_dtype_t::IT_DTYPE_BF16 => DataType::BF16,
-            crate::ffi::it_dtype_t::IT_DTYPE_I8 => DataType::I8,
-        };
-
-        let rust_shape: Vec<i64> = shape.iter().map(|&x| x as i64).collect();
-        return Ok((rust_dtype, rust_shape));
-    }
+    // ✅ 暂时注释 pytensor/ffi 依赖，直接通过 Python 属性获取
+    // if let Ok(pytensor) = obj.downcast::<crate::pytensor::PyTensor>() {
+    //     let tensor = &pytensor.borrow().inner;
+    //     let dtype = tensor.dtype();
+    //     let shape = tensor.shape();
+    //
+    //     let rust_dtype = match dtype {
+    //         crate::ffi::it_dtype_t::IT_DTYPE_F32 => DataType::F32,
+    //         crate::ffi::it_dtype_t::IT_DTYPE_F64 => DataType::F64,
+    //         crate::ffi::it_dtype_t::IT_DTYPE_F16 => DataType::F16,
+    //         crate::ffi::it_dtype_t::IT_DTYPE_BF16 => DataType::BF16,
+    //         crate::ffi::it_dtype_t::IT_DTYPE_I8 => DataType::I8,
+    //     };
+    //
+    //     let rust_shape: Vec<i64> = shape.iter().map(|&x| x as i64).collect();
+    //     return Ok((rust_dtype, rust_shape));
+    // }
 
     if let Ok(shape) = obj.call_method0("shape") {
         if let Ok(shape_list) = shape.extract::<Vec<i64>>() {
@@ -70,6 +71,9 @@ fn extract_tensor_info(py: Python<'_>, obj: &Py<PyAny>) -> Result<(DataType, Vec
                 s if s.contains("float16") || s.contains("f16") => DataType::F16,
                 s if s.contains("bfloat16") || s.contains("bf16") => DataType::BF16,
                 s if s.contains("int8") || s.contains("i8") => DataType::I8,
+                s if s.contains("int32") || s.contains("i32") => DataType::I32,
+                s if s.contains("int64") || s.contains("i64") => DataType::I64,
+                s if s.contains("bool") => DataType::Bool,
                 _ => DataType::F32,
             };
 
@@ -539,12 +543,17 @@ impl PyDagGraph {
         self.inner.values.len()
     }
 
+    pub fn num_constants(&self) -> usize {
+        self.inner.constants.len()
+    }
+
     pub fn __repr__(&self) -> String {
         format!(
-            "DagGraph(name={}, ops={}, values={})",
+            "DagGraph(name={}, ops={}, values={}, constants={})",
             self.inner.name,
             self.inner.ops.len(),
-            self.inner.values.len()
+            self.inner.values.len(),
+            self.inner.constants.len()
         )
     }
 }

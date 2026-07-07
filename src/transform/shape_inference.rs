@@ -1,7 +1,7 @@
 // src/transform/shape_inference.rs
 
 use std::collections::HashMap;
-use crate::ir::dag::{DagGraph, AttrValue};
+use crate::ir::dag::*;
 
 pub struct ShapeInferencePass;
 
