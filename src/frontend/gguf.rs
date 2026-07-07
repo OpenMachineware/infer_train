@@ -26,6 +26,7 @@ const SUPPORTED_ARCHITECTURES: &[&str] = &["llama", "mistral", "qwen", "phi"];
 // 量化类型
 // ============================================================
 
+#[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuantType {
     F32,
