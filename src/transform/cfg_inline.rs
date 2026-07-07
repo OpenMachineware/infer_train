@@ -1,7 +1,7 @@
 // src/transform/cfg_inline.rs
 
 use std::collections::HashMap;
-use crate::ir::cfg::{CfgGraph, CfgBlock, CfgOp};
+use crate::ir::cfg::{CfgGraph, CfgOp};
 
 pub struct CfgInlinePass;
 
@@ -96,11 +96,10 @@ impl CfgInlinePass {
         true
     }
 
-    fn find_function(cfg: &CfgGraph, name: &str) -> Option<CfgGraph> {
+    fn find_function(_cfg: &CfgGraph, name: &str) -> Option<CfgGraph> {
         // TODO: 从函数注册表中查找
-        // 这里返回 None，需要实现函数存储
-        // 可以添加一个 HashMap 存储所有函数
-        None
+        // 添加一个 HashMap 实现函数存储, 存储所有函数
+        todo!("从函数注册表中查找函数: {}", name)
     }
 }
 

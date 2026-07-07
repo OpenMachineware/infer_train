@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyList};
 
 use crate::ir::dag::{DagGraph, DataType};
 use crate::ffi::Tensor;
@@ -368,7 +368,6 @@ impl PyExecutor {
         }
     }
 
-    // ✅ 修复：参数类型改为 Py<PyList>，手动提取
     pub fn execute(&mut self, inputs: Py<PyList>) -> PyResult<Vec<PyTensor>> {
         Python::with_gil(|py| {
             let inputs_list = inputs.bind(py);

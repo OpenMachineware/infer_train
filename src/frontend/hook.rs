@@ -1,12 +1,12 @@
 // src/frontend/hook.rs
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyTuple};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::ir::cfg::{CfgGraph, CfgOp};
-use crate::ir::dag::{AttrValue, DataType, TensorType};
+use crate::ir::dag::{AttrValue, DataType};
 use crate::ir::dag::DagGraph;
 use crate::transform::FullOptimizer;
 use crate::ir::serialize::ModelFile;

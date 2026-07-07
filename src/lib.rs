@@ -135,7 +135,7 @@ pub fn test_cfg_optimization() -> PyResult<String> {
 
     let mut cfg = CfgGraph::new("test_cfg");
     let entry = cfg.add_block("entry");
-    let dead = cfg.add_block("dead");
+    let _dead = cfg.add_block("dead");
     cfg.set_entry(entry);
 
     // 优化

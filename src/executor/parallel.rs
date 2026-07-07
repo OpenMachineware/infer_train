@@ -1,8 +1,8 @@
 // src/executor/parallel.rs
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use rayon::prelude::*;
+// use std::sync::{Arc, Mutex};
+// use rayon::prelude::*;
 use crate::ffi::Tensor;
 use crate::ir::dag::{DagGraph, Op, AttrValue};
 use super::memory_reuse::MemoryPool;
@@ -11,7 +11,7 @@ pub struct ParallelExecutor<'a> {
     graph: &'a DagGraph,
     values: &'a mut HashMap<u64, Tensor>,
     memory_pool: &'a mut MemoryPool,
-    num_threads: usize,
+    _num_threads: usize,
 }
 
 impl<'a> ParallelExecutor<'a> {
@@ -25,7 +25,7 @@ impl<'a> ParallelExecutor<'a> {
             graph,
             values,
             memory_pool,
-            num_threads,
+            _num_threads: num_threads,
         }
     }
 

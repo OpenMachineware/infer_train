@@ -43,7 +43,6 @@ impl ConstantFoldingPass {
                 continue;
             }
 
-            // ✅ 改为 Self::fold_op_tensor
             if let Some((result_data, result_shape, result_dtype)) =
                 Self::fold_op_tensor(&op.op_type, &const_inputs, &const_shapes, &const_dtypes, &op.attrs)
             {
@@ -68,7 +67,6 @@ impl ConstantFoldingPass {
         changed
     }
 
-    // ✅ 改为关联函数（不需要 &self）
     fn fold_op_tensor(
         op_type: &str,
         inputs: &[Vec<u8>],
@@ -92,18 +90,14 @@ impl ConstantFoldingPass {
                     return None;
                 }
 
-                // ✅ 改为 Self::broadcast_shapes
                 let broadcast_shape = Self::broadcast_shapes(&shapes[0], &shapes[1])?;
 
-                // ✅ 改为 Self::decode_tensor
                 let data1 = Self::decode_tensor(&inputs[0], dtype, &shapes[0]);
                 let data2 = Self::decode_tensor(&inputs[1], dtype, &shapes[1]);
 
-                // ✅ 改为 Self::broadcast_data
                 let broadcasted1 = Self::broadcast_data(&data1, &shapes[0], &broadcast_shape, dtype);
                 let broadcasted2 = Self::broadcast_data(&data2, &shapes[1], &broadcast_shape, dtype);
 
-                // ✅ 改为 Self::elementwise_op
                 let result = match op_type {
                     "add" => Self::elementwise_op(&broadcasted1, &broadcasted2, |a, b| a + b, dtype),
                     "sub" => Self::elementwise_op(&broadcasted1, &broadcasted2, |a, b| a - b, dtype),
@@ -117,7 +111,6 @@ impl ConstantFoldingPass {
                     _ => return None,
                 };
 
-                // ✅ 改为 Self::encode_tensor
                 let encoded = Self::encode_tensor(&result, dtype);
                 Some((encoded, broadcast_shape, dtype))
             }
@@ -213,7 +206,7 @@ impl ConstantFoldingPass {
                 let mut result_data = Vec::new();
                 let mut result_shape = shapes[0].clone();
 
-                let mut offset = 0;
+                let _offset = 0;
                 for (i, data) in inputs.iter().enumerate() {
                     let shape = &shapes[i];
                     if i == 0 {

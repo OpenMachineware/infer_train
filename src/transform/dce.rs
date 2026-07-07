@@ -45,7 +45,7 @@ impl DCEPass {
         }
 
         // 3. 删除没有 producer 且不在输入/输出中的 Value
-        let live_values: HashSet<u64> = graph.outputs.iter().cloned().collect();
+        let _live_values: HashSet<u64> = graph.outputs.iter().cloned().collect();
         let dead_values: Vec<u64> = graph.values.keys()
             .filter(|&id| {
                 // 保留输入、输出、以及被 live 算子使用的值

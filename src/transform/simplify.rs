@@ -14,7 +14,7 @@ impl AlgebraicSimplifyPass {
         let op_ids: Vec<u64> = graph.ops.keys().cloned().collect();
 
         for &op_id in &op_ids {
-            // ✅ 先取出 op 的数据，释放借用
+            // 先取出 op 的数据，释放借用
             let op_data = match graph.ops.get(&op_id) {
                 Some(op) => {
                     // 复制需要的数据到局部变量
@@ -71,7 +71,7 @@ impl AlgebraicSimplifyPass {
                             continue;
                         }
                         if in1 == in2 {
-                            // ✅ 先获取 dtype，再调用 mutable 方法
+                            // 先获取 dtype，再调用 mutable 方法
                             let dtype = graph.values.get(&outputs[0])
                                 .map(|v| v.ty.dtype)
                                 .unwrap_or(DataType::F32);

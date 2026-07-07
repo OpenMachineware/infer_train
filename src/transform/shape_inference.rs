@@ -1,7 +1,7 @@
 // src/transform/shape_inference.rs
 
 use std::collections::HashMap;
-use crate::ir::dag::{DagGraph, TensorType, DataType, AttrValue};
+use crate::ir::dag::{DagGraph, AttrValue};
 
 pub struct ShapeInferencePass;
 
@@ -444,7 +444,7 @@ impl ShapeInferencePass {
             "sort" => {
                 Self::check_input_count(input_shapes, 1)?;
                 let _dim = Self::get_int_attr(attrs, "dim", -1) as usize;
-                let mut out_shape = input_shapes[0].clone();
+                let out_shape = input_shapes[0].clone();
                 // Sort 返回 values 和 indices
                 Ok(vec![out_shape.clone(), out_shape])
             }

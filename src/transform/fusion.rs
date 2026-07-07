@@ -18,7 +18,7 @@ impl FusionPass {
                 continue;
             }
 
-            // ✅ 先取出 op 的数据，释放借用
+            // 先取出 op 的数据，释放借用
             let op_data = match graph.ops.get(&op_id) {
                 Some(op) => {
                     Some((
@@ -42,7 +42,7 @@ impl FusionPass {
                 continue;
             }
 
-            // ✅ 用 inputs 而不是 op.inputs
+            // 用 inputs 而不是 op.inputs
             let conv_out = outputs[0];
             let users = graph.get_users(conv_out);
             if users.len() != 1 {
@@ -50,7 +50,7 @@ impl FusionPass {
             }
 
             let next_id = users[0];
-            // ✅ 先获取 next_op 的数据
+            // 先获取 next_op 的数据
             let next_op_data = match graph.ops.get(&next_id) {
                 Some(op) => {
                     Some((
@@ -70,7 +70,7 @@ impl FusionPass {
             };
 
             if next_op_type == "batchnorm2d" {
-                // ✅ 传入克隆的数据
+                // 传入克隆的数据
                 if let Some(fused) = Self::fuse_conv_bn(
                     graph,
                     op_id,
@@ -111,12 +111,12 @@ impl FusionPass {
     fn fuse_conv_bn(
         graph: &mut DagGraph,
         conv_id: u64,
-        conv_type: &str,
+        _conv_type: &str,
         conv_inputs: &[u64],
-        conv_outputs: &[u64],
+        _conv_outputs: &[u64],
         conv_attrs: &HashMap<String, AttrValue>,
         bn_id: u64,
-        bn_type: &str,
+        _bn_type: &str,
         bn_inputs: &[u64],
         bn_outputs: &[u64],
         bn_attrs: &HashMap<String, AttrValue>,
@@ -131,7 +131,7 @@ impl FusionPass {
             return None;
         }
 
-        // ✅ 修复未使用变量警告
+        // 修复未使用变量警告
         let _eps = bn_attrs.get("eps")
             .and_then(|v| match v { AttrValue::Float(f) => Some(*f), _ => None })
             .unwrap_or(1e-5);
@@ -165,9 +165,9 @@ impl FusionPass {
     fn fuse_conv_relu(
         _graph: &mut DagGraph,
         conv_id: u64,
-        conv_type: &str,
+        _conv_type: &str,
         conv_inputs: &[u64],
-        conv_outputs: &[u64],
+        _conv_outputs: &[u64],
         conv_attrs: &HashMap<String, AttrValue>,
         relu_id: u64,
         _relu_type: &str,

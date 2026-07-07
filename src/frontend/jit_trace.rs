@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict};
 
 use crate::ir::dag::{DagGraph, DataType, TensorType, AttrValue};
 use crate::ir::serialize::{ModelFile};
@@ -54,37 +54,43 @@ fn parse_python_dtype(dtype: &str) -> DataType {
     else { DataType::F32 }
 }
 
-// ============================================================
-// 从 Python 模型提取权重
-// ============================================================
-fn extract_weights_from_model(
-    py: Python,
-    model: &Bound<PyAny>,
-) -> PyResult<Vec<(String, Vec<u8>, String, Vec<i64>)>> {
-    let mut result = Vec::new();
-
-    let named_params = model.call_method("named_parameters", (), None)?;
-    let params_list = PyList::new(py, named_params.iter())?;
-
-    for item in params_list.iter() {
-        // 不能用 item?，直接使用 item
-        let name = item.get_item(0)?.extract::<String>()?;
-        let param = item.get_item(1)?;
-
-        let data = param.call_method("detach", (), None)?;
-        let data = data.call_method("numpy", (), None)?;
-        let data = data.call_method("tobytes", (), None)?;
-        let bytes_data: Vec<u8> = data.extract()?;
-
-        let dtype = param.getattr("dtype")?.str()?.to_string();
-        let shape = param.getattr("shape")?;
-        let shape_list: Vec<i64> = shape.extract()?;
-
-        result.push((name, bytes_data, dtype, shape_list));
-    }
-
-    Ok(result)
-}
+// // ============================================================
+// // 从 Python 模型提取权重
+// // ============================================================
+// fn extract_weights_from_model(
+//     py: Python,
+//     model: &Bound<PyAny>,
+// ) -> PyResult<Vec<(String, Vec<u8>, String, Vec<i64>)>> {
+//     let mut result = Vec::new();
+//
+//     let named_params = model.call_method("named_parameters", (), None)?;
+//     let params = named_params.try_iter()?;
+//     let params_list = PyList::new(
+//         py,
+//         params
+//             .map(|item| item.map(|obj| obj.into_any().unbind()))
+//             .collect::<Result<Vec<PyObject>, PyErr>>()?
+//     )?;
+//
+//     for item in params_list.iter() {
+//         // 不能用 item?，直接使用 item
+//         let name = item.get_item(0)?.extract::<String>()?;
+//         let param = item.get_item(1)?;
+//
+//         let data = param.call_method("detach", (), None)?;
+//         let data = data.call_method("numpy", (), None)?;
+//         let data = data.call_method("tobytes", (), None)?;
+//         let bytes_data: Vec<u8> = data.extract()?;
+//
+//         let dtype = param.getattr("dtype")?.str()?.to_string();
+//         let shape = param.getattr("shape")?;
+//         let shape_list: Vec<i64> = shape.extract()?;
+//
+//         result.push((name, bytes_data, dtype, shape_list));
+//     }
+//
+//     Ok(result)
+// }
 
 // ============================================================
 // 测试函数（Python 调用）
@@ -193,7 +199,7 @@ pub fn trace_and_save(
 pub fn trace_from_torch(
     py: Python,
     model: &Bound<PyAny>,
-    example_input: &Bound<PyAny>,
+    _example_input: &Bound<PyAny>,
 ) -> PyResult<DagGraph> {
     let torch = PyModule::import(py, "torch")?;
     let jit = torch.getattr("jit")?;
@@ -417,36 +423,36 @@ fn parse_inputs(s: &str) -> Vec<(String, String, Vec<i64>)> {
 // ============================================================
 // 属性提取
 // ============================================================
-fn extract_attrs(s: &str) -> HashMap<String, AttrValue> {
-    let mut attrs = HashMap::new();
-
-    // 从 JIT 节点中提取属性
-    // aten::conv2d(%input, %weight, %bias, %stride, %padding, %dilation, %groups)
-    // 这些参数在 JIT 中是以 %name 形式传递的，需要从上下文中解析
-
-    // 简化：提取常量属性
-    if let Some(start) = s.find('[') {
-        if let Some(end) = s.rfind(']') {
-            let attr_str = &s[start + 1..end];
-            for part in attr_str.split(',') {
-                let part = part.trim();
-                if let Some(eq) = part.find('=') {
-                    let key = part[..eq].trim();
-                    let val = part[eq + 1..].trim();
-                    if let Ok(v) = val.parse::<i64>() {
-                        attrs.insert(key.to_string(), AttrValue::Int(v));
-                    } else if let Ok(v) = val.parse::<f64>() {
-                        attrs.insert(key.to_string(), AttrValue::Float(v));
-                    } else {
-                        attrs.insert(key.to_string(), AttrValue::String(val.to_string()));
-                    }
-                }
-            }
-        }
-    }
-
-    attrs
-}
+// fn extract_attrs(s: &str) -> HashMap<String, AttrValue> {
+//     let mut attrs = HashMap::new();
+//
+//     // 从 JIT 节点中提取属性
+//     // aten::conv2d(%input, %weight, %bias, %stride, %padding, %dilation, %groups)
+//     // 这些参数在 JIT 中是以 %name 形式传递的，需要从上下文中解析
+//
+//     // 简化：提取常量属性
+//     if let Some(start) = s.find('[') {
+//         if let Some(end) = s.rfind(']') {
+//             let attr_str = &s[start + 1..end];
+//             for part in attr_str.split(',') {
+//                 let part = part.trim();
+//                 if let Some(eq) = part.find('=') {
+//                     let key = part[..eq].trim();
+//                     let val = part[eq + 1..].trim();
+//                     if let Ok(v) = val.parse::<i64>() {
+//                         attrs.insert(key.to_string(), AttrValue::Int(v));
+//                     } else if let Ok(v) = val.parse::<f64>() {
+//                         attrs.insert(key.to_string(), AttrValue::Float(v));
+//                     } else {
+//                         attrs.insert(key.to_string(), AttrValue::String(val.to_string()));
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//
+//     attrs
+// }
 
 // ============================================================
 // 值解析
@@ -545,19 +551,19 @@ fn extract_call_method_name(s: &str) -> String {
     "unknown".to_string()
 }
 
-fn extract_dtype_from_line(line: &str) -> String {
-    // 从 "Float(1, 10, strides=[10, 1], requires_grad=0, device=cpu)" 提取 "Float"
-    if let Some(start) = line.find('%') {
-        let after_name = &line[start + 1..];
-        if let Some(colon_pos) = after_name.find(':') {
-            let dtype_part = &after_name[colon_pos + 1..];
-            let dtype_end = dtype_part.find('(').unwrap_or(dtype_part.len());
-            return dtype_part[..dtype_end].trim().to_string();
-        }
-    }
-    // fallback
-    "Float".to_string()
-}
+// fn extract_dtype_from_line(line: &str) -> String {
+//     // 从 "Float(1, 10, strides=[10, 1], requires_grad=0, device=cpu)" 提取 "Float"
+//     if let Some(start) = line.find('%') {
+//         let after_name = &line[start + 1..];
+//         if let Some(colon_pos) = after_name.find(':') {
+//             let dtype_part = &after_name[colon_pos + 1..];
+//             let dtype_end = dtype_part.find('(').unwrap_or(dtype_part.len());
+//             return dtype_part[..dtype_end].trim().to_string();
+//         }
+//     }
+//     // fallback
+//     "Float".to_string()
+// }
 
 fn parse_constant(line: &str) -> Option<(String, AttrValue)> {
     if let Some(name_start) = line.find('%') {

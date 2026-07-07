@@ -33,7 +33,7 @@ impl CfgDCEPass {
         // 3. 删除死算子
         changed |= Self::remove_dead_ops(cfg);
 
-        // 4. ✅ 修复：合并单后继块
+        // 4. 修复：合并单后继块
         changed |= Self::merge_single_successor_blocks(cfg);
 
         changed
@@ -93,7 +93,6 @@ impl CfgDCEPass {
         changed
     }
 
-    // ✅ 修复：重新设计合并逻辑
     fn merge_single_successor_blocks(cfg: &mut CfgGraph) -> bool {
         let mut changed = false;
 
@@ -113,7 +112,7 @@ impl CfgDCEPass {
                 continue;
             }
 
-            // ✅ 先收集需要的数据，避免同时持有引用
+            // 先收集需要的数据，避免同时持有引用
             let (succ_id, predecessors, ops) = {
                 let block = match cfg.blocks.get(&block_id) {
                     Some(b) => b,
@@ -130,7 +129,7 @@ impl CfgDCEPass {
                 continue;
             }
 
-            // ✅ 现在可以安全地修改 cfg.blocks
+            // 现在可以安全地修改 cfg.blocks
             // 更新前驱块的 successor
             for pred in &predecessors {
                 if let Some(pred_block) = cfg.blocks.get_mut(pred) {

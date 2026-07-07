@@ -209,7 +209,7 @@ impl DagGraph {
     // ============================================================
     pub fn get_or_create_zero(&mut self, dtype: crate::ir::dag::DataType) -> u64 {
         // 先查找现有的0常量
-        for (&id, data) in &self.constants {
+        for (&id, _data) in &self.constants {
             if let Some(val) = self.values.get(&id) {
                 if val.ty.dtype == dtype && self.is_zero_constant(id) {
                     return id;
@@ -237,7 +237,7 @@ impl DagGraph {
     // 新增：获取或创建常量1
     // ============================================================
     pub fn get_or_create_one(&mut self, dtype: crate::ir::dag::DataType) -> u64 {
-        for (&id, data) in &self.constants {
+        for (&id, _data) in &self.constants {
             if let Some(val) = self.values.get(&id) {
                 if val.ty.dtype == dtype && self.is_one_constant(id) {
                     return id;

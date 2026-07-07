@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::ir::cfg::CfgGraph;
-use crate::ir::dag::{DagGraph, Op, Value, TensorType, DataType, AttrValue};
+use crate::ir::dag::{DagGraph, Op, TensorType, DataType, AttrValue};
 
 pub struct CfgToDagConverter;
 
@@ -17,8 +17,8 @@ impl CfgToDagConverter {
                 let dag_id = dag.add_value(
                     &format!("input_{}", input_id),
                     TensorType {
-                        dtype: *dtype,           // ✅ Copy
-                        shape: shape.clone(),    // ✅ Clone
+                        dtype: *dtype,
+                        shape: shape.clone(),
                     }
                 );
                 value_map.insert(input_id, dag_id);
@@ -46,8 +46,8 @@ impl CfgToDagConverter {
                     let dag_id = dag.add_value(
                         &format!("output_{}", out_id),
                         TensorType {
-                            dtype: *dtype,       // ✅ Copy
-                            shape: shape.clone(), // ✅ Clone
+                            dtype: *dtype,
+                            shape: shape.clone(),
                         }
                     );
                     output_ids.push(dag_id);
@@ -76,8 +76,8 @@ impl CfgToDagConverter {
                         let dag_id = dag.add_value(
                             &format!("v_{}", in_id),
                             TensorType {
-                                dtype: *dtype,       // ✅ Copy
-                                shape: shape.clone(), // ✅ Clone
+                                dtype: *dtype,
+                                shape: shape.clone(),
                             }
                         );
                         value_map.insert(in_id, dag_id);
@@ -93,7 +93,6 @@ impl CfgToDagConverter {
             for &out_id in &op.outputs {
                 let out_name = format!("{}_{}", op.op_type, out_id);
                 let (dtype, shape) = if let Some(info) = cfg.value_types.get(&out_id) {
-                    // ✅ info.0 是 &DataType，但 DataType 是 Copy，直接复制
                     (info.0.clone(), info.1.clone())
                 } else {
                     (DataType::F32, vec![])
@@ -164,7 +163,7 @@ impl CfgToDagConverter {
                 .ok_or_else(|| format!("False value {} not found", false_id))?;
 
             let dtype = if let Some((dtype, _)) = cfg.value_types.get(&true_id) {
-                *dtype  // ✅ Copy
+                *dtype
             } else {
                 DataType::F32
             };
