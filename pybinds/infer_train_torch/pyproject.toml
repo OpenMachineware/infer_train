@@ -29,4 +29,5 @@ module-name = "infer_train_torch._infer_train_torch"
 [dependency-groups]
 dev = [
     "maturin>=1.14.1",
+    "twine>=6.1.0",
 ]

@@ -1,4 +1,3 @@
-
 # InferTrain 硬件平台接入指南
 
 
@@ -10,8 +9,10 @@
 - Apple GPU (M系列芯片)
 - NVIDIA CUDA GPU
 - AMD ROCm GPU
-- 国产 NPU (华为昇腾、寒武纪、地平线等)
-- 国产 GPU (摩尔线程、景嘉微等)
+- NPU
+- GPU
+- DSP
+- 其他加速硬件
 
 
 ## 2. 架构概述
