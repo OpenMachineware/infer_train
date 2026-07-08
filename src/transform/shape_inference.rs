@@ -90,7 +90,8 @@ impl ShapeInferencePass {
 
                 if s1.len() < 2 || s2.len() < 2 {
                     return Err(format!(
-                        "MatMul requires at least 2D tensors, got {:?} and {:?}",
+                        "MatMul requires at least 2D tensors, \
+                        got {:?} and {:?}",
                         s1, s2
                     ));
                 }
@@ -131,7 +132,8 @@ impl ShapeInferencePass {
 
             // ---------- Conv2d ----------
             "conv2d" => {
-                Self::check_input_count(input_shapes, 2)?; // [x, weight] 或 [x, weight, bias]
+                // [x, weight] 或 [x, weight, bias]
+                Self::check_input_count(input_shapes, 2)?;
                 let x = &input_shapes[0];
                 let w = &input_shapes[1];
 
@@ -268,7 +270,8 @@ impl ShapeInferencePass {
                     let known_elements: i64 =
                         inferred_shape.iter().filter(|&&d| d != 0).product();
                     if known_elements == 0 {
-                        return Err("Cannot infer -1 dimension with zero known dimensions".to_string());
+                        return Err("Cannot infer -1 dimension with zero known \
+                        dimensions".to_string());
                     }
                     if total_elements % known_elements != 0 {
                         return Err(format!(
@@ -654,7 +657,8 @@ impl ShapeInferencePass {
 
         if output <= 0 {
             return Err(format!(
-                "Conv output size <= 0: input={}, kernel={}, padding={}, stride={}",
+                "Conv output size <= 0: input={}, kernel={}, \
+                padding={}, stride={}",
                 input, kernel, padding, stride
             ));
         }

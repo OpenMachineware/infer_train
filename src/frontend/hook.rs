@@ -499,7 +499,16 @@ impl HookTracer {
         )
     }
 
-    #[pyo3(signature = (model, inputs, path, model_name=None, optimizer="adam".to_string(), learning_rate=0.001))]
+    #[pyo3(
+        signature = (
+            model,
+            inputs,
+            path,
+            model_name=None,
+            optimizer="adam".to_string(),
+            learning_rate=0.001
+        )
+    )]
     pub fn trace_and_export_trainable(
         &mut self,
         model: Py<PyAny>,
@@ -520,7 +529,17 @@ impl HookTracer {
         )
     }
 
-    #[pyo3(signature = (model, inputs, path, model_name=None, trainable=false, optimizer="adam".to_string(), learning_rate=0.001))]
+    #[pyo3(
+        signature = (
+            model,
+            inputs,
+            path,
+            model_name=None,
+            trainable=false,
+            optimizer="adam".to_string(),
+            learning_rate=0.001
+        )
+    )]
     pub fn trace_and_export_with_config(
         &mut self,
         model: Py<PyAny>,

@@ -319,7 +319,8 @@ impl FusionPass {
 
         // 合并公式:
         // weight_fused = weight_conv * bn_weight / sqrt(bn_var + eps)
-        // bias_fused = (bias_conv - bn_mean) * bn_weight / sqrt(bn_var + eps) + bn_bias
+        // bias_fused =
+        //     (bias_conv - bn_mean) * bn_weight / sqrt(bn_var + eps) + bn_bias
 
         let out_channels = fused_bias.len();
         let elements_per_channel = conv_weight.len() / out_channels;

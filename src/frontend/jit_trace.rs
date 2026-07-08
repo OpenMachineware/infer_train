@@ -484,7 +484,8 @@ fn parse_inputs(s: &str) -> Vec<(String, String, Vec<i64>)> {
 //     let mut attrs = HashMap::new();
 //
 //     // 从 JIT 节点中提取属性
-//     // aten::conv2d(%input, %weight, %bias, %stride, %padding, %dilation, %groups)
+//     // aten::conv2d(%input, %weight, %bias, %stride,
+//                     %padding, %dilation, %groups)
 //     // 这些参数在 JIT 中是以 %name 形式传递的，需要从上下文中解析
 //
 //     // 简化：提取常量属性
@@ -501,7 +502,8 @@ fn parse_inputs(s: &str) -> Vec<(String, String, Vec<i64>)> {
 //                     } else if let Ok(v) = val.parse::<f64>() {
 //                         attrs.insert(key.to_string(), AttrValue::Float(v));
 //                     } else {
-//                         attrs.insert(key.to_string(), AttrValue::String(val.to_string()));
+//                         attrs.insert(key.to_string(),
+//                                      AttrValue::String(val.to_string()));
 //                     }
 //                 }
 //             }
@@ -650,7 +652,8 @@ fn extract_call_method_name(s: &str) -> String {
 }
 
 // fn extract_dtype_from_line(line: &str) -> String {
-//     // 从 "Float(1, 10, strides=[10, 1], requires_grad=0, device=cpu)" 提取 "Float"
+//     // 从 "Float(1, 10, strides=[10, 1],
+//                  requires_grad=0, device=cpu)" 提取 "Float"
 //     if let Some(start) = line.find('%') {
 //         let after_name = &line[start + 1..];
 //         if let Some(colon_pos) = after_name.find(':') {

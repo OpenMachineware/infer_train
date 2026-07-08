@@ -24,7 +24,15 @@ pub fn trace_model(
 
 /// 从 PyTorch 模型追踪并导出 ITM
 #[pyfunction]
-#[pyo3(signature = (model, example_inputs, path, model_name=None, trainable=None))]
+#[pyo3(
+    signature = (
+        model,
+        example_inputs,
+        path,
+        model_name=None,
+        trainable=None
+    )
+)]
 pub fn trace_and_export(
     _py: Python,
     model: Py<PyAny>,
@@ -54,7 +62,16 @@ pub fn trace_and_export(
 
 /// 从 PyTorch 模型创建可训练模型
 #[pyfunction]
-#[pyo3(signature = (model, example_inputs, path, model_name=None, optimizer=None, learning_rate=None))]
+#[pyo3(
+    signature = (
+        model,
+        example_inputs,
+        path,
+        model_name=None,
+        optimizer=None,
+        learning_rate=None
+    )
+)]
 pub fn trace_trainable(
     _py: Python,
     model: Py<PyAny>,

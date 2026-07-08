@@ -9,8 +9,10 @@ pub struct CommonSubexpressionEliminationPass;
 impl CommonSubexpressionEliminationPass {
     pub fn apply(graph: &mut DagGraph) -> bool {
         let mut changed = false;
-        // let mut seen: HashMap<u64, String> = HashMap::new();  // op_id -> hash
-        let mut hash_to_op: HashMap<String, u64> = HashMap::new(); // hash -> op_id
+        // op_id -> hash
+        // let mut seen: HashMap<u64, String> = HashMap::new();
+        // hash -> op_id
+        let mut hash_to_op: HashMap<String, u64> = HashMap::new();
         let mut to_remove = Vec::new();
         let mut replacements: HashMap<u64, u64> = HashMap::new();
 

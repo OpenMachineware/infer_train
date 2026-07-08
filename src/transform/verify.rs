@@ -41,7 +41,8 @@ impl VerifyPass {
                     }
                 } else {
                     return Err(format!(
-                        "Value {} has no producer and is not input/constant/output",
+                        "Value {} has no producer and is not \
+                         input/constant/output",
                         id
                     ));
                 }

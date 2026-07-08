@@ -612,7 +612,8 @@ impl PyModelFile {
     pub fn __repr__(&self) -> String {
         let guard = self.inner.lock().unwrap();
         format!(
-            "PyModelFile(name={}, framework={}, type={:?}, ops={}, constants={})",
+            "PyModelFile(name={}, framework={}, type={:?}, ops={},\
+             constants={})",
             guard.header().model_name,
             guard.header().framework,
             guard.header().model_type,
