@@ -1,8 +1,8 @@
 // src/transform/simplify.rs
 
-use std::collections::HashMap;
-use crate::ir::dag::{DagGraph, DataType, Op};
 use crate::ir::dag::AttrValue;
+use crate::ir::dag::{DagGraph, DataType, Op};
+use std::collections::HashMap;
 
 pub struct AlgebraicSimplifyPass;
 
@@ -67,7 +67,8 @@ impl AlgebraicSimplifyPass {
                         let real_id = graph.allocate_op_id();
                         let mut inserted_op = new_op.clone();
                         inserted_op.id = real_id;
-                        inserted_op.name = format!("{}_{}", new_op.op_type, real_id);
+                        inserted_op.name =
+                            format!("{}_{}", new_op.op_type, real_id);
                         // 更新 outputs
                         if inserted_op.outputs.is_empty() {
                             inserted_op.outputs.push(graph.next_id);
@@ -138,10 +139,7 @@ impl AlgebraicSimplifyPass {
     // 代数化简
     // ============================================================
 
-    fn simplify_algebraic(
-        graph: &mut DagGraph,
-        op: &Op,
-    ) -> SimplifyResult {
+    fn simplify_algebraic(graph: &mut DagGraph, op: &Op) -> SimplifyResult {
         match op.op_type.as_str() {
             // ---------- ADD ----------
             "add" => {
@@ -150,8 +148,12 @@ impl AlgebraicSimplifyPass {
                     let in2 = op.inputs[1];
 
                     // 1. ADD(x, -x) -> 0
-                    if Self::is_neg_of(graph, in1, in2) || Self::is_neg_of(graph, in2, in1) {
-                        let dtype = graph.values.get(&op.outputs[0])
+                    if Self::is_neg_of(graph, in1, in2)
+                        || Self::is_neg_of(graph, in2, in1)
+                    {
+                        let dtype = graph
+                            .values
+                            .get(&op.outputs[0])
                             .map(|v| v.ty.dtype)
                             .unwrap_or(DataType::F32);
                         let zero_id = graph.get_or_create_zero(dtype);
@@ -201,12 +203,18 @@ impl AlgebraicSimplifyPass {
                     }
 
                     // 4. ADD(x, -y) -> SUB(x, y)  (如果 y 是负常数，转为减法)
-                    if let Some(neg_const_id) = Self::get_neg_constant(graph, in2) {
-                        let sub_op = Self::create_binary_op("sub", in1, neg_const_id);
+                    if let Some(neg_const_id) =
+                        Self::get_neg_constant(graph, in2)
+                    {
+                        let sub_op =
+                            Self::create_binary_op("sub", in1, neg_const_id);
                         return SimplifyResult::NewOps(vec![sub_op]);
                     }
-                    if let Some(neg_const_id) = Self::get_neg_constant(graph, in1) {
-                        let sub_op = Self::create_binary_op("sub", in2, neg_const_id);
+                    if let Some(neg_const_id) =
+                        Self::get_neg_constant(graph, in1)
+                    {
+                        let sub_op =
+                            Self::create_binary_op("sub", in2, neg_const_id);
                         return SimplifyResult::NewOps(vec![sub_op]);
                     }
                 }
@@ -220,7 +228,9 @@ impl AlgebraicSimplifyPass {
 
                     // 1. SUB(x, x) -> 0
                     if in1 == in2 {
-                        let dtype = graph.values.get(&op.outputs[0])
+                        let dtype = graph
+                            .values
+                            .get(&op.outputs[0])
                             .map(|v| v.ty.dtype)
                             .unwrap_or(DataType::F32);
                         let zero_id = graph.get_or_create_zero(dtype);
@@ -247,8 +257,12 @@ impl AlgebraicSimplifyPass {
                     let in2 = op.inputs[1];
 
                     // 1. MUL(x, 0) -> 0
-                    if graph.is_zero_constant(in2) || graph.is_zero_constant(in1) {
-                        let dtype = graph.values.get(&op.outputs[0])
+                    if graph.is_zero_constant(in2)
+                        || graph.is_zero_constant(in1)
+                    {
+                        let dtype = graph
+                            .values
+                            .get(&op.outputs[0])
                             .map(|v| v.ty.dtype)
                             .unwrap_or(DataType::F32);
                         let zero_id = graph.get_or_create_zero(dtype);
@@ -273,7 +287,9 @@ impl AlgebraicSimplifyPass {
 
                     // 1. DIV(0, x) -> 0
                     if graph.is_zero_constant(in1) {
-                        let dtype = graph.values.get(&op.outputs[0])
+                        let dtype = graph
+                            .values
+                            .get(&op.outputs[0])
                             .map(|v| v.ty.dtype)
                             .unwrap_or(DataType::F32);
                         let zero_id = graph.get_or_create_zero(dtype);
@@ -287,7 +303,9 @@ impl AlgebraicSimplifyPass {
 
                     // 3. DIV(x, x) -> 1
                     if in1 == in2 {
-                        let dtype = graph.values.get(&op.outputs[0])
+                        let dtype = graph
+                            .values
+                            .get(&op.outputs[0])
                             .map(|v| v.ty.dtype)
                             .unwrap_or(DataType::F32);
                         let one_id = graph.get_or_create_one(dtype);
@@ -309,7 +327,9 @@ impl AlgebraicSimplifyPass {
 
                     // 2. POW(1, x) -> 1
                     if graph.is_one_constant(in1) {
-                        let dtype = graph.values.get(&op.outputs[0])
+                        let dtype = graph
+                            .values
+                            .get(&op.outputs[0])
                             .map(|v| v.ty.dtype)
                             .unwrap_or(DataType::F32);
                         let one_id = graph.get_or_create_one(dtype);
@@ -318,7 +338,9 @@ impl AlgebraicSimplifyPass {
 
                     // 3. POW(x, 0) -> 1
                     if graph.is_zero_constant(in2) {
-                        let dtype = graph.values.get(&op.outputs[0])
+                        let dtype = graph
+                            .values
+                            .get(&op.outputs[0])
                             .map(|v| v.ty.dtype)
                             .unwrap_or(DataType::F32);
                         let one_id = graph.get_or_create_one(dtype);
@@ -329,8 +351,11 @@ impl AlgebraicSimplifyPass {
 
             // ---------- EXP ----------
             "exp" => {
-                if op.inputs.len() >= 1 && graph.is_zero_constant(op.inputs[0]) {
-                    let dtype = graph.values.get(&op.outputs[0])
+                if op.inputs.len() >= 1 && graph.is_zero_constant(op.inputs[0])
+                {
+                    let dtype = graph
+                        .values
+                        .get(&op.outputs[0])
                         .map(|v| v.ty.dtype)
                         .unwrap_or(DataType::F32);
                     let one_id = graph.get_or_create_one(dtype);
@@ -345,7 +370,9 @@ impl AlgebraicSimplifyPass {
 
                     // 1. LOG(1) -> 0
                     if graph.is_one_constant(in1) {
-                        let dtype = graph.values.get(&op.outputs[0])
+                        let dtype = graph
+                            .values
+                            .get(&op.outputs[0])
                             .map(|v| v.ty.dtype)
                             .unwrap_or(DataType::F32);
                         let zero_id = graph.get_or_create_zero(dtype);
@@ -360,7 +387,9 @@ impl AlgebraicSimplifyPass {
             // ---------- NEG ----------
             "neg" => {
                 if op.inputs.len() >= 1 {
-                    if let Some(producer) = Self::get_producer_op(graph, op.inputs[0]) {
+                    if let Some(producer) =
+                        Self::get_producer_op(graph, op.inputs[0])
+                    {
                         // NEG(NEG(x)) -> x
                         if producer.op_type == "neg" {
                             return SimplifyResult::Replace(producer.inputs[0]);
@@ -371,8 +400,11 @@ impl AlgebraicSimplifyPass {
 
             // ---------- ABS ----------
             "abs" => {
-                if op.inputs.len() >= 1 && graph.is_zero_constant(op.inputs[0]) {
-                    let dtype = graph.values.get(&op.outputs[0])
+                if op.inputs.len() >= 1 && graph.is_zero_constant(op.inputs[0])
+                {
+                    let dtype = graph
+                        .values
+                        .get(&op.outputs[0])
                         .map(|v| v.ty.dtype)
                         .unwrap_or(DataType::F32);
                     let zero_id = graph.get_or_create_zero(dtype);
@@ -387,7 +419,9 @@ impl AlgebraicSimplifyPass {
 
                     // SQRT(0) -> 0
                     if graph.is_zero_constant(in1) {
-                        let dtype = graph.values.get(&op.outputs[0])
+                        let dtype = graph
+                            .values
+                            .get(&op.outputs[0])
                             .map(|v| v.ty.dtype)
                             .unwrap_or(DataType::F32);
                         let zero_id = graph.get_or_create_zero(dtype);
@@ -396,7 +430,9 @@ impl AlgebraicSimplifyPass {
 
                     // SQRT(1) -> 1
                     if graph.is_one_constant(in1) {
-                        let dtype = graph.values.get(&op.outputs[0])
+                        let dtype = graph
+                            .values
+                            .get(&op.outputs[0])
                             .map(|v| v.ty.dtype)
                             .unwrap_or(DataType::F32);
                         let one_id = graph.get_or_create_one(dtype);
@@ -424,11 +460,16 @@ impl AlgebraicSimplifyPass {
             "reshape" => {
                 if op.inputs.len() >= 1 {
                     // 1. 连续 RESHAPE 合并
-                    if let Some(producer) = Self::get_producer_op(graph, op.inputs[0]) {
+                    if let Some(producer) =
+                        Self::get_producer_op(graph, op.inputs[0])
+                    {
                         if producer.op_type == "reshape" {
                             let new_shape = Self::get_reshape_shape(op);
                             if let Some(shape) = new_shape {
-                                let new_op = Self::create_reshape_op(producer.inputs[0], &shape);
+                                let new_op = Self::create_reshape_op(
+                                    producer.inputs[0],
+                                    &shape,
+                                );
                                 return Some((Some(new_op), None));
                             }
                         }
@@ -449,7 +490,9 @@ impl AlgebraicSimplifyPass {
             // ---------- 连续 TRANSPOSE 合并 ----------
             "transpose" => {
                 if op.inputs.len() >= 1 {
-                    if let Some(producer) = Self::get_producer_op(graph, op.inputs[0]) {
+                    if let Some(producer) =
+                        Self::get_producer_op(graph, op.inputs[0])
+                    {
                         if producer.op_type == "transpose" {
                             return Some((None, Some(producer.inputs[0])));
                         }
@@ -474,7 +517,6 @@ impl AlgebraicSimplifyPass {
                 None
             }
 
-
             _ => None,
         }
     }
@@ -483,15 +525,14 @@ impl AlgebraicSimplifyPass {
     // 激活函数化简
     // ============================================================
 
-    fn simplify_activation(
-        graph: &DagGraph,
-        op: &Op,
-    ) -> Option<u64> {
+    fn simplify_activation(graph: &DagGraph, op: &Op) -> Option<u64> {
         match op.op_type.as_str() {
             // ---------- RELU(RELU(x)) -> RELU(x) ----------
             "relu" => {
                 if op.inputs.len() >= 1 {
-                    if let Some(producer) = Self::get_producer_op(graph, op.inputs[0]) {
+                    if let Some(producer) =
+                        Self::get_producer_op(graph, op.inputs[0])
+                    {
                         if producer.op_type == "relu" {
                             return Some(producer.inputs[0]);
                         }
@@ -509,20 +550,32 @@ impl AlgebraicSimplifyPass {
     // 池化化简
     // ============================================================
 
-    fn simplify_pool(
-        _graph: &DagGraph,
-        op: &Op,
-    ) -> Option<u64> {
+    fn simplify_pool(_graph: &DagGraph, op: &Op) -> Option<u64> {
         match op.op_type.as_str() {
             "maxpool2d" | "avgpool2d" => {
-                let kernel_size = op.attrs.get("kernel_size")
-                    .and_then(|v| match v { AttrValue::Int(i) => Some(*i as usize), _ => None })
+                let kernel_size = op
+                    .attrs
+                    .get("kernel_size")
+                    .and_then(|v| match v {
+                        AttrValue::Int(i) => Some(*i as usize),
+                        _ => None,
+                    })
                     .unwrap_or(0);
-                let stride = op.attrs.get("stride")
-                    .and_then(|v| match v { AttrValue::Int(i) => Some(*i as usize), _ => None })
+                let stride = op
+                    .attrs
+                    .get("stride")
+                    .and_then(|v| match v {
+                        AttrValue::Int(i) => Some(*i as usize),
+                        _ => None,
+                    })
                     .unwrap_or(0);
-                let padding = op.attrs.get("padding")
-                    .and_then(|v| match v { AttrValue::Int(i) => Some(*i as usize), _ => None })
+                let padding = op
+                    .attrs
+                    .get("padding")
+                    .and_then(|v| match v {
+                        AttrValue::Int(i) => Some(*i as usize),
+                        _ => None,
+                    })
                     .unwrap_or(0);
 
                 if kernel_size == 1 && stride == 1 && padding == 0 {
@@ -550,7 +603,10 @@ impl AlgebraicSimplifyPass {
         false
     }
 
-    fn get_producer_op<'a>(graph: &'a DagGraph, value_id: u64) -> Option<&'a Op> {
+    fn get_producer_op<'a>(
+        graph: &'a DagGraph,
+        value_id: u64,
+    ) -> Option<&'a Op> {
         if let Some(value) = graph.values.get(&value_id) {
             if let Some(producer_id) = value.producer {
                 return graph.ops.get(&producer_id);
@@ -560,12 +616,11 @@ impl AlgebraicSimplifyPass {
     }
 
     fn get_reshape_shape(op: &Op) -> Option<Vec<i64>> {
-        op.attrs.get("shape")
-            .and_then(|v| match v {
-                AttrValue::Shape(shape) => Some(shape.clone()),
-                AttrValue::IntList(list) => Some(list.clone()),
-                _ => None,
-            })
+        op.attrs.get("shape").and_then(|v| match v {
+            AttrValue::Shape(shape) => Some(shape.clone()),
+            AttrValue::IntList(list) => Some(list.clone()),
+            _ => None,
+        })
     }
 
     fn create_binary_op(op_type: &str, in1: u64, in2: u64) -> Op {
@@ -609,14 +664,19 @@ impl AlgebraicSimplifyPass {
             if let Some(val) = graph.values.get(&value_id) {
                 match val.ty.dtype {
                     DataType::F32 => {
-                        let floats: Vec<f32> = data.chunks(4)
-                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        let floats: Vec<f32> = data
+                            .chunks(4)
+                            .map(|c| {
+                                f32::from_le_bytes([c[0], c[1], c[2], c[3]])
+                            })
                             .collect();
                         let all_neg = floats.iter().all(|&x| x < 0.0);
                         let all_zero = floats.iter().all(|&x| x == 0.0);
                         if all_neg && !all_zero {
-                            let neg_data: Vec<f32> = floats.iter().map(|&x| -x).collect();
-                            let neg_bytes: Vec<u8> = neg_data.iter()
+                            let neg_data: Vec<f32> =
+                                floats.iter().map(|&x| -x).collect();
+                            let neg_bytes: Vec<u8> = neg_data
+                                .iter()
                                 .flat_map(|&v| v.to_le_bytes())
                                 .collect();
                             let ty = val.ty.clone();

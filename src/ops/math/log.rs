@@ -1,18 +1,23 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // 1. 浮点泛型 Forward
 // ============================================================
 
 pub fn log<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
-    let data: Vec<T> = a.data()
+    let data: Vec<T> = a
+        .data()
         .par_iter()
         .map(|&x| {
             let v = x.to_f32();
-            if v > 0.0 { T::from_f32(v.ln()) } else { T::from_f32(0.0) }
+            if v > 0.0 {
+                T::from_f32(v.ln())
+            } else {
+                T::from_f32(0.0)
+            }
         })
         .collect();
 
@@ -48,15 +53,21 @@ pub fn quantized_log(a: &Tensor<i8>) -> Tensor<i8> {
     let scale = a.scale().unwrap_or(1.0);
     let zero = a.zero_point().unwrap_or(0.0);
 
-    let result_fp: Vec<f32> = a.data()
+    let result_fp: Vec<f32> = a
+        .data()
         .iter()
         .map(|&x| {
             let v = (x as f32 - zero) * scale;
-            if v > 0.0 { v.ln() } else { 0.0 }
+            if v > 0.0 {
+                v.ln()
+            } else {
+                0.0
+            }
         })
         .collect();
 
-    let data: Vec<i8> = result_fp.iter()
+    let data: Vec<i8> = result_fp
+        .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
 
@@ -89,12 +100,19 @@ pub fn quantized_log_backward(
 pub struct LogOp;
 
 impl<T: DType + Send + Sync> Operator<T> for LogOp {
-    fn name(&self) -> &'static str { "log" }
+    fn name(&self) -> &'static str {
+        "log"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         log(inputs[0])
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 1);
         log_backward(grad, inputs[0])
     }
@@ -103,16 +121,25 @@ impl<T: DType + Send + Sync> Operator<T> for LogOp {
 pub struct QuantizedLogOp;
 
 impl Operator<i8> for QuantizedLogOp {
-    fn name(&self) -> &'static str { "quantized_log" }
+    fn name(&self) -> &'static str {
+        "quantized_log"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
         quantized_log(inputs[0])
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         assert_eq!(inputs.len(), 1);
         quantized_log_backward(grad, inputs[0])
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

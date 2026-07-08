@@ -1,7 +1,7 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. Zeros
@@ -40,13 +40,20 @@ pub fn full<T: DType + Send + Sync>(shape: &[usize], value: f32) -> Tensor<T> {
 pub struct ZerosOp;
 
 impl<T: DType + Send + Sync> Operator<T> for ZerosOp {
-    fn name(&self) -> &'static str { "zeros" }
+    fn name(&self) -> &'static str {
+        "zeros"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         // 从输入获取形状
         let shape = inputs[0].shape();
         zeros::<T>(shape)
     }
-    fn backward(&self, _grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         vec![]
     }
 }
@@ -54,12 +61,19 @@ impl<T: DType + Send + Sync> Operator<T> for ZerosOp {
 pub struct OnesOp;
 
 impl<T: DType + Send + Sync> Operator<T> for OnesOp {
-    fn name(&self) -> &'static str { "ones" }
+    fn name(&self) -> &'static str {
+        "ones"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         let shape = inputs[0].shape();
         ones::<T>(shape)
     }
-    fn backward(&self, _grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         vec![]
     }
 }
@@ -67,13 +81,20 @@ impl<T: DType + Send + Sync> Operator<T> for OnesOp {
 pub struct FullOp;
 
 impl<T: DType + Send + Sync> Operator<T> for FullOp {
-    fn name(&self) -> &'static str { "full" }
+    fn name(&self) -> &'static str {
+        "full"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         let shape = inputs[0].shape();
         let value = attrs.get_float("value").unwrap_or(0.0);
         full::<T>(shape, value)
     }
-    fn backward(&self, _grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         vec![]
     }
 }

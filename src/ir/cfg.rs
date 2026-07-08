@@ -1,8 +1,8 @@
 // src/ir/cfg.rs
 
-use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 use crate::ir::dag::{AttrValue, DataType};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CfgOp {
@@ -29,10 +29,10 @@ pub struct CfgBlock {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchInfo {
-    pub condition_value: u64,      // 条件值的 ID
-    pub true_branch: u64,          // true 分支的块 ID
-    pub false_branch: u64,         // false 分支的块 ID
-    pub merge_block: u64,          // 合并块 ID
+    pub condition_value: u64, // 条件值的 ID
+    pub true_branch: u64,     // true 分支的块 ID
+    pub false_branch: u64,    // false 分支的块 ID
+    pub merge_block: u64,     // 合并块 ID
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,16 +65,19 @@ impl CfgGraph {
     pub fn add_block(&mut self, name: &str) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.blocks.insert(id, CfgBlock {
+        self.blocks.insert(
             id,
-            name: name.to_string(),
-            ops: Vec::new(),
-            successors: Vec::new(),
-            predecessors: Vec::new(),
-            is_entry: false,
-            is_exit: false,
-            branch_info: None,
-        });
+            CfgBlock {
+                id,
+                name: name.to_string(),
+                ops: Vec::new(),
+                successors: Vec::new(),
+                predecessors: Vec::new(),
+                is_entry: false,
+                is_exit: false,
+                branch_info: None,
+            },
+        );
         id
     }
 
@@ -86,7 +89,9 @@ impl CfgGraph {
     }
 
     pub fn add_op(&mut self, block_id: u64, op: CfgOp) -> Result<(), String> {
-        let block = self.blocks.get_mut(&block_id)
+        let block = self
+            .blocks
+            .get_mut(&block_id)
             .ok_or_else(|| format!("Block {} not found", block_id))?;
         block.ops.push(op);
         Ok(())
@@ -125,7 +130,12 @@ impl CfgGraph {
         Ok(())
     }
 
-    pub fn add_input(&mut self, value_id: u64, dtype: DataType, shape: Vec<i64>) {
+    pub fn add_input(
+        &mut self,
+        value_id: u64,
+        dtype: DataType,
+        shape: Vec<i64>,
+    ) {
         self.inputs.push(value_id);
         self.value_types.insert(value_id, (dtype, shape));
     }

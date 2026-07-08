@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 // use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. Quantize (量化: f32 -> i8)
@@ -12,7 +12,8 @@ pub fn quantize(
     scale: f32,
     zero_point: f32,
 ) -> Tensor<i8> {
-    let data: Vec<i8> = input.data()
+    let data: Vec<i8> = input
+        .data()
         .par_iter()
         .map(|&x| {
             let v = (x / scale) + zero_point;
@@ -31,7 +32,8 @@ pub fn dequantize(input: &Tensor<i8>) -> Tensor<f32> {
     let scale = input.scale().unwrap_or(1.0);
     let zero_point = input.zero_point().unwrap_or(0.0);
 
-    let data: Vec<f32> = input.data()
+    let data: Vec<f32> = input
+        .data()
         .par_iter()
         .map(|&x| (x as f32 - zero_point) * scale)
         .collect();
@@ -43,9 +45,7 @@ pub fn dequantize(input: &Tensor<i8>) -> Tensor<f32> {
 // 3. Quantize Backward (梯度传递: 量化不可导，但可以用直通估计器)
 // ============================================================
 
-pub fn quantize_backward(
-    grad_output: &Tensor<f32>,
-) -> Vec<Tensor<f32>> {
+pub fn quantize_backward(grad_output: &Tensor<f32>) -> Vec<Tensor<f32>> {
     // 直通估计器 (STE): 梯度直接传递
     vec![grad_output.clone()]
 }
@@ -57,7 +57,9 @@ pub fn quantize_backward(
 pub struct QuantizeOp;
 
 impl Operator<f32> for QuantizeOp {
-    fn name(&self) -> &'static str { "quantize" }
+    fn name(&self) -> &'static str {
+        "quantize"
+    }
     fn forward(&self, inputs: &[&Tensor<f32>], attrs: &OpAttrs) -> Tensor<f32> {
         assert_eq!(inputs.len(), 1);
         let scale = attrs.get_float("scale").unwrap_or(1.0);
@@ -66,7 +68,12 @@ impl Operator<f32> for QuantizeOp {
         // 返回 f32 张量 (实际量化后是 i8，但为了兼容性)
         dequantize(&quantized)
     }
-    fn backward(&self, grad: &Tensor<f32>, _inputs: &[&Tensor<f32>], _attrs: &OpAttrs) -> Vec<Tensor<f32>> {
+    fn backward(
+        &self,
+        grad: &Tensor<f32>,
+        _inputs: &[&Tensor<f32>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<f32>> {
         quantize_backward(grad)
     }
 }
@@ -74,13 +81,24 @@ impl Operator<f32> for QuantizeOp {
 pub struct DequantizeOp;
 
 impl Operator<f32> for DequantizeOp {
-    fn name(&self) -> &'static str { "dequantize" }
-    fn forward(&self, inputs: &[&Tensor<f32>], _attrs: &OpAttrs) -> Tensor<f32> {
+    fn name(&self) -> &'static str {
+        "dequantize"
+    }
+    fn forward(
+        &self,
+        inputs: &[&Tensor<f32>],
+        _attrs: &OpAttrs,
+    ) -> Tensor<f32> {
         assert_eq!(inputs.len(), 1);
         // 假设输入是量化后的 f32 表示，实际是 i8
         inputs[0].clone()
     }
-    fn backward(&self, grad: &Tensor<f32>, _inputs: &[&Tensor<f32>], _attrs: &OpAttrs) -> Vec<Tensor<f32>> {
+    fn backward(
+        &self,
+        grad: &Tensor<f32>,
+        _inputs: &[&Tensor<f32>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<f32>> {
         vec![grad.clone()]
     }
 }

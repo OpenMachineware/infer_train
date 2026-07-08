@@ -1,15 +1,15 @@
-use std::fs::{self, File};
-use std::io::{Read, Write, Seek, SeekFrom};
-use std::path::Path;
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::Path;
 
 use memmap2::{Mmap, MmapOptions};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use pyo3::prelude::*;
 
-use crate::ir::dag::DagGraph;
 use crate::ir::cfg::CfgGraph;
+use crate::ir::dag::DagGraph;
 
 // ============================================================
 // 常量
@@ -79,10 +79,10 @@ pub struct TrainingState {
 // ============================================================
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeightsBlock {
-    pub ids: Vec<u64>,           // constant ID 列表
-    pub offsets: Vec<usize>,     // 每个权重在 data 中的偏移
-    pub sizes: Vec<usize>,       // 每个权重大小
-    pub data: Vec<u8>,           // 所有权重连续存储
+    pub ids: Vec<u64>,       // constant ID 列表
+    pub offsets: Vec<usize>, // 每个权重在 data 中的偏移
+    pub sizes: Vec<usize>,   // 每个权重大小
+    pub data: Vec<u8>,       // 所有权重连续存储
 }
 
 // ============================================================
@@ -95,7 +95,7 @@ pub struct ModelFile {
     weights: WeightsBlock,
     training_state: Option<TrainingState>,
     #[allow(dead_code)]
-    mmap: Option<Mmap>,          // 如果 mmap 加载，保持映射存活
+    mmap: Option<Mmap>, // 如果 mmap 加载，保持映射存活
 }
 
 impl ModelFile {
@@ -204,8 +204,9 @@ impl ModelFile {
         let weights_bytes = bincode::serialize(&self.weights)
             .map_err(|e| format!("Failed to serialize weights: {}", e))?;
         let training_bytes = match &self.training_state {
-            Some(s) => bincode::serialize(s)
-                .map_err(|e| format!("Failed to serialize training state: {}", e))?,
+            Some(s) => bincode::serialize(s).map_err(|e| {
+                format!("Failed to serialize training state: {}", e)
+            })?,
             None => Vec::new(),
         };
 
@@ -242,13 +243,13 @@ impl ModelFile {
         file.write_all(&weights_bytes)
             .map_err(|e| format!("Failed to write weights block: {}", e))?;
         if !training_bytes.is_empty() {
-            file.write_all(&training_bytes)
-                .map_err(|e| format!("Failed to write training state: {}", e))?;
+            file.write_all(&training_bytes).map_err(|e| {
+                format!("Failed to write training state: {}", e)
+            })?;
         }
 
         // 5. 同步并重命名
-        file.sync_all()
-            .map_err(|e| format!("Failed to sync file: {}", e))?;
+        file.sync_all().map_err(|e| format!("Failed to sync file: {}", e))?;
         std::fs::rename(temp_path, path)
             .map_err(|e| format!("Failed to rename file: {}", e))?;
 
@@ -267,7 +268,8 @@ impl ModelFile {
         let file = File::open(path)
             .map_err(|e| format!("Failed to open file: {}", e))?;
 
-        let file_size = file.metadata()
+        let file_size = file
+            .metadata()
             .map_err(|e| format!("Failed to get file size: {}", e))?
             .len();
 
@@ -286,7 +288,8 @@ impl ModelFile {
         } else {
             let mut buffer = [0u8; std::mem::size_of::<FileHeader>()];
             let mut reader = std::io::BufReader::new(&file);
-            reader.read_exact(&mut buffer)
+            reader
+                .read_exact(&mut buffer)
                 .map_err(|e| format!("Failed to read header: {}", e))?;
             buffer
         };
@@ -317,33 +320,38 @@ impl ModelFile {
             &mmap,
             reader.as_ref(),
             file_header.header_offset as usize,
-            file_header.graph_offset as usize - file_header.header_offset as usize,
+            file_header.graph_offset as usize
+                - file_header.header_offset as usize,
         )?;
 
         let graph_bytes = Self::read_block_at(
             &mmap,
             reader.as_ref(),
             file_header.graph_offset as usize,
-            file_header.weights_offset as usize - file_header.graph_offset as usize,
+            file_header.weights_offset as usize
+                - file_header.graph_offset as usize,
         )?;
 
         let weights_bytes = Self::read_block_at(
             &mmap,
             reader.as_ref(),
             file_header.weights_offset as usize,
-            file_header.training_state_offset as usize - file_header.weights_offset as usize,
+            file_header.training_state_offset as usize
+                - file_header.weights_offset as usize,
         )?;
 
-        let training_bytes = if file_header.training_state_offset < file_header.file_size {
-            Some(Self::read_block_at(
-                &mmap,
-                reader.as_ref(),
-                file_header.training_state_offset as usize,
-                (file_header.file_size - file_header.training_state_offset) as usize,
-            )?)
-        } else {
-            None
-        };
+        let training_bytes =
+            if file_header.training_state_offset < file_header.file_size {
+                Some(Self::read_block_at(
+                    &mmap,
+                    reader.as_ref(),
+                    file_header.training_state_offset as usize,
+                    (file_header.file_size - file_header.training_state_offset)
+                        as usize,
+                )?)
+            } else {
+                None
+            };
 
         // 4. 反序列化
         let header: ModelHeader = bincode::deserialize(&header_bytes)
@@ -357,8 +365,9 @@ impl ModelFile {
 
         let training_state = if let Some(bytes) = training_bytes {
             if !bytes.is_empty() {
-                Some(bincode::deserialize(&bytes)
-                    .map_err(|e| format!("Failed to deserialize training state: {}", e))?)
+                Some(bincode::deserialize(&bytes).map_err(|e| {
+                    format!("Failed to deserialize training state: {}", e)
+                })?)
             } else {
                 None
             }
@@ -366,13 +375,8 @@ impl ModelFile {
             None
         };
 
-        let mut model = ModelFile {
-            header,
-            graph,
-            weights,
-            training_state,
-            mmap,
-        };
+        let mut model =
+            ModelFile { header, graph, weights, training_state, mmap };
 
         // 5. 恢复权重到 graph
         model.restore_weights();
@@ -395,9 +399,11 @@ impl ModelFile {
         } else if let Some(reader) = reader {
             let mut buffer = vec![0u8; size];
             let mut reader_ref = reader.get_ref();
-            reader_ref.seek(SeekFrom::Start(offset as u64))
+            reader_ref
+                .seek(SeekFrom::Start(offset as u64))
                 .map_err(|e| format!("Failed to seek: {}", e))?;
-            reader_ref.read_exact(&mut buffer)
+            reader_ref
+                .read_exact(&mut buffer)
                 .map_err(|e| format!("Failed to read block: {}", e))?;
             Ok(buffer)
         } else {
@@ -410,11 +416,12 @@ impl ModelFile {
     // ============================================================
 
     pub fn save_training_state(&self, path: &Path) -> Result<(), String> {
-        let state = self.training_state.as_ref()
-            .ok_or("Model is not trainable")?;
+        let state =
+            self.training_state.as_ref().ok_or("Model is not trainable")?;
 
-        let bytes = bincode::serialize(state)
-            .map_err(|e| format!("Failed to serialize training state: {}", e))?;
+        let bytes = bincode::serialize(state).map_err(|e| {
+            format!("Failed to serialize training state: {}", e)
+        })?;
 
         let state_path = path.with_extension("train");
         fs::write(&state_path, bytes)
@@ -427,8 +434,10 @@ impl ModelFile {
         let bytes = fs::read(&state_path)
             .map_err(|e| format!("Failed to read training state: {}", e))?;
 
-        let state: TrainingState = bincode::deserialize(&bytes)
-            .map_err(|e| format!("Failed to deserialize training state: {}", e))?;
+        let state: TrainingState =
+            bincode::deserialize(&bytes).map_err(|e| {
+                format!("Failed to deserialize training state: {}", e)
+            })?;
 
         self.training_state = Some(state);
         Ok(())
@@ -438,12 +447,24 @@ impl ModelFile {
     // 访问器
     // ============================================================
 
-    pub fn header(&self) -> &ModelHeader { &self.header }
-    pub fn graph(&self) -> &DagGraph { &self.graph }
-    pub fn graph_mut(&mut self) -> &mut DagGraph { &mut self.graph }
-    pub fn training_state(&self) -> Option<&TrainingState> { self.training_state.as_ref() }
-    pub fn training_state_mut(&mut self) -> Option<&mut TrainingState> { self.training_state.as_mut() }
-    pub fn is_trainable(&self) -> bool { self.header.model_type == ModelType::Trainable }
+    pub fn header(&self) -> &ModelHeader {
+        &self.header
+    }
+    pub fn graph(&self) -> &DagGraph {
+        &self.graph
+    }
+    pub fn graph_mut(&mut self) -> &mut DagGraph {
+        &mut self.graph
+    }
+    pub fn training_state(&self) -> Option<&TrainingState> {
+        self.training_state.as_ref()
+    }
+    pub fn training_state_mut(&mut self) -> Option<&mut TrainingState> {
+        self.training_state.as_mut()
+    }
+    pub fn is_trainable(&self) -> bool {
+        self.header.model_type == ModelType::Trainable
+    }
 
     pub fn add_metadata(&mut self, key: &str, value: &str) {
         self.header.metadata.insert(key.to_string(), value.to_string());
@@ -463,7 +484,8 @@ impl ModelFile {
         framework: &str,
         trainable: bool,
     ) -> Result<Self, String> {
-        let dag = crate::transform::cfg_to_dag::CfgToDagConverter::convert(cfg)?;
+        let dag =
+            crate::transform::cfg_to_dag::CfgToDagConverter::convert(cfg)?;
         if trainable {
             Ok(Self::new_trainable(name, framework, dag, "adam", 0.001))
         } else {
@@ -487,7 +509,7 @@ impl Clone for ModelFile {
             graph: self.graph.clone(),
             weights: self.weights.clone(),
             training_state: self.training_state.clone(),
-            mmap: None,  // mmap 不克隆，重新加载
+            mmap: None, // mmap 不克隆，重新加载
         }
     }
 }
@@ -507,9 +529,9 @@ impl PyModelFile {
     pub fn new(name: &str, framework: &str) -> Self {
         let graph = DagGraph::new(name);
         PyModelFile {
-            inner: std::sync::Arc::new(std::sync::Mutex::new(
-                ModelFile::new(name, framework, graph)
-            )),
+            inner: std::sync::Arc::new(std::sync::Mutex::new(ModelFile::new(
+                name, framework, graph,
+            ))),
         }
     }
 
@@ -523,21 +545,23 @@ impl PyModelFile {
         let graph = DagGraph::new(name);
         PyModelFile {
             inner: std::sync::Arc::new(std::sync::Mutex::new(
-                ModelFile::new_trainable(name, framework, graph, optimizer, lr)
+                ModelFile::new_trainable(name, framework, graph, optimizer, lr),
             )),
         }
     }
 
     pub fn export(&self, path: &str) -> PyResult<()> {
         let guard = self.inner.lock().unwrap();
-        guard.save(Path::new(path))
+        guard
+            .save(Path::new(path))
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
     }
 
     #[staticmethod]
     pub fn import(path: &str) -> PyResult<Self> {
-        let inner = ModelFile::load(Path::new(path))
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        let inner = ModelFile::load(Path::new(path)).map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e)
+        })?;
         Ok(PyModelFile {
             inner: std::sync::Arc::new(std::sync::Mutex::new(inner)),
         })
@@ -550,13 +574,15 @@ impl PyModelFile {
 
     pub fn save_training_state(&self, path: &str) -> PyResult<()> {
         let guard = self.inner.lock().unwrap();
-        guard.save_training_state(Path::new(path))
+        guard
+            .save_training_state(Path::new(path))
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
     }
 
     pub fn load_training_state(&self, path: &str) -> PyResult<()> {
         let mut guard = self.inner.lock().unwrap();
-        guard.load_training_state(Path::new(path))
+        guard
+            .load_training_state(Path::new(path))
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
     }
 

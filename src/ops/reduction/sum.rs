@@ -1,13 +1,17 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. 浮点泛型 Forward
 // ============================================================
 
-pub fn sum<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize, keepdim: bool) -> Tensor<T> {
+pub fn sum<T: DType + Send + Sync>(
+    a: &Tensor<T>,
+    dim: usize,
+    keepdim: bool,
+) -> Tensor<T> {
     let shape = a.shape();
     assert!(dim < shape.len(), "sum: dim out of range");
 
@@ -98,14 +102,21 @@ pub fn sum_backward<T: DType>(
 pub struct SumOp;
 
 impl<T: DType + Send + Sync> Operator<T> for SumOp {
-    fn name(&self) -> &'static str { "sum" }
+    fn name(&self) -> &'static str {
+        "sum"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         let keepdim = attrs.get_bool("keepdim").unwrap_or(false);
         sum(inputs[0], dim, keepdim)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 1);
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         let keepdim = attrs.get_bool("keepdim").unwrap_or(false);

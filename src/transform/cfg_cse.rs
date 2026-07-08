@@ -1,9 +1,9 @@
 // src/transform/cfg_cse.rs
 
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use crate::ir::cfg::{CfgGraph, CfgOp};
 use crate::ir::dag::AttrValue;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 pub struct CfgCSEPass;
 
@@ -30,10 +30,18 @@ impl CfgCSEPass {
                 if Self::is_pure_operator(&op.op_type) {
                     let hash = Self::hash_op(op);
 
-                    if let Some(&(existing_block_id, existing_op_id)) = hash_to_op.get(&hash) {
-                        if op.outputs.len() == 1 && existing_block_id != block_id {
-                            if let Some(existing_block) = cfg.blocks.get(&existing_block_id) {
-                                if let Some(existing_op) = existing_block.ops.iter()
+                    if let Some(&(existing_block_id, existing_op_id)) =
+                        hash_to_op.get(&hash)
+                    {
+                        if op.outputs.len() == 1
+                            && existing_block_id != block_id
+                        {
+                            if let Some(existing_block) =
+                                cfg.blocks.get(&existing_block_id)
+                            {
+                                if let Some(existing_op) = existing_block
+                                    .ops
+                                    .iter()
                                     .find(|o| o.id == existing_op_id)
                                 {
                                     if !existing_op.outputs.is_empty() {
@@ -77,15 +85,39 @@ impl CfgCSEPass {
     }
 
     fn is_pure_operator(op_type: &str) -> bool {
-        matches!(op_type,
-            "add" | "sub" | "mul" | "div" | "pow" |
-            "exp" | "sqrt" | "log" | "log2" | "log10" |
-            "abs" | "neg" | "floor" | "ceil" | "round" |
-            "relu" | "sigmoid" | "tanh" | "gelu" | "silu" |
-            "matmul" | "linear" |
-            "conv2d" | "maxpool2d" | "avgpool2d" |
-            "batchnorm2d" | "layernorm" |
-            "reshape" | "transpose" | "slice" | "cat"
+        matches!(
+            op_type,
+            "add"
+                | "sub"
+                | "mul"
+                | "div"
+                | "pow"
+                | "exp"
+                | "sqrt"
+                | "log"
+                | "log2"
+                | "log10"
+                | "abs"
+                | "neg"
+                | "floor"
+                | "ceil"
+                | "round"
+                | "relu"
+                | "sigmoid"
+                | "tanh"
+                | "gelu"
+                | "silu"
+                | "matmul"
+                | "linear"
+                | "conv2d"
+                | "maxpool2d"
+                | "avgpool2d"
+                | "batchnorm2d"
+                | "layernorm"
+                | "reshape"
+                | "transpose"
+                | "slice"
+                | "cat"
         )
     }
 
@@ -111,7 +143,10 @@ impl CfgCSEPass {
         format!("{:016x}", hasher.finish())
     }
 
-    fn hash_attr(attr: &AttrValue, hasher: &mut std::collections::hash_map::DefaultHasher) {
+    fn hash_attr(
+        attr: &AttrValue,
+        hasher: &mut std::collections::hash_map::DefaultHasher,
+    ) {
         match attr {
             AttrValue::Int(i) => i.hash(hasher),
             AttrValue::Float(f) => f.to_bits().hash(hasher),

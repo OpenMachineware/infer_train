@@ -1,13 +1,18 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. 浮点泛型 Forward
 // ============================================================
 
-pub fn norm<T: DType + Send + Sync>(a: &Tensor<T>, p: usize, dim: usize, keepdim: bool) -> Tensor<T> {
+pub fn norm<T: DType + Send + Sync>(
+    a: &Tensor<T>,
+    p: usize,
+    dim: usize,
+    keepdim: bool,
+) -> Tensor<T> {
     let shape = a.shape();
     assert!(dim < shape.len(), "norm: dim out of range");
 
@@ -60,9 +65,7 @@ pub fn norm<T: DType + Send + Sync>(a: &Tensor<T>, p: usize, dim: usize, keepdim
 // 2. 浮点泛型 Backward (简化版)
 // ============================================================
 
-pub fn norm_backward<T: DType>(
-    grad_output: &Tensor<T>,
-) -> Vec<Tensor<T>> {
+pub fn norm_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
     vec![grad_output.clone()]
 }
 
@@ -73,7 +76,9 @@ pub fn norm_backward<T: DType>(
 pub struct NormOp;
 
 impl<T: DType + Send + Sync> Operator<T> for NormOp {
-    fn name(&self) -> &'static str { "norm" }
+    fn name(&self) -> &'static str {
+        "norm"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         let p = attrs.get_int("p").unwrap_or(2) as usize;
@@ -81,7 +86,12 @@ impl<T: DType + Send + Sync> Operator<T> for NormOp {
         let keepdim = attrs.get_bool("keepdim").unwrap_or(false);
         norm(inputs[0], p, dim, keepdim)
     }
-    fn backward(&self, grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         norm_backward(grad)
     }
 }

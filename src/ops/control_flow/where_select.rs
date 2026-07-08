@@ -1,6 +1,6 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
 use crate::tensor::Tensor;
+use rayon::prelude::*;
 // use crate::ops::registry::{OpAttrs};
 
 // ============================================================
@@ -12,8 +12,16 @@ pub fn select<T: DType + Send + Sync>(
     true_val: &Tensor<T>,
     false_val: &Tensor<T>,
 ) -> Tensor<T> {
-    assert_eq!(true_val.shape(), false_val.shape(), "select: shape mismatch between true and false");
-    assert_eq!(condition.len(), true_val.len(), "select: condition length must match tensor size");
+    assert_eq!(
+        true_val.shape(),
+        false_val.shape(),
+        "select: shape mismatch between true and false"
+    );
+    assert_eq!(
+        condition.len(),
+        true_val.len(),
+        "select: condition length must match tensor size"
+    );
 
     let cond_data = condition.data();
     let true_data = true_val.data();
@@ -21,13 +29,7 @@ pub fn select<T: DType + Send + Sync>(
 
     let data: Vec<T> = (0..cond_data.len())
         .into_par_iter()
-        .map(|i| {
-            if cond_data[i] != 0 {
-                true_data[i]
-            } else {
-                false_data[i]
-            }
-        })
+        .map(|i| if cond_data[i] != 0 { true_data[i] } else { false_data[i] })
         .collect();
 
     Tensor::new(data, true_val.shape())
@@ -68,7 +70,9 @@ pub fn select_backward<T: DType>(
 pub struct SelectOp;
 
 impl SelectOp {
-    pub fn name(&self) -> &'static str { "select" }
+    pub fn name(&self) -> &'static str {
+        "select"
+    }
     pub fn forward<T: DType + Send + Sync>(
         &self,
         condition: &Tensor<i8>,

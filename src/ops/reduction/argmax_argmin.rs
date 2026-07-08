@@ -1,13 +1,17 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::OpAttrs;
 use crate::tensor::Tensor;
-use crate::ops::registry::{OpAttrs};
 
 // ============================================================
 // 1. ArgMax Forward
 // ============================================================
 
-pub fn argmax<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize, keepdim: bool) -> Tensor<i64> {
+pub fn argmax<T: DType + Send + Sync>(
+    a: &Tensor<T>,
+    dim: usize,
+    keepdim: bool,
+) -> Tensor<i64> {
     let shape = a.shape();
     assert!(dim < shape.len(), "argmax: dim out of range");
 
@@ -64,7 +68,11 @@ pub fn argmax<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize, keepdim: bool) 
 // 2. ArgMin Forward
 // ============================================================
 
-pub fn argmin<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize, keepdim: bool) -> Tensor<i64> {
+pub fn argmin<T: DType + Send + Sync>(
+    a: &Tensor<T>,
+    dim: usize,
+    keepdim: bool,
+) -> Tensor<i64> {
     let shape = a.shape();
     assert!(dim < shape.len(), "argmin: dim out of range");
 
@@ -124,7 +132,9 @@ pub fn argmin<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize, keepdim: bool) 
 pub struct ArgMaxOp;
 
 impl ArgMaxOp {
-    pub fn name(&self) -> &'static str { "argmax" }
+    pub fn name(&self) -> &'static str {
+        "argmax"
+    }
     pub fn forward<T: DType + Send + Sync>(
         &self,
         inputs: &[&Tensor<T>],
@@ -152,7 +162,9 @@ impl ArgMaxOp {
 pub struct ArgMinOp;
 
 impl ArgMinOp {
-    pub fn name(&self) -> &'static str { "argmin" }
+    pub fn name(&self) -> &'static str {
+        "argmin"
+    }
     pub fn forward<T: DType + Send + Sync>(
         &self,
         inputs: &[&Tensor<T>],

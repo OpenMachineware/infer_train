@@ -1,20 +1,20 @@
 // src/lib.rs
 
+pub mod autograd;
 pub mod dtype;
-pub mod tensor;
-pub mod ops;
-pub mod ir;
-pub mod transform;
 pub mod executor;
 pub mod frontend;
-pub mod autograd;
+pub mod ir;
+pub mod ops;
 pub mod pytensor;
+pub mod tensor;
 pub mod torch_bridge;
+pub mod transform;
 
 // 重新导出常用类型
 pub use dtype::DType;
-pub use tensor::Tensor;
 pub use ops::math::add;
+pub use tensor::Tensor;
 
 use pyo3::prelude::*;
 
@@ -33,16 +33,33 @@ fn _infer_train_torch(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     rust_engine.add_class::<ir::serialize::PyDagGraph>()?;
     rust_engine.add_class::<executor::executor::PyExecutor>()?;
 
-
     // ---- Frontend ----
-    rust_engine.add_function(wrap_pyfunction!(frontend::gguf::import_gguf, &rust_engine)?)?;
-    rust_engine.add_function(wrap_pyfunction!(frontend::gguf::export_gguf, &rust_engine)?)?;
+    rust_engine.add_function(wrap_pyfunction!(
+        frontend::gguf::import_gguf,
+        &rust_engine
+    )?)?;
+    rust_engine.add_function(wrap_pyfunction!(
+        frontend::gguf::export_gguf,
+        &rust_engine
+    )?)?;
 
     // ---- Torch Bridge ----
-    rust_engine.add_function(wrap_pyfunction!(torch_bridge::trace_model, &rust_engine)?)?;
-    rust_engine.add_function(wrap_pyfunction!(torch_bridge::trace_and_export, &rust_engine)?)?;
-    rust_engine.add_function(wrap_pyfunction!(torch_bridge::trace_trainable, &rust_engine)?)?;
-    rust_engine.add_function(wrap_pyfunction!(torch_bridge::load_and_infer, &rust_engine)?)?;
+    rust_engine.add_function(wrap_pyfunction!(
+        torch_bridge::trace_model,
+        &rust_engine
+    )?)?;
+    rust_engine.add_function(wrap_pyfunction!(
+        torch_bridge::trace_and_export,
+        &rust_engine
+    )?)?;
+    rust_engine.add_function(wrap_pyfunction!(
+        torch_bridge::trace_trainable,
+        &rust_engine
+    )?)?;
+    rust_engine.add_function(wrap_pyfunction!(
+        torch_bridge::load_and_infer,
+        &rust_engine
+    )?)?;
 
     // ---- IR ----
     rust_engine.add_class::<ir::serialize::PyModelFile>()?;

@@ -1,10 +1,10 @@
 use rayon::prelude::*;
 // use rand::Rng;
+use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
+use crate::tensor::Tensor;
 use rand::distributions::{Distribution, Uniform};
 use rand_distr::StandardNormal;
-use crate::dtype::DType;
-use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. Rand (均匀分布 [0, 1))
@@ -52,12 +52,19 @@ pub fn randn<T: DType + Send + Sync>(shape: &[usize]) -> Tensor<T> {
 pub struct RandOp;
 
 impl<T: DType + Send + Sync> Operator<T> for RandOp {
-    fn name(&self) -> &'static str { "rand" }
+    fn name(&self) -> &'static str {
+        "rand"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         let shape = inputs[0].shape();
         rand::<T>(shape)
     }
-    fn backward(&self, _grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         vec![]
     }
 }
@@ -65,12 +72,19 @@ impl<T: DType + Send + Sync> Operator<T> for RandOp {
 pub struct RandnOp;
 
 impl<T: DType + Send + Sync> Operator<T> for RandnOp {
-    fn name(&self) -> &'static str { "randn" }
+    fn name(&self) -> &'static str {
+        "randn"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         let shape = inputs[0].shape();
         randn::<T>(shape)
     }
-    fn backward(&self, _grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         vec![]
     }
 }

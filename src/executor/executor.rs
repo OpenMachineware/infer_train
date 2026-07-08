@@ -1,22 +1,22 @@
 // src/executor/executor.rs
 
-use std::collections::HashMap;
 use pyo3::prelude::*;
-use pyo3::types::{PyList};
+use pyo3::types::PyList;
+use std::collections::HashMap;
 
+use crate::autograd::AutogradEngine;
 use crate::ir::dag::DagGraph;
 use crate::tensor::Tensor;
-use crate::autograd::AutogradEngine;
 
-use super::math;
-use super::nn;
 use super::activation;
-use super::tensor;
-use super::index;
 use super::control;
-use super::quantized;
+use super::index;
+use super::math;
+use super::memory_reuse::{MemoryConfig, MemoryPool};
+use super::nn;
 use super::parallel::ParallelExecutor;
-use super::memory_reuse::{MemoryPool, MemoryConfig};
+use super::quantized;
+use super::tensor;
 
 // ============================================================
 // 执行器
@@ -46,7 +46,8 @@ impl Executor {
 
     pub fn enable_training_mode(&mut self) {
         let config = MemoryConfig::training();
-        self.memory_pool = MemoryPool::new(config.block_size, config.total_size);
+        self.memory_pool =
+            MemoryPool::new(config.block_size, config.total_size);
     }
 
     pub fn with_parallel(mut self, parallel: bool) -> Self {
@@ -59,7 +60,10 @@ impl Executor {
         self
     }
 
-    pub fn execute(&mut self, inputs: &[Tensor<f32>]) -> Result<Vec<Tensor<f32>>, String> {
+    pub fn execute(
+        &mut self,
+        inputs: &[Tensor<f32>],
+    ) -> Result<Vec<Tensor<f32>>, String> {
         self.values.clear();
         self.memory_pool.reset();
 
@@ -96,7 +100,10 @@ impl Executor {
     fn load_constants(&mut self) -> Result<(), String> {
         for (&id, data) in &self.graph.constants {
             if let Some(value) = self.graph.values.get(&id) {
-                let shape: Vec<usize> = value.ty.shape.iter()
+                let shape: Vec<usize> = value
+                    .ty
+                    .shape
+                    .iter()
                     .map(|&x| if x == -1 { 0 } else { x as usize })
                     .collect();
 
@@ -107,16 +114,24 @@ impl Executor {
         Ok(())
     }
 
-    fn bytes_to_tensor(data: &[u8], shape: &[usize]) -> Result<Tensor<f32>, String> {
-        let float_data: Vec<f32> = data.chunks(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+    fn bytes_to_tensor(
+        data: &[u8],
+        shape: &[usize],
+    ) -> Result<Tensor<f32>, String> {
+        let float_data: Vec<f32> = data
+            .chunks(4)
+            .map(|chunk| {
+                f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+            })
             .collect();
         Ok(Tensor::new(float_data, shape))
     }
 
     fn execute_serial(&mut self, order: &[u64]) -> Result<(), String> {
         for &op_id in order {
-            let op = self.graph.get_op(op_id)
+            let op = self
+                .graph
+                .get_op(op_id)
                 .ok_or_else(|| format!("Op {} not found", op_id))?
                 .clone();
             self.execute_op(&op)?;
@@ -140,15 +155,20 @@ impl Executor {
             if let Some(t) = self.values.get(&in_id) {
                 input_tensors.push(t.clone());
             } else {
-                return Err(format!("Input value {} not found for op {}", in_id, op.id));
+                return Err(format!(
+                    "Input value {} not found for op {}",
+                    in_id, op.id
+                ));
             }
         }
 
-        let outputs = self.dispatch_op(&op.op_type, &input_tensors, &op.attrs)?;
+        let outputs =
+            self.dispatch_op(&op.op_type, &input_tensors, &op.attrs)?;
 
         for (i, &out_id) in op.outputs.iter().enumerate() {
             if i < outputs.len() {
-                let tensor = self.memory_pool.allocate_or_use(outputs[i].clone());
+                let tensor =
+                    self.memory_pool.allocate_or_use(outputs[i].clone());
                 self.values.insert(out_id, tensor);
             }
         }
@@ -179,7 +199,14 @@ impl Executor {
             return quantized::dispatch_quantized(op_type, inputs, attrs);
         }
 
-        let dispatchers: Vec<(&str, fn(&str, &[Tensor<f32>], &HashMap<String, crate::ir::dag::AttrValue>) -> Result<Vec<Tensor<f32>>, String>)> = vec![
+        let dispatchers: Vec<(
+            &str,
+            fn(
+                &str,
+                &[Tensor<f32>],
+                &HashMap<String, crate::ir::dag::AttrValue>,
+            ) -> Result<Vec<Tensor<f32>>, String>,
+        )> = vec![
             ("math", math::dispatch_math),
             ("nn", nn::dispatch_nn),
             ("activation", activation::dispatch_activation),
@@ -223,7 +250,14 @@ pub fn dispatch_op(
         return quantized::dispatch_quantized(op_type, inputs, attrs);
     }
 
-    let dispatchers: Vec<(&str, fn(&str, &[Tensor<f32>], &HashMap<String, crate::ir::dag::AttrValue>) -> Result<Vec<Tensor<f32>>, String>)> = vec![
+    let dispatchers: Vec<(
+        &str,
+        fn(
+            &str,
+            &[Tensor<f32>],
+            &HashMap<String, crate::ir::dag::AttrValue>,
+        ) -> Result<Vec<Tensor<f32>>, String>,
+    )> = vec![
         ("math", math::dispatch_math),
         ("nn", nn::dispatch_nn),
         ("activation", activation::dispatch_activation),
@@ -256,26 +290,26 @@ impl PyExecutor {
     pub fn new(graph: Py<PyAny>) -> PyResult<Self> {
         Python::with_gil(|py| {
             let graph_obj = graph.bind(py);
-            if let Ok(py_dag) = graph_obj.downcast::<crate::ir::serialize::PyDagGraph>() {
+            if let Ok(py_dag) =
+                graph_obj.downcast::<crate::ir::serialize::PyDagGraph>()
+            {
                 let dag = py_dag.borrow().inner.clone();
-                Ok(PyExecutor {
-                    inner: Executor::new(dag),
-                })
+                Ok(PyExecutor { inner: Executor::new(dag) })
             } else {
                 Err(pyo3::exceptions::PyTypeError::new_err(
-                    "Expected PyDagGraph"
+                    "Expected PyDagGraph",
                 ))
             }
         })
     }
 
     #[staticmethod]
-    pub fn from_model_file(model_file: &crate::ir::serialize::PyModelFile) -> Self {
+    pub fn from_model_file(
+        model_file: &crate::ir::serialize::PyModelFile,
+    ) -> Self {
         let guard = model_file.inner.lock().unwrap();
         let graph = guard.graph().clone();
-        PyExecutor {
-            inner: Executor::new(graph),
-        }
+        PyExecutor { inner: Executor::new(graph) }
     }
 
     pub fn execute(&mut self, inputs: Py<PyList>) -> PyResult<Vec<Py<PyAny>>> {
@@ -289,10 +323,13 @@ impl PyExecutor {
                 input_tensors.push(Tensor::new(data, &shape));
             }
 
-            let result = self.inner.execute(&input_tensors)
+            let result = self
+                .inner
+                .execute(&input_tensors)
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
 
-            let py_result: Vec<Py<PyAny>> = result.into_iter()
+            let py_result: Vec<Py<PyAny>> = result
+                .into_iter()
                 .map(|t| {
                     let data = t.data().to_vec();
                     PyList::new(py, data).unwrap().into_any().unbind()
@@ -311,7 +348,8 @@ impl PyExecutor {
     }
 
     pub fn memory_stats(&self) -> PyResult<HashMap<String, usize>> {
-        let (allocations, reuse_count, allocated_size, used_size) = self.inner.memory_pool.stats();
+        let (allocations, reuse_count, allocated_size, used_size) =
+            self.inner.memory_pool.stats();
         let mut stats = HashMap::new();
         stats.insert("allocations".to_string(), allocations);
         stats.insert("reuses".to_string(), reuse_count);
@@ -394,10 +432,7 @@ pub struct SGDOptimizerState {
 
 impl SGDOptimizerState {
     pub fn new(num_params: usize) -> Self {
-        SGDOptimizerState {
-            momentum: Vec::with_capacity(num_params),
-            step: 0,
-        }
+        SGDOptimizerState { momentum: Vec::with_capacity(num_params), step: 0 }
     }
 }
 
@@ -438,8 +473,8 @@ impl OptimizerState for SGDOptimizerState {
 // AdamW 优化器状态 (简化版)
 // ============================================================
 pub struct AdamWOptimizerState {
-    m: Vec<Tensor<f32>>,  // 一阶矩估计
-    v: Vec<Tensor<f32>>,  // 二阶矩估计
+    m: Vec<Tensor<f32>>, // 一阶矩估计
+    v: Vec<Tensor<f32>>, // 二阶矩估计
     step: u64,
 }
 
@@ -542,7 +577,10 @@ impl Trainer {
         for &id in &param_ids {
             if let Some(value) = graph.values.get(&id) {
                 // 创建初始参数张量
-                let shape: Vec<usize> = value.ty.shape.iter()
+                let shape: Vec<usize> = value
+                    .ty
+                    .shape
+                    .iter()
                     .map(|&x| if x == -1 { 0 } else { x as usize })
                     .collect();
                 let tensor = Tensor::zeros(&shape);
@@ -552,13 +590,13 @@ impl Trainer {
             }
         }
 
-        let optimizer_state: Box<dyn OptimizerState> = match config.optimizer_type {
+        let optimizer_state: Box<dyn OptimizerState> = match config
+            .optimizer_type
+        {
             OptimizerType::SGD => {
                 Box::new(SGDOptimizerState::new(param_ids.len()))
             }
-            OptimizerType::AdamW => {
-                Box::new(AdamWOptimizerState::new(&params))
-            }
+            OptimizerType::AdamW => Box::new(AdamWOptimizerState::new(&params)),
             OptimizerType::Adam => {
                 // Adam 与 AdamW 类似，但权重衰减方式不同
                 // 暂时用 AdamW
@@ -576,14 +614,20 @@ impl Trainer {
             optimizer_state,
             training_state: TrainingState::default(),
             config,
-            memory_pool: MemoryPool::new(memory_config.block_size, memory_config.total_size),
+            memory_pool: MemoryPool::new(
+                memory_config.block_size,
+                memory_config.total_size,
+            ),
         })
     }
 
     // ============================================================
     // 前向传播
     // ============================================================
-    pub fn forward(&mut self, inputs: &[Tensor<f32>]) -> Result<Vec<Tensor<f32>>, String> {
+    pub fn forward(
+        &mut self,
+        inputs: &[Tensor<f32>],
+    ) -> Result<Vec<Tensor<f32>>, String> {
         self.values.clear();
         self.memory_pool.reset();
 
@@ -602,7 +646,10 @@ impl Trainer {
         // 加载常量（权重）
         for (&id, data) in &self.graph.constants {
             if let Some(value) = self.graph.values.get(&id) {
-                let shape: Vec<usize> = value.ty.shape.iter()
+                let shape: Vec<usize> = value
+                    .ty
+                    .shape
+                    .iter()
                     .map(|&x| if x == -1 { 0 } else { x as usize })
                     .collect();
                 let tensor = Self::bytes_to_tensor(data, &shape)?;
@@ -612,7 +659,9 @@ impl Trainer {
 
         let order = self.graph.topological_sort()?;
         for op_id in order {
-            let op = self.graph.get_op(op_id)
+            let op = self
+                .graph
+                .get_op(op_id)
                 .ok_or_else(|| format!("Op {} not found", op_id))?
                 .clone();
             self.execute_op(&op)?;
@@ -630,15 +679,23 @@ impl Trainer {
             if let Some(t) = self.values.get(&in_id) {
                 input_tensors.push(t.clone());
             } else {
-                return Err(format!("Input value {} not found for op {}", in_id, op.id));
+                return Err(format!(
+                    "Input value {} not found for op {}",
+                    in_id, op.id
+                ));
             }
         }
 
-        let outputs = super::executor::dispatch_op(&op.op_type, &input_tensors, &op.attrs)?;
+        let outputs = super::executor::dispatch_op(
+            &op.op_type,
+            &input_tensors,
+            &op.attrs,
+        )?;
 
         for (i, &out_id) in op.outputs.iter().enumerate() {
             if i < outputs.len() {
-                let tensor = self.memory_pool.allocate_or_use(outputs[i].clone());
+                let tensor =
+                    self.memory_pool.allocate_or_use(outputs[i].clone());
                 self.values.insert(out_id, tensor);
             }
         }
@@ -669,7 +726,11 @@ impl Trainer {
     // 自动微分训练
     // ============================================================
 
-    pub fn train_step(&mut self, inputs: &[Tensor<f32>], targets: &Tensor<f32>) -> Result<f32, String> {
+    pub fn train_step(
+        &mut self,
+        inputs: &[Tensor<f32>],
+        targets: &Tensor<f32>,
+    ) -> Result<f32, String> {
         // 1. 创建 AutogradEngine
         let param_ids: Vec<u64> = self.param_ids.clone();
         let mut engine = AutogradEngine::new(self.graph.clone(), param_ids);
@@ -705,7 +766,11 @@ impl Trainer {
         Ok(loss.data()[0])
     }
 
-    fn compute_loss(&self, pred: &Tensor<f32>, target: &Tensor<f32>) -> Tensor<f32> {
+    fn compute_loss(
+        &self,
+        pred: &Tensor<f32>,
+        target: &Tensor<f32>,
+    ) -> Tensor<f32> {
         // MSE Loss
         use crate::ops::loss::mse::mse;
         mse(pred, target, true)
@@ -716,7 +781,9 @@ impl Trainer {
     // ============================================================
     pub fn step(&mut self) -> Result<(), String> {
         if self.grads.is_empty() {
-            return Err("No gradients available. Call backward() first.".to_string());
+            return Err(
+                "No gradients available. Call backward() first.".to_string()
+            );
         }
 
         let mut params = Vec::new();
@@ -732,7 +799,10 @@ impl Trainer {
             if let Some(grad) = self.grads.get(&param_id) {
                 grads.push(grad.clone());
             } else {
-                return Err(format!("Gradient for parameter {} not found", param_id));
+                return Err(format!(
+                    "Gradient for parameter {} not found",
+                    param_id
+                ));
             }
         }
 
@@ -795,7 +865,11 @@ impl Trainer {
                 self.config.learning_rate,
             )
         } else {
-            crate::ir::serialize::ModelFile::new(&self.graph.name, "torch", self.graph.clone())
+            crate::ir::serialize::ModelFile::new(
+                &self.graph.name,
+                "torch",
+                self.graph.clone(),
+            )
         };
 
         model_file.export(path)
@@ -804,9 +878,15 @@ impl Trainer {
     // ============================================================
     // 工具函数
     // ============================================================
-    fn bytes_to_tensor(data: &[u8], shape: &[usize]) -> Result<Tensor<f32>, String> {
-        let float_data: Vec<f32> = data.chunks(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+    fn bytes_to_tensor(
+        data: &[u8],
+        shape: &[usize],
+    ) -> Result<Tensor<f32>, String> {
+        let float_data: Vec<f32> = data
+            .chunks(4)
+            .map(|chunk| {
+                f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+            })
             .collect();
         Ok(Tensor::new(float_data, shape))
     }

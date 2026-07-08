@@ -1,7 +1,7 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // 1. 浮点泛型 Forward
@@ -10,7 +10,8 @@ use crate::ops::registry::{Operator, OpAttrs};
 pub fn sub<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Tensor<T> {
     assert_eq!(a.shape(), b.shape(), "Shape mismatch in sub");
 
-    let data: Vec<T> = a.data()
+    let data: Vec<T> = a
+        .data()
         .par_iter()
         .zip(b.data().par_iter())
         .map(|(&x, &y)| x - y)
@@ -51,7 +52,8 @@ pub fn quantized_sub(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
     let scale = scale_a;
     let zero = zero_a;
 
-    let result_fp: Vec<f32> = a.data()
+    let result_fp: Vec<f32> = a
+        .data()
         .iter()
         .zip(b.data().iter())
         .map(|(&x, &y)| {
@@ -61,7 +63,8 @@ pub fn quantized_sub(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
         })
         .collect();
 
-    let data: Vec<i8> = result_fp.iter()
+    let data: Vec<i8> = result_fp
+        .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
 
@@ -92,12 +95,19 @@ pub fn quantized_sub_backward(
 pub struct SubOp;
 
 impl<T: DType + Send + Sync> Operator<T> for SubOp {
-    fn name(&self) -> &'static str { "sub" }
+    fn name(&self) -> &'static str {
+        "sub"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 2);
         sub(inputs[0], inputs[1])
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 2);
         sub_backward(grad, inputs[0], inputs[1])
     }
@@ -106,16 +116,25 @@ impl<T: DType + Send + Sync> Operator<T> for SubOp {
 pub struct QuantizedSubOp;
 
 impl Operator<i8> for QuantizedSubOp {
-    fn name(&self) -> &'static str { "quantized_sub" }
+    fn name(&self) -> &'static str {
+        "quantized_sub"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 2);
         quantized_sub(inputs[0], inputs[1])
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         assert_eq!(inputs.len(), 2);
         quantized_sub_backward(grad, inputs[0], inputs[1])
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

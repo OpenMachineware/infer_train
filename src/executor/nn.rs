@@ -1,8 +1,8 @@
 // src/executor/nn.rs
 
-use std::collections::HashMap;
-use crate::tensor::Tensor;
 use crate::ir::dag::AttrValue;
+use crate::tensor::Tensor;
+use std::collections::HashMap;
 
 pub fn dispatch_nn(
     op_type: &str,
@@ -20,7 +20,7 @@ pub fn dispatch_nn(
             let groups = get_int(attrs, "groups", 1) as usize;
             let bias = if inputs.len() >= 3 { Some(&inputs[2]) } else { None };
             let result = crate::ops::conv_pool::conv2d::conv2d(
-                &inputs[0], &inputs[1], bias, stride, padding, dilation, groups
+                &inputs[0], &inputs[1], bias, stride, padding, dilation, groups,
             );
             Ok(vec![result])
         }
@@ -51,7 +51,12 @@ pub fn dispatch_nn(
             let kernel_size = get_int(attrs, "kernel_size", 2) as usize;
             let stride = get_int(attrs, "stride", kernel_size as i32) as usize;
             let padding = get_int(attrs, "padding", 0) as usize;
-            let result = crate::ops::conv_pool::max_pool::max_pool(&inputs[0], kernel_size, stride, padding);
+            let result = crate::ops::conv_pool::max_pool::max_pool(
+                &inputs[0],
+                kernel_size,
+                stride,
+                padding,
+            );
             Ok(vec![result])
         }
         "avgpool2d" => {
@@ -61,7 +66,12 @@ pub fn dispatch_nn(
             let kernel_size = get_int(attrs, "kernel_size", 2) as usize;
             let stride = get_int(attrs, "stride", kernel_size as i32) as usize;
             let padding = get_int(attrs, "padding", 0) as usize;
-            let result = crate::ops::conv_pool::avg_pool::avg_pool(&inputs[0], kernel_size, stride, padding);
+            let result = crate::ops::conv_pool::avg_pool::avg_pool(
+                &inputs[0],
+                kernel_size,
+                stride,
+                padding,
+            );
             Ok(vec![result])
         }
         "batchnorm2d" => {
@@ -70,7 +80,7 @@ pub fn dispatch_nn(
             }
             let eps = get_float(attrs, "eps", 1e-5);
             let result = crate::ops::normalization::batch_norm::batch_norm(
-                &inputs[0], &inputs[1], &inputs[2], &inputs[3], &inputs[4], eps
+                &inputs[0], &inputs[1], &inputs[2], &inputs[3], &inputs[4], eps,
             );
             Ok(vec![result])
         }
@@ -80,7 +90,7 @@ pub fn dispatch_nn(
             }
             let eps = get_float(attrs, "eps", 1e-5);
             let result = crate::ops::normalization::layer_norm::layer_norm(
-                &inputs[0], &inputs[1], &inputs[2], eps
+                &inputs[0], &inputs[1], &inputs[2], eps,
             );
             Ok(vec![result])
         }
@@ -100,7 +110,9 @@ pub fn dispatch_nn(
         }
         "embedding" => {
             if inputs.len() < 2 {
-                return Err("embedding requires 2 inputs (indices, weight)".to_string());
+                return Err(
+                    "embedding requires 2 inputs (indices, weight)".to_string()
+                );
             }
             // 需要从 indices 提取 i64
             // 暂时简化
@@ -111,17 +123,25 @@ pub fn dispatch_nn(
 }
 
 fn get_int(attrs: &HashMap<String, AttrValue>, key: &str, default: i32) -> i32 {
-    attrs.get(key)
+    attrs
+        .get(key)
         .and_then(|v| match v {
             AttrValue::Int(i) => Some(*i as i32),
-            AttrValue::IntList(list) if !list.is_empty() => Some(list[0] as i32),
+            AttrValue::IntList(list) if !list.is_empty() => {
+                Some(list[0] as i32)
+            }
             _ => None,
         })
         .unwrap_or(default)
 }
 
-fn get_float(attrs: &HashMap<String, AttrValue>, key: &str, default: f32) -> f32 {
-    attrs.get(key)
+fn get_float(
+    attrs: &HashMap<String, AttrValue>,
+    key: &str,
+    default: f32,
+) -> f32 {
+    attrs
+        .get(key)
         .and_then(|v| match v {
             AttrValue::Float(f) => Some(*f as f32),
             AttrValue::Int(i) => Some(*i as f32),
@@ -130,8 +150,13 @@ fn get_float(attrs: &HashMap<String, AttrValue>, key: &str, default: f32) -> f32
         .unwrap_or(default)
 }
 
-fn get_bool(attrs: &HashMap<String, AttrValue>, key: &str, default: bool) -> bool {
-    attrs.get(key)
+fn get_bool(
+    attrs: &HashMap<String, AttrValue>,
+    key: &str,
+    default: bool,
+) -> bool {
+    attrs
+        .get(key)
         .and_then(|v| match v {
             AttrValue::Bool(b) => Some(*b),
             AttrValue::Int(i) => Some(*i != 0),

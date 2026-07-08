@@ -1,14 +1,15 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // 1. 浮点泛型 Forward
 // ============================================================
 
 pub fn elu<T: DType + Send + Sync>(a: &Tensor<T>, alpha: f32) -> Tensor<T> {
-    let data: Vec<T> = a.data()
+    let data: Vec<T> = a
+        .data()
         .par_iter()
         .map(|&x| {
             let v = x.to_f32();
@@ -51,7 +52,8 @@ pub fn quantized_elu(a: &Tensor<i8>, alpha: f32) -> Tensor<i8> {
     let scale = a.scale().unwrap_or(1.0);
     let zero = a.zero_point().unwrap_or(0.0);
 
-    let data: Vec<i8> = c_fp.data()
+    let data: Vec<i8> = c_fp
+        .data()
         .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
@@ -75,7 +77,8 @@ pub fn quantized_elu_backward(
     let scale = a.scale().unwrap_or(1.0);
     let zero = a.zero_point().unwrap_or(0.0);
 
-    let data: Vec<i8> = grads[0].data()
+    let data: Vec<i8> = grads[0]
+        .data()
         .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
@@ -90,13 +93,20 @@ pub fn quantized_elu_backward(
 pub struct EluOp;
 
 impl<T: DType + Send + Sync> Operator<T> for EluOp {
-    fn name(&self) -> &'static str { "elu" }
+    fn name(&self) -> &'static str {
+        "elu"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         let alpha = attrs.get_float("alpha").unwrap_or(1.0);
         elu(inputs[0], alpha)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 1);
         let alpha = attrs.get_float("alpha").unwrap_or(1.0);
         elu_backward(grad, inputs[0], alpha)
@@ -106,18 +116,27 @@ impl<T: DType + Send + Sync> Operator<T> for EluOp {
 pub struct QuantizedEluOp;
 
 impl Operator<i8> for QuantizedEluOp {
-    fn name(&self) -> &'static str { "quantized_elu" }
+    fn name(&self) -> &'static str {
+        "quantized_elu"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
         let alpha = attrs.get_float("alpha").unwrap_or(1.0);
         quantized_elu(inputs[0], alpha)
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         assert_eq!(inputs.len(), 1);
         let alpha = attrs.get_float("alpha").unwrap_or(1.0);
         quantized_elu_backward(grad, inputs[0], alpha)
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

@@ -1,16 +1,22 @@
 // src/ops/tensor_manip/expand_repeat.rs
 
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // Expand 泛型 Forward
 // ============================================================
 
-pub fn expand<T: DType + Send + Sync>(input: &Tensor<T>, target_shape: &[usize]) -> Tensor<T> {
+pub fn expand<T: DType + Send + Sync>(
+    input: &Tensor<T>,
+    target_shape: &[usize],
+) -> Tensor<T> {
     let shape = input.shape();
-    assert!(target_shape.len() >= shape.len(), "expand: target shape must have same or more dims");
+    assert!(
+        target_shape.len() >= shape.len(),
+        "expand: target shape must have same or more dims"
+    );
 
     let mut data = Vec::new();
     let total = target_shape.iter().product::<usize>();
@@ -35,7 +41,10 @@ pub fn expand_backward<T: DType>(
 // Repeat 泛型 Forward
 // ============================================================
 
-pub fn repeat<T: DType + Send + Sync>(input: &Tensor<T>, repeats: &[usize]) -> Tensor<T> {
+pub fn repeat<T: DType + Send + Sync>(
+    input: &Tensor<T>,
+    repeats: &[usize],
+) -> Tensor<T> {
     let shape = input.shape();
     assert_eq!(shape.len(), repeats.len(), "repeat: repeats must match rank");
 
@@ -44,7 +53,8 @@ pub fn repeat<T: DType + Send + Sync>(input: &Tensor<T>, repeats: &[usize]) -> T
     for _ in 0..total {
         data.extend_from_slice(input.data());
     }
-    let new_shape: Vec<usize> = shape.iter().zip(repeats).map(|(a, b)| a * b).collect();
+    let new_shape: Vec<usize> =
+        shape.iter().zip(repeats).map(|(a, b)| a * b).collect();
     Tensor::new(data, &new_shape)
 }
 
@@ -64,7 +74,10 @@ pub fn repeat_backward<T: DType>(
 // 量化 Expand Forward
 // ============================================================
 
-pub fn quantized_expand(input: &Tensor<i8>, target_shape: &[usize]) -> Tensor<i8> {
+pub fn quantized_expand(
+    input: &Tensor<i8>,
+    target_shape: &[usize],
+) -> Tensor<i8> {
     let mut data = Vec::new();
     let total = target_shape.iter().product::<usize>();
     for _ in 0..total {
@@ -85,7 +98,12 @@ pub fn quantized_expand_backward(
 ) -> Vec<Tensor<i8>> {
     let scale = grad_output.scale().unwrap_or(1.0);
     let zero_point = grad_output.zero_point().unwrap_or(0.0);
-    vec![Tensor::<i8>::new_quantized(grad_output.data().to_vec(), original_shape, scale, zero_point)]
+    vec![Tensor::<i8>::new_quantized(
+        grad_output.data().to_vec(),
+        original_shape,
+        scale,
+        zero_point,
+    )]
 }
 
 // ============================================================
@@ -94,14 +112,19 @@ pub fn quantized_expand_backward(
 
 pub fn quantized_repeat(input: &Tensor<i8>, repeats: &[usize]) -> Tensor<i8> {
     let shape = input.shape();
-    assert_eq!(shape.len(), repeats.len(), "quantized_repeat: repeats must match rank");
+    assert_eq!(
+        shape.len(),
+        repeats.len(),
+        "quantized_repeat: repeats must match rank"
+    );
 
     let mut data = Vec::new();
     let total = repeats.iter().product::<usize>();
     for _ in 0..total {
         data.extend_from_slice(input.data());
     }
-    let new_shape: Vec<usize> = shape.iter().zip(repeats).map(|(a, b)| a * b).collect();
+    let new_shape: Vec<usize> =
+        shape.iter().zip(repeats).map(|(a, b)| a * b).collect();
     let scale = input.scale().unwrap_or(1.0);
     let zero_point = input.zero_point().unwrap_or(0.0);
     Tensor::<i8>::new_quantized(data, &new_shape, scale, zero_point)
@@ -118,7 +141,12 @@ pub fn quantized_repeat_backward(
     let len: usize = original_shape.iter().product();
     let scale = grad_output.scale().unwrap_or(1.0);
     let zero_point = grad_output.zero_point().unwrap_or(0.0);
-    vec![Tensor::<i8>::new_quantized(grad_output.data()[..len].to_vec(), original_shape, scale, zero_point)]
+    vec![Tensor::<i8>::new_quantized(
+        grad_output.data()[..len].to_vec(),
+        original_shape,
+        scale,
+        zero_point,
+    )]
 }
 
 // ============================================================
@@ -128,17 +156,25 @@ pub fn quantized_repeat_backward(
 pub struct ExpandOp;
 
 impl<T: DType + Send + Sync> Operator<T> for ExpandOp {
-    fn name(&self) -> &'static str { "expand" }
+    fn name(&self) -> &'static str {
+        "expand"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
-        let target_shape = attrs.get_int_list("shape")
+        let target_shape = attrs
+            .get_int_list("shape")
             .expect("expand requires shape")
             .iter()
             .map(|&x| x as usize)
             .collect::<Vec<_>>();
         expand(inputs[0], &target_shape)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         expand_backward(grad, inputs[0].shape())
     }
 }
@@ -150,17 +186,25 @@ impl<T: DType + Send + Sync> Operator<T> for ExpandOp {
 pub struct RepeatOp;
 
 impl<T: DType + Send + Sync> Operator<T> for RepeatOp {
-    fn name(&self) -> &'static str { "repeat" }
+    fn name(&self) -> &'static str {
+        "repeat"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
-        let repeats = attrs.get_int_list("repeats")
+        let repeats = attrs
+            .get_int_list("repeats")
             .expect("repeat requires repeats")
             .iter()
             .map(|&x| x as usize)
             .collect::<Vec<_>>();
         repeat(inputs[0], &repeats)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         repeat_backward(grad, inputs[0].shape())
     }
 }
@@ -172,20 +216,30 @@ impl<T: DType + Send + Sync> Operator<T> for RepeatOp {
 pub struct QuantizedExpandOp;
 
 impl Operator<i8> for QuantizedExpandOp {
-    fn name(&self) -> &'static str { "quantized_expand" }
+    fn name(&self) -> &'static str {
+        "quantized_expand"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
-        let target_shape = attrs.get_int_list("shape")
+        let target_shape = attrs
+            .get_int_list("shape")
             .expect("quantized_expand requires shape")
             .iter()
             .map(|&x| x as usize)
             .collect::<Vec<_>>();
         quantized_expand(inputs[0], &target_shape)
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         quantized_expand_backward(grad, inputs[0].shape())
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 // ============================================================
@@ -195,18 +249,28 @@ impl Operator<i8> for QuantizedExpandOp {
 pub struct QuantizedRepeatOp;
 
 impl Operator<i8> for QuantizedRepeatOp {
-    fn name(&self) -> &'static str { "quantized_repeat" }
+    fn name(&self) -> &'static str {
+        "quantized_repeat"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
-        let repeats = attrs.get_int_list("repeats")
+        let repeats = attrs
+            .get_int_list("repeats")
             .expect("quantized_repeat requires repeats")
             .iter()
             .map(|&x| x as usize)
             .collect::<Vec<_>>();
         quantized_repeat(inputs[0], &repeats)
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         quantized_repeat_backward(grad, inputs[0].shape())
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }

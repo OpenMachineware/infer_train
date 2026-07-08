@@ -2,13 +2,13 @@
 
 use std::collections::HashMap;
 
-use crate::tensor::Tensor;
-use crate::ir::dag::{DagGraph, Op};
-use crate::executor::Executor;
 use crate::autograd::tape::TapeEntry;
+use crate::executor::Executor;
+use crate::ir::dag::{DagGraph, Op};
+use crate::tensor::Tensor;
 
-use super::tape::Tape;
 use super::backward::backward;
+use super::tape::Tape;
 
 #[derive(Debug, Clone)]
 pub struct AutogradConfig {
@@ -18,10 +18,7 @@ pub struct AutogradConfig {
 
 impl Default for AutogradConfig {
     fn default() -> Self {
-        AutogradConfig {
-            enable_grad: true,
-            retain_graph: false,
-        }
+        AutogradConfig { enable_grad: true, retain_graph: false }
     }
 }
 
@@ -62,7 +59,10 @@ impl AutogradEngine {
     // 前向传播 (记录计算图)
     // ============================================================
 
-    pub fn forward(&mut self, inputs: &[Tensor<f32>]) -> Result<Vec<Tensor<f32>>, String> {
+    pub fn forward(
+        &mut self,
+        inputs: &[Tensor<f32>],
+    ) -> Result<Vec<Tensor<f32>>, String> {
         self.values.clear();
         self.tape = Tape::new();
         self.grads.clear();
@@ -79,7 +79,10 @@ impl AutogradEngine {
         for &param_id in &self.param_ids {
             if let Some(value) = self.graph.values.get(&param_id) {
                 if let Some(data) = self.graph.constants.get(&param_id) {
-                    let shape: Vec<usize> = value.ty.shape.iter()
+                    let shape: Vec<usize> = value
+                        .ty
+                        .shape
+                        .iter()
                         .map(|&x| if x == -1 { 0 } else { x as usize })
                         .collect();
                     let tensor = Self::bytes_to_tensor(data, &shape)?;
@@ -93,7 +96,10 @@ impl AutogradEngine {
         for (&id, data) in &self.graph.constants {
             if !self.param_ids.contains(&id) {
                 if let Some(value) = self.graph.values.get(&id) {
-                    let shape: Vec<usize> = value.ty.shape.iter()
+                    let shape: Vec<usize> = value
+                        .ty
+                        .shape
+                        .iter()
                         .map(|&x| if x == -1 { 0 } else { x as usize })
                         .collect();
                     let tensor = Self::bytes_to_tensor(data, &shape)?;
@@ -106,7 +112,9 @@ impl AutogradEngine {
         // 执行拓扑排序，记录每个算子
         let order = self.graph.topological_sort()?;
         for op_id in order {
-            let op = self.graph.get_op(op_id)
+            let op = self
+                .graph
+                .get_op(op_id)
                 .ok_or_else(|| format!("Op {} not found", op_id))?
                 .clone();
             self.execute_op_and_record(&op)?;
@@ -135,12 +143,19 @@ impl AutogradEngine {
             if let Some(t) = self.values.get(&in_id) {
                 input_tensors.push(t.clone());
             } else {
-                return Err(format!("Input value {} not found for op {}", in_id, op.id));
+                return Err(format!(
+                    "Input value {} not found for op {}",
+                    in_id, op.id
+                ));
             }
         }
 
         // 执行算子
-        let outputs = crate::executor::dispatch_op(&op.op_type, &input_tensors, &op.attrs)?;
+        let outputs = crate::executor::dispatch_op(
+            &op.op_type,
+            &input_tensors,
+            &op.attrs,
+        )?;
 
         // 存储输出并记录到 Tape
         for (i, &out_id) in op.outputs.iter().enumerate() {
@@ -148,7 +163,12 @@ impl AutogradEngine {
                 self.values.insert(out_id, outputs[i].clone());
 
                 // 根据 op_type 创建 TapeEntry
-                let entry = self.create_tape_entry(&op, &input_tensors, &outputs, out_id);
+                let entry = self.create_tape_entry(
+                    &op,
+                    &input_tensors,
+                    &outputs,
+                    out_id,
+                );
                 if let Some(e) = entry {
                     self.tape.push(e);
                 }
@@ -196,34 +216,27 @@ impl AutogradEngine {
                 input_b: input_ids[1],
                 output: out_id,
             }),
-            "exp" => Some(TapeEntry::Exp {
-                input: input_ids[0],
-                output: out_id,
-            }),
-            "sqrt" => Some(TapeEntry::Sqrt {
-                input: input_ids[0],
-                output: out_id,
-            }),
-            "log" => Some(TapeEntry::Log {
-                input: input_ids[0],
-                output: out_id,
-            }),
-            "neg" => Some(TapeEntry::Neg {
-                input: input_ids[0],
-                output: out_id,
-            }),
-            "relu" => Some(TapeEntry::Relu {
-                input: input_ids[0],
-                output: out_id,
-            }),
-            "sigmoid" => Some(TapeEntry::Sigmoid {
-                input: input_ids[0],
-                output: out_id,
-            }),
-            "tanh" => Some(TapeEntry::Tanh {
-                input: input_ids[0],
-                output: out_id,
-            }),
+            "exp" => {
+                Some(TapeEntry::Exp { input: input_ids[0], output: out_id })
+            }
+            "sqrt" => {
+                Some(TapeEntry::Sqrt { input: input_ids[0], output: out_id })
+            }
+            "log" => {
+                Some(TapeEntry::Log { input: input_ids[0], output: out_id })
+            }
+            "neg" => {
+                Some(TapeEntry::Neg { input: input_ids[0], output: out_id })
+            }
+            "relu" => {
+                Some(TapeEntry::Relu { input: input_ids[0], output: out_id })
+            }
+            "sigmoid" => {
+                Some(TapeEntry::Sigmoid { input: input_ids[0], output: out_id })
+            }
+            "tanh" => {
+                Some(TapeEntry::Tanh { input: input_ids[0], output: out_id })
+            }
             "matmul" => Some(TapeEntry::MatMul {
                 input_a: input_ids[0],
                 input_b: input_ids[1],
@@ -236,10 +249,14 @@ impl AutogradEngine {
             }),
             "concat" => Some(TapeEntry::Concat {
                 inputs: input_ids.clone(),
-                dim: op.attrs.get("dim").and_then(|v| match v {
-                    crate::ir::dag::AttrValue::Int(i) => Some(*i as usize),
-                    _ => None,
-                }).unwrap_or(0),
+                dim: op
+                    .attrs
+                    .get("dim")
+                    .and_then(|v| match v {
+                        crate::ir::dag::AttrValue::Int(i) => Some(*i as usize),
+                        _ => None,
+                    })
+                    .unwrap_or(0),
                 output: out_id,
             }),
             "pow" => {
@@ -252,54 +269,90 @@ impl AutogradEngine {
             }
             "softmax" => Some(TapeEntry::Softmax {
                 input: input_ids[0],
-                dim: op.attrs.get("dim").and_then(|v| match v {
-                    crate::ir::dag::AttrValue::Int(i) => Some(*i as usize),
-                    _ => None,
-                }).unwrap_or(0),
+                dim: op
+                    .attrs
+                    .get("dim")
+                    .and_then(|v| match v {
+                        crate::ir::dag::AttrValue::Int(i) => Some(*i as usize),
+                        _ => None,
+                    })
+                    .unwrap_or(0),
                 output: out_id,
             }),
             "sum" => Some(TapeEntry::ReduceSum {
                 input: input_ids[0],
-                dim: op.attrs.get("dim").and_then(|v| match v {
-                    crate::ir::dag::AttrValue::Int(i) => Some(*i as usize),
-                    _ => None,
-                }).unwrap_or(0),
-                keepdim: op.attrs.get("keepdim").and_then(|v| match v {
-                    crate::ir::dag::AttrValue::Bool(b) => Some(*b),
-                    _ => None,
-                }).unwrap_or(false),
+                dim: op
+                    .attrs
+                    .get("dim")
+                    .and_then(|v| match v {
+                        crate::ir::dag::AttrValue::Int(i) => Some(*i as usize),
+                        _ => None,
+                    })
+                    .unwrap_or(0),
+                keepdim: op
+                    .attrs
+                    .get("keepdim")
+                    .and_then(|v| match v {
+                        crate::ir::dag::AttrValue::Bool(b) => Some(*b),
+                        _ => None,
+                    })
+                    .unwrap_or(false),
                 output: out_id,
             }),
             "mean" => Some(TapeEntry::ReduceMean {
                 input: input_ids[0],
-                dim: op.attrs.get("dim").and_then(|v| match v {
-                    crate::ir::dag::AttrValue::Int(i) => Some(*i as usize),
-                    _ => None,
-                }).unwrap_or(0),
-                keepdim: op.attrs.get("keepdim").and_then(|v| match v {
-                    crate::ir::dag::AttrValue::Bool(b) => Some(*b),
-                    _ => None,
-                }).unwrap_or(false),
+                dim: op
+                    .attrs
+                    .get("dim")
+                    .and_then(|v| match v {
+                        crate::ir::dag::AttrValue::Int(i) => Some(*i as usize),
+                        _ => None,
+                    })
+                    .unwrap_or(0),
+                keepdim: op
+                    .attrs
+                    .get("keepdim")
+                    .and_then(|v| match v {
+                        crate::ir::dag::AttrValue::Bool(b) => Some(*b),
+                        _ => None,
+                    })
+                    .unwrap_or(false),
                 output: out_id,
             }),
             "slice" => Some(TapeEntry::Slice {
                 input: input_ids[0],
-                dim: op.attrs.get("dim").and_then(|v| match v {
-                    crate::ir::dag::AttrValue::Int(i) => Some(*i as usize),
-                    _ => None,
-                }).unwrap_or(0),
-                start: op.attrs.get("start").and_then(|v| match v {
-                    crate::ir::dag::AttrValue::Int(i) => Some(*i),
-                    _ => None,
-                }).unwrap_or(0),
-                end: op.attrs.get("end").and_then(|v| match v {
-                    crate::ir::dag::AttrValue::Int(i) => Some(*i),
-                    _ => None,
-                }).unwrap_or(-1),
-                step: op.attrs.get("step").and_then(|v| match v {
-                    crate::ir::dag::AttrValue::Int(i) => Some(*i),
-                    _ => None,
-                }).unwrap_or(1),
+                dim: op
+                    .attrs
+                    .get("dim")
+                    .and_then(|v| match v {
+                        crate::ir::dag::AttrValue::Int(i) => Some(*i as usize),
+                        _ => None,
+                    })
+                    .unwrap_or(0),
+                start: op
+                    .attrs
+                    .get("start")
+                    .and_then(|v| match v {
+                        crate::ir::dag::AttrValue::Int(i) => Some(*i),
+                        _ => None,
+                    })
+                    .unwrap_or(0),
+                end: op
+                    .attrs
+                    .get("end")
+                    .and_then(|v| match v {
+                        crate::ir::dag::AttrValue::Int(i) => Some(*i),
+                        _ => None,
+                    })
+                    .unwrap_or(-1),
+                step: op
+                    .attrs
+                    .get("step")
+                    .and_then(|v| match v {
+                        crate::ir::dag::AttrValue::Int(i) => Some(*i),
+                        _ => None,
+                    })
+                    .unwrap_or(1),
                 output: out_id,
             }),
             "squeeze" => Some(TapeEntry::Squeeze {
@@ -312,10 +365,14 @@ impl AutogradEngine {
             }),
             "unsqueeze" => Some(TapeEntry::Unsqueeze {
                 input: input_ids[0],
-                dim: op.attrs.get("dim").and_then(|v| match v {
-                    crate::ir::dag::AttrValue::Int(i) => Some(*i as usize),
-                    _ => None,
-                }).unwrap_or(0),
+                dim: op
+                    .attrs
+                    .get("dim")
+                    .and_then(|v| match v {
+                        crate::ir::dag::AttrValue::Int(i) => Some(*i as usize),
+                        _ => None,
+                    })
+                    .unwrap_or(0),
                 output: out_id,
             }),
             "select" => Some(TapeEntry::Select {
@@ -334,7 +391,11 @@ impl AutogradEngine {
                 let padding = attrs_get_int(&op.attrs, "padding", 0);
                 let dilation = attrs_get_int(&op.attrs, "dilation", 1);
                 let groups = attrs_get_int(&op.attrs, "groups", 1);
-                let bias = if input_ids.len() >= 3 { Some(input_ids[2]) } else { None };
+                let bias = if input_ids.len() >= 3 {
+                    Some(input_ids[2])
+                } else {
+                    None
+                };
                 Some(TapeEntry::Conv2d {
                     input: input_ids[0],
                     weight: input_ids[1],
@@ -403,7 +464,10 @@ impl AutogradEngine {
     // 反向传播
     // ============================================================
 
-    pub fn backward(&mut self, loss: &Tensor<f32>) -> Result<&HashMap<u64, Tensor<f32>>, String> {
+    pub fn backward(
+        &mut self,
+        loss: &Tensor<f32>,
+    ) -> Result<&HashMap<u64, Tensor<f32>>, String> {
         if !self.config.enable_grad {
             return Ok(&self.grads);
         }
@@ -441,7 +505,8 @@ impl AutogradEngine {
 
     // 梯度累积
     pub fn accumulate_grad(&mut self, param_id: u64, grad: Tensor<f32>) {
-        self.grads.entry(param_id)
+        self.grads
+            .entry(param_id)
             .and_modify(|existing| {
                 // 累加梯度
                 let existing_data = existing.data_mut();
@@ -493,7 +558,9 @@ impl AutogradEngine {
             let mut max_diff = 0.0;
             for i in 0..computed.len() {
                 let diff = (computed[i] - numeric[i]).abs();
-                if diff > max_diff { max_diff = diff; }
+                if diff > max_diff {
+                    max_diff = diff;
+                }
             }
             max_diff < eps
         } else {
@@ -505,9 +572,15 @@ impl AutogradEngine {
     // 工具函数
     // ============================================================
 
-    fn bytes_to_tensor(data: &[u8], shape: &[usize]) -> Result<Tensor<f32>, String> {
-        let float_data: Vec<f32> = data.chunks(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+    fn bytes_to_tensor(
+        data: &[u8],
+        shape: &[usize],
+    ) -> Result<Tensor<f32>, String> {
+        let float_data: Vec<f32> = data
+            .chunks(4)
+            .map(|chunk| {
+                f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+            })
             .collect();
         Ok(Tensor::new(float_data, shape))
     }
@@ -521,18 +594,30 @@ impl AutogradEngine {
 // 辅助函数
 // ============================================================
 
-fn attrs_get_int(attrs: &std::collections::HashMap<String, crate::ir::dag::AttrValue>, key: &str, default: usize) -> usize {
-    attrs.get(key)
+fn attrs_get_int(
+    attrs: &std::collections::HashMap<String, crate::ir::dag::AttrValue>,
+    key: &str,
+    default: usize,
+) -> usize {
+    attrs
+        .get(key)
         .and_then(|v| match v {
             crate::ir::dag::AttrValue::Int(i) => Some(*i as usize),
-            crate::ir::dag::AttrValue::IntList(list) if !list.is_empty() => Some(list[0] as usize),
+            crate::ir::dag::AttrValue::IntList(list) if !list.is_empty() => {
+                Some(list[0] as usize)
+            }
             _ => None,
         })
         .unwrap_or(default)
 }
 
-fn attrs_get_float(attrs: &std::collections::HashMap<String, crate::ir::dag::AttrValue>, key: &str, default: f32) -> f32 {
-    attrs.get(key)
+fn attrs_get_float(
+    attrs: &std::collections::HashMap<String, crate::ir::dag::AttrValue>,
+    key: &str,
+    default: f32,
+) -> f32 {
+    attrs
+        .get(key)
         .and_then(|v| match v {
             crate::ir::dag::AttrValue::Float(f) => Some(*f as f32),
             crate::ir::dag::AttrValue::Int(i) => Some(*i as f32),

@@ -1,14 +1,15 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // 1. 浮点泛型 Forward (近似版本)
 // ============================================================
 
 pub fn gelu<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
-    let data: Vec<T> = a.data()
+    let data: Vec<T> = a
+        .data()
         .par_iter()
         .map(|&x| {
             let v = x.to_f32();
@@ -40,7 +41,8 @@ pub fn gelu_backward<T: DType>(
         let cosh_val = (c * (v + 0.044715 * x3)).cosh();
         let sech2 = 1.0 / (cosh_val * cosh_val);
 
-        let dgelu = 0.5 * (1.0 + tanh_val) + 0.5 * v * sech2 * (c * (1.0 + 3.0 * 0.044715 * v * v));
+        let dgelu = 0.5 * (1.0 + tanh_val)
+            + 0.5 * v * sech2 * (c * (1.0 + 3.0 * 0.044715 * v * v));
         grad.data_mut()[i] = T::from_f32(grad.data()[i].to_f32() * dgelu);
     }
     vec![grad]
@@ -57,7 +59,8 @@ pub fn quantized_gelu(a: &Tensor<i8>) -> Tensor<i8> {
     let scale = a.scale().unwrap_or(1.0);
     let zero = a.zero_point().unwrap_or(0.0);
 
-    let data: Vec<i8> = c_fp.data()
+    let data: Vec<i8> = c_fp
+        .data()
         .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
@@ -80,7 +83,8 @@ pub fn quantized_gelu_backward(
     let scale = a.scale().unwrap_or(1.0);
     let zero = a.zero_point().unwrap_or(0.0);
 
-    let data: Vec<i8> = grads[0].data()
+    let data: Vec<i8> = grads[0]
+        .data()
         .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
@@ -95,12 +99,19 @@ pub fn quantized_gelu_backward(
 pub struct GeluOp;
 
 impl<T: DType + Send + Sync> Operator<T> for GeluOp {
-    fn name(&self) -> &'static str { "gelu" }
+    fn name(&self) -> &'static str {
+        "gelu"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         gelu(inputs[0])
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 1);
         gelu_backward(grad, inputs[0])
     }
@@ -109,16 +120,25 @@ impl<T: DType + Send + Sync> Operator<T> for GeluOp {
 pub struct QuantizedGeluOp;
 
 impl Operator<i8> for QuantizedGeluOp {
-    fn name(&self) -> &'static str { "quantized_gelu" }
+    fn name(&self) -> &'static str {
+        "quantized_gelu"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
         quantized_gelu(inputs[0])
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         assert_eq!(inputs.len(), 1);
         quantized_gelu_backward(grad, inputs[0])
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

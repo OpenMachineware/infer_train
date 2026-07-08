@@ -1,7 +1,7 @@
 // src/transform/cfg_dce.rs
 
-use std::collections::{HashSet, VecDeque};
 use crate::ir::cfg::CfgGraph;
+use std::collections::{HashSet, VecDeque};
 
 pub struct CfgDCEPass;
 
@@ -13,7 +13,9 @@ impl CfgDCEPass {
         let reachable = Self::mark_reachable_blocks(cfg);
 
         // 2. 删除不可达块
-        let dead_blocks: Vec<u64> = cfg.blocks.keys()
+        let dead_blocks: Vec<u64> = cfg
+            .blocks
+            .keys()
             .filter(|&id| !reachable.contains(id))
             .cloned()
             .collect();
@@ -75,7 +77,8 @@ impl CfgDCEPass {
         let mut live_ops = HashSet::new();
         for block in cfg.blocks.values() {
             for op in &block.ops {
-                let has_live_output = op.outputs.iter().any(|out| used_values.contains(out));
+                let has_live_output =
+                    op.outputs.iter().any(|out| used_values.contains(out));
                 if has_live_output {
                     live_ops.insert(op.id);
                 }
@@ -97,11 +100,11 @@ impl CfgDCEPass {
         let mut changed = false;
 
         // 先收集需要合并的块 ID
-        let blocks_to_merge: Vec<u64> = cfg.blocks.iter()
+        let blocks_to_merge: Vec<u64> = cfg
+            .blocks
+            .iter()
             .filter(|(_, block)| {
-                block.successors.len() == 1 &&
-                    !block.is_exit &&
-                    !block.is_entry
+                block.successors.len() == 1 && !block.is_exit && !block.is_entry
             })
             .map(|(&id, _)| id)
             .collect();

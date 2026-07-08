@@ -1,9 +1,9 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
-use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
-use crate::ops::linalg::matmul;
 use crate::ops::activation::softmax;
+use crate::ops::linalg::matmul;
+use crate::ops::registry::{OpAttrs, Operator};
+use crate::tensor::Tensor;
 
 // ============================================================
 // 1. 浮点泛型 Forward
@@ -24,7 +24,8 @@ pub fn scaled_dot_product_attention<T: DType + Send + Sync>(
     assert_eq!(k_shape.len(), 4, "SDPA: key must be 4D [B, H, L, D]");
     assert_eq!(v_shape.len(), 4, "SDPA: value must be 4D [B, H, L, D]");
 
-    let (batch, heads, seq_len, head_dim) = (q_shape[0], q_shape[1], q_shape[2], q_shape[3]);
+    let (batch, heads, seq_len, head_dim) =
+        (q_shape[0], q_shape[1], q_shape[2], q_shape[3]);
     assert_eq!(key.shape()[3], head_dim, "Key head dim mismatch");
     assert_eq!(value.shape()[2], seq_len, "Value seq len mismatch");
     assert_eq!(value.shape()[3], head_dim, "Value head dim mismatch");
@@ -34,11 +35,8 @@ pub fn scaled_dot_product_attention<T: DType + Send + Sync>(
     let mut scores = matmul::matmul(query, &k_t);
 
     // 应用 scale
-    let scale_val = if scale == 0.0 {
-        1.0 / (head_dim as f32).sqrt()
-    } else {
-        scale
-    };
+    let scale_val =
+        if scale == 0.0 { 1.0 / (head_dim as f32).sqrt() } else { scale };
 
     for v in scores.data_mut() {
         *v = T::from_f32(v.to_f32() * scale_val);
@@ -55,7 +53,8 @@ pub fn scaled_dot_product_attention<T: DType + Send + Sync>(
                     for j in 0..l {
                         if j > i {
                             let idx = ((b * heads + h) * l + i) * l + j;
-                            scores.data_mut()[idx] = T::from_f32(f32::NEG_INFINITY);
+                            scores.data_mut()[idx] =
+                                T::from_f32(f32::NEG_INFINITY);
                         }
                     }
                 }
@@ -91,16 +90,27 @@ pub fn scaled_dot_product_attention_backward<T: DType>(
 pub struct SdpaOp;
 
 impl<T: DType + Send + Sync> Operator<T> for SdpaOp {
-    fn name(&self) -> &'static str { "scaled_dot_product_attention" }
+    fn name(&self) -> &'static str {
+        "scaled_dot_product_attention"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 3);
         let scale = attrs.get_float("scale").unwrap_or(0.0);
         let is_causal = attrs.get_bool("is_causal").unwrap_or(false);
-        scaled_dot_product_attention(inputs[0], inputs[1], inputs[2], scale, is_causal)
+        scaled_dot_product_attention(
+            inputs[0], inputs[1], inputs[2], scale, is_causal,
+        )
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 3);
-        scaled_dot_product_attention_backward(grad, inputs[0], inputs[1], inputs[2])
+        scaled_dot_product_attention_backward(
+            grad, inputs[0], inputs[1], inputs[2],
+        )
     }
 }
 

@@ -1,15 +1,15 @@
 // src/frontend/hook.rs
 
 use pyo3::prelude::*;
-use pyo3::types::{PyTuple};
+use pyo3::types::PyTuple;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::ir::cfg::{CfgGraph, CfgOp};
-use crate::ir::dag::{AttrValue, DataType, DagGraph};
-use crate::transform::FullOptimizer;
-use crate::ir::serialize::ModelFile;
 use crate::autograd::AutogradEngine;
+use crate::ir::cfg::{CfgGraph, CfgOp};
+use crate::ir::dag::{AttrValue, DagGraph, DataType};
+use crate::ir::serialize::ModelFile;
+use crate::transform::FullOptimizer;
 
 // ============================================================
 // 辅助函数（在 impl HookTracer 外面，避开 #[pymethods]）
@@ -33,7 +33,10 @@ fn extract_value_id(py: Python<'_>, obj: &Py<PyAny>) -> Result<u64, String> {
     Ok(obj.as_ptr() as u64)
 }
 
-fn extract_tensor_info(py: Python<'_>, obj: &Py<PyAny>) -> Result<(DataType, Vec<i64>), String> {
+fn extract_tensor_info(
+    py: Python<'_>,
+    obj: &Py<PyAny>,
+) -> Result<(DataType, Vec<i64>), String> {
     let obj = obj.bind(py);
 
     // 暂时注释 pytensor/ffi 依赖，直接通过 Python 属性获取
@@ -67,10 +70,18 @@ fn extract_tensor_info(py: Python<'_>, obj: &Py<PyAny>) -> Result<(DataType, Vec
             };
 
             let rust_dtype = match dtype_str.as_str() {
-                s if s.contains("float32") || s.contains("f32") => DataType::F32,
-                s if s.contains("float64") || s.contains("f64") => DataType::F64,
-                s if s.contains("float16") || s.contains("f16") => DataType::F16,
-                s if s.contains("bfloat16") || s.contains("bf16") => DataType::BF16,
+                s if s.contains("float32") || s.contains("f32") => {
+                    DataType::F32
+                }
+                s if s.contains("float64") || s.contains("f64") => {
+                    DataType::F64
+                }
+                s if s.contains("float16") || s.contains("f16") => {
+                    DataType::F16
+                }
+                s if s.contains("bfloat16") || s.contains("bf16") => {
+                    DataType::BF16
+                }
                 s if s.contains("int8") || s.contains("i8") => DataType::I8,
                 s if s.contains("int32") || s.contains("i32") => DataType::I32,
                 s if s.contains("int64") || s.contains("i64") => DataType::I64,
@@ -85,7 +96,10 @@ fn extract_tensor_info(py: Python<'_>, obj: &Py<PyAny>) -> Result<(DataType, Vec
     Ok((DataType::F32, Vec::new()))
 }
 
-fn convert_attrs(py: Python<'_>, attrs: &HashMap<String, PyObject>) -> Result<HashMap<String, AttrValue>, String> {
+fn convert_attrs(
+    py: Python<'_>,
+    attrs: &HashMap<String, PyObject>,
+) -> Result<HashMap<String, AttrValue>, String> {
     let mut result = HashMap::new();
 
     for (key, value) in attrs {
@@ -231,7 +245,8 @@ impl HookTracer {
 
         // 创建或获取 AutogradEngine
         if self.autograd.is_none() {
-            self.autograd = Some(AutogradEngine::new(dag, self.param_ids.clone()));
+            self.autograd =
+                Some(AutogradEngine::new(dag, self.param_ids.clone()));
         }
 
         // 从 loss 提取 Tensor
@@ -293,16 +308,18 @@ impl HookTracer {
             // --- 提取 input IDs ---
             let mut input_ids = Vec::new();
             for obj in &inputs {
-                let id = extract_value_id(py, obj)
-                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+                let id = extract_value_id(py, obj).map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(e)
+                })?;
                 input_ids.push(id);
             }
 
             // --- 提取 output IDs ---
             let mut output_ids = Vec::new();
             for obj in &outputs {
-                let id = extract_value_id(py, obj)
-                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+                let id = extract_value_id(py, obj).map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(e)
+                })?;
                 output_ids.push(id);
             }
 
@@ -313,7 +330,9 @@ impl HookTracer {
             let op_id = self.op_counter;
             self.op_counter += 1;
 
-            let op_name = name.clone().unwrap_or_else(|| format!("{}_{}", op_type, op_id));
+            let op_name = name
+                .clone()
+                .unwrap_or_else(|| format!("{}_{}", op_type, op_id));
 
             let cfg_op = CfgOp {
                 id: op_id,
@@ -326,15 +345,18 @@ impl HookTracer {
 
             {
                 let mut cfg = self.cfg.lock().unwrap();
-                cfg.add_op(self.current_block, cfg_op)
-                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+                cfg.add_op(self.current_block, cfg_op).map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(e)
+                })?;
             }
 
             // --- 提取 tensor info ---
             for (i, out_id) in output_ids.iter().enumerate() {
                 self.value_map.insert(*out_id, *out_id);
                 if i < outputs.len() {
-                    if let Ok((dtype, shape)) = extract_tensor_info(py, &outputs[i]) {
+                    if let Ok((dtype, shape)) =
+                        extract_tensor_info(py, &outputs[i])
+                    {
                         let mut cfg = self.cfg.lock().unwrap();
                         cfg.value_types.insert(*out_id, (dtype, shape));
                     }
@@ -355,7 +377,8 @@ impl HookTracer {
             return Ok(0);
         }
 
-        let block_name = name.unwrap_or_else(|| format!("block_{}", self.block_counter));
+        let block_name =
+            name.unwrap_or_else(|| format!("block_{}", self.block_counter));
         self.block_counter += 1;
 
         let mut cfg = self.cfg.lock().unwrap();
@@ -400,8 +423,14 @@ impl HookTracer {
         let mut cfg = self.cfg.lock().unwrap();
         let merge_id = cfg.add_block(&merge_name);
 
-        cfg.set_branch(self.current_block, cond_id, true_block, false_block, merge_id)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        cfg.set_branch(
+            self.current_block,
+            cond_id,
+            true_block,
+            false_block,
+            merge_id,
+        )
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
         cfg.add_edge(self.current_block, true_block)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
         cfg.add_edge(self.current_block, false_block)
@@ -537,7 +566,8 @@ impl HookTracer {
             ModelFile::new(&self.model_name, &self.framework, dag)
         };
 
-        model_file.export(&path)
+        model_file
+            .export(&path)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
 
         Ok(())
@@ -555,7 +585,10 @@ impl HookTracer {
         let cfg = self.cfg.lock().unwrap();
         let mut stats = HashMap::new();
         stats.insert("blocks".to_string(), cfg.blocks.len());
-        stats.insert("ops".to_string(), cfg.blocks.values().map(|b| b.ops.len()).sum());
+        stats.insert(
+            "ops".to_string(),
+            cfg.blocks.values().map(|b| b.ops.len()).sum(),
+        );
         stats.insert("values".to_string(), cfg.value_types.len());
         stats.insert("inputs".to_string(), cfg.inputs.len());
         stats.insert("outputs".to_string(), cfg.outputs.len());

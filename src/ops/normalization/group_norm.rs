@@ -1,7 +1,7 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. 浮点泛型 Forward
@@ -133,7 +133,9 @@ pub fn group_norm_backward<T: DType>(
                 let gamma_val = gamma_data[ch].to_f32();
                 for s in 0..spatial {
                     let idx = base + s;
-                    grad_x[idx] = T::from_f32(grad_data[idx].to_f32() * gamma_val * inv_std);
+                    grad_x[idx] = T::from_f32(
+                        grad_data[idx].to_f32() * gamma_val * inv_std,
+                    );
                 }
             }
         }
@@ -149,14 +151,21 @@ pub fn group_norm_backward<T: DType>(
 pub struct GroupNormOp;
 
 impl<T: DType + Send + Sync> Operator<T> for GroupNormOp {
-    fn name(&self) -> &'static str { "group_norm" }
+    fn name(&self) -> &'static str {
+        "group_norm"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 3);
         let num_groups = attrs.get_int("num_groups").unwrap_or(1) as usize;
         let eps = attrs.get_float("eps").unwrap_or(1e-5);
         group_norm(inputs[0], inputs[1], inputs[2], num_groups, eps)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 3);
         let num_groups = attrs.get_int("num_groups").unwrap_or(1) as usize;
         let eps = attrs.get_float("eps").unwrap_or(1e-5);
@@ -170,7 +179,10 @@ mod tests {
 
     #[test]
     fn test_group_norm() {
-        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 4, 1]);
+        let x = Tensor::new(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            &[2, 4, 1],
+        );
         let gamma = Tensor::new(vec![1.0, 1.0, 1.0, 1.0], &[4]);
         let beta = Tensor::new(vec![0.0, 0.0, 0.0, 0.0], &[4]);
         let c = group_norm(&x, &gamma, &beta, 2, 1e-5);

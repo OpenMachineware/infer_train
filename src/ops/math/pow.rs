@@ -1,7 +1,7 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // 1. 浮点泛型 Forward
@@ -10,7 +10,8 @@ use crate::ops::registry::{Operator, OpAttrs};
 pub fn pow<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Tensor<T> {
     assert_eq!(a.shape(), b.shape(), "Shape mismatch in pow");
 
-    let data: Vec<T> = a.data()
+    let data: Vec<T> = a
+        .data()
         .par_iter()
         .zip(b.data().par_iter())
         .map(|(&x, &y)| T::from_f32(x.to_f32().powf(y.to_f32())))
@@ -34,8 +35,12 @@ pub fn pow_backward<T: DType>(
         let a_f32 = a.data()[i].to_f32();
         let b_f32 = b.data()[i].to_f32();
         if a_f32 > 0.0 {
-            grad_a.data_mut()[i] = T::from_f32(grad_a.data()[i].to_f32() * b_f32 * a_f32.powf(b_f32 - 1.0));
-            grad_b.data_mut()[i] = T::from_f32(grad_b.data()[i].to_f32() * a_f32.powf(b_f32) * a_f32.ln());
+            grad_a.data_mut()[i] = T::from_f32(
+                grad_a.data()[i].to_f32() * b_f32 * a_f32.powf(b_f32 - 1.0),
+            );
+            grad_b.data_mut()[i] = T::from_f32(
+                grad_b.data()[i].to_f32() * a_f32.powf(b_f32) * a_f32.ln(),
+            );
         } else {
             grad_a.data_mut()[i] = T::from_f32(0.0);
             grad_b.data_mut()[i] = T::from_f32(0.0);
@@ -59,7 +64,8 @@ pub fn quantized_pow(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
     let scale = scale_a;
     let zero = zero_a;
 
-    let result_fp: Vec<f32> = a.data()
+    let result_fp: Vec<f32> = a
+        .data()
         .iter()
         .zip(b.data().iter())
         .map(|(&x, &y)| {
@@ -69,7 +75,8 @@ pub fn quantized_pow(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
         })
         .collect();
 
-    let data: Vec<i8> = result_fp.iter()
+    let data: Vec<i8> = result_fp
+        .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
 
@@ -109,12 +116,19 @@ pub fn quantized_pow_backward(
 pub struct PowOp;
 
 impl<T: DType + Send + Sync> Operator<T> for PowOp {
-    fn name(&self) -> &'static str { "pow" }
+    fn name(&self) -> &'static str {
+        "pow"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 2);
         pow(inputs[0], inputs[1])
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 2);
         pow_backward(grad, inputs[0], inputs[1])
     }
@@ -123,16 +137,25 @@ impl<T: DType + Send + Sync> Operator<T> for PowOp {
 pub struct QuantizedPowOp;
 
 impl Operator<i8> for QuantizedPowOp {
-    fn name(&self) -> &'static str { "quantized_pow" }
+    fn name(&self) -> &'static str {
+        "quantized_pow"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 2);
         quantized_pow(inputs[0], inputs[1])
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         assert_eq!(inputs.len(), 2);
         quantized_pow_backward(grad, inputs[0], inputs[1])
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

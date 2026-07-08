@@ -1,13 +1,16 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 辅助：获取形状
 // ============================================================
 
-fn get_matmul_dims(a: &[usize], b: &[usize]) -> (usize, usize, usize, usize, usize, usize) {
+fn get_matmul_dims(
+    a: &[usize],
+    b: &[usize],
+) -> (usize, usize, usize, usize, usize, usize) {
     // 返回: (batch_dims, m, k, n, a_rank, b_rank)
     let a_rank = a.len();
     let b_rank = b.len();
@@ -17,7 +20,11 @@ fn get_matmul_dims(a: &[usize], b: &[usize]) -> (usize, usize, usize, usize, usi
     let k_b = b[b_rank - 2];
     let n = b[b_rank - 1];
 
-    assert_eq!(k_a, k_b, "Matmul: inner dimensions must match: {} vs {}", k_a, k_b);
+    assert_eq!(
+        k_a, k_b,
+        "Matmul: inner dimensions must match: {} vs {}",
+        k_a, k_b
+    );
 
     let batch_dims = a_rank.max(b_rank) - 2;
     (batch_dims, m, k_a, n, a_rank, b_rank)
@@ -34,10 +41,14 @@ fn get_batch_stride(shape: &[usize], dim: usize) -> usize {
 // 1. 浮点泛型 Forward
 // ============================================================
 
-pub fn matmul<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Tensor<T> {
+pub fn matmul<T: DType + Send + Sync>(
+    a: &Tensor<T>,
+    b: &Tensor<T>,
+) -> Tensor<T> {
     let a_shape = a.shape();
     let b_shape = b.shape();
-    let (batch_dims, m, k, n, a_rank, b_rank) = get_matmul_dims(a_shape, b_shape);
+    let (batch_dims, m, k, n, a_rank, b_rank) =
+        get_matmul_dims(a_shape, b_shape);
 
     // 计算输出形状
     let mut out_shape = Vec::new();
@@ -52,8 +63,10 @@ pub fn matmul<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Tensor<T>
     let out_size: usize = out_shape.iter().product();
     let mut out_data = vec![T::from_f32(0.0); out_size];
 
-    let _a_batch_stride = if a_rank >= 2 { get_batch_stride(a_shape, a_rank - 2) } else { 1 };
-    let _b_batch_stride = if b_rank >= 2 { get_batch_stride(b_shape, b_rank - 2) } else { 1 };
+    let _a_batch_stride =
+        if a_rank >= 2 { get_batch_stride(a_shape, a_rank - 2) } else { 1 };
+    let _b_batch_stride =
+        if b_rank >= 2 { get_batch_stride(b_shape, b_rank - 2) } else { 1 };
     let out_batch_stride = m * n;
 
     let batch_total: usize = out_shape[..batch_dims].iter().product();
@@ -74,12 +87,14 @@ pub fn matmul<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Tensor<T>
             if dim < a_rank - 2 {
                 let a_dim = a_shape[dim];
                 let a_idx = if a_dim == 1 { 0 } else { idx % a_dim };
-                a_offset += a_idx * a_shape[dim + 1..].iter().product::<usize>();
+                a_offset +=
+                    a_idx * a_shape[dim + 1..].iter().product::<usize>();
             }
             if dim < b_rank - 2 {
                 let b_dim = b_shape[dim];
                 let b_idx = if b_dim == 1 { 0 } else { idx % b_dim };
-                b_offset += b_idx * b_shape[dim + 1..].iter().product::<usize>();
+                b_offset +=
+                    b_idx * b_shape[dim + 1..].iter().product::<usize>();
             }
         }
         batch_offsets.push((a_offset, b_offset));
@@ -133,7 +148,8 @@ pub fn quantized_matmul(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
     let scale = a.scale().unwrap_or(1.0);
     let zero = a.zero_point().unwrap_or(0.0);
 
-    let data: Vec<i8> = c_fp.data()
+    let data: Vec<i8> = c_fp
+        .data()
         .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
@@ -161,11 +177,17 @@ pub fn quantized_matmul_backward(
 
     let mut result = Vec::new();
     for grad in grads {
-        let data: Vec<i8> = grad.data()
+        let data: Vec<i8> = grad
+            .data()
             .iter()
             .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
             .collect();
-        result.push(Tensor::<i8>::new_quantized(data, grad.shape(), scale, zero));
+        result.push(Tensor::<i8>::new_quantized(
+            data,
+            grad.shape(),
+            scale,
+            zero,
+        ));
     }
     result
 }
@@ -177,12 +199,19 @@ pub fn quantized_matmul_backward(
 pub struct MatMulOp;
 
 impl<T: DType + Send + Sync> Operator<T> for MatMulOp {
-    fn name(&self) -> &'static str { "matmul" }
+    fn name(&self) -> &'static str {
+        "matmul"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 2);
         matmul(inputs[0], inputs[1])
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 2);
         matmul_backward(grad, inputs[0], inputs[1])
     }
@@ -191,16 +220,25 @@ impl<T: DType + Send + Sync> Operator<T> for MatMulOp {
 pub struct QuantizedMatMulOp;
 
 impl Operator<i8> for QuantizedMatMulOp {
-    fn name(&self) -> &'static str { "quantized_matmul" }
+    fn name(&self) -> &'static str {
+        "quantized_matmul"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 2);
         quantized_matmul(inputs[0], inputs[1])
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         assert_eq!(inputs.len(), 2);
         quantized_matmul_backward(grad, inputs[0], inputs[1])
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 // ============================================================
@@ -231,8 +269,14 @@ mod tests {
 
     #[test]
     fn test_matmul_batch() {
-        let a = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]);
-        let b = Tensor::new(vec![1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 2.0], &[2, 2, 2]);
+        let a = Tensor::new(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            &[2, 2, 2],
+        );
+        let b = Tensor::new(
+            vec![1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 2.0],
+            &[2, 2, 2],
+        );
         let c = matmul(&a, &b);
         assert_eq!(c.data(), &[1.0, 2.0, 3.0, 4.0, 10.0, 12.0, 14.0, 16.0]);
         assert_eq!(c.shape(), &[2, 2, 2]);
@@ -250,8 +294,14 @@ mod tests {
 
     #[test]
     fn test_quantized_matmul() {
-        let a = Tensor::<i8>::new_quantized(vec![10, 20, 30, 40], &[2, 2], 0.1, 0.0);
-        let b = Tensor::<i8>::new_quantized(vec![20, 0, 10, 30], &[2, 2], 0.1, 0.0);
+        let a = Tensor::<i8>::new_quantized(
+            vec![10, 20, 30, 40],
+            &[2, 2],
+            0.1,
+            0.0,
+        );
+        let b =
+            Tensor::<i8>::new_quantized(vec![20, 0, 10, 30], &[2, 2], 0.1, 0.0);
         let c = quantized_matmul(&a, &b);
         assert_eq!(c.data(), &[40, 60, 100, 120]);
         assert_eq!(c.shape(), &[2, 2]);

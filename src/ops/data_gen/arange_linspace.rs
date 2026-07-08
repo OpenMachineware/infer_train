@@ -1,18 +1,21 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. Arange (等差序列)
 // ============================================================
 
-pub fn arange<T: DType + Send + Sync>(start: f32, end: f32, step: f32) -> Tensor<T> {
+pub fn arange<T: DType + Send + Sync>(
+    start: f32,
+    end: f32,
+    step: f32,
+) -> Tensor<T> {
     assert!(step > 0.0, "arange: step must be positive");
     let len = ((end - start) / step).ceil() as usize;
-    let data: Vec<T> = (0..len)
-        .map(|i| T::from_f32(start + i as f32 * step))
-        .collect();
+    let data: Vec<T> =
+        (0..len).map(|i| T::from_f32(start + i as f32 * step)).collect();
     Tensor::new(data, &[len])
 }
 
@@ -20,12 +23,15 @@ pub fn arange<T: DType + Send + Sync>(start: f32, end: f32, step: f32) -> Tensor
 // 2. Linspace (线性间隔)
 // ============================================================
 
-pub fn linspace<T: DType + Send + Sync>(start: f32, end: f32, steps: usize) -> Tensor<T> {
+pub fn linspace<T: DType + Send + Sync>(
+    start: f32,
+    end: f32,
+    steps: usize,
+) -> Tensor<T> {
     assert!(steps > 1, "linspace: steps must be > 1");
     let step = (end - start) / (steps - 1) as f32;
-    let data: Vec<T> = (0..steps)
-        .map(|i| T::from_f32(start + i as f32 * step))
-        .collect();
+    let data: Vec<T> =
+        (0..steps).map(|i| T::from_f32(start + i as f32 * step)).collect();
     Tensor::new(data, &[steps])
 }
 
@@ -36,14 +42,21 @@ pub fn linspace<T: DType + Send + Sync>(start: f32, end: f32, steps: usize) -> T
 pub struct ArangeOp;
 
 impl<T: DType + Send + Sync> Operator<T> for ArangeOp {
-    fn name(&self) -> &'static str { "arange" }
+    fn name(&self) -> &'static str {
+        "arange"
+    }
     fn forward(&self, _inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         let start = attrs.get_float("start").unwrap_or(0.0);
         let end = attrs.get_float("end").unwrap_or(1.0);
         let step = attrs.get_float("step").unwrap_or(1.0);
         arange::<T>(start, end, step)
     }
-    fn backward(&self, _grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         vec![]
     }
 }
@@ -51,14 +64,21 @@ impl<T: DType + Send + Sync> Operator<T> for ArangeOp {
 pub struct LinspaceOp;
 
 impl<T: DType + Send + Sync> Operator<T> for LinspaceOp {
-    fn name(&self) -> &'static str { "linspace" }
+    fn name(&self) -> &'static str {
+        "linspace"
+    }
     fn forward(&self, _inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         let start = attrs.get_float("start").unwrap_or(0.0);
         let end = attrs.get_float("end").unwrap_or(1.0);
         let steps = attrs.get_int("steps").unwrap_or(10) as usize;
         linspace::<T>(start, end, steps)
     }
-    fn backward(&self, _grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         vec![]
     }
 }

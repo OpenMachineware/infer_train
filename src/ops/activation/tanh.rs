@@ -1,14 +1,15 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // 1. 浮点泛型 Forward
 // ============================================================
 
 pub fn tanh<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
-    let data: Vec<T> = a.data()
+    let data: Vec<T> = a
+        .data()
         .par_iter()
         .map(|&x| {
             let v = x.to_f32();
@@ -31,7 +32,8 @@ pub fn tanh_backward<T: DType>(
     for i in 0..grad.len() {
         let v = a.data()[i].to_f32();
         let tanh_v = v.tanh();
-        grad.data_mut()[i] = T::from_f32(grad.data()[i].to_f32() * (1.0 - tanh_v * tanh_v));
+        grad.data_mut()[i] =
+            T::from_f32(grad.data()[i].to_f32() * (1.0 - tanh_v * tanh_v));
     }
     vec![grad]
 }
@@ -47,7 +49,8 @@ pub fn quantized_tanh(a: &Tensor<i8>) -> Tensor<i8> {
     let scale = a.scale().unwrap_or(1.0);
     let zero = a.zero_point().unwrap_or(0.0);
 
-    let data: Vec<i8> = c_fp.data()
+    let data: Vec<i8> = c_fp
+        .data()
         .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
@@ -70,7 +73,8 @@ pub fn quantized_tanh_backward(
     let scale = a.scale().unwrap_or(1.0);
     let zero = a.zero_point().unwrap_or(0.0);
 
-    let data: Vec<i8> = grads[0].data()
+    let data: Vec<i8> = grads[0]
+        .data()
         .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
@@ -85,12 +89,19 @@ pub fn quantized_tanh_backward(
 pub struct TanhOp;
 
 impl<T: DType + Send + Sync> Operator<T> for TanhOp {
-    fn name(&self) -> &'static str { "tanh" }
+    fn name(&self) -> &'static str {
+        "tanh"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         tanh(inputs[0])
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 1);
         tanh_backward(grad, inputs[0])
     }
@@ -99,16 +110,25 @@ impl<T: DType + Send + Sync> Operator<T> for TanhOp {
 pub struct QuantizedTanhOp;
 
 impl Operator<i8> for QuantizedTanhOp {
-    fn name(&self) -> &'static str { "quantized_tanh" }
+    fn name(&self) -> &'static str {
+        "quantized_tanh"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
         quantized_tanh(inputs[0])
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         assert_eq!(inputs.len(), 1);
         quantized_tanh_backward(grad, inputs[0])
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

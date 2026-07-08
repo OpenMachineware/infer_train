@@ -1,7 +1,7 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. 浮点泛型 Forward
@@ -103,7 +103,8 @@ pub fn instance_norm_backward<T: DType>(
 
             for s in 0..spatial {
                 let idx = base + s;
-                grad_x[idx] = T::from_f32(grad_data[idx].to_f32() * g * inv_std);
+                grad_x[idx] =
+                    T::from_f32(grad_data[idx].to_f32() * g * inv_std);
             }
         }
     }
@@ -118,13 +119,20 @@ pub fn instance_norm_backward<T: DType>(
 pub struct InstanceNormOp;
 
 impl<T: DType + Send + Sync> Operator<T> for InstanceNormOp {
-    fn name(&self) -> &'static str { "instance_norm" }
+    fn name(&self) -> &'static str {
+        "instance_norm"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 3);
         let eps = attrs.get_float("eps").unwrap_or(1e-5);
         instance_norm(inputs[0], inputs[1], inputs[2], eps)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 3);
         let eps = attrs.get_float("eps").unwrap_or(1e-5);
         instance_norm_backward(grad, inputs[0], inputs[1], eps)
@@ -137,7 +145,10 @@ mod tests {
 
     #[test]
     fn test_instance_norm() {
-        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]);
+        let x = Tensor::new(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            &[2, 2, 2],
+        );
         let gamma = Tensor::new(vec![1.0, 1.0], &[2]);
         let beta = Tensor::new(vec![0.0, 0.0], &[2]);
         let c = instance_norm(&x, &gamma, &beta, 1e-5);

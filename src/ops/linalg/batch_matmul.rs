@@ -1,14 +1,17 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 // use super::matmul::{matmul, matmul_backward};
 
 // ============================================================
 // 1. 浮点泛型 Forward
 // ============================================================
 
-pub fn batch_matmul<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Tensor<T> {
+pub fn batch_matmul<T: DType + Send + Sync>(
+    a: &Tensor<T>,
+    b: &Tensor<T>,
+) -> Tensor<T> {
     let a_shape = a.shape();
     let b_shape = b.shape();
 
@@ -20,8 +23,13 @@ pub fn batch_matmul<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Ten
     for i in 0..batch_dims {
         let a_dim = if i < a_shape.len() - 2 { a_shape[i] } else { 1 };
         let b_dim = if i < b_shape.len() - 2 { b_shape[i] } else { 1 };
-        assert!(a_dim == b_dim || a_dim == 1 || b_dim == 1,
-                "batch_matmul: batch dimension {} mismatch: {} vs {}", i, a_dim, b_dim);
+        assert!(
+            a_dim == b_dim || a_dim == 1 || b_dim == 1,
+            "batch_matmul: batch dimension {} mismatch: {} vs {}",
+            i,
+            a_dim,
+            b_dim
+        );
     }
 
     // 计算输出形状
@@ -38,7 +46,11 @@ pub fn batch_matmul<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Ten
     let k_a = a_shape[a_rank - 1];
     let k_b = b_shape[b_rank - 2];
     let n = b_shape[b_rank - 1];
-    assert_eq!(k_a, k_b, "batch_matmul: inner dimensions must match: {} vs {}", k_a, k_b);
+    assert_eq!(
+        k_a, k_b,
+        "batch_matmul: inner dimensions must match: {} vs {}",
+        k_a, k_b
+    );
 
     out_shape.push(m);
     out_shape.push(n);
@@ -73,12 +85,14 @@ pub fn batch_matmul<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Ten
                 if dim < a_rank - 2 {
                     let a_dim = a_shape[dim];
                     let a_idx = if a_dim == 1 { 0 } else { idx % a_dim };
-                    a_offset += a_idx * a_shape[dim + 1..].iter().product::<usize>();
+                    a_offset +=
+                        a_idx * a_shape[dim + 1..].iter().product::<usize>();
                 }
                 if dim < b_rank - 2 {
                     let b_dim = b_shape[dim];
                     let b_idx = if b_dim == 1 { 0 } else { idx % b_dim };
-                    b_offset += b_idx * b_shape[dim + 1..].iter().product::<usize>();
+                    b_offset +=
+                        b_idx * b_shape[dim + 1..].iter().product::<usize>();
                 }
             }
 
@@ -129,7 +143,8 @@ fn transpose<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
     let cols = shape[last];
     let batch_stride = rows * cols;
 
-    let data: Vec<T> = a.data()
+    let data: Vec<T> = a
+        .data()
         .par_chunks(batch_stride)
         .flat_map(|chunk| {
             let mut transposed = vec![T::from_f32(0.0); batch_stride];
@@ -152,12 +167,19 @@ fn transpose<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
 pub struct BatchMatMulOp;
 
 impl<T: DType + Send + Sync> Operator<T> for BatchMatMulOp {
-    fn name(&self) -> &'static str { "batch_matmul" }
+    fn name(&self) -> &'static str {
+        "batch_matmul"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 2);
         batch_matmul(inputs[0], inputs[1])
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 2);
         batch_matmul_backward(grad, inputs[0], inputs[1])
     }
@@ -173,8 +195,14 @@ mod tests {
 
     #[test]
     fn test_batch_matmul_2x2x2() {
-        let a = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]);
-        let b = Tensor::new(vec![1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 2.0], &[2, 2, 2]);
+        let a = Tensor::new(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            &[2, 2, 2],
+        );
+        let b = Tensor::new(
+            vec![1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 2.0],
+            &[2, 2, 2],
+        );
         let c = batch_matmul(&a, &b);
         assert_eq!(c.data(), &[1.0, 2.0, 3.0, 4.0, 10.0, 12.0, 14.0, 16.0]);
         assert_eq!(c.shape(), &[2, 2, 2]);
@@ -183,7 +211,10 @@ mod tests {
     #[test]
     fn test_batch_matmul_broadcast() {
         // a: [2, 2, 3], b: [1, 3, 2] → 广播 b 到 [2, 3, 2]
-        let a = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0], &[2, 2, 3]);
+        let a = Tensor::new(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+            &[2, 2, 3],
+        );
         let b = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[1, 3, 2]);
         let c = batch_matmul(&a, &b);
         assert_eq!(c.shape(), &[2, 2, 2]);
@@ -201,9 +232,18 @@ mod tests {
 
     #[test]
     fn test_batch_matmul_backward() {
-        let grad = Tensor::new(vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0], &[2, 2, 2]);
-        let a = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]);
-        let b = Tensor::new(vec![1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 2.0], &[2, 2, 2]);
+        let grad = Tensor::new(
+            vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
+            &[2, 2, 2],
+        );
+        let a = Tensor::new(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            &[2, 2, 2],
+        );
+        let b = Tensor::new(
+            vec![1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 2.0],
+            &[2, 2, 2],
+        );
         let grads = batch_matmul_backward(&grad, &a, &b);
         assert_eq!(grads.len(), 2);
         assert_eq!(grads[0].shape(), &[2, 2, 2]);

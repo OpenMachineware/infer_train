@@ -1,26 +1,26 @@
+pub mod cfg_cse;
+pub mod cfg_dce;
+pub mod cfg_inline;
+pub mod cfg_to_dag;
 pub mod constant_fold;
 pub mod cse;
 pub mod dce;
 pub mod fusion;
-pub mod simplify;
 pub mod shape_inference;
-pub mod cfg_to_dag;
+pub mod simplify;
 pub mod verify;
-pub mod cfg_inline;
-pub mod cfg_dce;
-pub mod cfg_cse;
 
+pub use cfg_cse::CfgCSEPass;
+pub use cfg_dce::CfgDCEPass;
+pub use cfg_inline::CfgInlinePass;
+pub use cfg_to_dag::CfgToDagConverter;
 pub use constant_fold::ConstantFoldingPass;
 pub use cse::CommonSubexpressionEliminationPass;
 pub use dce::DCEPass;
 pub use fusion::FusionPass;
-pub use simplify::AlgebraicSimplifyPass;
 pub use shape_inference::ShapeInferencePass;
-pub use cfg_to_dag::CfgToDagConverter;
+pub use simplify::AlgebraicSimplifyPass;
 pub use verify::VerifyPass;
-pub use cfg_inline::CfgInlinePass;
-pub use cfg_dce::CfgDCEPass;
-pub use cfg_cse::CfgCSEPass;
 
 use crate::ir::cfg::CfgGraph;
 use crate::ir::dag::DagGraph;

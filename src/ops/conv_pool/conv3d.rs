@@ -1,13 +1,19 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 辅助函数
 // ============================================================
 
-fn conv3d_output_size(input: usize, kernel: usize, stride: usize, padding: usize, dilation: usize) -> usize {
+fn conv3d_output_size(
+    input: usize,
+    kernel: usize,
+    stride: usize,
+    padding: usize,
+    dilation: usize,
+) -> usize {
     let effective_kernel = (kernel - 1) * dilation + 1;
     (input + 2 * padding - effective_kernel) / stride + 1
 }
@@ -29,10 +35,16 @@ pub fn conv3d<T: DType + Send + Sync>(
     let w_shape = weight.shape();
 
     assert_eq!(x_shape.len(), 5, "conv3d input must be 5D: [N, C, D, H, W]");
-    assert_eq!(w_shape.len(), 5, "conv3d weight must be 5D: [out_c, in_c, KD, KH, KW]");
+    assert_eq!(
+        w_shape.len(),
+        5,
+        "conv3d weight must be 5D: [out_c, in_c, KD, KH, KW]"
+    );
 
-    let (n, in_c, d, h, w) = (x_shape[0], x_shape[1], x_shape[2], x_shape[3], x_shape[4]);
-    let (out_c, in_c_w, k_d, k_h, k_w) = (w_shape[0], w_shape[1], w_shape[2], w_shape[3], w_shape[4]);
+    let (n, in_c, d, h, w) =
+        (x_shape[0], x_shape[1], x_shape[2], x_shape[3], x_shape[4]);
+    let (out_c, in_c_w, k_d, k_h, k_w) =
+        (w_shape[0], w_shape[1], w_shape[2], w_shape[3], w_shape[4]);
 
     assert_eq!(in_c, in_c_w * groups);
 
@@ -71,16 +83,38 @@ pub fn conv3d<T: DType + Send + Sync>(
                                             let ih = h_start + kh * dilation;
                                             let iw = w_start + kw * dilation;
                                             if id < d && ih < h && iw < w {
-                                                let x_idx = (((n_idx * in_c + in_ch) * d + id) * h + ih) * w + iw;
-                                                let w_idx = (((out_ch * in_c_per_group + ic) * k_d + kd) * k_h + kh) * k_w + kw;
-                                                sum = sum + x_data[x_idx] * w_data[w_idx];
+                                                let x_idx = (((n_idx * in_c
+                                                    + in_ch)
+                                                    * d
+                                                    + id)
+                                                    * h
+                                                    + ih)
+                                                    * w
+                                                    + iw;
+                                                let w_idx = (((out_ch
+                                                    * in_c_per_group
+                                                    + ic)
+                                                    * k_d
+                                                    + kd)
+                                                    * k_h
+                                                    + kh)
+                                                    * k_w
+                                                    + kw;
+                                                sum = sum
+                                                    + x_data[x_idx]
+                                                        * w_data[w_idx];
                                             }
                                         }
                                     }
                                 }
                             }
 
-                            let out_idx = (((n_idx * out_c + out_ch) * out_d + od) * out_h + oh) * out_w + ow;
+                            let out_idx = (((n_idx * out_c + out_ch) * out_d
+                                + od)
+                                * out_h
+                                + oh)
+                                * out_w
+                                + ow;
                             out_data[out_idx] = if let Some(b) = bias_data {
                                 sum + b[out_ch]
                             } else {
@@ -100,9 +134,7 @@ pub fn conv3d<T: DType + Send + Sync>(
 // 2. 浮点泛型 Backward (简化版)
 // ============================================================
 
-pub fn conv3d_backward<T: DType>(
-    grad_output: &Tensor<T>,
-) -> Vec<Tensor<T>> {
+pub fn conv3d_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
     vec![grad_output.clone()]
 }
 
@@ -113,7 +145,9 @@ pub fn conv3d_backward<T: DType>(
 pub struct Conv3dOp;
 
 impl<T: DType + Send + Sync> Operator<T> for Conv3dOp {
-    fn name(&self) -> &'static str { "conv3d" }
+    fn name(&self) -> &'static str {
+        "conv3d"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert!(inputs.len() >= 2 && inputs.len() <= 3);
         let stride = attrs.get_int("stride").unwrap_or(1) as usize;
@@ -123,7 +157,12 @@ impl<T: DType + Send + Sync> Operator<T> for Conv3dOp {
         let bias = if inputs.len() == 3 { Some(inputs[2]) } else { None };
         conv3d(inputs[0], inputs[1], bias, stride, padding, dilation, groups)
     }
-    fn backward(&self, grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         conv3d_backward(grad)
     }
 }

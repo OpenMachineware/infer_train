@@ -1,8 +1,8 @@
 // src/executor/quantized.rs
 
-use std::collections::HashMap;
-use crate::tensor::Tensor;
 use crate::ir::dag::AttrValue;
+use crate::tensor::Tensor;
+use std::collections::HashMap;
 
 pub fn dispatch_quantized(
     op_type: &str,
@@ -28,7 +28,9 @@ pub fn dispatch_quantized(
         }
         "quantized_conv2d" => {
             if inputs.len() < 2 {
-                return Err("quantized_conv2d requires at least 2 inputs".to_string());
+                return Err(
+                    "quantized_conv2d requires at least 2 inputs".to_string()
+                );
             }
             let stride = get_int(attrs, "stride", 1) as usize;
             let padding = get_int(attrs, "padding", 0) as usize;
@@ -36,13 +38,15 @@ pub fn dispatch_quantized(
             let groups = get_int(attrs, "groups", 1) as usize;
             let bias = if inputs.len() >= 3 { Some(&inputs[2]) } else { None };
             let result = crate::ops::conv_pool::conv2d::conv2d(
-                &inputs[0], &inputs[1], bias, stride, padding, dilation, groups
+                &inputs[0], &inputs[1], bias, stride, padding, dilation, groups,
             );
             Ok(vec![result])
         }
         "quantized_linear" => {
             if inputs.len() < 2 {
-                return Err("quantized_linear requires at least 2 inputs".to_string());
+                return Err(
+                    "quantized_linear requires at least 2 inputs".to_string()
+                );
             }
             let bias = if inputs.len() >= 3 { Some(&inputs[2]) } else { None };
             let w_t = crate::ops::linalg::transpose::transpose(&inputs[1]);
@@ -63,10 +67,13 @@ pub fn dispatch_quantized(
 }
 
 fn get_int(attrs: &HashMap<String, AttrValue>, key: &str, default: i32) -> i32 {
-    attrs.get(key)
+    attrs
+        .get(key)
         .and_then(|v| match v {
             AttrValue::Int(i) => Some(*i as i32),
-            AttrValue::IntList(list) if !list.is_empty() => Some(list[0] as i32),
+            AttrValue::IntList(list) if !list.is_empty() => {
+                Some(list[0] as i32)
+            }
             _ => None,
         })
         .unwrap_or(default)

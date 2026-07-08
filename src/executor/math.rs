@@ -1,8 +1,8 @@
 // src/executor/math.rs
 
-use std::collections::HashMap;
-use crate::tensor::Tensor;
 use crate::ir::dag::AttrValue;
+use crate::tensor::Tensor;
+use std::collections::HashMap;
 
 pub fn dispatch_math(
     op_type: &str,
@@ -42,7 +42,8 @@ pub fn dispatch_math(
             if inputs.len() < 2 {
                 return Err("matmul requires 2 inputs".to_string());
             }
-            let result = crate::ops::linalg::matmul::matmul(&inputs[0], &inputs[1]);
+            let result =
+                crate::ops::linalg::matmul::matmul(&inputs[0], &inputs[1]);
             Ok(vec![result])
         }
         "pow" => {

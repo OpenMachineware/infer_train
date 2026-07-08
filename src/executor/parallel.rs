@@ -1,9 +1,9 @@
 // src/executor/parallel.rs
 
-use std::collections::HashMap;
-use crate::tensor::Tensor;
-use crate::ir::dag::{DagGraph, Op};
 use super::memory_reuse::MemoryPool;
+use crate::ir::dag::{DagGraph, Op};
+use crate::tensor::Tensor;
+use std::collections::HashMap;
 
 pub struct ParallelExecutor<'a> {
     graph: &'a DagGraph,
@@ -60,7 +60,11 @@ impl<'a> ParallelExecutor<'a> {
         deps
     }
 
-    fn compute_levels(&self, order: &[u64], deps: &HashMap<u64, Vec<u64>>) -> Vec<Vec<u64>> {
+    fn compute_levels(
+        &self,
+        order: &[u64],
+        deps: &HashMap<u64, Vec<u64>>,
+    ) -> Vec<Vec<u64>> {
         let mut levels = Vec::new();
         let mut remaining: Vec<u64> = order.to_vec();
         let mut completed = std::collections::HashSet::new();
@@ -70,7 +74,8 @@ impl<'a> ParallelExecutor<'a> {
             let mut next_remaining = Vec::new();
 
             for &op_id in &remaining {
-                let all_deps_done = deps.get(&op_id)
+                let all_deps_done = deps
+                    .get(&op_id)
                     .map(|deps| deps.iter().all(|d| completed.contains(d)))
                     .unwrap_or(true);
 
@@ -98,7 +103,12 @@ impl<'a> ParallelExecutor<'a> {
     fn execute_level(&mut self, level: &[u64]) -> Result<(), String> {
         for &op_id in level {
             if let Some(op) = self.graph.get_op(op_id) {
-                Self::execute_op_direct(self.graph, self.values, self.memory_pool, op)?;
+                Self::execute_op_direct(
+                    self.graph,
+                    self.values,
+                    self.memory_pool,
+                    op,
+                )?;
             }
         }
         Ok(())
@@ -115,7 +125,10 @@ impl<'a> ParallelExecutor<'a> {
             if let Some(t) = values.get(&in_id) {
                 input_tensors.push(t.clone());
             } else {
-                return Err(format!("Input value {} not found for op {}", in_id, op.id));
+                return Err(format!(
+                    "Input value {} not found for op {}",
+                    in_id, op.id
+                ));
             }
         }
 

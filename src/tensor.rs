@@ -1,7 +1,7 @@
 // src/tensor.rs
 
-use serde::{Serialize, Deserialize};
 use crate::dtype::DType;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tensor<T: DType> {
@@ -40,7 +40,7 @@ impl<T: DType> Tensor<T> {
 
     fn compute_stride(shape: &[usize]) -> Vec<usize> {
         if shape.is_empty() {
-            return vec![1];  // 空 shape 的 stride 为 [1]
+            return vec![1]; // 空 shape 的 stride 为 [1]
         }
         let mut stride = vec![1; shape.len()];
         for i in (0..shape.len() - 1).rev() {
@@ -49,15 +49,33 @@ impl<T: DType> Tensor<T> {
         stride
     }
 
-    pub fn data(&self) -> &[T] { &self.data }
-    pub fn data_mut(&mut self) -> &mut [T] { &mut self.data }
-    pub fn shape(&self) -> &[usize] { &self.shape }
-    pub fn len(&self) -> usize { self.data.len() }
-    pub fn is_empty(&self) -> bool { self.data.is_empty() }
-    pub fn num_elements(&self) -> usize { self.data.len() }
-    pub fn is_quantized(&self) -> bool { self.scale.is_some() }
-    pub fn scale(&self) -> Option<f32> { self.scale }
-    pub fn zero_point(&self) -> Option<f32> { self.zero_point }
+    pub fn data(&self) -> &[T] {
+        &self.data
+    }
+    pub fn data_mut(&mut self) -> &mut [T] {
+        &mut self.data
+    }
+    pub fn shape(&self) -> &[usize] {
+        &self.shape
+    }
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+    pub fn num_elements(&self) -> usize {
+        self.data.len()
+    }
+    pub fn is_quantized(&self) -> bool {
+        self.scale.is_some()
+    }
+    pub fn scale(&self) -> Option<f32> {
+        self.scale
+    }
+    pub fn zero_point(&self) -> Option<f32> {
+        self.zero_point
+    }
 
     pub fn dequantize(&self) -> Option<Tensor<f32>>
     where
@@ -68,7 +86,9 @@ impl<T: DType> Tensor<T> {
         }
         let scale = self.scale.unwrap();
         let zero_point = self.zero_point.unwrap();
-        let data: Vec<f32> = self.data.iter()
+        let data: Vec<f32> = self
+            .data
+            .iter()
             .map(|&x| (x.into() - zero_point) * scale)
             .collect();
         Some(Tensor::new(data, &self.shape))
@@ -77,7 +97,12 @@ impl<T: DType> Tensor<T> {
 
 // i8 专用的量化 Tensor 构造
 impl Tensor<i8> {
-    pub fn new_quantized(data: Vec<i8>, shape: &[usize], scale: f32, zero_point: f32) -> Self {
+    pub fn new_quantized(
+        data: Vec<i8>,
+        shape: &[usize],
+        scale: f32,
+        zero_point: f32,
+    ) -> Self {
         let stride = Self::compute_stride(shape);
         Tensor {
             data,

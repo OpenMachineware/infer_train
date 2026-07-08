@@ -1,7 +1,7 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. TopK Forward
@@ -58,16 +58,17 @@ pub fn topk<T: DType + Send + Sync>(
     }
 
     let out_shape_indices = out_shape.clone();
-    (Tensor::new(out_values, &out_shape), Tensor::new(out_indices, &out_shape_indices))
+    (
+        Tensor::new(out_values, &out_shape),
+        Tensor::new(out_indices, &out_shape_indices),
+    )
 }
 
 // ============================================================
 // 2. TopK Backward (简化版)
 // ============================================================
 
-pub fn topk_backward<T: DType>(
-    grad_output: &Tensor<T>,
-) -> Vec<Tensor<T>> {
+pub fn topk_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
     vec![grad_output.clone()]
 }
 
@@ -78,7 +79,9 @@ pub fn topk_backward<T: DType>(
 pub struct TopkOp;
 
 impl<T: DType + Send + Sync> Operator<T> for TopkOp {
-    fn name(&self) -> &'static str { "topk" }
+    fn name(&self) -> &'static str {
+        "topk"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         let k = attrs.get_int("k").unwrap_or(1) as usize;
@@ -87,7 +90,12 @@ impl<T: DType + Send + Sync> Operator<T> for TopkOp {
         let (values, _indices) = topk(inputs[0], k, dim, largest);
         values
     }
-    fn backward(&self, grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         topk_backward(grad)
     }
 }
@@ -114,11 +122,10 @@ mod tests {
 
     #[test]
     fn test_topk_2d() {
-        let input = Tensor::new(vec![
-            1.0, 2.0, 3.0,
-            4.0, 5.0, 6.0,
-            7.0, 8.0, 9.0,
-        ], &[3, 3]);
+        let input = Tensor::new(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            &[3, 3],
+        );
         let (values, indices) = topk(&input, 2, 1, true);
         assert_eq!(values.shape(), &[3, 2]);
         assert_eq!(indices.shape(), &[3, 2]);

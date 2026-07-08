@@ -1,7 +1,7 @@
 // src/transform/dce.rs
 
-use std::collections::{HashSet};
 use crate::ir::dag::DagGraph;
+use std::collections::HashSet;
 
 pub struct DCEPass;
 
@@ -15,8 +15,7 @@ impl DCEPass {
 
         while let Some(value_id) = worklist.pop() {
             // 找到产生这个值的算子
-            let producer = graph.values.get(&value_id)
-                .and_then(|v| v.producer);
+            let producer = graph.values.get(&value_id).and_then(|v| v.producer);
 
             if let Some(op_id) = producer {
                 if !live_nodes.contains(&op_id) {
@@ -32,7 +31,9 @@ impl DCEPass {
         }
 
         // 2. 删除不在 live_nodes 中的算子
-        let dead_ops: Vec<u64> = graph.ops.keys()
+        let dead_ops: Vec<u64> = graph
+            .ops
+            .keys()
             .filter(|&id| !live_nodes.contains(id))
             .cloned()
             .collect();
@@ -45,8 +46,11 @@ impl DCEPass {
         }
 
         // 3. 删除没有 producer 且不在输入/输出中的 Value
-        let _live_values: HashSet<u64> = graph.outputs.iter().cloned().collect();
-        let dead_values: Vec<u64> = graph.values.keys()
+        let _live_values: HashSet<u64> =
+            graph.outputs.iter().cloned().collect();
+        let dead_values: Vec<u64> = graph
+            .values
+            .keys()
             .filter(|&id| {
                 // 保留输入、输出、以及被 live 算子使用的值
                 if graph.inputs.contains(id) || graph.outputs.contains(id) {

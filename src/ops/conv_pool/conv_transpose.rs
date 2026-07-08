@@ -1,7 +1,7 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 正确的转置卷积输出尺寸计算
@@ -38,7 +38,8 @@ pub fn conv_transpose<T: DType + Send + Sync>(
     assert_eq!(w_shape.len(), 4, "conv_transpose weight must be 4D");
 
     let (n, in_c, h, w) = (x_shape[0], x_shape[1], x_shape[2], x_shape[3]);
-    let (out_c, _in_c_w, k_h, k_w) = (w_shape[0], w_shape[1], w_shape[2], w_shape[3]);
+    let (out_c, _in_c_w, k_h, k_w) =
+        (w_shape[0], w_shape[1], w_shape[2], w_shape[3]);
 
     // 正确的转置卷积输出尺寸
     let out_h = (h - 1) * stride + k_h - 2 * padding + output_padding;
@@ -57,7 +58,8 @@ pub fn conv_transpose<T: DType + Send + Sync>(
             for ic in 0..in_c {
                 for ih in 0..h {
                     for iw in 0..w {
-                        let x_val = x_data[((n_idx * in_c + ic) * h + ih) * w + iw];
+                        let x_val =
+                            x_data[((n_idx * in_c + ic) * h + ih) * w + iw];
 
                         for kh in 0..k_h {
                             for kw in 0..k_w {
@@ -65,9 +67,15 @@ pub fn conv_transpose<T: DType + Send + Sync>(
                                 let ow = iw * stride + kw - padding;
 
                                 if oh < out_h && ow < out_w {
-                                    let w_idx = ((oc * in_c + ic) * k_h + kh) * k_w + kw;
-                                    let out_idx = ((n_idx * out_c + oc) * out_h + oh) * out_w + ow;
-                                    out_data[out_idx] = out_data[out_idx] + x_val * w_data[w_idx];
+                                    let w_idx = ((oc * in_c + ic) * k_h + kh)
+                                        * k_w
+                                        + kw;
+                                    let out_idx =
+                                        ((n_idx * out_c + oc) * out_h + oh)
+                                            * out_w
+                                            + ow;
+                                    out_data[out_idx] = out_data[out_idx]
+                                        + x_val * w_data[w_idx];
                                 }
                             }
                         }
@@ -83,7 +91,8 @@ pub fn conv_transpose<T: DType + Send + Sync>(
             for oc in 0..out_c {
                 for oh in 0..out_h {
                     for ow in 0..out_w {
-                        let out_idx = ((n_idx * out_c + oc) * out_h + oh) * out_w + ow;
+                        let out_idx =
+                            ((n_idx * out_c + oc) * out_h + oh) * out_w + ow;
                         out_data[out_idx] = out_data[out_idx] + b[oc];
                     }
                 }
@@ -111,16 +120,31 @@ pub fn conv_transpose_backward<T: DType>(
 pub struct ConvTransposeOp;
 
 impl<T: DType + Send + Sync> Operator<T> for ConvTransposeOp {
-    fn name(&self) -> &'static str { "conv_transpose" }
+    fn name(&self) -> &'static str {
+        "conv_transpose"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert!(inputs.len() >= 2 && inputs.len() <= 3);
         let stride = attrs.get_int("stride").map(|v| v as usize).unwrap_or(1);
         let padding = attrs.get_int("padding").map(|v| v as usize).unwrap_or(0);
-        let output_padding = attrs.get_int("output_padding").map(|v| v as usize).unwrap_or(0);
+        let output_padding =
+            attrs.get_int("output_padding").map(|v| v as usize).unwrap_or(0);
         let bias = if inputs.len() == 3 { Some(inputs[2]) } else { None };
-        conv_transpose(inputs[0], inputs[1], bias, stride, padding, output_padding)
+        conv_transpose(
+            inputs[0],
+            inputs[1],
+            bias,
+            stride,
+            padding,
+            output_padding,
+        )
     }
-    fn backward(&self, grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         conv_transpose_backward(grad)
     }
 }
@@ -138,11 +162,11 @@ mod tests {
         // 验证每个像素
         // x = [[1,2],[3,4]], w = [[1,0],[0,1]]
         // 输出在对应位置累加
-        assert_eq!(c.data()[0], 1.0);   // (0,0) = 1*1
-        assert_eq!(c.data()[1], 0.0);   // (0,1) = 0
-        assert_eq!(c.data()[4], 0.0);   // (1,0) = 0
-        assert_eq!(c.data()[5], 1.0);   // (1,1) = 2*1 + 1*1? 实际上是 2 + 1 = 3? 需要实际验证
-        // 重新实现后验证结果
+        assert_eq!(c.data()[0], 1.0); // (0,0) = 1*1
+        assert_eq!(c.data()[1], 0.0); // (0,1) = 0
+        assert_eq!(c.data()[4], 0.0); // (1,0) = 0
+        assert_eq!(c.data()[5], 1.0); // (1,1) = 2*1 + 1*1? 实际上是 2 + 1 = 3? 需要实际验证
+                                      // 重新实现后验证结果
         assert_eq!(c.len(), 16);
     }
 

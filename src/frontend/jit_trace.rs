@@ -1,11 +1,11 @@
 // src/frontend/jit_trace.rs
 
-use std::collections::HashMap;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict};
+use pyo3::types::PyDict;
+use std::collections::HashMap;
 
-use crate::ir::dag::{DagGraph, DataType, TensorType, AttrValue};
-use crate::ir::serialize::{ModelFile};
+use crate::ir::dag::{AttrValue, DagGraph, DataType, TensorType};
+use crate::ir::serialize::ModelFile;
 
 // ============================================================
 // 权重信息
@@ -44,14 +44,23 @@ pub fn trace_from_torch_with_weights(
 }
 
 fn parse_python_dtype(dtype: &str) -> DataType {
-    if dtype.contains("float32") { DataType::F32 }
-    else if dtype.contains("float64") { DataType::F64 }
-    else if dtype.contains("float16") { DataType::F16 }
-    else if dtype.contains("bfloat16") { DataType::BF16 }
-    else if dtype.contains("int8") { DataType::I8 }
-    else if dtype.contains("int32") { DataType::I32 }
-    else if dtype.contains("int64") { DataType::I64 }
-    else { DataType::F32 }
+    if dtype.contains("float32") {
+        DataType::F32
+    } else if dtype.contains("float64") {
+        DataType::F64
+    } else if dtype.contains("float16") {
+        DataType::F16
+    } else if dtype.contains("bfloat16") {
+        DataType::BF16
+    } else if dtype.contains("int8") {
+        DataType::I8
+    } else if dtype.contains("int32") {
+        DataType::I32
+    } else if dtype.contains("int64") {
+        DataType::I64
+    } else {
+        DataType::F32
+    }
 }
 
 // // ============================================================
@@ -114,28 +123,34 @@ pub fn trace_with_weights_py(
 
         let data_bytes: Vec<u8> = value_dict
             .get_item("data")?
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'data'"))?
+            .ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'data'")
+            })?
             .extract()?;
 
         let dtype_str: String = value_dict
             .get_item("dtype")?
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'dtype'"))?
+            .ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'dtype'")
+            })?
             .extract()?;
 
         let shape_list: Vec<i64> = value_dict
             .get_item("shape")?
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'shape'"))?
+            .ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'shape'")
+            })?
             .extract()?;
 
         let dtype = parse_python_dtype(&dtype_str);
-        weight_map.insert(name, WeightInfo {
-            data: data_bytes,
-            dtype,
-            shape: shape_list,
-        });
+        weight_map.insert(
+            name,
+            WeightInfo { data: data_bytes, dtype, shape: shape_list },
+        );
     }
 
-    let graph = trace_from_torch_with_weights(py, model, example_input, &weight_map)?;
+    let graph =
+        trace_from_torch_with_weights(py, model, example_input, &weight_map)?;
     Ok(format!("{:#?}", graph))
 }
 
@@ -161,35 +176,42 @@ pub fn trace_and_save(
 
         let data_bytes: Vec<u8> = value_dict
             .get_item("data")?
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'data'"))?
+            .ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'data'")
+            })?
             .extract()?;
 
         let dtype_str: String = value_dict
             .get_item("dtype")?
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'dtype'"))?
+            .ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'dtype'")
+            })?
             .extract()?;
 
         let shape_list: Vec<i64> = value_dict
             .get_item("shape")?
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'shape'"))?
+            .ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyKeyError, _>("missing 'shape'")
+            })?
             .extract()?;
 
         let dtype = parse_python_dtype(&dtype_str);
-        weight_map.insert(name, WeightInfo {
-            data: data_bytes,
-            dtype,
-            shape: shape_list,
-        });
+        weight_map.insert(
+            name,
+            WeightInfo { data: data_bytes, dtype, shape: shape_list },
+        );
     }
 
-    let graph = trace_from_torch_with_weights(py, model, example_input, &weight_map)?;
+    let graph =
+        trace_from_torch_with_weights(py, model, example_input, &weight_map)?;
 
     // 额外存储 shape 信息到 constants
     // 在 trace_from_torch_with_weights 中已经插入了 data，但没有 shape
     // 需要把 shape 存到 graph 的某个地方
     // 暂时先保持现状，后面再优化
     let model_file = ModelFile::new("traced_model", "torch", graph);
-    model_file.export(path)
+    model_file
+        .export(path)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
 }
 
@@ -214,7 +236,8 @@ pub fn trace_from_torch(
 
     // 3. 获取图
     let graph = frozen.getattr("graph")?;
-    let graph_str = graph.call_method("__str__", (), None)?.extract::<String>()?;
+    let graph_str =
+        graph.call_method("__str__", (), None)?.extract::<String>()?;
 
     let mut ir_graph = DagGraph::new("traced_model");
     let mut value_map: HashMap<String, u64> = HashMap::new();
@@ -233,10 +256,10 @@ pub fn trace_from_torch(
 
     // 如果没解析到输入，创建一个默认输入
     if ir_graph.inputs.is_empty() {
-        let id = ir_graph.add_value("input", TensorType {
-            dtype: DataType::F32,
-            shape: vec![1, 10],
-        });
+        let id = ir_graph.add_value(
+            "input",
+            TensorType { dtype: DataType::F32, shape: vec![1, 10] },
+        );
         value_map.insert("input".to_string(), id);
         value_map.insert("%x".to_string(), id);
         ir_graph.set_inputs(vec![id]);
@@ -267,7 +290,9 @@ pub fn trace_from_torch(
 
                     if !input_ids.is_empty() {
                         // 判断是 linear 还是 conv2d
-                        let op_type = if line.contains("Conv2d") || line.contains("conv") {
+                        let op_type = if line.contains("Conv2d")
+                            || line.contains("conv")
+                        {
                             "conv2d"
                         } else {
                             "linear"
@@ -277,11 +302,23 @@ pub fn trace_from_torch(
                         let dtype = parse_value_dtype(line);
                         let shape = parse_shape(line);
                         let (scale, zero_point) = parse_scale_zero_point(line);
-                        let out_id = create_value(&mut ir_graph, &out_name, dtype, shape, scale, zero_point);
+                        let out_id = create_value(
+                            &mut ir_graph,
+                            &out_name,
+                            dtype,
+                            shape,
+                            scale,
+                            zero_point,
+                        );
                         value_map.insert(out_name.clone(), out_id);
 
                         let attrs = HashMap::new();
-                        ir_graph.add_op(op_type, input_ids, vec![out_id], attrs);
+                        ir_graph.add_op(
+                            op_type,
+                            input_ids,
+                            vec![out_id],
+                            attrs,
+                        );
                         last_output = out_name;
                     }
                 }
@@ -296,11 +333,8 @@ pub fn trace_from_torch(
 
                 // 添加 Value 到 value_map
                 // 对于常量，dtype 需要从 value 推断，暂时用 F32
-                let dtype = DataType::F32;  // TODO: 从 value 推断 dtype
-                let ty = TensorType {
-                    dtype,
-                    shape: vec![],
-                };
+                let dtype = DataType::F32; // TODO: 从 value 推断 dtype
+                let ty = TensorType { dtype, shape: vec![] };
                 let id = ir_graph.add_value(&name, ty);
                 value_map.insert(name, id);
             }
@@ -318,7 +352,14 @@ pub fn trace_from_torch(
                 let dtype = parse_value_dtype(line);
                 let shape = parse_shape(line);
                 let (scale, zero_point) = parse_scale_zero_point(line);
-                let out_id = create_value(&mut ir_graph, &out_name, dtype, shape, scale, zero_point);
+                let out_id = create_value(
+                    &mut ir_graph,
+                    &out_name,
+                    dtype,
+                    shape,
+                    scale,
+                    zero_point,
+                );
                 value_map.insert(out_name.clone(), out_id);
 
                 let mut attrs = HashMap::new();
@@ -326,20 +367,26 @@ pub fn trace_from_torch(
                 // conv2d 特殊处理
                 if op_type == "conv2d" {
                     // 前 3 个是数据输入
-                    let data_inputs: Vec<String> = inputs.iter().take(3).cloned().collect();
-                    let data_input_ids = resolve_inputs(&data_inputs, &value_map);
+                    let data_inputs: Vec<String> =
+                        inputs.iter().take(3).cloned().collect();
+                    let data_input_ids =
+                        resolve_inputs(&data_inputs, &value_map);
 
                     // 后 4 个是属性
-                    let stride = constant_map.get(inputs[3].trim())
+                    let stride = constant_map
+                        .get(inputs[3].trim())
                         .cloned()
                         .unwrap_or(AttrValue::IntList(vec![1, 1]));
-                    let padding = constant_map.get(inputs[4].trim())
+                    let padding = constant_map
+                        .get(inputs[4].trim())
                         .cloned()
                         .unwrap_or(AttrValue::IntList(vec![0, 0]));
-                    let dilation = constant_map.get(inputs[5].trim())
+                    let dilation = constant_map
+                        .get(inputs[5].trim())
                         .cloned()
                         .unwrap_or(AttrValue::IntList(vec![1, 1]));
-                    let groups = constant_map.get(inputs[6].trim())
+                    let groups = constant_map
+                        .get(inputs[6].trim())
                         .cloned()
                         .unwrap_or(AttrValue::Int(1));
 
@@ -349,7 +396,12 @@ pub fn trace_from_torch(
                     attrs.insert("groups".to_string(), groups);
 
                     if !data_input_ids.is_empty() {
-                        ir_graph.add_op("conv2d", data_input_ids, vec![out_id], attrs);
+                        ir_graph.add_op(
+                            "conv2d",
+                            data_input_ids,
+                            vec![out_id],
+                            attrs,
+                        );
                     }
                     last_output = out_name;
                     continue;
@@ -403,7 +455,8 @@ fn parse_inputs(s: &str) -> Vec<(String, String, Vec<i64>)> {
             for part in args.split(',') {
                 let part = part.trim();
                 if let Some(name_pos) = part.find('%') {
-                    let name = part[name_pos..].split(':').next().unwrap_or("").trim();
+                    let name =
+                        part[name_pos..].split(':').next().unwrap_or("").trim();
                     if name.is_empty() || name == "%self.1" {
                         continue;
                     }
@@ -411,7 +464,11 @@ fn parse_inputs(s: &str) -> Vec<(String, String, Vec<i64>)> {
                     let dtype = "Float";
                     let shape = vec![1, 10];
                     if !name.is_empty() {
-                        result.push((name.to_string(), dtype.to_string(), shape));
+                        result.push((
+                            name.to_string(),
+                            dtype.to_string(),
+                            shape,
+                        ));
                     }
                 }
             }
@@ -457,7 +514,10 @@ fn parse_inputs(s: &str) -> Vec<(String, String, Vec<i64>)> {
 // ============================================================
 // 值解析
 // ============================================================
-fn resolve_inputs(inputs: &[String], value_map: &HashMap<String, u64>) -> Vec<u64> {
+fn resolve_inputs(
+    inputs: &[String],
+    value_map: &HashMap<String, u64>,
+) -> Vec<u64> {
     let mut result = Vec::new();
     for name in inputs {
         if let Some(&id) = value_map.get(name) {
@@ -489,25 +549,63 @@ fn create_value(
 // 解析算子类型
 // ============================================================
 fn parse_aten_op(s: &str) -> &'static str {
-    if s.contains("aten::add") { return "add"; }
-    if s.contains("aten::sub") { return "sub"; }
-    if s.contains("aten::mul") { return "mul"; }
-    if s.contains("aten::div") { return "div"; }
-    if s.contains("aten::matmul") || s.contains("aten::mm") { return "matmul"; }
-    if s.contains("aten::relu") { return "relu"; }
-    if s.contains("aten::sigmoid") { return "sigmoid"; }
-    if s.contains("aten::tanh") { return "tanh"; }
-    if s.contains("aten::softmax") { return "softmax"; }
-    if s.contains("aten::conv2d") || s.contains("aten::_convolution") { return "conv2d"; }
-    if s.contains("aten::max_pool2d") { return "maxpool2d"; }
-    if s.contains("aten::avg_pool2d") { return "avgpool2d"; }
-    if s.contains("aten::batch_norm") { return "batchnorm2d"; }
-    if s.contains("aten::layer_norm") { return "layernorm"; }
-    if s.contains("aten::linear") { return "linear"; }
-    if s.contains("aten::reshape") || s.contains("aten::view") { return "reshape"; }
-    if s.contains("aten::transpose") { return "transpose"; }
-    if s.contains("aten::cat") { return "cat"; }
-    if s.contains("aten::dropout") { return "dropout"; }
+    if s.contains("aten::add") {
+        return "add";
+    }
+    if s.contains("aten::sub") {
+        return "sub";
+    }
+    if s.contains("aten::mul") {
+        return "mul";
+    }
+    if s.contains("aten::div") {
+        return "div";
+    }
+    if s.contains("aten::matmul") || s.contains("aten::mm") {
+        return "matmul";
+    }
+    if s.contains("aten::relu") {
+        return "relu";
+    }
+    if s.contains("aten::sigmoid") {
+        return "sigmoid";
+    }
+    if s.contains("aten::tanh") {
+        return "tanh";
+    }
+    if s.contains("aten::softmax") {
+        return "softmax";
+    }
+    if s.contains("aten::conv2d") || s.contains("aten::_convolution") {
+        return "conv2d";
+    }
+    if s.contains("aten::max_pool2d") {
+        return "maxpool2d";
+    }
+    if s.contains("aten::avg_pool2d") {
+        return "avgpool2d";
+    }
+    if s.contains("aten::batch_norm") {
+        return "batchnorm2d";
+    }
+    if s.contains("aten::layer_norm") {
+        return "layernorm";
+    }
+    if s.contains("aten::linear") {
+        return "linear";
+    }
+    if s.contains("aten::reshape") || s.contains("aten::view") {
+        return "reshape";
+    }
+    if s.contains("aten::transpose") {
+        return "transpose";
+    }
+    if s.contains("aten::cat") {
+        return "cat";
+    }
+    if s.contains("aten::dropout") {
+        return "dropout";
+    }
     "unknown"
 }
 
@@ -591,11 +689,14 @@ fn parse_constant(line: &str) -> Option<(String, AttrValue)> {
 
                 // 处理 <Tensor>
                 if raw.starts_with('<') && raw.ends_with('>') {
-                    return Some((name, AttrValue::String("Tensor".to_string())));
+                    return Some((
+                        name,
+                        AttrValue::String("Tensor".to_string()),
+                    ));
                 }
                 // 处理数组: [2, 2]
                 else if raw.starts_with('[') && raw.ends_with(']') {
-                    let inner = &raw[1..raw.len()-1];
+                    let inner = &raw[1..raw.len() - 1];
                     let values: Vec<i64> = inner
                         .split(',')
                         .filter_map(|s| s.trim().parse::<i64>().ok())
@@ -619,7 +720,10 @@ fn parse_dtype(s: &str) -> DataType {
             DataType::F64
         } else if s.contains("Half") || s.contains("half") || s.contains("16") {
             // 检查是否是 BF16
-            if s.contains("BFloat16") || s.contains("bfloat16") || s.contains("BF16") {
+            if s.contains("BFloat16")
+                || s.contains("bfloat16")
+                || s.contains("BF16")
+            {
                 DataType::BF16
             } else {
                 DataType::F16
@@ -659,7 +763,11 @@ fn parse_shape(line: &str) -> Vec<i64> {
         let mut shape = Vec::new();
         for part in shape_part.split(',') {
             let part = part.trim();
-            if part.is_empty() || part.contains("strides") || part.contains("requires_grad") || part.contains("device") {
+            if part.is_empty()
+                || part.contains("strides")
+                || part.contains("requires_grad")
+                || part.contains("device")
+            {
                 break;
             }
             if let Ok(n) = part.parse::<i64>() {
@@ -668,7 +776,7 @@ fn parse_shape(line: &str) -> Vec<i64> {
         }
         return shape;
     }
-    vec![1, 10]  // fallback
+    vec![1, 10] // fallback
 }
 
 fn parse_scale_zero_point(line: &str) -> (Option<f32>, Option<f32>) {

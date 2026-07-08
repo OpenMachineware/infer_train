@@ -1,7 +1,7 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // 1. 浮点泛型 Forward
@@ -18,12 +18,13 @@ pub fn bce<T: DType + Send + Sync>(
     let pred_data = pred.data();
     let target_data = target.data();
 
-    let sum_loss: f32 = pred_data.par_iter()
+    let sum_loss: f32 = pred_data
+        .par_iter()
         .zip(target_data.par_iter())
         .map(|(&p, &t)| {
             let p_clamped = p.to_f32().clamp(eps, 1.0 - eps);
             let t_val = t.to_f32();
-            - (t_val * p_clamped.ln() + (1.0 - t_val) * (1.0 - p_clamped).ln())
+            -(t_val * p_clamped.ln() + (1.0 - t_val) * (1.0 - p_clamped).ln())
         })
         .sum();
 
@@ -54,7 +55,8 @@ pub fn bce_backward<T: DType>(
         grad_val
     };
 
-    let grad_pred: Vec<T> = pred.data()
+    let grad_pred: Vec<T> = pred
+        .data()
         .par_iter()
         .zip(target.data().par_iter())
         .map(|(&p, &t)| {
@@ -75,14 +77,21 @@ pub fn bce_backward<T: DType>(
 pub struct BceOp;
 
 impl<T: DType + Send + Sync> Operator<T> for BceOp {
-    fn name(&self) -> &'static str { "bce" }
+    fn name(&self) -> &'static str {
+        "bce"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 2);
         let reduction = attrs.get_bool("reduction").unwrap_or(true);
         let eps = attrs.get_float("eps").unwrap_or(1e-7);
         bce(inputs[0], inputs[1], reduction, eps)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 2);
         let reduction = attrs.get_bool("reduction").unwrap_or(true);
         let eps = attrs.get_float("eps").unwrap_or(1e-7);

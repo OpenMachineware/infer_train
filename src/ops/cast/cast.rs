@@ -1,17 +1,17 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // 1. Cast (类型转换)
 // ============================================================
 
-pub fn cast<T: DType + Send + Sync, U: DType + Send + Sync>(input: &Tensor<T>) -> Tensor<U> {
-    let data: Vec<U> = input.data()
-        .par_iter()
-        .map(|&x| U::from_f32(x.to_f32()))
-        .collect();
+pub fn cast<T: DType + Send + Sync, U: DType + Send + Sync>(
+    input: &Tensor<T>,
+) -> Tensor<U> {
+    let data: Vec<U> =
+        input.data().par_iter().map(|&x| U::from_f32(x.to_f32())).collect();
 
     Tensor::new(data, input.shape())
 }
@@ -20,9 +20,7 @@ pub fn cast<T: DType + Send + Sync, U: DType + Send + Sync>(input: &Tensor<T>) -
 // 2. Cast Backward (反向传播是恒等映射)
 // ============================================================
 
-pub fn cast_backward<T: DType>(
-    grad_output: &Tensor<T>,
-) -> Vec<Tensor<T>> {
+pub fn cast_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
     vec![grad_output.clone()]
 }
 
@@ -33,13 +31,20 @@ pub fn cast_backward<T: DType>(
 pub struct CastOp;
 
 impl<T: DType + Send + Sync> Operator<T> for CastOp {
-    fn name(&self) -> &'static str { "cast" }
+    fn name(&self) -> &'static str {
+        "cast"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         // 返回原值（实际 cast 需要指定目标类型）
         inputs[0].clone()
     }
-    fn backward(&self, grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         cast_backward(grad)
     }
 }
@@ -61,7 +66,9 @@ pub fn to_f16<T: DType + Send + Sync>(input: &Tensor<T>) -> Tensor<half::f16> {
     cast::<T, f16>(input)
 }
 
-pub fn to_bf16<T: DType + Send + Sync>(input: &Tensor<T>) -> Tensor<half::bf16> {
+pub fn to_bf16<T: DType + Send + Sync>(
+    input: &Tensor<T>,
+) -> Tensor<half::bf16> {
     use half::bf16;
     cast::<T, bf16>(input)
 }

@@ -1,8 +1,8 @@
 // src/executor/activation.rs
 
-use std::collections::HashMap;
-use crate::tensor::Tensor;
 use crate::ir::dag::AttrValue;
+use crate::tensor::Tensor;
+use std::collections::HashMap;
 
 pub fn dispatch_activation(
     op_type: &str,
@@ -49,28 +49,43 @@ pub fn dispatch_activation(
             if inputs.is_empty() {
                 return Err("softmax requires 1 input".to_string());
             }
-            let dim = attrs.get("dim")
-                .and_then(|v| match v { AttrValue::Int(i) => Some(*i as usize), _ => None })
+            let dim = attrs
+                .get("dim")
+                .and_then(|v| match v {
+                    AttrValue::Int(i) => Some(*i as usize),
+                    _ => None,
+                })
                 .unwrap_or(0);
-            let result = crate::ops::activation::softmax::softmax(&inputs[0], dim);
+            let result =
+                crate::ops::activation::softmax::softmax(&inputs[0], dim);
             Ok(vec![result])
         }
         "leaky_relu" => {
             if inputs.is_empty() {
                 return Err("leaky_relu requires 1 input".to_string());
             }
-            let alpha = attrs.get("alpha")
-                .and_then(|v| match v { AttrValue::Float(f) => Some(*f as f32), _ => None })
+            let alpha = attrs
+                .get("alpha")
+                .and_then(|v| match v {
+                    AttrValue::Float(f) => Some(*f as f32),
+                    _ => None,
+                })
                 .unwrap_or(0.01);
-            let result = crate::ops::activation::leaky_relu::leaky_relu(&inputs[0], alpha);
+            let result = crate::ops::activation::leaky_relu::leaky_relu(
+                &inputs[0], alpha,
+            );
             Ok(vec![result])
         }
         "elu" => {
             if inputs.is_empty() {
                 return Err("elu requires 1 input".to_string());
             }
-            let alpha = attrs.get("alpha")
-                .and_then(|v| match v { AttrValue::Float(f) => Some(*f as f32), _ => None })
+            let alpha = attrs
+                .get("alpha")
+                .and_then(|v| match v {
+                    AttrValue::Float(f) => Some(*f as f32),
+                    _ => None,
+                })
                 .unwrap_or(1.0);
             let result = crate::ops::activation::elu::elu(&inputs[0], alpha);
             Ok(vec![result])
@@ -86,10 +101,16 @@ pub fn dispatch_activation(
             if inputs.is_empty() {
                 return Err("log_softmax requires 1 input".to_string());
             }
-            let dim = attrs.get("dim")
-                .and_then(|v| match v { AttrValue::Int(i) => Some(*i as usize), _ => None })
+            let dim = attrs
+                .get("dim")
+                .and_then(|v| match v {
+                    AttrValue::Int(i) => Some(*i as usize),
+                    _ => None,
+                })
                 .unwrap_or(0);
-            let result = crate::ops::activation::log_softmax::log_softmax(&inputs[0], dim);
+            let result = crate::ops::activation::log_softmax::log_softmax(
+                &inputs[0], dim,
+            );
             Ok(vec![result])
         }
         _ => Err(format!("Unknown activation op: {}", op_type)),

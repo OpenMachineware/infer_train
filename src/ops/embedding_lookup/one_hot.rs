@@ -39,7 +39,9 @@ pub fn one_hot<T: DType + Send + Sync>(
 pub struct OneHotOp;
 
 impl OneHotOp {
-    pub fn name(&self) -> &'static str { "one_hot" }
+    pub fn name(&self) -> &'static str {
+        "one_hot"
+    }
     pub fn forward<T: DType + Send + Sync>(
         &self,
         indices: &Tensor<i64>,
@@ -70,7 +72,10 @@ mod tests {
         let indices = Tensor::new(vec![0, 2, 1, 0], &[4]);
         let c = one_hot::<f32>(&indices, 3);
         assert_eq!(c.shape(), &[4, 3]);
-        assert_eq!(c.data(), &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(
+            c.data(),
+            &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0]
+        );
     }
 
     #[test]

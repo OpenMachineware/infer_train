@@ -1,13 +1,17 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. Max Forward
 // ============================================================
 
-pub fn max<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize, keepdim: bool) -> Tensor<T> {
+pub fn max<T: DType + Send + Sync>(
+    a: &Tensor<T>,
+    dim: usize,
+    keepdim: bool,
+) -> Tensor<T> {
     let shape = a.shape();
     assert!(dim < shape.len(), "max: dim out of range");
 
@@ -36,7 +40,9 @@ pub fn max<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize, keepdim: bool) -> 
             for d in 0..dim_size {
                 let idx = base + d * inner;
                 let v = a_data[idx].to_f32();
-                if v > max_val { max_val = v; }
+                if v > max_val {
+                    max_val = v;
+                }
             }
             let out_idx = o * inner + i;
             out_data[out_idx] = T::from_f32(max_val);
@@ -60,7 +66,11 @@ pub fn max<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize, keepdim: bool) -> 
 // 2. Min Forward
 // ============================================================
 
-pub fn min<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize, keepdim: bool) -> Tensor<T> {
+pub fn min<T: DType + Send + Sync>(
+    a: &Tensor<T>,
+    dim: usize,
+    keepdim: bool,
+) -> Tensor<T> {
     let shape = a.shape();
     assert!(dim < shape.len(), "min: dim out of range");
 
@@ -89,7 +99,9 @@ pub fn min<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize, keepdim: bool) -> 
             for d in 0..dim_size {
                 let idx = base + d * inner;
                 let v = a_data[idx].to_f32();
-                if v < min_val { min_val = v; }
+                if v < min_val {
+                    min_val = v;
+                }
             }
             let out_idx = o * inner + i;
             out_data[out_idx] = T::from_f32(min_val);
@@ -139,14 +151,21 @@ pub fn min_backward<T: DType>(
 pub struct MaxOp;
 
 impl<T: DType + Send + Sync> Operator<T> for MaxOp {
-    fn name(&self) -> &'static str { "max" }
+    fn name(&self) -> &'static str {
+        "max"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         let keepdim = attrs.get_bool("keepdim").unwrap_or(false);
         max(inputs[0], dim, keepdim)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         let keepdim = attrs.get_bool("keepdim").unwrap_or(false);
         max_backward(grad, inputs[0], dim, keepdim)
@@ -156,14 +175,21 @@ impl<T: DType + Send + Sync> Operator<T> for MaxOp {
 pub struct MinOp;
 
 impl<T: DType + Send + Sync> Operator<T> for MinOp {
-    fn name(&self) -> &'static str { "min" }
+    fn name(&self) -> &'static str {
+        "min"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         let keepdim = attrs.get_bool("keepdim").unwrap_or(false);
         min(inputs[0], dim, keepdim)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         let keepdim = attrs.get_bool("keepdim").unwrap_or(false);
         min_backward(grad, inputs[0], dim, keepdim)

@@ -1,17 +1,15 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // FLOOR
 // ============================================================
 
 pub fn floor<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
-    let data: Vec<T> = a.data()
-        .par_iter()
-        .map(|&x| T::from_f32(x.to_f32().floor()))
-        .collect();
+    let data: Vec<T> =
+        a.data().par_iter().map(|&x| T::from_f32(x.to_f32().floor())).collect();
     Tensor::new(data, a.shape())
 }
 
@@ -26,7 +24,8 @@ pub fn quantized_floor(a: &Tensor<i8>) -> Tensor<i8> {
     let scale = a.scale().unwrap_or(1.0);
     let zero = a.zero_point().unwrap_or(0.0);
 
-    let result_fp: Vec<f32> = a.data()
+    let result_fp: Vec<f32> = a
+        .data()
         .iter()
         .map(|&x| {
             let v = (x as f32 - zero) * scale;
@@ -34,7 +33,8 @@ pub fn quantized_floor(a: &Tensor<i8>) -> Tensor<i8> {
         })
         .collect();
 
-    let data: Vec<i8> = result_fp.iter()
+    let data: Vec<i8> = result_fp
+        .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
 
@@ -44,12 +44,19 @@ pub fn quantized_floor(a: &Tensor<i8>) -> Tensor<i8> {
 pub struct FloorOp;
 
 impl<T: DType + Send + Sync> Operator<T> for FloorOp {
-    fn name(&self) -> &'static str { "floor" }
+    fn name(&self) -> &'static str {
+        "floor"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         floor(inputs[0])
     }
-    fn backward(&self, _grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 1);
         floor_backward(_grad, inputs[0])
     }
@@ -58,15 +65,24 @@ impl<T: DType + Send + Sync> Operator<T> for FloorOp {
 pub struct QuantizedFloorOp;
 
 impl Operator<i8> for QuantizedFloorOp {
-    fn name(&self) -> &'static str { "quantized_floor" }
+    fn name(&self) -> &'static str {
+        "quantized_floor"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
         quantized_floor(inputs[0])
     }
-    fn backward(&self, _grad: &Tensor<i8>, _inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<i8>,
+        _inputs: &[&Tensor<i8>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         vec![Tensor::zeros(_inputs[0].shape())]
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 // ============================================================
@@ -74,10 +90,8 @@ impl Operator<i8> for QuantizedFloorOp {
 // ============================================================
 
 pub fn ceil<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
-    let data: Vec<T> = a.data()
-        .par_iter()
-        .map(|&x| T::from_f32(x.to_f32().ceil()))
-        .collect();
+    let data: Vec<T> =
+        a.data().par_iter().map(|&x| T::from_f32(x.to_f32().ceil())).collect();
     Tensor::new(data, a.shape())
 }
 
@@ -92,7 +106,8 @@ pub fn quantized_ceil(a: &Tensor<i8>) -> Tensor<i8> {
     let scale = a.scale().unwrap_or(1.0);
     let zero = a.zero_point().unwrap_or(0.0);
 
-    let result_fp: Vec<f32> = a.data()
+    let result_fp: Vec<f32> = a
+        .data()
         .iter()
         .map(|&x| {
             let v = (x as f32 - zero) * scale;
@@ -100,7 +115,8 @@ pub fn quantized_ceil(a: &Tensor<i8>) -> Tensor<i8> {
         })
         .collect();
 
-    let data: Vec<i8> = result_fp.iter()
+    let data: Vec<i8> = result_fp
+        .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
 
@@ -110,12 +126,19 @@ pub fn quantized_ceil(a: &Tensor<i8>) -> Tensor<i8> {
 pub struct CeilOp;
 
 impl<T: DType + Send + Sync> Operator<T> for CeilOp {
-    fn name(&self) -> &'static str { "ceil" }
+    fn name(&self) -> &'static str {
+        "ceil"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         ceil(inputs[0])
     }
-    fn backward(&self, _grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 1);
         ceil_backward(_grad, inputs[0])
     }
@@ -124,15 +147,24 @@ impl<T: DType + Send + Sync> Operator<T> for CeilOp {
 pub struct QuantizedCeilOp;
 
 impl Operator<i8> for QuantizedCeilOp {
-    fn name(&self) -> &'static str { "quantized_ceil" }
+    fn name(&self) -> &'static str {
+        "quantized_ceil"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
         quantized_ceil(inputs[0])
     }
-    fn backward(&self, _grad: &Tensor<i8>, _inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<i8>,
+        _inputs: &[&Tensor<i8>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         vec![Tensor::zeros(_inputs[0].shape())]
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 // ============================================================
@@ -140,10 +172,8 @@ impl Operator<i8> for QuantizedCeilOp {
 // ============================================================
 
 pub fn round<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
-    let data: Vec<T> = a.data()
-        .par_iter()
-        .map(|&x| T::from_f32(x.to_f32().round()))
-        .collect();
+    let data: Vec<T> =
+        a.data().par_iter().map(|&x| T::from_f32(x.to_f32().round())).collect();
     Tensor::new(data, a.shape())
 }
 
@@ -158,7 +188,8 @@ pub fn quantized_round(a: &Tensor<i8>) -> Tensor<i8> {
     let scale = a.scale().unwrap_or(1.0);
     let zero = a.zero_point().unwrap_or(0.0);
 
-    let result_fp: Vec<f32> = a.data()
+    let result_fp: Vec<f32> = a
+        .data()
         .iter()
         .map(|&x| {
             let v = (x as f32 - zero) * scale;
@@ -166,7 +197,8 @@ pub fn quantized_round(a: &Tensor<i8>) -> Tensor<i8> {
         })
         .collect();
 
-    let data: Vec<i8> = result_fp.iter()
+    let data: Vec<i8> = result_fp
+        .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
 
@@ -176,12 +208,19 @@ pub fn quantized_round(a: &Tensor<i8>) -> Tensor<i8> {
 pub struct RoundOp;
 
 impl<T: DType + Send + Sync> Operator<T> for RoundOp {
-    fn name(&self) -> &'static str { "round" }
+    fn name(&self) -> &'static str {
+        "round"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         round(inputs[0])
     }
-    fn backward(&self, _grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 1);
         round_backward(_grad, inputs[0])
     }
@@ -190,15 +229,24 @@ impl<T: DType + Send + Sync> Operator<T> for RoundOp {
 pub struct QuantizedRoundOp;
 
 impl Operator<i8> for QuantizedRoundOp {
-    fn name(&self) -> &'static str { "quantized_round" }
+    fn name(&self) -> &'static str {
+        "quantized_round"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
         quantized_round(inputs[0])
     }
-    fn backward(&self, _grad: &Tensor<i8>, _inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<i8>,
+        _inputs: &[&Tensor<i8>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         vec![Tensor::zeros(_inputs[0].shape())]
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

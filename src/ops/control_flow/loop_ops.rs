@@ -1,15 +1,12 @@
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. While Loop (条件循环)
 // ============================================================
 
-pub fn while_loop<T: DType + Send + Sync>(
-    condition: &[i8],
-    body: &[T],
-) -> T {
+pub fn while_loop<T: DType + Send + Sync>(condition: &[i8], body: &[T]) -> T {
     // 简化版：将 body 中的值迭代直到 condition 为 false
     // 实际实现需要配合图执行
     let mut result = T::from_f32(0.0);
@@ -56,12 +53,19 @@ pub fn for_loop<T: DType + Send + Sync>(
 pub struct LoopOp;
 
 impl<T: DType + Send + Sync> Operator<T> for LoopOp {
-    fn name(&self) -> &'static str { "loop" }
+    fn name(&self) -> &'static str {
+        "loop"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         // 简化版：直接返回第一个输入
         inputs[0].clone()
     }
-    fn backward(&self, grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         vec![grad.clone()]
     }
 }

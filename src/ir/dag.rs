@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 
 // ============================================================
 // 数据类型
@@ -22,7 +22,7 @@ pub enum DataType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TensorType {
     pub dtype: DataType,
-    pub shape: Vec<i64>,  // -1 表示动态维度
+    pub shape: Vec<i64>, // -1 表示动态维度
 }
 
 // ============================================================
@@ -47,7 +47,7 @@ pub struct Value {
     pub id: u64,
     pub name: String,
     pub ty: TensorType,
-    pub producer: Option<u64>,  // 哪个 Op 产生的
+    pub producer: Option<u64>, // 哪个 Op 产生的
     pub scale: Option<f32>,
     pub zero_point: Option<f32>,
 }
@@ -79,8 +79,8 @@ pub struct Op {
     pub id: u64,
     pub name: String,
     pub op_type: String,
-    pub inputs: Vec<u64>,          // Value ID
-    pub outputs: Vec<u64>,         // Value ID
+    pub inputs: Vec<u64>,  // Value ID
+    pub outputs: Vec<u64>, // Value ID
     pub attrs: HashMap<String, AttrValue>,
 }
 
@@ -92,9 +92,9 @@ pub struct DagGraph {
     pub name: String,
     pub values: HashMap<u64, Value>,
     pub ops: HashMap<u64, Op>,
-    pub constants: HashMap<u64, Vec<u8>>,  // 常量张量数据
-    pub inputs: Vec<u64>,                   // 输入 Value ID
-    pub outputs: Vec<u64>,                  // 输出 Value ID
+    pub constants: HashMap<u64, Vec<u8>>, // 常量张量数据
+    pub inputs: Vec<u64>,                 // 输入 Value ID
+    pub outputs: Vec<u64>,                // 输出 Value ID
     pub next_id: u64,
 }
 
@@ -143,7 +143,8 @@ impl DagGraph {
     // 新增：查找Value的使用者
     // ============================================================
     pub fn get_users(&self, value_id: u64) -> Vec<u64> {
-        self.ops.iter()
+        self.ops
+            .iter()
             .filter(|(_, op)| op.inputs.contains(&value_id))
             .map(|(&id, _)| id)
             .collect()
@@ -157,14 +158,20 @@ impl DagGraph {
             if let Some(val) = self.values.get(&value_id) {
                 match val.ty.dtype {
                     crate::ir::dag::DataType::F32 => {
-                        let floats: Vec<f32> = data.chunks(4)
-                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        let floats: Vec<f32> = data
+                            .chunks(4)
+                            .map(|c| {
+                                f32::from_le_bytes([c[0], c[1], c[2], c[3]])
+                            })
                             .collect();
                         return floats.iter().all(|&x| x == 0.0);
                     }
                     crate::ir::dag::DataType::I32 => {
-                        let ints: Vec<i32> = data.chunks(4)
-                            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        let ints: Vec<i32> = data
+                            .chunks(4)
+                            .map(|c| {
+                                i32::from_le_bytes([c[0], c[1], c[2], c[3]])
+                            })
                             .collect();
                         return ints.iter().all(|&x| x == 0);
                     }
@@ -186,14 +193,20 @@ impl DagGraph {
             if let Some(val) = self.values.get(&value_id) {
                 match val.ty.dtype {
                     crate::ir::dag::DataType::F32 => {
-                        let floats: Vec<f32> = data.chunks(4)
-                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        let floats: Vec<f32> = data
+                            .chunks(4)
+                            .map(|c| {
+                                f32::from_le_bytes([c[0], c[1], c[2], c[3]])
+                            })
                             .collect();
                         return floats.iter().all(|&x| x == 1.0);
                     }
                     crate::ir::dag::DataType::I32 => {
-                        let ints: Vec<i32> = data.chunks(4)
-                            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        let ints: Vec<i32> = data
+                            .chunks(4)
+                            .map(|c| {
+                                i32::from_le_bytes([c[0], c[1], c[2], c[3]])
+                            })
                             .collect();
                         return ints.iter().all(|&x| x == 1);
                     }
@@ -207,7 +220,10 @@ impl DagGraph {
     // ============================================================
     // 新增：获取或创建常量0
     // ============================================================
-    pub fn get_or_create_zero(&mut self, dtype: crate::ir::dag::DataType) -> u64 {
+    pub fn get_or_create_zero(
+        &mut self,
+        dtype: crate::ir::dag::DataType,
+    ) -> u64 {
         // 先查找现有的0常量
         for (&id, _data) in &self.constants {
             if let Some(val) = self.values.get(&id) {
@@ -236,7 +252,10 @@ impl DagGraph {
     // ============================================================
     // 新增：获取或创建常量1
     // ============================================================
-    pub fn get_or_create_one(&mut self, dtype: crate::ir::dag::DataType) -> u64 {
+    pub fn get_or_create_one(
+        &mut self,
+        dtype: crate::ir::dag::DataType,
+    ) -> u64 {
         for (&id, _data) in &self.constants {
             if let Some(val) = self.values.get(&id) {
                 if val.ty.dtype == dtype && self.is_one_constant(id) {
@@ -276,17 +295,31 @@ impl DagGraph {
     ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.values.insert(id, Value::new(id, name, ty).with_quant_params(scale, zero_point));
+        self.values.insert(
+            id,
+            Value::new(id, name, ty).with_quant_params(scale, zero_point),
+        );
         id
     }
 
-    pub fn add_constant(&mut self, name: &str, ty: TensorType, data: Vec<u8>) -> u64 {
+    pub fn add_constant(
+        &mut self,
+        name: &str,
+        ty: TensorType,
+        data: Vec<u8>,
+    ) -> u64 {
         let id = self.add_value(name, ty);
         self.constants.insert(id, data);
         id
     }
 
-    pub fn add_op(&mut self, op_type: &str, inputs: Vec<u64>, outputs: Vec<u64>, attrs: HashMap<String, AttrValue>) -> u64 {
+    pub fn add_op(
+        &mut self,
+        op_type: &str,
+        inputs: Vec<u64>,
+        outputs: Vec<u64>,
+        attrs: HashMap<String, AttrValue>,
+    ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         for &out_id in &outputs {
@@ -294,14 +327,17 @@ impl DagGraph {
                 v.producer = Some(id);
             }
         }
-        self.ops.insert(id, Op {
+        self.ops.insert(
             id,
-            name: format!("{}_{}", op_type, id),
-            op_type: op_type.to_string(),
-            inputs,
-            outputs,
-            attrs,
-        });
+            Op {
+                id,
+                name: format!("{}_{}", op_type, id),
+                op_type: op_type.to_string(),
+                inputs,
+                outputs,
+                attrs,
+            },
+        );
         id
     }
 
@@ -348,7 +384,8 @@ impl DagGraph {
         }
 
         // Kahn 算法
-        let mut queue: Vec<u64> = in_degree.iter()
+        let mut queue: Vec<u64> = in_degree
+            .iter()
             .filter_map(|(&id, &deg)| if deg == 0 { Some(id) } else { None })
             .collect();
 

@@ -1,7 +1,7 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. 浮点泛型 Forward (推理模式)
@@ -91,7 +91,9 @@ pub fn batch_norm_backward<T: DType + Send + Sync>(
                 let grad = grad_data[idx].to_f32();
 
                 grad_input[idx] = T::from_f32(grad * gamma * inv_std);
-                grad_weight[ch] = T::from_f32(grad_weight[ch].to_f32() + grad * (x - mean) * inv_std);
+                grad_weight[ch] = T::from_f32(
+                    grad_weight[ch].to_f32() + grad * (x - mean) * inv_std,
+                );
                 grad_bias[ch] = T::from_f32(grad_bias[ch].to_f32() + grad);
             }
         }
@@ -111,16 +113,25 @@ pub fn batch_norm_backward<T: DType + Send + Sync>(
 pub struct BatchNormOp;
 
 impl<T: DType + Send + Sync> Operator<T> for BatchNormOp {
-    fn name(&self) -> &'static str { "batch_norm" }
+    fn name(&self) -> &'static str {
+        "batch_norm"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 5);
         let eps = attrs.get_float("eps").unwrap_or(1e-5);
         batch_norm(inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], eps)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 5);
         let eps = attrs.get_float("eps").unwrap_or(1e-5);
-        batch_norm_backward(grad, inputs[0], inputs[1], inputs[3], inputs[4], eps)
+        batch_norm_backward(
+            grad, inputs[0], inputs[1], inputs[3], inputs[4], eps,
+        )
     }
 }
 

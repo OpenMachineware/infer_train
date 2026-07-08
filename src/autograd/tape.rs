@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-
 // ============================================================
 // Tape 记录
 // ============================================================
@@ -230,17 +229,25 @@ impl TapeEntry {
             TapeEntry::Sqrt { input, .. } => vec![*input],
             TapeEntry::Log { input, .. } => vec![*input],
             TapeEntry::Neg { input, .. } => vec![*input],
-            TapeEntry::MatMul { input_a, input_b, .. } => vec![*input_a, *input_b],
+            TapeEntry::MatMul { input_a, input_b, .. } => {
+                vec![*input_a, *input_b]
+            }
             TapeEntry::Conv2d { input, weight, bias, .. } => {
                 let mut v = vec![*input, *weight];
-                if let Some(b) = bias { v.push(*b); }
+                if let Some(b) = bias {
+                    v.push(*b);
+                }
                 v
             }
             TapeEntry::Relu { input, .. } => vec![*input],
             TapeEntry::Sigmoid { input, .. } => vec![*input],
             TapeEntry::Tanh { input, .. } => vec![*input],
-            TapeEntry::BatchNorm { input, weight, bias, .. } => vec![*input, *weight, *bias],
-            TapeEntry::LayerNorm { input, weight, bias, .. } => vec![*input, *weight, *bias],
+            TapeEntry::BatchNorm { input, weight, bias, .. } => {
+                vec![*input, *weight, *bias]
+            }
+            TapeEntry::LayerNorm { input, weight, bias, .. } => {
+                vec![*input, *weight, *bias]
+            }
             TapeEntry::RMSNorm { input, weight, .. } => vec![*input, *weight],
             TapeEntry::MaxPool { input, .. } => vec![*input],
             TapeEntry::AvgPool { input, .. } => vec![*input],
@@ -249,11 +256,15 @@ impl TapeEntry {
             TapeEntry::Slice { input, .. } => vec![*input],
             TapeEntry::Squeeze { input, .. } => vec![*input],
             TapeEntry::Unsqueeze { input, .. } => vec![*input],
-            TapeEntry::Embedding { indices, weight, .. } => vec![*indices, *weight],
+            TapeEntry::Embedding { indices, weight, .. } => {
+                vec![*indices, *weight]
+            }
             TapeEntry::Softmax { input, .. } => vec![*input],
             TapeEntry::ReduceSum { input, .. } => vec![*input],
             TapeEntry::ReduceMean { input, .. } => vec![*input],
-            TapeEntry::Select { condition, true_val, false_val, .. } => vec![*condition, *true_val, *false_val],
+            TapeEntry::Select { condition, true_val, false_val, .. } => {
+                vec![*condition, *true_val, *false_val]
+            }
             TapeEntry::Parameter { .. } => vec![],
             TapeEntry::Input { .. } => vec![],
             TapeEntry::Constant { .. } => vec![],

@@ -28,9 +28,10 @@ impl VerifyPass {
 
         // 2. 检查所有 Value 都有 producer 或者是 input/constant
         for (&id, value) in &graph.values {
-            if !graph.inputs.contains(&id) &&
-                !graph.constants.contains_key(&id) &&
-                !graph.outputs.contains(&id) {
+            if !graph.inputs.contains(&id)
+                && !graph.constants.contains_key(&id)
+                && !graph.outputs.contains(&id)
+            {
                 if let Some(producer) = value.producer {
                     if !graph.ops.contains_key(&producer) {
                         return Err(format!(
@@ -71,7 +72,9 @@ impl VerifyPass {
                 if data.len() != expected_size {
                     return Err(format!(
                         "Constant {} size mismatch: expected {} bytes, got {}",
-                        id, expected_size, data.len()
+                        id,
+                        expected_size,
+                        data.len()
                     ));
                 }
             }
@@ -81,7 +84,9 @@ impl VerifyPass {
     }
 
     fn compute_tensor_size(ty: &crate::ir::dag::TensorType) -> usize {
-        let num_elements: usize = ty.shape.iter()
+        let num_elements: usize = ty
+            .shape
+            .iter()
             .filter(|&&d| d != -1)
             .map(|&d| d as usize)
             .product();

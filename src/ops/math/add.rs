@@ -1,8 +1,8 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
 use crate::tensor::Tensor;
+use rayon::prelude::*;
 // use crate::ops::registry::{Operator, OpAttrs, DeviceType};
-use crate::ops::registry::{Operator, OpAttrs};
+use crate::ops::registry::{OpAttrs, Operator};
 
 // ============================================================
 // 1. 浮点泛型 Forward
@@ -11,7 +11,8 @@ use crate::ops::registry::{Operator, OpAttrs};
 pub fn add<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Tensor<T> {
     assert_eq!(a.shape(), b.shape(), "Shape mismatch in add");
 
-    let data: Vec<T> = a.data()
+    let data: Vec<T> = a
+        .data()
         .par_iter()
         .zip(b.data().par_iter())
         .map(|(&x, &y)| x + y)
@@ -47,7 +48,8 @@ pub fn quantized_add(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
     let scale = scale_a;
     let zero = zero_a;
 
-    let result_fp: Vec<f32> = a.data()
+    let result_fp: Vec<f32> = a
+        .data()
         .iter()
         .zip(b.data().iter())
         .map(|(&x, &y)| {
@@ -57,7 +59,8 @@ pub fn quantized_add(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
         })
         .collect();
 
-    let data: Vec<i8> = result_fp.iter()
+    let data: Vec<i8> = result_fp
+        .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
 
@@ -153,8 +156,10 @@ mod tests {
     #[test]
     fn test_add_bf16() {
         use half::bf16;
-        let a = Tensor::new(vec![bf16::from_f32(1.0), bf16::from_f32(2.0)], &[2]);
-        let b = Tensor::new(vec![bf16::from_f32(3.0), bf16::from_f32(4.0)], &[2]);
+        let a =
+            Tensor::new(vec![bf16::from_f32(1.0), bf16::from_f32(2.0)], &[2]);
+        let b =
+            Tensor::new(vec![bf16::from_f32(3.0), bf16::from_f32(4.0)], &[2]);
         let c = add(&a, &b);
         assert_eq!(c.data()[0].to_f32(), 4.0);
         assert_eq!(c.data()[1].to_f32(), 6.0);

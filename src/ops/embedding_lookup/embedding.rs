@@ -51,7 +51,8 @@ pub fn embedding_backward<T: DType>(
     embedding_dim: usize,
 ) -> Vec<Tensor<T>> {
     let indices_data = indices.data();
-    let mut grad_weight = vec![T::from_f32(0.0); num_embeddings * embedding_dim];
+    let mut grad_weight =
+        vec![T::from_f32(0.0); num_embeddings * embedding_dim];
     let grad_data = grad_output.data();
 
     for (i, &idx) in indices_data.iter().enumerate() {
@@ -59,7 +60,8 @@ pub fn embedding_backward<T: DType>(
         let base = i * embedding_dim;
         let weight_base = idx_usize * embedding_dim;
         for d in 0..embedding_dim {
-            grad_weight[weight_base + d] = grad_weight[weight_base + d] + grad_data[base + d];
+            grad_weight[weight_base + d] =
+                grad_weight[weight_base + d] + grad_data[base + d];
         }
     }
 
@@ -74,7 +76,9 @@ pub fn embedding_backward<T: DType>(
 pub struct EmbeddingOp;
 
 impl EmbeddingOp {
-    pub fn name(&self) -> &'static str { "embedding" }
+    pub fn name(&self) -> &'static str {
+        "embedding"
+    }
     pub fn forward<T: DType + Send + Sync>(
         &self,
         indices: &Tensor<i64>,
@@ -104,11 +108,7 @@ mod tests {
     #[test]
     fn test_embedding() {
         let indices = Tensor::new(vec![0, 2, 1], &[3]);
-        let weight = Tensor::new(vec![
-            1.0, 2.0,
-            3.0, 4.0,
-            5.0, 6.0,
-        ], &[3, 2]);
+        let weight = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         let c = embedding(&indices, &weight);
         assert_eq!(c.shape(), &[3, 2]);
         assert_eq!(c.data(), &[1.0, 2.0, 5.0, 6.0, 3.0, 4.0]);
@@ -117,11 +117,7 @@ mod tests {
     #[test]
     fn test_embedding_op() {
         let indices = Tensor::new(vec![0, 2, 1], &[3]);
-        let weight = Tensor::new(vec![
-            1.0, 2.0,
-            3.0, 4.0,
-            5.0, 6.0,
-        ], &[3, 2]);
+        let weight = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         let op = EmbeddingOp;
         let c = op.forward(&indices, &weight);
         assert_eq!(c.data(), &[1.0, 2.0, 5.0, 6.0, 3.0, 4.0]);

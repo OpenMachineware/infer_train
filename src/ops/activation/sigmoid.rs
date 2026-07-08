@@ -1,14 +1,15 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // 1. 浮点泛型 Forward
 // ============================================================
 
 pub fn sigmoid<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
-    let data: Vec<T> = a.data()
+    let data: Vec<T> = a
+        .data()
         .par_iter()
         .map(|&x| {
             let v = x.to_f32();
@@ -31,7 +32,8 @@ pub fn sigmoid_backward<T: DType>(
     for i in 0..grad.len() {
         let v = a.data()[i].to_f32();
         let sig = 1.0 / (1.0 + (-v).exp());
-        grad.data_mut()[i] = T::from_f32(grad.data()[i].to_f32() * sig * (1.0 - sig));
+        grad.data_mut()[i] =
+            T::from_f32(grad.data()[i].to_f32() * sig * (1.0 - sig));
     }
     vec![grad]
 }
@@ -47,7 +49,8 @@ pub fn quantized_sigmoid(a: &Tensor<i8>) -> Tensor<i8> {
     let scale = a.scale().unwrap_or(1.0);
     let zero = a.zero_point().unwrap_or(0.0);
 
-    let data: Vec<i8> = c_fp.data()
+    let data: Vec<i8> = c_fp
+        .data()
         .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
@@ -70,7 +73,8 @@ pub fn quantized_sigmoid_backward(
     let scale = a.scale().unwrap_or(1.0);
     let zero = a.zero_point().unwrap_or(0.0);
 
-    let data: Vec<i8> = grads[0].data()
+    let data: Vec<i8> = grads[0]
+        .data()
         .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
@@ -85,12 +89,19 @@ pub fn quantized_sigmoid_backward(
 pub struct SigmoidOp;
 
 impl<T: DType + Send + Sync> Operator<T> for SigmoidOp {
-    fn name(&self) -> &'static str { "sigmoid" }
+    fn name(&self) -> &'static str {
+        "sigmoid"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         sigmoid(inputs[0])
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 1);
         sigmoid_backward(grad, inputs[0])
     }
@@ -99,16 +110,25 @@ impl<T: DType + Send + Sync> Operator<T> for SigmoidOp {
 pub struct QuantizedSigmoidOp;
 
 impl Operator<i8> for QuantizedSigmoidOp {
-    fn name(&self) -> &'static str { "quantized_sigmoid" }
+    fn name(&self) -> &'static str {
+        "quantized_sigmoid"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
         quantized_sigmoid(inputs[0])
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         assert_eq!(inputs.len(), 1);
         quantized_sigmoid_backward(grad, inputs[0])
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // 1. 浮点泛型 Forward
@@ -17,7 +17,8 @@ pub fn mse<T: DType + Send + Sync>(
     let pred_data = pred.data();
     let target_data = target.data();
 
-    let sum_sq: f32 = pred_data.par_iter()
+    let sum_sq: f32 = pred_data
+        .par_iter()
         .zip(target_data.par_iter())
         .map(|(&p, &t)| {
             let diff = p.to_f32() - t.to_f32();
@@ -51,7 +52,8 @@ pub fn mse_backward<T: DType>(
         2.0 * grad_val
     };
 
-    let grad_pred: Vec<T> = pred.data()
+    let grad_pred: Vec<T> = pred
+        .data()
         .par_iter()
         .zip(target.data().par_iter())
         .map(|(&p, &t)| T::from_f32((p.to_f32() - t.to_f32()) * scale))
@@ -67,13 +69,20 @@ pub fn mse_backward<T: DType>(
 pub struct MseOp;
 
 impl<T: DType + Send + Sync> Operator<T> for MseOp {
-    fn name(&self) -> &'static str { "mse" }
+    fn name(&self) -> &'static str {
+        "mse"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 2);
         let reduction = attrs.get_bool("reduction").unwrap_or(true);
         mse(inputs[0], inputs[1], reduction)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 2);
         let reduction = attrs.get_bool("reduction").unwrap_or(true);
         mse_backward(grad, inputs[0], inputs[1], reduction)

@@ -1,14 +1,19 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // 1. 浮点泛型 Forward
 // ============================================================
 
-pub fn clamp<T: DType + Send + Sync>(a: &Tensor<T>, min: f32, max: f32) -> Tensor<T> {
-    let data: Vec<T> = a.data()
+pub fn clamp<T: DType + Send + Sync>(
+    a: &Tensor<T>,
+    min: f32,
+    max: f32,
+) -> Tensor<T> {
+    let data: Vec<T> = a
+        .data()
         .par_iter()
         .map(|&x| {
             let v = x.to_f32();
@@ -49,7 +54,8 @@ pub fn quantized_clamp(a: &Tensor<i8>, min: f32, max: f32) -> Tensor<i8> {
     let scale = a.scale().unwrap_or(1.0);
     let zero = a.zero_point().unwrap_or(0.0);
 
-    let result_fp: Vec<f32> = a.data()
+    let result_fp: Vec<f32> = a
+        .data()
         .iter()
         .map(|&x| {
             let v = (x as f32 - zero) * scale;
@@ -57,7 +63,8 @@ pub fn quantized_clamp(a: &Tensor<i8>, min: f32, max: f32) -> Tensor<i8> {
         })
         .collect();
 
-    let data: Vec<i8> = result_fp.iter()
+    let data: Vec<i8> = result_fp
+        .iter()
         .map(|&v| ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8)
         .collect();
 
@@ -80,11 +87,8 @@ pub fn quantized_clamp_backward(
     let mut grad = grad_output.clone();
     for i in 0..grad.len() {
         let v = (a.data()[i] as f32 - zero) * scale;
-        grad.data_mut()[i] = if v >= min && v <= max {
-            grad.data()[i]
-        } else {
-            0
-        };
+        grad.data_mut()[i] =
+            if v >= min && v <= max { grad.data()[i] } else { 0 };
     }
     vec![grad]
 }
@@ -96,14 +100,21 @@ pub fn quantized_clamp_backward(
 pub struct ClampOp;
 
 impl<T: DType + Send + Sync> Operator<T> for ClampOp {
-    fn name(&self) -> &'static str { "clamp" }
+    fn name(&self) -> &'static str {
+        "clamp"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         let min = attrs.get_float("min").unwrap_or(0.0);
         let max = attrs.get_float("max").unwrap_or(1.0);
         clamp(inputs[0], min, max)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 1);
         let min = attrs.get_float("min").unwrap_or(0.0);
         let max = attrs.get_float("max").unwrap_or(1.0);
@@ -114,20 +125,29 @@ impl<T: DType + Send + Sync> Operator<T> for ClampOp {
 pub struct QuantizedClampOp;
 
 impl Operator<i8> for QuantizedClampOp {
-    fn name(&self) -> &'static str { "quantized_clamp" }
+    fn name(&self) -> &'static str {
+        "quantized_clamp"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
         let min = attrs.get_float("min").unwrap_or(0.0);
         let max = attrs.get_float("max").unwrap_or(1.0);
         quantized_clamp(inputs[0], min, max)
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         assert_eq!(inputs.len(), 1);
         let min = attrs.get_float("min").unwrap_or(0.0);
         let max = attrs.get_float("max").unwrap_or(1.0);
         quantized_clamp_backward(grad, inputs[0], min, max)
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

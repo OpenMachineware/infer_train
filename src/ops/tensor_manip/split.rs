@@ -1,8 +1,8 @@
 // src/ops/tensor_manip/split.rs
 
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 泛型 Forward
@@ -15,7 +15,10 @@ pub fn split<T: DType + Send + Sync>(
 ) -> Vec<Tensor<T>> {
     let shape = input.shape();
     let dim_size = shape[dim];
-    assert!(dim_size % split_size == 0, "split: dim size must be divisible by split size");
+    assert!(
+        dim_size % split_size == 0,
+        "split: dim size must be divisible by split size"
+    );
 
     let num_splits = dim_size / split_size;
     let mut result = Vec::with_capacity(num_splits);
@@ -62,7 +65,8 @@ pub fn split_backward<T: DType>(
         for o in 0..outer {
             for i in 0..split_size {
                 let src_idx = (o * split_size + i) * inner_stride;
-                let dst_idx = o * dim_stride + (s * split_size + i) * inner_stride;
+                let dst_idx =
+                    o * dim_stride + (s * split_size + i) * inner_stride;
                 for j in 0..inner_stride {
                     data[dst_idx + j] = grad.data()[src_idx + j];
                 }
@@ -84,7 +88,10 @@ pub fn quantized_split(
 ) -> Vec<Tensor<i8>> {
     let shape = input.shape();
     let dim_size = shape[dim];
-    assert!(dim_size % split_size == 0, "quantized_split: dim size must be divisible by split size");
+    assert!(
+        dim_size % split_size == 0,
+        "quantized_split: dim size must be divisible by split size"
+    );
 
     let num_splits = dim_size / split_size;
     let mut result = Vec::with_capacity(num_splits);
@@ -107,7 +114,9 @@ pub fn quantized_split(
                 data.extend_from_slice(&input.data()[idx..idx + inner_stride]);
             }
         }
-        result.push(Tensor::<i8>::new_quantized(data, &out_shape, scale, zero_point));
+        result.push(Tensor::<i8>::new_quantized(
+            data, &out_shape, scale, zero_point,
+        ));
     }
 
     result
@@ -131,7 +140,8 @@ pub fn quantized_split_backward(
         for o in 0..outer {
             for i in 0..split_size {
                 let src_idx = (o * split_size + i) * inner_stride;
-                let dst_idx = o * dim_stride + (s * split_size + i) * inner_stride;
+                let dst_idx =
+                    o * dim_stride + (s * split_size + i) * inner_stride;
                 for j in 0..inner_stride {
                     data[dst_idx + j] = grad.data()[src_idx + j];
                 }
@@ -149,16 +159,25 @@ pub fn quantized_split_backward(
 pub struct SplitOp;
 
 impl<T: DType + Send + Sync> Operator<T> for SplitOp {
-    fn name(&self) -> &'static str { "split" }
+    fn name(&self) -> &'static str {
+        "split"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
-        let split_size = attrs.get_int("split_size").map(|v| v as usize).unwrap_or(1);
+        let split_size =
+            attrs.get_int("split_size").map(|v| v as usize).unwrap_or(1);
         let dim = attrs.get_int("dim").map(|v| v as usize).unwrap_or(0);
         let results = split(inputs[0], split_size, dim);
         results.into_iter().next().unwrap_or_else(|| inputs[0].clone())
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
-        let split_size = attrs.get_int("split_size").map(|v| v as usize).unwrap_or(1);
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
+        let split_size =
+            attrs.get_int("split_size").map(|v| v as usize).unwrap_or(1);
         let dim = attrs.get_int("dim").map(|v| v as usize).unwrap_or(0);
         split_backward(&[grad], inputs[0].shape(), split_size, dim)
     }
@@ -167,18 +186,29 @@ impl<T: DType + Send + Sync> Operator<T> for SplitOp {
 pub struct QuantizedSplitOp;
 
 impl Operator<i8> for QuantizedSplitOp {
-    fn name(&self) -> &'static str { "quantized_split" }
+    fn name(&self) -> &'static str {
+        "quantized_split"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
-        let split_size = attrs.get_int("split_size").map(|v| v as usize).unwrap_or(1);
+        let split_size =
+            attrs.get_int("split_size").map(|v| v as usize).unwrap_or(1);
         let dim = attrs.get_int("dim").map(|v| v as usize).unwrap_or(0);
         let results = quantized_split(inputs[0], split_size, dim);
         results.into_iter().next().unwrap_or_else(|| inputs[0].clone())
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Vec<Tensor<i8>> {
-        let split_size = attrs.get_int("split_size").map(|v| v as usize).unwrap_or(1);
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
+        let split_size =
+            attrs.get_int("split_size").map(|v| v as usize).unwrap_or(1);
         let dim = attrs.get_int("dim").map(|v| v as usize).unwrap_or(0);
         quantized_split_backward(&[grad], inputs[0].shape(), split_size, dim)
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }

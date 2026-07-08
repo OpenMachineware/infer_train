@@ -129,9 +129,7 @@ pub struct OperatorRegistry {
 
 impl OperatorRegistry {
     pub fn new() -> Self {
-        OperatorRegistry {
-            ops: HashMap::new(),
-        }
+        OperatorRegistry { ops: HashMap::new() }
     }
 
     pub fn register<T: Operator<f32> + 'static>(&mut self, op: T) {
@@ -142,7 +140,12 @@ impl OperatorRegistry {
         self.ops.get(name).map(|b| b.as_ref())
     }
 
-    pub fn forward(&self, name: &str, inputs: &[&Tensor<f32>], attrs: &OpAttrs) -> Option<Tensor<f32>> {
+    pub fn forward(
+        &self,
+        name: &str,
+        inputs: &[&Tensor<f32>],
+        attrs: &OpAttrs,
+    ) -> Option<Tensor<f32>> {
         self.get(name).map(|op| op.forward(inputs, attrs))
     }
 }

@@ -1,7 +1,7 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // 1. 浮点泛型 Forward
@@ -17,7 +17,8 @@ pub fn l1<T: DType + Send + Sync>(
     let pred_data = pred.data();
     let target_data = target.data();
 
-    let sum_abs: f32 = pred_data.par_iter()
+    let sum_abs: f32 = pred_data
+        .par_iter()
         .zip(target_data.par_iter())
         .map(|(&p, &t)| (p.to_f32() - t.to_f32()).abs())
         .sum();
@@ -48,7 +49,8 @@ pub fn l1_backward<T: DType>(
         grad_val
     };
 
-    let grad_pred: Vec<T> = pred.data()
+    let grad_pred: Vec<T> = pred
+        .data()
         .par_iter()
         .zip(target.data().par_iter())
         .map(|(&p, &t)| {
@@ -67,13 +69,20 @@ pub fn l1_backward<T: DType>(
 pub struct L1Op;
 
 impl<T: DType + Send + Sync> Operator<T> for L1Op {
-    fn name(&self) -> &'static str { "l1" }
+    fn name(&self) -> &'static str {
+        "l1"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 2);
         let reduction = attrs.get_bool("reduction").unwrap_or(true);
         l1(inputs[0], inputs[1], reduction)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 2);
         let reduction = attrs.get_bool("reduction").unwrap_or(true);
         l1_backward(grad, inputs[0], inputs[1], reduction)

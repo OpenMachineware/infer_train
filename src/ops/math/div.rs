@@ -1,7 +1,7 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // 1. 浮点泛型 Forward
@@ -10,7 +10,8 @@ use crate::ops::registry::{Operator, OpAttrs};
 pub fn div<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Tensor<T> {
     assert_eq!(a.shape(), b.shape(), "Shape mismatch in div");
 
-    let data: Vec<T> = a.data()
+    let data: Vec<T> = a
+        .data()
         .par_iter()
         .zip(b.data().par_iter())
         .map(|(&x, &y)| {
@@ -43,9 +44,11 @@ pub fn div_backward<T: DType>(
             grad_a.data_mut()[i] = T::from_f32(0.0);
             grad_b.data_mut()[i] = T::from_f32(0.0);
         } else {
-            grad_a.data_mut()[i] = T::from_f32(grad_a.data()[i].to_f32() / b_f32);
+            grad_a.data_mut()[i] =
+                T::from_f32(grad_a.data()[i].to_f32() / b_f32);
             grad_b.data_mut()[i] = T::from_f32(
-                -grad_b.data()[i].to_f32() * a.data()[i].to_f32() / (b_f32 * b_f32)
+                -grad_b.data()[i].to_f32() * a.data()[i].to_f32()
+                    / (b_f32 * b_f32),
             );
         }
     }
@@ -67,20 +70,29 @@ pub fn quantized_div(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
     let scale = scale_a;
     let zero = zero_a;
 
-    let result_fp: Vec<f32> = a.data()
+    let result_fp: Vec<f32> = a
+        .data()
         .iter()
         .zip(b.data().iter())
         .map(|(&x, &y)| {
             let x_fp = (x as f32 - zero_a) * scale_a;
             let y_fp = (y as f32 - zero_b) * scale_b;
-            if y_fp == 0.0 { f32::INFINITY } else { x_fp / y_fp }
+            if y_fp == 0.0 {
+                f32::INFINITY
+            } else {
+                x_fp / y_fp
+            }
         })
         .collect();
 
-    let data: Vec<i8> = result_fp.iter()
+    let data: Vec<i8> = result_fp
+        .iter()
         .map(|&v| {
-            if v.is_infinite() { 127 }
-            else { ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8 }
+            if v.is_infinite() {
+                127
+            } else {
+                ((v / scale) + zero).round().clamp(-128.0, 127.0) as i8
+            }
         })
         .collect();
 
@@ -104,7 +116,9 @@ pub fn quantized_div_backward(
             grad_b.data_mut()[i] = 0;
         } else {
             grad_a.data_mut()[i] = grad_a.data()[i].saturating_div(b.data()[i]);
-            grad_b.data_mut()[i] = -grad_b.data()[i].saturating_mul(a.data()[i]) / (b.data()[i] * b.data()[i]);
+            grad_b.data_mut()[i] = -grad_b.data()[i]
+                .saturating_mul(a.data()[i])
+                / (b.data()[i] * b.data()[i]);
         }
     }
     vec![grad_a, grad_b]
@@ -117,12 +131,19 @@ pub fn quantized_div_backward(
 pub struct DivOp;
 
 impl<T: DType + Send + Sync> Operator<T> for DivOp {
-    fn name(&self) -> &'static str { "div" }
+    fn name(&self) -> &'static str {
+        "div"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 2);
         div(inputs[0], inputs[1])
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 2);
         div_backward(grad, inputs[0], inputs[1])
     }
@@ -131,16 +152,25 @@ impl<T: DType + Send + Sync> Operator<T> for DivOp {
 pub struct QuantizedDivOp;
 
 impl Operator<i8> for QuantizedDivOp {
-    fn name(&self) -> &'static str { "quantized_div" }
+    fn name(&self) -> &'static str {
+        "quantized_div"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 2);
         quantized_div(inputs[0], inputs[1])
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         assert_eq!(inputs.len(), 2);
         quantized_div_backward(grad, inputs[0], inputs[1])
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

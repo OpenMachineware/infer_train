@@ -1,9 +1,9 @@
 // src/autograd/mod.rs
 
-pub mod tape;
 pub mod backward;
 pub mod engine;
+pub mod tape;
 
-pub use tape::Tape;
 pub use backward::{backward, GradFn};
-pub use engine::{AutogradEngine, AutogradConfig};
+pub use engine::{AutogradConfig, AutogradEngine};
+pub use tape::Tape;

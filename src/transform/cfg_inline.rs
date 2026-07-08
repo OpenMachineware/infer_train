@@ -1,6 +1,6 @@
+use crate::ir::cfg::{CfgGraph, CfgOp};
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use crate::ir::cfg::{CfgGraph, CfgOp};
 
 static FUNCTION_REGISTRY: OnceLock<HashMap<String, CfgGraph>> = OnceLock::new();
 
@@ -9,7 +9,9 @@ pub struct CfgInlinePass;
 impl CfgInlinePass {
     pub fn apply(cfg: &mut CfgGraph) -> bool {
         let mut changed = false;
-        let call_ops: Vec<u64> = cfg.blocks.values()
+        let call_ops: Vec<u64> = cfg
+            .blocks
+            .values()
             .flat_map(|block| block.ops.iter())
             .filter(|op| Self::is_call_op(&op.op_type))
             .map(|op| op.id)
@@ -29,15 +31,17 @@ impl CfgInlinePass {
     }
 
     fn inline_call(cfg: &mut CfgGraph, call_op_id: u64) -> bool {
-        let (block_id, call_op) = match cfg.blocks.iter_mut()
-            .find_map(|(id, block)| {
-                block.ops.iter()
+        let (block_id, call_op) =
+            match cfg.blocks.iter_mut().find_map(|(id, block)| {
+                block
+                    .ops
+                    .iter()
                     .find(|op| op.id == call_op_id)
                     .map(|op| (*id, op.clone()))
             }) {
-            Some(found) => found,
-            None => return false,
-        };
+                Some(found) => found,
+                None => return false,
+            };
 
         let func_name = match call_op.attrs.get("function_name") {
             Some(crate::ir::dag::AttrValue::String(s)) => s.clone(),
@@ -60,7 +64,9 @@ impl CfgInlinePass {
         };
 
         // 内联函数体
-        let mut inline_ops = func_cfg.blocks.values()
+        let mut inline_ops = func_cfg
+            .blocks
+            .values()
             .flat_map(|b| b.ops.clone())
             .collect::<Vec<CfgOp>>();
 
@@ -84,7 +90,7 @@ impl CfgInlinePass {
             }
         }
 
-        block.ops.splice(pos..pos+1, inline_ops);
+        block.ops.splice(pos..pos + 1, inline_ops);
         true
     }
 
@@ -101,11 +107,15 @@ impl CfgInlinePass {
     }
 
     // 用 Mutex 版本（更安全）
-    pub fn register_function_mutex(name: &str, cfg: CfgGraph) -> Result<(), String> {
+    pub fn register_function_mutex(
+        name: &str,
+        cfg: CfgGraph,
+    ) -> Result<(), String> {
         // 如果已经存在，返回错误或覆盖
         // 这里用简单方式：使用 Mutex
         use std::sync::Mutex;
-        static REGISTRY_MUTEX: OnceLock<Mutex<HashMap<String, CfgGraph>>> = OnceLock::new();
+        static REGISTRY_MUTEX: OnceLock<Mutex<HashMap<String, CfgGraph>>> =
+            OnceLock::new();
         let mutex = REGISTRY_MUTEX.get_or_init(|| Mutex::new(HashMap::new()));
         let mut registry = mutex.lock().unwrap();
         registry.insert(name.to_string(), cfg);
@@ -126,8 +136,10 @@ mod tests {
         cfg.set_entry(block);
 
         let mut attrs = HashMap::new();
-        attrs.insert("function_name".to_string(),
-                     AttrValue::String("matmul".to_string()));
+        attrs.insert(
+            "function_name".to_string(),
+            AttrValue::String("matmul".to_string()),
+        );
 
         let op = CfgOp {
             id: 0,

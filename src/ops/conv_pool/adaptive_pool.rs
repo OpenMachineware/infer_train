@@ -1,7 +1,7 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. Adaptive Avg Pool Forward
@@ -13,7 +13,11 @@ pub fn adaptive_avg_pool<T: DType + Send + Sync>(
 ) -> Tensor<T> {
     let shape = x.shape();
     let spatial_dims = shape.len() - 2;
-    assert_eq!(spatial_dims, output_size.len(), "Output size must match spatial dims");
+    assert_eq!(
+        spatial_dims,
+        output_size.len(),
+        "Output size must match spatial dims"
+    );
 
     let mut out_shape = vec![shape[0], shape[1]];
     out_shape.extend_from_slice(output_size);
@@ -98,7 +102,9 @@ pub fn adaptive_max_pool<T: DType + Send + Sync>(
                         for iw in w_start..w_end {
                             let idx = ((b * c + ch) * h + ih) * w + iw;
                             let v = x_data[idx].to_f32();
-                            if v > max_val { max_val = v; }
+                            if v > max_val {
+                                max_val = v;
+                            }
                         }
                     }
                     let out_idx = ((b * c + ch) * out_h + oh) * out_w + ow;
@@ -118,22 +124,31 @@ pub fn adaptive_max_pool<T: DType + Send + Sync>(
 pub struct AdaptivePoolOp;
 
 impl<T: DType + Send + Sync> Operator<T> for AdaptivePoolOp {
-    fn name(&self) -> &'static str { "adaptive_pool" }
+    fn name(&self) -> &'static str {
+        "adaptive_pool"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
-        let output_size = attrs.get_int_list("output_size")
+        let output_size = attrs
+            .get_int_list("output_size")
             .expect("adaptive_pool requires output_size")
             .iter()
             .map(|&x| x as usize)
             .collect::<Vec<_>>();
-        let pool_type = attrs.get_string("pool_type").unwrap_or("avg".to_string());
+        let pool_type =
+            attrs.get_string("pool_type").unwrap_or("avg".to_string());
         if pool_type == "max" {
             adaptive_max_pool(inputs[0], &output_size)
         } else {
             adaptive_avg_pool(inputs[0], &output_size)
         }
     }
-    fn backward(&self, grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         vec![grad.clone()]
     }
 }
@@ -144,7 +159,10 @@ mod tests {
 
     #[test]
     fn test_adaptive_avg_pool() {
-        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], &[1, 1, 3, 3]);
+        let x = Tensor::new(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            &[1, 1, 3, 3],
+        );
         let c = adaptive_avg_pool(&x, &[2, 2]);
         assert_eq!(c.shape(), &[1, 1, 2, 2]);
     }

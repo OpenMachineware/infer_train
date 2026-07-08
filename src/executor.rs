@@ -1,20 +1,19 @@
 // src/executor/mod.rs
 
-pub mod executor;
-pub mod math;
-pub mod nn;
 pub mod activation;
-pub mod tensor;
-pub mod index;
 pub mod control;
-pub mod quantized;
+pub mod executor;
+pub mod index;
+pub mod math;
 pub mod memory_reuse;
+pub mod nn;
 pub mod parallel;
+pub mod quantized;
+pub mod tensor;
 
 pub use executor::{
-    Executor, PyExecutor,
-    Trainer, TrainerConfig, OptimizerType, TrainingState,
-    OptimizerState, SGDOptimizerState, AdamWOptimizerState,
+    AdamWOptimizerState, Executor, OptimizerState, OptimizerType, PyExecutor,
+    SGDOptimizerState, Trainer, TrainerConfig, TrainingState,
 };
+pub use memory_reuse::{MemoryConfig, MemoryPool};
 pub use parallel::dispatch_op;
-pub use memory_reuse::{MemoryPool, MemoryConfig};

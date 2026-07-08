@@ -1,7 +1,7 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. 浮点泛型 Forward
@@ -35,7 +35,9 @@ pub fn rms_norm<T: DType + Send + Sync>(
 
         for i in 0..last_dim {
             let idx = base + i;
-            out_data[idx] = T::from_f32(x_data[idx].to_f32() * inv_rms * weight_data[i].to_f32());
+            out_data[idx] = T::from_f32(
+                x_data[idx].to_f32() * inv_rms * weight_data[i].to_f32(),
+            );
         }
     }
 
@@ -81,14 +83,12 @@ pub fn rms_norm_backward<T: DType + Send + Sync>(
             let w = weight_data[i].to_f32();
 
             grad_input[idx] = T::from_f32(grad * w * inv_rms);
-            grad_weight[i] = T::from_f32(grad_weight[i].to_f32() + grad * x * inv_rms);
+            grad_weight[i] =
+                T::from_f32(grad_weight[i].to_f32() + grad * x * inv_rms);
         }
     }
 
-    vec![
-        Tensor::new(grad_input, shape),
-        Tensor::new(grad_weight, &[last_dim]),
-    ]
+    vec![Tensor::new(grad_input, shape), Tensor::new(grad_weight, &[last_dim])]
 }
 
 // ============================================================
@@ -98,13 +98,20 @@ pub fn rms_norm_backward<T: DType + Send + Sync>(
 pub struct RmsNormOp;
 
 impl<T: DType + Send + Sync> Operator<T> for RmsNormOp {
-    fn name(&self) -> &'static str { "rms_norm" }
+    fn name(&self) -> &'static str {
+        "rms_norm"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 2);
         let eps = attrs.get_float("eps").unwrap_or(1e-5);
         rms_norm(inputs[0], inputs[1], eps)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 2);
         let eps = attrs.get_float("eps").unwrap_or(1e-5);
         rms_norm_backward(grad, inputs[0], inputs[1], eps)

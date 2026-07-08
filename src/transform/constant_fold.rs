@@ -1,7 +1,7 @@
 // src/transform/constant_fold.rs
 
+use crate::ir::dag::{AttrValue, DagGraph, DataType};
 use std::collections::HashMap;
-use crate::ir::dag::{DagGraph, AttrValue, DataType};
 
 pub struct ConstantFoldingPass;
 
@@ -44,7 +44,13 @@ impl ConstantFoldingPass {
             }
 
             if let Some((result_data, result_shape, result_dtype)) =
-                Self::fold_op_tensor(&op.op_type, &const_inputs, &const_shapes, &const_dtypes, &op.attrs)
+                Self::fold_op_tensor(
+                    &op.op_type,
+                    &const_inputs,
+                    &const_shapes,
+                    &const_dtypes,
+                    &op.attrs,
+                )
             {
                 let out_id = op.outputs[0];
 
@@ -90,24 +96,74 @@ impl ConstantFoldingPass {
                     return None;
                 }
 
-                let broadcast_shape = Self::broadcast_shapes(&shapes[0], &shapes[1])?;
+                let broadcast_shape =
+                    Self::broadcast_shapes(&shapes[0], &shapes[1])?;
 
                 let data1 = Self::decode_tensor(&inputs[0], dtype, &shapes[0]);
                 let data2 = Self::decode_tensor(&inputs[1], dtype, &shapes[1]);
 
-                let broadcasted1 = Self::broadcast_data(&data1, &shapes[0], &broadcast_shape, dtype);
-                let broadcasted2 = Self::broadcast_data(&data2, &shapes[1], &broadcast_shape, dtype);
+                let broadcasted1 = Self::broadcast_data(
+                    &data1,
+                    &shapes[0],
+                    &broadcast_shape,
+                    dtype,
+                );
+                let broadcasted2 = Self::broadcast_data(
+                    &data2,
+                    &shapes[1],
+                    &broadcast_shape,
+                    dtype,
+                );
 
                 let result = match op_type {
-                    "add" => Self::elementwise_op(&broadcasted1, &broadcasted2, |a, b| a + b, dtype),
-                    "sub" => Self::elementwise_op(&broadcasted1, &broadcasted2, |a, b| a - b, dtype),
-                    "mul" => Self::elementwise_op(&broadcasted1, &broadcasted2, |a, b| a * b, dtype),
-                    "div" => Self::elementwise_op(&broadcasted1, &broadcasted2, |a, b| {
-                        if b == 0.0 { 0.0 } else { a / b }
-                    }, dtype),
-                    "pow" => Self::elementwise_op(&broadcasted1, &broadcasted2, |a, b| a.powf(b), dtype),
-                    "maximum" => Self::elementwise_op(&broadcasted1, &broadcasted2, |a, b| a.max(b), dtype),
-                    "minimum" => Self::elementwise_op(&broadcasted1, &broadcasted2, |a, b| a.min(b), dtype),
+                    "add" => Self::elementwise_op(
+                        &broadcasted1,
+                        &broadcasted2,
+                        |a, b| a + b,
+                        dtype,
+                    ),
+                    "sub" => Self::elementwise_op(
+                        &broadcasted1,
+                        &broadcasted2,
+                        |a, b| a - b,
+                        dtype,
+                    ),
+                    "mul" => Self::elementwise_op(
+                        &broadcasted1,
+                        &broadcasted2,
+                        |a, b| a * b,
+                        dtype,
+                    ),
+                    "div" => Self::elementwise_op(
+                        &broadcasted1,
+                        &broadcasted2,
+                        |a, b| {
+                            if b == 0.0 {
+                                0.0
+                            } else {
+                                a / b
+                            }
+                        },
+                        dtype,
+                    ),
+                    "pow" => Self::elementwise_op(
+                        &broadcasted1,
+                        &broadcasted2,
+                        |a, b| a.powf(b),
+                        dtype,
+                    ),
+                    "maximum" => Self::elementwise_op(
+                        &broadcasted1,
+                        &broadcasted2,
+                        |a, b| a.max(b),
+                        dtype,
+                    ),
+                    "minimum" => Self::elementwise_op(
+                        &broadcasted1,
+                        &broadcasted2,
+                        |a, b| a.min(b),
+                        dtype,
+                    ),
                     _ => return None,
                 };
 
@@ -115,8 +171,8 @@ impl ConstantFoldingPass {
                 Some((encoded, broadcast_shape, dtype))
             }
 
-            "exp" | "sqrt" | "log" | "log2" | "log10" |
-            "abs" | "neg" | "floor" | "ceil" | "round" | "sin" | "cos" | "tan" => {
+            "exp" | "sqrt" | "log" | "log2" | "log10" | "abs" | "neg"
+            | "floor" | "ceil" | "round" | "sin" | "cos" | "tan" => {
                 if inputs.len() != 1 {
                     return None;
                 }
@@ -148,15 +204,25 @@ impl ConstantFoldingPass {
                     return None;
                 }
 
-                let dim = attrs.get("dim")
-                    .and_then(|v| match v { AttrValue::Int(i) => Some(*i as usize), _ => None })
+                let dim = attrs
+                    .get("dim")
+                    .and_then(|v| match v {
+                        AttrValue::Int(i) => Some(*i as usize),
+                        _ => None,
+                    })
                     .unwrap_or(0);
-                let keepdim = attrs.get("keepdim")
-                    .and_then(|v| match v { AttrValue::Bool(b) => Some(*b), _ => None })
+                let keepdim = attrs
+                    .get("keepdim")
+                    .and_then(|v| match v {
+                        AttrValue::Bool(b) => Some(*b),
+                        _ => None,
+                    })
                     .unwrap_or(false);
 
                 let data = Self::decode_tensor(&inputs[0], dtype, &shapes[0]);
-                let (result_data, result_shape) = Self::reduce_op(&data, &shapes[0], dim, keepdim, op_type, dtype);
+                let (result_data, result_shape) = Self::reduce_op(
+                    &data, &shapes[0], dim, keepdim, op_type, dtype,
+                );
 
                 let encoded = Self::encode_tensor(&result_data, dtype);
                 Some((encoded, result_shape, dtype))
@@ -167,13 +233,20 @@ impl ConstantFoldingPass {
                     return None;
                 }
 
-                let perm = attrs.get("perm")
-                    .and_then(|v| match v { AttrValue::IntList(list) => Some(list.clone()), _ => None });
+                let perm = attrs.get("perm").and_then(|v| match v {
+                    AttrValue::IntList(list) => Some(list.clone()),
+                    _ => None,
+                });
 
                 let (result_data, result_shape) = if let Some(perm) = perm {
                     Self::transpose_tensor(&inputs[0], &shapes[0], &perm, dtype)
                 } else {
-                    Self::transpose_tensor(&inputs[0], &shapes[0], &[0, 1], dtype)
+                    Self::transpose_tensor(
+                        &inputs[0],
+                        &shapes[0],
+                        &[0, 1],
+                        dtype,
+                    )
                 };
 
                 Some((result_data, result_shape, dtype))
@@ -184,8 +257,10 @@ impl ConstantFoldingPass {
                     return None;
                 }
 
-                let new_shape = attrs.get("shape")
-                    .and_then(|v| match v { AttrValue::Shape(shape) => Some(shape.clone()), _ => None });
+                let new_shape = attrs.get("shape").and_then(|v| match v {
+                    AttrValue::Shape(shape) => Some(shape.clone()),
+                    _ => None,
+                });
 
                 if let Some(new_shape) = new_shape {
                     Some((inputs[0].clone(), new_shape, dtype))
@@ -199,8 +274,12 @@ impl ConstantFoldingPass {
                     return None;
                 }
 
-                let dim = attrs.get("dim")
-                    .and_then(|v| match v { AttrValue::Int(i) => Some(*i as usize), _ => None })
+                let dim = attrs
+                    .get("dim")
+                    .and_then(|v| match v {
+                        AttrValue::Int(i) => Some(*i as usize),
+                        _ => None,
+                    })
                     .unwrap_or(0);
 
                 let mut result_data = Vec::new();
@@ -229,14 +308,17 @@ impl ConstantFoldingPass {
     // ============================================================
 
     fn decode_tensor(data: &[u8], dtype: DataType, shape: &[i64]) -> Vec<f64> {
-        let num_elements: usize = shape.iter().filter(|&&d| d > 0).map(|&d| d as usize).product();
+        let num_elements: usize =
+            shape.iter().filter(|&&d| d > 0).map(|&d| d as usize).product();
 
         match dtype {
             DataType::F32 => {
                 let mut result = Vec::with_capacity(num_elements);
                 let chunks = data.chunks_exact(4);
                 for chunk in chunks {
-                    let val = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    let val = f32::from_le_bytes([
+                        chunk[0], chunk[1], chunk[2], chunk[3],
+                    ]);
                     result.push(val as f64);
                 }
                 result
@@ -246,8 +328,8 @@ impl ConstantFoldingPass {
                 let chunks = data.chunks_exact(8);
                 for chunk in chunks {
                     let val = f64::from_le_bytes([
-                        chunk[0], chunk[1], chunk[2], chunk[3],
-                        chunk[4], chunk[5], chunk[6], chunk[7]
+                        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4],
+                        chunk[5], chunk[6], chunk[7],
                     ]);
                     result.push(val);
                 }
@@ -257,7 +339,9 @@ impl ConstantFoldingPass {
                 let mut result = Vec::with_capacity(num_elements);
                 let chunks = data.chunks_exact(4);
                 for chunk in chunks {
-                    let val = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    let val = i32::from_le_bytes([
+                        chunk[0], chunk[1], chunk[2], chunk[3],
+                    ]);
                     result.push(val as f64);
                 }
                 result
@@ -266,7 +350,9 @@ impl ConstantFoldingPass {
                 let mut result = Vec::with_capacity(num_elements);
                 let chunks = data.chunks_exact(4);
                 for chunk in chunks {
-                    let val = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    let val = f32::from_le_bytes([
+                        chunk[0], chunk[1], chunk[2], chunk[3],
+                    ]);
                     result.push(val as f64);
                 }
                 result
@@ -327,7 +413,12 @@ impl ConstantFoldingPass {
         Some(result)
     }
 
-    fn broadcast_data(data: &[f64], from_shape: &[i64], to_shape: &[i64], _dtype: DataType) -> Vec<f64> {
+    fn broadcast_data(
+        data: &[f64],
+        from_shape: &[i64],
+        to_shape: &[i64],
+        _dtype: DataType,
+    ) -> Vec<f64> {
         if from_shape == to_shape {
             return data.to_vec();
         }
@@ -348,8 +439,15 @@ impl ConstantFoldingPass {
         result
     }
 
-    fn elementwise_op<F>(a: &[f64], b: &[f64], op: F, _dtype: DataType) -> Vec<f64>
-    where F: Fn(f64, f64) -> f64 {
+    fn elementwise_op<F>(
+        a: &[f64],
+        b: &[f64],
+        op: F,
+        _dtype: DataType,
+    ) -> Vec<f64>
+    where
+        F: Fn(f64, f64) -> f64,
+    {
         let len = a.len().min(b.len());
         let mut result = Vec::with_capacity(len);
         for i in 0..len {
@@ -359,7 +457,9 @@ impl ConstantFoldingPass {
     }
 
     fn unary_op<F>(data: &[f64], op: F, _dtype: DataType) -> Vec<f64>
-    where F: Fn(f64) -> f64 {
+    where
+        F: Fn(f64) -> f64,
+    {
         data.iter().map(|&x| op(x)).collect()
     }
 
@@ -394,7 +494,9 @@ impl ConstantFoldingPass {
                         let mut max_val = f64::NEG_INFINITY;
                         for d in 0..dim_size {
                             let idx = base + d * stride;
-                            if data[idx] > max_val { max_val = data[idx]; }
+                            if data[idx] > max_val {
+                                max_val = data[idx];
+                            }
                         }
                         max_val
                     }
@@ -402,7 +504,9 @@ impl ConstantFoldingPass {
                         let mut min_val = f64::INFINITY;
                         for d in 0..dim_size {
                             let idx = base + d * stride;
-                            if data[idx] < min_val { min_val = data[idx]; }
+                            if data[idx] < min_val {
+                                min_val = data[idx];
+                            }
                         }
                         min_val
                     }
@@ -445,11 +549,12 @@ impl ConstantFoldingPass {
         let mut result = vec![0.0; total];
 
         let mut strides = vec![1; rank];
-        for i in (0..rank-1).rev() {
-            strides[i] = strides[i+1] * dims[i+1];
+        for i in (0..rank - 1).rev() {
+            strides[i] = strides[i + 1] * dims[i + 1];
         }
 
-        let out_strides: Vec<usize> = perm.iter().map(|&p| strides[p]).collect();
+        let out_strides: Vec<usize> =
+            perm.iter().map(|&p| strides[p]).collect();
         let out_dims: Vec<usize> = perm.iter().map(|&p| dims[p]).collect();
 
         for i in 0..total {

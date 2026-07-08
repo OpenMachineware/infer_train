@@ -1,8 +1,8 @@
 // src/transform/cse.rs
 
+use crate::ir::dag::{AttrValue, DagGraph, Op};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use crate::ir::dag::{DagGraph, Op, AttrValue};
 
 pub struct CommonSubexpressionEliminationPass;
 
@@ -10,7 +10,7 @@ impl CommonSubexpressionEliminationPass {
     pub fn apply(graph: &mut DagGraph) -> bool {
         let mut changed = false;
         // let mut seen: HashMap<u64, String> = HashMap::new();  // op_id -> hash
-        let mut hash_to_op: HashMap<String, u64> = HashMap::new();  // hash -> op_id
+        let mut hash_to_op: HashMap<String, u64> = HashMap::new(); // hash -> op_id
         let mut to_remove = Vec::new();
         let mut replacements: HashMap<u64, u64> = HashMap::new();
 
@@ -32,7 +32,8 @@ impl CommonSubexpressionEliminationPass {
                     // 将当前算子的输出替换为已有算子的输出
                     if op.outputs.len() == 1 && existing_id != op_id {
                         let old_out = op.outputs[0];
-                        let new_out = graph.ops.get(&existing_id).unwrap().outputs[0];
+                        let new_out =
+                            graph.ops.get(&existing_id).unwrap().outputs[0];
                         replacements.insert(old_out, new_out);
                         to_remove.push(op_id);
                         changed = true;
@@ -68,13 +69,18 @@ impl CommonSubexpressionEliminationPass {
         }
 
         // 清理没有被任何算子使用的 Value（除了 inputs 和 outputs）
-        let live_values: Vec<u64> = graph.inputs.iter().chain(graph.outputs.iter()).cloned().collect();
-        let used_values: Vec<u64> = graph.ops.values()
+        let live_values: Vec<u64> =
+            graph.inputs.iter().chain(graph.outputs.iter()).cloned().collect();
+        let used_values: Vec<u64> = graph
+            .ops
+            .values()
             .flat_map(|op| op.inputs.iter().cloned())
             .chain(graph.ops.values().flat_map(|op| op.outputs.iter().cloned()))
             .collect();
 
-        let dead_values: Vec<u64> = graph.values.keys()
+        let dead_values: Vec<u64> = graph
+            .values
+            .keys()
             .filter(|&id| {
                 !live_values.contains(id) && !used_values.contains(id)
             })
@@ -114,7 +120,7 @@ impl CommonSubexpressionEliminationPass {
             "matmul" => true,
             "cat" => true,
             // 有副作用的（训练相关）
-            "dropout" => false,  // 训练时 dropout 有随机性
+            "dropout" => false, // 训练时 dropout 有随机性
             _ => false,
         }
     }
@@ -131,7 +137,10 @@ impl CommonSubexpressionEliminationPass {
         format!("{:016x}", hasher.finish())
     }
 
-    fn hash_attr(attr: &AttrValue, hasher: &mut std::collections::hash_map::DefaultHasher) {
+    fn hash_attr(
+        attr: &AttrValue,
+        hasher: &mut std::collections::hash_map::DefaultHasher,
+    ) {
         match attr {
             AttrValue::Int(i) => i.hash(hasher),
             AttrValue::Float(f) => {

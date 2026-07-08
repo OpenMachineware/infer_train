@@ -1,7 +1,7 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 // use crate::ops::linalg::matmul;
 use super::sdpa::scaled_dot_product_attention;
 
@@ -26,7 +26,11 @@ pub fn multi_head_attention<T: DType + Send + Sync>(
     assert_eq!(v_shape.len(), 3, "MHA: value must be 3D [B, L, D]");
 
     let (_batch, _seq_len, embed_dim) = (q_shape[0], q_shape[1], q_shape[2]);
-    assert_eq!(embed_dim % num_heads, 0, "Embedding dim must be divisible by num_heads");
+    assert_eq!(
+        embed_dim % num_heads,
+        0,
+        "Embedding dim must be divisible by num_heads"
+    );
 
     let head_dim = embed_dim / num_heads;
 
@@ -52,21 +56,28 @@ pub fn multi_head_attention<T: DType + Send + Sync>(
 // 辅助函数：重排维度
 // ============================================================
 
-fn reshape_to_4d<T: DType + Clone>(x: &Tensor<T>, num_heads: usize, head_dim: usize) -> Tensor<T> {
+fn reshape_to_4d<T: DType + Clone>(
+    x: &Tensor<T>,
+    num_heads: usize,
+    head_dim: usize,
+) -> Tensor<T> {
     let shape = x.shape();
     let batch = shape[0];
     let seq_len = shape[1];
     let embed_dim = shape[2];
 
-    let mut data = vec![T::from_f32(0.0); batch * num_heads * seq_len * head_dim];
+    let mut data =
+        vec![T::from_f32(0.0); batch * num_heads * seq_len * head_dim];
     let x_data = x.data();
 
     for b in 0..batch {
         for s in 0..seq_len {
             for h in 0..num_heads {
                 for d in 0..head_dim {
-                    let src_idx = (b * seq_len + s) * embed_dim + h * head_dim + d;
-                    let dst_idx = ((b * num_heads + h) * seq_len + s) * head_dim + d;
+                    let src_idx =
+                        (b * seq_len + s) * embed_dim + h * head_dim + d;
+                    let dst_idx =
+                        ((b * num_heads + h) * seq_len + s) * head_dim + d;
                     data[dst_idx] = x_data[src_idx];
                 }
             }
@@ -76,7 +87,11 @@ fn reshape_to_4d<T: DType + Clone>(x: &Tensor<T>, num_heads: usize, head_dim: us
     Tensor::new(data, &[batch, num_heads, seq_len, head_dim])
 }
 
-fn reshape_to_3d<T: DType + Clone>(x: &Tensor<T>, num_heads: usize, head_dim: usize) -> Tensor<T> {
+fn reshape_to_3d<T: DType + Clone>(
+    x: &Tensor<T>,
+    num_heads: usize,
+    head_dim: usize,
+) -> Tensor<T> {
     let shape = x.shape();
     let batch = shape[0];
     let seq_len = shape[2];
@@ -89,8 +104,10 @@ fn reshape_to_3d<T: DType + Clone>(x: &Tensor<T>, num_heads: usize, head_dim: us
         for h in 0..num_heads {
             for s in 0..seq_len {
                 for d in 0..head_dim {
-                    let src_idx = ((b * num_heads + h) * seq_len + s) * head_dim + d;
-                    let dst_idx = (b * seq_len + s) * embed_dim + h * head_dim + d;
+                    let src_idx =
+                        ((b * num_heads + h) * seq_len + s) * head_dim + d;
+                    let dst_idx =
+                        (b * seq_len + s) * embed_dim + h * head_dim + d;
                     data[dst_idx] = x_data[src_idx];
                 }
             }
@@ -117,15 +134,24 @@ pub fn multi_head_attention_backward<T: DType>(
 pub struct MhaOp;
 
 impl<T: DType + Send + Sync> Operator<T> for MhaOp {
-    fn name(&self) -> &'static str { "multi_head_attention" }
+    fn name(&self) -> &'static str {
+        "multi_head_attention"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 3);
         let num_heads = attrs.get_int("num_heads").unwrap_or(8) as usize;
         let scale = attrs.get_float("scale").unwrap_or(0.0);
         let is_causal = attrs.get_bool("is_causal").unwrap_or(false);
-        multi_head_attention(inputs[0], inputs[1], inputs[2], num_heads, scale, is_causal)
+        multi_head_attention(
+            inputs[0], inputs[1], inputs[2], num_heads, scale, is_causal,
+        )
     }
-    fn backward(&self, grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         multi_head_attention_backward(grad)
     }
 }

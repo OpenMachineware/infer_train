@@ -1,7 +1,7 @@
 // src/executor/memory_reuse.rs
 
-use std::collections::{HashMap, BinaryHeap};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 
 use crate::tensor::Tensor;
 
@@ -54,17 +54,17 @@ impl Ord for FreeBlock {
 
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryConfig {
-    pub block_size: usize,      // 内存块大小 (2^n)
-    pub total_size: usize,      // 总内存大小
-    pub enable_defrag: bool,    // 是否启用碎片整理
-    pub defrag_threshold: f32,  // 碎片率阈值
+    pub block_size: usize,     // 内存块大小 (2^n)
+    pub total_size: usize,     // 总内存大小
+    pub enable_defrag: bool,   // 是否启用碎片整理
+    pub defrag_threshold: f32, // 碎片率阈值
 }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
         MemoryConfig {
             block_size: 4096,
-            total_size: 64 * 1024 * 1024,  // 64MB
+            total_size: 64 * 1024 * 1024, // 64MB
             enable_defrag: false,
             defrag_threshold: 0.3,
         }
@@ -76,7 +76,7 @@ impl MemoryConfig {
     pub fn inference() -> Self {
         MemoryConfig {
             block_size: 4096,
-            total_size: 32 * 1024 * 1024,   // 32MB
+            total_size: 32 * 1024 * 1024, // 32MB
             enable_defrag: false,
             defrag_threshold: 0.5,
         }
@@ -86,7 +86,7 @@ impl MemoryConfig {
     pub fn training() -> Self {
         MemoryConfig {
             block_size: 8192,
-            total_size: 256 * 1024 * 1024,  // 256MB
+            total_size: 256 * 1024 * 1024, // 256MB
             enable_defrag: true,
             defrag_threshold: 0.2,
         }
@@ -118,10 +118,7 @@ impl BytePool {
     pub fn new(block_size: usize, total_size: usize) -> Self {
         let arena = vec![0u8; total_size];
         let mut free_blocks = BinaryHeap::new();
-        free_blocks.push(FreeBlock {
-            offset: 0,
-            size: total_size,
-        });
+        free_blocks.push(FreeBlock { offset: 0, size: total_size });
 
         BytePool {
             arena,
@@ -144,7 +141,8 @@ impl BytePool {
 
     pub fn allocate(&mut self, size: usize) -> Option<(usize, usize)> {
         // 对齐到 block_size
-        let aligned_size = ((size + self.block_size - 1) / self.block_size) * self.block_size;
+        let aligned_size =
+            ((size + self.block_size - 1) / self.block_size) * self.block_size;
 
         // 找最佳空闲块 (First-Fit + Best-Fit 混合)
         let mut best_block: Option<FreeBlock> = None;
@@ -240,9 +238,9 @@ impl BytePool {
     // ============================================================
 
     pub fn get_data(&self, id: u64) -> Option<&[u8]> {
-        self.allocations.get(&id).map(|&(offset, size)| {
-            &self.arena[offset..offset + size]
-        })
+        self.allocations
+            .get(&id)
+            .map(|&(offset, size)| &self.arena[offset..offset + size])
     }
 
     pub fn get_data_mut(&mut self, id: u64) -> Option<&mut [u8]> {
@@ -275,8 +273,11 @@ impl BytePool {
             return 0.0;
         }
         let avg_free = total_free / num_blocks;
-        let max_free = self.free_blocks.iter().map(|b| b.size).max().unwrap_or(0);
-        if max_free == 0 { return 0.0; }
+        let max_free =
+            self.free_blocks.iter().map(|b| b.size).max().unwrap_or(0);
+        if max_free == 0 {
+            return 0.0;
+        }
         1.0 - (avg_free as f32 / max_free as f32)
     }
 
@@ -290,10 +291,7 @@ impl BytePool {
         self.allocations_count = 0;
         self.reuse_count = 0;
         self.free_blocks.clear();
-        self.free_blocks.push(FreeBlock {
-            offset: 0,
-            size: self.arena.len(),
-        });
+        self.free_blocks.push(FreeBlock { offset: 0, size: self.arena.len() });
     }
 
     pub fn clear(&mut self) {
@@ -307,7 +305,9 @@ impl BytePool {
 
     pub fn defragment(&mut self) {
         // 收集所有已分配块
-        let mut allocs: Vec<(usize, usize, u64)> = self.allocations.iter()
+        let mut allocs: Vec<(usize, usize, u64)> = self
+            .allocations
+            .iter()
             .map(|(&id, &(offset, size))| (offset, size, id))
             .collect();
         allocs.sort_by_key(|(offset, _, _)| *offset);
@@ -342,8 +342,6 @@ impl BytePool {
         }
     }
 }
-
-
 
 // ============================================================
 // Tensor 专用的内存池适配器
@@ -442,7 +440,6 @@ impl MemoryPool {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,13 +468,13 @@ mod tests {
     fn test_byte_pool_defragment() {
         let mut pool = BytePool::new_with_blocks(64, 10);
 
-        let (o1, _) = pool.allocate(100).unwrap();  // id=0, offset=0
-        let (o2, _) = pool.allocate(50).unwrap();   // id=1, offset=128
-        let (o3, _) = pool.allocate(80).unwrap();   // id=2, offset=192
+        let (o1, _) = pool.allocate(100).unwrap(); // id=0, offset=0
+        let (o2, _) = pool.allocate(50).unwrap(); // id=1, offset=128
+        let (o3, _) = pool.allocate(80).unwrap(); // id=2, offset=192
 
         // ✅ 用 id 释放
-        pool.free(0);  // 释放第一个块
-        pool.free(2);  // 释放第三个块
+        pool.free(0); // 释放第一个块
+        pool.free(2); // 释放第三个块
 
         // 碎片化
         assert!(pool.fragmentation() > 0.0);

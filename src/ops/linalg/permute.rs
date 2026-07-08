@@ -1,13 +1,16 @@
-use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
+use rayon::prelude::*;
 
 // ============================================================
 // 1. 浮点泛型 Forward
 // ============================================================
 
-pub fn permute<T: DType + Send + Sync>(a: &Tensor<T>, dims: &[usize]) -> Tensor<T> {
+pub fn permute<T: DType + Send + Sync>(
+    a: &Tensor<T>,
+    dims: &[usize],
+) -> Tensor<T> {
     let shape = a.shape();
     assert_eq!(shape.len(), dims.len(), "permute: dims length must match rank");
 
@@ -37,7 +40,8 @@ pub fn permute<T: DType + Send + Sync>(a: &Tensor<T>, dims: &[usize]) -> Tensor<
     let a_data = a.data();
 
     // 遍历新张量的每个位置，根据新步长解出维度索引，再映射回原始位置
-    let data: Vec<T> = (0..total).into_par_iter()
+    let data: Vec<T> = (0..total)
+        .into_par_iter()
         .map(|new_idx| {
             let mut old_idx = 0;
             let mut rem = new_idx;
@@ -74,7 +78,10 @@ pub fn permute_backward<T: DType>(
 // 3. 另一种实现：用循环构建索引（更易懂）
 // ============================================================
 
-pub fn permute_loop<T: DType + Clone>(a: &Tensor<T>, dims: &[usize]) -> Tensor<T> {
+pub fn permute_loop<T: DType + Clone>(
+    a: &Tensor<T>,
+    dims: &[usize],
+) -> Tensor<T> {
     let shape = a.shape();
     let new_shape: Vec<usize> = dims.iter().map(|&d| shape[d]).collect();
 
@@ -115,19 +122,28 @@ pub fn permute_loop<T: DType + Clone>(a: &Tensor<T>, dims: &[usize]) -> Tensor<T
 pub struct PermuteOp;
 
 impl<T: DType + Send + Sync> Operator<T> for PermuteOp {
-    fn name(&self) -> &'static str { "permute" }
+    fn name(&self) -> &'static str {
+        "permute"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
-        let dims = attrs.get_int_list("dims")
+        let dims = attrs
+            .get_int_list("dims")
             .expect("permute requires dims attribute")
             .iter()
             .map(|&x| x as usize)
             .collect::<Vec<_>>();
         permute(inputs[0], &dims)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 1);
-        let dims = attrs.get_int_list("dims")
+        let dims = attrs
+            .get_int_list("dims")
             .expect("permute requires dims attribute")
             .iter()
             .map(|&x| x as usize)
@@ -165,7 +181,10 @@ mod tests {
 
     #[test]
     fn test_permute_3d() {
-        let a = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]);
+        let a = Tensor::new(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            &[2, 2, 2],
+        );
         // dims [2,0,1]: (d2, d0, d1)
         // 期望: [1,3,5,7,2,4,6,8]
         let c = permute(&a, &[2, 0, 1]);

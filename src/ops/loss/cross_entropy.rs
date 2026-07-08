@@ -36,7 +36,9 @@ pub fn cross_entropy<T: DType + Send + Sync>(
             for c in 0..num_classes {
                 let idx = base + c * spatial;
                 let v = logits_data[idx].to_f32();
-                if v > max_val { max_val = v; }
+                if v > max_val {
+                    max_val = v;
+                }
             }
 
             let mut sum_exp = 0.0;
@@ -98,7 +100,9 @@ pub fn cross_entropy_backward<T: DType>(
             for c in 0..num_classes {
                 let idx = base + c * spatial;
                 let v = logits_data[idx].to_f32();
-                if v > max_val { max_val = v; }
+                if v > max_val {
+                    max_val = v;
+                }
             }
 
             let mut sum_exp = 0.0;
@@ -109,7 +113,8 @@ pub fn cross_entropy_backward<T: DType>(
 
             for c in 0..num_classes {
                 let idx = base + c * spatial;
-                let softmax = (logits_data[idx].to_f32() - max_val).exp() / sum_exp;
+                let softmax =
+                    (logits_data[idx].to_f32() - max_val).exp() / sum_exp;
                 let grad_val = if c == target_idx {
                     scale * (softmax - 1.0)
                 } else {
@@ -130,7 +135,9 @@ pub fn cross_entropy_backward<T: DType>(
 pub struct CrossEntropyOp;
 
 impl CrossEntropyOp {
-    pub fn name(&self) -> &'static str { "cross_entropy" }
+    pub fn name(&self) -> &'static str {
+        "cross_entropy"
+    }
     pub fn forward<T: DType + Send + Sync>(
         &self,
         logits: &Tensor<T>,

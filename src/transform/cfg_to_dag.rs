@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use crate::ir::cfg::CfgGraph;
-use crate::ir::dag::{DagGraph, Op, TensorType, DataType, AttrValue};
+use crate::ir::dag::{AttrValue, DagGraph, DataType, Op, TensorType};
+use std::collections::HashMap;
 
 pub struct CfgToDagConverter;
 
@@ -16,23 +16,27 @@ impl CfgToDagConverter {
             if let Some((dtype, shape)) = cfg.value_types.get(&input_id) {
                 let dag_id = dag.add_value(
                     &format!("input_{}", input_id),
-                    TensorType {
-                        dtype: *dtype,
-                        shape: shape.clone(),
-                    }
+                    TensorType { dtype: *dtype, shape: shape.clone() },
                 );
                 value_map.insert(input_id, dag_id);
             }
         }
 
         for &block_id in &block_order {
-            let block = cfg.blocks.get(&block_id)
+            let block = cfg
+                .blocks
+                .get(&block_id)
                 .ok_or_else(|| format!("Block {} not found", block_id))?;
 
             Self::convert_block(&mut dag, block, &mut value_map, cfg)?;
 
             if let Some(branch_info) = &block.branch_info {
-                Self::convert_branch(&mut dag, branch_info, &mut value_map, cfg)?;
+                Self::convert_branch(
+                    &mut dag,
+                    branch_info,
+                    &mut value_map,
+                    cfg,
+                )?;
             }
         }
 
@@ -45,10 +49,7 @@ impl CfgToDagConverter {
                 if let Some((dtype, shape)) = cfg.value_types.get(&out_id) {
                     let dag_id = dag.add_value(
                         &format!("output_{}", out_id),
-                        TensorType {
-                            dtype: *dtype,
-                            shape: shape.clone(),
-                        }
+                        TensorType { dtype: *dtype, shape: shape.clone() },
                     );
                     output_ids.push(dag_id);
                 }
@@ -75,10 +76,7 @@ impl CfgToDagConverter {
                     if let Some((dtype, shape)) = cfg.value_types.get(&in_id) {
                         let dag_id = dag.add_value(
                             &format!("v_{}", in_id),
-                            TensorType {
-                                dtype: *dtype,
-                                shape: shape.clone(),
-                            }
+                            TensorType { dtype: *dtype, shape: shape.clone() },
                         );
                         value_map.insert(in_id, dag_id);
                         inputs.push(dag_id);
@@ -92,18 +90,19 @@ impl CfgToDagConverter {
             let mut outputs = Vec::new();
             for &out_id in &op.outputs {
                 let out_name = format!("{}_{}", op.op_type, out_id);
-                let (dtype, shape) = if let Some(info) = cfg.value_types.get(&out_id) {
-                    (info.0.clone(), info.1.clone())
-                } else {
-                    (DataType::F32, vec![])
-                };
+                let (dtype, shape) =
+                    if let Some(info) = cfg.value_types.get(&out_id) {
+                        (info.0.clone(), info.1.clone())
+                    } else {
+                        (DataType::F32, vec![])
+                    };
 
                 let dag_id = dag.add_value(
                     &out_name,
                     TensorType {
-                        dtype,  // DataType 是 Copy
+                        dtype, // DataType 是 Copy
                         shape: shape.clone(),
-                    }
+                    },
                 );
                 value_map.insert(out_id, dag_id);
                 outputs.push(dag_id);
@@ -140,29 +139,39 @@ impl CfgToDagConverter {
     ) -> Result<(), String> {
         let cond_dag_id = match value_map.get(&branch_info.condition_value) {
             Some(&id) => id,
-            None => return Err(format!(
-                "Condition value {} not found",
-                branch_info.condition_value
-            )),
+            None => {
+                return Err(format!(
+                    "Condition value {} not found",
+                    branch_info.condition_value
+                ))
+            }
         };
 
-        let true_outputs = Self::find_block_outputs(cfg, branch_info.true_branch)?;
-        let false_outputs = Self::find_block_outputs(cfg, branch_info.false_branch)?;
+        let true_outputs =
+            Self::find_block_outputs(cfg, branch_info.true_branch)?;
+        let false_outputs =
+            Self::find_block_outputs(cfg, branch_info.false_branch)?;
 
         if true_outputs.len() != false_outputs.len() {
             return Err(format!(
                 "Branch output mismatch: true has {}, false has {}",
-                true_outputs.len(), false_outputs.len()
+                true_outputs.len(),
+                false_outputs.len()
             ));
         }
 
-        for (idx, (&true_id, &false_id)) in true_outputs.iter().zip(false_outputs.iter()).enumerate() {
-            let true_dag_id = *value_map.get(&true_id)
+        for (idx, (&true_id, &false_id)) in
+            true_outputs.iter().zip(false_outputs.iter()).enumerate()
+        {
+            let true_dag_id = *value_map
+                .get(&true_id)
                 .ok_or_else(|| format!("True value {} not found", true_id))?;
-            let false_dag_id = *value_map.get(&false_id)
+            let false_dag_id = *value_map
+                .get(&false_id)
                 .ok_or_else(|| format!("False value {} not found", false_id))?;
 
-            let dtype = if let Some((dtype, _)) = cfg.value_types.get(&true_id) {
+            let dtype = if let Some((dtype, _)) = cfg.value_types.get(&true_id)
+            {
                 *dtype
             } else {
                 DataType::F32
@@ -170,14 +179,14 @@ impl CfgToDagConverter {
 
             let select_id = dag.add_value(
                 &format!("select_{}_{}", branch_info.merge_block, idx),
-                TensorType {
-                    dtype,
-                    shape: vec![],
-                }
+                TensorType { dtype, shape: vec![] },
             );
 
             let mut attrs = HashMap::new();
-            attrs.insert("condition".to_string(), AttrValue::String("branch".to_string()));
+            attrs.insert(
+                "condition".to_string(),
+                AttrValue::String("branch".to_string()),
+            );
 
             dag.insert_op(Op {
                 id: 0,
@@ -192,8 +201,13 @@ impl CfgToDagConverter {
         Ok(())
     }
 
-    fn find_block_outputs(cfg: &CfgGraph, block_id: u64) -> Result<Vec<u64>, String> {
-        let block = cfg.blocks.get(&block_id)
+    fn find_block_outputs(
+        cfg: &CfgGraph,
+        block_id: u64,
+    ) -> Result<Vec<u64>, String> {
+        let block = cfg
+            .blocks
+            .get(&block_id)
             .ok_or_else(|| format!("Block {} not found", block_id))?;
 
         let mut outputs = Vec::new();

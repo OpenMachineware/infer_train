@@ -4,4 +4,6 @@ pub mod cast;
 pub mod quantize;
 
 pub use cast::{cast, cast_backward, CastOp};
-pub use quantize::{quantize, quantize_backward, dequantize, QuantizeOp, DequantizeOp};
+pub use quantize::{
+    dequantize, quantize, quantize_backward, DequantizeOp, QuantizeOp,
+};

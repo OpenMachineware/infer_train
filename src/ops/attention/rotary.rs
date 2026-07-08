@@ -1,7 +1,7 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. 浮点泛型 Forward (RoPE)
@@ -65,12 +65,19 @@ pub fn rotary_embedding_backward<T: DType>(
 pub struct RotaryOp;
 
 impl<T: DType + Send + Sync> Operator<T> for RotaryOp {
-    fn name(&self) -> &'static str { "rotary_embedding" }
+    fn name(&self) -> &'static str {
+        "rotary_embedding"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 3);
         rotary_embedding(inputs[0], inputs[1], inputs[2])
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         rotary_embedding_backward(grad, inputs[0], inputs[1], inputs[2])
     }
 }

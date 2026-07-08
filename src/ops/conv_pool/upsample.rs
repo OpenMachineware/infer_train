@@ -1,7 +1,7 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. 浮点泛型 Forward (nearest neighbor)
@@ -13,7 +13,11 @@ pub fn upsample<T: DType + Send + Sync>(
 ) -> Tensor<T> {
     let shape = x.shape();
     let spatial_dims = shape.len() - 2;
-    assert_eq!(spatial_dims, scale_factor.len(), "Scale factor must match spatial dims");
+    assert_eq!(
+        spatial_dims,
+        scale_factor.len(),
+        "Scale factor must match spatial dims"
+    );
 
     let mut out_shape = vec![shape[0], shape[1]];
     for i in 0..spatial_dims {
@@ -68,18 +72,27 @@ pub fn upsample_backward<T: DType>(
 pub struct UpsampleOp;
 
 impl<T: DType + Send + Sync> Operator<T> for UpsampleOp {
-    fn name(&self) -> &'static str { "upsample" }
+    fn name(&self) -> &'static str {
+        "upsample"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
-        let scale_factor = attrs.get_int_list("scale_factor")
+        let scale_factor = attrs
+            .get_int_list("scale_factor")
             .expect("upsample requires scale_factor")
             .iter()
             .map(|&x| x as usize)
             .collect::<Vec<_>>();
         upsample(inputs[0], &scale_factor)
     }
-    fn backward(&self, grad: &Tensor<T>, _inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
-        let scale_factor = attrs.get_int_list("scale_factor")
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
+        let scale_factor = attrs
+            .get_int_list("scale_factor")
             .expect("upsample requires scale_factor")
             .iter()
             .map(|&x| x as usize)

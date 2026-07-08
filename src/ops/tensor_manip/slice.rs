@@ -1,8 +1,8 @@
 // src/ops/tensor_manip/slice.rs
 
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 泛型 Forward
@@ -33,7 +33,8 @@ pub fn slice<T: DType + Send + Sync>(
     let mut data = Vec::with_capacity(outer * out_len * inner_stride);
     for o in 0..outer {
         for i in 0..out_len {
-            let idx = o * dim_stride + (start + i as i64 * step) as usize * inner_stride;
+            let idx = o * dim_stride
+                + (start + i as i64 * step) as usize * inner_stride;
             data.extend_from_slice(&input.data()[idx..idx + inner_stride]);
         }
     }
@@ -65,7 +66,8 @@ pub fn slice_backward<T: DType>(
     for o in 0..outer {
         for i in 0..grad_output.shape()[dim] {
             let src_idx = (o * grad_output.shape()[dim] + i) * inner_stride;
-            let dst_idx = o * dim_size as usize * inner_stride + (start + i as i64 * step) as usize * inner_stride;
+            let dst_idx = o * dim_size as usize * inner_stride
+                + (start + i as i64 * step) as usize * inner_stride;
             for j in 0..inner_stride {
                 data[dst_idx + j] = grad_output.data()[src_idx + j];
             }
@@ -103,7 +105,8 @@ pub fn quantized_slice(
     let mut data = Vec::with_capacity(outer * out_len * inner_stride);
     for o in 0..outer {
         for i in 0..out_len {
-            let idx = o * dim_stride + (start + i as i64 * step) as usize * inner_stride;
+            let idx = o * dim_stride
+                + (start + i as i64 * step) as usize * inner_stride;
             data.extend_from_slice(&input.data()[idx..idx + inner_stride]);
         }
     }
@@ -139,7 +142,8 @@ pub fn quantized_slice_backward(
     for o in 0..outer {
         for i in 0..grad_output.shape()[dim] {
             let src_idx = (o * grad_output.shape()[dim] + i) * inner_stride;
-            let dst_idx = o * dim_size as usize * inner_stride + (start + i as i64 * step) as usize * inner_stride;
+            let dst_idx = o * dim_size as usize * inner_stride
+                + (start + i as i64 * step) as usize * inner_stride;
             for j in 0..inner_stride {
                 data[dst_idx + j] = grad_output.data()[src_idx + j];
             }
@@ -156,7 +160,9 @@ pub fn quantized_slice_backward(
 pub struct SliceOp;
 
 impl<T: DType + Send + Sync> Operator<T> for SliceOp {
-    fn name(&self) -> &'static str { "slice" }
+    fn name(&self) -> &'static str {
+        "slice"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
@@ -165,7 +171,12 @@ impl<T: DType + Send + Sync> Operator<T> for SliceOp {
         let step = attrs.get_int("step").unwrap_or(1);
         slice(inputs[0], dim, start, end, step)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         let start = attrs.get_int("start").unwrap_or(0);
         let end = attrs.get_int("end").unwrap_or(i64::MAX);
@@ -177,7 +188,9 @@ impl<T: DType + Send + Sync> Operator<T> for SliceOp {
 pub struct QuantizedSliceOp;
 
 impl Operator<i8> for QuantizedSliceOp {
-    fn name(&self) -> &'static str { "quantized_slice" }
+    fn name(&self) -> &'static str {
+        "quantized_slice"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
@@ -186,12 +199,19 @@ impl Operator<i8> for QuantizedSliceOp {
         let step = attrs.get_int("step").unwrap_or(1);
         quantized_slice(inputs[0], dim, start, end, step)
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         let start = attrs.get_int("start").unwrap_or(0);
         let end = attrs.get_int("end").unwrap_or(i64::MAX);
         let step = attrs.get_int("step").unwrap_or(1);
         quantized_slice_backward(grad, inputs[0].shape(), dim, start, end, step)
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }

@@ -1,5 +1,5 @@
+use crate::ir::dag::{AttrValue, DagGraph, DataType, Op, TensorType};
 use std::collections::HashMap;
-use crate::ir::dag::{DagGraph, Op, DataType, TensorType, AttrValue};
 
 pub struct FusionPass;
 
@@ -18,15 +18,13 @@ impl FusionPass {
 
             // 先取出 op 的数据，释放借用
             let op_data = match graph.ops.get(&op_id) {
-                Some(op) => {
-                    Some((
-                        op_id,
-                        op.op_type.clone(),
-                        op.inputs.clone(),
-                        op.outputs.clone(),
-                        op.attrs.clone(),
-                    ))
-                }
+                Some(op) => Some((
+                    op_id,
+                    op.op_type.clone(),
+                    op.inputs.clone(),
+                    op.outputs.clone(),
+                    op.attrs.clone(),
+                )),
                 None => continue,
             };
 
@@ -50,19 +48,23 @@ impl FusionPass {
             let next_id = users[0];
             // 先获取 next_op 的数据
             let next_op_data = match graph.ops.get(&next_id) {
-                Some(op) => {
-                    Some((
-                        next_id,
-                        op.op_type.clone(),
-                        op.inputs.clone(),
-                        op.outputs.clone(),
-                        op.attrs.clone(),
-                    ))
-                }
+                Some(op) => Some((
+                    next_id,
+                    op.op_type.clone(),
+                    op.inputs.clone(),
+                    op.outputs.clone(),
+                    op.attrs.clone(),
+                )),
                 None => continue,
             };
 
-            let (next_id_clone, next_op_type, next_inputs, next_outputs, next_attrs) = match next_op_data {
+            let (
+                next_id_clone,
+                next_op_type,
+                next_inputs,
+                next_outputs,
+                next_attrs,
+            ) = match next_op_data {
                 Some(data) => data,
                 None => continue,
             };
@@ -72,9 +74,16 @@ impl FusionPass {
                 if let Some(fused) = Self::fuse_conv_bn(
                     graph,
                     op_id,
-                    &op_type, &inputs, &outputs, &attrs,
-                    next_id_clone, &next_op_type, &next_inputs, &next_outputs, &next_attrs,
-                    &mut to_remove
+                    &op_type,
+                    &inputs,
+                    &outputs,
+                    &attrs,
+                    next_id_clone,
+                    &next_op_type,
+                    &next_inputs,
+                    &next_outputs,
+                    &next_attrs,
+                    &mut to_remove,
                 ) {
                     new_ops.push(fused);
                     changed = true;
@@ -83,9 +92,16 @@ impl FusionPass {
                 if let Some(fused) = Self::fuse_conv_relu(
                     graph,
                     op_id,
-                    &op_type, &inputs, &outputs, &attrs,
-                    next_id_clone, &next_op_type, &next_inputs, &next_outputs, &next_attrs,
-                    &mut to_remove
+                    &op_type,
+                    &inputs,
+                    &outputs,
+                    &attrs,
+                    next_id_clone,
+                    &next_op_type,
+                    &next_inputs,
+                    &next_outputs,
+                    &next_attrs,
+                    &mut to_remove,
                 ) {
                     new_ops.push(fused);
                     changed = true;
@@ -122,21 +138,26 @@ impl FusionPass {
     ) -> Option<Op> {
         let bn_out = bn_outputs[0];
         let users = graph.get_users(bn_out);
-        let has_relu = users.len() == 1 &&
-            graph.ops.get(&users[0]).map_or(false, |o| o.op_type == "relu");
+        let has_relu = users.len() == 1
+            && graph.ops.get(&users[0]).map_or(false, |o| o.op_type == "relu");
 
         if bn_inputs.len() < 5 {
             return None;
         }
 
         // 读取 BN 参数
-        let eps = bn_attrs.get("eps")
-            .and_then(|v| match v { AttrValue::Float(f) => Some(*f), _ => None })
+        let eps = bn_attrs
+            .get("eps")
+            .and_then(|v| match v {
+                AttrValue::Float(f) => Some(*f),
+                _ => None,
+            })
             .unwrap_or(1e-5);
 
         // 获取 Conv 和 BN 的权重 ID
         let conv_weight_id = conv_inputs[1]; // conv 的第二个输入是 weight
-        let conv_bias_id = if conv_inputs.len() >= 3 { Some(conv_inputs[2]) } else { None };
+        let conv_bias_id =
+            if conv_inputs.len() >= 3 { Some(conv_inputs[2]) } else { None };
         let bn_weight_id = bn_inputs[1];
         let bn_bias_id = bn_inputs[2];
         let bn_mean_id = bn_inputs[3];
@@ -265,20 +286,25 @@ impl FusionPass {
         eps: f32,
     ) -> (Vec<u8>, Option<Vec<u8>>) {
         // 解码为 f32
-        let conv_weight: Vec<f32> = conv_weight_data.chunks(4)
+        let conv_weight: Vec<f32> = conv_weight_data
+            .chunks(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
 
-        let bn_weight: Vec<f32> = bn_weight_data.chunks(4)
+        let bn_weight: Vec<f32> = bn_weight_data
+            .chunks(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        let bn_bias: Vec<f32> = bn_bias_data.chunks(4)
+        let bn_bias: Vec<f32> = bn_bias_data
+            .chunks(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        let bn_mean: Vec<f32> = bn_mean_data.chunks(4)
+        let bn_mean: Vec<f32> = bn_mean_data
+            .chunks(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        let bn_var: Vec<f32> = bn_var_data.chunks(4)
+        let bn_var: Vec<f32> = bn_var_data
+            .chunks(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
 
@@ -312,12 +338,10 @@ impl FusionPass {
         }
 
         // 编码回 u8
-        let fused_weight_bytes: Vec<u8> = fused_weight.iter()
-            .flat_map(|&v| v.to_le_bytes())
-            .collect();
-        let fused_bias_bytes: Vec<u8> = fused_bias.iter()
-            .flat_map(|&v| v.to_le_bytes())
-            .collect();
+        let fused_weight_bytes: Vec<u8> =
+            fused_weight.iter().flat_map(|&v| v.to_le_bytes()).collect();
+        let fused_bias_bytes: Vec<u8> =
+            fused_bias.iter().flat_map(|&v| v.to_le_bytes()).collect();
 
         (fused_weight_bytes, Some(fused_bias_bytes))
     }

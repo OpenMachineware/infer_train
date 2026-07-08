@@ -1,14 +1,17 @@
 // src/ops/tensor_manip/squeeze_unsqueeze.rs
 
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // Squeeze 泛型
 // ============================================================
 
-pub fn squeeze<T: DType + Send + Sync>(input: &Tensor<T>, dim: Option<usize>) -> Tensor<T> {
+pub fn squeeze<T: DType + Send + Sync>(
+    input: &Tensor<T>,
+    dim: Option<usize>,
+) -> Tensor<T> {
     let shape = input.shape();
     let mut new_shape = Vec::new();
 
@@ -49,7 +52,10 @@ pub fn squeeze_backward<T: DType>(
 // Unsqueeze 泛型
 // ============================================================
 
-pub fn unsqueeze<T: DType + Send + Sync>(input: &Tensor<T>, dim: usize) -> Tensor<T> {
+pub fn unsqueeze<T: DType + Send + Sync>(
+    input: &Tensor<T>,
+    dim: usize,
+) -> Tensor<T> {
     let shape = input.shape();
     let mut new_shape = Vec::with_capacity(shape.len() + 1);
     for i in 0..=dim {
@@ -106,7 +112,12 @@ pub fn quantized_squeeze(input: &Tensor<i8>, dim: Option<usize>) -> Tensor<i8> {
 
     let scale = input.scale().unwrap_or(1.0);
     let zero_point = input.zero_point().unwrap_or(0.0);
-    Tensor::<i8>::new_quantized(input.data().to_vec(), &new_shape, scale, zero_point)
+    Tensor::<i8>::new_quantized(
+        input.data().to_vec(),
+        &new_shape,
+        scale,
+        zero_point,
+    )
 }
 
 // ============================================================
@@ -124,9 +135,19 @@ pub fn quantized_squeeze_backward(
     if let Some(d) = dim {
         let mut new_shape = original_shape.to_vec();
         new_shape.insert(d, 1);
-        vec![Tensor::<i8>::new_quantized(grad_output.data().to_vec(), &new_shape, scale, zero_point)]
+        vec![Tensor::<i8>::new_quantized(
+            grad_output.data().to_vec(),
+            &new_shape,
+            scale,
+            zero_point,
+        )]
     } else {
-        vec![Tensor::<i8>::new_quantized(grad_output.data().to_vec(), original_shape, scale, zero_point)]
+        vec![Tensor::<i8>::new_quantized(
+            grad_output.data().to_vec(),
+            original_shape,
+            scale,
+            zero_point,
+        )]
     }
 }
 
@@ -150,7 +171,12 @@ pub fn quantized_unsqueeze(input: &Tensor<i8>, dim: usize) -> Tensor<i8> {
     }
     let scale = input.scale().unwrap_or(1.0);
     let zero_point = input.zero_point().unwrap_or(0.0);
-    Tensor::<i8>::new_quantized(input.data().to_vec(), &new_shape, scale, zero_point)
+    Tensor::<i8>::new_quantized(
+        input.data().to_vec(),
+        &new_shape,
+        scale,
+        zero_point,
+    )
 }
 
 // ============================================================
@@ -170,7 +196,12 @@ pub fn quantized_unsqueeze_backward(
             new_shape.push(shape[i]);
         }
     }
-    vec![Tensor::<i8>::new_quantized(grad_output.data().to_vec(), &new_shape, scale, zero_point)]
+    vec![Tensor::<i8>::new_quantized(
+        grad_output.data().to_vec(),
+        &new_shape,
+        scale,
+        zero_point,
+    )]
 }
 
 // ============================================================
@@ -180,13 +211,20 @@ pub fn quantized_unsqueeze_backward(
 pub struct SqueezeOp;
 
 impl<T: DType + Send + Sync> Operator<T> for SqueezeOp {
-    fn name(&self) -> &'static str { "squeeze" }
+    fn name(&self) -> &'static str {
+        "squeeze"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         let dim = attrs.get_int("dim").map(|d| d as usize);
         squeeze(inputs[0], dim)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         let dim = attrs.get_int("dim").map(|d| d as usize);
         squeeze_backward(grad, inputs[0].shape(), dim)
     }
@@ -195,13 +233,20 @@ impl<T: DType + Send + Sync> Operator<T> for SqueezeOp {
 pub struct UnsqueezeOp;
 
 impl<T: DType + Send + Sync> Operator<T> for UnsqueezeOp {
-    fn name(&self) -> &'static str { "unsqueeze" }
+    fn name(&self) -> &'static str {
+        "unsqueeze"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         unsqueeze(inputs[0], dim)
     }
-    fn backward(&self, grad: &Tensor<T>, _inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         unsqueeze_backward(grad, dim)
     }
@@ -214,31 +259,49 @@ impl<T: DType + Send + Sync> Operator<T> for UnsqueezeOp {
 pub struct QuantizedSqueezeOp;
 
 impl Operator<i8> for QuantizedSqueezeOp {
-    fn name(&self) -> &'static str { "quantized_squeeze" }
+    fn name(&self) -> &'static str {
+        "quantized_squeeze"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
         let dim = attrs.get_int("dim").map(|d| d as usize);
         quantized_squeeze(inputs[0], dim)
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         let dim = attrs.get_int("dim").map(|d| d as usize);
         quantized_squeeze_backward(grad, inputs[0].shape(), dim)
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }
 
 pub struct QuantizedUnsqueezeOp;
 
 impl Operator<i8> for QuantizedUnsqueezeOp {
-    fn name(&self) -> &'static str { "quantized_unsqueeze" }
+    fn name(&self) -> &'static str {
+        "quantized_unsqueeze"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         quantized_unsqueeze(inputs[0], dim)
     }
-    fn backward(&self, grad: &Tensor<i8>, _inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        _inputs: &[&Tensor<i8>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
         quantized_unsqueeze_backward(grad, dim)
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }

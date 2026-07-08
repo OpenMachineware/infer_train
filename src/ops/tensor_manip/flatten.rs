@@ -1,14 +1,18 @@
 // src/ops/tensor_manip/flatten.rs
 
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 泛型 Forward
 // ============================================================
 
-pub fn flatten<T: DType + Send + Sync>(input: &Tensor<T>, start_dim: usize, end_dim: usize) -> Tensor<T> {
+pub fn flatten<T: DType + Send + Sync>(
+    input: &Tensor<T>,
+    start_dim: usize,
+    end_dim: usize,
+) -> Tensor<T> {
     let shape = input.shape();
     let rank = shape.len();
     let start = start_dim.min(rank);
@@ -45,7 +49,11 @@ pub fn flatten_backward<T: DType>(
 // 量化 Forward
 // ============================================================
 
-pub fn quantized_flatten(input: &Tensor<i8>, start_dim: usize, end_dim: usize) -> Tensor<i8> {
+pub fn quantized_flatten(
+    input: &Tensor<i8>,
+    start_dim: usize,
+    end_dim: usize,
+) -> Tensor<i8> {
     let shape = input.shape();
     let rank = shape.len();
     let start = start_dim.min(rank);
@@ -66,7 +74,12 @@ pub fn quantized_flatten(input: &Tensor<i8>, start_dim: usize, end_dim: usize) -
 
     let scale = input.scale().unwrap_or(1.0);
     let zero_point = input.zero_point().unwrap_or(0.0);
-    Tensor::<i8>::new_quantized(input.data().to_vec(), &new_shape, scale, zero_point)
+    Tensor::<i8>::new_quantized(
+        input.data().to_vec(),
+        &new_shape,
+        scale,
+        zero_point,
+    )
 }
 
 // ============================================================
@@ -79,7 +92,12 @@ pub fn quantized_flatten_backward(
 ) -> Vec<Tensor<i8>> {
     let scale = grad_output.scale().unwrap_or(1.0);
     let zero_point = grad_output.zero_point().unwrap_or(0.0);
-    vec![Tensor::<i8>::new_quantized(grad_output.data().to_vec(), original_shape, scale, zero_point)]
+    vec![Tensor::<i8>::new_quantized(
+        grad_output.data().to_vec(),
+        original_shape,
+        scale,
+        zero_point,
+    )]
 }
 
 // ============================================================
@@ -89,18 +107,30 @@ pub fn quantized_flatten_backward(
 pub struct FlattenOp;
 
 impl<T: DType + Send + Sync> Operator<T> for FlattenOp {
-    fn name(&self) -> &'static str { "flatten" }
+    fn name(&self) -> &'static str {
+        "flatten"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         let start_dim = attrs.get_int("start_dim").unwrap_or(0) as usize;
         // 如果 end_dim 没有提供，使用 rank - 1
-        let end_dim = attrs.get_int("end_dim").map(|v| v as usize).unwrap_or_else(|| {
-            let rank = inputs[0].shape().len();
-            if rank > 0 { rank - 1 } else { 0 }
-        });
+        let end_dim =
+            attrs.get_int("end_dim").map(|v| v as usize).unwrap_or_else(|| {
+                let rank = inputs[0].shape().len();
+                if rank > 0 {
+                    rank - 1
+                } else {
+                    0
+                }
+            });
         flatten(inputs[0], start_dim, end_dim)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         flatten_backward(grad, inputs[0].shape())
     }
 }
@@ -112,19 +142,33 @@ impl<T: DType + Send + Sync> Operator<T> for FlattenOp {
 pub struct QuantizedFlattenOp;
 
 impl Operator<i8> for QuantizedFlattenOp {
-    fn name(&self) -> &'static str { "quantized_flatten" }
+    fn name(&self) -> &'static str {
+        "quantized_flatten"
+    }
     fn forward(&self, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
         let start_dim = attrs.get_int("start_dim").unwrap_or(0) as usize;
         // 如果 end_dim 没有提供，使用 rank - 1
-        let end_dim = attrs.get_int("end_dim").map(|v| v as usize).unwrap_or_else(|| {
-            let rank = inputs[0].shape().len();
-            if rank > 0 { rank - 1 } else { 0 }
-        });
+        let end_dim =
+            attrs.get_int("end_dim").map(|v| v as usize).unwrap_or_else(|| {
+                let rank = inputs[0].shape().len();
+                if rank > 0 {
+                    rank - 1
+                } else {
+                    0
+                }
+            });
         quantized_flatten(inputs[0], start_dim, end_dim)
     }
-    fn backward(&self, grad: &Tensor<i8>, inputs: &[&Tensor<i8>], _attrs: &OpAttrs) -> Vec<Tensor<i8>> {
+    fn backward(
+        &self,
+        grad: &Tensor<i8>,
+        inputs: &[&Tensor<i8>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<i8>> {
         quantized_flatten_backward(grad, inputs[0].shape())
     }
-    fn supports_quantized(&self) -> bool { true }
+    fn supports_quantized(&self) -> bool {
+        true
+    }
 }

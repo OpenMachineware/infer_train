@@ -1,7 +1,7 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. 浮点泛型 Forward
@@ -46,7 +46,9 @@ pub fn layer_norm<T: DType + Send + Sync>(
         for i in 0..last_dim {
             let idx = base + i;
             let norm = (x_data[idx].to_f32() - mean) * inv_std;
-            out_data[idx] = T::from_f32(norm * gamma_data[i].to_f32() + beta_data[i].to_f32());
+            out_data[idx] = T::from_f32(
+                norm * gamma_data[i].to_f32() + beta_data[i].to_f32(),
+            );
         }
     }
 
@@ -79,7 +81,9 @@ pub fn layer_norm_backward<T: DType + Send + Sync>(
         let base = o * last_dim;
 
         let mut mean = 0.0;
-        for i in 0..last_dim { mean += x_data[base + i].to_f32(); }
+        for i in 0..last_dim {
+            mean += x_data[base + i].to_f32();
+        }
         mean /= last_dim as f32;
 
         let mut var = 0.0;
@@ -117,13 +121,20 @@ pub fn layer_norm_backward<T: DType + Send + Sync>(
 pub struct LayerNormOp;
 
 impl<T: DType + Send + Sync> Operator<T> for LayerNormOp {
-    fn name(&self) -> &'static str { "layer_norm" }
+    fn name(&self) -> &'static str {
+        "layer_norm"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 3);
         let eps = attrs.get_float("eps").unwrap_or(1e-5);
         layer_norm(inputs[0], inputs[1], inputs[2], eps)
     }
-    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        inputs: &[&Tensor<T>],
+        attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 3);
         let eps = attrs.get_float("eps").unwrap_or(1e-5);
         layer_norm_backward(grad, inputs[0], inputs[1], eps)
@@ -142,7 +153,8 @@ mod tests {
         let c = layer_norm(&x, &gamma, &beta, 1e-5);
         assert_eq!(c.shape(), &[2, 3]);
         // 每行均值为0，方差为1
-        let row0_mean: f32 = c.data()[0..3].iter().map(|&x| x.to_f32()).sum::<f32>() / 3.0;
+        let row0_mean: f32 =
+            c.data()[0..3].iter().map(|&x| x.to_f32()).sum::<f32>() / 3.0;
         assert!(f32::abs(row0_mean) < 0.001);
     }
 }

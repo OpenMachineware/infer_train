@@ -1,7 +1,7 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. Eye (单位矩阵)
@@ -37,13 +37,20 @@ pub fn diag<T: DType + Send + Sync>(input: &Tensor<T>) -> Tensor<T> {
 pub struct EyeOp;
 
 impl<T: DType + Send + Sync> Operator<T> for EyeOp {
-    fn name(&self) -> &'static str { "eye" }
+    fn name(&self) -> &'static str {
+        "eye"
+    }
     fn forward(&self, _inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         let n = attrs.get_int("n").unwrap_or(3) as usize;
         let m = attrs.get_int("m").map(|v| v as usize);
         eye::<T>(n, m)
     }
-    fn backward(&self, _grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         vec![]
     }
 }
@@ -51,12 +58,19 @@ impl<T: DType + Send + Sync> Operator<T> for EyeOp {
 pub struct DiagOp;
 
 impl<T: DType + Send + Sync> Operator<T> for DiagOp {
-    fn name(&self) -> &'static str { "diag" }
+    fn name(&self) -> &'static str {
+        "diag"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         diag(inputs[0])
     }
-    fn backward(&self, _grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        _grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         vec![]
     }
 }

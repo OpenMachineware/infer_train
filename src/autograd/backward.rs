@@ -2,14 +2,16 @@
 
 use std::collections::HashMap;
 
-use crate::tensor::Tensor;
-use crate::ops::math::*;
 use crate::ops::activation::*;
-use crate::ops::tensor_manip::reshape::reshape;
-use crate::ops::conv_pool::{conv2d_backward, max_pool_backward, avg_pool_backward};
+use crate::ops::conv_pool::{
+    avg_pool_backward, conv2d_backward, max_pool_backward,
+};
+use crate::ops::linalg::matmul_backward;
+use crate::ops::math::*;
 use crate::ops::normalization::{batch_norm_backward, layer_norm_backward};
 use crate::ops::rms_norm_backward;
-use crate::ops::linalg::matmul_backward;
+use crate::ops::tensor_manip::reshape::reshape;
+use crate::tensor::Tensor;
 
 use super::tape::{Tape, TapeEntry};
 
@@ -18,7 +20,11 @@ use super::tape::{Tape, TapeEntry};
 // ============================================================
 
 pub trait GradFn {
-    fn backward(&self, grad_output: &Tensor<f32>, tape: &Tape) -> Vec<(u64, Tensor<f32>)>;
+    fn backward(
+        &self,
+        grad_output: &Tensor<f32>,
+        tape: &Tape,
+    ) -> Vec<(u64, Tensor<f32>)>;
 }
 
 // ============================================================
@@ -42,12 +48,15 @@ pub fn backward(
             let entry = &tape.entries()[idx];
             let output_id = entry.output_id();
             let grad = grads.get(&output_id);
-            if grad.is_none() { continue; }
+            if grad.is_none() {
+                continue;
+            }
             let grad = grad.unwrap();
 
             let input_grads = backward_entry(entry, grad, values, tape);
             for (input_id, g) in input_grads {
-                grads.entry(input_id)
+                grads
+                    .entry(input_id)
                     .and_modify(|existing| {
                         // 梯度累积
                         let existing_data = existing.data_mut();
@@ -79,37 +88,42 @@ fn backward_entry(
         // 数学算子
         // ============================================================
         TapeEntry::Add { input_a, input_b, .. } => {
-            let grads = add_backward(grad_output,
-                                     values.get(input_a).unwrap(),
-                                     values.get(input_b).unwrap(),
+            let grads = add_backward(
+                grad_output,
+                values.get(input_a).unwrap(),
+                values.get(input_b).unwrap(),
             );
             vec![(*input_a, grads[0].clone()), (*input_b, grads[1].clone())]
         }
         TapeEntry::Sub { input_a, input_b, .. } => {
-            let grads = sub_backward(grad_output,
-                                     values.get(input_a).unwrap(),
-                                     values.get(input_b).unwrap(),
+            let grads = sub_backward(
+                grad_output,
+                values.get(input_a).unwrap(),
+                values.get(input_b).unwrap(),
             );
             vec![(*input_a, grads[0].clone()), (*input_b, grads[1].clone())]
         }
         TapeEntry::Mul { input_a, input_b, .. } => {
-            let grads = mul_backward(grad_output,
-                                     values.get(input_a).unwrap(),
-                                     values.get(input_b).unwrap(),
+            let grads = mul_backward(
+                grad_output,
+                values.get(input_a).unwrap(),
+                values.get(input_b).unwrap(),
             );
             vec![(*input_a, grads[0].clone()), (*input_b, grads[1].clone())]
         }
         TapeEntry::Div { input_a, input_b, .. } => {
-            let grads = div_backward(grad_output,
-                                     values.get(input_a).unwrap(),
-                                     values.get(input_b).unwrap(),
+            let grads = div_backward(
+                grad_output,
+                values.get(input_a).unwrap(),
+                values.get(input_b).unwrap(),
             );
             vec![(*input_a, grads[0].clone()), (*input_b, grads[1].clone())]
         }
         TapeEntry::Pow { input, exponent, .. } => {
-            let grads = pow_backward(grad_output,
-                                     values.get(input).unwrap(),
-                                     &Tensor::new(vec![*exponent], &[1]),
+            let grads = pow_backward(
+                grad_output,
+                values.get(input).unwrap(),
+                &Tensor::new(vec![*exponent], &[1]),
             );
             vec![(*input, grads[0].clone())]
         }
@@ -134,9 +148,10 @@ fn backward_entry(
         // 线性代数
         // ============================================================
         TapeEntry::MatMul { input_a, input_b, .. } => {
-            let grads = matmul_backward(grad_output,
-                                        values.get(input_a).unwrap(),
-                                        values.get(input_b).unwrap(),
+            let grads = matmul_backward(
+                grad_output,
+                values.get(input_a).unwrap(),
+                values.get(input_b).unwrap(),
             );
             vec![(*input_a, grads[0].clone()), (*input_b, grads[1].clone())]
         }
@@ -149,7 +164,8 @@ fn backward_entry(
             vec![(*input, grads[0].clone())]
         }
         TapeEntry::Sigmoid { input, .. } => {
-            let grads = sigmoid_backward(grad_output, values.get(input).unwrap());
+            let grads =
+                sigmoid_backward(grad_output, values.get(input).unwrap());
             vec![(*input, grads[0].clone())]
         }
         TapeEntry::Tanh { input, .. } => {
@@ -157,17 +173,36 @@ fn backward_entry(
             vec![(*input, grads[0].clone())]
         }
         TapeEntry::Softmax { input, .. } => {
-            let grads = softmax_backward(grad_output, values.get(input).unwrap());
+            let grads =
+                softmax_backward(grad_output, values.get(input).unwrap());
             vec![(*input, grads[0].clone())]
         }
         // ============================================================
         // 卷积
         // ============================================================
-        TapeEntry::Conv2d { input, weight, bias, stride, padding, dilation, groups, .. } => {
+        TapeEntry::Conv2d {
+            input,
+            weight,
+            bias,
+            stride,
+            padding,
+            dilation,
+            groups,
+            ..
+        } => {
             let x = values.get(input).unwrap();
             let w = values.get(weight).unwrap();
-            let grads = conv2d_backward(grad_output, x, w, *stride, *padding, *dilation, *groups);
-            let mut result = vec![(*input, grads[0].clone()), (*weight, grads[1].clone())];
+            let grads = conv2d_backward(
+                grad_output,
+                x,
+                w,
+                *stride,
+                *padding,
+                *dilation,
+                *groups,
+            );
+            let mut result =
+                vec![(*input, grads[0].clone()), (*weight, grads[1].clone())];
             if let Some(b) = bias {
                 result.push((*b, grads[2].clone()));
             }
@@ -179,18 +214,33 @@ fn backward_entry(
         // ============================================================
         TapeEntry::MaxPool { input, kernel_size, stride, padding, .. } => {
             let x = values.get(input).unwrap();
-            let grad_input = max_pool_backward(grad_output, x, *kernel_size, *stride, *padding);
+            let grad_input = max_pool_backward(
+                grad_output,
+                x,
+                *kernel_size,
+                *stride,
+                *padding,
+            );
             vec![(*input, grad_input)]
         }
         TapeEntry::AvgPool { input, kernel_size, stride, padding, .. } => {
-            let grad_input = avg_pool_backward(grad_output, *kernel_size, *stride, *padding);
+            let grad_input =
+                avg_pool_backward(grad_output, *kernel_size, *stride, *padding);
             vec![(*input, grad_input)]
         }
 
         // ============================================================
         // 归一化
         // ============================================================
-        TapeEntry::BatchNorm { input, weight, bias, running_mean, running_var, eps, .. } => {
+        TapeEntry::BatchNorm {
+            input,
+            weight,
+            bias,
+            running_mean,
+            running_var,
+            eps,
+            ..
+        } => {
             let x = values.get(input).unwrap();
             let w = values.get(weight).unwrap();
             let rm = values.get(running_mean).unwrap();
@@ -216,10 +266,7 @@ fn backward_entry(
             let x = values.get(input).unwrap();
             let w = values.get(weight).unwrap();
             let grads = rms_norm_backward(grad_output, x, w, *eps);
-            vec![
-                (*input, grads[0].clone()),
-                (*weight, grads[1].clone()),
-            ]
+            vec![(*input, grads[0].clone()), (*weight, grads[1].clone())]
         }
 
         // ============================================================
@@ -228,7 +275,10 @@ fn backward_entry(
         #[allow(unused_variables)]
         TapeEntry::Reshape { input, output, new_shape: _ } => {
             let original_shape = values.get(input).unwrap().shape();
-            let grad_input = crate::ops::tensor_manip::reshape::reshape(grad_output, original_shape);
+            let grad_input = crate::ops::tensor_manip::reshape::reshape(
+                grad_output,
+                original_shape,
+            );
             vec![(*input, grad_input)]
         }
         TapeEntry::Concat { inputs, .. } => {
@@ -237,7 +287,8 @@ fn backward_entry(
             for &input_id in inputs {
                 let input_tensor = values.get(&input_id).unwrap();
                 let len = input_tensor.len();
-                let grad_slice = grad_output.data()[offset..offset + len].to_vec();
+                let grad_slice =
+                    grad_output.data()[offset..offset + len].to_vec();
                 let grad = Tensor::new(grad_slice, input_tensor.shape());
                 result.push((input_id, grad));
                 offset += len;

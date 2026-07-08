@@ -49,9 +49,7 @@ pub fn gather<T: DType + Send + Sync>(
 // 2. Gather Backward
 // ============================================================
 
-pub fn gather_backward<T: DType>(
-    grad_output: &Tensor<T>,
-) -> Vec<Tensor<T>> {
+pub fn gather_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
     vec![grad_output.clone()]
 }
 
@@ -67,7 +65,11 @@ pub fn scatter<T: DType + Send + Sync>(
 ) -> Tensor<T> {
     let input_shape = input.shape();
     let indices_shape = indices.shape();
-    assert_eq!(indices_shape, src.shape(), "scatter: indices and src shape mismatch");
+    assert_eq!(
+        indices_shape,
+        src.shape(),
+        "scatter: indices and src shape mismatch"
+    );
     assert!(dim < input_shape.len(), "scatter: dim out of range");
 
     let mut out_data = input.data().to_vec();
@@ -99,9 +101,7 @@ pub fn scatter<T: DType + Send + Sync>(
 // 4. Scatter Backward
 // ============================================================
 
-pub fn scatter_backward<T: DType>(
-    grad_output: &Tensor<T>,
-) -> Vec<Tensor<T>> {
+pub fn scatter_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
     vec![grad_output.clone()]
 }
 
@@ -112,7 +112,9 @@ pub fn scatter_backward<T: DType>(
 pub struct GatherOp;
 
 impl GatherOp {
-    pub fn name(&self) -> &'static str { "gather" }
+    pub fn name(&self) -> &'static str {
+        "gather"
+    }
     pub fn forward<T: DType + Send + Sync>(
         &self,
         input: &Tensor<T>,
@@ -139,7 +141,9 @@ impl GatherOp {
 pub struct ScatterOp;
 
 impl ScatterOp {
-    pub fn name(&self) -> &'static str { "scatter" }
+    pub fn name(&self) -> &'static str {
+        "scatter"
+    }
     pub fn forward<T: DType + Send + Sync>(
         &self,
         input: &Tensor<T>,
@@ -180,11 +184,10 @@ mod tests {
 
     #[test]
     fn test_gather_2d() {
-        let input = Tensor::new(vec![
-            1.0, 2.0, 3.0,
-            4.0, 5.0, 6.0,
-            7.0, 8.0, 9.0,
-        ], &[3, 3]);
+        let input = Tensor::new(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            &[3, 3],
+        );
         let indices = Tensor::new(vec![0, 2], &[2]);
         let c = gather(&input, &indices, 0);
         assert_eq!(c.data(), &[1.0, 2.0, 3.0, 7.0, 8.0, 9.0]);
@@ -193,11 +196,10 @@ mod tests {
 
     #[test]
     fn test_gather_2d_dim1() {
-        let input = Tensor::new(vec![
-            1.0, 2.0, 3.0,
-            4.0, 5.0, 6.0,
-            7.0, 8.0, 9.0,
-        ], &[3, 3]);
+        let input = Tensor::new(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            &[3, 3],
+        );
         let indices = Tensor::new(vec![0, 2], &[2]);
         let c = gather(&input, &indices, 1);
         assert_eq!(c.data(), &[1.0, 3.0, 4.0, 6.0, 7.0, 9.0]);

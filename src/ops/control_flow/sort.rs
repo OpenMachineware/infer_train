@@ -1,7 +1,7 @@
 // use rayon::prelude::*;
 use crate::dtype::DType;
+use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
-use crate::ops::registry::{Operator, OpAttrs};
 
 // ============================================================
 // 1. Sort Forward (沿指定维度排序)
@@ -58,9 +58,7 @@ pub fn sort<T: DType + Send + Sync>(
 // 2. Sort Backward (简化版)
 // ============================================================
 
-pub fn sort_backward<T: DType>(
-    grad_output: &Tensor<T>,
-) -> Vec<Tensor<T>> {
+pub fn sort_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
     vec![grad_output.clone()]
 }
 
@@ -71,7 +69,9 @@ pub fn sort_backward<T: DType>(
 pub struct SortOp;
 
 impl<T: DType + Send + Sync> Operator<T> for SortOp {
-    fn name(&self) -> &'static str { "sort" }
+    fn name(&self) -> &'static str {
+        "sort"
+    }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         let dim = attrs.get_int("dim").unwrap_or(0) as usize;
@@ -79,7 +79,12 @@ impl<T: DType + Send + Sync> Operator<T> for SortOp {
         let (values, _indices) = sort(inputs[0], dim, ascending);
         values
     }
-    fn backward(&self, grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
+    fn backward(
+        &self,
+        grad: &Tensor<T>,
+        _inputs: &[&Tensor<T>],
+        _attrs: &OpAttrs,
+    ) -> Vec<Tensor<T>> {
         sort_backward(grad)
     }
 }
@@ -105,11 +110,10 @@ mod tests {
 
     #[test]
     fn test_sort_2d() {
-        let input = Tensor::new(vec![
-            3.0, 1.0, 4.0,
-            1.0, 5.0, 9.0,
-            2.0, 6.0, 5.0,
-        ], &[3, 3]);
+        let input = Tensor::new(
+            vec![3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0, 5.0],
+            &[3, 3],
+        );
         let (values, _indices) = sort(&input, 1, true);
         assert_eq!(values.shape(), &[3, 3]);
         assert_eq!(values.data()[0], 1.0);
