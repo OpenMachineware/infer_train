@@ -6,6 +6,7 @@ use pyo3::types::{PyList};
 
 use crate::ir::dag::DagGraph;
 use crate::tensor::Tensor;
+use crate::autograd::AutogradEngine;
 
 use super::math;
 use super::nn;
@@ -662,6 +663,52 @@ impl Trainer {
         // 目前简化版：只记录 loss，梯度由用户手动计算
         self.training_state.loss = loss.data()[0];
         Ok(())
+    }
+
+    // ============================================================
+    // 自动微分训练
+    // ============================================================
+
+    pub fn train_step(&mut self, inputs: &[Tensor<f32>], targets: &Tensor<f32>) -> Result<f32, String> {
+        // 1. 创建 AutogradEngine
+        let param_ids: Vec<u64> = self.param_ids.clone();
+        let mut engine = AutogradEngine::new(self.graph.clone(), param_ids);
+
+        // 2. 前向
+        let outputs = engine.forward(inputs)?;
+
+        // 3. 计算损失
+        let loss = self.compute_loss(&outputs[0], targets);
+
+        // 4. 反向
+        engine.backward(&loss)?;
+
+        // 5. 获取梯度并更新
+        let grads = engine.get_all_grads();
+        for &param_id in engine.param_ids() {
+            if let Some(grad) = grads.get(&param_id) {
+                if let Some(param) = self.values.get_mut(&param_id) {
+                    let lr = self.config.learning_rate;
+                    for i in 0..param.len() {
+                        param.data_mut()[i] -= lr * grad.data()[i];
+                    }
+                    let data = Self::tensor_to_bytes(param);
+                    self.graph.constants.insert(param_id, data);
+                }
+            }
+        }
+
+        // 6. 更新训练状态
+        self.training_state.loss = loss.data()[0];
+        self.training_state.step += 1;
+
+        Ok(loss.data()[0])
+    }
+
+    fn compute_loss(&self, pred: &Tensor<f32>, target: &Tensor<f32>) -> Tensor<f32> {
+        // MSE Loss
+        use crate::ops::loss::mse::mse;
+        mse(pred, target, true)
     }
 
     // ============================================================

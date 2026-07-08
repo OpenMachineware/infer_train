@@ -13,6 +13,152 @@ fn conv_output_size(input: usize, kernel: usize, stride: usize, padding: usize, 
 }
 
 // ============================================================
+// 辅助: ConvTranspose (反卷积)
+// ============================================================
+
+fn conv_transpose_impl<T: DType + Send + Sync>(
+    grad_output: &Tensor<T>,
+    weight: &Tensor<T>,
+    stride: usize,
+    padding: usize,
+    output_padding: usize,
+) -> Tensor<T> {
+    let w_shape = weight.shape();
+    let out_c = w_shape[0];
+    let in_c = w_shape[1];
+    let k_h = w_shape[2];
+    let k_w = w_shape[3];
+
+    let g_shape = grad_output.shape();
+    let n = g_shape[0];
+    let h = g_shape[2];
+    let w = g_shape[3];
+
+    let out_h = (h - 1) * stride + k_h - 2 * padding + output_padding;
+    let out_w = (w - 1) * stride + k_w - 2 * padding + output_padding;
+
+    let mut result = vec![T::zero(); n * in_c * out_h * out_w];
+    let grad_data = grad_output.data();
+    let weight_data = weight.data();
+
+    for b in 0..n {
+        for oc in 0..out_c {
+            for ic in 0..in_c {
+                for i in 0..h {
+                    for j in 0..w {
+                        let grad_val = grad_data[((b * out_c + oc) * h + i) * w + j];
+                        if grad_val == T::zero() { continue; }
+
+                        for kh in 0..k_h {
+                            for kw in 0..k_w {
+                                let oh = i * stride + kh - padding;
+                                let ow = j * stride + kw - padding;
+                                if oh < out_h && ow < out_w {
+                                    let w_idx = (((oc * in_c + ic) * k_h + kh) * k_w + kw);
+                                    let out_idx = (((b * in_c + ic) * out_h + oh) * out_w + ow);
+                                    result[out_idx] = result[out_idx] + grad_val * weight_data[w_idx];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Tensor::new(result, &[n, in_c, out_h, out_w])
+}
+
+// ============================================================
+// 辅助: 权重梯度
+// ============================================================
+
+fn conv_weight_gradient_impl<T: DType + Send + Sync>(
+    input: &Tensor<T>,
+    grad_output: &Tensor<T>,
+    stride: usize,
+    padding: usize,
+    dilation: usize,
+    groups: usize,
+) -> Tensor<T> {
+    let i_shape = input.shape();
+    let g_shape = grad_output.shape();
+    let in_c = i_shape[1];
+    let out_c = g_shape[1];
+    let h = i_shape[2];
+    let w = i_shape[3];
+    let gh = g_shape[2];
+    let gw = g_shape[3];
+
+    let k_h = h - (gh - 1) * stride;
+    let k_w = w - (gw - 1) * stride;
+
+    let mut grad_weight = vec![T::zero(); out_c * in_c * k_h * k_w];
+    let input_data = input.data();
+    let grad_data = grad_output.data();
+
+    for b in 0..i_shape[0] {
+        for oc in 0..out_c {
+            for ic in 0..in_c {
+                for i in 0..gh {
+                    for j in 0..gw {
+                        let grad_val = grad_data[((b * out_c + oc) * gh + i) * gw + j];
+                        if grad_val == T::zero() { continue; }
+
+                        let h_start = i * stride;
+                        let w_start = j * stride;
+                        for kh in 0..k_h {
+                            for kw in 0..k_w {
+                                let ih = h_start + kh;
+                                let iw = w_start + kw;
+                                if ih < h && iw < w {
+                                    let input_idx = (((b * in_c + ic) * h + ih) * w + iw);
+                                    let w_idx = (((oc * in_c + ic) * k_h + kh) * k_w + kw);
+                                    grad_weight[w_idx] = grad_weight[w_idx] + grad_val * input_data[input_idx];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Tensor::new(grad_weight, &[out_c, in_c, k_h, k_w])
+}
+
+// ============================================================
+// 辅助: Bias 梯度
+// ============================================================
+
+fn conv_bias_gradient_impl<T: DType + Send + Sync>(
+    grad_output: &Tensor<T>,
+) -> Tensor<T> {
+    let shape = grad_output.shape();
+    let n = shape[0];
+    let c = shape[1];
+    let h = shape[2];
+    let w = shape[3];
+    let grad_data = grad_output.data();
+
+    let mut bias_grad = vec![T::zero(); c];
+    for b in 0..n {
+        for ch in 0..c {
+            let mut sum = T::zero();
+            for i in 0..h {
+                for j in 0..w {
+                    let idx = ((b * c + ch) * h + i) * w + j;
+                    sum = sum + grad_data[idx];
+                }
+            }
+            bias_grad[ch] = bias_grad[ch] + sum;
+        }
+    }
+
+    Tensor::new(bias_grad, &[c])
+}
+
+// ============================================================
 // 1. 浮点泛型 Forward
 // ============================================================
 
@@ -91,22 +237,28 @@ pub fn conv2d<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward (简化版)
+// 2. 浮点泛型 Backward
 // ============================================================
 
-pub fn conv2d_backward<T: DType>(
+pub fn conv2d_backward<T: DType + Send + Sync>(
     grad_output: &Tensor<T>,
-    _x: &Tensor<T>,
-    _weight: &Tensor<T>,
-    _stride: usize,
-    _padding: usize,
-    _dilation: usize,
-    _groups: usize,
+    input: &Tensor<T>,
+    weight: &Tensor<T>,
+    stride: usize,
+    padding: usize,
+    dilation: usize,
+    groups: usize,
 ) -> Vec<Tensor<T>> {
-    // 简化版：只计算对输入的梯度
-    // 实际反向传播需要 grad_weight 和 grad_bias
-    let grad_x = grad_output.clone();
-    vec![grad_x]
+    // 1. ∂L/∂input = conv_transpose(grad_output, weight)
+    let grad_input = conv_transpose_impl(grad_output, weight, stride, padding, 0);
+
+    // 2. ∂L/∂weight = conv(input, grad_output)
+    let grad_weight = conv_weight_gradient_impl(input, grad_output, stride, padding, dilation, groups);
+
+    // 3. ∂L/∂bias = sum(grad_output) over [N, H, W]
+    let grad_bias = conv_bias_gradient_impl(grad_output);
+
+    vec![grad_input, grad_weight, grad_bias]
 }
 
 // ============================================================
@@ -119,18 +271,19 @@ impl<T: DType + Send + Sync> Operator<T> for Conv2dOp {
     fn name(&self) -> &'static str { "conv2d" }
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert!(inputs.len() >= 2 && inputs.len() <= 3);
-        let stride = attrs.get_int("stride").unwrap_or(1) as usize;
-        let padding = attrs.get_int("padding").unwrap_or(0) as usize;
-        let dilation = attrs.get_int("dilation").unwrap_or(1) as usize;
-        let groups = attrs.get_int("groups").unwrap_or(1) as usize;
+        let stride = attrs.get_int("stride").map(|v| v as usize).unwrap_or(1);
+        let padding = attrs.get_int("padding").map(|v| v as usize).unwrap_or(0);
+        let dilation = attrs.get_int("dilation").map(|v| v as usize).unwrap_or(1);
+        let groups = attrs.get_int("groups").map(|v| v as usize).unwrap_or(1);
         let bias = if inputs.len() == 3 { Some(inputs[2]) } else { None };
         conv2d(inputs[0], inputs[1], bias, stride, padding, dilation, groups)
     }
     fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
-        let stride = attrs.get_int("stride").unwrap_or(1) as usize;
-        let padding = attrs.get_int("padding").unwrap_or(0) as usize;
-        let dilation = attrs.get_int("dilation").unwrap_or(1) as usize;
-        let groups = attrs.get_int("groups").unwrap_or(1) as usize;
+        assert!(inputs.len() >= 2 && inputs.len() <= 3);
+        let stride = attrs.get_int("stride").map(|v| v as usize).unwrap_or(1);
+        let padding = attrs.get_int("padding").map(|v| v as usize).unwrap_or(0);
+        let dilation = attrs.get_int("dilation").map(|v| v as usize).unwrap_or(1);
+        let groups = attrs.get_int("groups").map(|v| v as usize).unwrap_or(1);
         conv2d_backward(grad, inputs[0], inputs[1], stride, padding, dilation, groups)
     }
 }

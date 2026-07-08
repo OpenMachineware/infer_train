@@ -57,29 +57,29 @@ pub fn layer_norm<T: DType + Send + Sync>(
 // 2. 浮点泛型 Backward
 // ============================================================
 
-pub fn layer_norm_backward<T: DType>(
+pub fn layer_norm_backward<T: DType + Send + Sync>(
     grad_output: &Tensor<T>,
-    x: &Tensor<T>,
-    gamma: &Tensor<T>,
+    input: &Tensor<T>,
+    weight: &Tensor<T>,
     eps: f32,
 ) -> Vec<Tensor<T>> {
-    let shape = x.shape();
+    let shape = input.shape();
     let last_dim = shape[shape.len() - 1];
     let outer: usize = shape[..shape.len() - 1].iter().product();
 
     let grad_data = grad_output.data();
-    let x_data = x.data();
-    let gamma_data = gamma.data();
+    let x_data = input.data();
+    let gamma_data = weight.data();
 
-    let mut grad_x = vec![T::from_f32(0.0); x.len()];
+    let mut grad_input = vec![T::zero(); input.len()];
+    let mut grad_weight = vec![T::zero(); last_dim];
+    let mut grad_bias = vec![T::zero(); last_dim];
 
     for o in 0..outer {
         let base = o * last_dim;
 
         let mut mean = 0.0;
-        for i in 0..last_dim {
-            mean += x_data[base + i].to_f32();
-        }
+        for i in 0..last_dim { mean += x_data[base + i].to_f32(); }
         mean /= last_dim as f32;
 
         let mut var = 0.0;
@@ -88,16 +88,26 @@ pub fn layer_norm_backward<T: DType>(
             var += diff * diff;
         }
         var /= last_dim as f32;
-
         let inv_std = 1.0 / (var + eps).sqrt();
 
         for i in 0..last_dim {
             let idx = base + i;
-            grad_x[idx] = T::from_f32(grad_data[idx].to_f32() * gamma_data[i].to_f32() * inv_std);
+            let x = x_data[idx].to_f32();
+            let grad = grad_data[idx].to_f32();
+            let gamma = gamma_data[i].to_f32();
+            let norm = (x - mean) * inv_std;
+
+            grad_input[idx] = T::from_f32(grad * gamma * inv_std);
+            grad_weight[i] = T::from_f32(grad_weight[i].to_f32() + grad * norm);
+            grad_bias[i] = T::from_f32(grad_bias[i].to_f32() + grad);
         }
     }
 
-    vec![Tensor::new(grad_x, shape)]
+    vec![
+        Tensor::new(grad_input, shape),
+        Tensor::new(grad_weight, &[last_dim]),
+        Tensor::new(grad_bias, &[last_dim]),
+    ]
 }
 
 // ============================================================

@@ -46,21 +46,22 @@ pub fn rms_norm<T: DType + Send + Sync>(
 // 2. 浮点泛型 Backward
 // ============================================================
 
-pub fn rms_norm_backward<T: DType>(
+pub fn rms_norm_backward<T: DType + Send + Sync>(
     grad_output: &Tensor<T>,
-    x: &Tensor<T>,
+    input: &Tensor<T>,
     weight: &Tensor<T>,
     eps: f32,
 ) -> Vec<Tensor<T>> {
-    let shape = x.shape();
+    let shape = input.shape();
     let last_dim = shape[shape.len() - 1];
     let outer: usize = shape[..shape.len() - 1].iter().product();
 
     let grad_data = grad_output.data();
-    let x_data = x.data();
+    let x_data = input.data();
     let weight_data = weight.data();
 
-    let mut grad_x = vec![T::from_f32(0.0); x.len()];
+    let mut grad_input = vec![T::zero(); input.len()];
+    let mut grad_weight = vec![T::zero(); last_dim];
 
     for o in 0..outer {
         let base = o * last_dim;
@@ -75,11 +76,19 @@ pub fn rms_norm_backward<T: DType>(
 
         for i in 0..last_dim {
             let idx = base + i;
-            grad_x[idx] = T::from_f32(grad_data[idx].to_f32() * weight_data[i].to_f32() * inv_rms);
+            let x = x_data[idx].to_f32();
+            let grad = grad_data[idx].to_f32();
+            let w = weight_data[i].to_f32();
+
+            grad_input[idx] = T::from_f32(grad * w * inv_rms);
+            grad_weight[i] = T::from_f32(grad_weight[i].to_f32() + grad * x * inv_rms);
         }
     }
 
-    vec![Tensor::new(grad_x, shape)]
+    vec![
+        Tensor::new(grad_input, shape),
+        Tensor::new(grad_weight, &[last_dim]),
+    ]
 }
 
 // ============================================================

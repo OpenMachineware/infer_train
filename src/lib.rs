@@ -7,6 +7,7 @@ pub mod ir;
 pub mod transform;
 pub mod executor;
 pub mod frontend;
+pub mod autograd;
 
 // 重新导出常用类型
 pub use dtype::DType;

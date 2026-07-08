@@ -65,13 +65,55 @@ pub fn avg_pool<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward (简化版)
+// 2. 浮点泛型 Backward
 // ============================================================
 
-pub fn avg_pool_backward<T: DType>(
+pub fn avg_pool_backward<T: DType + Send + Sync>(
     grad_output: &Tensor<T>,
-) -> Vec<Tensor<T>> {
-    vec![grad_output.clone()]
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+) -> Tensor<T> {
+    let g_shape = grad_output.shape();
+    let n = g_shape[0];
+    let c = g_shape[1];
+    let oh = g_shape[2];
+    let ow = g_shape[3];
+
+    let h = oh * stride;
+    let w = ow * stride;
+    let pool_size = kernel_size * kernel_size;
+    let grad_data = grad_output.data();
+
+    let mut grad_input = vec![T::zero(); n * c * h * w];
+
+    for b in 0..n {
+        for ch in 0..c {
+            for i in 0..oh {
+                for j in 0..ow {
+                    let grad_val = grad_data[((b * c + ch) * oh + i) * ow + j];
+                    if grad_val == T::zero() { continue; }
+
+                    let h_start = i * stride;
+                    let w_start = j * stride;
+                    let avg_grad = grad_val / T::from_f32(pool_size as f32);
+
+                    for kh in 0..kernel_size {
+                        let ih = h_start + kh;
+                        if ih >= h { continue; }
+                        for kw in 0..kernel_size {
+                            let iw = w_start + kw;
+                            if iw >= w { continue; }
+                            let idx = (((b * c + ch) * h + ih) * w + iw);
+                            grad_input[idx] = grad_input[idx] + avg_grad;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Tensor::new(grad_input, &[n, c, h, w])
 }
 
 // ============================================================
@@ -89,8 +131,12 @@ impl<T: DType + Send + Sync> Operator<T> for AvgPoolOp {
         let padding = attrs.get_int("padding").map(|v| v as usize).unwrap_or(0);
         avg_pool(inputs[0], kernel_size, stride, padding)
     }
-    fn backward(&self, grad: &Tensor<T>, _inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Vec<Tensor<T>> {
-        avg_pool_backward(grad)
+    fn backward(&self, grad: &Tensor<T>, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Vec<Tensor<T>> {
+        assert_eq!(inputs.len(), 1);
+        let kernel_size = attrs.get_int("kernel_size").map(|v| v as usize).unwrap_or(2);
+        let stride = attrs.get_int("stride").map(|v| v as usize).unwrap_or(kernel_size);
+        let padding = attrs.get_int("padding").map(|v| v as usize).unwrap_or(0);
+        vec![avg_pool_backward(grad, kernel_size, stride, padding)]
     }
 }
 
