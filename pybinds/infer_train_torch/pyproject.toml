@@ -8,8 +8,9 @@ version = "0.1.0"
 description = "InferTrain bindings for Torch"
 requires-python = ">=3.8"
 authors = [
-    { name = "Your Name", email = "you@example.com" }
+    { name = "Jia Liu", email = "proljc@gmail.com" }
 ]
+readme = "README.md"
 
 dependencies = [
     "numpy>=1.20.0",

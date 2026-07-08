@@ -1,4 +1,21 @@
-# python/infer_train_torch/_patch.py
+# -*- coding: utf-8 -*-
+# InferTrain - A Unified Inference and Training Engine
+#
+# Copyright (c) 2026 Jia Liu & InferTrain Contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# This file is part of InferTrain.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at:
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import torch
 import torch.nn.functional as F
@@ -7,11 +24,12 @@ from typing import Any, Optional, Callable, Dict
 import functools
 
 from ._infer_train_torch import rust_engine
-from ._tensor import to_engine_tensor, to_torch_tensor, wrap_tensor, unwrap_tensor
+from ._tensor import (to_engine_tensor, to_torch_tensor, wrap_tensor,
+                      unwrap_tensor)
 
 
 # ============================================================
-# 1. 缓存原始函数
+# Cache the original function
 # ============================================================
 
 _ORIGINAL: Dict[str, Callable] = {}
@@ -25,11 +43,11 @@ def _get_original(name: str) -> Callable:
 
 
 # ============================================================
-# 2. 算子补丁
+# ops
 # ============================================================
 
 def _it_binary_op(self: Tensor, other: Any, op_name: str) -> Tensor:
-    """通用二元操作"""
+    """Generic binary operations."""
     if self.device.type != "cpu":
         return _get_original(op_name)(self, other)
 
@@ -47,7 +65,7 @@ def _it_binary_op(self: Tensor, other: Any, op_name: str) -> Tensor:
 
 
 def _it_unary_op(self: Tensor, op_name: str) -> Tensor:
-    """通用一元操作"""
+    """Generic unary operations."""
     if self.device.type != "cpu":
         return _get_original(op_name)(self)
 
@@ -59,7 +77,7 @@ def _it_unary_op(self: Tensor, op_name: str) -> Tensor:
 
 
 def _it_functional_op(input: Tensor, op_name: str, *args, **kwargs) -> Tensor:
-    """通用 functional 操作"""
+    """Generic functional operations."""
     if input.device.type != "cpu":
         return _get_original(op_name)(input, *args, **kwargs)
 
@@ -71,7 +89,7 @@ def _it_functional_op(input: Tensor, op_name: str, *args, **kwargs) -> Tensor:
 
 
 # ============================================================
-# 3. 反向传播补丁
+# backward
 # ============================================================
 
 _IT_TRACER = None
@@ -87,24 +105,24 @@ def _it_backward(
         gradient: Optional[Tensor] = None,
         retain_graph: Optional[bool] = None,
 ) -> None:
-    """覆盖 Tensor.backward"""
+    """Overwrite Tensor.backward"""
     if self.device.type == "cpu" and _IT_TRACER is not None:
-        # 使用引擎的反向传播
+        # Use engine backward propagation
         eng_tensor = unwrap_tensor(self)
         if eng_tensor is not None:
             _IT_TRACER.backward(eng_tensor)
             return
 
-    # fallback 到 PyTorch
+    # fallback to PyTorch
     _get_original("backward")(self, gradient, retain_graph)
 
 
 # ============================================================
-# 4. 优化器补丁
+# optimizer
 # ============================================================
 
 def _it_optimizer_step(self) -> None:
-    """覆盖 optimizer.step"""
+    """Overwrite optimizer.step"""
     if _IT_TRACER is not None:
         _IT_TRACER.step()
     else:
@@ -112,15 +130,15 @@ def _it_optimizer_step(self) -> None:
 
 
 # ============================================================
-# 5. 应用补丁
+# Apply patches
 # ============================================================
 
 def apply_patches(tracer=None):
-    """应用所有补丁"""
+    """Hack all ops"""
     global _IT_TRACER
     _IT_TRACER = tracer
 
-    # 保存原始函数
+    # Store original functional
     _save_original("add", Tensor.__add__)
     _save_original("sub", Tensor.__sub__)
     _save_original("mul", Tensor.__mul__)
@@ -128,7 +146,6 @@ def apply_patches(tracer=None):
     _save_original("backward", Tensor.backward)
     _save_original("optimizer_step", torch.optim.Optimizer.step)
 
-    # 保存 functional
     _save_original("relu", F.relu)
     _save_original("sigmoid", F.sigmoid)
     _save_original("tanh", F.tanh)
@@ -145,22 +162,15 @@ def apply_patches(tracer=None):
     _save_original("softmax", F.softmax)
     _save_original("log_softmax", F.log_softmax)
 
-    # 覆盖 Tensor 方法
+    # Overwrite Tensor methods
     Tensor.__add__ = lambda self, other: _it_binary_op(self, other, "add")
     Tensor.__sub__ = lambda self, other: _it_binary_op(self, other, "sub")
     Tensor.__mul__ = lambda self, other: _it_binary_op(self, other, "mul")
-    Tensor.__matmul__ = lambda self, other: _it_binary_op(self, other, "matmul")
+    Tensor.__matmul__ = lambda self, other: _it_binary_op(self, other,
+                                                          "matmul")
     Tensor.backward = _it_backward
 
-    # 覆盖 functional
-    # F.relu = lambda input: _it_functional_op(input, "relu")
-    # F.sigmoid = lambda input: _it_functional_op(input, "sigmoid")
-    # F.tanh = lambda input: _it_functional_op(input, "tanh")
-    # F.gelu = lambda input: _it_functional_op(input, "gelu")
-    # F.silu = lambda input: _it_functional_op(input, "silu")
-    # F.conv2d = lambda input, weight, bias=None, **kwargs: _it_conv2d(input, weight, bias, **kwargs)
-    # ... 其他 functional
-    # 覆盖 functional（带完整参数）
+    # Overwrite functional
     F.relu = _it_relu
     F.sigmoid = _it_sigmoid
     F.tanh = _it_tanh
@@ -177,14 +187,16 @@ def apply_patches(tracer=None):
     # F.softmax = _it_softmax
     # F.log_softmax = _it_log_softmax
 
-    # 覆盖 optimizer.step
+    # Overwrite optimizer.step
     torch.optim.Optimizer.step = _it_optimizer_step
 
 
-def _it_conv2d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
-    """覆盖 F.conv2d"""
+def _it_conv2d(input, weight, bias=None, stride=1, padding=0, dilation=1,
+               groups=1):
+    """Overwrite F.conv2d"""
     if input.device.type != "cpu":
-        return _get_original("conv2d")(input, weight, bias, stride, padding, dilation, groups)
+        return _get_original("conv2d")(input, weight, bias, stride, padding,
+                                       dilation, groups)
 
     a = to_engine_tensor(input)
     w = to_engine_tensor(weight)
@@ -197,11 +209,11 @@ def _it_conv2d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups
 
 
 def _it_relu(input, inplace=False):
-    """覆盖 F.relu"""
+    """Overwrite F.relu"""
     if input.device.type != "cpu":
         return _get_original("relu")(input, inplace=inplace)
 
-    # 引擎不支持 inplace，忽略
+    # No inplace support, pass
     a = to_engine_tensor(input)
     result = a.relu()
     out = to_torch_tensor(result)
@@ -249,11 +261,11 @@ def _it_silu(input):
 
 
 # ============================================================
-# 6. 移除补丁
+# Remove ops patches
 # ============================================================
 
 def remove_patches():
-    """移除所有补丁"""
+    """Retore all ops"""
     Tensor.__add__ = _get_original("add")
     Tensor.__sub__ = _get_original("sub")
     Tensor.__mul__ = _get_original("mul")
@@ -267,4 +279,4 @@ def remove_patches():
     F.gelu = _get_original("gelu")
     F.silu = _get_original("silu")
     F.conv2d = _get_original("conv2d")
-    # ... 恢复所有
+    # More ops...
