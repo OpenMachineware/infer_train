@@ -1,7 +1,8 @@
-// src/transform/cfg_inline.rs
-
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use crate::ir::cfg::{CfgGraph, CfgOp};
+
+static FUNCTION_REGISTRY: OnceLock<HashMap<String, CfgGraph>> = OnceLock::new();
 
 pub struct CfgInlinePass;
 
@@ -28,7 +29,6 @@ impl CfgInlinePass {
     }
 
     fn inline_call(cfg: &mut CfgGraph, call_op_id: u64) -> bool {
-        // 使用 match 或 if let 替代 ? 操作符
         let (block_id, call_op) = match cfg.blocks.iter_mut()
             .find_map(|(id, block)| {
                 block.ops.iter()
@@ -39,25 +39,21 @@ impl CfgInlinePass {
             None => return false,
         };
 
-        // 获取被调用的函数名
         let func_name = match call_op.attrs.get("function_name") {
             Some(crate::ir::dag::AttrValue::String(s)) => s.clone(),
             _ => return false,
         };
 
-        // 查找被调用的函数
-        let func_cfg = match Self::find_function(cfg, &func_name) {
+        let func_cfg = match Self::find_function(&func_name) {
             Some(cfg) => cfg,
             None => return false,
         };
 
-        // 获取 block
         let block = match cfg.blocks.get_mut(&block_id) {
             Some(b) => b,
             None => return false,
         };
 
-        // 找到 call_op 的位置
         let pos = match block.ops.iter().position(|op| op.id == call_op_id) {
             Some(p) => p,
             None => return false,
@@ -74,14 +70,12 @@ impl CfgInlinePass {
             op.id = cfg.next_id;
             cfg.next_id += 1;
 
-            // 映射 inputs
             for inp in &mut op.inputs {
                 if let Some(&new_id) = value_map.get(inp) {
                     *inp = new_id;
                 }
             }
 
-            // 映射 outputs
             for out in &mut op.outputs {
                 let new_id = cfg.next_id;
                 cfg.next_id += 1;
@@ -90,16 +84,32 @@ impl CfgInlinePass {
             }
         }
 
-        // 替换原始 call_op
         block.ops.splice(pos..pos+1, inline_ops);
-
         true
     }
 
-    fn find_function(_cfg: &CfgGraph, name: &str) -> Option<CfgGraph> {
-        // TODO: 从函数注册表中查找
-        // 添加一个 HashMap 实现函数存储, 存储所有函数
-        todo!("从函数注册表中查找函数: {}", name)
+    fn find_function(name: &str) -> Option<CfgGraph> {
+        FUNCTION_REGISTRY.get().and_then(|registry| registry.get(name).cloned())
+    }
+
+    pub fn register_function(name: &str, cfg: CfgGraph) -> Result<(), String> {
+        let _registry = FUNCTION_REGISTRY.get_or_init(|| HashMap::new());
+        // 注意：这里需要可变访问，但 OnceLock 的 get_or_init 返回 &T
+        // 需要换成 Mutex 或者先获取再插入
+        // 简化：用 Mutex 保护
+        Self::register_function_mutex(name, cfg)
+    }
+
+    // 用 Mutex 版本（更安全）
+    pub fn register_function_mutex(name: &str, cfg: CfgGraph) -> Result<(), String> {
+        // 如果已经存在，返回错误或覆盖
+        // 这里用简单方式：使用 Mutex
+        use std::sync::Mutex;
+        static REGISTRY_MUTEX: OnceLock<Mutex<HashMap<String, CfgGraph>>> = OnceLock::new();
+        let mutex = REGISTRY_MUTEX.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut registry = mutex.lock().unwrap();
+        registry.insert(name.to_string(), cfg);
+        Ok(())
     }
 }
 

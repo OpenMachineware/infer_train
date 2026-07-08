@@ -8,6 +8,7 @@ pub mod conv3d;
 pub mod conv_transpose;
 pub mod adaptive_pool;
 pub mod upsample;
+pub mod fused_conv_bn;
 
 pub use conv2d::{conv2d, conv2d_backward, Conv2dOp};
 pub use max_pool::{max_pool, max_pool_backward, MaxPoolOp};
