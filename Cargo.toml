@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "infer_train_torch"
+name = "_infer_train_torch"
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -32,5 +32,5 @@ rand = "0.8"
 
 [features]
 extension-module = ["pyo3/extension-module"]
-default = ["torch"]
+default = ["torch", "extension-module"]
 torch = ["dep:pyo3", "dep:numpy"]

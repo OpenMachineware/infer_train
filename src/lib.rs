@@ -23,26 +23,34 @@ use pyo3::prelude::*;
 // ============================================================
 #[cfg(feature = "torch")]
 #[pymodule]
-fn infer_train_torch(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
-    // ---- 基础 Tensor ----
-    m.add_class::<pytensor::PyTensor>()?;
+fn _infer_train_torch(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
+    let rust_engine = PyModule::new(py, "rust_engine")?;
+
+    // ---- 基础 class ----
+    rust_engine.add_class::<pytensor::PyTensor>()?;
+    rust_engine.add_class::<frontend::hook::HookTracer>()?;
+    rust_engine.add_class::<ir::serialize::PyModelFile>()?;
+    rust_engine.add_class::<ir::serialize::PyDagGraph>()?;
+    rust_engine.add_class::<executor::executor::PyExecutor>()?;
+
 
     // ---- Frontend ----
-    m.add_function(wrap_pyfunction!(frontend::gguf::import_gguf, m)?)?;
-    m.add_function(wrap_pyfunction!(frontend::gguf::export_gguf, m)?)?;
+    rust_engine.add_function(wrap_pyfunction!(frontend::gguf::import_gguf, &rust_engine)?)?;
+    rust_engine.add_function(wrap_pyfunction!(frontend::gguf::export_gguf, &rust_engine)?)?;
 
     // ---- Torch Bridge ----
-    m.add_function(wrap_pyfunction!(torch_bridge::trace_model, m)?)?;
-    m.add_function(wrap_pyfunction!(torch_bridge::trace_and_export, m)?)?;
-    m.add_function(wrap_pyfunction!(torch_bridge::trace_trainable, m)?)?;
-    m.add_function(wrap_pyfunction!(torch_bridge::load_and_infer, m)?)?;
+    rust_engine.add_function(wrap_pyfunction!(torch_bridge::trace_model, &rust_engine)?)?;
+    rust_engine.add_function(wrap_pyfunction!(torch_bridge::trace_and_export, &rust_engine)?)?;
+    rust_engine.add_function(wrap_pyfunction!(torch_bridge::trace_trainable, &rust_engine)?)?;
+    rust_engine.add_function(wrap_pyfunction!(torch_bridge::load_and_infer, &rust_engine)?)?;
 
     // ---- IR ----
-    m.add_class::<ir::serialize::PyModelFile>()?;
-    m.add_class::<ir::serialize::PyDagGraph>()?;
+    rust_engine.add_class::<ir::serialize::PyModelFile>()?;
+    rust_engine.add_class::<ir::serialize::PyDagGraph>()?;
 
     // ---- Executor ----
-    m.add_class::<executor::PyExecutor>()?;
+    rust_engine.add_class::<executor::PyExecutor>()?;
 
+    m.add_submodule(&rust_engine)?;
     Ok(())
 }

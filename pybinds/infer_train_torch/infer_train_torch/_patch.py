@@ -6,7 +6,7 @@ from torch import Tensor
 from typing import Any, Optional, Callable, Dict
 import functools
 
-from . import rust_engine
+from ._infer_train_torch import rust_engine
 from ._tensor import to_engine_tensor, to_torch_tensor, wrap_tensor, unwrap_tensor
 
 
@@ -153,13 +153,29 @@ def apply_patches(tracer=None):
     Tensor.backward = _it_backward
 
     # 覆盖 functional
-    F.relu = lambda input: _it_functional_op(input, "relu")
-    F.sigmoid = lambda input: _it_functional_op(input, "sigmoid")
-    F.tanh = lambda input: _it_functional_op(input, "tanh")
-    F.gelu = lambda input: _it_functional_op(input, "gelu")
-    F.silu = lambda input: _it_functional_op(input, "silu")
-    F.conv2d = lambda input, weight, bias=None, **kwargs: _it_conv2d(input, weight, bias, **kwargs)
+    # F.relu = lambda input: _it_functional_op(input, "relu")
+    # F.sigmoid = lambda input: _it_functional_op(input, "sigmoid")
+    # F.tanh = lambda input: _it_functional_op(input, "tanh")
+    # F.gelu = lambda input: _it_functional_op(input, "gelu")
+    # F.silu = lambda input: _it_functional_op(input, "silu")
+    # F.conv2d = lambda input, weight, bias=None, **kwargs: _it_conv2d(input, weight, bias, **kwargs)
     # ... 其他 functional
+    # 覆盖 functional（带完整参数）
+    F.relu = _it_relu
+    F.sigmoid = _it_sigmoid
+    F.tanh = _it_tanh
+    F.gelu = _it_gelu
+    F.silu = _it_silu
+    F.conv2d = _it_conv2d
+    # F.linear = _it_linear
+    # F.max_pool2d = _it_max_pool2d
+    # F.avg_pool2d = _it_avg_pool2d
+    # F.batch_norm = _it_batch_norm
+    # F.layer_norm = _it_layer_norm
+    # F.embedding = _it_embedding
+    # F.dropout = _it_dropout
+    # F.softmax = _it_softmax
+    # F.log_softmax = _it_log_softmax
 
     # 覆盖 optimizer.step
     torch.optim.Optimizer.step = _it_optimizer_step
@@ -175,6 +191,58 @@ def _it_conv2d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups
     b = to_engine_tensor(bias) if bias is not None else None
 
     result = a.conv2d(w, b, stride, padding, dilation, groups)
+    out = to_torch_tensor(result)
+    wrap_tensor(out)
+    return out
+
+
+def _it_relu(input, inplace=False):
+    """覆盖 F.relu"""
+    if input.device.type != "cpu":
+        return _get_original("relu")(input, inplace=inplace)
+
+    # 引擎不支持 inplace，忽略
+    a = to_engine_tensor(input)
+    result = a.relu()
+    out = to_torch_tensor(result)
+    wrap_tensor(out)
+    return out
+
+def _it_sigmoid(input):
+    if input.device.type != "cpu":
+        return _get_original("sigmoid")(input)
+    a = to_engine_tensor(input)
+    result = a.sigmoid()
+    out = to_torch_tensor(result)
+    wrap_tensor(out)
+    return out
+
+
+def _it_tanh(input):
+    if input.device.type != "cpu":
+        return _get_original("tanh")(input)
+    a = to_engine_tensor(input)
+    result = a.tanh()
+    out = to_torch_tensor(result)
+    wrap_tensor(out)
+    return out
+
+
+def _it_gelu(input):
+    if input.device.type != "cpu":
+        return _get_original("gelu")(input)
+    a = to_engine_tensor(input)
+    result = a.gelu()
+    out = to_torch_tensor(result)
+    wrap_tensor(out)
+    return out
+
+
+def _it_silu(input):
+    if input.device.type != "cpu":
+        return _get_original("silu")(input)
+    a = to_engine_tensor(input)
+    result = a.silu()
     out = to_torch_tensor(result)
     wrap_tensor(out)
     return out

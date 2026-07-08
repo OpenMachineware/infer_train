@@ -3,6 +3,7 @@
 use pyo3::prelude::*;
 // use pyo3::types::PySequence;
 use pyo3::types::{PyAny};
+use numpy::{PyArrayDyn, PyArrayMethods, PyUntypedArrayMethods};
 
 use crate::tensor::Tensor;
 
@@ -56,15 +57,27 @@ impl PyTensor {
 
     #[staticmethod]
     pub fn from_numpy(array: &Bound<PyAny>) -> PyResult<PyTensor> {
-        use numpy::PyReadonlyArray1;
+        if let Ok(data) = array.extract::<Vec<f32>>() {
+            let shape = vec![data.len()];
+            return Ok(PyTensor {
+                inner: Tensor::new(data, &shape),
+            });
+        }
 
-        // 1. 使用 extract 直接提取 PyReadonlyArray1<f32>
-        // 2. 调用 as_slice() 获取底层只读切片
-        // 3. to_vec() 拷贝数据到 Rust 堆内存
-        let arr = array.extract::<PyReadonlyArray1<f32>>()?;
-        let data = arr.as_slice()?.to_vec();
+        let arr = array.downcast::<PyArrayDyn<f32>>()
+            .map_err(|e| pyo3::exceptions::PyTypeError::new_err(
+                format!("Cannot convert to PyArrayDyn: {}", e)
+            ))?;
 
-        let shape = vec![data.len()];
+        let shape = arr.shape().to_vec();
+
+        let readonly = arr.readonly();
+        let slice = readonly.as_slice()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(
+                format!("Cannot get slice from array: {}", e)
+            ))?;
+
+        let data = slice.to_vec();
 
         Ok(PyTensor {
             inner: Tensor::new(data, &shape),

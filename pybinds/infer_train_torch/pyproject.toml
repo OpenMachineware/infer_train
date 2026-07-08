@@ -1,0 +1,32 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "infer_train_torch"
+version = "0.1.0"
+description = "InferTrain bindings for Torch"
+requires-python = ">=3.8"
+authors = [
+    { name = "Your Name", email = "you@example.com" }
+]
+
+dependencies = [
+    "numpy>=1.20.0",
+]
+
+[project.optional-dependencies]
+torch = [
+    "torch>=2.0.0",
+]
+
+[tool.maturin]
+bindings = "pyo3"
+manifest-path = "../../Cargo.toml"
+python-source = "."
+module-name = "infer_train_torch._infer_train_torch"
+
+[dependency-groups]
+dev = [
+    "maturin>=1.14.1",
+]

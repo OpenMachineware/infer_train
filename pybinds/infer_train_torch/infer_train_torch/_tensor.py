@@ -5,8 +5,7 @@ import numpy as np
 from typing import Any, Optional
 
 # 导入 Rust 的 PyTensor
-from . import rust_engine
-
+from ._infer_train_torch import rust_engine
 
 def to_engine_tensor(t: torch.Tensor) -> rust_engine.PyTensor:
     """PyTorch Tensor → 引擎 PyTensor"""
