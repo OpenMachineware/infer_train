@@ -34,7 +34,7 @@ InferTrain 是一个专为边缘设备设计的推训一体 AI 推理与训练�
 ```bash
 # 从源码安装（需要 Rust 环境）
 git clone https://github.com/yourname/infer_train.git
-cd infer_train
+cd infer_train/pybinds/infer_train_torch
 uv pip install -e .
 ```
 
@@ -208,6 +208,9 @@ Apache 2.0
 7. 确保commit msg无英文外的其他语言 
 8. commit时加`-s`参数，以便生成Sign-off 
 9. 提交 Pull Request
+
+
+参与开发请优先参考 `TODO[_zh].md`。
 
 新算子开发请参考 `docs/dev_ops[_zh].md`。
 
