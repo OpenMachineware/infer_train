@@ -54,8 +54,8 @@ fn conv_transpose_impl<T: DType + Send + Sync>(
                                 let oh = i * stride + kh - padding;
                                 let ow = j * stride + kw - padding;
                                 if oh < out_h && ow < out_w {
-                                    let w_idx = (((oc * in_c + ic) * k_h + kh) * k_w + kw);
-                                    let out_idx = (((b * in_c + ic) * out_h + oh) * out_w + ow);
+                                    let w_idx = ((oc * in_c + ic) * k_h + kh) * k_w + kw;
+                                    let out_idx = ((b * in_c + ic) * out_h + oh) * out_w + ow;
                                     result[out_idx] = result[out_idx] + grad_val * weight_data[w_idx];
                                 }
                             }
@@ -77,9 +77,9 @@ fn conv_weight_gradient_impl<T: DType + Send + Sync>(
     input: &Tensor<T>,
     grad_output: &Tensor<T>,
     stride: usize,
-    padding: usize,
-    dilation: usize,
-    groups: usize,
+    _padding: usize,
+    _dilation: usize,
+    _groups: usize,
 ) -> Tensor<T> {
     let i_shape = input.shape();
     let g_shape = grad_output.shape();
@@ -112,8 +112,8 @@ fn conv_weight_gradient_impl<T: DType + Send + Sync>(
                                 let ih = h_start + kh;
                                 let iw = w_start + kw;
                                 if ih < h && iw < w {
-                                    let input_idx = (((b * in_c + ic) * h + ih) * w + iw);
-                                    let w_idx = (((oc * in_c + ic) * k_h + kh) * k_w + kw);
+                                    let input_idx = ((b * in_c + ic) * h + ih) * w + iw;
+                                    let w_idx = ((oc * in_c + ic) * k_h + kh) * k_w + kw;
                                     grad_weight[w_idx] = grad_weight[w_idx] + grad_val * input_data[input_idx];
                                 }
                             }

@@ -8,6 +8,8 @@ pub mod transform;
 pub mod executor;
 pub mod frontend;
 pub mod autograd;
+pub mod pytensor;
+pub mod torch_bridge;
 
 // 重新导出常用类型
 pub use dtype::DType;
@@ -22,9 +24,18 @@ use pyo3::prelude::*;
 #[cfg(feature = "torch")]
 #[pymodule]
 fn infer_train_torch(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
+    // ---- 基础 Tensor ----
+    m.add_class::<pytensor::PyTensor>()?;
+
     // ---- Frontend ----
     m.add_function(wrap_pyfunction!(frontend::gguf::import_gguf, m)?)?;
     m.add_function(wrap_pyfunction!(frontend::gguf::export_gguf, m)?)?;
+
+    // ---- Torch Bridge ----
+    m.add_function(wrap_pyfunction!(torch_bridge::trace_model, m)?)?;
+    m.add_function(wrap_pyfunction!(torch_bridge::trace_and_export, m)?)?;
+    m.add_function(wrap_pyfunction!(torch_bridge::trace_trainable, m)?)?;
+    m.add_function(wrap_pyfunction!(torch_bridge::load_and_infer, m)?)?;
 
     // ---- IR ----
     m.add_class::<ir::serialize::PyModelFile>()?;

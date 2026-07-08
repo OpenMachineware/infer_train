@@ -26,7 +26,7 @@ pub trait GradFn {
 // ============================================================
 
 pub fn backward(
-    loss: &Tensor<f32>,
+    _loss: &Tensor<f32>,
     tape: &Tape,
     values: &HashMap<u64, Tensor<f32>>,
 ) -> HashMap<u64, Tensor<f32>> {
@@ -72,7 +72,7 @@ fn backward_entry(
     entry: &TapeEntry,
     grad_output: &Tensor<f32>,
     values: &HashMap<u64, Tensor<f32>>,
-    tape: &Tape,
+    _tape: &Tape,
 ) -> Vec<(u64, Tensor<f32>)> {
     match entry {
         // ============================================================
@@ -105,14 +105,6 @@ fn backward_entry(
                                      values.get(input_b).unwrap(),
             );
             vec![(*input_a, grads[0].clone()), (*input_b, grads[1].clone())]
-        }
-
-        TapeEntry::Pow { input, exponent, .. } => {
-            let x = values.get(input).unwrap();
-            // ∂(x^e)/∂x = e * x^(e-1)
-            let e_minus_1 = *exponent - 1.0;
-            let grad_input = mul(grad_output, &pow(x, &Tensor::new(vec![e_minus_1], &[1])));
-            vec![(*input, mul(&Tensor::new(vec![*exponent], &[1]), &grad_input))]
         }
         TapeEntry::Pow { input, exponent, .. } => {
             let grads = pow_backward(grad_output,
@@ -233,6 +225,7 @@ fn backward_entry(
         // ============================================================
         // 张量操作
         // ============================================================
+        #[allow(unused_variables)]
         TapeEntry::Reshape { input, output, new_shape: _ } => {
             let original_shape = values.get(input).unwrap().shape();
             let grad_input = crate::ops::tensor_manip::reshape::reshape(grad_output, original_shape);
@@ -251,10 +244,11 @@ fn backward_entry(
             }
             result
         }
+        #[allow(unused_variables)]
         TapeEntry::Slice { input, dim, start, end, step, .. } => {
             // slice 的 backward：把梯度填回原始形状
             let original_shape = values.get(input).unwrap().shape();
-            let mut grad_input = vec![0.0f32; original_shape.iter().product()];
+            let grad_input = vec![0.0f32; original_shape.iter().product()];
             // TODO: 把 grad_output 填回对应的位置
             vec![(*input, Tensor::new(grad_input, original_shape))]
         }
@@ -286,7 +280,7 @@ fn backward_entry(
                 grad_input = reshape(&grad_input, &new_shape);
             }
             // 广播到原始形状
-            let mut broadcast_shape = shape.to_vec();
+            let broadcast_shape = shape.to_vec();
             for (i, &dim_size) in broadcast_shape.iter().enumerate() {
                 if i == *dim && grad_input.shape()[i] != dim_size {
                     // 需要广播
@@ -314,7 +308,7 @@ fn backward_entry(
         // 其他
         // ============================================================
         TapeEntry::Select { condition, true_val, false_val, .. } => {
-            let cond = values.get(condition).unwrap();
+            let _cond = values.get(condition).unwrap();
             let grad_true = grad_output.clone();
             let grad_false = grad_output.clone();
             vec![
@@ -323,6 +317,7 @@ fn backward_entry(
                 (*false_val, grad_false),
             ]
         }
+        #[allow(unused_variables)]
         TapeEntry::Embedding { indices, weight, .. } => {
             // embedding 的 backward：梯度传给 weight
             let grad_weight = grad_output.clone();
@@ -339,6 +334,7 @@ fn backward_entry(
         // ============================================================
         // 未实现的算子 (TODO)
         // ============================================================
+        #[allow(unreachable_patterns)]
         _ => {
             eprintln!("Warning: backward not implemented for {:?}", entry);
             vec![]

@@ -72,7 +72,7 @@ pub fn avg_pool_backward<T: DType + Send + Sync>(
     grad_output: &Tensor<T>,
     kernel_size: usize,
     stride: usize,
-    padding: usize,
+    _padding: usize,
 ) -> Tensor<T> {
     let g_shape = grad_output.shape();
     let n = g_shape[0];
@@ -104,7 +104,7 @@ pub fn avg_pool_backward<T: DType + Send + Sync>(
                         for kw in 0..kernel_size {
                             let iw = w_start + kw;
                             if iw >= w { continue; }
-                            let idx = (((b * c + ch) * h + ih) * w + iw);
+                            let idx = ((b * c + ch) * h + ih) * w + iw;
                             grad_input[idx] = grad_input[idx] + avg_grad;
                         }
                     }

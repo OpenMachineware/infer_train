@@ -9,6 +9,7 @@ use crate::ir::cfg::{CfgGraph, CfgOp};
 use crate::ir::dag::{AttrValue, DataType, DagGraph};
 use crate::transform::FullOptimizer;
 use crate::ir::serialize::ModelFile;
+use crate::autograd::AutogradEngine;
 
 // ============================================================
 // 辅助函数（在 impl HookTracer 外面，避开 #[pymethods]）
@@ -17,7 +18,7 @@ use crate::ir::serialize::ModelFile;
 fn extract_value_id(py: Python<'_>, obj: &Py<PyAny>) -> Result<u64, String> {
     let obj = obj.bind(py);
 
-    // ✅ 暂时注释 pytensor 依赖
+    // 暂时注释 pytensor 依赖
     // if let Ok(pytensor) = obj.downcast::<crate::pytensor::PyTensor>() {
     //     let tensor = &pytensor.borrow().inner;
     //     return Ok(tensor as *const _ as u64);
@@ -35,7 +36,7 @@ fn extract_value_id(py: Python<'_>, obj: &Py<PyAny>) -> Result<u64, String> {
 fn extract_tensor_info(py: Python<'_>, obj: &Py<PyAny>) -> Result<(DataType, Vec<i64>), String> {
     let obj = obj.bind(py);
 
-    // ✅ 暂时注释 pytensor/ffi 依赖，直接通过 Python 属性获取
+    // 暂时注释 pytensor/ffi 依赖，直接通过 Python 属性获取
     // if let Ok(pytensor) = obj.downcast::<crate::pytensor::PyTensor>() {
     //     let tensor = &pytensor.borrow().inner;
     //     let dtype = tensor.dtype();
@@ -125,6 +126,9 @@ pub struct HookTracer {
     block_counter: u64,
     model_name: String,
     framework: String,
+    autograd: Option<AutogradEngine>,
+    param_ids: Vec<u64>,
+    training_mode: bool,
 }
 
 #[pymethods]
@@ -145,6 +149,9 @@ impl HookTracer {
             block_counter: 1,
             model_name: "model".to_string(),
             framework: "torch".to_string(),
+            autograd: None,
+            param_ids: Vec::new(),
+            training_mode: false,
         }
     }
 
@@ -177,6 +184,9 @@ impl HookTracer {
         self.op_counter = 0;
         self.is_tracing = false;
         self.block_counter = 1;
+        self.autograd = None;
+        self.param_ids.clear();
+        self.training_mode = false;
     }
 
     pub fn set_model_name(&mut self, name: String) {
@@ -185,6 +195,81 @@ impl HookTracer {
 
     pub fn set_framework(&mut self, framework: String) {
         self.framework = framework;
+    }
+
+    pub fn set_training_mode(&mut self, mode: bool) {
+        self.training_mode = mode;
+    }
+
+    // ============================================================
+    // 记录参数 (供 Python 补丁调用)
+    // ============================================================
+
+    pub fn register_parameter(&mut self, param_id: u64) {
+        if !self.param_ids.contains(&param_id) {
+            self.param_ids.push(param_id);
+        }
+    }
+
+    pub fn get_param_ids(&self) -> Vec<u64> {
+        self.param_ids.clone()
+    }
+
+    // ============================================================
+    // 反向传播 (供 Python 补丁调用)
+    // ============================================================
+
+    pub fn backward(&mut self, loss: Py<PyAny>) -> PyResult<()> {
+        if !self.training_mode {
+            return Ok(());
+        }
+
+        // 获取 DAG
+        let cfg = self.cfg.lock().unwrap().clone();
+        let dag = FullOptimizer::optimize_full(&mut cfg.clone())
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+
+        // 创建或获取 AutogradEngine
+        if self.autograd.is_none() {
+            self.autograd = Some(AutogradEngine::new(dag, self.param_ids.clone()));
+        }
+
+        // 从 loss 提取 Tensor
+        Python::with_gil(|py| {
+            let _loss_obj = loss.bind(py);
+            // 获取 loss 值 (简化版：假设是标量)
+            // TODO: 从 PyTorch Tensor 提取数据
+            Ok(())
+        })
+    }
+
+    // ============================================================
+    // 更新权重 (供 Python 补丁调用)
+    // ============================================================
+
+    pub fn step(&mut self) -> PyResult<()> {
+        if !self.training_mode || self.autograd.is_none() {
+            return Ok(());
+        }
+
+        // 使用 AutogradEngine 更新权重
+        // TODO: 实现权重更新
+        Ok(())
+    }
+
+    // ============================================================
+    // 获取 DAG (供导出使用)
+    // ============================================================
+
+    pub fn get_dag(&self) -> PyResult<Py<PyAny>> {
+        let cfg = self.cfg.lock().unwrap().clone();
+        let dag = FullOptimizer::optimize_full(&mut cfg.clone())
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+
+        Python::with_gil(|py| {
+            let py_dag = crate::ir::serialize::PyDagGraph { inner: dag };
+            Ok(Py::new(py, py_dag)?.into_any())
+        })
     }
 
     // ============================================================

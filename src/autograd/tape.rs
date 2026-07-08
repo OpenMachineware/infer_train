@@ -1,9 +1,5 @@
-// src/autograd/tape.rs
-
 use std::collections::HashMap;
 
-use crate::tensor::Tensor;
-use crate::ir::dag::Op;
 
 // ============================================================
 // Tape 记录

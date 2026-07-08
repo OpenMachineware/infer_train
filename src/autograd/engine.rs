@@ -31,6 +31,7 @@ impl Default for AutogradConfig {
 
 pub struct AutogradEngine {
     graph: DagGraph,
+    #[allow(dead_code)]
     executor: Executor,
     tape: Tape,
     values: HashMap<u64, Tensor<f32>>,

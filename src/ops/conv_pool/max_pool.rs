@@ -83,7 +83,7 @@ pub fn max_pool_backward<T: DType + Send + Sync>(
     input: &Tensor<T>,
     kernel_size: usize,
     stride: usize,
-    padding: usize,
+    _padding: usize,
 ) -> Tensor<T> {
     let i_shape = input.shape();
     let g_shape = grad_output.shape();
@@ -117,7 +117,7 @@ pub fn max_pool_backward<T: DType + Send + Sync>(
                         for kw in 0..kernel_size {
                             let iw = w_start + kw;
                             if iw >= w { continue; }
-                            let idx = (((b * c + ch) * h + ih) * w + iw);
+                            let idx = ((b * c + ch) * h + ih) * w + iw;
                             let v = input_data[idx].to_f32();
                             if v > max_val {
                                 max_val = v;
@@ -127,7 +127,7 @@ pub fn max_pool_backward<T: DType + Send + Sync>(
                         }
                     }
 
-                    let grad_idx = (((b * c + ch) * h + max_h) * w + max_w);
+                    let grad_idx = ((b * c + ch) * h + max_h) * w + max_w;
                     grad_input[grad_idx] = grad_input[grad_idx] + grad_val;
                 }
             }
