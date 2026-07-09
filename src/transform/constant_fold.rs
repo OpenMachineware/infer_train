@@ -9,61 +9,45 @@ impl ConstantFoldingPass {
     pub fn apply(graph: &mut DagGraph) -> bool {
         let mut changed = false;
         let mut to_remove = Vec::new();
+        let mut replacements: HashMap<u64, u64> = HashMap::new();
 
         let op_ids: Vec<u64> = graph.ops.keys().cloned().collect();
 
         for &op_id in &op_ids {
             let op = match graph.ops.get(&op_id) {
-                Some(o) => o,
+                Some(o) => o.clone(),
                 None => continue,
             };
 
-            let mut all_constant = true;
-            let mut const_inputs = Vec::new();
-            let mut const_shapes = Vec::new();
-            let mut const_dtypes = Vec::new();
-
-            for &in_id in &op.inputs {
-                if let Some(data) = graph.constants.get(&in_id) {
-                    const_inputs.push(data.clone());
-                    if let Some(value) = graph.values.get(&in_id) {
-                        const_shapes.push(value.ty.shape.clone());
-                        const_dtypes.push(value.ty.dtype);
-                    } else {
-                        all_constant = false;
-                        break;
-                    }
-                } else {
-                    all_constant = false;
-                    break;
-                }
-            }
-
-            if !all_constant || op.inputs.is_empty() {
+            // ============================================================
+            // 1. 量化传播 (消除冗余 Cast)
+            // ============================================================
+            if let Some(repl) = Self::propagate_quantization(graph, &op) {
+                replacements.insert(op.outputs[0], repl);
+                to_remove.push(op_id);
+                changed = true;
                 continue;
             }
 
-            if let Some((result_data, result_shape, result_dtype)) =
-                Self::fold_op_tensor(
-                    &op.op_type,
-                    &const_inputs,
-                    &const_shapes,
-                    &const_dtypes,
-                    &op.attrs,
-                )
-            {
+            // ============================================================
+            // 2. 常量折叠 (已有的)
+            // ============================================================
+            if let Some(result) = Self::fold_constant_op(graph, &op) {
                 let out_id = op.outputs[0];
-
-                graph.constants.insert(out_id, result_data);
-
+                graph.constants.insert(out_id, result.0);
                 if let Some(value) = graph.values.get_mut(&out_id) {
-                    value.ty.shape = result_shape;
-                    value.ty.dtype = result_dtype;
+                    value.ty.shape = result.1;
+                    value.ty.dtype = result.2;
                 }
-
                 to_remove.push(op_id);
                 changed = true;
+                continue;
             }
+        }
+
+        // 应用替换
+        for (old_id, new_id) in &replacements {
+            Self::apply_replacement(graph, *old_id, *new_id);
         }
 
         for id in to_remove {
@@ -71,6 +55,193 @@ impl ConstantFoldingPass {
         }
 
         changed
+    }
+
+    // ============================================================
+    // 量化传播
+    // ============================================================
+
+    fn propagate_quantization(
+        graph: &DagGraph,
+        op: &crate::ir::dag::Op,
+    ) -> Option<u64> {
+        match op.op_type.as_str() {
+            // ---------- Dequantize ----------
+            "dequantize" => {
+                if op.inputs.len() >= 1 {
+                    let input_id = op.inputs[0];
+
+                    if let Some(producer) = Self::get_producer_op(graph, input_id) {
+                        if producer.op_type == "quantize" {
+                            if producer.inputs.len() >= 1 {
+                                return Some(producer.inputs[0]);
+                            }
+                        }
+                    }
+
+                    if graph.constants.contains_key(&input_id) {
+                        return Some(input_id);
+                    }
+                }
+                // 没匹配到，返回 None
+                return None;
+            }
+
+            // ---------- Quantize ----------
+            "quantize" => {
+                if op.inputs.len() >= 1 {
+                    let input_id = op.inputs[0];
+
+                    if let Some(producer) = Self::get_producer_op(graph, input_id) {
+                        if producer.op_type == "dequantize" {
+                            if producer.inputs.len() >= 1 {
+                                return Some(producer.inputs[0]);
+                            }
+                        }
+                    }
+
+                    if graph.constants.contains_key(&input_id) {
+                        return None;
+                    }
+                }
+                return None;
+            }
+
+            // ---------- Cast ----------
+            "cast" => {
+                if op.inputs.len() >= 1 {
+                    let input_id = op.inputs[0];
+                    if let Some(producer) = Self::get_producer_op(graph, input_id) {
+                        if producer.op_type == "cast" {
+                            // 两个 Cast 合并为一个
+                            if producer.inputs.len() >= 1 {
+                                // 直接返回 producer 的输入（相当于跳过中间 Cast）
+                                // 因为最终 Cast 会决定类型，中间 Cast 可以省略
+                                return Some(producer.inputs[0]);
+                            }
+                        }
+                    }
+                }
+                return None;
+            }
+
+            _ => None,
+        }
+    }
+
+    // ============================================================
+    // 常量折叠
+    // ============================================================
+    fn fold_constant_op(
+        graph: &DagGraph,
+        op: &crate::ir::dag::Op,
+    ) -> Option<(Vec<u8>, Vec<i64>, DataType)> {
+        let mut all_constant = true;
+        let mut const_inputs = Vec::new();
+        let mut const_shapes = Vec::new();
+        let mut const_dtypes = Vec::new();
+
+        for &in_id in &op.inputs {
+            if let Some(data) = graph.constants.get(&in_id) {
+                const_inputs.push(data.clone());
+                if let Some(value) = graph.values.get(&in_id) {
+                    const_shapes.push(value.ty.shape.clone());
+                    const_dtypes.push(value.ty.dtype);
+                } else {
+                    all_constant = false;
+                    break;
+                }
+            } else {
+                all_constant = false;
+                break;
+            }
+        }
+
+        if !all_constant || op.inputs.is_empty() {
+            return None;
+        }
+
+        let dtype = const_dtypes[0];
+        let all_same_dtype = const_dtypes.iter().all(|&d| d == dtype);
+        if !all_same_dtype {
+            return None;
+        }
+
+        // ============================================================
+        // 量化常量折叠 (新增)
+        // ============================================================
+
+        if op.op_type == "quantize" {
+            // 量化常量
+            if let Some(scale) = op.attrs.get("scale") {
+                let scale_val = match scale {
+                    AttrValue::Float(f) => *f as f32,
+                    AttrValue::Int(i) => *i as f32,
+                    _ => 1.0,
+                };
+                let zero_point = op.attrs.get("zero_point")
+                    .and_then(|v| match v {
+                        AttrValue::Int(i) => Some(*i as f32),
+                        AttrValue::Float(f) => Some(*f as f32),
+                        _ => None,
+                    })
+                    .unwrap_or(0.0);
+
+                let data = Self::decode_tensor(&const_inputs[0], dtype, &const_shapes[0]);
+                let quantized_data: Vec<i8> = data.iter()
+                    .map(|&x| ((x as f32 / scale_val) + zero_point).round().clamp(-128.0, 127.0) as i8)
+                    .collect();
+
+                let bytes: Vec<u8> = quantized_data.iter()
+                    .flat_map(|&v| v.to_le_bytes())
+                    .collect();
+
+                let out_shape = const_shapes[0].clone();
+                return Some((bytes, out_shape, DataType::I8));
+            }
+        }
+
+        if op.op_type == "dequantize" {
+            // 反量化常量
+            let dtype = const_dtypes[0];
+            if dtype == DataType::I8 {
+                let scale = op.attrs.get("scale")
+                    .and_then(|v| match v {
+                        AttrValue::Float(f) => Some(*f as f32),
+                        _ => None,
+                    })
+                    .unwrap_or(1.0);
+                let zero_point = op.attrs.get("zero_point")
+                    .and_then(|v| match v {
+                        AttrValue::Int(i) => Some(*i as f32),
+                        AttrValue::Float(f) => Some(*f as f32),
+                        _ => None,
+                    })
+                    .unwrap_or(0.0);
+
+                let data: Vec<f32> = const_inputs[0].iter()
+                    .map(|&b| (b as f32 - zero_point) * scale)
+                    .collect();
+
+                let bytes: Vec<u8> = data.iter()
+                    .flat_map(|&v| v.to_le_bytes())
+                    .collect();
+
+                return Some((bytes, const_shapes[0].clone(), DataType::F32));
+            }
+        }
+
+        // ============================================================
+        // 原有的常量折叠
+        // ============================================================
+
+        Self::fold_op_tensor(
+            &op.op_type,
+            &const_inputs,
+            &const_shapes,
+            &const_dtypes,
+            &op.attrs,
+        )
     }
 
     fn fold_op_tensor(
@@ -304,8 +475,86 @@ impl ConstantFoldingPass {
     }
 
     // ============================================================
-    // 辅助函数（全部改为关联函数）
+    // 辅助函数
     // ============================================================
+
+    fn get_producer_op<'a>(
+        graph: &'a DagGraph,
+        value_id: u64,
+    ) -> Option<&'a crate::ir::dag::Op> {
+        if let Some(value) = graph.values.get(&value_id) {
+            if let Some(producer_id) = value.producer {
+                return graph.ops.get(&producer_id);
+            }
+        }
+        None
+    }
+
+    #[allow(dead_code)]
+    fn get_cast_dtype(op: &crate::ir::dag::Op) -> Option<DataType> {
+        op.attrs.get("dtype")
+            .and_then(|v| match v {
+                AttrValue::String(s) => match s.as_str() {
+                    "F32" => Some(DataType::F32),
+                    "F64" => Some(DataType::F64),
+                    "F16" => Some(DataType::F16),
+                    "BF16" => Some(DataType::BF16),
+                    "I8" => Some(DataType::I8),
+                    _ => None,
+                },
+                _ => None,
+            })
+    }
+
+    #[allow(dead_code)]
+    fn create_cast_op(input: u64, dtype: DataType) -> crate::ir::dag::Op {
+        let dtype_str = match dtype {
+            DataType::F32 => "F32",
+            DataType::F64 => "F64",
+            DataType::F16 => "F16",
+            DataType::BF16 => "BF16",
+            DataType::I8 => "I8",
+            DataType::I32 => "I32",
+            DataType::I64 => "I64",
+            DataType::Bool => "Bool",
+        };
+        let mut attrs = HashMap::new();
+        attrs.insert("dtype".to_string(), AttrValue::String(dtype_str.to_string()));
+        crate::ir::dag::Op {
+            id: 0,
+            name: format!("cast_{}", input),
+            op_type: "cast".to_string(),
+            inputs: vec![input],
+            outputs: vec![],
+            attrs,
+        }
+    }
+
+    fn apply_replacement(graph: &mut DagGraph, old_id: u64, new_id: u64) {
+        for (_, op) in graph.ops.iter_mut() {
+            for input in &mut op.inputs {
+                if *input == old_id {
+                    *input = new_id;
+                }
+            }
+        }
+        for output in &mut graph.outputs {
+            if *output == old_id {
+                *output = new_id;
+            }
+        }
+        if let Some(value) = graph.values.get(&old_id) {
+            if let Some(producer_id) = value.producer {
+                if let Some(op) = graph.ops.get_mut(&producer_id) {
+                    for output in &mut op.outputs {
+                        if *output == old_id {
+                            *output = new_id;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     fn decode_tensor(data: &[u8], dtype: DataType, shape: &[i64]) -> Vec<f64> {
         let num_elements: usize =
