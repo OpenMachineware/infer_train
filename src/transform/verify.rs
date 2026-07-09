@@ -98,6 +98,7 @@ impl VerifyPass {
             crate::ir::dag::DataType::F16 => 2,
             crate::ir::dag::DataType::BF16 => 2,
             crate::ir::dag::DataType::I8 => 1,
+            crate::ir::dag::DataType::I16 => 2,
             crate::ir::dag::DataType::I32 => 4,
             crate::ir::dag::DataType::I64 => 8,
             crate::ir::dag::DataType::Bool => 1,

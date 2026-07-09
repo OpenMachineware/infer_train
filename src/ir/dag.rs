@@ -11,6 +11,7 @@ pub enum DataType {
     F16,
     BF16,
     I8,
+    I16,
     I32,
     I64,
     Bool,

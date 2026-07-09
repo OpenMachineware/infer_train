@@ -232,6 +232,24 @@ impl ConstantFoldingPass {
         }
 
         // ============================================================
+        // Cast 常量折叠
+        // ============================================================
+        if op.op_type == "cast" {
+            if let Some(target_dtype) = Self::get_cast_dtype(op) {
+                // 解码输入数据
+                let data = Self::decode_tensor(&const_inputs[0], const_dtypes[0], &const_shapes[0]);
+
+                // 编码为目标数据类型
+                let encoded = Self::encode_tensor(&data, target_dtype);
+
+                // 返回折叠后的常量
+                return Some((encoded, const_shapes[0].clone(), target_dtype));
+            }
+            return None;
+        }
+
+
+        // ============================================================
         // 原有的常量折叠
         // ============================================================
 
@@ -500,6 +518,17 @@ impl ConstantFoldingPass {
                     "F16" => Some(DataType::F16),
                     "BF16" => Some(DataType::BF16),
                     "I8" => Some(DataType::I8),
+                    "I16" => Some(DataType::I16),
+                    "I32" => Some(DataType::I32),
+                    "I64" => Some(DataType::I64),
+                    "Bool" => Some(DataType::Bool),
+                    _ => None,
+                },
+                AttrValue::Int(i) => match i {
+                    0 => Some(DataType::F32),
+                    1 => Some(DataType::F64),
+                    2 => Some(DataType::I32),
+                    3 => Some(DataType::I64),
                     _ => None,
                 },
                 _ => None,
@@ -514,6 +543,7 @@ impl ConstantFoldingPass {
             DataType::F16 => "F16",
             DataType::BF16 => "BF16",
             DataType::I8 => "I8",
+            DataType::I16 => "I16",
             DataType::I32 => "I32",
             DataType::I64 => "I64",
             DataType::Bool => "Bool",
