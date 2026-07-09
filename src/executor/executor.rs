@@ -104,6 +104,96 @@ impl Executor {
         self.collect_outputs()
     }
 
+    pub fn execute_batch(
+        &mut self,
+        batch_inputs: &[Vec<Tensor<f32>>],
+    ) -> Result<Vec<Vec<Tensor<f32>>>, String> {
+        let mut results = Vec::new();
+
+        for inputs in batch_inputs {
+            let result = self.execute(inputs)?;
+            results.push(result);
+        }
+
+        Ok(results)
+    }
+
+    pub fn execute_batch_single(
+        &mut self,
+        inputs: &[Tensor<f32>],
+        batch_size: usize,
+    ) -> Result<Vec<Vec<Tensor<f32>>>, String> {
+        // 将输入按 batch_size 分块
+        let mut results = Vec::new();
+        let total = inputs.len();
+
+        for start in (0..total).step_by(batch_size) {
+            let end = (start + batch_size).min(total);
+            let batch = &inputs[start..end];
+            let result = self.execute(batch)?;
+            results.push(result);
+        }
+
+        Ok(results)
+    }
+
+    pub fn execute_batch_multi(
+        &mut self,
+        input_batches: &[Vec<Tensor<f32>>],
+    ) -> Result<Vec<Vec<Tensor<f32>>>, String> {
+        let mut results = Vec::new();
+
+        for batch in input_batches {
+            let result = self.execute(batch)?;
+            results.push(result);
+        }
+
+        Ok(results)
+    }
+
+    // 优化批量推理（共享 constants 加载，一次执行多个 batch）
+    pub fn execute_batch_optimized(
+        &mut self,
+        batches: &[Vec<Tensor<f32>>],
+    ) -> Result<Vec<Vec<Tensor<f32>>>, String> {
+        if batches.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 1. 加载 constants（只加载一次）
+        self.load_constants()?;
+
+        // 2. 获取执行顺序（只计算一次）
+        let order = self.scheduler.get_execution_order().to_vec();
+
+        // 3. 对每个 batch 执行
+        let mut all_results = Vec::with_capacity(batches.len());
+
+        for inputs in batches {
+            // 清理上一次的中间值，但保留 constants
+            self.values.clear();
+            self.memory_pool.reset();
+
+            // 只加载输入
+            for (i, &input_id) in self.graph.inputs.iter().enumerate() {
+                if i < inputs.len() {
+                    self.values.insert(input_id, inputs[i].clone());
+                }
+            }
+
+            // 执行
+            if self.parallel && order.len() > 1 {
+                self.execute_parallel(&order)?;
+            } else {
+                self.execute_serial(&order)?;
+            }
+
+            all_results.push(self.collect_outputs()?);
+        }
+
+        Ok(all_results)
+    }
+
     fn validate_inputs(&self, inputs: &[Tensor<f32>]) -> Result<(), String> {
         if inputs.len() != self.graph.inputs.len() {
             return Err(format!(
@@ -369,6 +459,76 @@ impl PyExecutor {
                 })
                 .collect();
             Ok(py_result)
+        })
+    }
+
+    // 基础批量推理
+    pub fn execute_batch(
+        &mut self,
+        inputs: Vec<Vec<Py<PyAny>>>,
+    ) -> PyResult<Vec<Vec<Py<PyAny>>>> {
+        Python::with_gil(|py| {
+            let mut batch_tensors = Vec::new();
+            for batch in inputs {
+                let mut input_tensors = Vec::new();
+                for item in batch {
+                    let data: Vec<f32> = item.extract(py)?;
+                    let shape = vec![data.len()];
+                    input_tensors.push(Tensor::new(data, &shape));
+                }
+                batch_tensors.push(input_tensors);
+            }
+
+            let results = self.inner.execute_batch(&batch_tensors)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+
+            let py_results: Vec<Vec<Py<PyAny>>> = results.into_iter()
+                .map(|batch| {
+                    batch.into_iter()
+                        .map(|t| {
+                            let data = t.data().to_vec();
+                            PyList::new(py, data).unwrap().into_any().unbind()
+                        })
+                        .collect()
+                })
+                .collect();
+
+            Ok(py_results)
+        })
+    }
+
+    // 优化批量推理（共享 constants）
+    pub fn execute_batch_optimized(
+        &mut self,
+        inputs: Vec<Vec<Py<PyAny>>>,
+    ) -> PyResult<Vec<Vec<Py<PyAny>>>> {
+        Python::with_gil(|py| {
+            let mut batch_tensors = Vec::new();
+            for batch in inputs {
+                let mut input_tensors = Vec::new();
+                for item in batch {
+                    let data: Vec<f32> = item.extract(py)?;
+                    let shape = vec![data.len()];
+                    input_tensors.push(Tensor::new(data, &shape));
+                }
+                batch_tensors.push(input_tensors);
+            }
+
+            let results = self.inner.execute_batch_optimized(&batch_tensors)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+
+            let py_results: Vec<Vec<Py<PyAny>>> = results.into_iter()
+                .map(|batch| {
+                    batch.into_iter()
+                        .map(|t| {
+                            let data = t.data().to_vec();
+                            PyList::new(py, data).unwrap().into_any().unbind()
+                        })
+                        .collect()
+                })
+                .collect();
+
+            Ok(py_results)
         })
     }
 
