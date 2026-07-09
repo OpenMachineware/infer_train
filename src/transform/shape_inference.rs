@@ -270,8 +270,11 @@ impl ShapeInferencePass {
                     let known_elements: i64 =
                         inferred_shape.iter().filter(|&&d| d != 0).product();
                     if known_elements == 0 {
-                        return Err("Cannot infer -1 dimension with zero known \
-                        dimensions".to_string());
+                        return Err(
+                            "Cannot infer -1 dimension with zero known \
+                        dimensions"
+                                .to_string(),
+                        );
                     }
                     if total_elements % known_elements != 0 {
                         return Err(format!(

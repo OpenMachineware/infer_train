@@ -418,7 +418,11 @@ impl MemoryPool {
     // 兼容旧接口（用于 Executor）
     // ============================================================
 
-    pub fn allocate_or_use(&mut self, value_id: u64, tensor: Tensor<f32>) -> Tensor<f32> {
+    pub fn allocate_or_use(
+        &mut self,
+        value_id: u64,
+        tensor: Tensor<f32>,
+    ) -> Tensor<f32> {
         let data_bytes = tensor.data();
         let bytes = bytemuck::cast_slice(data_bytes);
 

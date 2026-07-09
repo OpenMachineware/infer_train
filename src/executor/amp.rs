@@ -1,6 +1,6 @@
 // src/executor/amp.rs
 
-use crate::ir::dag::{DagGraph, Op, AttrValue, TensorType, DataType};
+use crate::ir::dag::{AttrValue, DagGraph, DataType, Op, TensorType};
 use crate::tensor::Tensor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,27 +131,35 @@ impl AmpGraphConverter {
                         outputs: vec![cast_out_id],
                         attrs: {
                             let mut attrs = std::collections::HashMap::new();
-                            attrs.insert("dtype".to_string(), AttrValue::String(format!("{:?}", amp_dtype)));
+                            attrs.insert(
+                                "dtype".to_string(),
+                                AttrValue::String(format!("{:?}", amp_dtype)),
+                            );
                             attrs
                         },
                     };
 
                     // 创建输出 Value
-                    let out_shape = graph.values.get(&in_id)
+                    let out_shape = graph
+                        .values
+                        .get(&in_id)
                         .map(|v| v.ty.shape.clone())
                         .unwrap_or(vec![]);
 
-                    graph.values.insert(cast_out_id, crate::ir::dag::Value {
-                        id: cast_out_id,
-                        name: format!("cast_to_amp_{}", in_id),
-                        ty: TensorType {
-                            dtype: amp_dtype,
-                            shape: out_shape,
+                    graph.values.insert(
+                        cast_out_id,
+                        crate::ir::dag::Value {
+                            id: cast_out_id,
+                            name: format!("cast_to_amp_{}", in_id),
+                            ty: TensorType {
+                                dtype: amp_dtype,
+                                shape: out_shape,
+                            },
+                            producer: Some(cast_out_id),
+                            scale: None,
+                            zero_point: None,
                         },
-                        producer: Some(cast_out_id),
-                        scale: None,
-                        zero_point: None,
-                    });
+                    );
 
                     new_ops.push(cast_op);
                     new_inputs.push(cast_out_id);
@@ -171,26 +179,34 @@ impl AmpGraphConverter {
                         outputs: vec![cast_out_id],
                         attrs: {
                             let mut attrs = std::collections::HashMap::new();
-                            attrs.insert("dtype".to_string(), AttrValue::String("F32".to_string()));
+                            attrs.insert(
+                                "dtype".to_string(),
+                                AttrValue::String("F32".to_string()),
+                            );
                             attrs
                         },
                     };
 
-                    let out_shape = graph.values.get(&out_id)
+                    let out_shape = graph
+                        .values
+                        .get(&out_id)
                         .map(|v| v.ty.shape.clone())
                         .unwrap_or(vec![]);
 
-                    graph.values.insert(cast_out_id, crate::ir::dag::Value {
-                        id: cast_out_id,
-                        name: format!("cast_from_amp_{}", out_id),
-                        ty: TensorType {
-                            dtype: DataType::F32,
-                            shape: out_shape,
+                    graph.values.insert(
+                        cast_out_id,
+                        crate::ir::dag::Value {
+                            id: cast_out_id,
+                            name: format!("cast_from_amp_{}", out_id),
+                            ty: TensorType {
+                                dtype: DataType::F32,
+                                shape: out_shape,
+                            },
+                            producer: Some(cast_out_id),
+                            scale: None,
+                            zero_point: None,
                         },
-                        producer: Some(cast_out_id),
-                        scale: None,
-                        zero_point: None,
-                    });
+                    );
 
                     new_ops.push(cast_op);
                     new_outputs.push(cast_out_id);
@@ -244,23 +260,29 @@ impl AmpGraphConverter {
                         outputs: vec![cast_out_id],
                         attrs: {
                             let mut attrs = std::collections::HashMap::new();
-                            attrs.insert("dtype".to_string(), AttrValue::String("F32".to_string()));
+                            attrs.insert(
+                                "dtype".to_string(),
+                                AttrValue::String("F32".to_string()),
+                            );
                             attrs
                         },
                     };
 
                     let out_shape = v.ty.shape.clone();
-                    graph.values.insert(cast_out_id, crate::ir::dag::Value {
-                        id: cast_out_id,
-                        name: format!("cast_output_{}", out_id),
-                        ty: TensorType {
-                            dtype: DataType::F32,
-                            shape: out_shape,
+                    graph.values.insert(
+                        cast_out_id,
+                        crate::ir::dag::Value {
+                            id: cast_out_id,
+                            name: format!("cast_output_{}", out_id),
+                            ty: TensorType {
+                                dtype: DataType::F32,
+                                shape: out_shape,
+                            },
+                            producer: Some(cast_out_id),
+                            scale: None,
+                            zero_point: None,
                         },
-                        producer: Some(cast_out_id),
-                        scale: None,
-                        zero_point: None,
-                    });
+                    );
 
                     graph.ops.insert(cast_out_id, cast_op);
                     new_outputs.push(cast_out_id);

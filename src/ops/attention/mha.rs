@@ -124,8 +124,7 @@ fn reshape_to_3d<T: DType + Clone>(
 pub fn multi_head_attention_backward<T: DType>(
     grad_output: &Tensor<T>,
 ) -> Vec<Tensor<T>> {
-    vec![grad_output.clone(), grad_output.clone(),
-         grad_output.clone()]
+    vec![grad_output.clone(), grad_output.clone(), grad_output.clone()]
 }
 
 // ============================================================

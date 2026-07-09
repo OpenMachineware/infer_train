@@ -142,8 +142,12 @@ impl<'a> ParallelExecutor<'a> {
                 if let Some(id) = memory_pool.allocate(bytes) {
                     if let Some(pool_data) = memory_pool.get_mut(id) {
                         pool_data[..bytes.len()].copy_from_slice(bytes);
-                        let float_data: &[f32] = bytemuck::cast_slice::<u8, f32>(pool_data);
-                        let tensor = Tensor::new(float_data.to_vec(), outputs[i].shape());
+                        let float_data: &[f32] =
+                            bytemuck::cast_slice::<u8, f32>(pool_data);
+                        let tensor = Tensor::new(
+                            float_data.to_vec(),
+                            outputs[i].shape(),
+                        );
                         values.insert(out_id, tensor);
                     } else {
                         values.insert(out_id, outputs[i].clone());

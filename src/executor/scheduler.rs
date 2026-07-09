@@ -1,8 +1,8 @@
 // src/executor/scheduler.rs
 
-use std::collections::{HashMap, VecDeque, HashSet};
-use std::cmp::Ordering;
 use crate::ir::dag::DagGraph;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 // ============================================================
 // 调度器配置
@@ -40,9 +40,9 @@ pub struct Scheduler {
 #[derive(Debug, Clone)]
 pub struct NodeWeight {
     pub op_id: u64,
-    pub compute_cost: f32,      // 计算开销 (FLOPs)
-    pub memory_cost: usize,     // 内存开销 (bytes)
-    pub priority: f32,          // 优先级 (越高越先执行)
+    pub compute_cost: f32,  // 计算开销 (FLOPs)
+    pub memory_cost: usize, // 内存开销 (bytes)
+    pub priority: f32,      // 优先级 (越高越先执行)
 }
 
 impl Scheduler {
@@ -84,12 +84,10 @@ impl Scheduler {
 
             let priority = self.calculate_priority(&compute_cost, &memory_cost);
 
-            self.node_weights.insert(op_id, NodeWeight {
+            self.node_weights.insert(
                 op_id,
-                compute_cost,
-                memory_cost,
-                priority,
-            });
+                NodeWeight { op_id, compute_cost, memory_cost, priority },
+            );
         }
     }
 
@@ -144,20 +142,17 @@ impl Scheduler {
         }
 
         // 按优先级排序的队列
-        let mut queue: Vec<u64> = in_degree.iter()
-            .filter_map(|(&id, &deg)| {
-                if deg == 0 {
-                    Some(id)
-                } else {
-                    None
-                }
-            })
+        let mut queue: Vec<u64> = in_degree
+            .iter()
+            .filter_map(|(&id, &deg)| if deg == 0 { Some(id) } else { None })
             .collect();
 
         // 按优先级降序排序 (高优先级先执行)
         queue.sort_by(|a, b| {
-            let pa = self.node_weights.get(a).map(|w| w.priority).unwrap_or(0.0);
-            let pb = self.node_weights.get(b).map(|w| w.priority).unwrap_or(0.0);
+            let pa =
+                self.node_weights.get(a).map(|w| w.priority).unwrap_or(0.0);
+            let pb =
+                self.node_weights.get(b).map(|w| w.priority).unwrap_or(0.0);
             pb.partial_cmp(&pa).unwrap_or(Ordering::Equal)
         });
 
@@ -173,13 +168,18 @@ impl Scheduler {
                     *deg -= 1;
                     if *deg == 0 {
                         // 插入时保持优先级
-                        let priority = self.node_weights.get(&next)
+                        let priority = self
+                            .node_weights
+                            .get(&next)
                             .map(|w| w.priority)
                             .unwrap_or(0.0);
 
-                        let pos = queue_deque.iter()
+                        let pos = queue_deque
+                            .iter()
                             .position(|&x| {
-                                let p = self.node_weights.get(&x)
+                                let p = self
+                                    .node_weights
+                                    .get(&x)
                                     .map(|w| w.priority)
                                     .unwrap_or(0.0);
                                 p < priority
@@ -212,9 +212,7 @@ impl Scheduler {
         for &op_id in order {
             if let Some(op) = graph.get_op(op_id) {
                 for &in_id in &op.inputs {
-                    memory_map.entry(in_id)
-                        .or_insert(Vec::new())
-                        .push(op_id);
+                    memory_map.entry(in_id).or_insert(Vec::new()).push(op_id);
                 }
             }
         }
@@ -256,10 +254,14 @@ impl Scheduler {
             if !group.is_empty() {
                 // 按内存大小排序 (先分配大的，再分配小的，减少碎片)
                 group.sort_by(|a, b| {
-                    let mem_a = self.node_weights.get(a)
+                    let mem_a = self
+                        .node_weights
+                        .get(a)
                         .map(|w| w.memory_cost)
                         .unwrap_or(0);
-                    let mem_b = self.node_weights.get(b)
+                    let mem_b = self
+                        .node_weights
+                        .get(b)
                         .map(|w| w.memory_cost)
                         .unwrap_or(0);
                     mem_b.cmp(&mem_a)
@@ -291,7 +293,10 @@ impl Scheduler {
     // 内存规划
     // ============================================================
 
-    pub fn plan_memory(&self, graph: &DagGraph) -> HashMap<u64, (usize, usize)> {
+    pub fn plan_memory(
+        &self,
+        graph: &DagGraph,
+    ) -> HashMap<u64, (usize, usize)> {
         let mut plan = HashMap::new();
         let mut live_ranges = HashMap::new();
 
@@ -302,7 +307,8 @@ impl Scheduler {
                     live_ranges.insert(out_id, (pos, pos));
                 }
                 for &in_id in &op.inputs {
-                    live_ranges.entry(in_id)
+                    live_ranges
+                        .entry(in_id)
                         .and_modify(|(_start, end)| {
                             *end = pos;
                         })
@@ -315,7 +321,10 @@ impl Scheduler {
         let mut current_offset = 0;
         for (&id, (_start, _end)) in &live_ranges {
             if let Some(value) = graph.get_value(id) {
-                let size: usize = value.ty.shape.iter()
+                let size: usize = value
+                    .ty
+                    .shape
+                    .iter()
                     .filter(|&&d| d != -1)
                     .map(|&d| d as usize)
                     .product();

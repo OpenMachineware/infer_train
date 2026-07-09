@@ -18,7 +18,8 @@ impl FusionPass {
             }
 
             // 每次重新获取，但获取后就立即使用
-            let (op_type, inputs, outputs, attrs) = match graph.ops.get(&op_id) {
+            let (op_type, inputs, outputs, attrs) = match graph.ops.get(&op_id)
+            {
                 Some(op) => (
                     op.op_type.clone(),
                     op.inputs.clone(),
@@ -37,8 +38,14 @@ impl FusionPass {
                 // ---------------------------------------------------------
                 "conv2d" => {
                     Self::try_fuse_conv2d(
-                        graph, op_id, &inputs, &outputs, &attrs,
-                        &mut to_remove, &mut new_ops, &mut changed,
+                        graph,
+                        op_id,
+                        &inputs,
+                        &outputs,
+                        &attrs,
+                        &mut to_remove,
+                        &mut new_ops,
+                        &mut changed,
                     );
                 }
 
@@ -47,8 +54,15 @@ impl FusionPass {
                 // ---------------------------------------------------------
                 "matmul" | "linear" => {
                     Self::try_fuse_matmul_linear(
-                        graph, op_id, &op_type, &inputs, &outputs, &attrs,
-                        &mut to_remove, &mut new_ops, &mut changed,
+                        graph,
+                        op_id,
+                        &op_type,
+                        &inputs,
+                        &outputs,
+                        &attrs,
+                        &mut to_remove,
+                        &mut new_ops,
+                        &mut changed,
                     );
                 }
 
@@ -57,8 +71,14 @@ impl FusionPass {
                 // ---------------------------------------------------------
                 "layernorm" => {
                     Self::try_fuse_layernorm(
-                        graph, op_id, &inputs, &outputs, &attrs,
-                        &mut to_remove, &mut new_ops, &mut changed,
+                        graph,
+                        op_id,
+                        &inputs,
+                        &outputs,
+                        &attrs,
+                        &mut to_remove,
+                        &mut new_ops,
+                        &mut changed,
                     );
                 }
 
@@ -67,8 +87,14 @@ impl FusionPass {
                 // ---------------------------------------------------------
                 "add" => {
                     Self::try_fuse_add(
-                        graph, op_id, &inputs, &outputs, &attrs,
-                        &mut to_remove, &mut new_ops, &mut changed,
+                        graph,
+                        op_id,
+                        &inputs,
+                        &outputs,
+                        &attrs,
+                        &mut to_remove,
+                        &mut new_ops,
+                        &mut changed,
                     );
                 }
 
@@ -77,8 +103,14 @@ impl FusionPass {
                 // ---------------------------------------------------------
                 "softmax" => {
                     Self::try_fuse_softmax(
-                        graph, op_id, &inputs, &outputs, &attrs,
-                        &mut to_remove, &mut new_ops, &mut changed,
+                        graph,
+                        op_id,
+                        &inputs,
+                        &outputs,
+                        &attrs,
+                        &mut to_remove,
+                        &mut new_ops,
+                        &mut changed,
                     );
                 }
 
@@ -87,8 +119,14 @@ impl FusionPass {
                 // ---------------------------------------------------------
                 "gelu" => {
                     Self::try_fuse_gelu(
-                        graph, op_id, &inputs, &outputs, &attrs,
-                        &mut to_remove, &mut new_ops, &mut changed,
+                        graph,
+                        op_id,
+                        &inputs,
+                        &outputs,
+                        &attrs,
+                        &mut to_remove,
+                        &mut new_ops,
+                        &mut changed,
                     );
                 }
 
@@ -136,13 +174,7 @@ impl FusionPass {
         match next_op.op_type.as_str() {
             "batchnorm2d" => {
                 if let Some(fused) = Self::fuse_conv_bn(
-                    graph,
-                    conv_id,
-                    inputs,
-                    outputs,
-                    attrs,
-                    next_id,
-                    &next_op,
+                    graph, conv_id, inputs, outputs, attrs, next_id, &next_op,
                     to_remove,
                 ) {
                     new_ops.push(fused);
@@ -151,12 +183,7 @@ impl FusionPass {
             }
             "relu" => {
                 if let Some(fused) = Self::fuse_conv_relu(
-                    conv_id,
-                    inputs,
-                    outputs,
-                    attrs,
-                    next_id,
-                    &next_op,
+                    conv_id, inputs, outputs, attrs, next_id, &next_op,
                     to_remove,
                 ) {
                     new_ops.push(fused);
@@ -197,15 +224,8 @@ impl FusionPass {
         match next_op.op_type.as_str() {
             "add" => {
                 if let Some(fused) = Self::fuse_matmul_add(
-                    graph,
-                    op_id,
-                    op_type,
-                    inputs,
-                    outputs,
-                    attrs,
-                    next_id,
-                    &next_op,
-                    to_remove,
+                    graph, op_id, op_type, inputs, outputs, attrs, next_id,
+                    &next_op, to_remove,
                 ) {
                     new_ops.push(fused);
                     *changed = true;
@@ -213,13 +233,7 @@ impl FusionPass {
             }
             "relu" => {
                 if let Some(fused) = Self::fuse_matmul_relu(
-                    op_id,
-                    op_type,
-                    inputs,
-                    outputs,
-                    attrs,
-                    next_id,
-                    &next_op,
+                    op_id, op_type, inputs, outputs, attrs, next_id, &next_op,
                     to_remove,
                 ) {
                     new_ops.push(fused);
@@ -228,13 +242,7 @@ impl FusionPass {
             }
             "gelu" => {
                 if let Some(fused) = Self::fuse_matmul_gelu(
-                    op_id,
-                    op_type,
-                    inputs,
-                    outputs,
-                    attrs,
-                    next_id,
-                    &next_op,
+                    op_id, op_type, inputs, outputs, attrs, next_id, &next_op,
                     to_remove,
                 ) {
                     new_ops.push(fused);
@@ -243,15 +251,8 @@ impl FusionPass {
             }
             "layernorm" => {
                 if let Some(fused) = Self::fuse_matmul_layernorm(
-                    graph,
-                    op_id,
-                    op_type,
-                    inputs,
-                    outputs,
-                    attrs,
-                    next_id,
-                    &next_op,
-                    to_remove,
+                    graph, op_id, op_type, inputs, outputs, attrs, next_id,
+                    &next_op, to_remove,
                 ) {
                     new_ops.push(fused);
                     *changed = true;
@@ -289,13 +290,7 @@ impl FusionPass {
 
         if next_op.op_type == "matmul" || next_op.op_type == "linear" {
             if let Some(fused) = Self::fuse_layernorm_matmul(
-                graph,
-                ln_id,
-                inputs,
-                outputs,
-                attrs,
-                next_id,
-                &next_op,
+                graph, ln_id, inputs, outputs, attrs, next_id, &next_op,
                 to_remove,
             ) {
                 new_ops.push(fused);
@@ -333,12 +328,7 @@ impl FusionPass {
         match next_op.op_type.as_str() {
             "layernorm" => {
                 if let Some(fused) = Self::fuse_add_layernorm(
-                    add_id,
-                    inputs,
-                    outputs,
-                    attrs,
-                    next_id,
-                    &next_op,
+                    add_id, inputs, outputs, attrs, next_id, &next_op,
                     to_remove,
                 ) {
                     new_ops.push(fused);
@@ -347,13 +337,7 @@ impl FusionPass {
             }
             "matmul" | "linear" => {
                 if let Some(fused) = Self::fuse_add_matmul(
-                    graph,
-                    add_id,
-                    inputs,
-                    outputs,
-                    attrs,
-                    next_id,
-                    &next_op,
+                    graph, add_id, inputs, outputs, attrs, next_id, &next_op,
                     to_remove,
                 ) {
                     new_ops.push(fused);
@@ -392,12 +376,7 @@ impl FusionPass {
 
         if next_op.op_type == "matmul" {
             if let Some(fused) = Self::fuse_softmax_matmul(
-                softmax_id,
-                inputs,
-                outputs,
-                attrs,
-                next_id,
-                &next_op,
+                softmax_id, inputs, outputs, attrs, next_id, &next_op,
                 to_remove,
             ) {
                 new_ops.push(fused);
@@ -438,13 +417,7 @@ impl FusionPass {
         // GELU + MatMul (MLP 的第二层)
         if next_op.op_type == "matmul" || next_op.op_type == "linear" {
             if let Some(fused) = Self::fuse_gelu_matmul(
-                graph,
-                gelu_id,
-                inputs,
-                outputs,
-                attrs,
-                next_id,
-                &next_op,
+                graph, gelu_id, inputs, outputs, attrs, next_id, &next_op,
                 to_remove,
             ) {
                 new_ops.push(fused);
@@ -492,24 +465,31 @@ impl FusionPass {
             .unwrap_or(1e-5);
 
         let conv_weight_id = conv_inputs[1];
-        let conv_bias_id = if conv_inputs.len() >= 3 { Some(conv_inputs[2]) } else { None };
+        let conv_bias_id =
+            if conv_inputs.len() >= 3 { Some(conv_inputs[2]) } else { None };
         let bn_weight_id = bn_inputs[1];
         let bn_bias_id = bn_inputs[2];
         let bn_mean_id = bn_inputs[3];
         let bn_var_id = bn_inputs[4];
 
         let conv_weight_data = graph.constants.get(&conv_weight_id)?.clone();
-        let conv_bias_data = conv_bias_id.and_then(|id| graph.constants.get(&id)).cloned();
+        let conv_bias_data =
+            conv_bias_id.and_then(|id| graph.constants.get(&id)).cloned();
         let bn_weight_data = graph.constants.get(&bn_weight_id)?.clone();
         let bn_bias_data = graph.constants.get(&bn_bias_id)?.clone();
         let bn_mean_data = graph.constants.get(&bn_mean_id)?.clone();
         let bn_var_data = graph.constants.get(&bn_var_id)?.clone();
 
         let weight_ty = graph.values.get(&conv_weight_id)?.ty.clone();
-        let bias_ty = conv_bias_id.and_then(|id| graph.values.get(&id)).map(|v| v.ty.clone())
+        let bias_ty = conv_bias_id
+            .and_then(|id| graph.values.get(&id))
+            .map(|v| v.ty.clone())
             .or_else(|| {
                 let out_channels = bn_weight_data.len() / 4;
-                Some(TensorType { dtype: DataType::F32, shape: vec![out_channels as i64] })
+                Some(TensorType {
+                    dtype: DataType::F32,
+                    shape: vec![out_channels as i64],
+                })
             })?;
 
         let (fused_weight_data, fused_bias_data) = Self::fuse_conv_bn_weights(
@@ -710,7 +690,11 @@ impl FusionPass {
         to_remove.push(relu_id);
 
         let fused_op = Self::create_fused_op(
-            if matmul_type == "linear" { "fused_linear_relu" } else { "fused_matmul_relu" },
+            if matmul_type == "linear" {
+                "fused_linear_relu"
+            } else {
+                "fused_matmul_relu"
+            },
             matmul_inputs.to_vec(),
             vec![relu_op.outputs[0]],
             matmul_attrs.clone(),
@@ -737,7 +721,11 @@ impl FusionPass {
         to_remove.push(gelu_id);
 
         let fused_op = Self::create_fused_op(
-            if matmul_type == "linear" { "fused_linear_gelu" } else { "fused_matmul_gelu" },
+            if matmul_type == "linear" {
+                "fused_linear_gelu"
+            } else {
+                "fused_matmul_gelu"
+            },
             matmul_inputs.to_vec(),
             vec![gelu_op.outputs[0]],
             matmul_attrs.clone(),
@@ -783,7 +771,11 @@ impl FusionPass {
         }
 
         let fused_op = Self::create_fused_op(
-            if matmul_type == "linear" { "fused_linear_layernorm" } else { "fused_matmul_layernorm" },
+            if matmul_type == "linear" {
+                "fused_linear_layernorm"
+            } else {
+                "fused_matmul_layernorm"
+            },
             fused_inputs,
             vec![ln_outputs[0]],
             fused_attrs,
@@ -833,8 +825,13 @@ impl FusionPass {
         if is_constant {
             // 完全折叠 LayerNorm + MatMul
             return Self::fold_layernorm_matmul(
-                graph, ln_id, matmul_id,
-                ln_inputs, ln_attrs, matmul_inputs, matmul_attrs,
+                graph,
+                ln_id,
+                matmul_id,
+                ln_inputs,
+                ln_attrs,
+                matmul_inputs,
+                matmul_attrs,
                 to_remove,
             );
         }
@@ -891,22 +888,27 @@ impl FusionPass {
         let weight_data = graph.constants.get(&matmul_inputs[1])?;
 
         // 解码为 f32
-        let input: Vec<f32> = input_data.chunks(4)
+        let input: Vec<f32> = input_data
+            .chunks(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        let gamma: Vec<f32> = gamma_data.chunks(4)
+        let gamma: Vec<f32> = gamma_data
+            .chunks(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        let beta: Vec<f32> = beta_data.chunks(4)
+        let beta: Vec<f32> = beta_data
+            .chunks(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        let weight: Vec<f32> = weight_data.chunks(4)
+        let weight: Vec<f32> = weight_data
+            .chunks(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
 
         // 计算 LayerNorm
         let mean: f32 = input.iter().sum::<f32>() / input.len() as f32;
-        let var: f32 = input.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / input.len() as f32;
+        let var: f32 = input.iter().map(|&x| (x - mean).powi(2)).sum::<f32>()
+            / input.len() as f32;
         let std = (var + eps as f32).sqrt();
 
         // 归一化并与 MatMul 权重融合
@@ -930,14 +932,10 @@ impl FusionPass {
         }
 
         // 编码
-        let fused_weight_bytes: Vec<u8> = fused_weight
-            .iter()
-            .flat_map(|&v| v.to_le_bytes())
-            .collect();
-        let fused_bias_bytes: Vec<u8> = fused_bias
-            .iter()
-            .flat_map(|&v| v.to_le_bytes())
-            .collect();
+        let fused_weight_bytes: Vec<u8> =
+            fused_weight.iter().flat_map(|&v| v.to_le_bytes()).collect();
+        let fused_bias_bytes: Vec<u8> =
+            fused_bias.iter().flat_map(|&v| v.to_le_bytes()).collect();
 
         let weight_ty = graph.values.get(&matmul_inputs[1])?.ty.clone();
         let bias_ty = TensorType {
@@ -963,7 +961,9 @@ impl FusionPass {
             "matmul",
             vec![ln_inputs[0], fused_weight_id, fused_bias_id],
             matmul_attrs.get("outputs").map_or(vec![], |v| match v {
-                AttrValue::IntList(list) => list.iter().map(|&i| i as u64).collect(),
+                AttrValue::IntList(list) => {
+                    list.iter().map(|&i| i as u64).collect()
+                }
                 _ => vec![],
             }),
             HashMap::new(),

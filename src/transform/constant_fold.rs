@@ -71,7 +71,9 @@ impl ConstantFoldingPass {
                 if op.inputs.len() >= 1 {
                     let input_id = op.inputs[0];
 
-                    if let Some(producer) = Self::get_producer_op(graph, input_id) {
+                    if let Some(producer) =
+                        Self::get_producer_op(graph, input_id)
+                    {
                         if producer.op_type == "quantize" {
                             if producer.inputs.len() >= 1 {
                                 return Some(producer.inputs[0]);
@@ -92,7 +94,9 @@ impl ConstantFoldingPass {
                 if op.inputs.len() >= 1 {
                     let input_id = op.inputs[0];
 
-                    if let Some(producer) = Self::get_producer_op(graph, input_id) {
+                    if let Some(producer) =
+                        Self::get_producer_op(graph, input_id)
+                    {
                         if producer.op_type == "dequantize" {
                             if producer.inputs.len() >= 1 {
                                 return Some(producer.inputs[0]);
@@ -111,7 +115,9 @@ impl ConstantFoldingPass {
             "cast" => {
                 if op.inputs.len() >= 1 {
                     let input_id = op.inputs[0];
-                    if let Some(producer) = Self::get_producer_op(graph, input_id) {
+                    if let Some(producer) =
+                        Self::get_producer_op(graph, input_id)
+                    {
                         if producer.op_type == "cast" {
                             // 两个 Cast 合并为一个
                             if producer.inputs.len() >= 1 {
@@ -179,7 +185,9 @@ impl ConstantFoldingPass {
                     AttrValue::Int(i) => *i as f32,
                     _ => 1.0,
                 };
-                let zero_point = op.attrs.get("zero_point")
+                let zero_point = op
+                    .attrs
+                    .get("zero_point")
                     .and_then(|v| match v {
                         AttrValue::Int(i) => Some(*i as f32),
                         AttrValue::Float(f) => Some(*f as f32),
@@ -187,12 +195,22 @@ impl ConstantFoldingPass {
                     })
                     .unwrap_or(0.0);
 
-                let data = Self::decode_tensor(&const_inputs[0], dtype, &const_shapes[0]);
-                let quantized_data: Vec<i8> = data.iter()
-                    .map(|&x| ((x as f32 / scale_val) + zero_point).round().clamp(-128.0, 127.0) as i8)
+                let data = Self::decode_tensor(
+                    &const_inputs[0],
+                    dtype,
+                    &const_shapes[0],
+                );
+                let quantized_data: Vec<i8> = data
+                    .iter()
+                    .map(|&x| {
+                        ((x as f32 / scale_val) + zero_point)
+                            .round()
+                            .clamp(-128.0, 127.0) as i8
+                    })
                     .collect();
 
-                let bytes: Vec<u8> = quantized_data.iter()
+                let bytes: Vec<u8> = quantized_data
+                    .iter()
                     .flat_map(|&v| v.to_le_bytes())
                     .collect();
 
@@ -205,13 +223,17 @@ impl ConstantFoldingPass {
             // 反量化常量
             let dtype = const_dtypes[0];
             if dtype == DataType::I8 {
-                let scale = op.attrs.get("scale")
+                let scale = op
+                    .attrs
+                    .get("scale")
                     .and_then(|v| match v {
                         AttrValue::Float(f) => Some(*f as f32),
                         _ => None,
                     })
                     .unwrap_or(1.0);
-                let zero_point = op.attrs.get("zero_point")
+                let zero_point = op
+                    .attrs
+                    .get("zero_point")
                     .and_then(|v| match v {
                         AttrValue::Int(i) => Some(*i as f32),
                         AttrValue::Float(f) => Some(*f as f32),
@@ -219,13 +241,13 @@ impl ConstantFoldingPass {
                     })
                     .unwrap_or(0.0);
 
-                let data: Vec<f32> = const_inputs[0].iter()
+                let data: Vec<f32> = const_inputs[0]
+                    .iter()
                     .map(|&b| (b as f32 - zero_point) * scale)
                     .collect();
 
-                let bytes: Vec<u8> = data.iter()
-                    .flat_map(|&v| v.to_le_bytes())
-                    .collect();
+                let bytes: Vec<u8> =
+                    data.iter().flat_map(|&v| v.to_le_bytes()).collect();
 
                 return Some((bytes, const_shapes[0].clone(), DataType::F32));
             }
@@ -237,7 +259,11 @@ impl ConstantFoldingPass {
         if op.op_type == "cast" {
             if let Some(target_dtype) = Self::get_cast_dtype(op) {
                 // 解码输入数据
-                let data = Self::decode_tensor(&const_inputs[0], const_dtypes[0], &const_shapes[0]);
+                let data = Self::decode_tensor(
+                    &const_inputs[0],
+                    const_dtypes[0],
+                    &const_shapes[0],
+                );
 
                 // 编码为目标数据类型
                 let encoded = Self::encode_tensor(&data, target_dtype);
@@ -509,29 +535,28 @@ impl ConstantFoldingPass {
 
     #[allow(dead_code)]
     fn get_cast_dtype(op: &crate::ir::dag::Op) -> Option<DataType> {
-        op.attrs.get("dtype")
-            .and_then(|v| match v {
-                AttrValue::String(s) => match s.as_str() {
-                    "F32" => Some(DataType::F32),
-                    "F64" => Some(DataType::F64),
-                    "F16" => Some(DataType::F16),
-                    "BF16" => Some(DataType::BF16),
-                    "I8" => Some(DataType::I8),
-                    "I16" => Some(DataType::I16),
-                    "I32" => Some(DataType::I32),
-                    "I64" => Some(DataType::I64),
-                    "Bool" => Some(DataType::Bool),
-                    _ => None,
-                },
-                AttrValue::Int(i) => match i {
-                    0 => Some(DataType::F32),
-                    1 => Some(DataType::F64),
-                    2 => Some(DataType::I32),
-                    3 => Some(DataType::I64),
-                    _ => None,
-                },
+        op.attrs.get("dtype").and_then(|v| match v {
+            AttrValue::String(s) => match s.as_str() {
+                "F32" => Some(DataType::F32),
+                "F64" => Some(DataType::F64),
+                "F16" => Some(DataType::F16),
+                "BF16" => Some(DataType::BF16),
+                "I8" => Some(DataType::I8),
+                "I16" => Some(DataType::I16),
+                "I32" => Some(DataType::I32),
+                "I64" => Some(DataType::I64),
+                "Bool" => Some(DataType::Bool),
                 _ => None,
-            })
+            },
+            AttrValue::Int(i) => match i {
+                0 => Some(DataType::F32),
+                1 => Some(DataType::F64),
+                2 => Some(DataType::I32),
+                3 => Some(DataType::I64),
+                _ => None,
+            },
+            _ => None,
+        })
     }
 
     #[allow(dead_code)]
@@ -548,7 +573,10 @@ impl ConstantFoldingPass {
             DataType::Bool => "Bool",
         };
         let mut attrs = HashMap::new();
-        attrs.insert("dtype".to_string(), AttrValue::String(dtype_str.to_string()));
+        attrs.insert(
+            "dtype".to_string(),
+            AttrValue::String(dtype_str.to_string()),
+        );
         crate::ir::dag::Op {
             id: 0,
             name: format!("cast_{}", input),

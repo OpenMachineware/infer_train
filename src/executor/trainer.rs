@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 
 use crate::ir::dag::{DagGraph, Op};
-use crate::tensor::Tensor;
 use crate::ir::serialize::ModelFile;
+use crate::tensor::Tensor;
 
-use super::memory_reuse::{MemoryPool, MemoryConfig};
 use super::amp::{AmpConfig, AmpGraphConverter};
+use super::memory_reuse::{MemoryConfig, MemoryPool};
 
 // ============================================================
 // 训练器配置
@@ -80,35 +80,42 @@ impl Trainer {
         }
 
         // 创建优化器
-        let optimizer_state: Box<dyn OptimizerState> = match config.optimizer_type {
-            OptimizerType::SGD => {
-                Box::new(SGDOptimizerState::new(param_ids.len()))
-            }
-            OptimizerType::AdamW => {
-                let mut params = Vec::new();
-                for &id in &param_ids {
-                    if let Some(value) = graph.values.get(&id) {
-                        let shape: Vec<usize> = value.ty.shape.iter()
-                            .map(|&x| if x == -1 { 0 } else { x as usize })
-                            .collect();
-                        params.push(Tensor::zeros(&shape));
-                    }
+        let optimizer_state: Box<dyn OptimizerState> =
+            match config.optimizer_type {
+                OptimizerType::SGD => {
+                    Box::new(SGDOptimizerState::new(param_ids.len()))
                 }
-                Box::new(AdamWOptimizerState::new(&params))
-            }
-            OptimizerType::Adam => {
-                let mut params = Vec::new();
-                for &id in &param_ids {
-                    if let Some(value) = graph.values.get(&id) {
-                        let shape: Vec<usize> = value.ty.shape.iter()
-                            .map(|&x| if x == -1 { 0 } else { x as usize })
-                            .collect();
-                        params.push(Tensor::zeros(&shape));
+                OptimizerType::AdamW => {
+                    let mut params = Vec::new();
+                    for &id in &param_ids {
+                        if let Some(value) = graph.values.get(&id) {
+                            let shape: Vec<usize> = value
+                                .ty
+                                .shape
+                                .iter()
+                                .map(|&x| if x == -1 { 0 } else { x as usize })
+                                .collect();
+                            params.push(Tensor::zeros(&shape));
+                        }
                     }
+                    Box::new(AdamWOptimizerState::new(&params))
                 }
-                Box::new(AdamWOptimizerState::new(&params))
-            }
-        };
+                OptimizerType::Adam => {
+                    let mut params = Vec::new();
+                    for &id in &param_ids {
+                        if let Some(value) = graph.values.get(&id) {
+                            let shape: Vec<usize> = value
+                                .ty
+                                .shape
+                                .iter()
+                                .map(|&x| if x == -1 { 0 } else { x as usize })
+                                .collect();
+                            params.push(Tensor::zeros(&shape));
+                        }
+                    }
+                    Box::new(AdamWOptimizerState::new(&params))
+                }
+            };
 
         let memory_config = MemoryConfig::training();
 
@@ -120,7 +127,10 @@ impl Trainer {
             optimizer_state,
             training_state: TrainingState::default(),
             config,
-            memory_pool: MemoryPool::new(memory_config.block_size, memory_config.total_size),
+            memory_pool: MemoryPool::new(
+                memory_config.block_size,
+                memory_config.total_size,
+            ),
             amp_config,
             loss_scale: amp_config.init_scale,
         })
@@ -130,7 +140,10 @@ impl Trainer {
     // 前向传播
     // ============================================================
 
-    pub fn forward(&mut self, inputs: &[Tensor<f32>]) -> Result<Vec<Tensor<f32>>, String> {
+    pub fn forward(
+        &mut self,
+        inputs: &[Tensor<f32>],
+    ) -> Result<Vec<Tensor<f32>>, String> {
         self.values.clear();
         self.memory_pool.reset();
 
@@ -150,7 +163,10 @@ impl Trainer {
         // 加载常量 (权重) - 保持在 FP32
         for (&id, data) in &self.graph.constants {
             if let Some(value) = self.graph.values.get(&id) {
-                let shape: Vec<usize> = value.ty.shape.iter()
+                let shape: Vec<usize> = value
+                    .ty
+                    .shape
+                    .iter()
                     .map(|&x| if x == -1 { 0 } else { x as usize })
                     .collect();
                 let tensor = Self::bytes_to_tensor(data, &shape)?;
@@ -161,7 +177,9 @@ impl Trainer {
         // 执行
         let order = self.graph.topological_sort()?;
         for op_id in order {
-            let op = self.graph.get_op(op_id)
+            let op = self
+                .graph
+                .get_op(op_id)
                 .ok_or_else(|| format!("Op {} not found", op_id))?
                 .clone();
             self.execute_op(&op)?;
@@ -180,15 +198,24 @@ impl Trainer {
             if let Some(t) = self.values.get(&in_id) {
                 input_tensors.push(t.clone());
             } else {
-                return Err(format!("Input value {} not found for op {}", in_id, op.id));
+                return Err(format!(
+                    "Input value {} not found for op {}",
+                    in_id, op.id
+                ));
             }
         }
 
-        let outputs = super::executor::dispatch_op(&op.op_type, &input_tensors, &op.attrs)?;
+        let outputs = super::executor::dispatch_op(
+            &op.op_type,
+            &input_tensors,
+            &op.attrs,
+        )?;
 
         for (i, &out_id) in op.outputs.iter().enumerate() {
             if i < outputs.len() {
-                let tensor = self.memory_pool.allocate_or_use(out_id, outputs[i].clone());
+                let tensor = self
+                    .memory_pool
+                    .allocate_or_use(out_id, outputs[i].clone());
                 self.values.insert(out_id, tensor);
             }
         }
@@ -216,16 +243,17 @@ impl Trainer {
         self.training_state.loss = loss.data()[0];
 
         // 如果 AMP 启用，缩放 loss
-        let _loss_to_backward = if self.amp_config.enabled && self.amp_config.loss_scaling {
-            // 缩放 loss
-            let mut scaled = loss.clone();
-            for v in scaled.data_mut() {
-                *v *= self.loss_scale;
-            }
-            scaled
-        } else {
-            loss.clone()
-        };
+        let _loss_to_backward =
+            if self.amp_config.enabled && self.amp_config.loss_scaling {
+                // 缩放 loss
+                let mut scaled = loss.clone();
+                for v in scaled.data_mut() {
+                    *v *= self.loss_scale;
+                }
+                scaled
+            } else {
+                loss.clone()
+            };
 
         // 从 loss 计算梯度
         // TODO: 实现完整的自动微分
@@ -240,7 +268,9 @@ impl Trainer {
 
     pub fn step(&mut self) -> Result<(), String> {
         if self.grads.is_empty() {
-            return Err("No gradients available. Call backward() first.".to_string());
+            return Err(
+                "No gradients available. Call backward() first.".to_string()
+            );
         }
 
         let mut params = Vec::new();
@@ -263,7 +293,10 @@ impl Trainer {
                 }
                 grads.push(grad_fp32);
             } else {
-                return Err(format!("Gradient for parameter {} not found", param_id));
+                return Err(format!(
+                    "Gradient for parameter {} not found",
+                    param_id
+                ));
             }
         }
 
@@ -319,9 +352,10 @@ impl Trainer {
 
         // 如果梯度有 inf/nan，减小 scale
         // 否则增大 scale
-        let has_inf = self.grads.values().any(|g| {
-            g.data().iter().any(|&v| v.is_infinite() || v.is_nan())
-        });
+        let has_inf = self
+            .grads
+            .values()
+            .any(|g| g.data().iter().any(|&v| v.is_infinite() || v.is_nan()));
 
         if has_inf {
             self.loss_scale *= 0.5;
@@ -362,9 +396,15 @@ impl Trainer {
     // 工具函数
     // ============================================================
 
-    fn bytes_to_tensor(data: &[u8], shape: &[usize]) -> Result<Tensor<f32>, String> {
-        let float_data: Vec<f32> = data.chunks(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+    fn bytes_to_tensor(
+        data: &[u8],
+        shape: &[usize],
+    ) -> Result<Tensor<f32>, String> {
+        let float_data: Vec<f32> = data
+            .chunks(4)
+            .map(|chunk| {
+                f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+            })
             .collect();
         Ok(Tensor::new(float_data, shape))
     }
@@ -453,10 +493,7 @@ pub struct SGDOptimizerState {
 
 impl SGDOptimizerState {
     pub fn new(num_params: usize) -> Self {
-        SGDOptimizerState {
-            momentum: Vec::with_capacity(num_params),
-            step: 0,
-        }
+        SGDOptimizerState { momentum: Vec::with_capacity(num_params), step: 0 }
     }
 }
 
