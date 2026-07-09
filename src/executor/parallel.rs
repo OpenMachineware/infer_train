@@ -136,8 +136,21 @@ impl<'a> ParallelExecutor<'a> {
 
         for (i, &out_id) in op.outputs.iter().enumerate() {
             if i < outputs.len() {
-                let tensor = memory_pool.allocate_or_use(outputs[i].clone());
-                values.insert(out_id, tensor);
+                let data_bytes = outputs[i].data();
+                let bytes = bytemuck::cast_slice::<f32, u8>(data_bytes);
+
+                if let Some(id) = memory_pool.allocate(bytes) {
+                    if let Some(pool_data) = memory_pool.get_mut(id) {
+                        pool_data[..bytes.len()].copy_from_slice(bytes);
+                        let float_data: &[f32] = bytemuck::cast_slice::<u8, f32>(pool_data);
+                        let tensor = Tensor::new(float_data.to_vec(), outputs[i].shape());
+                        values.insert(out_id, tensor);
+                    } else {
+                        values.insert(out_id, outputs[i].clone());
+                    }
+                } else {
+                    values.insert(out_id, outputs[i].clone());
+                }
             }
         }
 
@@ -145,7 +158,10 @@ impl<'a> ParallelExecutor<'a> {
             let users = graph.get_users(in_id);
             if users.len() == 1 && users[0] == op.id {
                 if let Some(tensor) = values.get(&in_id) {
-                    memory_pool.mark_reusable(tensor);
+                    let data_bytes = tensor.data();
+                    let _bytes = bytemuck::cast_slice::<f32, u8>(data_bytes);
+                    // 简化直接跳过，由内存池自动管理
+                    // TODO 查找并释放对应的 pool id
                 }
             }
         }

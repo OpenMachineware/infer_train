@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use crate::autograd::AutogradEngine;
 use crate::ir::dag::DagGraph;
 use crate::tensor::Tensor;
+use super::scheduler::{Scheduler, SchedulerConfig};
 
 use super::activation;
 use super::control;
@@ -25,20 +26,37 @@ pub struct Executor {
     graph: DagGraph,
     values: HashMap<u64, Tensor<f32>>,
     memory_pool: MemoryPool,
+    scheduler: Scheduler,
     parallel: bool,
     num_threads: usize,
 }
 
 impl Executor {
     pub fn new(graph: DagGraph) -> Self {
-        Self::with_memory_config(graph, MemoryConfig::inference())
+        Self::with_config(graph, MemoryConfig::inference(), SchedulerConfig::default())
     }
 
     pub fn with_memory_config(graph: DagGraph, config: MemoryConfig) -> Self {
+        Self::with_config(graph, config, SchedulerConfig::default())
+    }
+
+    pub fn with_scheduler_config(graph: DagGraph, config: SchedulerConfig) -> Self {
+        Self::with_config(graph, MemoryConfig::inference(), config)
+    }
+
+    pub fn with_config(
+        graph: DagGraph,
+        memory_config: MemoryConfig,
+        scheduler_config: SchedulerConfig,
+    ) -> Self {
+        let mut scheduler = Scheduler::new(scheduler_config);
+        scheduler.schedule(&graph);
+
         Executor {
             graph,
             values: HashMap::new(),
-            memory_pool: MemoryPool::new(config.block_size, config.total_size),
+            memory_pool: MemoryPool::new(memory_config.block_size, memory_config.total_size),
+            scheduler,
             parallel: false,
             num_threads: rayon::current_num_threads(),
         }
@@ -75,7 +93,7 @@ impl Executor {
 
         self.load_constants()?;
 
-        let order = self.graph.topological_sort()?;
+        let order = self.scheduler.get_execution_order().to_vec();
 
         if self.parallel && order.len() > 1 {
             self.execute_parallel(&order)?;
@@ -162,14 +180,29 @@ impl Executor {
             }
         }
 
-        let outputs =
-            self.dispatch_op(&op.op_type, &input_tensors, &op.attrs)?;
+        let outputs = self.dispatch_op(&op.op_type, &input_tensors, &op.attrs)?;
 
         for (i, &out_id) in op.outputs.iter().enumerate() {
             if i < outputs.len() {
-                let tensor =
-                    self.memory_pool.allocate_or_use(outputs[i].clone());
-                self.values.insert(out_id, tensor);
+                // 先获取 bytes，再分配
+                let data_bytes = outputs[i].data();
+                let bytes = bytemuck::cast_slice(data_bytes);
+
+                if let Some(id) = self.memory_pool.allocate(bytes) {
+                    // 从内存池获取数据并创建 Tensor
+                    if let Some(pool_data) = self.memory_pool.get_mut(id) {
+                        pool_data[..bytes.len()].copy_from_slice(bytes);
+                        let float_data: &[f32] = bytemuck::cast_slice(pool_data);
+                        let tensor = Tensor::new(float_data.to_vec(), outputs[i].shape());
+                        self.values.insert(out_id, tensor);
+                    } else {
+                        // 降级：直接存储
+                        self.values.insert(out_id, outputs[i].clone());
+                    }
+                } else {
+                    // 内存池满，直接存储
+                    self.values.insert(out_id, outputs[i].clone());
+                }
             }
         }
 
@@ -182,8 +215,8 @@ impl Executor {
         for &in_id in &op.inputs {
             let users = self.graph.get_users(in_id);
             if users.len() == 1 && users[0] == op.id {
-                if let Some(tensor) = self.values.get(&in_id) {
-                    self.memory_pool.mark_reusable(tensor);
+                if let Some(_tensor) = self.values.get(&in_id) {
+                    self.memory_pool.mark_reusable(in_id);
                 }
             }
         }
@@ -694,8 +727,7 @@ impl Trainer {
 
         for (i, &out_id) in op.outputs.iter().enumerate() {
             if i < outputs.len() {
-                let tensor =
-                    self.memory_pool.allocate_or_use(outputs[i].clone());
+                let tensor = self.memory_pool.allocate_or_use(out_id, outputs[i].clone());
                 self.values.insert(out_id, tensor);
             }
         }
@@ -703,8 +735,8 @@ impl Trainer {
         for &in_id in &op.inputs {
             let users = self.graph.get_users(in_id);
             if users.len() == 1 && users[0] == op.id {
-                if let Some(tensor) = self.values.get(&in_id) {
-                    self.memory_pool.mark_reusable(&tensor);
+                if let Some(_tensor) = self.values.get(&in_id) {
+                    self.memory_pool.mark_reusable(in_id);
                 }
             }
         }

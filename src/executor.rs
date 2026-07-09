@@ -9,6 +9,7 @@ pub mod memory_reuse;
 pub mod nn;
 pub mod parallel;
 pub mod quantized;
+pub mod scheduler;
 pub mod tensor;
 
 pub use executor::{

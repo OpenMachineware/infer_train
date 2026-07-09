@@ -418,25 +418,25 @@ impl MemoryPool {
     // 兼容旧接口（用于 Executor）
     // ============================================================
 
-    pub fn allocate_or_use(&mut self, tensor: Tensor<f32>) -> Tensor<f32> {
+    pub fn allocate_or_use(&mut self, value_id: u64, tensor: Tensor<f32>) -> Tensor<f32> {
         let data_bytes = tensor.data();
         let bytes = bytemuck::cast_slice(data_bytes);
 
         if let Some(id) = self.allocate(bytes) {
-            // 从池中分配成功
+            self.tensor_map.insert(value_id, id);
             let pool_data = self.get(id).unwrap();
             let float_data: &[f32] = bytemuck::cast_slice(pool_data);
             Tensor::new(float_data.to_vec(), tensor.shape())
         } else {
-            // 池满，返回原 tensor (降级)
             tensor
         }
     }
 
-    pub fn mark_reusable(&mut self, _tensor: &Tensor<f32>) {
-        // 找到对应的 tensor 并释放
-        // 注意：这里需要维护 tensor 到 id 的映射
-        // 目前简化：不做复杂映射
+    pub fn mark_reusable(&mut self, value_id: u64) {
+        if let Some(&id) = self.tensor_map.get(&value_id) {
+            self.pool.free(id);
+            self.tensor_map.remove(&value_id);
+        }
     }
 }
 
