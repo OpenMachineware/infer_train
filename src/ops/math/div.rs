@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 use rayon::prelude::*;
 
 // ============================================================
-// 1. 浮点泛型 Forward
+// 浮点泛型 Forward
 // ============================================================
 
 pub fn div<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Tensor<T> {
@@ -28,7 +28,7 @@ pub fn div<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Tensor<T> {
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward
+// 浮点泛型 Backward
 // ============================================================
 
 pub fn div_backward<T: DType>(
@@ -56,7 +56,7 @@ pub fn div_backward<T: DType>(
 }
 
 // ============================================================
-// 3. 量化 Forward
+// 量化 Forward
 // ============================================================
 
 pub fn quantized_div(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
@@ -100,7 +100,7 @@ pub fn quantized_div(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
 }
 
 // ============================================================
-// 4. 量化 Backward
+// 量化 Backward
 // ============================================================
 
 pub fn quantized_div_backward(
@@ -125,7 +125,7 @@ pub fn quantized_div_backward(
 }
 
 // ============================================================
-// 5. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct DivOp;

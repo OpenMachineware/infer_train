@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 1. Arange (等差序列)
+// Arange (等差序列)
 // ============================================================
 
 pub fn arange<T: DType + Send + Sync>(
@@ -20,7 +20,7 @@ pub fn arange<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. Linspace (线性间隔)
+// Linspace (线性间隔)
 // ============================================================
 
 pub fn linspace<T: DType + Send + Sync>(
@@ -36,7 +36,7 @@ pub fn linspace<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 3. Operators
+// Operators
 // ============================================================
 
 pub struct ArangeOp;

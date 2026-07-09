@@ -6,7 +6,7 @@ pub struct VerifyPass;
 
 impl VerifyPass {
     pub fn verify(graph: &DagGraph) -> Result<(), String> {
-        // 1. 检查所有 Op 的 inputs 都存在
+        // 检查所有 Op 的 inputs 都存在
         for (op_id, op) in &graph.ops {
             for &in_id in &op.inputs {
                 if !graph.values.contains_key(&in_id) {
@@ -26,7 +26,7 @@ impl VerifyPass {
             }
         }
 
-        // 2. 检查所有 Value 都有 producer 或者是 input/constant
+        // 检查所有 Value 都有 producer 或者是 input/constant
         for (&id, value) in &graph.values {
             if !graph.inputs.contains(&id)
                 && !graph.constants.contains_key(&id)
@@ -49,12 +49,12 @@ impl VerifyPass {
             }
         }
 
-        // 3. 检查没有循环依赖
+        // 检查没有循环依赖
         if let Err(e) = graph.topological_sort() {
             return Err(format!("Graph has cycles: {}", e));
         }
 
-        // 4. 检查所有 shape 都是有效的
+        // 检查所有 shape 都是有效的
         for (&id, value) in &graph.values {
             for &dim in &value.ty.shape {
                 if dim < -1 {
@@ -66,7 +66,7 @@ impl VerifyPass {
             }
         }
 
-        // 5. 检查所有常量数据大小匹配 shape
+        // 检查所有常量数据大小匹配 shape
         for (&id, data) in &graph.constants {
             if let Some(value) = graph.values.get(&id) {
                 let expected_size = Self::compute_tensor_size(&value.ty);

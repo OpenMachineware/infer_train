@@ -19,7 +19,7 @@ fn conv3d_output_size(
 }
 
 // ============================================================
-// 1. 浮点泛型 Forward
+// 浮点泛型 Forward
 // ============================================================
 
 pub fn conv3d<T: DType + Send + Sync>(
@@ -131,7 +131,7 @@ pub fn conv3d<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward (简化版)
+// 浮点泛型 Backward - 简化版   TODO: 完善
 // ============================================================
 
 pub fn conv3d_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
@@ -139,7 +139,7 @@ pub fn conv3d_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
 }
 
 // ============================================================
-// 3. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct Conv3dOp;

@@ -3,7 +3,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 1. While Loop (条件循环)
+// While Loop (条件循环)
 // ============================================================
 
 pub fn while_loop<T: DType + Send + Sync>(condition: &[i8], body: &[T]) -> T {
@@ -23,7 +23,7 @@ pub fn while_loop<T: DType + Send + Sync>(condition: &[i8], body: &[T]) -> T {
 }
 
 // ============================================================
-// 2. For Loop
+// For Loop
 // ============================================================
 
 pub fn for_loop<T: DType + Send + Sync>(
@@ -47,7 +47,7 @@ pub fn for_loop<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 3. Loop Op (占位)
+// Loop Op - 占位   TODO: 实现
 // ============================================================
 
 pub struct LoopOp;

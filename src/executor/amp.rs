@@ -97,7 +97,7 @@ impl AmpGraphConverter {
         let mut to_remove = Vec::new();
         let mut next_id = graph.next_id;
 
-        // 1. 收集所有需要转换的节点
+        // 收集所有需要转换的节点
         let op_ids: Vec<u64> = graph.ops.keys().cloned().collect();
 
         for &op_id in &op_ids {
@@ -211,11 +211,11 @@ impl AmpGraphConverter {
             }
         }
 
-        // 2. 更新参数 (参数也需要转换为 AMP dtype)
+        // 更新参数 (参数也需要转换为 AMP dtype)
         // 但训练时参数保持在 FP32，forward 时动态转换
         // 这里只标记，实际转换在 forward 时做
 
-        // 3. 替换 graph
+        // 替换 graph
         for id in to_remove {
             graph.ops.remove(&id);
         }
@@ -226,7 +226,7 @@ impl AmpGraphConverter {
 
         graph.next_id = next_id;
 
-        // 4. 更新输出 (确保输出是 FP32)
+        // 更新输出 (确保输出是 FP32)
         let mut new_outputs = Vec::new();
         for &out_id in &graph.outputs {
             let out_value = graph.values.get(&out_id);

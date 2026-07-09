@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 1. Max Forward
+// Max Forward
 // ============================================================
 
 pub fn max<T: DType + Send + Sync>(
@@ -63,7 +63,7 @@ pub fn max<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. Min Forward
+// Min Forward
 // ============================================================
 
 pub fn min<T: DType + Send + Sync>(
@@ -122,7 +122,7 @@ pub fn min<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 3. Backward (简化版)
+// Backward - 简化版   TODO: 完善
 // ============================================================
 
 pub fn max_backward<T: DType>(
@@ -145,7 +145,7 @@ pub fn min_backward<T: DType>(
 }
 
 // ============================================================
-// 4. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct MaxOp;

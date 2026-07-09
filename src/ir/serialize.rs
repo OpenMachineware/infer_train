@@ -196,7 +196,7 @@ impl ModelFile {
         let mut file = File::create(&temp_path)
             .map_err(|e| format!("Failed to create file: {}", e))?;
 
-        // 1. 序列化各块
+        // 序列化各块
         let header_bytes = bincode::serialize(&self.header)
             .map_err(|e| format!("Failed to serialize header: {}", e))?;
         let graph_bytes = bincode::serialize(&self.graph)
@@ -210,14 +210,14 @@ impl ModelFile {
             None => Vec::new(),
         };
 
-        // 2. 计算偏移
+        // 计算偏移
         let header_offset = std::mem::size_of::<FileHeader>() as u64;
         let graph_offset = header_offset + header_bytes.len() as u64;
         let weights_offset = graph_offset + graph_bytes.len() as u64;
         let training_offset = weights_offset + weights_bytes.len() as u64;
         let total_size = training_offset + training_bytes.len() as u64;
 
-        // 3. 写入文件头
+        // 写入文件头
         let file_header = FileHeader {
             magic: MAGIC,
             version: VERSION,
@@ -235,7 +235,7 @@ impl ModelFile {
         file.write_all(header_bytes_raw)
             .map_err(|e| format!("Failed to write header: {}", e))?;
 
-        // 4. 写入各块
+        // 写入各块
         file.write_all(&header_bytes)
             .map_err(|e| format!("Failed to write header block: {}", e))?;
         file.write_all(&graph_bytes)
@@ -248,7 +248,7 @@ impl ModelFile {
             })?;
         }
 
-        // 5. 同步并重命名
+        // 同步并重命名
         file.sync_all().map_err(|e| format!("Failed to sync file: {}", e))?;
         std::fs::rename(temp_path, path)
             .map_err(|e| format!("Failed to rename file: {}", e))?;
@@ -277,7 +277,7 @@ impl ModelFile {
             return Err("File too small".to_string());
         }
 
-        // 1. 读取文件头
+        // 读取文件头
         let header_bytes_raw = if use_mmap {
             let mmap = unsafe { MmapOptions::new().map(&file) }
                 .map_err(|e| format!("Failed to mmap file: {}", e))?;
@@ -296,7 +296,7 @@ impl ModelFile {
 
         let file_header: FileHeader = *bytemuck::from_bytes(&header_bytes_raw);
 
-        // 2. 验证
+        // 验证
         if file_header.magic != MAGIC {
             return Err("Invalid magic number".to_string());
         }
@@ -307,7 +307,7 @@ impl ModelFile {
             ));
         }
 
-        // 3. 读取各块
+        // 读取各块
         let (mmap, reader) = if use_mmap {
             let mmap = unsafe { MmapOptions::new().map(&file) }
                 .map_err(|e| format!("Failed to mmap file: {}", e))?;
@@ -353,7 +353,7 @@ impl ModelFile {
                 None
             };
 
-        // 4. 反序列化
+        // 反序列化
         let header: ModelHeader = bincode::deserialize(&header_bytes)
             .map_err(|e| format!("Failed to deserialize header: {}", e))?;
 
@@ -378,7 +378,7 @@ impl ModelFile {
         let mut model =
             ModelFile { header, graph, weights, training_state, mmap };
 
-        // 5. 恢复权重到 graph
+        // 恢复权重到 graph
         model.restore_weights();
 
         Ok(model)

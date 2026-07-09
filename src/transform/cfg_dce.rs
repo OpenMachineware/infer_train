@@ -9,10 +9,10 @@ impl CfgDCEPass {
     pub fn apply(cfg: &mut CfgGraph) -> bool {
         let mut changed = false;
 
-        // 1. 标记可达块
+        // 标记可达块
         let reachable = Self::mark_reachable_blocks(cfg);
 
-        // 2. 删除不可达块
+        // 删除不可达块
         let dead_blocks: Vec<u64> = cfg
             .blocks
             .keys()
@@ -32,10 +32,10 @@ impl CfgDCEPass {
             }
         }
 
-        // 3. 删除死算子
+        // 删除死算子
         changed |= Self::remove_dead_ops(cfg);
 
-        // 4. 修复：合并单后继块
+        // 修复：合并单后继块
         changed |= Self::merge_single_successor_blocks(cfg);
 
         changed

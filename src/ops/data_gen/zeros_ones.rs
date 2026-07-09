@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 1. Zeros
+// Zeros
 // ============================================================
 
 pub fn zeros<T: DType + Send + Sync>(shape: &[usize]) -> Tensor<T> {
@@ -14,7 +14,7 @@ pub fn zeros<T: DType + Send + Sync>(shape: &[usize]) -> Tensor<T> {
 }
 
 // ============================================================
-// 2. Ones
+// Ones
 // ============================================================
 
 pub fn ones<T: DType + Send + Sync>(shape: &[usize]) -> Tensor<T> {
@@ -24,7 +24,7 @@ pub fn ones<T: DType + Send + Sync>(shape: &[usize]) -> Tensor<T> {
 }
 
 // ============================================================
-// 3. Full (fill with value)
+// Full (fill with value)
 // ============================================================
 
 pub fn full<T: DType + Send + Sync>(shape: &[usize], value: f32) -> Tensor<T> {
@@ -34,7 +34,7 @@ pub fn full<T: DType + Send + Sync>(shape: &[usize], value: f32) -> Tensor<T> {
 }
 
 // ============================================================
-// 4. Operators
+// Operators
 // ============================================================
 
 pub struct ZerosOp;

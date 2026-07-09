@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 use rayon::prelude::*;
 
 // ============================================================
-// 1. 浮点泛型 Forward (近似版本)
+// 浮点泛型 Forward - 近似版本
 // ============================================================
 
 pub fn gelu<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
@@ -25,7 +25,7 @@ pub fn gelu<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward
+// 浮点泛型 Backward
 // ============================================================
 
 pub fn gelu_backward<T: DType>(
@@ -49,7 +49,7 @@ pub fn gelu_backward<T: DType>(
 }
 
 // ============================================================
-// 3. 量化 Forward (简化版)
+// 量化 Forward - 简化版 TODO: 完善
 // ============================================================
 
 pub fn quantized_gelu(a: &Tensor<i8>) -> Tensor<i8> {
@@ -69,7 +69,7 @@ pub fn quantized_gelu(a: &Tensor<i8>) -> Tensor<i8> {
 }
 
 // ============================================================
-// 4. 量化 Backward (简化版)
+// 量化 Backward - 简化版 TODO: 完善
 // ============================================================
 
 pub fn quantized_gelu_backward(
@@ -93,7 +93,7 @@ pub fn quantized_gelu_backward(
 }
 
 // ============================================================
-// 5. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct GeluOp;

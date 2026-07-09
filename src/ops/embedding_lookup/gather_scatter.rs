@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 // use crate::ops::registry::{OpAttrs};
 
 // ============================================================
-// 1. Gather Forward
+// Gather Forward
 // ============================================================
 
 pub fn gather<T: DType + Send + Sync>(
@@ -46,7 +46,7 @@ pub fn gather<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. Gather Backward
+// Gather Backward
 // ============================================================
 
 pub fn gather_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
@@ -54,7 +54,7 @@ pub fn gather_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
 }
 
 // ============================================================
-// 3. Scatter Forward
+// Scatter Forward
 // ============================================================
 
 pub fn scatter<T: DType + Send + Sync>(
@@ -98,7 +98,7 @@ pub fn scatter<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 4. Scatter Backward
+// Scatter Backward
 // ============================================================
 
 pub fn scatter_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
@@ -106,7 +106,7 @@ pub fn scatter_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
 }
 
 // ============================================================
-// 5. Gather Op
+// Gather Op
 // ============================================================
 
 pub struct GatherOp;
@@ -135,7 +135,7 @@ impl GatherOp {
 }
 
 // ============================================================
-// 6. Scatter Op
+// Scatter Op
 // ============================================================
 
 pub struct ScatterOp;
@@ -166,7 +166,7 @@ impl ScatterOp {
 }
 
 // ============================================================
-// 7. 测试
+// 测试
 // ============================================================
 
 #[cfg(test)]

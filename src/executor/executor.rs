@@ -159,13 +159,13 @@ impl Executor {
             return Ok(Vec::new());
         }
 
-        // 1. 加载 constants（只加载一次）
+        // 加载 constants（只加载一次）
         self.load_constants()?;
 
-        // 2. 获取执行顺序（只计算一次）
+        // 获取执行顺序（只计算一次）
         let order = self.scheduler.get_execution_order().to_vec();
 
-        // 3. 对每个 batch 执行
+        // 对每个 batch 执行
         let mut all_results = Vec::with_capacity(batches.len());
 
         for inputs in batches {

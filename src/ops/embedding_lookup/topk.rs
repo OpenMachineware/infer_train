@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 1. TopK Forward
+// TopK Forward
 // ============================================================
 
 pub fn topk<T: DType + Send + Sync>(
@@ -65,7 +65,7 @@ pub fn topk<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. TopK Backward (简化版)
+// TopK Backward - 简化版   TODO: 完善
 // ============================================================
 
 pub fn topk_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
@@ -73,7 +73,7 @@ pub fn topk_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
 }
 
 // ============================================================
-// 3. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct TopkOp;

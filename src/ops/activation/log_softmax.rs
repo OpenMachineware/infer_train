@@ -5,7 +5,7 @@ use crate::tensor::Tensor;
 use rayon::prelude::*;
 
 // ============================================================
-// 1. 浮点泛型 Forward
+// 浮点泛型 Forward
 // ============================================================
 
 pub fn log_softmax<T: DType + Send + Sync>(
@@ -20,7 +20,7 @@ pub fn log_softmax<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward
+// 浮点泛型 Backward
 // ============================================================
 
 pub fn log_softmax_backward<T: DType>(
@@ -42,7 +42,7 @@ pub fn log_softmax_backward<T: DType>(
 }
 
 // ============================================================
-// 3. 量化 Forward
+// 量化 Forward
 // ============================================================
 
 pub fn quantized_log_softmax(a: &Tensor<i8>, dim: usize) -> Tensor<i8> {
@@ -62,7 +62,7 @@ pub fn quantized_log_softmax(a: &Tensor<i8>, dim: usize) -> Tensor<i8> {
 }
 
 // ============================================================
-// 4. 量化 Backward (简化版)
+// 量化 Backward - 简化版   TODO: 完善
 // ============================================================
 
 pub fn quantized_log_softmax_backward(
@@ -86,7 +86,7 @@ pub fn quantized_log_softmax_backward(
 }
 
 // ============================================================
-// 5. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct LogSoftmaxOp;

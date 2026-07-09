@@ -9,7 +9,7 @@ impl DCEPass {
     pub fn apply(graph: &mut DagGraph) -> bool {
         let mut changed = false;
 
-        // 1. 标记所有需要保留的节点（从输出反向遍历）
+        // 标记所有需要保留的节点（从输出反向遍历）
         let mut live_nodes: HashSet<u64> = HashSet::new();
         let mut worklist: Vec<u64> = graph.outputs.clone();
 
@@ -30,7 +30,7 @@ impl DCEPass {
             }
         }
 
-        // 2. 删除不在 live_nodes 中的算子
+        // 删除不在 live_nodes 中的算子
         let dead_ops: Vec<u64> = graph
             .ops
             .keys()
@@ -45,7 +45,7 @@ impl DCEPass {
             }
         }
 
-        // 3. 删除没有 producer 且不在输入/输出中的 Value
+        // 删除没有 producer 且不在输入/输出中的 Value
         let _live_values: HashSet<u64> =
             graph.outputs.iter().cloned().collect();
         let dead_values: Vec<u64> = graph

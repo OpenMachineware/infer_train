@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 1. 浮点泛型 Forward
+// 浮点泛型 Forward
 // ============================================================
 
 pub fn softmax<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize) -> Tensor<T> {
@@ -55,7 +55,7 @@ pub fn softmax<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize) -> Tensor<T> {
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward
+// 浮点泛型 Backward
 // ============================================================
 
 pub fn softmax_backward<T: DType>(
@@ -77,7 +77,7 @@ pub fn softmax_backward<T: DType>(
 }
 
 // ============================================================
-// 3. 量化 Forward
+// 量化 Forward
 // ============================================================
 
 pub fn quantized_softmax(a: &Tensor<i8>, dim: usize) -> Tensor<i8> {
@@ -97,7 +97,7 @@ pub fn quantized_softmax(a: &Tensor<i8>, dim: usize) -> Tensor<i8> {
 }
 
 // ============================================================
-// 4. 量化 Backward (简化版)
+// 量化 Backward - 简化版   TODO: 完善
 // ============================================================
 
 pub fn quantized_softmax_backward(
@@ -121,7 +121,7 @@ pub fn quantized_softmax_backward(
 }
 
 // ============================================================
-// 5. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct SoftmaxOp;

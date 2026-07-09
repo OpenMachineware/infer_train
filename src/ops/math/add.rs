@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use crate::ops::registry::{OpAttrs, Operator};
 
 // ============================================================
-// 1. 浮点泛型 Forward
+// 浮点泛型 Forward
 // ============================================================
 
 pub fn add<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Tensor<T> {
@@ -22,7 +22,7 @@ pub fn add<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Tensor<T> {
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward
+// 浮点泛型 Backward
 // ============================================================
 
 pub fn add_backward<T: DType>(
@@ -34,7 +34,7 @@ pub fn add_backward<T: DType>(
 }
 
 // ============================================================
-// 3. 量化 Forward
+// 量化 Forward
 // ============================================================
 
 pub fn quantized_add(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
@@ -68,7 +68,7 @@ pub fn quantized_add(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
 }
 
 // ============================================================
-// 4. 量化 Backward
+// 量化 Backward
 // ============================================================
 
 pub fn quantized_add_backward(
@@ -80,7 +80,7 @@ pub fn quantized_add_backward(
 }
 
 // ============================================================
-// 5. Operator Trait 实现（CPU 版本）
+// Operator Trait 实现（CPU 版本）
 // ============================================================
 
 pub struct AddOp;
@@ -107,7 +107,7 @@ impl<T: DType + Send + Sync> Operator<T> for AddOp {
 }
 
 // ============================================================
-// 6. 量化 Operator Trait 实现
+// 量化 Operator Trait 实现
 // ============================================================
 
 pub struct QuantizedAddOp;
@@ -138,7 +138,7 @@ impl Operator<i8> for QuantizedAddOp {
 }
 
 // ============================================================
-// 7. 测试
+// 测试
 // ============================================================
 
 #[cfg(test)]

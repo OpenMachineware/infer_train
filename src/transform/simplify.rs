@@ -147,7 +147,7 @@ impl AlgebraicSimplifyPass {
                     let in1 = op.inputs[0];
                     let in2 = op.inputs[1];
 
-                    // 1. ADD(x, -x) -> 0
+                    // ADD(x, -x) -> 0
                     if Self::is_neg_of(graph, in1, in2)
                         || Self::is_neg_of(graph, in2, in1)
                     {
@@ -160,7 +160,7 @@ impl AlgebraicSimplifyPass {
                         return SimplifyResult::Replace(zero_id);
                     }
 
-                    // 2. ADD(x, 0) -> x
+                    // ADD(x, 0) -> x
                     if graph.is_zero_constant(in2) {
                         return SimplifyResult::Replace(in1);
                     }
@@ -168,7 +168,7 @@ impl AlgebraicSimplifyPass {
                         return SimplifyResult::Replace(in2);
                     }
 
-                    // 3. ADD(x, ADD(y, z)) -> ADD(ADD(x, y), z)  (结合律)
+                    // ADD(x, ADD(y, z)) -> ADD(ADD(x, y), z)  (结合律)
                     if let Some(inner_op) = Self::get_producer_op(graph, in2) {
                         if inner_op.op_type == "add" {
                             let inner_input0 = inner_op.inputs[0];
@@ -202,7 +202,7 @@ impl AlgebraicSimplifyPass {
                         }
                     }
 
-                    // 4. ADD(x, -y) -> SUB(x, y)  (如果 y 是负常数，转为减法)
+                    // ADD(x, -y) -> SUB(x, y)  (如果 y 是负常数，转为减法)
                     if let Some(neg_const_id) =
                         Self::get_neg_constant(graph, in2)
                     {
@@ -226,7 +226,7 @@ impl AlgebraicSimplifyPass {
                     let in1 = op.inputs[0];
                     let in2 = op.inputs[1];
 
-                    // 1. SUB(x, x) -> 0
+                    // SUB(x, x) -> 0
                     if in1 == in2 {
                         let dtype = graph
                             .values
@@ -237,12 +237,12 @@ impl AlgebraicSimplifyPass {
                         return SimplifyResult::Replace(zero_id);
                     }
 
-                    // 2. SUB(x, 0) -> x
+                    // SUB(x, 0) -> x
                     if graph.is_zero_constant(in2) {
                         return SimplifyResult::Replace(in1);
                     }
 
-                    // 3. SUB(0, x) -> NEG(x)
+                    // SUB(0, x) -> NEG(x)
                     if graph.is_zero_constant(in1) {
                         let neg_op = Self::create_unary_op("neg", in2);
                         return SimplifyResult::NewOps(vec![neg_op]);
@@ -256,7 +256,7 @@ impl AlgebraicSimplifyPass {
                     let in1 = op.inputs[0];
                     let in2 = op.inputs[1];
 
-                    // 1. MUL(x, 0) -> 0
+                    // MUL(x, 0) -> 0
                     if graph.is_zero_constant(in2)
                         || graph.is_zero_constant(in1)
                     {
@@ -269,7 +269,7 @@ impl AlgebraicSimplifyPass {
                         return SimplifyResult::Replace(zero_id);
                     }
 
-                    // 2. MUL(x, 1) -> x
+                    // MUL(x, 1) -> x
                     if graph.is_one_constant(in2) {
                         return SimplifyResult::Replace(in1);
                     }
@@ -285,7 +285,7 @@ impl AlgebraicSimplifyPass {
                     let in1 = op.inputs[0];
                     let in2 = op.inputs[1];
 
-                    // 1. DIV(0, x) -> 0
+                    // DIV(0, x) -> 0
                     if graph.is_zero_constant(in1) {
                         let dtype = graph
                             .values
@@ -296,12 +296,12 @@ impl AlgebraicSimplifyPass {
                         return SimplifyResult::Replace(zero_id);
                     }
 
-                    // 2. DIV(x, 1) -> x
+                    // DIV(x, 1) -> x
                     if graph.is_one_constant(in2) {
                         return SimplifyResult::Replace(in1);
                     }
 
-                    // 3. DIV(x, x) -> 1
+                    // DIV(x, x) -> 1
                     if in1 == in2 {
                         let dtype = graph
                             .values
@@ -320,12 +320,12 @@ impl AlgebraicSimplifyPass {
                     let in1 = op.inputs[0];
                     let in2 = op.inputs[1];
 
-                    // 1. POW(x, 1) -> x
+                    // POW(x, 1) -> x
                     if graph.is_one_constant(in2) {
                         return SimplifyResult::Replace(in1);
                     }
 
-                    // 2. POW(1, x) -> 1
+                    // POW(1, x) -> 1
                     if graph.is_one_constant(in1) {
                         let dtype = graph
                             .values
@@ -336,7 +336,7 @@ impl AlgebraicSimplifyPass {
                         return SimplifyResult::Replace(one_id);
                     }
 
-                    // 3. POW(x, 0) -> 1
+                    // POW(x, 0) -> 1
                     if graph.is_zero_constant(in2) {
                         let dtype = graph
                             .values
@@ -368,7 +368,7 @@ impl AlgebraicSimplifyPass {
                 if op.inputs.len() >= 1 {
                     let in1 = op.inputs[0];
 
-                    // 1. LOG(1) -> 0
+                    // LOG(1) -> 0
                     if graph.is_one_constant(in1) {
                         let dtype = graph
                             .values
@@ -379,7 +379,7 @@ impl AlgebraicSimplifyPass {
                         return SimplifyResult::Replace(zero_id);
                     }
 
-                    // 2. LOG(e) -> 1 (e ≈ 2.71828)
+                    // LOG(e) -> 1 (e ≈ 2.71828)
                     // 可选：检测常数 e
                 }
             }
@@ -459,7 +459,7 @@ impl AlgebraicSimplifyPass {
             // ---------- RESHAPE 化简 ----------
             "reshape" => {
                 if op.inputs.len() >= 1 {
-                    // 1. 连续 RESHAPE 合并
+                    // 连续 RESHAPE 合并
                     if let Some(producer) =
                         Self::get_producer_op(graph, op.inputs[0])
                     {
@@ -475,7 +475,7 @@ impl AlgebraicSimplifyPass {
                         }
                     }
 
-                    // 2. RESHAPE 后形状不变 -> 消除
+                    // RESHAPE 后形状不变 -> 消除
                     if let Some(input) = graph.values.get(&op.inputs[0]) {
                         if let Some(output) = graph.values.get(&op.outputs[0]) {
                             if input.ty.shape == output.ty.shape {

@@ -62,13 +62,13 @@ impl Scheduler {
         self.node_weights.clear();
         self.execution_order.clear();
 
-        // 1. 计算每个节点的权重
+        // 计算每个节点的权重
         self.compute_node_weights(graph);
 
-        // 2. 拓扑排序 + 按优先级调度
+        // 拓扑排序 + 按优先级调度
         let topo = self.topological_sort_with_priority(graph);
 
-        // 3. 启发式重排 (考虑内存和计算)
+        // 启发式重排 (考虑内存和计算)
         self.heuristic_reorder(graph, &topo);
 
         self.execution_order.clone()

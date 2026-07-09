@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 1. Adaptive Avg Pool Forward
+// Adaptive Avg Pool Forward
 // ============================================================
 
 pub fn adaptive_avg_pool<T: DType + Send + Sync>(
@@ -64,7 +64,7 @@ pub fn adaptive_avg_pool<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. Adaptive Max Pool Forward
+// Adaptive Max Pool Forward
 // ============================================================
 
 pub fn adaptive_max_pool<T: DType + Send + Sync>(
@@ -118,7 +118,7 @@ pub fn adaptive_max_pool<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 3. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct AdaptivePoolOp;

@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 1. 浮点泛型 Forward
+// 浮点泛型 Forward
 // ============================================================
 
 pub fn norm<T: DType + Send + Sync>(
@@ -62,7 +62,7 @@ pub fn norm<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward (简化版)
+// 浮点泛型 Backward - 简化版   TODO: 完善
 // ============================================================
 
 pub fn norm_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
@@ -70,7 +70,7 @@ pub fn norm_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
 }
 
 // ============================================================
-// 3. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct NormOp;

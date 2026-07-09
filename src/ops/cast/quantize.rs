@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 1. Quantize (量化: f32 -> i8)
+// Quantize (量化: f32 -> i8)
 // ============================================================
 
 pub fn quantize(
@@ -25,7 +25,7 @@ pub fn quantize(
 }
 
 // ============================================================
-// 2. Dequantize (反量化: i8 -> f32)
+// Dequantize (反量化: i8 -> f32)
 // ============================================================
 
 pub fn dequantize(input: &Tensor<i8>) -> Tensor<f32> {
@@ -42,7 +42,7 @@ pub fn dequantize(input: &Tensor<i8>) -> Tensor<f32> {
 }
 
 // ============================================================
-// 3. Quantize Backward (梯度传递: 量化不可导，但可以用直通估计器)
+// Quantize Backward (梯度传递: 量化不可导，但可以用直通估计器)
 // ============================================================
 
 pub fn quantize_backward(grad_output: &Tensor<f32>) -> Vec<Tensor<f32>> {
@@ -51,7 +51,7 @@ pub fn quantize_backward(grad_output: &Tensor<f32>) -> Vec<Tensor<f32>> {
 }
 
 // ============================================================
-// 4. Operators
+// Operators
 // ============================================================
 
 pub struct QuantizeOp;

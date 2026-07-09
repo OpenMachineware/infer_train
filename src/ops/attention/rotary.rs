@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 1. 浮点泛型 Forward (RoPE)
+// 浮点泛型 Forward (RoPE)
 // ============================================================
 
 pub fn rotary_embedding<T: DType + Send + Sync>(
@@ -46,7 +46,7 @@ pub fn rotary_embedding<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward (简化版)
+// 浮点泛型 Backward - 简化版 TODO: 完善
 // ============================================================
 
 pub fn rotary_embedding_backward<T: DType>(
@@ -59,7 +59,7 @@ pub fn rotary_embedding_backward<T: DType>(
 }
 
 // ============================================================
-// 3. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct RotaryOp;

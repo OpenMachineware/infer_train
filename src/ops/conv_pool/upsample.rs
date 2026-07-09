@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 1. 浮点泛型 Forward (nearest neighbor)
+// 浮点泛型 Forward (nearest neighbor)
 // ============================================================
 
 pub fn upsample<T: DType + Send + Sync>(
@@ -54,7 +54,7 @@ pub fn upsample<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward (简化版)
+// 浮点泛型 Backward - 简化版   TODO: 完善
 // ============================================================
 
 pub fn upsample_backward<T: DType>(
@@ -66,7 +66,7 @@ pub fn upsample_backward<T: DType>(
 }
 
 // ============================================================
-// 3. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct UpsampleOp;

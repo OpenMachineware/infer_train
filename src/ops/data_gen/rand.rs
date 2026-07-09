@@ -7,7 +7,7 @@ use rand::distributions::{Distribution, Uniform};
 use rand_distr::StandardNormal;
 
 // ============================================================
-// 1. Rand (均匀分布 [0, 1))
+// Rand (均匀分布 [0, 1))
 // ============================================================
 
 pub fn rand<T: DType + Send + Sync>(shape: &[usize]) -> Tensor<T> {
@@ -27,7 +27,7 @@ pub fn rand<T: DType + Send + Sync>(shape: &[usize]) -> Tensor<T> {
 }
 
 // ============================================================
-// 2. Randn (正态分布 N(0, 1))
+// Randn (正态分布 N(0, 1))
 // ============================================================
 
 pub fn randn<T: DType + Send + Sync>(shape: &[usize]) -> Tensor<T> {
@@ -46,7 +46,7 @@ pub fn randn<T: DType + Send + Sync>(shape: &[usize]) -> Tensor<T> {
 }
 
 // ============================================================
-// 3. Operators
+// Operators
 // ============================================================
 
 pub struct RandOp;

@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 use rayon::prelude::*;
 
 // ============================================================
-// 1. 浮点泛型 Forward
+// 浮点泛型 Forward
 // ============================================================
 
 pub fn relu6<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
@@ -29,7 +29,7 @@ pub fn relu6<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward
+// 浮点泛型 Backward
 // ============================================================
 
 pub fn relu6_backward<T: DType>(
@@ -46,7 +46,7 @@ pub fn relu6_backward<T: DType>(
 }
 
 // ============================================================
-// 3. 量化 Forward
+// 量化 Forward
 // ============================================================
 
 // src/ops/activation/relu6.rs
@@ -75,7 +75,7 @@ pub fn quantized_relu6(a: &Tensor<i8>) -> Tensor<i8> {
 }
 
 // ============================================================
-// 4. 量化 Backward
+// 量化 Backward
 // ============================================================
 
 pub fn quantized_relu6_backward(
@@ -97,7 +97,7 @@ pub fn quantized_relu6_backward(
 }
 
 // ============================================================
-// 5. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct Relu6Op;

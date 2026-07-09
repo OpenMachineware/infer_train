@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 1. Sort Forward (沿指定维度排序)
+// Sort Forward (沿指定维度排序)
 // ============================================================
 
 pub fn sort<T: DType + Send + Sync>(
@@ -55,7 +55,7 @@ pub fn sort<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. Sort Backward (简化版)
+// Sort Backward - 简化版  TODO: 完善
 // ============================================================
 
 pub fn sort_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
@@ -63,7 +63,7 @@ pub fn sort_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
 }
 
 // ============================================================
-// 3. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct SortOp;

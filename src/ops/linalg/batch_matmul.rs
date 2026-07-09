@@ -5,7 +5,7 @@ use rayon::prelude::*;
 // use super::matmul::{matmul, matmul_backward};
 
 // ============================================================
-// 1. 浮点泛型 Forward
+// 浮点泛型 Forward
 // ============================================================
 
 pub fn batch_matmul<T: DType + Send + Sync>(
@@ -110,7 +110,7 @@ pub fn batch_matmul<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward
+// 浮点泛型 Backward
 // ============================================================
 
 pub fn batch_matmul_backward<T: DType>(
@@ -128,7 +128,7 @@ pub fn batch_matmul_backward<T: DType>(
 }
 
 // ============================================================
-// 3. 辅助函数：transpose (复用)
+// 辅助函数：transpose (复用)
 // ============================================================
 
 fn transpose<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
@@ -161,7 +161,7 @@ fn transpose<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
 }
 
 // ============================================================
-// 4. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct BatchMatMulOp;
@@ -186,7 +186,7 @@ impl<T: DType + Send + Sync> Operator<T> for BatchMatMulOp {
 }
 
 // ============================================================
-// 5. 测试
+// 测试
 // ============================================================
 
 #[cfg(test)]

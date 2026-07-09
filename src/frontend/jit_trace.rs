@@ -226,15 +226,15 @@ pub fn trace_from_torch(
     let torch = PyModule::import(py, "torch")?;
     let jit = torch.getattr("jit")?;
 
-    // 1. 先 script
+    // 先 script
     let scripted = jit.call_method("script", (model,), None)?;
 
-    // 2. 再 freeze（需要 eval 模式）
+    // 再 freeze（需要 eval 模式）
     // 注意：如果模型不是 eval 模式，freeze 会报错
     // 所以需要用户在调用前 model.eval()
     let frozen = jit.call_method("freeze", (scripted,), None)?;
 
-    // 3. 获取图
+    // 获取图
     let graph = frozen.getattr("graph")?;
     let graph_str =
         graph.call_method("__str__", (), None)?.extract::<String>()?;

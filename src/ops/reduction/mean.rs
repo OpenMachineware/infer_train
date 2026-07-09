@@ -5,7 +5,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 1. 浮点泛型 Forward
+// 浮点泛型 Forward
 // ============================================================
 
 pub fn mean<T: DType + Send + Sync>(
@@ -27,7 +27,7 @@ pub fn mean<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward
+// 浮点泛型 Backward
 // ============================================================
 
 pub fn mean_backward<T: DType>(
@@ -51,7 +51,7 @@ pub fn mean_backward<T: DType>(
 }
 
 // ============================================================
-// 3. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct MeanOp;

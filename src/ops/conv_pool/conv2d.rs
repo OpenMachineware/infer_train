@@ -180,7 +180,7 @@ fn conv_bias_gradient_impl<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 1. 浮点泛型 Forward
+// 浮点泛型 Forward
 // ============================================================
 
 pub fn conv2d<T: DType + Send + Sync>(
@@ -278,7 +278,7 @@ pub fn conv2d<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. 浮点泛型 Backward
+// 浮点泛型 Backward
 // ============================================================
 
 pub fn conv2d_backward<T: DType + Send + Sync>(
@@ -290,11 +290,11 @@ pub fn conv2d_backward<T: DType + Send + Sync>(
     dilation: usize,
     groups: usize,
 ) -> Vec<Tensor<T>> {
-    // 1. ∂L/∂input = conv_transpose(grad_output, weight)
+    // ∂L/∂input = conv_transpose(grad_output, weight)
     let grad_input =
         conv_transpose_impl(grad_output, weight, stride, padding, 0);
 
-    // 2. ∂L/∂weight = conv(input, grad_output)
+    // ∂L/∂weight = conv(input, grad_output)
     let grad_weight = conv_weight_gradient_impl(
         input,
         grad_output,
@@ -304,14 +304,14 @@ pub fn conv2d_backward<T: DType + Send + Sync>(
         groups,
     );
 
-    // 3. ∂L/∂bias = sum(grad_output) over [N, H, W]
+    // ∂L/∂bias = sum(grad_output) over [N, H, W]
     let grad_bias = conv_bias_gradient_impl(grad_output);
 
     vec![grad_input, grad_weight, grad_bias]
 }
 
 // ============================================================
-// 3. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct Conv2dOp;

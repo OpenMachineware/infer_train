@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 1. Eye (单位矩阵)
+// Eye (单位矩阵)
 // ============================================================
 
 pub fn eye<T: DType + Send + Sync>(n: usize, m: Option<usize>) -> Tensor<T> {
@@ -17,7 +17,7 @@ pub fn eye<T: DType + Send + Sync>(n: usize, m: Option<usize>) -> Tensor<T> {
 }
 
 // ============================================================
-// 2. Diag (对角矩阵 / 提取对角线)
+// Diag (对角矩阵 / 提取对角线)
 // ============================================================
 
 pub fn diag<T: DType + Send + Sync>(input: &Tensor<T>) -> Tensor<T> {
@@ -31,7 +31,7 @@ pub fn diag<T: DType + Send + Sync>(input: &Tensor<T>) -> Tensor<T> {
 }
 
 // ============================================================
-// 3. Operators
+// Operators
 // ============================================================
 
 pub struct EyeOp;

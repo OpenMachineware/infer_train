@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 use rayon::prelude::*;
 
 // ============================================================
-// 1. Cast (类型转换)
+// Cast (类型转换)
 // ============================================================
 
 pub fn cast<T: DType + Send + Sync, U: DType + Send + Sync>(
@@ -17,7 +17,7 @@ pub fn cast<T: DType + Send + Sync, U: DType + Send + Sync>(
 }
 
 // ============================================================
-// 2. Cast Backward (反向传播是恒等映射)
+// Cast Backward (反向传播是恒等映射)
 // ============================================================
 
 pub fn cast_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
@@ -25,7 +25,7 @@ pub fn cast_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
 }
 
 // ============================================================
-// 3. Operator Trait 实现
+// Operator Trait 实现
 // ============================================================
 
 pub struct CastOp;
@@ -50,7 +50,7 @@ impl<T: DType + Send + Sync> Operator<T> for CastOp {
 }
 
 // ============================================================
-// 4. 便捷函数: 特定类型转换
+// 便捷函数: 特定类型转换
 // ============================================================
 
 pub fn to_f32<T: DType + Send + Sync>(input: &Tensor<T>) -> Tensor<f32> {
