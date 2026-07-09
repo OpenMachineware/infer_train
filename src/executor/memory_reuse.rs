@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(offset2, 128);
         assert_eq!(size2, 64);
 
-        // ✅ 释放第一个块：用 id=0（第一次分配返回的 id）
+        // 释放第一个块：用 id=0（第一次分配返回的 id）
         pool.free(0);
 
         // 分配第三个块，应该复用第一个块
@@ -472,7 +472,7 @@ mod tests {
         let (o2, _) = pool.allocate(50).unwrap(); // id=1, offset=128
         let (o3, _) = pool.allocate(80).unwrap(); // id=2, offset=192
 
-        // ✅ 用 id 释放
+        // 用 id 释放
         pool.free(0); // 释放第一个块
         pool.free(2); // 释放第三个块
 

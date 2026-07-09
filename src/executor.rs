@@ -11,10 +11,15 @@ pub mod parallel;
 pub mod quantized;
 pub mod scheduler;
 pub mod tensor;
+pub mod trainer;
+pub mod amp;
 
-pub use executor::{
-    AdamWOptimizerState, Executor, OptimizerState, OptimizerType, PyExecutor,
-    SGDOptimizerState, Trainer, TrainerConfig, TrainingState,
+pub use executor::{Executor, PyExecutor};
+pub use trainer::{
+    Trainer, TrainerConfig, OptimizerType, TrainingState,
+    OptimizerState, SGDOptimizerState, AdamWOptimizerState,
 };
-pub use memory_reuse::{MemoryConfig, MemoryPool};
+pub use amp::{AmpConfig, AmpDtype, AmpGraphConverter};
 pub use parallel::dispatch_op;
+pub use memory_reuse::{MemoryPool, MemoryConfig};
+pub use scheduler::{Scheduler, SchedulerConfig};
