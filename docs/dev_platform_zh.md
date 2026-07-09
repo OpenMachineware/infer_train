@@ -255,30 +255,6 @@ pub struct CambriconNPU {
 }
 ```
 
-### 5.5 地平线 NPU
-
-```rust
-// src/device/horizon.rs
-
-// 使用地平线 BPU SDK
-extern "C" {
-    fn hb_bpu_initialize(...);
-    fn hb_bpu_run(...);
-}
-```
-
-### 5.6 摩尔线程 GPU
-
-```rust
-// src/device/mtt.rs
-
-// 使用摩尔线程 MUSA SDK (兼容 CUDA)
-extern "C" {
-    fn muInit(...);
-    fn muMalloc(...);
-}
-```
-
 
 ## 6. 厂商接入步骤
 

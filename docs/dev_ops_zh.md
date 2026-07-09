@@ -335,4 +335,4 @@ A: 反量化 → 浮点计算 → 重新量化。
 ### Q: 算子需要属性 (attrs) 怎么办？
 
 A: 在 `forward` 中从 `attrs` 读取：`attrs.get_int("key").unwrap_or(default)`
-```
+

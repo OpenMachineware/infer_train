@@ -586,6 +586,6 @@ impl FusionRule for Op1Op2Fusion {
 
 ## 13. 相关文档
 
-- `docs/dev_ops[_zh].md` - 算子开发指南
+- [dev_ops_zh.md](dev_ops_zh.md) - 算子开发指南
 - `src/transform/fusion.rs` - 融合实现
 - `tests/test_fusion.rs` - 融合测试

@@ -417,7 +417,7 @@
 
 ### 添加新算子
 
-1. 参考 `docs/dev_ops[_zh].md`
+1. 参考 [docs/dev_ops_zh.md](./docs/dev_ops_zh.md)
 2. 在 `src/ops/` 对应目录添加
 3. 实现 Forward + Backward + Quantized
 4. 添加测试
@@ -425,7 +425,7 @@
 
 ### 添加硬件支持
 
-1. 参考 `docs/dev_platform[_zh].md`
+1. 参考 [docs/dev_platform_zh.md](./docs/dev_platform_zh.md)
 2. 实现 `Operator<T>` trait
 3. 实现设备内存管理
 4. 注册到引擎

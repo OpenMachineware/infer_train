@@ -22,9 +22,9 @@ InferTrain 是一个专为边缘设备设计的推训一体 AI 推理与训练�
 | PyTorch 无感侵入 | import 即可，用户代码无需修改                 |
 | GGUF 支持 | 导入/导出 GGUF 格式，支持量化模型训练             |
 | ITM 格式 | 自研二进制格式，分块存储，支持 mmap               |
-| 内存复用 | 字节池内存管理，训练内存峰值降低 70%               |
+| 内存复用 | 字节池内存管理，训练内存峰值降低 70%以上             |
 | 自动微分 | 基于 Tape 的自动微分引擎                    |
-| 并行执行 | Rayon 并行，充分利用多核                    |
+| 并行执行 | Rayon 并行，充分利用多核 - TODO             |
 
 
 ## 快速开始
@@ -161,7 +161,7 @@ infer_train/
 
 ### 添加新算子
 
-参考 `docs/dev_ops[_zh].md`，包含：
+参考 [docs/dev_ops_zh.md](./docs/dev_ops_zh.md)，包含：
 
 1. C++ 算子添加流程（如需）
 2. Rust 算子开发模板
@@ -176,7 +176,7 @@ infer_train/
 3. 算子注册
 4. 设备选择策略
 
-详见 `docs/dev_dev_platform[_zh].md`（待补充）
+详见 [docs/dev_platform_zh.md](./docs/dev_platform_zh.md)（待补充）
 
 
 ## 支持平台
@@ -210,15 +210,15 @@ Apache 2.0
 9. 提交 Pull Request
 
 
-参与开发请优先参考 `TODO[_zh].md`。
+参与开发请优先参考 [TODO_zh.md](TODO_zh.md)。
 
-新算子开发请参考 `docs/dev_ops[_zh].md`。
+新算子开发请参考 [docs/dev_ops_zh.md](./docs/dev_ops_zh.md)。
 
-算子融合优化开发请参考 `docs/dev_fusion[_zh].md`。
+算子融合优化开发请参考 [docs/dev_fusion_zh.md](./docs/dev_fusion_zh.md)。
 
-硬件平台接入请参考 `docs/dev_platform[_zh].md`。
+硬件平台接入请参考 [docs/dev_platform_zh.md](./docs/dev_platform_zh.md)。
 
-写代码之前请先阅读 `docs/rust_subset_guidelines[_zh].md`。
+写代码之前请先阅读 [docs/rust_subset_guidelines_zh.md](./docs/rust_subset_guidelines_zh.md)。
 
 ## 联系方式
 
