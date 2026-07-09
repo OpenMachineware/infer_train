@@ -11,6 +11,7 @@ authors = [
     { name = "Jia Liu", email = "proljc@gmail.com" }
 ]
 readme = "README.md"
+license = {text = "Apache-2.0"}
 
 dependencies = [
     "numpy>=1.20.0",
@@ -20,6 +21,11 @@ dependencies = [
 torch = [
     "torch>=2.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/OpenMachineware/infer_train"
+Issues = "https://github.com/OpenMachineware/infer_train/issues"
+Repository = "https://github.com/OpenMachineware/infer_train.git"
 
 [tool.maturin]
 bindings = "pyo3"

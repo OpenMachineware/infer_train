@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 // use crate::ops::registry::{OpAttrs};
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn cross_entropy<T: DType + Send + Sync>(
@@ -65,7 +65,7 @@ pub fn cross_entropy<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn cross_entropy_backward<T: DType>(
@@ -129,7 +129,7 @@ pub fn cross_entropy_backward<T: DType>(
 }
 
 // ============================================================
-// CrossEntropy Op (独立实现)
+// CrossEntropy Op (Standalone Implementation)
 // ============================================================
 
 pub struct CrossEntropyOp;
@@ -158,7 +158,7 @@ impl CrossEntropyOp {
 }
 
 // ============================================================
-// 测试
+// Tests
 // ============================================================
 
 #[cfg(test)]

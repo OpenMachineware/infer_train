@@ -118,7 +118,7 @@ pub fn adaptive_max_pool<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct AdaptivePoolOp;

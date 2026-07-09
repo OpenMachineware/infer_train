@@ -3,12 +3,12 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// While Loop (条件循环)
+// While Loop (Conditional Loop)
 // ============================================================
 
 pub fn while_loop<T: DType + Send + Sync>(condition: &[i8], body: &[T]) -> T {
-    // 简化版：将 body 中的值迭代直到 condition 为 false
-    // 实际实现需要配合图执行
+    // Simplified: iterate through values in body until condition is false
+    // Actual implementation needs to work with graph execution
     let mut result = T::from_f32(0.0);
     for (i, &cond) in condition.iter().enumerate() {
         if cond != 0 {
@@ -32,7 +32,7 @@ pub fn for_loop<T: DType + Send + Sync>(
     step: i64,
     body: &[T],
 ) -> T {
-    // 简化版：迭代指定次数
+    // Simplified: iterate specified number of times
     let mut result = T::from_f32(0.0);
     let mut idx = 0;
     let mut i = start;
@@ -47,7 +47,7 @@ pub fn for_loop<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// Loop Op - 占位   TODO: 实现
+// Loop Op - Placeholder   TODO: Implement
 // ============================================================
 
 pub struct LoopOp;
@@ -57,7 +57,7 @@ impl<T: DType + Send + Sync> Operator<T> for LoopOp {
         "loop"
     }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
-        // 简化版：直接返回第一个输入
+        // Simplified: return first input directly
         inputs[0].clone()
     }
     fn backward(

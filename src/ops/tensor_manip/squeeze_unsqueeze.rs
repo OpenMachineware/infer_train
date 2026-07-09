@@ -5,7 +5,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// Squeeze 泛型
+// Squeeze Generic
 // ============================================================
 
 pub fn squeeze<T: DType + Send + Sync>(
@@ -49,7 +49,7 @@ pub fn squeeze_backward<T: DType>(
 }
 
 // ============================================================
-// Unsqueeze 泛型
+// Unsqueeze Generic
 // ============================================================
 
 pub fn unsqueeze<T: DType + Send + Sync>(
@@ -87,7 +87,7 @@ pub fn unsqueeze_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Squeeze Forward
+// Quantized Squeeze Forward
 // ============================================================
 
 pub fn quantized_squeeze(input: &Tensor<i8>, dim: Option<usize>) -> Tensor<i8> {
@@ -121,7 +121,7 @@ pub fn quantized_squeeze(input: &Tensor<i8>, dim: Option<usize>) -> Tensor<i8> {
 }
 
 // ============================================================
-// 量化 Squeeze Backward
+// Quantized Squeeze Backward
 // ============================================================
 
 pub fn quantized_squeeze_backward(
@@ -152,7 +152,7 @@ pub fn quantized_squeeze_backward(
 }
 
 // ============================================================
-// 量化 Unsqueeze Forward
+// Quantized Unsqueeze Forward
 // ============================================================
 
 pub fn quantized_unsqueeze(input: &Tensor<i8>, dim: usize) -> Tensor<i8> {
@@ -180,7 +180,7 @@ pub fn quantized_unsqueeze(input: &Tensor<i8>, dim: usize) -> Tensor<i8> {
 }
 
 // ============================================================
-// 量化 Unsqueeze Backward
+// Quantized Unsqueeze Backward
 // ============================================================
 
 pub fn quantized_unsqueeze_backward(
@@ -253,7 +253,7 @@ impl<T: DType + Send + Sync> Operator<T> for UnsqueezeOp {
 }
 
 // ============================================================
-// 量化 Operator Trait
+// Quantized Operator Trait
 // ============================================================
 
 pub struct QuantizedSqueezeOp;

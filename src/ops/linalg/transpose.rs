@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 use rayon::prelude::*;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn transpose<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
@@ -37,16 +37,16 @@ pub fn transpose<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn transpose_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
-    // 转置的梯度就是再次转置
+    // Gradient of transpose is transpose again
     vec![transpose(grad_output)]
 }
 
 // ============================================================
-// 量化 Forward
+// Quantized Forward
 // ============================================================
 
 pub fn quantized_transpose(a: &Tensor<i8>) -> Tensor<i8> {
@@ -84,7 +84,7 @@ pub fn quantized_transpose(a: &Tensor<i8>) -> Tensor<i8> {
 }
 
 // ============================================================
-// 量化 Backward
+// Quantized Backward
 // ============================================================
 
 pub fn quantized_transpose_backward(
@@ -94,7 +94,7 @@ pub fn quantized_transpose_backward(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct TransposeOp;
@@ -141,7 +141,7 @@ impl Operator<i8> for QuantizedTransposeOp {
 }
 
 // ============================================================
-// 测试
+// Tests
 // ============================================================
 
 #[cfg(test)]

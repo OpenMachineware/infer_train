@@ -7,7 +7,7 @@ pub struct ShapeInferencePass;
 
 impl ShapeInferencePass {
     pub fn apply(graph: &mut DagGraph) -> Result<(), String> {
-        // 按拓扑顺序遍历
+        // Traverse in topological order
         let topo = graph.topological_sort()?;
 
         for &op_id in &topo {
@@ -16,7 +16,7 @@ impl ShapeInferencePass {
                 None => continue,
             };
 
-            // 收集输入 shape
+            // Collect input shapes
             let input_shapes: Result<Vec<Vec<i64>>, String> = op
                 .inputs
                 .iter()
@@ -31,11 +31,11 @@ impl ShapeInferencePass {
 
             let input_shapes = input_shapes?;
 
-            // 推导输出 shape
+            // Infer output shapes
             let output_shapes =
                 Self::infer_shapes(&op.op_type, &input_shapes, &op.attrs)?;
 
-            // 更新 outputs 的 shape
+            // Update output shapes
             if output_shapes.len() != op.outputs.len() {
                 return Err(format!(
                     "Shape count mismatch for op {}: expected {}, got {}",
@@ -56,7 +56,7 @@ impl ShapeInferencePass {
     }
 
     // ============================================================
-    // 核心：Shape 推导规则
+    // Core: Shape inference rules
     // ============================================================
     fn infer_shapes(
         op_type: &str,
@@ -64,7 +64,7 @@ impl ShapeInferencePass {
         attrs: &HashMap<String, AttrValue>,
     ) -> Result<Vec<Vec<i64>>, String> {
         match op_type {
-            // ---------- 一元逐元素算子（shape不变） ----------
+            // ---------- Unary element-wise ops (shape unchanged) ----------
             "relu" | "relu6" | "leaky_relu" | "elu" | "gelu" | "silu"
             | "sigmoid" | "tanh" | "hard_swish" | "hard_sigmoid"
             | "softplus" | "softshrink" | "celu" | "exp" | "sqrt" | "log"
@@ -73,7 +73,7 @@ impl ShapeInferencePass {
                 Ok(vec![input_shapes[0].clone()])
             }
 
-            // ---------- 二元逐元素算子（广播） ----------
+            // ---------- Binary element-wise ops (broadcast) ----------
             "add" | "sub" | "mul" | "div" | "pow" | "maximum" | "minimum"
             | "equal" | "not_equal" | "less" | "less_equal" | "greater"
             | "greater_equal" => {
@@ -106,7 +106,7 @@ impl ShapeInferencePass {
                     ));
                 }
 
-                // 广播 batch 维度
+                // Broadcast batch dimensions
                 let mut batch_dims = Vec::new();
                 let max_batch = s1.len().max(s2.len()) - 2;
                 for i in 0..max_batch {
@@ -132,7 +132,7 @@ impl ShapeInferencePass {
 
             // ---------- Conv2d ----------
             "conv2d" => {
-                // [x, weight] 或 [x, weight, bias]
+                // [x, weight] or [x, weight, bias]
                 Self::check_input_count(input_shapes, 2)?;
                 let x = &input_shapes[0];
                 let w = &input_shapes[1];
@@ -160,7 +160,7 @@ impl ShapeInferencePass {
                     ));
                 }
 
-                // 从 attrs 读取参数
+                // Read parameters from attrs
                 let stride =
                     Self::get_int_list_attr(attrs, "stride", vec![1, 1]);
                 let padding =
@@ -197,13 +197,13 @@ impl ShapeInferencePass {
             // ---------- BatchNorm2d ----------
             "batchnorm2d" => {
                 Self::check_input_count(input_shapes, 1)?;
-                // shape 不变
+                // shape unchanged
                 Ok(vec![input_shapes[0].clone()])
             }
 
-            // ---------- 融合算子 ----------
+            // ---------- Fused ops ----------
             "fused_conv_bn" | "fused_conv_relu" | "fused_conv_bn_relu" => {
-                // 与 conv2d 相同
+                // Same as conv2d
                 Self::infer_shapes("conv2d", input_shapes, attrs)
             }
 
@@ -246,7 +246,7 @@ impl ShapeInferencePass {
                 let shape_attr = Self::get_shape_attr(attrs, "shape")?;
                 let x = &input_shapes[0];
 
-                // 计算总元素数
+                // Calculate total elements
                 let total_elements = Self::total_elements(x)?;
                 let mut inferred_shape = Vec::new();
                 let mut has_neg = false;
@@ -266,7 +266,7 @@ impl ShapeInferencePass {
                 }
 
                 if has_neg {
-                    // 计算 -1 维度的值
+                    // Calculate the -1 dimension value
                     let known_elements: i64 =
                         inferred_shape.iter().filter(|&&d| d != 0).product();
                     if known_elements == 0 {
@@ -395,7 +395,7 @@ impl ShapeInferencePass {
                             ));
                         }
                     }
-                    // 在 concat 维度上相加
+                    // Sum along concat dimension
                     if result[dim] != -1 && shape[dim] != -1 {
                         result[dim] += shape[dim];
                     } else {
@@ -408,13 +408,13 @@ impl ShapeInferencePass {
             // ---------- Softmax ----------
             "softmax" | "log_softmax" => {
                 Self::check_input_count(input_shapes, 1)?;
-                // shape 不变
+                // shape unchanged
                 Ok(vec![input_shapes[0].clone()])
             }
 
-            // ---------- 常量/占位符 ----------
+            // ---------- Constants/Placeholders ----------
             "constant" => {
-                // 直接从 attrs 读取 shape
+                // Read shape directly from attrs
                 if let Some(shape) = Self::get_shape_attr_opt(attrs, "shape") {
                     Ok(vec![shape])
                 } else if let Some(shape) =
@@ -422,7 +422,7 @@ impl ShapeInferencePass {
                 {
                     Ok(vec![shape])
                 } else {
-                    // 默认标量
+                    // Default scalar
                     Ok(vec![vec![]])
                 }
             }
@@ -435,7 +435,7 @@ impl ShapeInferencePass {
                 let indices = &input_shapes[0];
                 let weight = &input_shapes[1];
 
-                // 输出 shape = indices_shape + [weight_shape[-1]]
+                // Output shape = indices_shape + [weight_shape[-1]]
                 let mut out_shape = indices.clone();
                 if weight.len() >= 2 {
                     out_shape.push(weight[weight.len() - 1]);
@@ -450,12 +450,12 @@ impl ShapeInferencePass {
                 Self::check_input_count(input_shapes, 2)?;
                 let _dim = Self::get_int_attr(attrs, "dim", 0) as usize;
 
-                // 输出 shape 与 indices 相同
+                // Output shape same as indices
                 Ok(vec![input_shapes[1].clone()])
             }
             "scatter" => {
                 Self::check_input_count(input_shapes, 3)?;
-                // 输出 shape 与 input 相同
+                // Output shape same as input
                 Ok(vec![input_shapes[0].clone()])
             }
 
@@ -471,7 +471,7 @@ impl ShapeInferencePass {
                 if dim < out_shape.len() {
                     out_shape[dim] = k;
                 }
-                // TopK 返回两个输出：values 和 indices
+                // TopK returns two outputs: values and indices
                 Ok(vec![out_shape.clone(), out_shape])
             }
 
@@ -512,12 +512,12 @@ impl ShapeInferencePass {
                 Self::check_input_count(input_shapes, 1)?;
                 let _dim = Self::get_int_attr(attrs, "dim", -1) as usize;
                 let out_shape = input_shapes[0].clone();
-                // Sort 返回 values 和 indices
+                // Sort returns values and indices
                 Ok(vec![out_shape.clone(), out_shape])
             }
 
             // ============================================================
-            // 量化算子（shape 与对应 FP 算子相同）
+    // Quantized ops (shape same as corresponding FP ops)
             // ============================================================
             "quantized_add" | "quantized_sub" | "quantized_mul"
             | "quantized_div" => Self::infer_shapes("add", input_shapes, attrs),
@@ -556,7 +556,7 @@ impl ShapeInferencePass {
             }
 
             // ============================================================
-            // Identity 相关
+    // Identity-related
             // ============================================================
             "identity" => {
                 Self::check_input_count(input_shapes, 1)?;
@@ -564,16 +564,16 @@ impl ShapeInferencePass {
             }
 
             // ============================================================
-            // Dropout（推理时是 identity）
+    // Dropout (identity during inference)
             // ============================================================
             "dropout" => {
                 Self::check_input_count(input_shapes, 1)?;
                 Ok(vec![input_shapes[0].clone()])
             }
 
-            // ---------- 未知算子 ----------
+            // ---------- Unknown ops ----------
             _ => {
-                // 对于未知算子，假设 shape 不变或尝试从输入推断
+                // For unknown ops, assume shape unchanged or infer from input
                 if !input_shapes.is_empty() {
                     Ok(vec![input_shapes[0].clone()])
                 } else {
@@ -587,7 +587,7 @@ impl ShapeInferencePass {
     }
 
     // ============================================================
-    // 辅助函数：Shape 计算
+    // Helper functions: Shape calculation
     // ============================================================
 
     fn check_input_count(
@@ -654,7 +654,7 @@ impl ShapeInferencePass {
         let output = (padded - effective_kernel) / stride + 1;
 
         if padding_mode == "same" {
-            // 对于 same padding，输出大小保持输入大小
+            // For same padding, output size equals input size
             return Ok(input);
         }
 
@@ -688,7 +688,7 @@ impl ShapeInferencePass {
     }
 
     // ============================================================
-    // 辅助函数：读取 Attr
+    // Helper functions: Read attributes
     // ============================================================
 
     fn get_int_attr(

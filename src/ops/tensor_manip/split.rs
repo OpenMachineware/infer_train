@@ -5,7 +5,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 泛型 Forward
+// Generic Forward
 // ============================================================
 
 pub fn split<T: DType + Send + Sync>(
@@ -46,7 +46,7 @@ pub fn split<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 泛型 Backward
+// Generic Backward
 // ============================================================
 
 pub fn split_backward<T: DType>(
@@ -78,7 +78,7 @@ pub fn split_backward<T: DType>(
 }
 
 // ============================================================
-// 量化版本 (类似 pattern，省略详细实现)
+// Quantized Version (similar pattern, detailed implementation omitted)
 // ============================================================
 
 pub fn quantized_split(

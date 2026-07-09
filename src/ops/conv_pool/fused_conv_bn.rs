@@ -12,8 +12,10 @@ pub fn fused_conv_bn<T: DType + Send + Sync>(
     groups: usize,
     _eps: f32,
 ) -> Tensor<T> {
-    // 融合的 Conv+BN：直接执行卷积，BN 参数已经合并到 weight 和 bias 中
-    // 实际实现可以直接调用 conv2d，因为 BN 已经在编译时合并
+    // Fused Conv+BN: directly perform convolution,
+    // BN parameters already merged into weight and bias
+    // Actual implementation can directly call
+    // conv2d since BN is already merged at compile time
     crate::ops::conv_pool::conv2d::conv2d(
         x, weight, bias, stride, padding, dilation, groups,
     )

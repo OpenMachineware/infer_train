@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 use rayon::prelude::*;
 
 // ============================================================
-// Cast (类型转换)
+// Cast (Type Conversion)
 // ============================================================
 
 pub fn cast<T: DType + Send + Sync, U: DType + Send + Sync>(
@@ -17,7 +17,7 @@ pub fn cast<T: DType + Send + Sync, U: DType + Send + Sync>(
 }
 
 // ============================================================
-// Cast Backward (反向传播是恒等映射)
+// Cast Backward (Backpropagation is identity mapping)
 // ============================================================
 
 pub fn cast_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
@@ -25,7 +25,7 @@ pub fn cast_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct CastOp;
@@ -36,7 +36,7 @@ impl<T: DType + Send + Sync> Operator<T> for CastOp {
     }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
-        // 返回原值（实际 cast 需要指定目标类型）
+        // Return original value (actual cast needs target type)
         inputs[0].clone()
     }
     fn backward(
@@ -50,7 +50,7 @@ impl<T: DType + Send + Sync> Operator<T> for CastOp {
 }
 
 // ============================================================
-// 便捷函数: 特定类型转换
+// Convenience Functions: Specific Type Conversions
 // ============================================================
 
 pub fn to_f32<T: DType + Send + Sync>(input: &Tensor<T>) -> Tensor<f32> {

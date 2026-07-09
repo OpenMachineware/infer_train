@@ -23,7 +23,7 @@ impl Default for AutogradConfig {
 }
 
 // ============================================================
-// 自动微分引擎
+// Automatic Differentiation Engine
 // ============================================================
 
 pub struct AutogradEngine {
@@ -56,7 +56,7 @@ impl AutogradEngine {
     }
 
     // ============================================================
-    // 前向传播 (记录计算图)
+    // Forward Propagation (Record Computation Graph)
     // ============================================================
 
     pub fn forward(
@@ -67,7 +67,7 @@ impl AutogradEngine {
         self.tape = Tape::new();
         self.grads.clear();
 
-        // 注册输入
+        // Register inputs
         for (i, &input_id) in self.graph.inputs.iter().enumerate() {
             if i < inputs.len() {
                 self.values.insert(input_id, inputs[i].clone());
@@ -75,7 +75,7 @@ impl AutogradEngine {
             }
         }
 
-        // 注册参数
+        // Register parameters
         for &param_id in &self.param_ids {
             if let Some(value) = self.graph.values.get(&param_id) {
                 if let Some(data) = self.graph.constants.get(&param_id) {
@@ -92,7 +92,7 @@ impl AutogradEngine {
             }
         }
 
-        // 注册常量
+        // Register constants
         for (&id, data) in &self.graph.constants {
             if !self.param_ids.contains(&id) {
                 if let Some(value) = self.graph.values.get(&id) {
@@ -109,7 +109,7 @@ impl AutogradEngine {
             }
         }
 
-        // 执行拓扑排序，记录每个算子
+        // Execute topological sort, record each operator
         let order = self.graph.topological_sort()?;
         for op_id in order {
             let op = self
@@ -120,7 +120,7 @@ impl AutogradEngine {
             self.execute_op_and_record(&op)?;
         }
 
-        // 收集输出
+        // Collect outputs
         let mut result = Vec::new();
         for &out_id in &self.graph.outputs {
             if let Some(t) = self.values.get(&out_id) {
@@ -134,7 +134,7 @@ impl AutogradEngine {
     }
 
     // ============================================================
-    // 执行算子并记录到 Tape
+    // Execute Operator and Record to Tape
     // ============================================================
 
     fn execute_op_and_record(&mut self, op: &Op) -> Result<(), String> {
@@ -150,19 +150,19 @@ impl AutogradEngine {
             }
         }
 
-        // 执行算子
+        // Execute operator
         let outputs = crate::executor::dispatch_op(
             &op.op_type,
             &input_tensors,
             &op.attrs,
         )?;
 
-        // 存储输出并记录到 Tape
+        // Store output and record to Tape
         for (i, &out_id) in op.outputs.iter().enumerate() {
             if i < outputs.len() {
                 self.values.insert(out_id, outputs[i].clone());
 
-                // 根据 op_type 创建 TapeEntry
+                // Create TapeEntry based on op_type
                 let entry = self.create_tape_entry(
                     &op,
                     &input_tensors,
@@ -179,7 +179,7 @@ impl AutogradEngine {
     }
 
     // ============================================================
-    // 创建 TapeEntry
+    // Create TapeEntry
     // ============================================================
 
     fn create_tape_entry(
@@ -454,14 +454,15 @@ impl AutogradEngine {
                 })
             }
             _ => {
-                // 对于未记录的算子，不加入 tape (但有 forward 结果)
+                // For unrecorded operators,
+                // don't add to tape (but keep forward result)
                 None
             }
         }
     }
 
     // ============================================================
-    // 反向传播
+    // Backward Propagation
     // ============================================================
 
     pub fn backward(
@@ -478,7 +479,7 @@ impl AutogradEngine {
     }
 
     // ============================================================
-    // 获取梯度
+    // Get Gradient
     // ============================================================
 
     pub fn get_grad(&self, param_id: u64) -> Option<&Tensor<f32>> {
@@ -489,7 +490,7 @@ impl AutogradEngine {
         &self.grads
     }
 
-    // 启用梯度追踪
+    // Enable gradient tracking
     pub fn set_requires_grad(&mut self, param_id: u64, requires_grad: bool) {
         if requires_grad && !self.param_ids.contains(&param_id) {
             self.param_ids.push(param_id);
@@ -498,17 +499,17 @@ impl AutogradEngine {
         }
     }
 
-    // 检查参数是否需要梯度
+    // Check if parameter requires gradient
     pub fn requires_grad(&self, param_id: u64) -> bool {
         self.param_ids.contains(&param_id)
     }
 
-    // 梯度累积
+    // Gradient accumulation
     pub fn accumulate_grad(&mut self, param_id: u64, grad: Tensor<f32>) {
         self.grads
             .entry(param_id)
             .and_modify(|existing| {
-                // 累加梯度
+                // Accumulate gradient
                 let existing_data = existing.data_mut();
                 let grad_data = grad.data();
                 for i in 0..existing_data.len().min(grad_data.len()) {
@@ -518,12 +519,12 @@ impl AutogradEngine {
             .or_insert(grad);
     }
 
-    // 清零梯度
+    // Zero gradients
     pub fn zero_grad(&mut self) {
         self.grads.clear();
     }
 
-    // 梯度裁剪 (防止梯度爆炸)
+    // Gradient clipping (prevent gradient explosion)
     pub fn clip_grad(&mut self, max_norm: f32) {
         let mut total_norm = 0.0;
         for grad in self.grads.values() {
@@ -542,7 +543,7 @@ impl AutogradEngine {
         }
     }
 
-    // 梯度检查 (用于验证)
+    // Gradient checking (for verification)
     pub fn grad_check(
         &self,
         param_id: u64,
@@ -569,7 +570,7 @@ impl AutogradEngine {
     }
 
     // ============================================================
-    // 工具函数
+    // Utility Functions
     // ============================================================
 
     fn bytes_to_tensor(
@@ -591,7 +592,7 @@ impl AutogradEngine {
 }
 
 // ============================================================
-// 辅助函数
+// Helper Functions
 // ============================================================
 
 fn attrs_get_int(

@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 // use crate::ops::registry::{OpAttrs};
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn embedding<T: DType + Send + Sync>(
@@ -41,7 +41,7 @@ pub fn embedding<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn embedding_backward<T: DType>(
@@ -70,7 +70,7 @@ pub fn embedding_backward<T: DType>(
 }
 
 // ============================================================
-// Embedding Op (独立实现)
+// Embedding Op (Standalone Implementation)
 // ============================================================
 
 pub struct EmbeddingOp;
@@ -98,7 +98,7 @@ impl EmbeddingOp {
 }
 
 // ============================================================
-// 测试
+// Tests
 // ============================================================
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 正确的转置卷积输出尺寸计算
+// Correct transpose convolution output size calculation
 // ============================================================
 
 pub fn conv_transpose_output_size(
@@ -14,13 +14,13 @@ pub fn conv_transpose_output_size(
     padding: usize,
     output_padding: usize,
 ) -> usize {
-    // 标准转置卷积公式:
+    // Standard transpose convolution formula:
     // out = (in - 1) * stride - 2 * padding + kernel_size + output_padding
     (input_size - 1) * stride + kernel_size - 2 * padding + output_padding
 }
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn conv_transpose<T: DType + Send + Sync>(
@@ -41,7 +41,7 @@ pub fn conv_transpose<T: DType + Send + Sync>(
     let (out_c, _in_c_w, k_h, k_w) =
         (w_shape[0], w_shape[1], w_shape[2], w_shape[3]);
 
-    // 正确的转置卷积输出尺寸
+    // Correct transpose convolution output size
     let out_h = (h - 1) * stride + k_h - 2 * padding + output_padding;
     let out_w = (w - 1) * stride + k_w - 2 * padding + output_padding;
 
@@ -52,7 +52,8 @@ pub fn conv_transpose<T: DType + Send + Sync>(
     let w_data = weight.data();
     let bias_data = bias.map(|b| b.data());
 
-    // 转置卷积实现：对每个输入像素，把权重乘到输出对应位置
+    // Transpose convolution implementation: for each input pixel,
+    // multiply weight to corresponding output position
     for n_idx in 0..n {
         for oc in 0..out_c {
             for ic in 0..in_c {
@@ -85,7 +86,7 @@ pub fn conv_transpose<T: DType + Send + Sync>(
         }
     }
 
-    // 添加 bias
+    // Add bias
     if let Some(b) = bias_data {
         for n_idx in 0..n {
             for oc in 0..out_c {
@@ -104,7 +105,7 @@ pub fn conv_transpose<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward - 简化版   TODO: 完善
+// Float Generic Backward - Simplified   TODO: Improve
 // ============================================================
 
 pub fn conv_transpose_backward<T: DType>(
@@ -114,7 +115,7 @@ pub fn conv_transpose_backward<T: DType>(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct ConvTransposeOp;
@@ -159,14 +160,14 @@ mod tests {
         let w = Tensor::new(vec![1.0, 0.0, 0.0, 1.0], &[1, 1, 2, 2]);
         let c = conv_transpose(&x, &w, None, 2, 0, 0);
         assert_eq!(c.shape(), &[1, 1, 4, 4]);
-        // 验证每个像素
+        // Verify each pixel
         // x = [[1,2],[3,4]], w = [[1,0],[0,1]]
-        // 输出在对应位置累加
+        // Output accumulates at corresponding positions
         assert_eq!(c.data()[0], 1.0); // (0,0) = 1*1
         assert_eq!(c.data()[1], 0.0); // (0,1) = 0
         assert_eq!(c.data()[4], 0.0); // (1,0) = 0
-        assert_eq!(c.data()[5], 1.0); // (1,1) = 2*1 + 1*1? 实际上是 2 + 1 = 3?
-                                      // 需要实际验证重新实现后验证结果
+        assert_eq!(c.data()[5], 1.0); // (1,1) = 2*1 + 1*1? Actually 2 + 1 = 3?
+                                      // Need to verify after reimplementation
         assert_eq!(c.len(), 16);
     }
 
@@ -185,7 +186,7 @@ mod tests {
         let b = Tensor::new(vec![1.0], &[1]);
         let c = conv_transpose(&x, &w, Some(&b), 2, 0, 0);
         assert_eq!(c.shape(), &[1, 1, 4, 4]);
-        // 所有元素加 bias 1
+        // All elements plus bias 1
         assert_eq!(c.data()[0], 2.0);
     }
 }

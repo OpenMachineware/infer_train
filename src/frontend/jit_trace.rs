@@ -8,7 +8,7 @@ use crate::ir::dag::{AttrValue, DagGraph, DataType, TensorType};
 use crate::ir::serialize::ModelFile;
 
 // ============================================================
-// 权重信息
+// Weight Info
 // ============================================================
 #[derive(Debug, Clone)]
 pub struct WeightInfo {
@@ -18,7 +18,7 @@ pub struct WeightInfo {
 }
 
 // ============================================================
-// 主函数：带权重 trace
+// Main function: trace with weights
 // ============================================================
 pub fn trace_from_torch_with_weights(
     py: Python,
@@ -31,9 +31,9 @@ pub fn trace_from_torch_with_weights(
     for (name, weight) in weights {
         for (value_id, value) in &mut graph.values {
             if value.name == *name || value.name == format!("%self.{}", name) {
-                // 更新 shape
+                // Update shape
                 value.ty.shape = weight.shape.clone();
-                // 存数据
+                // Store data
                 graph.constants.insert(*value_id, weight.data.clone());
                 break;
             }
@@ -64,7 +64,7 @@ fn parse_python_dtype(dtype: &str) -> DataType {
 }
 
 // // ============================================================
-// // 从 Python 模型提取权重
+// // Extract weights from Python model
 // // ============================================================
 // fn extract_weights_from_model(
 //     py: Python,
@@ -82,7 +82,6 @@ fn parse_python_dtype(dtype: &str) -> DataType {
 //     )?;
 //
 //     for item in params_list.iter() {
-//         // 不能用 item?，直接使用 item
 //         let name = item.get_item(0)?.extract::<String>()?;
 //         let param = item.get_item(1)?;
 //
@@ -102,8 +101,8 @@ fn parse_python_dtype(dtype: &str) -> DataType {
 // }
 
 // ============================================================
-// 测试函数（Python 调用）
-// Python 导出的 trace_with_weights
+// Test function (called by Python)
+// Python exported trace_with_weights
 // ============================================================
 #[pyfunction]
 pub fn trace_with_weights_py(
@@ -155,7 +154,7 @@ pub fn trace_with_weights_py(
 }
 
 // ============================================================
-// 导出模型文件
+// Export model file
 // ============================================================
 #[pyfunction]
 pub fn trace_and_save(
@@ -205,10 +204,10 @@ pub fn trace_and_save(
     let graph =
         trace_from_torch_with_weights(py, model, example_input, &weight_map)?;
 
-    // 额外存储 shape 信息到 constants
-    // 在 trace_from_torch_with_weights 中已经插入了 data，但没有 shape
-    // 需要把 shape 存到 graph 的某个地方
-    // 暂时先保持现状，后面再优化
+    // Additional shape info storage to constants
+    // trace_from_torch_with_weights already inserted data, but no shape
+    // Need to store shape somewhere in graph
+    // Keep as-is for now, optimize later
     let model_file = ModelFile::new("traced_model", "torch", graph);
     model_file
         .export(path)
@@ -216,7 +215,7 @@ pub fn trace_and_save(
 }
 
 // ============================================================
-// 主函数：从 PyTorch JIT 图捕获 IR
+// Main function: capture IR from PyTorch JIT graph
 // ============================================================
 pub fn trace_from_torch(
     py: Python,
@@ -226,15 +225,15 @@ pub fn trace_from_torch(
     let torch = PyModule::import(py, "torch")?;
     let jit = torch.getattr("jit")?;
 
-    // 先 script
+    // First script
     let scripted = jit.call_method("script", (model,), None)?;
 
-    // 再 freeze（需要 eval 模式）
-    // 注意：如果模型不是 eval 模式，freeze 会报错
-    // 所以需要用户在调用前 model.eval()
+    // Then freeze (requires eval mode)
+    // Note: If model is not in eval mode, freeze will error
+    // So user needs to call model.eval() before
     let frozen = jit.call_method("freeze", (scripted,), None)?;
 
-    // 获取图
+    // Get graph
     let graph = frozen.getattr("graph")?;
     let graph_str =
         graph.call_method("__str__", (), None)?.extract::<String>()?;
@@ -243,7 +242,7 @@ pub fn trace_from_torch(
     let mut value_map: HashMap<String, u64> = HashMap::new();
     let mut last_output = String::new();
 
-    // 解析输入
+    // Parse inputs
     let input_names = parse_inputs(&graph_str);
     for (name, dtype, shape) in input_names {
         let dt = parse_dtype(&dtype);
@@ -254,7 +253,7 @@ pub fn trace_from_torch(
         last_output = name;
     }
 
-    // 如果没解析到输入，创建一个默认输入
+    // If no inputs parsed, create a default input
     if ir_graph.inputs.is_empty() {
         let id = ir_graph.add_value(
             "input",
@@ -275,12 +274,12 @@ pub fn trace_from_torch(
             continue;
         }
 
-        // 跳过 GetAttr
+        // Skip GetAttr
         if line.contains("prim::GetAttr") {
             continue;
         }
 
-        // 处理 CallMethod
+        // Handle CallMethod
         if line.contains("prim::CallMethod") {
             if let Some((out_name, _ /* rest */)) = parse_output_name(line) {
                 let method_name = extract_call_method_name(line);
@@ -289,7 +288,7 @@ pub fn trace_from_torch(
                     let input_ids = resolve_inputs(&inputs, &value_map);
 
                     if !input_ids.is_empty() {
-                        // 判断是 linear 还是 conv2d
+                        // Determine if linear or conv2d
                         let op_type = if line.contains("Conv2d")
                             || line.contains("conv")
                         {
@@ -298,7 +297,7 @@ pub fn trace_from_torch(
                             "linear"
                         };
 
-                        // 只创建一次 out_id
+                        // Create out_id only once
                         let dtype = parse_value_dtype(line);
                         let shape = parse_shape(line);
                         let (scale, zero_point) = parse_scale_zero_point(line);
@@ -326,14 +325,15 @@ pub fn trace_from_torch(
             continue;
         }
 
-        // 处理 Constant
+        // Handle Constant
         if line.contains("prim::Constant") {
             if let Some((name, value)) = parse_constant(line) {
                 constant_map.insert(name.clone(), value);
 
-                // 添加 Value 到 value_map
-                // 对于常量，dtype 需要从 value 推断，暂时用 F32
-                let dtype = DataType::F32; // TODO: 从 value 推断 dtype
+                // Add Value to value_map
+                // For constants, dtype needs to be inferred from value,
+                // use F32 for now
+                let dtype = DataType::F32; // TODO: infer dtype from value
                 let ty = TensorType { dtype, shape: vec![] };
                 let id = ir_graph.add_value(&name, ty);
                 value_map.insert(name, id);
@@ -341,14 +341,14 @@ pub fn trace_from_torch(
             continue;
         }
 
-        // 处理 aten:: 算子
+        // Handle aten:: operators
         if let Some((out_name, rest_line)) = parse_output_name(line) {
             let op_type = parse_aten_op(&rest_line);
             if op_type != "unknown" {
                 let inputs = extract_inputs(&rest_line);
                 let input_ids = resolve_inputs(&inputs, &value_map);
 
-                // 创建 out_id（只创建一次）
+                // Create out_id (only once)
                 let dtype = parse_value_dtype(line);
                 let shape = parse_shape(line);
                 let (scale, zero_point) = parse_scale_zero_point(line);
@@ -364,15 +364,15 @@ pub fn trace_from_torch(
 
                 let mut attrs = HashMap::new();
 
-                // conv2d 特殊处理
+                // conv2d special handling
                 if op_type == "conv2d" {
-                    // 前 3 个是数据输入
+                    // First 3 are data inputs
                     let data_inputs: Vec<String> =
                         inputs.iter().take(3).cloned().collect();
                     let data_input_ids =
                         resolve_inputs(&data_inputs, &value_map);
 
-                    // 后 4 个是属性
+                    // Last 4 are attributes
                     let stride = constant_map
                         .get(inputs[3].trim())
                         .cloned()
@@ -407,7 +407,7 @@ pub fn trace_from_torch(
                     continue;
                 }
 
-                // 通用处理
+                // General handling
                 if !input_ids.is_empty() {
                     ir_graph.add_op(op_type, input_ids, vec![out_id], attrs);
                 }
@@ -416,11 +416,11 @@ pub fn trace_from_torch(
         }
     }
 
-    // 设置输出
+    // Set outputs
     if !ir_graph.outputs.is_empty() {
-        // 保留已有输出
+        // Keep existing outputs
     } else {
-        // 如果没有输出，用最后一个
+        // If no outputs, use the last one
         if let Some(id) = value_map.get(&last_output) {
             ir_graph.set_outputs(vec![*id]);
         }
@@ -430,8 +430,8 @@ pub fn trace_from_torch(
 }
 
 // ============================================================
-// 测试函数（Python 调用）
-// 勿删，用于调试（看 IR 结构，不需要权重）
+// Test function (called by Python)
+// Do not delete, used for debugging (view IR structure, no weights)
 // ============================================================
 #[pyfunction]
 pub fn test_trace_from_torch(
@@ -444,7 +444,7 @@ pub fn test_trace_from_torch(
 }
 
 // ============================================================
-// 输入解析
+// Input parsing
 // ============================================================
 fn parse_inputs(s: &str) -> Vec<(String, String, Vec<i64>)> {
     let mut result = Vec::new();
@@ -460,7 +460,7 @@ fn parse_inputs(s: &str) -> Vec<(String, String, Vec<i64>)> {
                     if name.is_empty() || name == "%self.1" {
                         continue;
                     }
-                    // 提取 dtype 和 shape
+                    // Extract dtype and shape
                     let dtype = "Float";
                     let shape = vec![1, 10];
                     if !name.is_empty() {
@@ -478,17 +478,18 @@ fn parse_inputs(s: &str) -> Vec<(String, String, Vec<i64>)> {
 }
 
 // ============================================================
-// 属性提取
+// Attribute extraction
 // ============================================================
 // fn extract_attrs(s: &str) -> HashMap<String, AttrValue> {
 //     let mut attrs = HashMap::new();
 //
-//     // 从 JIT 节点中提取属性
+//     // Extract attributes from JIT nodes
 //     // aten::conv2d(%input, %weight, %bias, %stride,
 //                     %padding, %dilation, %groups)
-//     // 这些参数在 JIT 中是以 %name 形式传递的，需要从上下文中解析
+//     // These parameters are passed as %name in JIT,
+//     // need to parse from context
 //
-//     // 简化：提取常量属性
+//     // Simplified: extract constant attributes
 //     if let Some(start) = s.find('[') {
 //         if let Some(end) = s.rfind(']') {
 //             let attr_str = &s[start + 1..end];
@@ -514,7 +515,7 @@ fn parse_inputs(s: &str) -> Vec<(String, String, Vec<i64>)> {
 // }
 
 // ============================================================
-// 值解析
+// Value resolution
 // ============================================================
 fn resolve_inputs(
     inputs: &[String],
@@ -548,7 +549,7 @@ fn create_value(
 }
 
 // ============================================================
-// 解析算子类型
+// Parse operator type
 // ============================================================
 fn parse_aten_op(s: &str) -> &'static str {
     if s.contains("aten::add") {
@@ -612,7 +613,7 @@ fn parse_aten_op(s: &str) -> &'static str {
 }
 
 // ============================================================
-// 通用辅助函数
+// Generic helper functions
 // ============================================================
 fn parse_output_name(line: &str) -> Option<(String, String)> {
     if let Some(pos) = line.find('=') {
@@ -652,8 +653,8 @@ fn extract_call_method_name(s: &str) -> String {
 }
 
 // fn extract_dtype_from_line(line: &str) -> String {
-//     // 从 "Float(1, 10, strides=[10, 1],
-//                  requires_grad=0, device=cpu)" 提取 "Float"
+//     // Extract "Float" from "Float(1, 10, strides=[10, 1],
+//                  requires_grad=0, device=cpu)"
 //     if let Some(start) = line.find('%') {
 //         let after_name = &line[start + 1..];
 //         if let Some(colon_pos) = after_name.find(':') {
@@ -690,14 +691,14 @@ fn parse_constant(line: &str) -> Option<(String, AttrValue)> {
             if value_end > 0 {
                 let raw = &value_str[..value_end].trim();
 
-                // 处理 <Tensor>
+                // Handle <Tensor>
                 if raw.starts_with('<') && raw.ends_with('>') {
                     return Some((
                         name,
                         AttrValue::String("Tensor".to_string()),
                     ));
                 }
-                // 处理数组: [2, 2]
+                // Handle array: [2, 2]
                 else if raw.starts_with('[') && raw.ends_with(']') {
                     let inner = &raw[1..raw.len() - 1];
                     let values: Vec<i64> = inner
@@ -706,7 +707,7 @@ fn parse_constant(line: &str) -> Option<(String, AttrValue)> {
                         .collect();
                     return Some((name, AttrValue::IntList(values)));
                 }
-                // 处理整数: 1
+                // Handle integer: 1
                 else if let Ok(v) = raw.parse::<i64>() {
                     return Some((name, AttrValue::Int(v)));
                 }
@@ -722,7 +723,7 @@ fn parse_dtype(s: &str) -> DataType {
         if s.contains("Double") || s.contains("double") || s.contains("64") {
             DataType::F64
         } else if s.contains("Half") || s.contains("half") || s.contains("16") {
-            // 检查是否是 BF16
+            // Check if BF16
             if s.contains("BFloat16")
                 || s.contains("bfloat16")
                 || s.contains("BF16")
@@ -748,7 +749,7 @@ fn parse_dtype(s: &str) -> DataType {
 }
 
 fn parse_value_dtype(line: &str) -> DataType {
-    // 从 " %x.1 : Float(1, 10, ...)" 提取 "Float"
+    // Extract "Float" from " %x.1 : Float(1, 10, ...)"
     if let Some(colon_pos) = line.find(':') {
         let after_colon = &line[colon_pos + 1..];
         let dtype_end = after_colon.find('(').unwrap_or(after_colon.len());
@@ -762,7 +763,7 @@ fn parse_shape(line: &str) -> Vec<i64> {
     if let Some(start) = line.find('(') {
         let end = line[start..].find(')').unwrap_or(0);
         let shape_part = &line[start + 1..start + end];
-        // 提取数字，直到遇到 ',' 或 'strides'
+        // Extract numbers until ',' or 'strides'
         let mut shape = Vec::new();
         for part in shape_part.split(',') {
             let part = part.trim();
@@ -783,11 +784,11 @@ fn parse_shape(line: &str) -> Vec<i64> {
 }
 
 fn parse_scale_zero_point(line: &str) -> (Option<f32>, Option<f32>) {
-    // 从 JIT 图中提取 scale 和 zero_point（如果有）
-    // 例如: "scale=0.01, zero_point=0" 或 "scale=0.01" 或 "zero_point=0"
+    // Extract scale and zero_point from JIT graph (if present)
+    // Example: "scale=0.01, zero_point=0" or "scale=0.01" or "zero_point=0"
     let mut scale = None;
     let mut zero_point = None;
-    // 简化：如果行包含 "scale=" 提取
+    // Simplified: extract if line contains "scale="
     if let Some(start) = line.find("scale=") {
         let rest = &line[start + 6..];
         let end = rest.find(',').unwrap_or(rest.len());

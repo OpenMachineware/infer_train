@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// Quantize (量化: f32 -> i8)
+// Quantize (Quantization: f32 -> i8)
 // ============================================================
 
 pub fn quantize(
@@ -25,7 +25,7 @@ pub fn quantize(
 }
 
 // ============================================================
-// Dequantize (反量化: i8 -> f32)
+// Dequantize (Dequantization: i8 -> f32)
 // ============================================================
 
 pub fn dequantize(input: &Tensor<i8>) -> Tensor<f32> {
@@ -42,11 +42,12 @@ pub fn dequantize(input: &Tensor<i8>) -> Tensor<f32> {
 }
 
 // ============================================================
-// Quantize Backward (梯度传递: 量化不可导，但可以用直通估计器)
+// Quantize Backward (Gradient Propagation: quantization is non-differentiable,
+//                    but we can use Straight-Through Estimator)
 // ============================================================
 
 pub fn quantize_backward(grad_output: &Tensor<f32>) -> Vec<Tensor<f32>> {
-    // 直通估计器 (STE): 梯度直接传递
+    // Straight-Through Estimator (STE): gradient passes through directly
     vec![grad_output.clone()]
 }
 
@@ -65,7 +66,8 @@ impl Operator<f32> for QuantizeOp {
         let scale = attrs.get_float("scale").unwrap_or(1.0);
         let zero_point = attrs.get_float("zero_point").unwrap_or(0.0);
         let quantized = quantize(inputs[0], scale, zero_point);
-        // 返回 f32 张量 (实际量化后是 i8，但为了兼容性)
+        // Return f32 tensor
+        // (actually i8 after quantization, but for compatibility)
         dequantize(&quantized)
     }
     fn backward(
@@ -90,7 +92,7 @@ impl Operator<f32> for DequantizeOp {
         _attrs: &OpAttrs,
     ) -> Tensor<f32> {
         assert_eq!(inputs.len(), 1);
-        // 假设输入是量化后的 f32 表示，实际是 i8
+        // Assume input is quantized f32 representation, actually i8
         inputs[0].clone()
     }
     fn backward(
@@ -121,7 +123,7 @@ mod tests {
     fn test_quantize_range() {
         let input = Tensor::new(vec![-10.0, 0.0, 10.0], &[3]);
         let quantized = quantize(&input, 1.0, 0.0);
-        // -10 在 [-128, 127] 范围内，保持 -10
+        // -10 is within [-128, 127] range, stays -10
         assert_eq!(quantized.data()[0], -10);
         assert_eq!(quantized.data()[1], 0);
         assert_eq!(quantized.data()[2], 10);
@@ -131,7 +133,7 @@ mod tests {
     fn test_quantize_clamp() {
         let input = Tensor::new(vec![-1000.0, 1000.0], &[2]);
         let quantized = quantize(&input, 1.0, 0.0);
-        // -1000 被 clamp 到 -128, 1000 被 clamp 到 127
+        // -1000 clamped to -128, 1000 clamped to 127
         assert_eq!(quantized.data()[0], -128);
         assert_eq!(quantized.data()[1], 127);
     }

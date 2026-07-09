@@ -1,5 +1,9 @@
 # InferTrain - 推训一体计算引擎
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
+[![英文文档](https://img.shields.io/badge/English_Docs-Click_here-brightgreen?style=for-the-badge)](./README.md)
+
 ## 项目简介
 
 InferTrain 是一个专为边缘设备设计的推训一体 AI 推理与训练引擎。
@@ -205,8 +209,8 @@ Apache 2.0
 4. 确保代码和注释中无中文
 5. 确保代码**严格不超过80列**，包括注释
 6. 保证每次commit，都是一个完整的，独立的，小型的改动
-7. 确保commit msg无中文 
-8. commit时加`-s`参数，以便生成Sign-off 
+7. 确保commit msg无中文
+8. commit时加`-s`参数，以便生成Sign-off
 9. 提交 Pull Request
 
 

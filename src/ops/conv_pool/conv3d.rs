@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 辅助函数
+// Helper Functions
 // ============================================================
 
 fn conv3d_output_size(
@@ -19,7 +19,7 @@ fn conv3d_output_size(
 }
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn conv3d<T: DType + Send + Sync>(
@@ -131,7 +131,7 @@ pub fn conv3d<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward - 简化版   TODO: 完善
+// Float Generic Backward - Simplified   TODO: Improve
 // ============================================================
 
 pub fn conv3d_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
@@ -139,7 +139,7 @@ pub fn conv3d_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct Conv3dOp;

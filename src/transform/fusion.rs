@@ -9,7 +9,7 @@ impl FusionPass {
         let mut to_remove = Vec::new();
         let mut new_ops = Vec::new();
 
-        // 只收集 ID，不克隆数据
+        // Collect IDs only, no data cloning
         let op_ids: Vec<u64> = graph.ops.keys().cloned().collect();
 
         for &op_id in &op_ids {
@@ -17,7 +17,7 @@ impl FusionPass {
                 continue;
             }
 
-            // 每次重新获取，但获取后就立即使用
+            // Re-fetch each time, use immediately after fetching
             let (op_type, inputs, outputs, attrs) = match graph.ops.get(&op_id)
             {
                 Some(op) => (
@@ -30,11 +30,11 @@ impl FusionPass {
             };
 
             // ============================================================
-            // 第一轮：检测各种融合模式
+            // Round 1: Detect various fusion patterns
             // ============================================================
             match op_type.as_str() {
                 // ---------------------------------------------------------
-                // Conv2d 相关融合
+                // Conv2d-related fusion
                 // ---------------------------------------------------------
                 "conv2d" => {
                     Self::try_fuse_conv2d(
@@ -50,7 +50,7 @@ impl FusionPass {
                 }
 
                 // ---------------------------------------------------------
-                // MatMul/Linear 相关融合
+                // MatMul/Linear-related fusion
                 // ---------------------------------------------------------
                 "matmul" | "linear" => {
                     Self::try_fuse_matmul_linear(
@@ -67,7 +67,7 @@ impl FusionPass {
                 }
 
                 // ---------------------------------------------------------
-                // LayerNorm 相关融合
+                // LayerNorm-related fusion
                 // ---------------------------------------------------------
                 "layernorm" => {
                     Self::try_fuse_layernorm(
@@ -83,7 +83,7 @@ impl FusionPass {
                 }
 
                 // ---------------------------------------------------------
-                // Add 相关融合
+                // Add-related fusion
                 // ---------------------------------------------------------
                 "add" => {
                     Self::try_fuse_add(
@@ -99,7 +99,7 @@ impl FusionPass {
                 }
 
                 // ---------------------------------------------------------
-                // Softmax 相关融合
+                // Softmax-related fusion
                 // ---------------------------------------------------------
                 "softmax" => {
                     Self::try_fuse_softmax(
@@ -115,7 +115,7 @@ impl FusionPass {
                 }
 
                 // ---------------------------------------------------------
-                // GELU 相关融合
+                // GELU-related fusion
                 // ---------------------------------------------------------
                 "gelu" => {
                     Self::try_fuse_gelu(
@@ -134,7 +134,7 @@ impl FusionPass {
             }
         }
 
-        // 清理和添加新算子
+        // Cleanup and add new operators
         for id in to_remove {
             graph.ops.remove(&id);
         }
@@ -146,7 +146,7 @@ impl FusionPass {
     }
 
     // ============================================================
-    // Conv2d 融合
+    // Conv2d fusion
     // ============================================================
     fn try_fuse_conv2d(
         graph: &mut DagGraph,
@@ -195,7 +195,7 @@ impl FusionPass {
     }
 
     // ============================================================
-    // MatMul/Linear 融合
+    // MatMul/Linear fusion
     // ============================================================
     fn try_fuse_matmul_linear(
         graph: &mut DagGraph,
@@ -263,7 +263,7 @@ impl FusionPass {
     }
 
     // ============================================================
-    // LayerNorm 融合
+    // LayerNorm fusion
     // ============================================================
     fn try_fuse_layernorm(
         graph: &mut DagGraph,
@@ -300,7 +300,7 @@ impl FusionPass {
     }
 
     // ============================================================
-    // Add 融合
+    // Add fusion
     // ============================================================
     fn try_fuse_add(
         graph: &mut DagGraph,
@@ -349,7 +349,7 @@ impl FusionPass {
     }
 
     // ============================================================
-    // Softmax 融合
+    // Softmax fusion
     // ============================================================
     fn try_fuse_softmax(
         graph: &mut DagGraph,
@@ -386,7 +386,7 @@ impl FusionPass {
     }
 
     // ============================================================
-    // GELU 融合
+    // GELU fusion
     // ============================================================
     fn try_fuse_gelu(
         graph: &mut DagGraph,
@@ -398,9 +398,9 @@ impl FusionPass {
         new_ops: &mut Vec<Op>,
         changed: &mut bool,
     ) {
-        // 检查 GELU 前面是否是 MatMul/Linear
-        // 这个通常在 try_fuse_matmul_linear 中处理
-        // 这里作为补充：GELU + 后续操作
+        // Check if MatMul/Linear is before GELU
+        // This is usually handled in try_fuse_matmul_linear
+        // This serves as a supplement: GELU + subsequent operations
         let gelu_out = outputs[0];
         let users = graph.get_users(gelu_out);
         if users.len() != 1 {
@@ -414,7 +414,7 @@ impl FusionPass {
             None => return,
         };
 
-        // GELU + MatMul (MLP 的第二层)
+        // GELU + MatMul (second layer of MLP)
         if next_op.op_type == "matmul" || next_op.op_type == "linear" {
             if let Some(fused) = Self::fuse_gelu_matmul(
                 graph, gelu_id, inputs, outputs, attrs, next_id, &next_op,
@@ -427,7 +427,7 @@ impl FusionPass {
     }
 
     // ============================================================
-    // 具体融合实现
+    // Specific fusion implementations
     // ============================================================
     // ------------------------------------------------------------
     // Conv2d + BN
@@ -450,7 +450,7 @@ impl FusionPass {
             return None;
         }
 
-        // 检查是否有 ReLU
+        // Check if there's a ReLU
         let bn_out = bn_outputs[0];
         let users = graph.get_users(bn_out);
         let has_relu = users.len() == 1
@@ -590,13 +590,14 @@ impl FusionPass {
         let add_attrs = &add_op.attrs;
 
         let matmul_out = if matmul_type == "matmul" {
-            // MatMul 的输出是第一个输出
-            matmul_inputs[0] // 实际上应该是 outputs[0]，但这里用 inputs 示意
+            // MatMul output is the first output
+            // Actually should be outputs[0], but using inputs for illustration
+            matmul_inputs[0]
         } else {
             matmul_inputs[0]
         };
 
-        // 检查 Add 的另一个输入是否是常量（bias）
+        // Check if the other input to Add is a constant (bias)
         let bias_id = if add_inputs[0] == matmul_out {
             Some(add_inputs[1])
         } else if add_inputs[1] == matmul_out {
@@ -610,7 +611,7 @@ impl FusionPass {
             _ => return None,
         };
 
-        // 检查是否有后续的 ReLU 或 GELU
+        // Check if there's a subsequent ReLU or GELU
         let add_out = add_outputs[0];
         let users = graph.get_users(add_out);
         let has_relu = users.len() == 1
@@ -761,7 +762,7 @@ impl FusionPass {
         to_remove.push(ln_id);
 
         let mut fused_inputs = matmul_inputs.to_vec();
-        // 添加 LayerNorm 的 gamma 和 beta
+        // Add LayerNorm gamma and beta
         fused_inputs.push(ln_inputs[1]); // gamma
         fused_inputs.push(ln_inputs[2]); // beta
 
@@ -816,14 +817,14 @@ impl FusionPass {
             None
         };
 
-        // 检查输入是否是常量（可以完全折叠）
+        // Check if inputs are constants (can be fully folded)
         let is_constant = graph.constants.contains_key(&ln_input_id)
             && graph.constants.contains_key(&gamma_id)
             && graph.constants.contains_key(&beta_id)
             && graph.constants.contains_key(&matmul_weight_id);
 
         if is_constant {
-            // 完全折叠 LayerNorm + MatMul
+            // Fully fold LayerNorm + MatMul
             return Self::fold_layernorm_matmul(
                 graph,
                 ln_id,
@@ -836,7 +837,7 @@ impl FusionPass {
             );
         }
 
-        // 否则只融合算子（kernel fusion）
+        // Otherwise only fuse operators (kernel fusion)
         to_remove.push(ln_id);
         to_remove.push(matmul_id);
 
@@ -863,7 +864,7 @@ impl FusionPass {
         Some(fused_op)
     }
 
-    // 完全折叠 LayerNorm + MatMul
+    // Fully fold LayerNorm + MatMul
     fn fold_layernorm_matmul(
         graph: &mut DagGraph,
         ln_id: u64,
@@ -887,7 +888,7 @@ impl FusionPass {
         let beta_data = graph.constants.get(&ln_inputs[2])?;
         let weight_data = graph.constants.get(&matmul_inputs[1])?;
 
-        // 解码为 f32
+        // Decode to f32
         let input: Vec<f32> = input_data
             .chunks(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -905,13 +906,13 @@ impl FusionPass {
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
 
-        // 计算 LayerNorm
+        // Compute LayerNorm
         let mean: f32 = input.iter().sum::<f32>() / input.len() as f32;
         let var: f32 = input.iter().map(|&x| (x - mean).powi(2)).sum::<f32>()
             / input.len() as f32;
         let std = (var + eps as f32).sqrt();
 
-        // 归一化并与 MatMul 权重融合
+        // Normalize and fuse with MatMul weights
         let out_features = gamma.len();
         let in_features = weight.len() / out_features;
 
@@ -931,7 +932,7 @@ impl FusionPass {
             }
         }
 
-        // 编码
+        // Encode
         let fused_weight_bytes: Vec<u8> =
             fused_weight.iter().flat_map(|&v| v.to_le_bytes()).collect();
         let fused_bias_bytes: Vec<u8> =
@@ -1151,7 +1152,7 @@ impl FusionPass {
     }
 
     // ------------------------------------------------------------
-    // Conv+BN 权重合并辅助函数
+    // Conv+BN weight merging helper
     // ------------------------------------------------------------
     fn fuse_conv_bn_weights(
         conv_weight_data: &[u8],
@@ -1218,7 +1219,7 @@ impl FusionPass {
     }
 
     // ------------------------------------------------------------
-    // 辅助函数
+    // Helper function
     // ------------------------------------------------------------
     fn create_fused_op(
         op_type: &str,

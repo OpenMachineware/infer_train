@@ -33,7 +33,7 @@ pub fn dispatch_nn(
             let w_t = crate::ops::linalg::transpose::transpose(&inputs[1]);
             let result = crate::ops::linalg::matmul::matmul(&inputs[0], &w_t);
             let result = if let Some(b) = bias {
-                // 加上 bias
+                // Add bias
                 let mut data = result.data().to_vec();
                 for (i, v) in data.iter_mut().enumerate() {
                     *v = *v + b.data()[i % b.len()];
@@ -100,9 +100,9 @@ pub fn dispatch_nn(
             }
             let _p = get_float(attrs, "p", 0.5);
             let training = get_bool(attrs, "training", false);
-            // 推理模式下 dropout 是 identity
+            // Dropout is identity in inference mode
             if training {
-                // 简化版：返回原值
+                // Simplified: return original value
                 Ok(vec![inputs[0].clone()])
             } else {
                 Ok(vec![inputs[0].clone()])
@@ -114,8 +114,8 @@ pub fn dispatch_nn(
                     "embedding requires 2 inputs (indices, weight)".to_string()
                 );
             }
-            // 需要从 indices 提取 i64
-            // 暂时简化
+            // Need to extract i64 from indices
+            // Simplified for now
             Ok(vec![inputs[1].clone()])
         }
         _ => Err(format!("Unknown nn op: {}", op_type)),

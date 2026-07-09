@@ -122,7 +122,7 @@ pub fn min<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// Backward - 简化版   TODO: 完善
+// Backward - Simplified   TODO: Improve
 // ============================================================
 
 pub fn max_backward<T: DType>(
@@ -131,7 +131,7 @@ pub fn max_backward<T: DType>(
     _dim: usize,
     _keepdim: bool,
 ) -> Vec<Tensor<T>> {
-    // 简化版：直接传递梯度
+    // Simplified: directly pass gradient
     vec![grad_output.clone()]
 }
 
@@ -145,7 +145,7 @@ pub fn min_backward<T: DType>(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct MaxOp;

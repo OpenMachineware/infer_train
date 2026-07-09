@@ -6,7 +6,7 @@ use crate::tensor::Tensor;
 use super::sdpa::scaled_dot_product_attention;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn multi_head_attention<T: DType + Send + Sync>(
@@ -53,7 +53,7 @@ pub fn multi_head_attention<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 辅助函数：重排维度
+// Helper: Reshape dimensions
 // ============================================================
 
 fn reshape_to_4d<T: DType + Clone>(
@@ -118,7 +118,7 @@ fn reshape_to_3d<T: DType + Clone>(
 }
 
 // ============================================================
-// 浮点泛型 Backward - 简化版 TODO: 完善
+// Float Generic Backward - Simplified TODO: Improve
 // ============================================================
 
 pub fn multi_head_attention_backward<T: DType>(
@@ -128,7 +128,7 @@ pub fn multi_head_attention_backward<T: DType>(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct MhaOp;

@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 浮点泛型 Forward (推理模式)
+// Float Generic Forward (Inference Mode)
 // ============================================================
 
 pub fn batch_norm<T: DType + Send + Sync>(
@@ -51,7 +51,7 @@ pub fn batch_norm<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward (训练模式)
+// Float Generic Backward (Training Mode)
 // ============================================================
 
 pub fn batch_norm_backward<T: DType + Send + Sync>(
@@ -107,7 +107,7 @@ pub fn batch_norm_backward<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct BatchNormOp;

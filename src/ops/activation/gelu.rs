@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 use rayon::prelude::*;
 
 // ============================================================
-// 浮点泛型 Forward - 近似版本
+// Float Generic Forward - Approximate Version
 // ============================================================
 
 pub fn gelu<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
@@ -13,7 +13,8 @@ pub fn gelu<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
         .par_iter()
         .map(|&x| {
             let v = x.to_f32();
-            // GELU 近似: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+            // GELU approximation:
+            // 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
             let c = 0.79788456; // sqrt(2/pi)
             let x3 = v * v * v;
             let tanh_val = (c * (v + 0.044715 * x3)).tanh();
@@ -25,7 +26,7 @@ pub fn gelu<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn gelu_backward<T: DType>(
@@ -49,7 +50,7 @@ pub fn gelu_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Forward - 简化版 TODO: 完善
+// Quantized Forward - Simplified TODO: Improve
 // ============================================================
 
 pub fn quantized_gelu(a: &Tensor<i8>) -> Tensor<i8> {
@@ -69,7 +70,7 @@ pub fn quantized_gelu(a: &Tensor<i8>) -> Tensor<i8> {
 }
 
 // ============================================================
-// 量化 Backward - 简化版 TODO: 完善
+// Quantized Backward - Simplified TODO: Improve
 // ============================================================
 
 pub fn quantized_gelu_backward(
@@ -93,7 +94,7 @@ pub fn quantized_gelu_backward(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct GeluOp;

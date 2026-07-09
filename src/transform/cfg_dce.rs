@@ -9,10 +9,10 @@ impl CfgDCEPass {
     pub fn apply(cfg: &mut CfgGraph) -> bool {
         let mut changed = false;
 
-        // 标记可达块
+        // Mark reachable blocks
         let reachable = Self::mark_reachable_blocks(cfg);
 
-        // 删除不可达块
+        // Remove unreachable blocks
         let dead_blocks: Vec<u64> = cfg
             .blocks
             .keys()
@@ -32,10 +32,10 @@ impl CfgDCEPass {
             }
         }
 
-        // 删除死算子
+        // Remove dead operators
         changed |= Self::remove_dead_ops(cfg);
 
-        // 修复：合并单后继块
+        // Fix: merge blocks with single successor
         changed |= Self::merge_single_successor_blocks(cfg);
 
         changed
@@ -99,7 +99,7 @@ impl CfgDCEPass {
     fn merge_single_successor_blocks(cfg: &mut CfgGraph) -> bool {
         let mut changed = false;
 
-        // 先收集需要合并的块 ID
+        // Collect block IDs to merge first
         let blocks_to_merge: Vec<u64> = cfg
             .blocks
             .iter()
@@ -110,12 +110,13 @@ impl CfgDCEPass {
             .collect();
 
         for &block_id in &blocks_to_merge {
-            // 检查块是否还存在（可能已被之前合并删除）
+            // Check if block still exists (might have been merged and deleted)
             if !cfg.blocks.contains_key(&block_id) {
                 continue;
             }
 
-            // 先收集需要的数据，避免同时持有引用
+            // Collect needed data first to avoid holding references
+            // simultaneously
             let (succ_id, predecessors, ops) = {
                 let block = match cfg.blocks.get(&block_id) {
                     Some(b) => b,
@@ -127,13 +128,13 @@ impl CfgDCEPass {
                 (succ_id, predecessors, ops)
             };
 
-            // 检查后继块是否存在
+            // Check if successor block exists
             if !cfg.blocks.contains_key(&succ_id) {
                 continue;
             }
 
-            // 现在可以安全地修改 cfg.blocks
-            // 更新前驱块的 successor
+            // Now it's safe to modify cfg.blocks
+            // Update predecessor blocks' successors
             for pred in &predecessors {
                 if let Some(pred_block) = cfg.blocks.get_mut(pred) {
                     for succ in &mut pred_block.successors {
@@ -144,16 +145,16 @@ impl CfgDCEPass {
                 }
             }
 
-            // 将当前块的算子移到后继块
+            // Move current block's operators to successor block
             if let Some(succ_block) = cfg.blocks.get_mut(&succ_id) {
                 let mut new_ops = ops.clone();
                 new_ops.append(&mut succ_block.ops);
                 succ_block.ops = new_ops;
-                // 更新前驱
+                // Update predecessors
                 succ_block.predecessors = predecessors.clone();
             }
 
-            // 删除当前块
+            // Remove current block
             cfg.blocks.remove(&block_id);
             changed = true;
         }

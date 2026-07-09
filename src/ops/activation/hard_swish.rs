@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 use rayon::prelude::*;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn hard_swish<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
@@ -31,7 +31,7 @@ pub fn hard_swish<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn hard_swish_backward<T: DType>(
@@ -41,7 +41,7 @@ pub fn hard_swish_backward<T: DType>(
     let mut grad = grad_output.clone();
     for i in 0..grad.len() {
         let v = a.data()[i].to_f32();
-        // 导数: 当 -3 < x < 3 时为 (2*x + 3)/6，否则为 0 或 1
+        // Derivative: (2*x + 3)/6 when -3 < x < 3, otherwise 0 or 1
         let dhs = if v < -3.0 {
             0.0
         } else if v > 3.0 {
@@ -55,7 +55,7 @@ pub fn hard_swish_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Forward - 简化版   TODO: 完善
+// Quantized Forward - Simplified   TODO: Improve
 // ============================================================
 
 pub fn quantized_hard_swish(a: &Tensor<i8>) -> Tensor<i8> {
@@ -75,7 +75,7 @@ pub fn quantized_hard_swish(a: &Tensor<i8>) -> Tensor<i8> {
 }
 
 // ============================================================
-// 量化 Backward - 简化版   TODO: 完善
+// Quantized Backward - Simplified   TODO: Improve
 // ============================================================
 
 pub fn quantized_hard_swish_backward(
@@ -99,7 +99,7 @@ pub fn quantized_hard_swish_backward(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct HardSwishOp;

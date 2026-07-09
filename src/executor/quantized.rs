@@ -9,8 +9,8 @@ pub fn dispatch_quantized(
     inputs: &[Tensor<f32>],
     attrs: &HashMap<String, AttrValue>,
 ) -> Result<Vec<Tensor<f32>>, String> {
-    // 量化算子：暂时用 float 版本替代
-    // 实际需要 i8 张量支持
+    // Quantized operators: temporarily use float version instead
+    // Actual implementation needs i8 tensor support
     match op_type {
         "quantized_add" => {
             if inputs.len() < 2 {

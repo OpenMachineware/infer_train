@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 // ============================================================
-// 调度器配置
+// Scheduler Configuration
 // ============================================================
 
 #[derive(Debug, Clone)]
@@ -28,7 +28,7 @@ impl Default for SchedulerConfig {
 }
 
 // ============================================================
-// 调度器
+// Scheduler
 // ============================================================
 
 pub struct Scheduler {
@@ -40,9 +40,9 @@ pub struct Scheduler {
 #[derive(Debug, Clone)]
 pub struct NodeWeight {
     pub op_id: u64,
-    pub compute_cost: f32,  // 计算开销 (FLOPs)
-    pub memory_cost: usize, // 内存开销 (bytes)
-    pub priority: f32,      // 优先级 (越高越先执行)
+    pub compute_cost: f32,  // Compute cost (FLOPs)
+    pub memory_cost: usize, // Memory cost (bytes)
+    pub priority: f32,      // Priority (higher = execute earlier)
 }
 
 impl Scheduler {
@@ -55,27 +55,27 @@ impl Scheduler {
     }
 
     // ============================================================
-    // 生成执行顺序
+    // Generate Execution Order
     // ============================================================
 
     pub fn schedule(&mut self, graph: &DagGraph) -> Vec<u64> {
         self.node_weights.clear();
         self.execution_order.clear();
 
-        // 计算每个节点的权重
+        // Compute weights for each node
         self.compute_node_weights(graph);
 
-        // 拓扑排序 + 按优先级调度
+        // Topological sort + priority-based scheduling
         let topo = self.topological_sort_with_priority(graph);
 
-        // 启发式重排 (考虑内存和计算)
+        // Heuristic reordering (considering memory and computation)
         self.heuristic_reorder(graph, &topo);
 
         self.execution_order.clone()
     }
 
     // ============================================================
-    // 计算节点权重
+    // Compute Node Weights
     // ============================================================
 
     fn compute_node_weights(&mut self, graph: &DagGraph) {
@@ -111,14 +111,14 @@ impl Scheduler {
     }
 
     fn calculate_priority(&self, compute: &f32, memory: &usize) -> f32 {
-        // 计算密集型 + 内存密集型 = 高优先级
+        // Compute-intensive + memory-intensive = high priority
         let compute_factor = compute / 10.0;
         let memory_factor = (*memory as f32) / (1024.0 * 1024.0);
         compute_factor + memory_factor * 0.5
     }
 
     // ============================================================
-    // 拓扑排序 + 优先级
+    // Topological Sort + Priority
     // ============================================================
 
     fn topological_sort_with_priority(&self, graph: &DagGraph) -> Vec<u64> {
@@ -141,13 +141,13 @@ impl Scheduler {
             }
         }
 
-        // 按优先级排序的队列
+        // Priority-sorted queue
         let mut queue: Vec<u64> = in_degree
             .iter()
             .filter_map(|(&id, &deg)| if deg == 0 { Some(id) } else { None })
             .collect();
 
-        // 按优先级降序排序 (高优先级先执行)
+        // Sort by priority descending (higher priority first)
         queue.sort_by(|a, b| {
             let pa =
                 self.node_weights.get(a).map(|w| w.priority).unwrap_or(0.0);
@@ -167,7 +167,7 @@ impl Scheduler {
                     let deg = in_degree.get_mut(&next).unwrap();
                     *deg -= 1;
                     if *deg == 0 {
-                        // 插入时保持优先级
+                        // Maintain priority when inserting
                         let priority = self
                             .node_weights
                             .get(&next)
@@ -196,7 +196,7 @@ impl Scheduler {
     }
 
     // ============================================================
-    // 启发式重排
+    // Heuristic Reordering
     // ============================================================
 
     fn heuristic_reorder(&self, graph: &DagGraph, order: &[u64]) -> Vec<u64> {
@@ -206,7 +206,8 @@ impl Scheduler {
             return result;
         }
 
-        // 按内存访问模式重排: 优先安排能复用内存的算子
+        // Reorder by memory access pattern:
+        // prioritize ops that can reuse memory
         let mut memory_map: HashMap<u64, Vec<u64>> = HashMap::new();
 
         for &op_id in order {
@@ -217,7 +218,7 @@ impl Scheduler {
             }
         }
 
-        // 对结果按内存复用分组
+        // Group results by memory reuse
         let mut grouped = Vec::new();
         let mut visited = HashSet::new();
 
@@ -237,7 +238,7 @@ impl Scheduler {
                 visited.insert(id);
                 group.push(id);
 
-                // 找共享内存的邻居
+                // Find memory-sharing neighbors
                 if let Some(op) = graph.get_op(id) {
                     for &in_id in &op.inputs {
                         if let Some(users) = memory_map.get(&in_id) {
@@ -252,7 +253,8 @@ impl Scheduler {
             }
 
             if !group.is_empty() {
-                // 按内存大小排序 (先分配大的，再分配小的，减少碎片)
+                // Sort by memory size (allocate larger first, then smaller,
+                //                      to reduce fragmentation)
                 group.sort_by(|a, b| {
                     let mem_a = self
                         .node_weights
@@ -278,7 +280,7 @@ impl Scheduler {
     }
 
     // ============================================================
-    // 获取执行计划
+    // Get Execution Plan
     // ============================================================
 
     pub fn get_execution_order(&self) -> &[u64] {
@@ -290,7 +292,7 @@ impl Scheduler {
     }
 
     // ============================================================
-    // 内存规划
+    // Memory Planning
     // ============================================================
 
     pub fn plan_memory(
@@ -300,7 +302,7 @@ impl Scheduler {
         let mut plan = HashMap::new();
         let mut live_ranges = HashMap::new();
 
-        // 计算每个值的生命周期
+        // Compute lifetime of each value
         for (pos, &op_id) in self.execution_order.iter().enumerate() {
             if let Some(op) = graph.get_op(op_id) {
                 for &out_id in &op.outputs {
@@ -317,7 +319,7 @@ impl Scheduler {
             }
         }
 
-        // 分配内存地址
+        // Allocate memory addresses
         let mut current_offset = 0;
         for (&id, (_start, _end)) in &live_ranges {
             if let Some(value) = graph.get_value(id) {

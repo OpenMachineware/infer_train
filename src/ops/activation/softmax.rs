@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn softmax<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize) -> Tensor<T> {
@@ -15,7 +15,7 @@ pub fn softmax<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize) -> Tensor<T> {
     let mut data = vec![T::from_f32(0.0); a.len()];
     let a_data = a.data();
 
-    // 计算每个维度的大小和步长
+    // Compute size and stride for each dimension
     let mut stride = 1;
     for i in (dim + 1)..shape.len() {
         stride *= shape[i];
@@ -25,7 +25,7 @@ pub fn softmax<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize) -> Tensor<T> {
 
     for o in 0..outer {
         for s in 0..stride {
-            // 找到最大值 (数值稳定性)
+            // Find max value (numerical stability)
             let mut max_val = f32::NEG_INFINITY;
             for d in 0..dim_size {
                 let idx = o * dim_size * stride + d * stride + s;
@@ -35,14 +35,14 @@ pub fn softmax<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize) -> Tensor<T> {
                 }
             }
 
-            // 计算 sum of exp
+            // Compute sum of exp
             let mut sum = 0.0;
             for d in 0..dim_size {
                 let idx = o * dim_size * stride + d * stride + s;
                 sum += (a_data[idx].to_f32() - max_val).exp();
             }
 
-            // 计算 softmax
+            // Compute softmax
             for d in 0..dim_size {
                 let idx = o * dim_size * stride + d * stride + s;
                 data[idx] =
@@ -55,7 +55,7 @@ pub fn softmax<T: DType + Send + Sync>(a: &Tensor<T>, dim: usize) -> Tensor<T> {
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn softmax_backward<T: DType>(
@@ -67,7 +67,7 @@ pub fn softmax_backward<T: DType>(
     let out_data = output.data();
     let _grad_data = grad.data_mut();
 
-    // 简化版：逐元素计算
+    // Simplified version: element-wise computation
     for i in 0..grad.len() {
         let grad_val = grad.data()[i].to_f32();
         let out_val = out_data[i].to_f32();
@@ -77,7 +77,7 @@ pub fn softmax_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Forward
+// Quantized Forward
 // ============================================================
 
 pub fn quantized_softmax(a: &Tensor<i8>, dim: usize) -> Tensor<i8> {
@@ -97,7 +97,7 @@ pub fn quantized_softmax(a: &Tensor<i8>, dim: usize) -> Tensor<i8> {
 }
 
 // ============================================================
-// 量化 Backward - 简化版   TODO: 完善
+// Quantized Backward - Simplified   TODO: Improve
 // ============================================================
 
 pub fn quantized_softmax_backward(
@@ -121,7 +121,7 @@ pub fn quantized_softmax_backward(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct SoftmaxOp;
@@ -144,7 +144,7 @@ impl<T: DType + Send + Sync> Operator<T> for SoftmaxOp {
         attrs: &OpAttrs,
     ) -> Vec<Tensor<T>> {
         assert_eq!(inputs.len(), 1);
-        // 使用前向传播的输出作为输入
+        // Use forward pass output as input
         let dim = attrs.get_int("dim").unwrap_or(-1) as usize;
         let actual_dim =
             if dim == usize::MAX { inputs[0].shape().len() - 1 } else { dim };

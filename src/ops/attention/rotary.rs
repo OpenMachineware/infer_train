@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 浮点泛型 Forward (RoPE)
+// Float Generic Forward (RoPE)
 // ============================================================
 
 pub fn rotary_embedding<T: DType + Send + Sync>(
@@ -36,7 +36,7 @@ pub fn rotary_embedding<T: DType + Send + Sync>(
             let x1 = x_data[idx1].to_f32();
             let x2 = x_data[idx2].to_f32();
 
-            // 旋转: [x1, x2] -> [x1*cos - x2*sin, x1*sin + x2*cos]
+            // Rotation: [x1, x2] -> [x1*cos - x2*sin, x1*sin + x2*cos]
             out_data[idx1] = T::from_f32(x1 * cos_val - x2 * sin_val);
             out_data[idx2] = T::from_f32(x1 * sin_val + x2 * cos_val);
         }
@@ -46,7 +46,7 @@ pub fn rotary_embedding<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward - 简化版 TODO: 完善
+// Float Generic Backward - Simplified TODO: Improve
 // ============================================================
 
 pub fn rotary_embedding_backward<T: DType>(
@@ -59,7 +59,7 @@ pub fn rotary_embedding_backward<T: DType>(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct RotaryOp;

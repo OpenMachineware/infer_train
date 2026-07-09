@@ -19,7 +19,7 @@ use super::quantized;
 use super::tensor;
 
 // ============================================================
-// 执行器
+// Executor
 // ============================================================
 pub struct Executor {
     graph: DagGraph,
@@ -132,7 +132,7 @@ impl Executor {
         inputs: &[Tensor<f32>],
         batch_size: usize,
     ) -> Result<Vec<Vec<Tensor<f32>>>, String> {
-        // 将输入按 batch_size 分块
+        // Split inputs into chunks by batch_size
         let mut results = Vec::new();
         let total = inputs.len();
 
@@ -160,7 +160,8 @@ impl Executor {
         Ok(results)
     }
 
-    // 优化批量推理（共享 constants 加载，一次执行多个 batch）
+    // Optimized batch inference
+    // (share constant loading, execute multiple batches at once)
     pub fn execute_batch_optimized(
         &mut self,
         batches: &[Vec<Tensor<f32>>],
@@ -169,28 +170,28 @@ impl Executor {
             return Ok(Vec::new());
         }
 
-        // 加载 constants（只加载一次）
+        // Load constants (only once)
         self.load_constants()?;
 
-        // 获取执行顺序（只计算一次）
+        // Get execution order (only once)
         let order = self.scheduler.get_execution_order().to_vec();
 
-        // 对每个 batch 执行
+        // Execute for each batch
         let mut all_results = Vec::with_capacity(batches.len());
 
         for inputs in batches {
-            // 清理上一次的中间值，但保留 constants
+            // Clear previous intermediate values, but keep constants
             self.values.clear();
             self.memory_pool.reset();
 
-            // 只加载输入
+            // Only load inputs
             for (i, &input_id) in self.graph.inputs.iter().enumerate() {
                 if i < inputs.len() {
                     self.values.insert(input_id, inputs[i].clone());
                 }
             }
 
-            // 执行
+            // Execute
             if self.parallel && order.len() > 1 {
                 self.execute_parallel(&order)?;
             } else {
@@ -284,12 +285,12 @@ impl Executor {
 
         for (i, &out_id) in op.outputs.iter().enumerate() {
             if i < outputs.len() {
-                // 先获取 bytes，再分配
+                // Get bytes first, then allocate
                 let data_bytes = outputs[i].data();
                 let bytes = bytemuck::cast_slice(data_bytes);
 
                 if let Some(id) = self.memory_pool.allocate(bytes) {
-                    // 从内存池获取数据并创建 Tensor
+                    // Get data from memory pool and create Tensor
                     if let Some(pool_data) = self.memory_pool.get_mut(id) {
                         pool_data[..bytes.len()].copy_from_slice(bytes);
                         let float_data: &[f32] =
@@ -300,11 +301,11 @@ impl Executor {
                         );
                         self.values.insert(out_id, tensor);
                     } else {
-                        // 降级：直接存储
+                        // Fallback: store directly
                         self.values.insert(out_id, outputs[i].clone());
                     }
                 } else {
-                    // 内存池满，直接存储
+                    // Memory pool full, store directly
                     self.values.insert(out_id, outputs[i].clone());
                 }
             }
@@ -375,7 +376,7 @@ impl Executor {
 }
 
 // ============================================================
-// dispatch_op 函数（导出供 parallel 使用）
+// dispatch_op function (exported for parallel use)
 // ============================================================
 
 pub fn dispatch_op(
@@ -413,7 +414,7 @@ pub fn dispatch_op(
 }
 
 // ============================================================
-// PyO3 绑定
+// PyO3 Bindings
 // ============================================================
 
 #[pyclass]
@@ -454,7 +455,7 @@ impl PyExecutor {
             let inputs_list = inputs.bind(py);
             let mut input_tensors = Vec::new();
             for item in inputs_list.iter() {
-                // 从 PyObject 提取数据
+                // Extract data from PyObject
                 let data: Vec<f32> = item.extract()?;
                 let shape = vec![data.len()];
                 input_tensors.push(Tensor::new(data, &shape));
@@ -476,7 +477,7 @@ impl PyExecutor {
         })
     }
 
-    // 基础批量推理
+    // Basic batch inference
     pub fn execute_batch(
         &mut self,
         inputs: Vec<Vec<Py<PyAny>>>,
@@ -515,7 +516,7 @@ impl PyExecutor {
         })
     }
 
-    // 优化批量推理（共享 constants）
+    // Optimized batch inference (shared constants)
     pub fn execute_batch_optimized(
         &mut self,
         inputs: Vec<Vec<Py<PyAny>>>,

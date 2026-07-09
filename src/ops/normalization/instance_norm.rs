@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn instance_norm<T: DType + Send + Sync>(
@@ -30,14 +30,14 @@ pub fn instance_norm<T: DType + Send + Sync>(
         for ch in 0..c {
             let base = (b * c + ch) * spatial;
 
-            // 计算 mean
+            // Compute mean
             let mut mean = 0.0;
             for s in 0..spatial {
                 mean += x_data[base + s].to_f32();
             }
             mean /= spatial as f32;
 
-            // 计算 variance
+            // Compute variance
             let mut var = 0.0;
             for s in 0..spatial {
                 let diff = x_data[base + s].to_f32() - mean;
@@ -61,7 +61,7 @@ pub fn instance_norm<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn instance_norm_backward<T: DType>(
@@ -113,7 +113,7 @@ pub fn instance_norm_backward<T: DType>(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct InstanceNormOp;
@@ -153,6 +153,6 @@ mod tests {
         let beta = Tensor::new(vec![0.0, 0.0], &[2]);
         let c = instance_norm(&x, &gamma, &beta, 1e-5);
         assert_eq!(c.shape(), &[2, 2, 2]);
-        // 每个 (batch, channel) 独立归一化
+        // Each (batch, channel) is normalized independently
     }
 }

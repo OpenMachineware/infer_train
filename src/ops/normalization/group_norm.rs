@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn group_norm<T: DType + Send + Sync>(
@@ -35,7 +35,7 @@ pub fn group_norm<T: DType + Send + Sync>(
             let g_start = g * group_size;
             let g_end = g_start + group_size;
 
-            // 计算该 group 的 mean 和 variance
+            // Compute mean and variance for this group
             let mut mean = 0.0;
             let mut count = 0;
             for ch in g_start..g_end {
@@ -59,7 +59,7 @@ pub fn group_norm<T: DType + Send + Sync>(
 
             let inv_std = 1.0 / (var + eps).sqrt();
 
-            // 应用归一化
+            // Apply normalization
             for ch in g_start..g_end {
                 let base = (b * c + ch) * spatial;
                 let g_idx = ch;
@@ -78,7 +78,7 @@ pub fn group_norm<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward - 简化版   TODO: 完善
+// Float Generic Backward - Simplified   TODO: Improve
 // ============================================================
 
 pub fn group_norm_backward<T: DType>(
@@ -145,7 +145,7 @@ pub fn group_norm_backward<T: DType>(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct GroupNormOp;
@@ -187,6 +187,6 @@ mod tests {
         let beta = Tensor::new(vec![0.0, 0.0, 0.0, 0.0], &[4]);
         let c = group_norm(&x, &gamma, &beta, 2, 1e-5);
         assert_eq!(c.shape(), &[2, 4, 1]);
-        // 每个 group 独立归一化
+        // Each group is normalized independently
     }
 }

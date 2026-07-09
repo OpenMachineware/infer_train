@@ -5,7 +5,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 泛型 Forward
+// Generic Forward
 // ============================================================
 
 pub fn flatten<T: DType + Send + Sync>(
@@ -35,7 +35,7 @@ pub fn flatten<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 泛型 Backward
+// Generic Backward
 // ============================================================
 
 pub fn flatten_backward<T: DType>(
@@ -46,7 +46,7 @@ pub fn flatten_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Forward
+// Quantized Forward
 // ============================================================
 
 pub fn quantized_flatten(
@@ -83,7 +83,7 @@ pub fn quantized_flatten(
 }
 
 // ============================================================
-// 量化 Backward
+// Quantized Backward
 // ============================================================
 
 pub fn quantized_flatten_backward(
@@ -101,7 +101,7 @@ pub fn quantized_flatten_backward(
 }
 
 // ============================================================
-// Flatten Operator (泛型)
+// Flatten Operator (Generic)
 // ============================================================
 
 pub struct FlattenOp;
@@ -113,7 +113,7 @@ impl<T: DType + Send + Sync> Operator<T> for FlattenOp {
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T> {
         assert_eq!(inputs.len(), 1);
         let start_dim = attrs.get_int("start_dim").unwrap_or(0) as usize;
-        // 如果 end_dim 没有提供，使用 rank - 1
+        // If end_dim is not provided, use rank - 1
         let end_dim =
             attrs.get_int("end_dim").map(|v| v as usize).unwrap_or_else(|| {
                 let rank = inputs[0].shape().len();
@@ -136,7 +136,7 @@ impl<T: DType + Send + Sync> Operator<T> for FlattenOp {
 }
 
 // ============================================================
-// 量化 Flatten Operator
+// Quantized Flatten Operator
 // ============================================================
 
 pub struct QuantizedFlattenOp;
@@ -148,7 +148,7 @@ impl Operator<i8> for QuantizedFlattenOp {
     fn forward(&self, inputs: &[&Tensor<i8>], attrs: &OpAttrs) -> Tensor<i8> {
         assert_eq!(inputs.len(), 1);
         let start_dim = attrs.get_int("start_dim").unwrap_or(0) as usize;
-        // 如果 end_dim 没有提供，使用 rank - 1
+        // If end_dim is not provided, use rank - 1
         let end_dim =
             attrs.get_int("end_dim").map(|v| v as usize).unwrap_or_else(|| {
                 let rank = inputs[0].shape().len();

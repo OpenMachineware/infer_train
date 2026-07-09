@@ -72,17 +72,17 @@ impl AmpConfig {
 }
 
 // ============================================================
-// AMP 图转换器
+// AMP Graph Converter
 // ============================================================
 
 pub struct AmpGraphConverter;
 
 impl AmpGraphConverter {
-    /// 将 DAG 转换为混合精度 DAG
-    /// 规则：
-    /// 1. 输入插入 Cast (FP32 → AMP dtype)
-    /// 2. 输出插入 Cast (AMP dtype → FP32)
-    /// 3. 每个算子的输入/输出自动适配 AMP dtype
+    /// Convert DAG to mixed precision DAG
+    /// Rules:
+    /// 1. Insert Cast at input (FP32 → AMP dtype)
+    /// 2. Insert Cast at output (AMP dtype → FP32)
+    /// 3. Automatically adapt input/output of each operator to AMP dtype
     pub fn convert(
         graph: &mut DagGraph,
         config: &AmpConfig,
@@ -97,7 +97,7 @@ impl AmpGraphConverter {
         let mut to_remove = Vec::new();
         let mut next_id = graph.next_id;
 
-        // 收集所有需要转换的节点
+        // Collect all nodes to convert
         let op_ids: Vec<u64> = graph.ops.keys().cloned().collect();
 
         for &op_id in &op_ids {
@@ -106,12 +106,12 @@ impl AmpGraphConverter {
                 None => continue,
             };
 
-            // 判断算子是否应该在 AMP dtype 下执行
+            // Determine if operator should run in AMP dtype
             if Self::should_run_in_amp(&op.op_type) {
-                // 为每个输入插入 Cast (FP32 → AMP dtype)
+                // Insert Cast for each input (FP32 → AMP dtype)
                 let mut new_inputs = Vec::new();
                 for &in_id in &op.inputs {
-                    // 检查输入是否已经是 AMP dtype
+                    // Check if input is already AMP dtype
                     if let Some(value) = graph.values.get(&in_id) {
                         if value.ty.dtype == amp_dtype {
                             new_inputs.push(in_id);
@@ -119,7 +119,7 @@ impl AmpGraphConverter {
                         }
                     }
 
-                    // 插入 Cast
+                    // Insert Cast
                     let cast_out_id = next_id;
                     next_id += 1;
 
@@ -139,7 +139,7 @@ impl AmpGraphConverter {
                         },
                     };
 
-                    // 创建输出 Value
+                    // Create output Value
                     let out_shape = graph
                         .values
                         .get(&in_id)
@@ -165,7 +165,7 @@ impl AmpGraphConverter {
                     new_inputs.push(cast_out_id);
                 }
 
-                // 为输出插入 Cast (AMP dtype → FP32)
+                // Insert Cast for output (AMP dtype → FP32)
                 let mut new_outputs = Vec::new();
                 for &out_id in &op.outputs {
                     let cast_out_id = next_id;
@@ -212,7 +212,7 @@ impl AmpGraphConverter {
                     new_outputs.push(cast_out_id);
                 }
 
-                // 更新算子 (使用 AMP dtype)
+                // Update operator (use AMP dtype)
                 let mut new_op = op.clone();
                 new_op.inputs = new_inputs;
                 new_op.outputs = new_outputs;
@@ -222,16 +222,17 @@ impl AmpGraphConverter {
 
                 to_remove.push(op_id);
             } else {
-                // 不转换的算子保持原样
+                // Operators that don't convert remain unchanged
                 new_ops.push(op);
             }
         }
 
-        // 更新参数 (参数也需要转换为 AMP dtype)
-        // 但训练时参数保持在 FP32，forward 时动态转换
-        // 这里只标记，实际转换在 forward 时做
+        // Update parameters (parameters also need to be converted to AMP dtype)
+        // But during training, parameters stay in FP32 and are converted
+        // dynamically during forward
+        // Only mark here, actual conversion happens during forward
 
-        // 替换 graph
+        // Replace graph
         for id in to_remove {
             graph.ops.remove(&id);
         }
@@ -242,13 +243,13 @@ impl AmpGraphConverter {
 
         graph.next_id = next_id;
 
-        // 更新输出 (确保输出是 FP32)
+        // Update outputs (ensure outputs are FP32)
         let mut new_outputs = Vec::new();
         for &out_id in &graph.outputs {
             let out_value = graph.values.get(&out_id);
             if let Some(v) = out_value {
                 if v.ty.dtype != DataType::F32 {
-                    // 插入 Cast
+                    // Insert Cast
                     let cast_out_id = next_id;
                     next_id += 1;
 
@@ -298,32 +299,32 @@ impl AmpGraphConverter {
     }
 
     fn should_run_in_amp(op_type: &str) -> bool {
-        // 这些算子在 AMP dtype 下运行
-        // 数值稳定的算子
+        // These operators run in AMP dtype
+        // Numerically stable operators
         match op_type {
-            // 数学
+            // Math
             "add" | "sub" | "mul" | "div" | "pow" |
             "exp" | "sqrt" | "log" | "abs" | "neg" |
-            // 激活
+            // Activation
             "relu" | "gelu" | "silu" | "sigmoid" | "tanh" |
-            // 线性代数
+            // Linear algebra
             "matmul" | "batch_matmul" | "transpose" |
-            // 卷积
+            // Convolution
             "conv2d" | "conv1d" | "conv3d" |
-            // 池化
+            // Pooling
             "maxpool2d" | "avgpool2d" |
-            // 张量操作
+            // Tensor operations
             "reshape" | "flatten" | "concat" | "slice" |
-            // 归约
+            // Reduction
             "sum" | "mean" | "max" | "min" |
-            // 嵌入
+            // Embedding
             "embedding" |
-            // 注意力
+            // Attention
             "scaled_dot_product_attention" |
-            // 归一化
+            // Normalization
             "layer_norm" | "rms_norm" => true,
 
-            // 这些算子保持 FP32 (数值敏感)
+            // These operators stay in FP32 (numerically sensitive)
             "batch_norm" | "softmax" | "log_softmax" => false,
             "cross_entropy" | "mse" | "l1" | "bce" => false,
             _ => true,
@@ -332,7 +333,7 @@ impl AmpGraphConverter {
 }
 
 // ============================================================
-// Tensor 转换工具
+// Tensor Conversion Utilities
 // ============================================================
 
 #[allow(unused_assignments)]
@@ -340,11 +341,11 @@ pub fn cast_to_dtype<T: crate::dtype::DType + Send + Sync>(
     input: &Tensor<f32>,
     _dtype: DataType,
 ) -> Tensor<f32> {
-    // 这里用 cast 算子实现
-    // 实际转换由 cast 算子处理
-    // 由于我们使用 f32 存储所有值，cast 只改变 dtype 标记
+    // Implemented using cast operator
+    // Actual conversion handled by cast operator
+    // Since we store all values as f32, cast only changes dtype tag
     let mut result = input.clone();
-    // 标记 dtype
+    // Mark dtype
     result = Tensor::new(input.data().to_vec(), input.shape());
     result
 }

@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 use rayon::prelude::*;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn abs<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
@@ -15,7 +15,7 @@ pub fn abs<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn abs_backward<T: DType>(
@@ -37,7 +37,7 @@ pub fn abs_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Forward
+// Quantized Forward
 // ============================================================
 
 pub fn quantized_abs(a: &Tensor<i8>) -> Tensor<i8> {
@@ -62,7 +62,7 @@ pub fn quantized_abs(a: &Tensor<i8>) -> Tensor<i8> {
 }
 
 // ============================================================
-// 量化 Backward
+// Quantized Backward
 // ============================================================
 
 pub fn quantized_abs_backward(
@@ -83,7 +83,7 @@ pub fn quantized_abs_backward(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct AbsOp;

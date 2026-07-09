@@ -23,16 +23,16 @@ pub struct CfgBlock {
     pub predecessors: Vec<u64>,
     pub is_entry: bool,
     pub is_exit: bool,
-    // 分支信息
+    // Branch information
     pub branch_info: Option<BranchInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchInfo {
-    pub condition_value: u64, // 条件值的 ID
-    pub true_branch: u64,     // true 分支的块 ID
-    pub false_branch: u64,    // false 分支的块 ID
-    pub merge_block: u64,     // 合并块 ID
+    pub condition_value: u64, // Condition value ID
+    pub true_branch: u64,     // True branch block ID
+    pub false_branch: u64,    // False branch block ID
+    pub merge_block: u64,     // Merge block ID
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,7 +44,7 @@ pub struct CfgGraph {
     pub inputs: Vec<u64>,
     pub outputs: Vec<u64>,
     pub next_id: u64,
-    // 值映射 (value_id -> (type, shape))
+    // Value mapping (value_id -> (type, shape))
     pub value_types: HashMap<u64, (DataType, Vec<i64>)>,
 }
 
@@ -142,7 +142,7 @@ impl CfgGraph {
 
     pub fn add_output(&mut self, value_id: u64) {
         self.outputs.push(value_id);
-        // 标记为输出块
+        // Mark as output block
         for block in self.blocks.values_mut() {
             if block.ops.iter().any(|op| op.outputs.contains(&value_id)) {
                 block.is_exit = true;
@@ -172,9 +172,9 @@ impl CfgGraph {
             }
         }
 
-        // 检查是否所有块都被访问
+        // Check if all blocks are visited
         if result.len() != self.blocks.len() {
-            // 处理未访问的块（可能是孤立块）
+            // Handle unvisited blocks (possibly isolated)
             for (&id, _) in &self.blocks {
                 if !visited.contains(&id) {
                     result.push(id);

@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn norm<T: DType + Send + Sync>(
@@ -62,7 +62,7 @@ pub fn norm<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward - 简化版   TODO: 完善
+// Float Generic Backward - Simplified   TODO: Improve
 // ============================================================
 
 pub fn norm_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
@@ -70,7 +70,7 @@ pub fn norm_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct NormOp;
@@ -112,7 +112,7 @@ mod tests {
     fn test_norm_l1_2d() {
         let a = Tensor::new(vec![-1.0, 2.0, -3.0, 4.0], &[2, 2]);
         let c = norm(&a, 1, 1, false);
-        // 第一行: |-1| + |2| = 3, 第二行: |-3| + |4| = 7
+        // Row 1: |-1| + |2| = 3, Row 2: |-3| + |4| = 7
         assert_eq!(c.data(), &[3.0, 7.0]);
     }
 }

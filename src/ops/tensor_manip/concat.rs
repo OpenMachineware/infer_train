@@ -6,7 +6,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 泛型 Forward
+// Generic Forward
 // ============================================================
 
 pub fn concat<T: DType + Send + Sync>(
@@ -52,7 +52,7 @@ pub fn concat<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 泛型 Backward
+// Generic Backward
 // ============================================================
 
 pub fn concat_backward<T: DType>(
@@ -72,7 +72,7 @@ pub fn concat_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Forward
+// Quantized Forward
 // ============================================================
 
 pub fn quantized_concat(inputs: &[&Tensor<i8>], dim: usize) -> Tensor<i8> {
@@ -121,7 +121,7 @@ pub fn quantized_concat(inputs: &[&Tensor<i8>], dim: usize) -> Tensor<i8> {
 }
 
 // ============================================================
-// 量化 Backward
+// Quantized Backward
 // ============================================================
 
 pub fn quantized_concat_backward(

@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// Sort Forward (沿指定维度排序)
+// Sort Forward (Sort along specified dimension)
 // ============================================================
 
 pub fn sort<T: DType + Send + Sync>(
@@ -27,7 +27,7 @@ pub fn sort<T: DType + Send + Sync>(
 
     for o in 0..outer {
         for i in 0..inner {
-            // 收集该维度的所有值
+            // Collect all values in this dimension
             let mut pairs: Vec<(f32, usize)> = Vec::with_capacity(dim_size);
             let base = o * stride + i;
             for d in 0..dim_size {
@@ -35,14 +35,14 @@ pub fn sort<T: DType + Send + Sync>(
                 pairs.push((input_data[idx].to_f32(), d));
             }
 
-            // 排序
+            // Sort
             if ascending {
                 pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
             } else {
                 pairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
             }
 
-            // 写入结果
+            // Write results
             for d in 0..dim_size {
                 let idx = base + d * inner;
                 out_values[idx] = T::from_f32(pairs[d].0);
@@ -55,7 +55,7 @@ pub fn sort<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// Sort Backward - 简化版  TODO: 完善
+// Sort Backward - Simplified  TODO: Improve
 // ============================================================
 
 pub fn sort_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
@@ -63,7 +63,7 @@ pub fn sort_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct SortOp;

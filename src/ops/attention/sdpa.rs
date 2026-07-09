@@ -6,7 +6,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn scaled_dot_product_attention<T: DType + Send + Sync>(
@@ -34,7 +34,7 @@ pub fn scaled_dot_product_attention<T: DType + Send + Sync>(
     let k_t = crate::ops::linalg::transpose::transpose(key);
     let mut scores = matmul::matmul(query, &k_t);
 
-    // 应用 scale
+    // Apply scale
     let scale_val =
         if scale == 0.0 { 1.0 / (head_dim as f32).sqrt() } else { scale };
 
@@ -42,9 +42,9 @@ pub fn scaled_dot_product_attention<T: DType + Send + Sync>(
         *v = T::from_f32(v.to_f32() * scale_val);
     }
 
-    // 应用 causal mask (如果启用)
+    // Apply causal mask (if enabled)
     if is_causal {
-        // 简化版：只对最后两维应用 mask
+        // Simplified: apply mask to last two dimensions only
         let score_shape = scores.shape();
         let l = score_shape[2];
         for b in 0..batch {
@@ -71,7 +71,7 @@ pub fn scaled_dot_product_attention<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward - 简化版 TODO: 完善
+// Float Generic Backward - Simplified TODO: Improve
 // ============================================================
 
 pub fn scaled_dot_product_attention_backward<T: DType>(
@@ -84,7 +84,7 @@ pub fn scaled_dot_product_attention_backward<T: DType>(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct SdpaOp;

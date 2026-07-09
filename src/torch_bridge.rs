@@ -7,7 +7,7 @@ use crate::frontend::hook::HookTracer;
 // use crate::ir::serialize::PyDagGraph;
 use crate::executor::PyExecutor;
 
-/// 从 PyTorch 模型追踪并返回 DAG
+/// Trace from PyTorch model and return DAG
 #[pyfunction]
 pub fn trace_model(
     _py: Python,
@@ -16,13 +16,13 @@ pub fn trace_model(
 ) -> PyResult<Py<PyAny>> {
     let mut tracer = HookTracer::new();
 
-    // 使用 HookTracer 追踪
+    // Trace using HookTracer
     let dag = tracer.trace_to_dag(model, example_inputs)?;
 
     Ok(dag)
 }
 
-/// 从 PyTorch 模型追踪并导出 ITM
+/// Trace from PyTorch model and export ITM
 #[pyfunction]
 #[pyo3(
     signature = (
@@ -60,7 +60,7 @@ pub fn trace_and_export(
     )
 }
 
-/// 从 PyTorch 模型创建可训练模型
+/// Create trainable model from PyTorch model
 #[pyfunction]
 #[pyo3(
     signature = (
@@ -97,7 +97,7 @@ pub fn trace_trainable(
     )
 }
 
-/// 加载 ITM 模型并执行推理
+/// Load ITM model and execute inference
 #[pyfunction]
 pub fn load_and_infer(
     py: Python,
@@ -108,7 +108,7 @@ pub fn load_and_infer(
     let model_file = PyModelFile::load(&model_path)?;
     let dag = model_file.get_graph()?;
 
-    // 创建执行器
+    // Create executor
     let mut executor = PyExecutor::new(dag)?;
 
     let list = PyList::new(py, inputs.iter().map(|x| x.bind(py)))?.unbind();

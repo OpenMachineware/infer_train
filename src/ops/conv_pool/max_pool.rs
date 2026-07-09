@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 辅助函数
+// Helper Functions
 // ============================================================
 
 pub fn pool_output_size(
@@ -24,7 +24,7 @@ pub fn pool_output_size(
 }
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn max_pool<T: DType + Send + Sync>(
@@ -90,7 +90,7 @@ pub fn max_pool<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn max_pool_backward<T: DType + Send + Sync>(
@@ -159,7 +159,7 @@ pub fn max_pool_backward<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct MaxPoolOp;

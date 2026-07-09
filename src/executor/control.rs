@@ -17,8 +17,8 @@ pub fn dispatch_control(
                         .to_string(),
                 );
             }
-            // 简化版：用条件选择
-            // 实际需要 condition 是 bool 张量
+            // Simplified: use conditional selection
+            // Actual implementation needs condition to be bool tensor
             let result = inputs[1].clone();
             Ok(vec![result])
         }

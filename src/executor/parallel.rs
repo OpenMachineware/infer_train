@@ -164,8 +164,9 @@ impl<'a> ParallelExecutor<'a> {
                 if let Some(tensor) = values.get(&in_id) {
                     let data_bytes = tensor.data();
                     let _bytes = bytemuck::cast_slice::<f32, u8>(data_bytes);
-                    // 简化直接跳过，由内存池自动管理
-                    // TODO 查找并释放对应的 pool id
+                    // Simplified: skip for now,
+                    // managed automatically by memory pool
+                    // TODO: Find and release corresponding pool id
                 }
             }
         }

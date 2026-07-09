@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 // ============================================================
-// Tape 记录
+// Tape Record
 // ============================================================
 
 #[derive(Debug, Clone)]
@@ -166,15 +166,15 @@ pub enum TapeEntry {
         false_val: u64,
         output: u64,
     },
-    // 参数节点 (叶子节点)
+    // Parameter node (leaf node)
     Parameter {
         id: u64,
     },
-    // 输入节点
+    // Input node
     Input {
         id: u64,
     },
-    // 常量节点 (不可训练)
+    // Constant node (non-trainable)
     Constant {
         id: u64,
     },
@@ -273,17 +273,17 @@ impl TapeEntry {
 }
 
 // ============================================================
-// Tape (计算图)
+// Tape (Computation Graph)
 // ============================================================
 
 #[derive(Debug, Clone, Default)]
 pub struct Tape {
     entries: Vec<TapeEntry>,
-    // value_id -> entry_index (用于快速查找)
+    // value_id -> entry_index (for fast lookup)
     value_to_entry: HashMap<u64, usize>,
-    // 参数列表
+    // Parameter list
     param_ids: Vec<u64>,
-    // 输入列表
+    // Input list
     input_ids: Vec<u64>,
 }
 
@@ -356,7 +356,7 @@ impl Tape {
         self.entries.is_empty()
     }
 
-    // 获取计算图的拓扑序（反向）
+    // Get topological order of computation graph (reverse)
     pub fn reverse_order(&self, output_id: u64) -> Vec<usize> {
         let mut visited = std::collections::HashSet::new();
         let mut result = Vec::new();

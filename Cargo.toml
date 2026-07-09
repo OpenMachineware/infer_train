@@ -2,6 +2,10 @@
 name = "infer_train"
 version = "0.1.0"
 edition = "2021"
+authors = ["Jia Liu <proljc@gmail.com>"]
+description = "A Unified Inference and Training Engine"
+license = "Apache-2.0"
+repository = "https://github.com/OpenMachineware/infer_train"
 
 [lib]
 name = "_infer_train_torch"

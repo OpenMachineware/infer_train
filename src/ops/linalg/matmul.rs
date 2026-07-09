@@ -4,14 +4,14 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 辅助：获取形状
+// Helper: Get dimensions
 // ============================================================
 
 fn get_matmul_dims(
     a: &[usize],
     b: &[usize],
 ) -> (usize, usize, usize, usize, usize, usize) {
-    // 返回: (batch_dims, m, k, n, a_rank, b_rank)
+    // Returns: (batch_dims, m, k, n, a_rank, b_rank)
     let a_rank = a.len();
     let b_rank = b.len();
 
@@ -38,7 +38,7 @@ fn get_batch_stride(shape: &[usize], dim: usize) -> usize {
 }
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn matmul<T: DType + Send + Sync>(
@@ -50,7 +50,7 @@ pub fn matmul<T: DType + Send + Sync>(
     let (batch_dims, m, k, n, a_rank, b_rank) =
         get_matmul_dims(a_shape, b_shape);
 
-    // 计算输出形状
+    // Compute output shape
     let mut out_shape = Vec::new();
     for i in 0..batch_dims {
         let a_idx = if i < a_rank - 2 { a_shape[i] } else { 1 };
@@ -73,7 +73,7 @@ pub fn matmul<T: DType + Send + Sync>(
     let a_data = a.data();
     let b_data = b.data();
 
-    // 预计算每个 batch 的偏移
+    // Precompute offsets for each batch
     let mut batch_offsets = Vec::with_capacity(batch_total);
     for batch_idx in 0..batch_total {
         let mut a_offset = 0;
@@ -120,7 +120,7 @@ pub fn matmul<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn matmul_backward<T: DType>(
@@ -128,7 +128,7 @@ pub fn matmul_backward<T: DType>(
     a: &Tensor<T>,
     b: &Tensor<T>,
 ) -> Vec<Tensor<T>> {
-    // 使用 crate::ops::linalg::transpose
+    // Use crate::ops::linalg::transpose
     let b_t = crate::ops::linalg::transpose::transpose(b);
     let a_t = crate::ops::linalg::transpose::transpose(a);
     let grad_a = matmul(grad_output, &b_t);
@@ -137,7 +137,7 @@ pub fn matmul_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Forward (简化版)
+// Quantized Forward (Simplified)
 // ============================================================
 
 pub fn quantized_matmul(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
@@ -158,7 +158,7 @@ pub fn quantized_matmul(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
 }
 
 // ============================================================
-// 量化 Backward
+// Quantized Backward
 // ============================================================
 
 pub fn quantized_matmul_backward(
@@ -193,7 +193,7 @@ pub fn quantized_matmul_backward(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct MatMulOp;
@@ -242,7 +242,7 @@ impl Operator<i8> for QuantizedMatMulOp {
 }
 
 // ============================================================
-// 测试
+// Tests
 // ============================================================
 
 #[cfg(test)]

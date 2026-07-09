@@ -12,13 +12,13 @@ use crate::ir::cfg::CfgGraph;
 use crate::ir::dag::DagGraph;
 
 // ============================================================
-// 常量
+// Constants
 // ============================================================
 pub const MAGIC: [u8; 8] = [0x49, 0x54, 0x52, 0x41, 0x49, 0x4E, 0x00, 0x00];
 pub const VERSION: u32 = 2;
 
 // ============================================================
-// 文件头部 (固定大小，方便快速读取)
+// File header (fixed size for fast reading)
 // ============================================================
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -36,7 +36,7 @@ pub struct FileHeader {
 }
 
 // ============================================================
-// 模型类型
+// Model type
 // ============================================================
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ModelType {
@@ -60,7 +60,7 @@ pub struct ModelHeader {
 }
 
 // ============================================================
-// 训练状态
+// Training state
 // ============================================================
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainingState {
@@ -75,18 +75,18 @@ pub struct TrainingState {
 }
 
 // ============================================================
-// 权重块 (按 ID 索引的字节流)
+// Weights block (ID-indexed byte stream)
 // ============================================================
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeightsBlock {
-    pub ids: Vec<u64>,       // constant ID 列表
-    pub offsets: Vec<usize>, // 每个权重在 data 中的偏移
-    pub sizes: Vec<usize>,   // 每个权重大小
-    pub data: Vec<u8>,       // 所有权重连续存储
+    pub ids: Vec<u64>,       // List of constant IDs
+    pub offsets: Vec<usize>, // Offset of each weight in data
+    pub sizes: Vec<usize>,   // Size of each weight
+    pub data: Vec<u8>,       // All weights stored consecutively
 }
 
 // ============================================================
-// ModelFile (新设计)
+// ModelFile (new design)
 // ============================================================
 
 pub struct ModelFile {
@@ -95,12 +95,12 @@ pub struct ModelFile {
     weights: WeightsBlock,
     training_state: Option<TrainingState>,
     #[allow(dead_code)]
-    mmap: Option<Mmap>, // 如果 mmap 加载，保持映射存活
+    mmap: Option<Mmap>, // Keep mapping alive if loaded via mmap
 }
 
 impl ModelFile {
     // ============================================================
-    // 构造函数
+    // Constructors
     // ============================================================
 
     pub fn new(name: &str, framework: &str, graph: DagGraph) -> Self {
@@ -149,7 +149,7 @@ impl ModelFile {
     }
 
     // ============================================================
-    // 权重提取
+    // Weight extraction
     // ============================================================
 
     fn extract_weights(graph: &DagGraph) -> WeightsBlock {
@@ -187,7 +187,7 @@ impl ModelFile {
     }
 
     // ============================================================
-    // 保存
+    // Save
     // ============================================================
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -196,7 +196,7 @@ impl ModelFile {
         let mut file = File::create(&temp_path)
             .map_err(|e| format!("Failed to create file: {}", e))?;
 
-        // 序列化各块
+        // Serialize each block
         let header_bytes = bincode::serialize(&self.header)
             .map_err(|e| format!("Failed to serialize header: {}", e))?;
         let graph_bytes = bincode::serialize(&self.graph)
@@ -210,14 +210,14 @@ impl ModelFile {
             None => Vec::new(),
         };
 
-        // 计算偏移
+        // Calculate offsets
         let header_offset = std::mem::size_of::<FileHeader>() as u64;
         let graph_offset = header_offset + header_bytes.len() as u64;
         let weights_offset = graph_offset + graph_bytes.len() as u64;
         let training_offset = weights_offset + weights_bytes.len() as u64;
         let total_size = training_offset + training_bytes.len() as u64;
 
-        // 写入文件头
+        // Write file header
         let file_header = FileHeader {
             magic: MAGIC,
             version: VERSION,
@@ -235,7 +235,7 @@ impl ModelFile {
         file.write_all(header_bytes_raw)
             .map_err(|e| format!("Failed to write header: {}", e))?;
 
-        // 写入各块
+        // Write each block
         file.write_all(&header_bytes)
             .map_err(|e| format!("Failed to write header block: {}", e))?;
         file.write_all(&graph_bytes)
@@ -248,7 +248,7 @@ impl ModelFile {
             })?;
         }
 
-        // 同步并重命名
+        // Sync and rename
         file.sync_all().map_err(|e| format!("Failed to sync file: {}", e))?;
         std::fs::rename(temp_path, path)
             .map_err(|e| format!("Failed to rename file: {}", e))?;
@@ -257,7 +257,7 @@ impl ModelFile {
     }
 
     // ============================================================
-    // 加载
+    // Load
     // ============================================================
 
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -277,7 +277,7 @@ impl ModelFile {
             return Err("File too small".to_string());
         }
 
-        // 读取文件头
+        // Read file header
         let header_bytes_raw = if use_mmap {
             let mmap = unsafe { MmapOptions::new().map(&file) }
                 .map_err(|e| format!("Failed to mmap file: {}", e))?;
@@ -296,7 +296,7 @@ impl ModelFile {
 
         let file_header: FileHeader = *bytemuck::from_bytes(&header_bytes_raw);
 
-        // 验证
+        // Validation
         if file_header.magic != MAGIC {
             return Err("Invalid magic number".to_string());
         }
@@ -307,7 +307,7 @@ impl ModelFile {
             ));
         }
 
-        // 读取各块
+        // Read each block
         let (mmap, reader) = if use_mmap {
             let mmap = unsafe { MmapOptions::new().map(&file) }
                 .map_err(|e| format!("Failed to mmap file: {}", e))?;
@@ -353,7 +353,7 @@ impl ModelFile {
                 None
             };
 
-        // 反序列化
+        // Deserialize
         let header: ModelHeader = bincode::deserialize(&header_bytes)
             .map_err(|e| format!("Failed to deserialize header: {}", e))?;
 
@@ -378,7 +378,7 @@ impl ModelFile {
         let mut model =
             ModelFile { header, graph, weights, training_state, mmap };
 
-        // 恢复权重到 graph
+        // Restore weights to graph
         model.restore_weights();
 
         Ok(model)
@@ -412,7 +412,7 @@ impl ModelFile {
     }
 
     // ============================================================
-    // 增量保存
+    // Incremental save
     // ============================================================
 
     pub fn save_training_state(&self, path: &Path) -> Result<(), String> {
@@ -444,7 +444,7 @@ impl ModelFile {
     }
 
     // ============================================================
-    // 访问器
+    // Accessors
     // ============================================================
 
     pub fn header(&self) -> &ModelHeader {
@@ -475,7 +475,7 @@ impl ModelFile {
     }
 
     // ============================================================
-    // CFG 转换
+    // CFG conversion
     // ============================================================
 
     pub fn from_cfg(
@@ -509,13 +509,13 @@ impl Clone for ModelFile {
             graph: self.graph.clone(),
             weights: self.weights.clone(),
             training_state: self.training_state.clone(),
-            mmap: None, // mmap 不克隆，重新加载
+            mmap: None, // mmap not cloned, reload if needed
         }
     }
 }
 
 // ============================================================
-// Python 绑定
+// Python bindings
 // ============================================================
 
 #[pyclass]

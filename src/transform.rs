@@ -26,7 +26,7 @@ use crate::ir::cfg::CfgGraph;
 use crate::ir::dag::DagGraph;
 
 // ============================================================
-// CFG 优化 Pipeline
+// CFG Optimization Pipeline
 // ============================================================
 pub struct CfgOptimizer;
 
@@ -55,7 +55,7 @@ impl CfgOptimizer {
 }
 
 // ============================================================
-// DAG 优化 Pipeline
+// DAG Optimization Pipeline
 // ============================================================
 pub struct DagOptimizer;
 
@@ -92,7 +92,7 @@ impl DagOptimizer {
 }
 
 // ============================================================
-// 完整优化 Pipeline（CFG + DAG）
+// Full Optimization Pipeline (CFG + DAG)
 // ============================================================
 pub struct FullOptimizer;
 

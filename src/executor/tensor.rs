@@ -42,7 +42,7 @@ pub fn dispatch_tensor(
                     _ => None,
                 })
                 .unwrap_or(0);
-            // 收集引用
+            // Collect references
             let tensor_refs: Vec<&Tensor<f32>> = inputs.iter().collect();
             let result =
                 crate::ops::tensor_manip::concat::concat(&tensor_refs, dim);

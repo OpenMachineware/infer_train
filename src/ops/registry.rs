@@ -5,7 +5,7 @@ use crate::tensor::Tensor;
 use std::collections::HashMap;
 
 // ============================================================
-// 属性（算子的参数）
+// Attributes (operator parameters)
 // ============================================================
 
 #[derive(Debug, Clone, Default)]
@@ -74,7 +74,7 @@ impl OpAttrs {
 }
 
 // ============================================================
-// 设备类型
+// Device types
 // ============================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,17 +87,17 @@ pub enum DeviceType {
 }
 
 // ============================================================
-// 算子 Trait（厂商只需实现这个）
+// Operator trait (vendors only need to implement this)
 // ============================================================
 
 pub trait Operator<T: DType + Send + Sync>: Send + Sync {
-    /// 算子名称
+    /// Operator name
     fn name(&self) -> &'static str;
 
-    /// 前向传播
+    /// Forward pass
     fn forward(&self, inputs: &[&Tensor<T>], attrs: &OpAttrs) -> Tensor<T>;
 
-    /// 反向传播（默认不支持）
+    /// Backward pass (not supported by default)
     fn backward(
         &self,
         _grad_output: &Tensor<T>,
@@ -107,24 +107,24 @@ pub trait Operator<T: DType + Send + Sync>: Send + Sync {
         vec![]
     }
 
-    /// 是否支持量化
+    /// Whether quantized is supported
     fn supports_quantized(&self) -> bool {
         false
     }
 
-    /// 设备类型
+    /// Device type
     fn device_type(&self) -> DeviceType {
         DeviceType::CPU
     }
 }
 
 // ============================================================
-// 算子注册表
+// Operator registry
 // ============================================================
 
 pub struct OperatorRegistry {
     ops: HashMap<String, Box<dyn Operator<f32>>>,
-    // 可以扩展其他 dtype
+    // Can extend to other dtypes
 }
 
 impl OperatorRegistry {

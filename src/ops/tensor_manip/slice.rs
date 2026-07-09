@@ -5,7 +5,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 泛型 Forward
+// Generic Forward
 // ============================================================
 
 pub fn slice<T: DType + Send + Sync>(
@@ -25,7 +25,7 @@ pub fn slice<T: DType + Send + Sync>(
     let mut out_shape = shape.to_vec();
     out_shape[dim] = out_len;
 
-    // 计算步长
+    // Compute strides
     let inner_stride = shape[dim + 1..].iter().product::<usize>();
     let outer = shape[..dim].iter().product::<usize>();
     let dim_stride = inner_stride * shape[dim];
@@ -43,7 +43,7 @@ pub fn slice<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 泛型 Backward
+// Generic Backward
 // ============================================================
 
 pub fn slice_backward<T: DType>(
@@ -55,7 +55,7 @@ pub fn slice_backward<T: DType>(
     step: i64,
 ) -> Vec<Tensor<T>> {
     let mut data = vec![T::from_f32(0.0); original_shape.iter().product()];
-    // 把梯度填回对应的位置
+    // Fill gradient back to corresponding positions
     let inner_stride = original_shape[dim + 1..].iter().product::<usize>();
     let outer = original_shape[..dim].iter().product::<usize>();
     let dim_size = original_shape[dim] as i64;
@@ -78,7 +78,7 @@ pub fn slice_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Forward
+// Quantized Forward
 // ============================================================
 
 pub fn quantized_slice(
@@ -117,7 +117,7 @@ pub fn quantized_slice(
 }
 
 // ============================================================
-// 量化 Backward
+// Quantized Backward
 // ============================================================
 
 pub fn quantized_slice_backward(

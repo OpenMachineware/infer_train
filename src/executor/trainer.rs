@@ -10,7 +10,7 @@ use super::amp::{AmpConfig, AmpGraphConverter};
 use super::memory_reuse::{MemoryConfig, MemoryPool};
 
 // ============================================================
-// 训练器配置
+// Trainer configuration
 // ============================================================
 
 #[derive(Debug, Clone)]
@@ -40,7 +40,7 @@ impl Default for TrainerConfig {
 }
 
 // ============================================================
-// 训练器
+// Trainer
 // ============================================================
 
 pub struct Trainer {
@@ -74,12 +74,12 @@ impl Trainer {
         let _amp_config_clone = amp_config.clone();
         let _loss_scale = amp_config.init_scale;
 
-        // 转换 DAG 为混合精度
+        // Convert DAG to mixed precision
         if amp_config.enabled {
             AmpGraphConverter::convert(&mut graph, &amp_config, &param_ids)?;
         }
 
-        // 创建优化器
+        // Create optimizer
         let optimizer_state: Box<dyn OptimizerState> =
             match config.optimizer_type {
                 OptimizerType::SGD => {
@@ -137,7 +137,7 @@ impl Trainer {
     }
 
     // ============================================================
-    // 前向传播
+// Forward pass
     // ============================================================
 
     pub fn forward(
@@ -155,12 +155,12 @@ impl Trainer {
             ));
         }
 
-        // 加载输入 (如果 AMP 启用，输入已经是 AMP dtype)
+        // Load inputs (if AMP enabled, inputs are already AMP dtype)
         for (i, &input_id) in self.graph.inputs.iter().enumerate() {
             self.values.insert(input_id, inputs[i].clone());
         }
 
-        // 加载常量 (权重) - 保持在 FP32
+        // Load constants (weights) - keep in FP32
         for (&id, data) in &self.graph.constants {
             if let Some(value) = self.graph.values.get(&id) {
                 let shape: Vec<usize> = value
@@ -174,7 +174,7 @@ impl Trainer {
             }
         }
 
-        // 执行
+        // Execute
         let order = self.graph.topological_sort()?;
         for op_id in order {
             let op = self
@@ -189,7 +189,7 @@ impl Trainer {
     }
 
     // ============================================================
-    // 执行单个算子
+    // Execute single operator
     // ============================================================
 
     fn execute_op(&mut self, op: &Op) -> Result<(), String> {
@@ -220,7 +220,7 @@ impl Trainer {
             }
         }
 
-        // 标记可复用
+        // Mark as reusable
         for &in_id in &op.inputs {
             let users = self.graph.get_users(in_id);
             if users.len() == 1 && users[0] == op.id {
@@ -234,18 +234,18 @@ impl Trainer {
     }
 
     // ============================================================
-    // 反向传播
+    // Backward pass
     // ============================================================
 
     pub fn backward(&mut self, loss: &Tensor<f32>) -> Result<(), String> {
-        // 如果 AMP 启用，loss 已经是 AMP dtype
-        // 反向传播使用 AMP dtype
+        // If AMP enabled, loss is already AMP dtype
+        // Backward pass uses AMP dtype
         self.training_state.loss = loss.data()[0];
 
-        // 如果 AMP 启用，缩放 loss
+        // If AMP enabled, scale loss
         let _loss_to_backward =
             if self.amp_config.enabled && self.amp_config.loss_scaling {
-                // 缩放 loss
+                // Scale loss
                 let mut scaled = loss.clone();
                 for v in scaled.data_mut() {
                     *v *= self.loss_scale;
@@ -255,15 +255,15 @@ impl Trainer {
                 loss.clone()
             };
 
-        // 从 loss 计算梯度
-        // TODO: 实现完整的自动微分
-        // 目前简化版
+        // Compute gradients from loss
+        // TODO: Implement full autodiff
+        // Currently simplified version
 
         Ok(())
     }
 
     // ============================================================
-    // 更新权重
+    // Update weights
     // ============================================================
 
     pub fn step(&mut self) -> Result<(), String> {
@@ -284,7 +284,7 @@ impl Trainer {
             }
 
             if let Some(grad) = self.grads.get(&param_id) {
-                // 如果 AMP 启用，梯度需要反缩放
+                // If AMP enabled, gradients need to be unscaled
                 let mut grad_fp32 = grad.clone();
                 if self.amp_config.enabled && self.amp_config.loss_scaling {
                     for v in grad_fp32.data_mut() {
@@ -300,7 +300,7 @@ impl Trainer {
             }
         }
 
-        // 梯度裁剪
+        // Gradient clipping
         if let Some(clip_val) = self.config.gradient_clip {
             let mut total_norm = 0.0;
             for g in &grads {
@@ -321,7 +321,7 @@ impl Trainer {
 
         self.optimizer_state.update(&mut params, &grads, &self.config)?;
 
-        // 更新 graph.constants (保存权重)
+        // Update graph.constants (save weights)
         for (i, &param_id) in self.param_ids.iter().enumerate() {
             if i < params.len() {
                 let tensor = &params[i];
@@ -333,7 +333,7 @@ impl Trainer {
         self.grads.clear();
         self.training_state.step += 1;
 
-        // 更新 loss_scale (动态调整)
+        // Update loss_scale (dynamic adjustment)
         if self.amp_config.dynamic_scale {
             self.update_loss_scale();
         }
@@ -342,7 +342,7 @@ impl Trainer {
     }
 
     // ============================================================
-    // 损失缩放管理
+    // Loss scaling management
     // ============================================================
 
     fn update_loss_scale(&mut self) {
@@ -350,8 +350,8 @@ impl Trainer {
             return;
         }
 
-        // 如果梯度有 inf/nan，减小 scale
-        // 否则增大 scale
+        // If gradients have inf/nan, decrease scale
+        // Otherwise increase scale
         let has_inf = self
             .grads
             .values()
@@ -359,13 +359,13 @@ impl Trainer {
 
         if has_inf {
             self.loss_scale *= 0.5;
-            // 确保不低于最小值
+            // Ensure not below minimum
             if self.loss_scale < 1.0 {
                 self.loss_scale = 1.0;
             }
         } else {
             self.loss_scale *= 1.5;
-            // 确保不超过最大值
+            // Ensure not above maximum
             if self.loss_scale > 65536.0 {
                 self.loss_scale = 65536.0;
             }
@@ -373,7 +373,7 @@ impl Trainer {
     }
 
     // ============================================================
-    // 保存模型
+    // Save model
     // ============================================================
 
     pub fn save(&self, path: &str, trainable: bool) -> Result<(), String> {
@@ -393,7 +393,7 @@ impl Trainer {
     }
 
     // ============================================================
-    // 工具函数
+    // Utility functions
     // ============================================================
 
     fn bytes_to_tensor(
@@ -455,7 +455,7 @@ impl Trainer {
 }
 
 // ============================================================
-// 训练状态
+// Training state
 // ============================================================
 
 #[derive(Debug, Clone, Default)]
@@ -467,7 +467,7 @@ pub struct TrainingState {
 }
 
 // ============================================================
-// 优化器状态
+// Optimizer state
 // ============================================================
 
 pub trait OptimizerState: Send + Sync {
@@ -482,7 +482,7 @@ pub trait OptimizerState: Send + Sync {
 }
 
 // ============================================================
-// SGD 优化器
+// SGD optimizer
 // ============================================================
 
 pub struct SGDOptimizerState {
@@ -531,7 +531,7 @@ impl OptimizerState for SGDOptimizerState {
 }
 
 // ============================================================
-// AdamW 优化器
+// AdamW optimizer
 // ============================================================
 
 pub struct AdamWOptimizerState {

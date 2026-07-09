@@ -32,7 +32,7 @@ pub fn topk<T: DType + Send + Sync>(
 
     for o in 0..outer {
         for i in 0..inner {
-            // 收集该维度的所有值
+            // Collect all values in this dimension
             let mut pairs: Vec<(f32, usize)> = Vec::with_capacity(dim_size);
             let base = o * stride + i;
             for d in 0..dim_size {
@@ -40,14 +40,14 @@ pub fn topk<T: DType + Send + Sync>(
                 pairs.push((input_data[idx].to_f32(), d));
             }
 
-            // 排序
+            // Sort
             if largest {
                 pairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
             } else {
                 pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
             }
 
-            // 取前 k 个
+            // Take top k
             let out_base = (o * k + 0) * inner + i;
             for d in 0..k.min(dim_size) {
                 let out_idx = out_base + d * inner;
@@ -65,7 +65,7 @@ pub fn topk<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// TopK Backward - 简化版   TODO: 完善
+// TopK Backward - Simplified   TODO: Improve
 // ============================================================
 
 pub fn topk_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
@@ -73,7 +73,7 @@ pub fn topk_backward<T: DType>(grad_output: &Tensor<T>) -> Vec<Tensor<T>> {
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct TopkOp;

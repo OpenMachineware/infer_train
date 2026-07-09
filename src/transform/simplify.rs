@@ -7,7 +7,7 @@ use std::collections::HashMap;
 pub struct AlgebraicSimplifyPass;
 
 // ============================================================
-// 定义返回类型
+// Define return types
 // ============================================================
 enum SimplifyResult {
     None,
@@ -49,7 +49,7 @@ impl AlgebraicSimplifyPass {
                 None => continue,
             };
 
-            // ---------- 代数化简 ----------
+            // ---------- Algebraic simplification ----------
             let result = Self::simplify_algebraic(graph, &op);
             match result {
                 SimplifyResult::Replace(repl) => {
@@ -59,17 +59,17 @@ impl AlgebraicSimplifyPass {
                     continue;
                 }
                 SimplifyResult::NewOps(ops) => {
-                    // 处理多个新算子
+                    // Handle multiple new operators
                     let output_id = op.outputs[0];
                     let mut last_output = output_id;
                     for new_op in ops {
-                        // 分配真实 ID
+                        // Allocate real IDs
                         let real_id = graph.allocate_op_id();
                         let mut inserted_op = new_op.clone();
                         inserted_op.id = real_id;
                         inserted_op.name =
                             format!("{}_{}", new_op.op_type, real_id);
-                        // 更新 outputs
+                        // Update outputs
                         if inserted_op.outputs.is_empty() {
                             inserted_op.outputs.push(graph.next_id);
                             graph.next_id += 1;
@@ -77,7 +77,8 @@ impl AlgebraicSimplifyPass {
                         last_output = inserted_op.outputs[0];
                         new_ops.push(inserted_op);
                     }
-                    // 最后一个算子的输出替换原来 op 的输出
+                    // Replace original op's output with the
+                    // last operator's output
                     replacements.insert(output_id, last_output);
                     to_remove.push(op_id);
                     changed = true;
@@ -86,7 +87,7 @@ impl AlgebraicSimplifyPass {
                 SimplifyResult::None => {}
             }
 
-            // ---------- 张量操作化简 ----------
+            // ---------- Tensor operation simplification ----------
             let result = Self::simplify_tensor_ops(graph, &op);
             if let Some((new_op, replacement)) = result {
                 if let Some(repl) = replacement {
@@ -100,7 +101,7 @@ impl AlgebraicSimplifyPass {
                 continue;
             }
 
-            // ---------- 激活函数化简 ----------
+            // ---------- Activation function simplification ----------
             let result = Self::simplify_activation(graph, &op);
             if let Some(replacement) = result {
                 replacements.insert(op.outputs[0], replacement);
@@ -109,7 +110,7 @@ impl AlgebraicSimplifyPass {
                 continue;
             }
 
-            // ---------- 池化化简 ----------
+            // ---------- Pooling simplification ----------
             let result = Self::simplify_pool(graph, &op);
             if let Some(replacement) = result {
                 replacements.insert(op.outputs[0], replacement);
@@ -119,7 +120,7 @@ impl AlgebraicSimplifyPass {
             }
         }
 
-        // 应用替换
+        // Apply replacements
         for (old_id, new_id) in &replacements {
             Self::apply_replacement(graph, *old_id, *new_id);
         }
@@ -136,8 +137,8 @@ impl AlgebraicSimplifyPass {
     }
 
     // ============================================================
-    // 代数化简
-    // ============================================================
+// Algebraic simplification
+// ============================================================
 
     fn simplify_algebraic(graph: &mut DagGraph, op: &Op) -> SimplifyResult {
         match op.op_type.as_str() {
@@ -168,7 +169,7 @@ impl AlgebraicSimplifyPass {
                         return SimplifyResult::Replace(in2);
                     }
 
-                    // ADD(x, ADD(y, z)) -> ADD(ADD(x, y), z)  (结合律)
+                    // ADD(x, ADD(y, z)) -> ADD(ADD(x, y), z)  (associativity)
                     if let Some(inner_op) = Self::get_producer_op(graph, in2) {
                         if inner_op.op_type == "add" {
                             let inner_input0 = inner_op.inputs[0];
@@ -202,7 +203,8 @@ impl AlgebraicSimplifyPass {
                         }
                     }
 
-                    // ADD(x, -y) -> SUB(x, y)  (如果 y 是负常数，转为减法)
+                    // ADD(x, -y) -> SUB(x, y)
+                    // (if y is a negative constant, convert to subtraction)
                     if let Some(neg_const_id) =
                         Self::get_neg_constant(graph, in2)
                     {
@@ -380,7 +382,7 @@ impl AlgebraicSimplifyPass {
                     }
 
                     // LOG(e) -> 1 (e ≈ 2.71828)
-                    // 可选：检测常数 e
+                    // Optional: detect constant e
                 }
             }
 
@@ -448,7 +450,7 @@ impl AlgebraicSimplifyPass {
     }
 
     // ============================================================
-    // 张量操作化简
+    // Tensor operation simplification
     // ============================================================
 
     fn simplify_tensor_ops(
@@ -456,10 +458,10 @@ impl AlgebraicSimplifyPass {
         op: &Op,
     ) -> Option<(Option<Op>, Option<u64>)> {
         match op.op_type.as_str() {
-            // ---------- RESHAPE 化简 ----------
+            // ---------- RESHAPE simplification ----------
             "reshape" => {
                 if op.inputs.len() >= 1 {
-                    // 连续 RESHAPE 合并
+                    // Merge consecutive RESHAPE operations
                     if let Some(producer) =
                         Self::get_producer_op(graph, op.inputs[0])
                     {
@@ -475,7 +477,7 @@ impl AlgebraicSimplifyPass {
                         }
                     }
 
-                    // RESHAPE 后形状不变 -> 消除
+                    // RESHAPE with unchanged shape -> eliminate
                     if let Some(input) = graph.values.get(&op.inputs[0]) {
                         if let Some(output) = graph.values.get(&op.outputs[0]) {
                             if input.ty.shape == output.ty.shape {
@@ -487,7 +489,7 @@ impl AlgebraicSimplifyPass {
                 None
             }
 
-            // ---------- 连续 TRANSPOSE 合并 ----------
+            // ---------- Merge consecutive TRANSPOSE ----------
             "transpose" => {
                 if op.inputs.len() >= 1 {
                     if let Some(producer) =
@@ -501,7 +503,7 @@ impl AlgebraicSimplifyPass {
                 None
             }
 
-            // ---------- 单输入 CONCAT 消除 ----------
+            // ---------- Eliminate single-input CONCAT ----------
             "concat" => {
                 if op.inputs.len() == 1 {
                     return Some((None, Some(op.inputs[0])));
@@ -509,7 +511,7 @@ impl AlgebraicSimplifyPass {
                 None
             }
 
-            // ---------- 单输出 SPLIT 消除 ----------
+            // ---------- Eliminate single-output SPLIT ----------
             "split" => {
                 if op.inputs.len() >= 1 && op.outputs.len() == 1 {
                     return Some((None, Some(op.inputs[0])));
@@ -522,7 +524,7 @@ impl AlgebraicSimplifyPass {
     }
 
     // ============================================================
-    // 激活函数化简
+    // Activation function simplification
     // ============================================================
 
     fn simplify_activation(graph: &DagGraph, op: &Op) -> Option<u64> {
@@ -547,7 +549,7 @@ impl AlgebraicSimplifyPass {
     }
 
     // ============================================================
-    // 池化化简
+    // Pooling simplification
     // ============================================================
 
     fn simplify_pool(_graph: &DagGraph, op: &Op) -> Option<u64> {
@@ -591,7 +593,7 @@ impl AlgebraicSimplifyPass {
     }
 
     // ============================================================
-    // 辅助函数
+    // Helper functions
     // ============================================================
 
     fn is_neg_of(graph: &DagGraph, a: u64, b: u64) -> bool {
@@ -658,7 +660,7 @@ impl AlgebraicSimplifyPass {
         }
     }
 
-    // 获取负常数
+    // Get negative constant
     fn get_neg_constant(graph: &mut DagGraph, value_id: u64) -> Option<u64> {
         if let Some(data) = graph.constants.get(&value_id) {
             if let Some(val) = graph.values.get(&value_id) {

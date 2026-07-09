@@ -19,13 +19,13 @@ use crate::ir::dag::{
 };
 
 // ============================================================
-// 常量
+// Constants
 // ============================================================
 
 const SUPPORTED_ARCHITECTURES: &[&str] = &["llama", "mistral", "qwen", "phi"];
 
 // ============================================================
-// 量化类型
+// Quantization Types
 // ============================================================
 
 #[allow(non_camel_case_types)]
@@ -80,13 +80,13 @@ impl QuantType {
 }
 
 // ============================================================
-// 类型别名 (简化泛型)
+// Type Aliases (Simplify Generics)
 // ============================================================
 
 type GGUFFileReaderType = GGUFFileReader<std::io::BufReader<std::fs::File>>;
 
 // ============================================================
-// 元数据结构
+// Metadata Structure
 // ============================================================
 
 #[derive(Debug, Clone)]
@@ -105,7 +105,7 @@ pub struct GGUFModelMetadata {
 }
 
 // ============================================================
-// Tensor 数据结构
+// Tensor Data Structure
 // ============================================================
 
 #[derive(Debug, Clone)]
@@ -118,7 +118,7 @@ pub struct GGUFTensor {
 }
 
 // ============================================================
-// 读取元数据
+// Read Metadata
 // ============================================================
 
 fn read_metadata(
@@ -194,7 +194,7 @@ fn read_metadata(
 }
 
 // ============================================================
-// 提取 Tensor 数据 (反量化)
+// Extract Tensor Data (Dequantization)
 // ============================================================
 
 fn extract_tensor_data(tensor_info: &TensorInfo) -> Result<Vec<u8>, String> {
@@ -327,7 +327,7 @@ fn map_gguf_type(tensor_type: GGUFTensorType) -> Result<DataType, String> {
 }
 
 // ============================================================
-// GGUF 导入器 (内部函数)
+// GGUF Importer (Internal)
 // ============================================================
 
 pub fn import_gguf_internal(path: &str) -> Result<DagGraph, String> {
@@ -365,7 +365,7 @@ pub fn import_gguf_internal(path: &str) -> Result<DagGraph, String> {
 }
 
 // ============================================================
-// GGUF 导出器 (内部函数)
+// GGUF Exporter (Internal)
 // ============================================================
 
 pub fn export_gguf_internal(
@@ -402,7 +402,7 @@ pub fn export_gguf_internal(
 }
 
 // ============================================================
-// 权重提取
+// Weight Extraction
 // ============================================================
 
 #[derive(Debug, Clone)]
@@ -435,7 +435,7 @@ fn extract_weights_from_graph(
 }
 
 // ============================================================
-// 元数据构建
+// Metadata Construction
 // ============================================================
 
 fn build_gguf_metadata(
@@ -483,7 +483,7 @@ fn build_gguf_metadata(
 }
 
 // ============================================================
-// 量化
+// Quantization
 // ============================================================
 
 fn quantize_tensor(
@@ -569,7 +569,7 @@ fn quantize_tensor(
 }
 
 // ============================================================
-// Transformer DAG 构建器
+// Transformer DAG Builder
 // ============================================================
 
 fn get_weight(
@@ -580,7 +580,7 @@ fn get_weight(
         return Ok(id);
     }
 
-    // 尝试模糊匹配
+    // Try fuzzy matching
     for key in weight_map.keys() {
         if key.contains(name) || name.contains(key) {
             if let Some(&id) = weight_map.get(key) {
@@ -873,7 +873,7 @@ fn build_transformer_dag(
         weight_map.insert(tensor.name.clone(), id);
     }
 
-    // 输入
+    // Input
     let input_id = dag.add_value(
         "input",
         DagTensorType { dtype: DataType::I64, shape: vec![1, -1] },
@@ -900,7 +900,7 @@ fn build_transformer_dag(
     dag.ops.insert(op_counter, embed_op);
     op_counter += 1;
 
-    // 各层
+    // Layers
     let mut current = embed_output;
     for layer in 0..metadata.num_layers {
         let (next, count) = build_layer(
@@ -969,7 +969,7 @@ fn build_transformer_dag(
 }
 
 // ============================================================
-// PyO3 绑定 (暴露给 Python)
+// PyO3 Bindings (Exposed to Python)
 // ============================================================
 
 #[pyfunction]

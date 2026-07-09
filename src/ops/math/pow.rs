@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 use rayon::prelude::*;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn pow<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Tensor<T> {
@@ -21,7 +21,7 @@ pub fn pow<T: DType + Send + Sync>(a: &Tensor<T>, b: &Tensor<T>) -> Tensor<T> {
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn pow_backward<T: DType>(
@@ -50,7 +50,7 @@ pub fn pow_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Forward
+// Quantized Forward
 // ============================================================
 
 pub fn quantized_pow(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
@@ -84,7 +84,7 @@ pub fn quantized_pow(a: &Tensor<i8>, b: &Tensor<i8>) -> Tensor<i8> {
 }
 
 // ============================================================
-// 量化 Backward
+// Quantized Backward
 // ============================================================
 
 pub fn quantized_pow_backward(
@@ -92,7 +92,7 @@ pub fn quantized_pow_backward(
     a: &Tensor<i8>,
     b: &Tensor<i8>,
 ) -> Vec<Tensor<i8>> {
-    // 简化的量化反向传播
+    // Simplified quantized backward
     let mut grad_a = grad_output.clone();
     let mut grad_b = grad_output.clone();
     for i in 0..grad_a.len() {
@@ -110,7 +110,7 @@ pub fn quantized_pow_backward(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct PowOp;

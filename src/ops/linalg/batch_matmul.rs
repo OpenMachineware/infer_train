@@ -5,7 +5,7 @@ use rayon::prelude::*;
 // use super::matmul::{matmul, matmul_backward};
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn batch_matmul<T: DType + Send + Sync>(
@@ -18,7 +18,7 @@ pub fn batch_matmul<T: DType + Send + Sync>(
     assert!(a_shape.len() >= 3, "batch_matmul: a must be at least 3D");
     assert!(b_shape.len() >= 3, "batch_matmul: b must be at least 3D");
 
-    // 批量维度必须匹配
+    // Batch dimensions must match
     let batch_dims = a_shape.len().max(b_shape.len()) - 2;
     for i in 0..batch_dims {
         let a_dim = if i < a_shape.len() - 2 { a_shape[i] } else { 1 };
@@ -32,7 +32,7 @@ pub fn batch_matmul<T: DType + Send + Sync>(
         );
     }
 
-    // 计算输出形状
+    // Compute output shape
     let mut out_shape = Vec::new();
     let a_rank = a_shape.len();
     let b_rank = b_shape.len();
@@ -55,13 +55,13 @@ pub fn batch_matmul<T: DType + Send + Sync>(
     out_shape.push(m);
     out_shape.push(n);
 
-    // 计算每个 batch
+    // Compute for each batch
     let batch_total: usize = out_shape[..batch_dims].iter().product();
     let out_batch_stride = m * n;
     let _a_batch_stride = a_shape[a_rank - 2] * a_shape[a_rank - 1];
     let _b_batch_stride = b_shape[b_rank - 2] * b_shape[b_rank - 1];
 
-    // 计算每个 batch 的 a 和 b 的起始偏移
+    // Compute start offsets for a and b for each batch
     let a_data = a.data();
     let b_data = b.data();
 
@@ -73,7 +73,7 @@ pub fn batch_matmul<T: DType + Send + Sync>(
             let i = local_idx / n;
             let j = local_idx % n;
 
-            // 计算 a_offset 和 b_offset
+            // Compute a_offset and b_offset
             let mut a_offset = 0;
             let mut b_offset = 0;
             let mut tmp = batch_idx;
@@ -110,7 +110,7 @@ pub fn batch_matmul<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn batch_matmul_backward<T: DType>(
@@ -118,8 +118,8 @@ pub fn batch_matmul_backward<T: DType>(
     a: &Tensor<T>,
     b: &Tensor<T>,
 ) -> Vec<Tensor<T>> {
-    // batch_matmul 的 backward 就是逐个 batch 做 matmul_backward
-    // 但为了简化，直接用 transpose + matmul
+    // batch_matmul backward: apply matmul_backward to each batch
+    // For simplicity, use transpose + matmul directly
     let b_t = transpose(b);
     let a_t = transpose(a);
     let grad_a = batch_matmul(grad_output, &b_t);
@@ -128,7 +128,7 @@ pub fn batch_matmul_backward<T: DType>(
 }
 
 // ============================================================
-// 辅助函数：transpose (复用)
+// Helper: transpose (reuse)
 // ============================================================
 
 fn transpose<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
@@ -161,7 +161,7 @@ fn transpose<T: DType + Send + Sync>(a: &Tensor<T>) -> Tensor<T> {
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct BatchMatMulOp;
@@ -186,7 +186,7 @@ impl<T: DType + Send + Sync> Operator<T> for BatchMatMulOp {
 }
 
 // ============================================================
-// 测试
+// Tests
 // ============================================================
 
 #[cfg(test)]
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn test_batch_matmul_broadcast() {
-        // a: [2, 2, 3], b: [1, 3, 2] → 广播 b 到 [2, 3, 2]
+        // a: [2, 2, 3], b: [1, 3, 2] → broadcast b to [2, 3, 2]
         let a = Tensor::new(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
             &[2, 2, 3],
@@ -218,9 +218,9 @@ mod tests {
         let b = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[1, 3, 2]);
         let c = batch_matmul(&a, &b);
         assert_eq!(c.shape(), &[2, 2, 2]);
-        // 手动验证第一个 batch:
+        // Manual verification for first batch:
         // [[1,2,3],[4,5,6]] * [[1,2],[3,4],[5,6]] = [[22,28],[49,64]]
-        // 第二个 batch:
+        // Second batch:
         // [[7,8,9],[10,11,12]] * [[1,2],[3,4],[5,6]] = [[76,100],[103,136]]
         assert_eq!(c.data()[0], 22.0);
         assert_eq!(c.data()[1], 28.0);

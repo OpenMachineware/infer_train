@@ -16,7 +16,7 @@ use crate::tensor::Tensor;
 use super::tape::{Tape, TapeEntry};
 
 // ============================================================
-// 梯度函数 Trait
+// Gradient Function Trait
 // ============================================================
 
 pub trait GradFn {
@@ -28,7 +28,7 @@ pub trait GradFn {
 }
 
 // ============================================================
-// 梯度计算
+// Gradient Computation
 // ============================================================
 
 pub fn backward(
@@ -58,7 +58,7 @@ pub fn backward(
                 grads
                     .entry(input_id)
                     .and_modify(|existing| {
-                        // 梯度累积
+                        // Gradient accumulation
                         let existing_data = existing.data_mut();
                         let grad_data = g.data();
                         for i in 0..existing_data.len().min(grad_data.len()) {
@@ -74,7 +74,7 @@ pub fn backward(
 }
 
 // ============================================================
-// 单个 Entry 的反向传播
+// Backward Propagation for Single Entry
 // ============================================================
 
 fn backward_entry(
@@ -85,7 +85,7 @@ fn backward_entry(
 ) -> Vec<(u64, Tensor<f32>)> {
     match entry {
         // ============================================================
-        // 数学算子
+        // Math Operators
         // ============================================================
         TapeEntry::Add { input_a, input_b, .. } => {
             let grads = add_backward(
@@ -145,7 +145,7 @@ fn backward_entry(
         }
 
         // ============================================================
-        // 线性代数
+        // Linear Algebra
         // ============================================================
         TapeEntry::MatMul { input_a, input_b, .. } => {
             let grads = matmul_backward(
@@ -157,7 +157,7 @@ fn backward_entry(
         }
 
         // ============================================================
-        // 激活函数
+        // Activation Functions
         // ============================================================
         TapeEntry::Relu { input, .. } => {
             let grads = relu_backward(grad_output, values.get(input).unwrap());
@@ -178,7 +178,7 @@ fn backward_entry(
             vec![(*input, grads[0].clone())]
         }
         // ============================================================
-        // 卷积
+        // Convolution
         // ============================================================
         TapeEntry::Conv2d {
             input,
@@ -210,7 +210,7 @@ fn backward_entry(
         }
 
         // ============================================================
-        // 池化
+        // Pooling
         // ============================================================
         TapeEntry::MaxPool { input, kernel_size, stride, padding, .. } => {
             let x = values.get(input).unwrap();
@@ -230,7 +230,7 @@ fn backward_entry(
         }
 
         // ============================================================
-        // 归一化
+        // Normalization
         // ============================================================
         TapeEntry::BatchNorm {
             input,
@@ -270,7 +270,7 @@ fn backward_entry(
         }
 
         // ============================================================
-        // 张量操作
+        // Tensor Operations
         // ============================================================
         #[allow(unused_variables)]
         TapeEntry::Reshape { input, output, new_shape: _ } => {
@@ -297,10 +297,10 @@ fn backward_entry(
         }
         #[allow(unused_variables)]
         TapeEntry::Slice { input, dim, start, end, step, .. } => {
-            // slice 的 backward：把梯度填回原始形状
+            // slice backward: fill gradient back to original shape
             let original_shape = values.get(input).unwrap().shape();
             let grad_input = vec![0.0f32; original_shape.iter().product()];
-            // TODO: 把 grad_output 填回对应的位置
+            // TODO: fill grad_output back to corresponding positions
             vec![(*input, Tensor::new(grad_input, original_shape))]
         }
         TapeEntry::Squeeze { input, dim, .. } => {
@@ -309,7 +309,7 @@ fn backward_entry(
             if let Some(d) = dim {
                 new_shape.insert(*d, 1);
             } else {
-                // 如果 dim 是 None，无法恢复，返回原梯度
+                // If dim is None, cannot restore, return original gradient
                 return vec![(*input, grad_output.clone())];
             }
             let grad_input = reshape(grad_output, &new_shape);
@@ -330,11 +330,11 @@ fn backward_entry(
                 new_shape.insert(*dim, 1);
                 grad_input = reshape(&grad_input, &new_shape);
             }
-            // 广播到原始形状
+            // Broadcast to original shape
             let broadcast_shape = shape.to_vec();
             for (i, &dim_size) in broadcast_shape.iter().enumerate() {
                 if i == *dim && grad_input.shape()[i] != dim_size {
-                    // 需要广播
+                    // Need broadcasting
                 }
             }
             vec![(*input, grad_input)]
@@ -356,7 +356,7 @@ fn backward_entry(
         }
 
         // ============================================================
-        // 其他
+        // Others
         // ============================================================
         TapeEntry::Select { condition, true_val, false_val, .. } => {
             let _cond = values.get(condition).unwrap();
@@ -370,20 +370,20 @@ fn backward_entry(
         }
         #[allow(unused_variables)]
         TapeEntry::Embedding { indices, weight, .. } => {
-            // embedding 的 backward：梯度传给 weight
+            // embedding backward: gradient passed to weight
             let grad_weight = grad_output.clone();
             vec![(*weight, grad_weight)]
         }
 
         // ============================================================
-        // 参数/输入/常量 (没有反向传播)
+        // Parameter/Input/Constant (no backward propagation)
         // ============================================================
         TapeEntry::Parameter { .. } => vec![],
         TapeEntry::Input { .. } => vec![],
         TapeEntry::Constant { .. } => vec![],
 
         // ============================================================
-        // 未实现的算子 (TODO)
+        // Unimplemented operators (TODO)
         // ============================================================
         #[allow(unreachable_patterns)]
         _ => {

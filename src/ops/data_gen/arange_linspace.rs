@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// Arange (等差序列)
+// Arange (Arithmetic Sequence)
 // ============================================================
 
 pub fn arange<T: DType + Send + Sync>(
@@ -20,7 +20,7 @@ pub fn arange<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// Linspace (线性间隔)
+// Linspace (Linear Spacing)
 // ============================================================
 
 pub fn linspace<T: DType + Send + Sync>(

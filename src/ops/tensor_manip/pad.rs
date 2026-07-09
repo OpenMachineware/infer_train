@@ -5,7 +5,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 泛型 Forward
+// Generic Forward
 // ============================================================
 
 pub fn pad<T: DType + Send + Sync>(
@@ -22,7 +22,7 @@ pub fn pad<T: DType + Send + Sync>(
     }
 
     let mut data = vec![T::from_f32(value); new_shape.iter().product()];
-    // 简化版：复制数据到中间位置
+    // Simplified: copy data to the middle position
     let _inner_stride = shape[shape.len() - 1];
     let outer = shape[..shape.len() - 1].iter().product::<usize>();
     let input_data = input.data();
@@ -39,7 +39,7 @@ pub fn pad<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 泛型 Backward
+// Generic Backward
 // ============================================================
 
 pub fn pad_backward<T: DType>(
@@ -64,7 +64,7 @@ pub fn pad_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Forward
+// Quantized Forward
 // ============================================================
 
 pub fn quantized_pad(
@@ -103,7 +103,7 @@ pub fn quantized_pad(
 }
 
 // ============================================================
-// 量化 Backward
+// Quantized Backward
 // ============================================================
 
 pub fn quantized_pad_backward(
@@ -167,7 +167,7 @@ impl<T: DType + Send + Sync> Operator<T> for PadOp {
 }
 
 // ============================================================
-// 量化 Pad Operator
+// Quantized Pad Operator
 // ============================================================
 
 pub struct QuantizedPadOp;

@@ -12,13 +12,13 @@ use crate::ir::serialize::ModelFile;
 use crate::transform::FullOptimizer;
 
 // ============================================================
-// 辅助函数（在 impl HookTracer 外面，避开 #[pymethods]）
+// Helper Functions (outside impl HookTracer to avoid #[pymethods])
 // ============================================================
 
 fn extract_value_id(py: Python<'_>, obj: &Py<PyAny>) -> Result<u64, String> {
     let obj = obj.bind(py);
 
-    // 暂时注释 pytensor 依赖
+    // Temporarily commented out pytensor dependency
     // if let Ok(pytensor) = obj.downcast::<crate::pytensor::PyTensor>() {
     //     let tensor = &pytensor.borrow().inner;
     //     return Ok(tensor as *const _ as u64);
@@ -39,7 +39,8 @@ fn extract_tensor_info(
 ) -> Result<(DataType, Vec<i64>), String> {
     let obj = obj.bind(py);
 
-    // 暂时注释 pytensor/ffi 依赖，直接通过 Python 属性获取
+    // Temporarily commented out pytensor/ffi dependency,
+    // get directly via Python attributes
     // if let Ok(pytensor) = obj.downcast::<crate::pytensor::PyTensor>() {
     //     let tensor = &pytensor.borrow().inner;
     //     let dtype = tensor.dtype();
@@ -216,7 +217,7 @@ impl HookTracer {
     }
 
     // ============================================================
-    // 记录参数 (供 Python 补丁调用)
+    // Record Parameters (called by Python patches)
     // ============================================================
 
     pub fn register_parameter(&mut self, param_id: u64) {
@@ -230,7 +231,7 @@ impl HookTracer {
     }
 
     // ============================================================
-    // 反向传播 (供 Python 补丁调用)
+    // Backward Propagation (called by Python patches)
     // ============================================================
 
     pub fn backward(&mut self, loss: Py<PyAny>) -> PyResult<()> {
@@ -238,28 +239,28 @@ impl HookTracer {
             return Ok(());
         }
 
-        // 获取 DAG
+        // Get DAG
         let cfg = self.cfg.lock().unwrap().clone();
         let dag = FullOptimizer::optimize_full(&mut cfg.clone())
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
 
-        // 创建或获取 AutogradEngine
+        // Create or get AutogradEngine
         if self.autograd.is_none() {
             self.autograd =
                 Some(AutogradEngine::new(dag, self.param_ids.clone()));
         }
 
-        // 从 loss 提取 Tensor
+        // Extract Tensor from loss
         Python::with_gil(|py| {
             let _loss_obj = loss.bind(py);
-            // 获取 loss 值 (简化版：假设是标量)
-            // TODO: 从 PyTorch Tensor 提取数据
+            // Get loss value (simplified: assume scalar)
+            // TODO: Extract data from PyTorch Tensor
             Ok(())
         })
     }
 
     // ============================================================
-    // 更新权重 (供 Python 补丁调用)
+    // Update Weights (called by Python patches)
     // ============================================================
 
     pub fn step(&mut self) -> PyResult<()> {
@@ -267,13 +268,13 @@ impl HookTracer {
             return Ok(());
         }
 
-        // 使用 AutogradEngine 更新权重
-        // TODO: 实现权重更新
+        // Use AutogradEngine to update weights
+        // TODO: Implement weight update
         Ok(())
     }
 
     // ============================================================
-    // 获取 DAG (供导出使用)
+    // Get DAG (for export)
     // ============================================================
 
     pub fn get_dag(&self) -> PyResult<Py<PyAny>> {
@@ -288,7 +289,7 @@ impl HookTracer {
     }
 
     // ============================================================
-    // 记录算子
+    // Record Operator
     // ============================================================
 
     #[pyo3(signature = (op_type, inputs, outputs, attrs, name=None))]
@@ -305,7 +306,7 @@ impl HookTracer {
         }
 
         Python::with_gil(|py| {
-            // --- 提取 input IDs ---
+            // --- Extract input IDs ---
             let mut input_ids = Vec::new();
             for obj in &inputs {
                 let id = extract_value_id(py, obj).map_err(|e| {
@@ -314,7 +315,7 @@ impl HookTracer {
                 input_ids.push(id);
             }
 
-            // --- 提取 output IDs ---
+            // --- Extract output IDs ---
             let mut output_ids = Vec::new();
             for obj in &outputs {
                 let id = extract_value_id(py, obj).map_err(|e| {
@@ -323,7 +324,7 @@ impl HookTracer {
                 output_ids.push(id);
             }
 
-            // --- 转换 attrs ---
+            // --- Convert attrs ---
             let rust_attrs = convert_attrs(py, &attrs)
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
 
@@ -350,7 +351,7 @@ impl HookTracer {
                 })?;
             }
 
-            // --- 提取 tensor info ---
+            // --- Extract tensor info ---
             for (i, out_id) in output_ids.iter().enumerate() {
                 self.value_map.insert(*out_id, *out_id);
                 if i < outputs.len() {
@@ -368,7 +369,7 @@ impl HookTracer {
     }
 
     // ============================================================
-    // 控制流
+    // Control Flow
     // ============================================================
 
     #[pyo3(signature = (name=None))]
@@ -447,7 +448,7 @@ impl HookTracer {
     }
 
     // ============================================================
-    // 高层 API
+    // High-level API
     // ============================================================
 
     pub fn trace_to_dag(

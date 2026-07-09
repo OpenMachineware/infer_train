@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 use rayon::prelude::*;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn clamp<T: DType + Send + Sync>(
@@ -25,7 +25,7 @@ pub fn clamp<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn clamp_backward<T: DType>(
@@ -47,7 +47,7 @@ pub fn clamp_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Forward
+// Quantized Forward
 // ============================================================
 
 pub fn quantized_clamp(a: &Tensor<i8>, min: f32, max: f32) -> Tensor<i8> {
@@ -72,7 +72,7 @@ pub fn quantized_clamp(a: &Tensor<i8>, min: f32, max: f32) -> Tensor<i8> {
 }
 
 // ============================================================
-// 量化 Backward
+// Quantized Backward
 // ============================================================
 
 pub fn quantized_clamp_backward(
@@ -94,7 +94,7 @@ pub fn quantized_clamp_backward(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct ClampOp;

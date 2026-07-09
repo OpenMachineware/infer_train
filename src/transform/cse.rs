@@ -16,7 +16,7 @@ impl CommonSubexpressionEliminationPass {
         let mut to_remove = Vec::new();
         let mut replacements: HashMap<u64, u64> = HashMap::new();
 
-        // 按拓扑顺序遍历
+        // Traverse in topological order
         let op_ids: Vec<u64> = graph.ops.keys().cloned().collect();
 
         for &op_id in &op_ids {
@@ -25,13 +25,14 @@ impl CommonSubexpressionEliminationPass {
                 None => continue,
             };
 
-            // 只处理纯函数算子（没有副作用的）
+            // Only process pure function operators (no side effects)
             if Self::is_pure_operator(&op.op_type) {
                 let hash = Self::hash_op(op);
 
                 if let Some(&existing_id) = hash_to_op.get(&hash) {
-                    // 找到重复的算子
-                    // 将当前算子的输出替换为已有算子的输出
+                    // Found duplicate operator
+                    // Replace current operator's output with existing
+                    // operator's output
                     if op.outputs.len() == 1 && existing_id != op_id {
                         let old_out = op.outputs[0];
                         let new_out =
@@ -47,9 +48,9 @@ impl CommonSubexpressionEliminationPass {
             }
         }
 
-        // 应用替换
+        // Apply replacements
         for (old_id, new_id) in &replacements {
-            // 更新所有算子的 inputs
+            // Update all operators' inputs
             for (_, op) in graph.ops.iter_mut() {
                 for input in &mut op.inputs {
                     if input == old_id {
@@ -57,7 +58,7 @@ impl CommonSubexpressionEliminationPass {
                     }
                 }
             }
-            // 更新 graph.outputs
+            // Update graph.outputs
             for output in &mut graph.outputs {
                 if output == old_id {
                     *output = *new_id;
@@ -65,12 +66,12 @@ impl CommonSubexpressionEliminationPass {
             }
         }
 
-        // 删除被替换的算子
+        // Remove replaced operators
         for id in to_remove {
             graph.ops.remove(&id);
         }
 
-        // 清理没有被任何算子使用的 Value（除了 inputs 和 outputs）
+        // Clean up Values not used by any operator (except inputs and outputs)
         let live_values: Vec<u64> =
             graph.inputs.iter().chain(graph.outputs.iter()).cloned().collect();
         let used_values: Vec<u64> = graph
@@ -98,37 +99,38 @@ impl CommonSubexpressionEliminationPass {
     }
 
     fn is_pure_operator(op_type: &str) -> bool {
-        // 纯函数算子：没有副作用，相同输入产生相同输出
+        // Pure function operators: no side effects,
+        // same input produces same output
         match op_type {
-            // 数学算子
+            // Math operators
             "add" | "sub" | "mul" | "div" | "pow" => true,
             "exp" | "sqrt" | "log" | "log2" | "log10" => true,
             "abs" | "neg" | "clamp" | "floor" | "ceil" | "round" => true,
-            // 激活函数
+            // Activation functions
             "relu" | "leaky_relu" | "elu" | "gelu" | "relu6" => true,
             "sigmoid" | "tanh" | "silu" | "hard_swish" | "hard_sigmoid" => true,
             "softplus" | "softshrink" | "celu" => true,
             "softmax" | "log_softmax" => true,
-            // 张量操作
+            // Tensor operations
             "reshape" | "transpose" | "slice" => true,
             "cumsum" | "cumprod" => true,
-            // 线性层
+            // Linear layers
             "linear" => true,
-            // 池化
+            // Pooling
             "maxpool2d" | "avgpool2d" => true,
-            // 归一化（推理模式是纯函数）
+            // Normalization (pure function in inference mode)
             "batchnorm2d" | "layernorm" | "rmsnorm" => true,
-            // 其他
+            // Others
             "matmul" => true,
             "cat" => true,
-            // 有副作用的（训练相关）
-            "dropout" => false, // 训练时 dropout 有随机性
+            // Side-effect operators (training related)
+            "dropout" => false, // dropout has randomness during training
             _ => false,
         }
     }
 
     fn hash_op(op: &Op) -> String {
-        // 计算算子的哈希：op_type + inputs + attrs
+        // Compute operator hash: op_type + inputs + attrs
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         op.op_type.hash(&mut hasher);
         op.inputs.hash(&mut hasher);
@@ -146,7 +148,7 @@ impl CommonSubexpressionEliminationPass {
         match attr {
             AttrValue::Int(i) => i.hash(hasher),
             AttrValue::Float(f) => {
-                // float 转 bits 后 hash
+                // hash float after converting to bits
                 f.to_bits().hash(hasher)
             }
             AttrValue::Bool(b) => b.hash(hasher),

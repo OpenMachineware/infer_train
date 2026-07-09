@@ -63,14 +63,14 @@ impl CfgInlinePass {
             None => return false,
         };
 
-        // 内联函数体
+        // Inline function body
         let mut inline_ops = func_cfg
             .blocks
             .values()
             .flat_map(|b| b.ops.clone())
             .collect::<Vec<CfgOp>>();
 
-        // 重映射 Value ID
+        // Remap Value IDs
         let mut value_map = HashMap::new();
         for op in &mut inline_ops {
             op.id = cfg.next_id;
@@ -100,19 +100,20 @@ impl CfgInlinePass {
 
     pub fn register_function(name: &str, cfg: CfgGraph) -> Result<(), String> {
         let _registry = FUNCTION_REGISTRY.get_or_init(|| HashMap::new());
-        // 注意：这里需要可变访问，但 OnceLock 的 get_or_init 返回 &T
-        // 需要换成 Mutex 或者先获取再插入
-        // 简化：用 Mutex 保护
+        // Note: mutable access is needed here,
+        // but OnceLock's get_or_init returns &T
+        // Need to use Mutex or get first then insert
+        // Simplified: use Mutex for protection
         Self::register_function_mutex(name, cfg)
     }
 
-    // 用 Mutex 版本（更安全）
+    // Mutex version (safer)
     pub fn register_function_mutex(
         name: &str,
         cfg: CfgGraph,
     ) -> Result<(), String> {
-        // 如果已经存在，返回错误或覆盖
-        // 这里用简单方式：使用 Mutex
+        // If already exists, return error or overwrite
+        // Simple approach: use Mutex
         use std::sync::Mutex;
         static REGISTRY_MUTEX: OnceLock<Mutex<HashMap<String, CfgGraph>>> =
             OnceLock::new();

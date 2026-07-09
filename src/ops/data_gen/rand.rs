@@ -7,14 +7,14 @@ use rand::distributions::{Distribution, Uniform};
 use rand_distr::StandardNormal;
 
 // ============================================================
-// Rand (均匀分布 [0, 1))
+// Rand (Uniform Distribution [0, 1))
 // ============================================================
 
 pub fn rand<T: DType + Send + Sync>(shape: &[usize]) -> Tensor<T> {
     let size: usize = shape.iter().product();
     let uniform = Uniform::new(0.0_f32, 1.0_f32);
 
-    // 每个线程独立获取 rng
+    // Each thread gets its own rng independently
     let data: Vec<T> = (0..size)
         .into_par_iter()
         .map(|_| {
@@ -27,13 +27,13 @@ pub fn rand<T: DType + Send + Sync>(shape: &[usize]) -> Tensor<T> {
 }
 
 // ============================================================
-// Randn (正态分布 N(0, 1))
+// Randn (Normal Distribution N(0, 1))
 // ============================================================
 
 pub fn randn<T: DType + Send + Sync>(shape: &[usize]) -> Tensor<T> {
     let size: usize = shape.iter().product();
 
-    // 每个线程独立获取 rng
+    // Each thread gets its own rng independently
     let data: Vec<T> = (0..size)
         .into_par_iter()
         .map(|_| {

@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 辅助函数：计算卷积输出尺寸
+// Helper: Compute convolution output size
 // ============================================================
 
 fn conv_output_size(
@@ -19,7 +19,7 @@ fn conv_output_size(
 }
 
 // ============================================================
-// 辅助: ConvTranspose (反卷积)
+// Helper: ConvTranspose (Deconvolution)
 // ============================================================
 
 fn conv_transpose_impl<T: DType + Send + Sync>(
@@ -84,7 +84,7 @@ fn conv_transpose_impl<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 辅助: 权重梯度
+// Helper: Weight Gradient
 // ============================================================
 
 fn conv_weight_gradient_impl<T: DType + Send + Sync>(
@@ -149,7 +149,7 @@ fn conv_weight_gradient_impl<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 辅助: Bias 梯度
+// Helper: Bias Gradient
 // ============================================================
 
 fn conv_bias_gradient_impl<T: DType + Send + Sync>(
@@ -180,7 +180,7 @@ fn conv_bias_gradient_impl<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn conv2d<T: DType + Send + Sync>(
@@ -278,7 +278,7 @@ pub fn conv2d<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn conv2d_backward<T: DType + Send + Sync>(
@@ -311,7 +311,7 @@ pub fn conv2d_backward<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct Conv2dOp;

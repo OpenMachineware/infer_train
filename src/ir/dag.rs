@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // ============================================================
-// 数据类型
+// Data Types
 // ============================================================
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DataType {
@@ -18,16 +18,16 @@ pub enum DataType {
 }
 
 // ============================================================
-// 张量类型
+// Tensor Type
 // ============================================================
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TensorType {
     pub dtype: DataType,
-    pub shape: Vec<i64>, // -1 表示动态维度
+    pub shape: Vec<i64>, // -1 indicates dynamic dimension
 }
 
 // ============================================================
-// 属性值
+// Attribute Values
 // ============================================================
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttrValue {
@@ -41,14 +41,14 @@ pub enum AttrValue {
 }
 
 // ============================================================
-// 值（数据流边）
+// Value (Data Flow Edge)
 // ============================================================
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Value {
     pub id: u64,
     pub name: String,
     pub ty: TensorType,
-    pub producer: Option<u64>, // 哪个 Op 产生的
+    pub producer: Option<u64>, // Which Op produced this value
     pub scale: Option<f32>,
     pub zero_point: Option<f32>,
 }
@@ -73,7 +73,7 @@ impl Value {
 }
 
 // ============================================================
-// 算子节点
+// Operator Node
 // ============================================================
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Op {
@@ -86,16 +86,16 @@ pub struct Op {
 }
 
 // ============================================================
-// DAG 计算图
+// DAG Computation Graph
 // ============================================================
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DagGraph {
     pub name: String,
     pub values: HashMap<u64, Value>,
     pub ops: HashMap<u64, Op>,
-    pub constants: HashMap<u64, Vec<u8>>, // 常量张量数据
-    pub inputs: Vec<u64>,                 // 输入 Value ID
-    pub outputs: Vec<u64>,                // 输出 Value ID
+    pub constants: HashMap<u64, Vec<u8>>, // Constant tensor data
+    pub inputs: Vec<u64>,                 // Input Value IDs
+    pub outputs: Vec<u64>,                // Output Value IDs
     pub next_id: u64,
 }
 
@@ -113,7 +113,7 @@ impl DagGraph {
     }
 
     // ============================================================
-    // 新增：分配算子ID
+    // Allocate Operator ID
     // ============================================================
     pub fn allocate_op_id(&mut self) -> u64 {
         let id = self.next_id;
@@ -122,14 +122,14 @@ impl DagGraph {
     }
 
     // ============================================================
-    // 新增：安全插入算子（自动分配ID）
+    // Safe Insert Operator (Auto ID Allocation)
     // ============================================================
     pub fn insert_op(&mut self, mut op: Op) -> u64 {
         let id = self.allocate_op_id();
         op.id = id;
         op.name = format!("{}_{}", op.op_type, id);
 
-        // 更新outputs的producer
+        // Update producer for outputs
         for &out_id in &op.outputs {
             if let Some(v) = self.values.get_mut(&out_id) {
                 v.producer = Some(id);
@@ -141,7 +141,7 @@ impl DagGraph {
     }
 
     // ============================================================
-    // 新增：查找Value的使用者
+    // Find Users of a Value
     // ============================================================
     pub fn get_users(&self, value_id: u64) -> Vec<u64> {
         self.ops
@@ -152,7 +152,7 @@ impl DagGraph {
     }
 
     // ============================================================
-    // 新增：检查是否是常量0
+    // Check if Value is Zero Constant
     // ============================================================
     pub fn is_zero_constant(&self, value_id: u64) -> bool {
         if let Some(data) = self.constants.get(&value_id) {
@@ -187,7 +187,7 @@ impl DagGraph {
     }
 
     // ============================================================
-    // 新增：检查是否是常量1
+    // Check if Value is One Constant
     // ============================================================
     pub fn is_one_constant(&self, value_id: u64) -> bool {
         if let Some(data) = self.constants.get(&value_id) {
@@ -219,13 +219,13 @@ impl DagGraph {
     }
 
     // ============================================================
-    // 新增：获取或创建常量0
+    // Get or Create Zero Constant
     // ============================================================
     pub fn get_or_create_zero(
         &mut self,
         dtype: crate::ir::dag::DataType,
     ) -> u64 {
-        // 先查找现有的0常量
+        // First search for existing zero constant
         for (&id, _data) in &self.constants {
             if let Some(val) = self.values.get(&id) {
                 if val.ty.dtype == dtype && self.is_zero_constant(id) {
@@ -234,7 +234,7 @@ impl DagGraph {
             }
         }
 
-        // 创建新的0常量
+        // Create new zero constant
         let name = format!("zero_{}", self.next_id);
         let shape = vec![1];
         let ty = crate::ir::dag::TensorType { dtype, shape };
@@ -244,14 +244,14 @@ impl DagGraph {
             crate::ir::dag::DataType::F32 => vec![0u8; 4],
             crate::ir::dag::DataType::I32 => vec![0u8; 4],
             crate::ir::dag::DataType::I8 => vec![0u8; 1],
-            _ => vec![0u8; 4], // 默认
+            _ => vec![0u8; 4], // default
         };
         self.constants.insert(id, data);
         id
     }
 
     // ============================================================
-    // 新增：获取或创建常量1
+    // Get or Create One Constant
     // ============================================================
     pub fn get_or_create_one(
         &mut self,
@@ -359,22 +359,22 @@ impl DagGraph {
     }
 
     // ============================================================
-    // 拓扑排序
+    // Topological Sort
     // ============================================================
     pub fn topological_sort(&self) -> Result<Vec<u64>, String> {
         let mut in_degree: HashMap<u64, usize> = HashMap::new();
         let mut adj: HashMap<u64, Vec<u64>> = HashMap::new();
 
-        // 初始化
+        // Initialize
         for (&id, _) in &self.ops {
             in_degree.entry(id).or_insert(0);
             adj.entry(id).or_insert(Vec::new());
         }
 
-        // 构建边
+        // Build edges
         for (op_id, op) in &self.ops {
             for &out_id in &op.outputs {
-                // 找到使用这个输出的算子
+                // Find operators that use this output
                 for (next_id, next_op) in &self.ops {
                     if next_op.inputs.contains(&out_id) {
                         adj.entry(*op_id).or_insert(Vec::new()).push(*next_id);
@@ -384,7 +384,7 @@ impl DagGraph {
             }
         }
 
-        // Kahn 算法
+        // Kahn's algorithm
         let mut queue: Vec<u64> = in_degree
             .iter()
             .filter_map(|(&id, &deg)| if deg == 0 { Some(id) } else { None })

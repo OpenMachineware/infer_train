@@ -124,15 +124,15 @@ impl CfgCSEPass {
     fn hash_op(op: &CfgOp) -> String {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
-        // 哈希 op_type
+        // Hash op_type
         op.op_type.hash(&mut hasher);
 
-        // 哈希 inputs
+        // Hash inputs
         op.inputs.hash(&mut hasher);
 
-        // 手动哈希 attrs
+        // Manually hash attrs
         let mut keys: Vec<&String> = op.attrs.keys().collect();
-        keys.sort(); // 保证顺序一致
+        keys.sort(); // Ensure consistent order
         for key in keys {
             key.hash(&mut hasher);
             if let Some(value) = op.attrs.get(key) {
@@ -218,7 +218,7 @@ mod tests {
 
         let hash1 = CfgCSEPass::hash_op(&op);
 
-        // 相同 attrs 应该产生相同 hash
+        // Same attrs should produce same hash
         let mut attrs2 = HashMap::new();
         attrs2.insert("stride".to_string(), AttrValue::Int(2));
         attrs2.insert("padding".to_string(), AttrValue::Int(1));

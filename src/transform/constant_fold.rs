@@ -20,7 +20,7 @@ impl ConstantFoldingPass {
             };
 
             // ============================================================
-            // 量化传播 - 消除冗余 Cast
+            // Quantization propagation - eliminate redundant Cast
             // ============================================================
             if let Some(repl) = Self::propagate_quantization(graph, &op) {
                 replacements.insert(op.outputs[0], repl);
@@ -30,7 +30,7 @@ impl ConstantFoldingPass {
             }
 
             // ============================================================
-            // 常量折叠
+            // Constant folding
             // ============================================================
             if let Some(result) = Self::fold_constant_op(graph, &op) {
                 let out_id = op.outputs[0];
@@ -45,7 +45,7 @@ impl ConstantFoldingPass {
             }
         }
 
-        // 应用替换
+        // Apply replacements
         for (old_id, new_id) in &replacements {
             Self::apply_replacement(graph, *old_id, *new_id);
         }
@@ -58,7 +58,7 @@ impl ConstantFoldingPass {
     }
 
     // ============================================================
-    // 量化传播
+    // Quantization propagation
     // ============================================================
 
     fn propagate_quantization(
@@ -85,7 +85,7 @@ impl ConstantFoldingPass {
                         return Some(input_id);
                     }
                 }
-                // 没匹配到，返回 None
+                // No match found, return None
                 return None;
             }
 
@@ -119,10 +119,13 @@ impl ConstantFoldingPass {
                         Self::get_producer_op(graph, input_id)
                     {
                         if producer.op_type == "cast" {
-                            // 两个 Cast 合并为一个
+                            // Merge two Casts into one
                             if producer.inputs.len() >= 1 {
-                                // 直接返回 producer 的输入（相当于跳过中间 Cast）
-                                // 因为最终 Cast 会决定类型，中间 Cast 可以省略
+                                // Directly return producer's input
+                                // (equivalent to skipping
+                                // the intermediate Cast)
+                                // Because the final Cast determines the type,
+                                // intermediate Casts can be omitted
                                 return Some(producer.inputs[0]);
                             }
                         }
@@ -136,7 +139,7 @@ impl ConstantFoldingPass {
     }
 
     // ============================================================
-    // 常量折叠
+    // Constant folding
     // ============================================================
     fn fold_constant_op(
         graph: &DagGraph,
@@ -174,11 +177,11 @@ impl ConstantFoldingPass {
         }
 
         // ============================================================
-        // 量化常量折叠
+        // Quantization constant folding
         // ============================================================
 
         if op.op_type == "quantize" {
-            // 量化常量
+            // Quantize constant
             if let Some(scale) = op.attrs.get("scale") {
                 let scale_val = match scale {
                     AttrValue::Float(f) => *f as f32,
@@ -220,7 +223,7 @@ impl ConstantFoldingPass {
         }
 
         if op.op_type == "dequantize" {
-            // 反量化常量
+            // Dequantize constant
             let dtype = const_dtypes[0];
             if dtype == DataType::I8 {
                 let scale = op
@@ -254,28 +257,28 @@ impl ConstantFoldingPass {
         }
 
         // ============================================================
-        // Cast 常量折叠
+        // Cast constant folding
         // ============================================================
         if op.op_type == "cast" {
             if let Some(target_dtype) = Self::get_cast_dtype(op) {
-                // 解码输入数据
+                // Decode input data
                 let data = Self::decode_tensor(
                     &const_inputs[0],
                     const_dtypes[0],
                     &const_shapes[0],
                 );
 
-                // 编码为目标数据类型
+                // Encode to target data type
                 let encoded = Self::encode_tensor(&data, target_dtype);
 
-                // 返回折叠后的常量
+                // Return folded constant
                 return Some((encoded, const_shapes[0].clone(), target_dtype));
             }
             return None;
         }
 
         // ============================================================
-        // 原有的常量折叠
+        // Original constant folding
         // ============================================================
 
         Self::fold_op_tensor(
@@ -518,7 +521,7 @@ impl ConstantFoldingPass {
     }
 
     // ============================================================
-    // 辅助函数
+    // Helper functions
     // ============================================================
 
     fn get_producer_op<'a>(

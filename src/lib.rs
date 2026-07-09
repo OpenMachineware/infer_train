@@ -11,7 +11,7 @@ pub mod tensor;
 pub mod torch_bridge;
 pub mod transform;
 
-// 重新导出常用类型
+// Re-export commonly used types
 pub use dtype::DType;
 pub use ops::math::add;
 pub use tensor::Tensor;
@@ -19,14 +19,14 @@ pub use tensor::Tensor;
 use pyo3::prelude::*;
 
 // ============================================================
-// PyTorch 插件
+// PyTorch Plugin
 // ============================================================
 #[cfg(feature = "torch")]
 #[pymodule]
 fn _infer_train_torch(py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     let rust_engine = PyModule::new(py, "rust_engine")?;
 
-    // ---- 基础 class ----
+    // ---- Basic classes ----
     rust_engine.add_class::<pytensor::PyTensor>()?;
     rust_engine.add_class::<frontend::hook::HookTracer>()?;
     rust_engine.add_class::<ir::serialize::PyModelFile>()?;

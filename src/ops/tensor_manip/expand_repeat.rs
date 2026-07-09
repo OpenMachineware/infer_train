@@ -5,7 +5,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// Expand 泛型 Forward
+// Expand Generic Forward
 // ============================================================
 
 pub fn expand<T: DType + Send + Sync>(
@@ -27,7 +27,7 @@ pub fn expand<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// Expand 泛型 Backward
+// Expand Generic Backward
 // ============================================================
 
 pub fn expand_backward<T: DType>(
@@ -38,7 +38,7 @@ pub fn expand_backward<T: DType>(
 }
 
 // ============================================================
-// Repeat 泛型 Forward
+// Repeat Generic Forward
 // ============================================================
 
 pub fn repeat<T: DType + Send + Sync>(
@@ -59,7 +59,7 @@ pub fn repeat<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// Repeat 泛型 Backward
+// Repeat Generic Backward
 // ============================================================
 
 pub fn repeat_backward<T: DType>(
@@ -71,7 +71,7 @@ pub fn repeat_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Expand Forward
+// Quantized Expand Forward
 // ============================================================
 
 pub fn quantized_expand(
@@ -89,7 +89,7 @@ pub fn quantized_expand(
 }
 
 // ============================================================
-// 量化 Expand Backward
+// Quantized Expand Backward
 // ============================================================
 
 pub fn quantized_expand_backward(
@@ -107,7 +107,7 @@ pub fn quantized_expand_backward(
 }
 
 // ============================================================
-// 量化 Repeat Forward
+// Quantized Repeat Forward
 // ============================================================
 
 pub fn quantized_repeat(input: &Tensor<i8>, repeats: &[usize]) -> Tensor<i8> {
@@ -131,7 +131,7 @@ pub fn quantized_repeat(input: &Tensor<i8>, repeats: &[usize]) -> Tensor<i8> {
 }
 
 // ============================================================
-// 量化 Repeat Backward
+// Quantized Repeat Backward
 // ============================================================
 
 pub fn quantized_repeat_backward(
@@ -210,7 +210,7 @@ impl<T: DType + Send + Sync> Operator<T> for RepeatOp {
 }
 
 // ============================================================
-// 量化 Expand Operator
+// Quantized Expand Operator
 // ============================================================
 
 pub struct QuantizedExpandOp;
@@ -243,7 +243,7 @@ impl Operator<i8> for QuantizedExpandOp {
 }
 
 // ============================================================
-// 量化 Repeat Operator
+// Quantized Repeat Operator
 // ============================================================
 
 pub struct QuantizedRepeatOp;

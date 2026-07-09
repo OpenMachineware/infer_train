@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 use rayon::prelude::*;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn leaky_relu<T: DType + Send + Sync>(
@@ -24,7 +24,7 @@ pub fn leaky_relu<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn leaky_relu_backward<T: DType>(
@@ -45,7 +45,7 @@ pub fn leaky_relu_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Forward
+// Quantized Forward
 // ============================================================
 
 pub fn quantized_leaky_relu(a: &Tensor<i8>, alpha: f32) -> Tensor<i8> {
@@ -70,7 +70,7 @@ pub fn quantized_leaky_relu(a: &Tensor<i8>, alpha: f32) -> Tensor<i8> {
 }
 
 // ============================================================
-// 量化 Backward
+// Quantized Backward
 // ============================================================
 
 pub fn quantized_leaky_relu_backward(
@@ -86,7 +86,7 @@ pub fn quantized_leaky_relu_backward(
             grad.data()[i]
         } else {
             // grad.data()[i].saturating_mul(alpha_i8) / 128
-            // FIXME  先简化，后续再完善
+            // FIXME Simplified for now, to be improved later
             grad.data()[i]
         };
     }
@@ -94,7 +94,7 @@ pub fn quantized_leaky_relu_backward(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct LeakyReluOp;

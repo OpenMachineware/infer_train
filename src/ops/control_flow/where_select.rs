@@ -4,7 +4,7 @@ use rayon::prelude::*;
 // use crate::ops::registry::{OpAttrs};
 
 // ============================================================
-// Select Forward (条件选择)
+// Select Forward (Conditional Selection)
 // ============================================================
 
 pub fn select<T: DType + Send + Sync>(
@@ -64,7 +64,7 @@ pub fn select_backward<T: DType>(
 }
 
 // ============================================================
-// Select Op (独立实现)
+// Select Op (Standalone Implementation)
 // ============================================================
 
 pub struct SelectOp;
@@ -91,7 +91,7 @@ impl SelectOp {
 }
 
 // ============================================================
-// 测试
+// Tests
 // ============================================================
 
 #[cfg(test)]

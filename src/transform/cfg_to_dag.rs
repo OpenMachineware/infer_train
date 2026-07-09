@@ -11,7 +11,7 @@ impl CfgToDagConverter {
         let block_order = cfg.topological_sort()?;
         let mut value_map: HashMap<u64, u64> = HashMap::new();
 
-        // 处理输入
+        // Process inputs
         for &input_id in &cfg.inputs {
             if let Some((dtype, shape)) = cfg.value_types.get(&input_id) {
                 let dag_id = dag.add_value(
@@ -40,7 +40,7 @@ impl CfgToDagConverter {
             }
         }
 
-        // 处理输出
+        // Process outputs
         let mut output_ids = Vec::new();
         for &out_id in &cfg.outputs {
             if let Some(&dag_id) = value_map.get(&out_id) {
@@ -67,7 +67,7 @@ impl CfgToDagConverter {
         cfg: &CfgGraph,
     ) -> Result<(), String> {
         for op in &block.ops {
-            // 映射输入
+            // Map inputs
             let mut inputs = Vec::new();
             for &in_id in &op.inputs {
                 if let Some(&dag_id) = value_map.get(&in_id) {
@@ -86,7 +86,7 @@ impl CfgToDagConverter {
                 }
             }
 
-            // 创建输出
+            // Create outputs
             let mut outputs = Vec::new();
             for &out_id in &op.outputs {
                 let out_name = format!("{}_{}", op.op_type, out_id);
@@ -100,7 +100,7 @@ impl CfgToDagConverter {
                 let dag_id = dag.add_value(
                     &out_name,
                     TensorType {
-                        dtype, // DataType 是 Copy
+                        dtype, // DataType is Copy
                         shape: shape.clone(),
                     },
                 );
@@ -108,7 +108,7 @@ impl CfgToDagConverter {
                 outputs.push(dag_id);
             }
 
-            // 创建 Op
+            // Create Op
             let op_id = dag.insert_op(Op {
                 id: 0,
                 name: op.name.clone(),
@@ -118,7 +118,7 @@ impl CfgToDagConverter {
                 attrs: op.attrs.clone(),
             });
 
-            // 更新 producer
+            // Update producer
             for &out_id in &op.outputs {
                 if let Some(&dag_id) = value_map.get(&out_id) {
                     if let Some(value) = dag.values.get_mut(&dag_id) {
@@ -228,7 +228,7 @@ impl CfgToDagConverter {
 }
 
 // ============================================================
-// 测试
+// Tests
 // ============================================================
 
 #[cfg(test)]
@@ -242,7 +242,7 @@ mod tests {
         let entry = cfg.add_block("entry");
         cfg.set_entry(entry);
 
-        // 添加一个简单的算子
+        // Add a simple operator
         let op = CfgOp {
             id: 0,
             op_type: "add".to_string(),
@@ -253,7 +253,7 @@ mod tests {
         };
         cfg.add_op(entry, op).unwrap();
 
-        // 添加 value types
+        // Add value types
         cfg.value_types.insert(1, (DataType::F32, vec![2, 3]));
         cfg.value_types.insert(2, (DataType::F32, vec![2, 3]));
         cfg.value_types.insert(3, (DataType::F32, vec![2, 3]));

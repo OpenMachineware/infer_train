@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn layer_norm<T: DType + Send + Sync>(
@@ -26,14 +26,14 @@ pub fn layer_norm<T: DType + Send + Sync>(
     for o in 0..outer {
         let base = o * last_dim;
 
-        // 计算 mean
+        // Compute mean
         let mut mean = 0.0;
         for i in 0..last_dim {
             mean += x_data[base + i].to_f32();
         }
         mean /= last_dim as f32;
 
-        // 计算 variance
+        // Compute variance
         let mut var = 0.0;
         for i in 0..last_dim {
             let diff = x_data[base + i].to_f32() - mean;
@@ -56,7 +56,7 @@ pub fn layer_norm<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn layer_norm_backward<T: DType + Send + Sync>(
@@ -115,7 +115,7 @@ pub fn layer_norm_backward<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct LayerNormOp;
@@ -152,7 +152,7 @@ mod tests {
         let beta = Tensor::new(vec![0.0, 0.0, 0.0], &[3]);
         let c = layer_norm(&x, &gamma, &beta, 1e-5);
         assert_eq!(c.shape(), &[2, 3]);
-        // 每行均值为0，方差为1
+        // Each row should have mean 0 and variance 1
         let row0_mean: f32 =
             c.data()[0..3].iter().map(|&x| x.to_f32()).sum::<f32>() / 3.0;
         assert!(f32::abs(row0_mean) < 0.001);

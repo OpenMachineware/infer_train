@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn rms_norm<T: DType + Send + Sync>(
@@ -24,7 +24,7 @@ pub fn rms_norm<T: DType + Send + Sync>(
     for o in 0..outer {
         let base = o * last_dim;
 
-        // 计算 RMS
+        // Compute RMS
         let mut rms = 0.0;
         for i in 0..last_dim {
             let v = x_data[base + i].to_f32();
@@ -45,7 +45,7 @@ pub fn rms_norm<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn rms_norm_backward<T: DType + Send + Sync>(
@@ -92,7 +92,7 @@ pub fn rms_norm_backward<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct RmsNormOp;
@@ -128,6 +128,6 @@ mod tests {
         let weight = Tensor::new(vec![1.0, 1.0, 1.0], &[3]);
         let c = rms_norm(&x, &weight, 1e-5);
         assert_eq!(c.shape(), &[2, 3]);
-        // 每个元素的 RMS 归一化后，RMS = 1
+        // After RMS normalization, each element should have RMS = 1
     }
 }

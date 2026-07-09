@@ -44,7 +44,7 @@ impl<T: DType + Send + Sync> Operator<T> for ZerosOp {
         "zeros"
     }
     fn forward(&self, inputs: &[&Tensor<T>], _attrs: &OpAttrs) -> Tensor<T> {
-        // 从输入获取形状
+        // Get shape from input
         let shape = inputs[0].shape();
         zeros::<T>(shape)
     }

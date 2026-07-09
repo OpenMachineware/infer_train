@@ -40,7 +40,7 @@ impl<T: DType> Tensor<T> {
 
     fn compute_stride(shape: &[usize]) -> Vec<usize> {
         if shape.is_empty() {
-            return vec![1]; // 空 shape 的 stride 为 [1]
+            return vec![1]; // stride for empty shape is [1]
         }
         let mut stride = vec![1; shape.len()];
         for i in (0..shape.len() - 1).rev() {
@@ -95,7 +95,7 @@ impl<T: DType> Tensor<T> {
     }
 }
 
-// i8 专用的量化 Tensor 构造
+// Quantized Tensor constructor for i8
 impl Tensor<i8> {
     pub fn new_quantized(
         data: Vec<i8>,

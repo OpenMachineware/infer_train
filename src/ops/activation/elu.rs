@@ -4,7 +4,7 @@ use crate::tensor::Tensor;
 use rayon::prelude::*;
 
 // ============================================================
-// 浮点泛型 Forward
+// Float Generic Forward
 // ============================================================
 
 pub fn elu<T: DType + Send + Sync>(a: &Tensor<T>, alpha: f32) -> Tensor<T> {
@@ -21,7 +21,7 @@ pub fn elu<T: DType + Send + Sync>(a: &Tensor<T>, alpha: f32) -> Tensor<T> {
 }
 
 // ============================================================
-// 浮点泛型 Backward
+// Float Generic Backward
 // ============================================================
 
 pub fn elu_backward<T: DType>(
@@ -42,7 +42,7 @@ pub fn elu_backward<T: DType>(
 }
 
 // ============================================================
-// 量化 Forward (简化版)
+// Quantized Forward (Simplified)
 // ============================================================
 
 pub fn quantized_elu(a: &Tensor<i8>, alpha: f32) -> Tensor<i8> {
@@ -62,7 +62,7 @@ pub fn quantized_elu(a: &Tensor<i8>, alpha: f32) -> Tensor<i8> {
 }
 
 // ============================================================
-// 量化 Backward (简化版)
+// Quantized Backward (Simplified)
 // ============================================================
 
 pub fn quantized_elu_backward(
@@ -87,7 +87,7 @@ pub fn quantized_elu_backward(
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct EluOp;

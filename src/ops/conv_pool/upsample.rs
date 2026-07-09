@@ -4,7 +4,7 @@ use crate::ops::registry::{OpAttrs, Operator};
 use crate::tensor::Tensor;
 
 // ============================================================
-// 浮点泛型 Forward (nearest neighbor)
+// Float Generic Forward (nearest neighbor)
 // ============================================================
 
 pub fn upsample<T: DType + Send + Sync>(
@@ -54,19 +54,19 @@ pub fn upsample<T: DType + Send + Sync>(
 }
 
 // ============================================================
-// 浮点泛型 Backward - 简化版   TODO: 完善
+// Float Generic Backward - Simplified   TODO: Improve
 // ============================================================
 
 pub fn upsample_backward<T: DType>(
     grad_output: &Tensor<T>,
     _scale_factor: &[usize],
 ) -> Vec<Tensor<T>> {
-    // 简化版：直接返回梯度
+    // Simplified: return gradient directly
     vec![grad_output.clone()]
 }
 
 // ============================================================
-// Operator Trait 实现
+// Operator Trait Implementation
 // ============================================================
 
 pub struct UpsampleOp;
