@@ -1,6 +1,7 @@
 # InferTrain - 推训一体计算引擎
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![CLA assistant](https://cla-assistant.io/readme/badge/OpenMachineware/infer_train)](https://cla-assistant.io/allowlist/OpenMachineware/infer_train)
 
 [![英文文档](https://img.shields.io/badge/English_Docs-Click_here-brightgreen?style=for-the-badge)](./README.md)
 
@@ -203,26 +204,9 @@ Apache 2.0
 
 ## 贡献指南
 
-1. Fork 仓库
-2. 创建功能分支
-3. 实现功能
-4. 确保代码和注释中无中文
-5. 确保代码**严格不超过80列**，包括注释
-6. 保证每次commit，都是一个完整的，独立的，小型的改动
-7. 确保commit msg无中文
-8. commit时加`-s`参数，以便生成Sign-off
-9. 提交 Pull Request
+我们欢迎所有人参与贡献！完整的贡献流程、编码规范与开发文档请阅读[《参与贡献指南》](CONTRIBUTING_zh.md)。
 
-
-参与开发请优先参考 [TODO_zh.md](TODO_zh.md)。
-
-新算子开发请参考 [docs/dev_ops_zh.md](./docs/dev_ops_zh.md)。
-
-算子融合优化开发请参考 [docs/dev_fusion_zh.md](./docs/dev_fusion_zh.md)。
-
-硬件平台接入请参考 [docs/dev_platform_zh.md](./docs/dev_platform_zh.md)。
-
-写代码之前请先阅读 [docs/rust_subset_guidelines_zh.md](./docs/rust_subset_guidelines_zh.md)。
+**重要**：所有贡献者都必须签署[贡献者许可协议 (CLA)](CLA_zh.md)——当您打开第一个 Pull Request 时，cla-assistant 会自动提示您签署。
 
 ## 联系方式
 

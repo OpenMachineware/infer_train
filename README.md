@@ -1,6 +1,7 @@
 # InferTrain - Unified Inference and Training Engine
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![CLA assistant](https://cla-assistant.io/readme/badge/OpenMachineware/infer_train)](https://cla-assistant.io/allowlist/OpenMachineware/infer_train)
 
 [![Chinese Docs](https://img.shields.io/badge/Chinese_Docs-Click_here-blue?style=for-the-badge)](./README_zh.md)
 
@@ -201,28 +202,11 @@ Hardware acceleration support:
 Apache 2.0
 
 
-## Contributing Guide
+## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Implement the feature
-4. Ensure no Chinese in code and comments
-5. Ensure code **strictly does not exceed 80 columns**, including comments
-6. Ensure each commit is a complete, independent, small change
-7. Ensure commit messages have no Chinese
-8. Add `-s` flag when committing to generate Sign-off
-9. Submit Pull Request
+We welcome contributions from everyone! Please read the [Contributing Guide](CONTRIBUTING.md) for the full contribution workflow, coding conventions, and development documentation.
 
-
-Please refer to [TODO.md](TODO.md) for priority development tasks.
-
-New operator development: refer to [docs/dev_ops.md](./docs/dev_ops.md).
-
-Operator fusion optimization: refer to [docs/dev_fusion.md](./docs/dev_fusion.md).
-
-Hardware platform integration: refer to [docs/dev_platform.md](./docs/dev_platform.md).
-
-Please read [docs/rust_subset_guidelines.md](./docs/rust_subset_guidelines.md) before writing code.
+**Important**: All contributors must sign the [Contributor License Agreement](CLA.md) — cla-assistant will automatically prompt you to sign when you open your first Pull Request.
 
 ## Contact
 
