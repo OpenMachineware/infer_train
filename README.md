@@ -1,214 +1,135 @@
-# InferTrain - Unified Inference and Training Engine
+# InferTrain
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![CLA assistant](https://cla-assistant.io/readme/badge/OpenMachineware/infer_train)](https://cla-assistant.io/allowlist/OpenMachineware/infer_train)
 
 [![Chinese Docs](https://img.shields.io/badge/Chinese_Docs-Click_here-blue?style=for-the-badge)](./README_zh.md)
 
-## Project Overview
+**Inference + Training Engine** — a from-scratch LLM inference *and* training engine written in pure Mojo, on top of a minimal C runtime-helper layer (pthread task pool + `mmap`).
 
-InferTrain is an AI inference and training engine designed specifically for edge devices.
+```
+┌─────────────────────────────── infer_train ───────────────────────────────┐
+│                                                                           │
+│  CLI (llama.cpp-compatible)        HTTP server (OpenAI-compatible)        │
+│  infer_train -m M -p P -n N       /v1/models /v1/chat/completions         │
+│  quantize / serve                 /v1/completions (SSE) /v1/finetune      │
+│  --infer-train-mode off|lora|full                                         │
+│                          │                              │                │
+│  ┌───────────────────────▼──────────────────────────────▼──────────────┐  │
+│  │  Python bindings (C ABI)  ·  torch.compile backend "infer_train"     │  │
+│  └───────────────────────┬──────────────────────────────┬──────────────┘  │
+│                          │                              │                 │
+│  ┌───────────────────────▼───────────────┐  ┌───────────▼──────────────┐  │
+│  │  runtime: Model / generate /          │  │  training: TrainModel /   │  │
+│  │  finetune (on-the-fly)                │  │  run_with_grad / AdamW    │  │
+│  └───────────────────────┬───────────────┘  └───────────┬──────────────┘  │
+│                          │                              │                 │
+│  ┌───────────────────────▼──────────────────────────────▼──────────────┐  │
+│  │  core: tensor / graph / interpreter / optimizer(IR) / JIT           │  │
+│  │  ops: cpu kernels · fused kernels · quantized (GGUF Q4_K/Q5_K/Q6_K/ │  │
+│  │        Q8_0/IQ4_NL/IQ4_XS/NF4) · attention (KV cache: dense/paged/  │  │
+│  │        sliding window) · autograd                                   │  │
+│  │  transformer: qwen2 · hunyuan-dense · qwen35 (Gated DeltaNet hybrid)│  │
+│  │  tokenizers: Qwen / Llama / Hunyuan (GPT-2 byte-level BPE, auto-    │  │
+│  │             selected from GGUF metadata) + custom registry          │  │
+│  │  storage: GGUF loader (mmap) · .mmdl checkpoints (GGUF-compatible)  │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────────────────────┘
+```
 
-- **Model Privacy**: Inference runs locally on the device, keeping model weights and network structures private. Publishers can allow users to fine-tune without disclosing the network structure. Users can also save locally fine-tuned weights for continued use, achieving both privacy and personalization.
-- **Unified Inference & Training**: The same codebase supports both inference and training, enabling weight updates during inference
-- **Multi-Frontend Support**: PyTorch Hook/JIT Trace, GGUF
-- **Multi-Precision Support**: F32/F64/F16/BF16/I8 quantization
-- **Memory Reuse**: Byte-pool memory management, ideal for edge devices
-- **ITM Private Format**: Proprietary binary model format with chunked storage, mmap, and incremental training
-- **Pure Rust Implementation**: All operators implemented in Rust, no C++ dependencies
+## Quick Start
+
+```bash
+# build everything and run the full test suite
+make test-m7
+
+# generate with the 1.5B model
+make cli
+./infer_train -m DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf \
+    -p "<｜User｜>What is 1+1?<｜Assistant｜><think>" -n 120 --seed 7
+
+# 7B translation model (Hy-MT2, hunyuan-dense)
+./infer_train -m Hy-MT2-7B-Q4_K_M.gguf \
+    -p "Translate to English: 今天天气很好。" -n 64
+
+# 27B hybrid (Qwen3.8, Gated DeltaNet + full attention)
+./infer_train -m Qwen3.8-27B-UD-Q5_K_M.gguf -c 32768 -p "Hello world" -n 64
+
+# OpenAI-compatible HTTP server
+INFERTRAIN_MODEL=DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf \
+    python -m infer_train.server --port 8080
+curl http://127.0.0.1:8080/v1/completions \
+    -d '{"prompt":"1+1=","max_tokens":32,"temperature":0.6}'
+
+# Python API
+from infer_train import load_model
+m = load_model("DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf")
+print(m.generate("1+1=", max_tokens=32, seed=7))
+losses = m.finetune("What is 1+1?", "1+1 equals 2.", lr=1e-5)  # on-the-fly fine-tuning
+
+# post-fine-tuning re-quantization (.mmdl -> Q4_K_M / Q8_0 / NF4)
+./infer_train quantize -i model.mmdl -o model_quantized.gguf -f Q4_K_M
+```
 
 ## Core Features
 
 | Feature | Description |
-|--|------------------------------------|
-| Model Privacy | Publishers don't need to disclose network structure; users can keep personalized customizations private after local fine-tuning |
-| Unified Inference & Training | Same model can infer and train; weights can be incrementally updated |
-| Pure Rust Operators | 78+ operators, supporting F32/F64/F16/BF16/I8 |
-| PyTorch Non-Invasive Integration | Just import, no user code modification required |
-| GGUF Support | Import/export GGUF format, supports quantized model training |
-| ITM Format | Proprietary binary format, chunked storage, mmap support |
-| Memory Reuse | Byte-pool memory management, reduces training memory peak by 70%+ |
-| Automatic Differentiation | Tape-based autograd engine |
-| Parallel Execution | Rayon parallel, fully utilize multi-core - TODO |
+|---|---|
+| **Inference** | Three architectures (qwen2 / hunyuan-dense / qwen35 hybrid SSM), direct GGUF weight loading (Q4_K/Q5_K/Q6_K/Q8_0/IQ4_NL/IQ4_XS), KV Cache (dense / Paged / sliding window / adaptive memory), llama.cpp-compatible sampling |
+| **Training** | Backward operators, `run_with_grad` automatic differentiation, AdamW/SGD, `train_step`/`eval_step`, gradient accumulation, mixed precision (AMP), dynamic quantization |
+| **Fine-tuning** | `finetune_step` (Mojo) and `Model.finetune` (Python) — no service downtime, LoRA-style updates on trainable subsets |
+| **Quantization** | Post-fine-tuning re-quantization: FP16 → Q4_K_M / Q8_0 / NF4 (`infer_train quantize`), compatible with GGUF toolchain |
+| **Storage** | Private `.mmdl` checkpoints: weights + gradients + AdamW m/v + training metadata; incremental updates, delta appends, checkpoint resumption; `strip_to_gguf` exports pure weights |
+| **Tokenization** | `Tokenizer` trait + Qwen/Llama/Hunyuan implementations, auto-selected by `tokenizer.ggml.model`/`tokenizer.ggml.pre`, `register_tokenizer` for custom tokenizers |
+| **API** | C ABI + Python bindings + `torch.compile` backend; OpenAI-compatible HTTP endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/completions` SSE, `/v1/finetune`, `/v1/finetune/status`), `INFERTRAIN_API_KEY` authentication |
+| **CLI** | `infer_train`: llama.cpp core parameters (`-m -c -np --host --port --temp --top-p --top-k --repeat-penalty -t --no-cnv`) + `--infer-train-*` parameter group |
 
+## Performance Benchmarks (Apple M1 Max, 64 GB; InferTrain is CPU multi-threaded)
 
-## Quick Start
+| Model | Size | Prefill | Decode | Peak Memory | llama.cpp (CPU) Decode | Ratio |
+|---|---|---|---|---|---|---|
+| DeepSeek-R1-Distill-Qwen-1.5B (Q5_K_M) | 1.28 GB | 4.4 t/s | 4.2 t/s | ~5 GB | 60.3 t/s | 7% |
+| Hy-MT2-7B (Q4_K_M, hunyuan-dense) | 4.6 GB | 0.82 t/s | 0.82 t/s | ~15 GB | 19.6 t/s | 4% |
+| Qwen3.8-27B (UD-Q5_K_M, qwen35 hybrid) | 19.7 GB | 0.23 t/s | 0.22 t/s | ~55 GB | 4.4 t/s | 5% |
 
-### Installation
+> ⚠️ **Performance target not met**: M7's "reach 85% of llama.cpp" target currently sits at 4–7% (CPU baseline). Numerical correctness is unaffected (token-identical with llama.cpp); the gap is in kernel efficiency (scalar DeltaNet recurrence, no AMX weight reordering, element-wise attention). Full analysis, 32K context memory data, and v1.1 optimization roadmap are in `docs/M7_PERFORMANCE_REPORT.md`; M5/M6 data in `docs/M5_PERFORMANCE_REPORT.md` and `docs/M6_TRAINING_REPORT.md`.
+
+## Verified Numerical Correctness
+
+* **Hy-MT2-7B (hunyuan-dense)**: Token-identical with llama.cpp — 4-step greedy decoding yields identical tokens, full logits vector correlation ≥ 0.9995.
+* **Qwen3.8-27B (qwen35 hybrid)**: 1-token / 2-token / 6-step greedy decoding matches llama.cpp token-for-token (single-token logits correlation 0.9991).
+* **1.5B (qwen2)**: M3 regression baseline `reference_logits_5.npy` bitwise identical (post-refactor).
+* All GGUF dequantization formats verified against gguf-py (llama.cpp official Python implementation).
+* M6 training: bitwise identical with PyTorch eager (loss 3.58 → 1.77).
+
+## Ecosystem
+
+* [CONTRIBUTING.md](CONTRIBUTING.md) — Contribution guidelines (Chinese: [CONTRIBUTING_zh.md](CONTRIBUTING_zh.md))
+* [CLA.md](CLA.md) — Contributor License Agreement (Chinese: [CLA_zh.md](CLA_zh.md))
+* [docs/NEW_OPERATOR_GUIDE.md](docs/NEW_OPERATOR_GUIDE.md) — How to discover and add new operators
+* [docs/FUSION_GUIDE.md](docs/FUSION_GUIDE.md) — How to extend operator fusion passes
+* [docs/PORTING_GUIDE.md](docs/PORTING_GUIDE.md) — How to port to new hardware platforms (CUDA/ROCm/…)
+* [docs/M5_PERFORMANCE_REPORT.md](docs/M5_PERFORMANCE_REPORT.md) / [docs/M6_TRAINING_REPORT.md](docs/M6_TRAINING_REPORT.md) — Milestone reports
+* [LICENSE](LICENSE)
+
+## Development
 
 ```bash
-# Install from source (requires Rust environment)
-git clone https://github.com/yourname/infer_train.git
-cd infer_train/pybinds/infer_train_torch
-uv pip install -e .
+make tp          # build C runtime helpers (thread pool + mmap)
+make test        # M1/M2 core tests
+make test-m3     # tokenizer / ops / forward validation
+make test-m5     # IR optimizer + JIT + torch.compile backend
+make test-m6     # training suites
+make test-m7     # everything + the M7 feature suites
+make cli         # the infer_train binary
 ```
 
-### Python Usage
+Test composition: Mojo executables (`tests/*.mojo`, compiled with `pixi run mojo build -I .`) + Python acceptance suites (`tests/python/`). Mojo 1.0 constraints: `def`-only, no runtime globals, `fn` deprecated; C-side helpers linked via `-Xlinker` (`tools/thread_pool.c`).
 
-```python
-import torch
-import torch.nn as nn
-import infer_train_torch as it  # ← Just add this line
+## Known Limitations / TODO
 
-class MyModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.fc = nn.Linear(784, 256)
-        self.relu = nn.ReLU()
-        self.out = nn.Linear(256, 10)
-
-    def forward(self, x):
-        return self.out(self.relu(self.fc(x)))
-
-model = MyModel()
-x = torch.randn(1, 784)
-
-# Inference (automatically uses engine)
-output = model(x)
-
-# Trace and export
-dag = it.trace_model(model, [x])
-it.export_model("model.itm", "my_model", trainable=True)
-
-# Load and inference
-model_file = it.PyModelFile.load("model.itm")
-executor = it.PyExecutor.from_model_file(model_file)
-result = executor.execute([x])
-```
-
-### GGUF Model Loading
-
-```python
-import infer_train_torch as it
-
-# Import GGUF model
-dag = it.import_gguf("llama-2-7b.gguf")
-
-# Export to ITM (faster loading)
-model_file = it.PyModelFile.new("llama", "gguf", dag)
-model_file.export("llama.itm")
-
-# Train GGUF model (infer while training)
-trainer = it.Trainer.from_model_file(model_file)
-loss = trainer.train_step(inputs, targets)
-trainer.save("llama_updated.itm", trainable=True)
-
-# Export back to GGUF
-it.export_gguf("llama_updated.gguf", dag, "Q8_0")
-```
-
-
-## Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Python Layer                           │
-│            (PyTorch Hook / GGUF Importer)                   │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                      Rust Core Layer                        │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
-│  │    CFG IR   │→│    DAG IR   │→│   Executor/Trainer   │ │
-│  │  (Control Flow Graph) │  │  (Data Flow Graph) │  │   (Inference/Training) │ │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘ │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              78+ Operators (Pure Rust)               │   │
-│  │  math / linalg / activation / conv / normalization │   │
-│  │  reduction / loss / embedding / attention / ...    │   │
-│  └─────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              Autograd (Tape + Backward)             │   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    ITM Storage Format                      │
-│            (Chunked Storage / mmap / Incremental Training) │
-└─────────────────────────────────────────────────────────────┘
-```
-
-
-## Directory Structure
-
-```
-infer_train/
-├── src/
-│   ├── ops/              # 78+ operator implementations
-│   │   ├── math/         # Math operators
-│   │   ├── linalg/       # Linear algebra
-│   │   ├── activation/   # Activation functions
-│   │   ├── conv_pool/    # Convolution and pooling
-│   │   ├── normalization/# Normalization
-│   │   ├── reduction/    # Reduction
-│   │   ├── loss/         # Loss functions
-│   │   ├── embedding_lookup/ # Embedding and lookup
-│   │   ├── attention/    # Attention
-│   │   ├── control_flow/ # Control flow
-│   │   ├── tensor_manip/ # Tensor manipulation
-│   │   ├── data_gen/     # Data generation
-│   │   └── cast/         # Type conversion
-│   ├── ir/               # IR data structures (DAG/CFG)
-│   ├── transform/        # Optimization passes
-│   ├── executor/         # Inference/training executor
-│   ├── autograd/         # Autograd engine
-│   └── frontend/         # Frontend (Hook/GGUF)
-├── pybinds/              # Python bindings
-└── docs/                 # Development documentation
-    ├── dev_ops.md        # Operator development guide
-    └── dev_ops_zh.md     # Operator development guide (Chinese)
-```
-
-
-## Development Guide
-
-### Adding New Operators
-
-Refer to [docs/dev_ops.md](./docs/dev_ops.md), which includes:
-
-1. C++ operator addition workflow (if needed)
-2. Rust operator development template
-3. Backward propagation implementation
-4. Quantization support
-5. Test cases
-
-### Adding Hardware Platform Support
-
-1. Implement `Operator<T>` trait
-2. Device memory management
-3. Operator registration
-4. Device selection strategy
-
-See [docs/dev_platform.md](./docs/dev_platform.md) for details (to be added)
-
-
-## Supported Platforms
-
-- macOS (Apple Silicon / Intel)
-- Linux (x86_64 / ARM64)
-- Windows (x86_64)
-
-Hardware acceleration support:
-- Apple GPU (Metal) - Seeking volunteers
-- NVIDIA CUDA - Seeking volunteers
-- AMD ROCm - Seeking volunteers
-- Other NPU/GPU/DSP/hardware accelerators - Seeking volunteers
-
-
-## License
-
-Apache 2.0
-
-
-## Contributing
-
-We welcome contributions from everyone! Please read the [Contributing Guide](CONTRIBUTING.md) for the full contribution workflow, coding conventions, and development documentation.
-
-**Important**: All contributors must sign the [Contributor License Agreement](CLA.md) — cla-assistant will automatically prompt you to sign when you open your first Pull Request.
-
-## Contact
-
-- Issues: GitHub Issues
-- Discussion: GitHub Discussions
+* **Qwen3.8 MTP (nextn_predict) module not enabled** — matches llama.cpp default single-model decoding; MTP speculative decoding deferred to v1.1.
+* **NF4 is a private GGML extended type (30)** — llama.cpp cannot read NF4 weights; export to llama.cpp using `-f Q4_K_M` / `Q8_0`.
+* Mixed precision training (AMP) uses fp32 master weights + fp16 shadow; FSDP/pipeline parallelism not implemented.
+* GPU backends (CUDA/ROCm) interfaces are ready (see PORTING_GUIDE), kernels remain for porting.
+* More ops / more models (MoE, VL), more platforms (Windows/Linux packaging).

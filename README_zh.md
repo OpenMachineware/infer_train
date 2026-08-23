@@ -1,214 +1,135 @@
-# InferTrain - 推训一体计算引擎
+# InferTrain
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![CLA assistant](https://cla-assistant.io/readme/badge/OpenMachineware/infer_train)](https://cla-assistant.io/allowlist/OpenMachineware/infer_train)
 
 [![英文文档](https://img.shields.io/badge/English_Docs-Click_here-brightgreen?style=for-the-badge)](./README.md)
 
-## 项目简介
+**推训一体引擎** —— 纯 Mojo 编写的从零开始的 LLM 推理与训练引擎，仅依赖最小 C 运行时辅助层（pthread 任务池 + `mmap`）。
 
-InferTrain 是一个专为边缘设备设计的推训一体 AI 推理与训练引擎。
-
-- **模型保密**：推理在设备端本地执行，模型权重和网络结构不离开设备，发布者无需公开网络结构即可让用户进行微调。同时，用户在本地微调后的权重可以保存并持续使用，私有化与个性化兼得。
-- **推训一体**：同一套代码支持推理和训练，边推理边更新权重
-- **多前端支持**：PyTorch Hook/JIT Trace、GGUF
-- **多精度支持**：F32/F64/F16/BF16/I8 量化
-- **内存复用**：字节池内存管理，适合边缘设备
-- **ITM 私有格式**：自研二进制模型格式，支持分块存储、mmap、增量训练
-- **纯 Rust 实现**：所有算子均为 Rust 实现，无 C++ 依赖
-
-## 核心特性
-
-| 特性 | 说明                                 |
-|--|------------------------------------|
-| 模型保密 | 发布者无需公开网络结构，用户本地微调后也可以保密自己的个性化定制成果 |
-| 推训一体 | 同一模型可推理也可训练，权重可增量更新                |
-| 纯 Rust 算子 | 78+ 算子，支持 F32/F64/F16/BF16/I8      |
-| PyTorch 无感侵入 | import 即可，用户代码无需修改                 |
-| GGUF 支持 | 导入/导出 GGUF 格式，支持量化模型训练             |
-| ITM 格式 | 自研二进制格式，分块存储，支持 mmap               |
-| 内存复用 | 字节池内存管理，训练内存峰值降低 70%以上             |
-| 自动微分 | 基于 Tape 的自动微分引擎                    |
-| 并行执行 | Rayon 并行，充分利用多核 - TODO             |
-
+```
+┌─────────────────────────────── infer_train ───────────────────────────────┐
+│                                                                           │
+│  CLI (llama.cpp 兼容)                HTTP 服务器 (OpenAI 兼容)             │
+│  infer_train -m M -p P -n N       /v1/models /v1/chat/completions         │
+│  quantize / serve                 /v1/completions (SSE) /v1/finetune      │
+│  --infer-train-mode off|lora|full                                         │
+│                          │                              │                │
+│  ┌───────────────────────▼──────────────────────────────▼──────────────┐  │
+│  │  Python 绑定 (C ABI)  ·  torch.compile 后端 "infer_train"           │  │
+│  └───────────────────────┬──────────────────────────────┬──────────────┘  │
+│                          │                              │                 │
+│  ┌───────────────────────▼───────────────┐  ┌───────────▼──────────────┐  │
+│  │  运行时: Model / generate /           │  │  训练: TrainModel /       │  │
+│  │  finetune (边推边训)                   │  │  run_with_grad / AdamW    │  │
+│  └───────────────────────┬───────────────┘  └───────────┬──────────────┘  │
+│                          │                              │                 │
+│  ┌───────────────────────▼──────────────────────────────▼──────────────┐  │
+│  │  核心: tensor / graph / interpreter / optimizer(IR) / JIT           │  │
+│  │  算子: CPU 内核 · 融合内核 · 量化内核 (GGUF Q4_K/Q5_K/Q6_K/         │  │
+│  │        Q8_0/IQ4_NL/IQ4_XS/NF4) · 注意力 (KV cache: dense/paged/    │  │
+│  │        滑动窗口) · 自动微分                                           │  │
+│  │  Transformer: qwen2 · hunyuan-dense · qwen35 (Gated DeltaNet 混合)  │  │
+│  │  分词器: Qwen / Llama / Hunyuan (GPT-2 byte-level BPE,              │  │
+│  │           根据 GGUF 元数据自动选择) + 自定义注册表                    │  │
+│  │  存储: GGUF 加载器 (mmap) · .mmdl 检查点 (GGUF 兼容)                │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────────────────────┘
+```
 
 ## 快速开始
 
-### 安装
+```bash
+# 构建所有组件并运行完整测试套件
+make test-m7
+
+# 使用 1.5B 模型生成
+make cli
+./infer_train -m DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf \
+    -p "<｜User｜>What is 1+1?<｜Assistant｜><think>" -n 120 --seed 7
+
+# 7B 翻译模型 (Hy-MT2, hunyuan-dense)
+./infer_train -m Hy-MT2-7B-Q4_K_M.gguf \
+    -p "Translate to English: 今天天气很好。" -n 64
+
+# 27B 混合模型 (Qwen3.8, Gated DeltaNet + 全注意力)
+./infer_train -m Qwen3.8-27B-UD-Q5_K_M.gguf -c 32768 -p "Hello world" -n 64
+
+# OpenAI 兼容 HTTP 服务器
+INFERTRAIN_MODEL=DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf \
+    python -m infer_train.server --port 8080
+curl http://127.0.0.1:8080/v1/completions \
+    -d '{"prompt":"1+1=","max_tokens":32,"temperature":0.6}'
+
+# Python API
+from infer_train import load_model
+m = load_model("DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf")
+print(m.generate("1+1=", max_tokens=32, seed=7))
+losses = m.finetune("What is 1+1?", "1+1 equals 2.", lr=1e-5)  # 边推边训
+
+# 微调后重量化 (.mmdl -> Q4_K_M / Q8_0 / NF4)
+./infer_train quantize -i model.mmdl -o model_quantized.gguf -f Q4_K_M
+```
+
+## 核心功能
+
+| 功能 | 说明 |
+|---|---|
+| **推理** | 三种架构（qwen2 / hunyuan-dense / qwen35 混合 SSM），GGUF 权重直接加载（Q4_K/Q5_K/Q6_K/Q8_0/IQ4_NL/IQ4_XS），KV Cache（稠密 / Paged / 滑动窗口 / 内存自适应），llama.cpp 兼容采样 |
+| **训练** | 反向算子、`run_with_grad` 自动微分、AdamW/SGD、`train_step`/`eval_step`、梯度累积、混合精度（AMP）、动态量化 |
+| **微调** | `finetune_step`（Mojo）与 `Model.finetune`（Python）——服务不停机，LoRA 风格只更新可训练子集 |
+| **量化** | 微调后重量化：FP16 → Q4_K_M / Q8_0 / NF4（`infer_train quantize`），量化文件兼容 GGUF 工具链 |
+| **存储** | 私有 `.mmdl` 检查点：权重 + 梯度 + AdamW m/v + 训练元数据；增量更新、delta 追加、断点续训；`strip_to_gguf` 导出纯权重 |
+| **分词** | `Tokenizer` trait + Qwen/Llama/Hunyuan 三实现，按 `tokenizer.ggml.model`/`tokenizer.ggml.pre` 自动选择，`register_tokenizer` 注册自定义分词器 |
+| **API** | C ABI + Python 绑定 + `torch.compile` 后端；OpenAI 兼容 HTTP 端点（`/v1/models`、`/v1/chat/completions`、`/v1/completions` SSE、`/v1/finetune`、`/v1/finetune/status`），`INFERTRAIN_API_KEY` 鉴权 |
+| **CLI** | `infer_train`：llama.cpp 核心参数（`-m -c -np --host --port --temp --top-p --top-k --repeat-penalty -t --no-cnv`）+ `--infer-train-*` 参数组 |
+
+## 性能基准（Apple M1 Max，64 GB；InferTrain 为 CPU 多线程）
+
+| 模型 | 大小 | 预填充 | 解码 | 峰值内存 | llama.cpp（CPU）解码 | 对比 |
+|---|---|---|---|---|---|---|
+| DeepSeek-R1-Distill-Qwen-1.5B（Q5_K_M） | 1.28 GB | 4.4 t/s | 4.2 t/s | ~5 GB | 60.3 t/s | 7% |
+| Hy-MT2-7B（Q4_K_M, hunyuan-dense） | 4.6 GB | 0.82 t/s | 0.82 t/s | ~15 GB | 19.6 t/s | 4% |
+| Qwen3.8-27B（UD-Q5_K_M, qwen35 hybrid） | 19.7 GB | 0.23 t/s | 0.22 t/s | ~55 GB | 4.4 t/s | 5% |
+
+> ⚠️ **性能目标未达成**：M7 的「推理速度达 llama.cpp 85%」目标当前为 4–7%（CPU 基线）。数值正确性不受影响（与 llama.cpp 逐 token 一致），差距在 内核效率（标量 DeltaNet 递推、无 AMX 权重重排、逐元素注意力），完整分析、 32K 上下文内存数据与 v1.1 优化路线见 `docs/M7_PERFORMANCE_REPORT.md`； M5/M6 数据见 `docs/M5_PERFORMANCE_REPORT.md` 与 `docs/M6_TRAINING_REPORT.md`。
+
+## 已验证的数值正确性
+
+* **Hy-MT2-7B（hunyuan-dense）**：与 llama.cpp 逐 token 对比——连续 4 步贪心解码 token 完全一致，全 logits 向量相关系数 ≥ 0.9995。
+* **Qwen3.8-27B（qwen35 混合）**：单 token / 双 token / 6 步贪心解码与 llama.cpp 逐 token 一致（单 token logits 相关系数 0.9991）。
+* **1.5B（qwen2）**：M3 回归基准 `reference_logits_5.npy` 逐位一致（含新架构重构后）。
+* 所有 GGUF 反量化格式对 gguf-py（llama.cpp 官方 Python 实现）逐一校验。
+* M6 训练：与 PyTorch eager 逐位一致（loss 3.58 → 1.77）。
+
+## 生态
+
+* [CONTRIBUTING.md](CONTRIBUTING.md) — 贡献指南（中文版：[CONTRIBUTING_zh.md](CONTRIBUTING_zh.md)）
+* [CLA.md](CLA.md) — 贡献者许可协议（中文版：[CLA_zh.md](CLA_zh.md)）
+* [docs/NEW_OPERATOR_GUIDE.md](docs/NEW_OPERATOR_GUIDE.md) — 如何发现并添加新算子
+* [docs/FUSION_GUIDE.md](docs/FUSION_GUIDE.md) — 如何扩展算子融合 Pass
+* [docs/PORTING_GUIDE.md](docs/PORTING_GUIDE.md) — 如何移植到新硬件平台（CUDA/ROCm/…）
+* [docs/M5_PERFORMANCE_REPORT.md](docs/M5_PERFORMANCE_REPORT.md) / [docs/M6_TRAINING_REPORT.md](docs/M6_TRAINING_REPORT.md) — 里程碑报告
+* [LICENSE](LICENSE)
+
+## 开发
 
 ```bash
-# 从源码安装（需要 Rust 环境）
-git clone https://github.com/yourname/infer_train.git
-cd infer_train/pybinds/infer_train_torch
-uv pip install -e .
+make tp          # 构建 C 运行时辅助库 (线程池 + mmap)
+make test        # M1/M2 核心测试
+make test-m3     # 分词器 / 算子 / 前向验证
+make test-m5     # IR 优化器 + JIT + torch.compile 后端
+make test-m6     # 训练套件
+make test-m7     # 所有测试 + M7 功能套件
+make cli         # infer_train 二进制
 ```
 
-### Python 使用
+测试组成：Mojo 可执行文件（`tests/*.mojo`，`pixi run mojo build -I .` 编译）+ Python 验收套件（`tests/python/`）。Mojo 1.0 约束：统一 `def`、无运行时全局变量、 `fn` 已弃用；C 侧辅助库经 `-Xlinker` 链接（`tools/thread_pool.c`）。
 
-```python
-import torch
-import torch.nn as nn
-import infer_train_torch as it  # ← 只加这一行
+## 已知限制 / TODO
 
-class MyModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.fc = nn.Linear(784, 256)
-        self.relu = nn.ReLU()
-        self.out = nn.Linear(256, 10)
-
-    def forward(self, x):
-        return self.out(self.relu(self.fc(x)))
-
-model = MyModel()
-x = torch.randn(1, 784)
-
-# 推理（自动走引擎）
-output = model(x)
-
-# 追踪并导出
-dag = it.trace_model(model, [x])
-it.export_model("model.itm", "my_model", trainable=True)
-
-# 加载并推理
-model_file = it.PyModelFile.load("model.itm")
-executor = it.PyExecutor.from_model_file(model_file)
-result = executor.execute([x])
-```
-
-### GGUF 模型加载
-
-```python
-import infer_train_torch as it
-
-# 导入 GGUF 模型
-dag = it.import_gguf("llama-2-7b.gguf")
-
-# 导出为 ITM（更快加载）
-model_file = it.PyModelFile.new("llama", "gguf", dag)
-model_file.export("llama.itm")
-
-# 训练 GGUF 模型（边推边训）
-trainer = it.Trainer.from_model_file(model_file)
-loss = trainer.train_step(inputs, targets)
-trainer.save("llama_updated.itm", trainable=True)
-
-# 导出回 GGUF
-it.export_gguf("llama_updated.gguf", dag, "Q8_0")
-```
-
-
-## 架构概览
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Python 层                             │
-│            (PyTorch Hook / GGUF 导入器)                    │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                      Rust 核心层                           │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
-│  │    CFG IR   │→│    DAG IR   │→│   Executor/Trainer   │ │
-│  │  (控制流图) │  │  (数据流图) │  │   (推理/训练)       │ │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘ │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              78+ 算子 (纯 Rust)                     │   │
-│  │  math / linalg / activation / conv / normalization │   │
-│  │  reduction / loss / embedding / attention / ...    │   │
-│  └─────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              自动微分 (Tape + Backward)             │   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    ITM 存储格式                            │
-│            (分块存储 / mmap / 增量训练)                    │
-└─────────────────────────────────────────────────────────────┘
-```
-
-
-## 目录结构
-
-```
-infer_train/
-├── src/
-│   ├── ops/              # 78+ 算子实现
-│   │   ├── math/         # 数学算子
-│   │   ├── linalg/       # 线性代数
-│   │   ├── activation/   # 激活函数
-│   │   ├── conv_pool/    # 卷积与池化
-│   │   ├── normalization/# 归一化
-│   │   ├── reduction/    # 归约
-│   │   ├── loss/         # 损失函数
-│   │   ├── embedding_lookup/ # 嵌入与查找
-│   │   ├── attention/    # 注意力
-│   │   ├── control_flow/ # 控制流
-│   │   ├── tensor_manip/ # 张量操作
-│   │   ├── data_gen/     # 数据生成
-│   │   └── cast/         # 类型转换
-│   ├── ir/               # IR 数据结构 (DAG/CFG)
-│   ├── transform/        # 优化 Pass
-│   ├── executor/         # 推理/训练执行器
-│   ├── autograd/         # 自动微分引擎
-│   └── frontend/         # 前端 (Hook/GGUF)
-├── pybinds/              # Python 绑定
-└── docs/                 # 开发文档
-    ├── dev_ops.md        # 算子开发指南
-    └── dev_ops_zh.md     # 算子开发指南 (中文)
-```
-
-
-## 开发指南
-
-### 添加新算子
-
-参考 [docs/dev_ops_zh.md](./docs/dev_ops_zh.md)，包含：
-
-1. C++ 算子添加流程（如需）
-2. Rust 算子开发模板
-3. 反向传播实现
-4. 量化支持
-5. 测试用例
-
-### 添加硬件平台支持
-
-1. 实现 `Operator<T>` trait
-2. 设备内存管理
-3. 算子注册
-4. 设备选择策略
-
-详见 [docs/dev_platform_zh.md](./docs/dev_platform_zh.md)（待补充）
-
-
-## 支持平台
-
-- macOS (Apple Silicon / Intel)
-- Linux (x86_64 / ARM64)
-- Windows (x86_64)
-
-硬件加速支持：
-- Apple GPU (Metal) - 呼唤志愿者
-- NVIDIA CUDA - 呼唤志愿者
-- AMD ROCm - 呼唤志愿者
-- 其他 NPU/GPU/DSP/硬件加速器 - 呼唤志愿者
-
-
-## 许可证
-
-Apache 2.0
-
-
-## 贡献指南
-
-我们欢迎所有人参与贡献！完整的贡献流程、编码规范与开发文档请阅读[《参与贡献指南》](CONTRIBUTING_zh.md)。
-
-**重要**：所有贡献者都必须签署[贡献者许可协议 (CLA)](CLA_zh.md)——当您打开第一个 Pull Request 时，cla-assistant 会自动提示您签署。
-
-## 联系方式
-
-- Issues: GitHub Issues
-- 讨论: GitHub Discussions
+* **Qwen3.8 的 MTP（nextn_predict）模块未启用**——与 llama.cpp 默认单模型解码一致， MTP 投机解码留待 v1.1。
+* **NF4 为私有 GGML 扩展类型（30）**，llama.cpp 无法读取 NF4 权重；导出给 llama.cpp 请用 `-f Q4_K_M` / `Q8_0`。
+* 混合精度训练（AMP）为 fp32 主权重 + fp16 影子；FSDP/流水并行未实现。
+* GPU 后端（CUDA/ROCm）接口已就绪（见 PORTING_GUIDE），内核留待移植。
+* 更多算子 / 更多模型（MoE、VL）、更多平台（Windows/Linux 打包）。

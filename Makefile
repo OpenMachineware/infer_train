@@ -1,0 +1,126 @@
+# infer_train build helpers.
+#
+# Mojo is provided by the pixi environment (see pixi.toml).  Every target
+# shells out to `pixi run mojo` so the correct toolchain and MODULAR_HOME are
+# picked up automatically.  The C runtime helpers (tools/thread_pool.c:
+# pthread task pool + mmap + wall clock) are compiled to a small dylib and
+# linked into every build that reaches the engine kernels via `-Xlinker`.
+
+MOJO := pixi run mojo
+SRC := src
+TP := python/infer_train/_lib/libinfer_train_tp.dylib
+TP_XLINK := -Xlinker $(TP)
+
+.PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 package clean tp cli
+
+# The C runtime helper library (thread pool + mmap + clock).
+tp:
+	cc -O2 -shared -o $(TP) tools/thread_pool.c
+
+# Compile and run the M1/M2 example tests (now under tests/, built with
+# `-I .` so `src.`-prefixed imports resolve).
+test: tp
+	$(MOJO) build -I . tests/test_core.mojo $(TP_XLINK) -o tests/test_core && ./tests/test_core
+	$(MOJO) build -I . tests/test_quant.mojo $(TP_XLINK) -o tests/test_quant && ./tests/test_quant
+	$(MOJO) build -I . tests/test_cpuops.mojo $(TP_XLINK) -o tests/test_cpuops && ./tests/test_cpuops
+	$(MOJO) build -I . tests/test_registry.mojo $(TP_XLINK) -o tests/test_registry && ./tests/test_registry
+	$(MOJO) build -I . tests/test_e2e.mojo $(TP_XLINK) -o tests/test_e2e && ./tests/test_e2e
+
+# M3 tests (tests/ builds with -I . so `src.` imports resolve).
+test-m3: tp
+	$(MOJO) build -I . tests/test_json.mojo $(TP_XLINK) -o tests/test_json
+	./tests/test_json
+	$(MOJO) build -I . tests/test_tokenizer.mojo $(TP_XLINK) -o tests/test_tokenizer
+	./tests/test_tokenizer
+	$(MOJO) build -I . tests/test_ops.mojo $(TP_XLINK) -o tests/test_ops
+	./tests/test_ops
+	$(MOJO) build -I . tests/test_sampler.mojo $(TP_XLINK) -o tests/test_sampler
+	./tests/test_sampler
+	$(MOJO) build -I . tests/test_forward.mojo $(TP_XLINK) -o tests/test_forward
+	./tests/test_forward
+
+# M5: the optimizer/CFG/JIT suites (Mojo executables).
+test-m5-mojo: tp
+	$(MOJO) build -I . tests/test_optimizer.mojo $(TP_XLINK) -o tests/test_optimizer
+	./tests/test_optimizer
+	$(MOJO) build -I . tests/test_jit.mojo $(TP_XLINK) -o tests/test_jit
+	./tests/test_jit
+
+# M6: training - backward gradient checks, the AdamW/SGD optimizers, the
+# Mojo training loop, and the PyTorch training acceptance suite.
+test-m6-mojo: tp
+	$(MOJO) build -I . tests/test_backward.mojo $(TP_XLINK) -o tests/test_backward
+	./tests/test_backward
+	$(MOJO) build -I . tests/test_train_optimizer.mojo $(TP_XLINK) -o tests/test_train_optimizer
+	./tests/test_train_optimizer
+	$(MOJO) build -I . tests/test_training.mojo $(TP_XLINK) -o tests/test_training
+	./tests/test_training
+
+test-m6-python: tp
+	$(MOJO) build -I . src/bindings/infer_train_bindings.mojo $(TP_XLINK) \
+		--emit shared-lib -o python/infer_train/_lib/libinfer_train.dylib
+	pixi run python -m pytest tests/python/test_training.py -v
+
+# M4+M5: build the C-API shared library and run the Python/PyTorch suite.
+# The e2e 1.5B generation test needs the GGUF next to the repo root.
+test-m4: tp
+	$(MOJO) build -I . src/bindings/infer_train_bindings.mojo $(TP_XLINK) \
+		--emit shared-lib -o python/infer_train/_lib/libinfer_train.dylib
+	pixi run python -m pytest tests/python/ -v
+
+# M7: tokenizer abstraction, dequantizers, mmdl, finetune, KV cache,
+# requantize + the Python finetune/server API tests.
+# (test_dequant_m7 compares against gguf-py-generated reference bins; the
+# generator falls back to a bundled numpy reference when gguf-py is absent.)
+test-m7-mojo: tp
+	pixi run python tools/gen_dequant_refs.py
+	$(MOJO) build -I . tests/test_tokenizer_m7.mojo $(TP_XLINK) -o tests/test_tokenizer_m7
+	./tests/test_tokenizer_m7
+	$(MOJO) build -I . tests/test_dequant_m7.mojo $(TP_XLINK) -o tests/test_dequant_m7
+	./tests/test_dequant_m7
+	$(MOJO) build -I . tests/test_mmdl.mojo $(TP_XLINK) -o tests/test_mmdl
+	./tests/test_mmdl
+	$(MOJO) build -I . tests/test_finetune.mojo $(TP_XLINK) -o tests/test_finetune
+	./tests/test_finetune
+	$(MOJO) build -I . tests/test_kv_cache_m7.mojo $(TP_XLINK) -o tests/test_kv_cache_m7
+	./tests/test_kv_cache_m7
+	$(MOJO) build -I . tests/test_requantize.mojo $(TP_XLINK) -o tests/test_requantize
+	./tests/test_requantize
+
+test-m7-python: tp
+	$(MOJO) build -I . src/bindings/infer_train_bindings.mojo $(TP_XLINK) \
+		--emit shared-lib -o python/infer_train/_lib/libinfer_train.dylib
+	pixi run python -m pytest tests/python/test_finetune.py tests/python/test_server.py -v
+
+# Multi-model validation (needs the 7B / 27B GGUFs next to the repo root).
+test-m7-models: tp
+	$(MOJO) build -I . tests/test_hunyuan.mojo $(TP_XLINK) -o tests/test_hunyuan
+	./tests/test_hunyuan
+
+test-m5: test test-m3 test-m5-mojo test-m4
+
+# M6: everything (Mojo training suites + the PyTorch acceptance tests).
+test-m6: test-m6-mojo test-m6-python
+
+# M7: everything (regression suites + the M7 feature suites).
+test-m7: test test-m3 test-m5-mojo test-m6-mojo test-m7-mojo test-m7-python
+
+# The M7 CLI binary.
+cli: tp
+	$(MOJO) build -I . src/core/cli/infer_train_cli.mojo $(TP_XLINK) -o infer_train
+
+# Precompile the source tree into a distributable .mojopkg.  The package name
+# is taken from the `-o` filename: `infer_train`.
+package:
+	$(MOJO) precompile $(SRC) -o infer_train.mojopkg
+
+clean:
+	rm -f infer_train.mojopkg infer_train \
+	      tests/test_core tests/test_quant tests/test_cpuops \
+	      tests/test_registry tests/test_e2e \
+	      tests/test_json tests/test_tokenizer tests/test_ops \
+	      tests/test_sampler tests/test_forward tests/test_optimizer \
+	      tests/test_jit tests/test_backward tests/test_train_optimizer \
+	      tests/test_training tests/test_tokenizer_m7 tests/test_dequant_m7 \
+	      tests/test_mmdl tests/test_finetune tests/test_kv_cache_m7 \
+	      tests/test_requantize tests/test_hunyuan

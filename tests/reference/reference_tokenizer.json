@@ -1,0 +1,158 @@
+{
+ "tests": [
+  {
+   "text": "Hello",
+   "tokens": [
+    9707
+   ],
+   "decoded": "Hello"
+  },
+  {
+   "text": "Hello world",
+   "tokens": [
+    9707,
+    1879
+   ],
+   "decoded": "Hello world"
+  },
+  {
+   "text": "Hello, world! 123",
+   "tokens": [
+    9707,
+    11,
+    1879,
+    0,
+    220,
+    16,
+    17,
+    18
+   ],
+   "decoded": "Hello, world! 123"
+  },
+  {
+   "text": "1+1=",
+   "tokens": [
+    16,
+    10,
+    16,
+    28
+   ],
+   "decoded": "1+1="
+  },
+  {
+   "text": "2+2=?",
+   "tokens": [
+    17,
+    10,
+    17,
+    19884
+   ],
+   "decoded": "2+2=?"
+  },
+  {
+   "text": "What is the capital of France?",
+   "tokens": [
+    3838,
+    374,
+    279,
+    6722,
+    315,
+    9625,
+    30
+   ],
+   "decoded": "What is the capital of France?"
+  },
+  {
+   "text": "The capital of France is",
+   "tokens": [
+    785,
+    6722,
+    315,
+    9625,
+    374
+   ],
+   "decoded": "The capital of France is"
+  },
+  {
+   "text": "<think>",
+   "tokens": [
+    151648
+   ],
+   "decoded": "<think>"
+  },
+  {
+   "text": "<｜User｜>hi<｜Assistant｜>",
+   "tokens": [
+    27,
+    130957,
+    1474,
+    130957,
+    29,
+    6023,
+    27,
+    130957,
+    71703,
+    130957,
+    29
+   ],
+   "decoded": "<｜User｜>hi<｜Assistant｜>"
+  },
+  {
+   "text": "   leading spaces",
+   "tokens": [
+    256,
+    6388,
+    12621
+   ],
+   "decoded": "   leading spaces"
+  },
+  {
+   "text": "new\nline",
+   "tokens": [
+    931,
+    198,
+    1056
+   ],
+   "decoded": "new\nline"
+  },
+  {
+   "text": "café",
+   "tokens": [
+    924,
+    58858
+   ],
+   "decoded": "café"
+  },
+  {
+   "text": "你好世界",
+   "tokens": [
+    108386,
+    99489
+   ],
+   "decoded": "你好世界"
+  },
+  {
+   "text": "It's a test. It's 'ok'. 100%",
+   "tokens": [
+    2132,
+    594,
+    264,
+    1273,
+    13,
+    1084,
+    594,
+    364,
+    562,
+    4427,
+    220,
+    16,
+    15,
+    15,
+    4
+   ],
+   "decoded": "It's a test. It's 'ok'. 100%"
+  }
+ ],
+ "bos": 151646,
+ "eos": 151643
+}
