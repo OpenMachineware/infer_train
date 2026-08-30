@@ -11,7 +11,8 @@ SRC := src
 TP := python/infer_train/_lib/libinfer_train_tp.dylib
 TP_XLINK := -Xlinker $(TP)
 
-.PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 test-gpu package clean tp cli
+.PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 test-gpu test-gguf-split \
+        package clean tp cli
 
 # The C runtime helper library (thread pool + mmap + clock).
 tp:
@@ -38,6 +39,7 @@ test-m3: tp
 	./tests/test_sampler
 	$(MOJO) build -I . tests/test_forward.mojo $(TP_XLINK) -o tests/test_forward
 	./tests/test_forward
+	$(MAKE) test-gguf-split
 	$(MAKE) test-gpu
 
 # GPU kernels (Metal).  Falls back to the CPU kernels on machines without a
@@ -47,6 +49,12 @@ test-gpu: tp
 	./tests/test_gpuops
 	$(MOJO) build -I . tests/test_gpu_pipeline.mojo $(TP_XLINK) -o tests/test_gpu_pipeline
 	./tests/test_gpu_pipeline
+
+# GGUF split-file (multi-part) loading.  Needs the split part files next to
+# the repo root (see tests/test_gguf_split.mojo); reports SKIP if absent.
+test-gguf-split: tp
+	$(MOJO) build -I . tests/test_gguf_split.mojo $(TP_XLINK) -o tests/test_gguf_split
+	./tests/test_gguf_split
 
 # M5: the optimizer/CFG/JIT suites (Mojo executables).
 test-m5-mojo: tp
@@ -123,13 +131,11 @@ cli: tp
 package:
 	$(MOJO) precompile $(SRC) -o infer_train.mojopkg
 
+# Remove every build artifact: the CLI binary, the .mojopkg package, the
+# compiled shared libraries (C-API + the C runtime helper dylib), and all test
+# executables (tests/test_* without the .mojo source extension).
 clean:
-	rm -f infer_train.mojopkg infer_train \
-	      tests/test_core tests/test_quant tests/test_cpuops \
-	      tests/test_registry tests/test_e2e \
-	      tests/test_json tests/test_tokenizer tests/test_ops \
-	      tests/test_sampler tests/test_forward tests/test_optimizer \
-	      tests/test_jit tests/test_backward tests/test_train_optimizer \
-	      tests/test_training tests/test_tokenizer_m7 tests/test_dequant_m7 \
-	      tests/test_mmdl tests/test_finetune tests/test_kv_cache_m7 \
-	      tests/test_requantize tests/test_hunyuan
+	rm -f infer_train.mojopkg infer_train
+	rm -f python/infer_train/_lib/libinfer_train.dylib \
+	      python/infer_train/_lib/libinfer_train_tp.dylib
+	@for f in tests/test_*; do case "$$f" in *.mojo) ;; *) rm -f "$$f";; esac; done

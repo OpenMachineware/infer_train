@@ -88,7 +88,6 @@ from src.core.ops.fused.matmul_add import fused_matmul_add_bias, fused_matmul_ad
 from src.core.ops.fused.matmul_rms_norm import fused_matmul_rms_norm
 from src.core.ops.fused.swiglu_matmul import fused_swiglu_matmul
 from src.runtime.inference import Model, load_model, generate
-from src.core.memory import munmap_file
 from src.core.train_optimizer import adamw_step_raw
 from src.core.ops.cpu.rms_norm_cpu import rms_norm_weight_cpu
 from src.core.ops.loss.cross_entropy import cross_entropy_forward
@@ -492,7 +491,7 @@ def _free_model_contents(mut model: Model):
     for i in range(model.transformer.cache.num_layers()):
         _free_buffer[DType.float16, 3](model.transformer.cache.layers[i].k)
         _free_buffer[DType.float16, 3](model.transformer.cache.layers[i].v)
-    munmap_file(model.transformer.ctx.data, model.transformer.ctx.size)
+    model.transformer.ctx.munmap_all()
 
 
 @export

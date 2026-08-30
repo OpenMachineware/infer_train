@@ -3,7 +3,7 @@ authors = ["Jia Liu <proljc@gmail.com>"]
 channels = ["https://conda.modular.com/max", "conda-forge"]
 name = "infer_train"
 platforms = ["osx-arm64"]
-version = "0.2.0"
+version = "0.2.1"
 
 [tasks]
 

@@ -71,11 +71,47 @@ losses = m.finetune("What is 1+1?", "1+1 equals 2.", lr=1e-5)  # on-the-fly fine
 ./infer_train quantize -i model.mmdl -o model_quantized.gguf -f Q4_K_M
 ```
 
+## GGUF Split Files (Multi-Part Models)
+
+Large models are often distributed as *split* GGUF files — several parts
+named `<base>.gguf-NNNNN-of-NNNNN.gguf` (5-digit zero-padded), produced by
+llama.cpp's `llama-gguf-split`. InferTrain loads them transparently:
+
+```bash
+# split a model (brew install llama.cpp)
+llama-gguf-split --split-max-size 600M model.gguf model.gguf
+# -> model.gguf-00001-of-00003.gguf  model.gguf-00002-of-00003.gguf  model.gguf-00003-of-00003.gguf
+
+# load any part — all parts are memory-mapped and merged automatically
+./infer_train -m model.gguf-00001-of-00003.gguf -p "Hello" -n 64
+
+# Python API
+m = load_model("model.gguf-00001-of-00003.gguf")
+```
+
+How it works:
+
+* Each part is a valid GGUF file holding only its own tensor subset; the
+  **first** part carries the full metadata (the others only `split.no` /
+  `split.tensors.count` / `split.count`), and every tensor's offset is
+  relative to its own part's data section.
+* `load_gguf` auto-detects the input: a part path
+  (`…gguf-NNNNN-of-NNNNN.gguf`) loads the whole split; a plain `.gguf` loads
+  as a single file; a base name whose part files exist on disk is expanded
+  to the split.
+* Every tensor is tagged with the part that owns its bytes
+  (`GGUFTensor.file_idx`), so dequantization reads from the correct mapping —
+  a split model is numerically identical to the single file.
+
+`make test-gguf-split` verifies this: it loads the 1.5B model both as a
+single file and as a 3-part split and checks that dequantized weights are
+byte-identical (`max_diff = 0.0`) across all parts.
+
 ## Core Features
 
 | Feature | Description |
 |---|---|
-| **Inference** | Three architectures (qwen2 / hunyuan-dense / qwen35 hybrid SSM), direct GGUF weight loading (Q4_K/Q5_K/Q6_K/Q8_0/IQ4_NL/IQ4_XS), KV Cache (dense / Paged / sliding window / adaptive memory), llama.cpp-compatible sampling |
+| **Inference** | Three architectures (qwen2 / hunyuan-dense / qwen35 hybrid SSM), direct GGUF weight loading (Q4_K/Q5_K/Q6_K/Q8_0/IQ4_NL/IQ4_XS), split/multi-part GGUF (`llama-gguf-split`, auto-detected), KV Cache (dense / Paged / sliding window / adaptive memory), llama.cpp-compatible sampling |
 | **Training** | Backward operators, `run_with_grad` automatic differentiation, AdamW/SGD, `train_step`/`eval_step`, gradient accumulation, mixed precision (AMP), dynamic quantization |
 | **Fine-tuning** | `finetune_step` (Mojo) and `Model.finetune` (Python) — no service downtime, LoRA-style updates on trainable subsets |
 | **Quantization** | Post-fine-tuning re-quantization: FP16 → Q4_K_M / Q8_0 / NF4 (`infer_train quantize`), compatible with GGUF toolchain |
@@ -118,6 +154,7 @@ losses = m.finetune("What is 1+1?", "1+1 equals 2.", lr=1e-5)  # on-the-fly fine
 make tp          # build C runtime helpers (thread pool + mmap)
 make test        # M1/M2 core tests
 make test-m3     # tokenizer / ops / forward validation
+make test-gguf-split  # GGUF split-file (multi-part) loading
 make test-m5     # IR optimizer + JIT + torch.compile backend
 make test-m6     # training suites
 make test-m7     # everything + the M7 feature suites

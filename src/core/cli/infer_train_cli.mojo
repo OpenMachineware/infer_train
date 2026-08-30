@@ -101,7 +101,7 @@ def main() raises:
 
 def help_text() -> String:
     return """
-infer_train - a Mojo 1.0 inference + training engine (M7)
+infer_train - a Mojo inference + training engine
 
 Usage:
   infer_train -m MODEL [options]                 generate text
@@ -369,8 +369,9 @@ def quantize_file(args: CliArgs) raises:
             var fp16 = tensor_zeros[DType.float16, 2](
                 StaticTuple[Int, 2](1, numel)
             )
+            var (src, off) = ctx.tensor_data(t)
             dequantize_into(
-                t.ggml_type, ctx.data, ctx.data_offset + t.offset, fp16, numel
+                t.ggml_type, src, off, fp16, numel
             )
             var src1 = fp16.reshape[1](StaticTuple[Int, 1](numel))
             var quant = requantize(src1, numel, args.quant_format)
@@ -382,8 +383,9 @@ def quantize_file(args: CliArgs) raises:
             var fp16 = tensor_zeros[DType.float16, 2](
                 StaticTuple[Int, 2](1, numel)
             )
+            var (src, off) = ctx.tensor_data(t)
             dequantize_into(
-                t.ggml_type, ctx.data, ctx.data_offset + t.offset, fp16, numel
+                t.ggml_type, src, off, fp16, numel
             )
             types.append(1)
             for i in range(numel):
@@ -393,7 +395,7 @@ def quantize_file(args: CliArgs) raises:
         else:
             # keep already-quantized tensors as-is (bulk copy)
             types.append(t.ggml_type)
-            var raw = ctx.data.unsafe_offset(ctx.data_offset + t.offset)
+            var raw = ctx.tensor_data_ptr(t)
             var src_bytes = _quant_bytes(t.ggml_type, numel)
             for i in range(src_bytes):
                 b.append_u8(raw.unsafe_load[width=1](offset=i))

@@ -808,10 +808,11 @@ def dequantize_weight(
     else:
         shape = StaticTuple[Int, 2](tensor.dims[0], 1)
     var out = tensor_zeros[DType.float16, 2](shape)
+    var (src, off) = ctx.tensor_data(tensor)
     dequantize_into(
         tensor.ggml_type,
-        ctx.data,
-        ctx.data_offset + tensor.offset,
+        src,
+        off,
         out,
         numel,
     )
@@ -826,10 +827,11 @@ def dequantize_vector(
     var tmp = tensor_zeros[DType.float16, 2](
         StaticTuple[Int, 2](1, numel)
     )
+    var (src, off) = ctx.tensor_data(tensor)
     dequantize_into(
         tensor.ggml_type,
-        ctx.data,
-        ctx.data_offset + tensor.offset,
+        src,
+        off,
         tmp,
         numel,
     )

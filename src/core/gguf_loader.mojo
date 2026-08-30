@@ -11,7 +11,7 @@
 # The whole file is memory-mapped via `memory.mmap_file`; tensor payloads are
 # addressed as offsets into that buffer (zero copy on the host).
 
-from .memory import mmap_file
+from .memory import mmap_file, munmap_file
 from .utils import align_up, unimplemented
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
@@ -74,7 +74,8 @@ struct GGUFTensor(Copyable, Movable, ImplicitlyCopyable):
     var n_dims: Int
     var dims: StaticTuple[Int, GGUF_MAX_DIMS]
     var ggml_type: Int
-    var offset: Int  # byte offset into the tensor-data section
+    var offset: Int  # byte offset into the owning file's tensor-data section
+    var file_idx: Int  # index into GGUFContext.parts (0 for a single file)
 
     def __init__(out self):
         self.name = String("")
@@ -82,6 +83,33 @@ struct GGUFTensor(Copyable, Movable, ImplicitlyCopyable):
         self.dims = StaticTuple[Int, GGUF_MAX_DIMS](fill=0)
         self.ggml_type = 0
         self.offset = 0
+        self.file_idx = 0
+
+
+struct GGUFFilePart(Copyable, Movable, ImplicitlyCopyable):
+    """One memory-mapped split file of a (possibly multi-part) GGUF model.
+
+    A single-file model is a one-element list of these.  `data_offset` is the
+    byte offset (within THIS file's mapping) where the tensor payloads begin;
+    a tensor's bytes live at `data.unsafe_offset(data_offset + tensor.offset)`.
+    """
+
+    var path: String
+    var data: Pointer[UInt8, MutUntrackedOrigin]
+    var size: Int
+    var data_offset: Int
+
+    def __init__(
+        out self,
+        path: String,
+        data: Pointer[UInt8, MutUntrackedOrigin],
+        size: Int,
+        data_offset: Int,
+    ):
+        self.path = path
+        self.data = data
+        self.size = size
+        self.data_offset = data_offset
 
 
 struct Reader(Movable):
@@ -142,7 +170,8 @@ struct GGUFContext(Movable):
     var meta_count: Int
     var metadata: Dict[String, GGUFMetaValue]
     var tensors: List[GGUFTensor]
-    var data_offset: Int  # byte offset where tensor payloads begin
+    var data_offset: Int  # byte offset where tensor payloads begin (part 0)
+    var parts: List[GGUFFilePart]  # one per split file (>= 1)
 
     def __init__(
         out self, data: Pointer[UInt8, MutUntrackedOrigin], size: Int
@@ -155,6 +184,27 @@ struct GGUFContext(Movable):
         self.metadata = Dict[String, GGUFMetaValue]()
         self.tensors = List[GGUFTensor]()
         self.data_offset = 0
+        self.parts = List[GGUFFilePart]()
+
+    def n_parts(self) -> Int:
+        return len(self.parts)
+
+    def tensor_data(
+        self, t: GGUFTensor
+    ) -> Tuple[Pointer[UInt8, MutUntrackedOrigin], Int]:
+        """(base pointer, byte offset) of `t`'s payload in its owning part."""
+        var part = self.parts[t.file_idx]
+        return (part.data, part.data_offset + t.offset)
+
+    def tensor_data_ptr(self, t: GGUFTensor) -> Pointer[UInt8, MutUntrackedOrigin]:
+        """Base pointer directly at `t`'s payload bytes (owning part aware)."""
+        var (base, off) = self.tensor_data(t)
+        return base.unsafe_offset(off)
+
+    def munmap_all(mut self):
+        """Release every part's memory mapping (call once when done)."""
+        for part in self.parts:
+            munmap_file(part.data, part.size)
 
 
 def _skip_meta_array(mut reader: Reader, elem_type: Int, length: Int):
@@ -174,27 +224,114 @@ def _skip_meta_array(mut reader: Reader, elem_type: Int, length: Int):
         reader.skip(length)  # unknown; best effort
 
 
-def load_gguf(file_path: String) raises -> GGUFContext:
-    """Parse a GGUF file into a `GGUFContext` (file is memory-mapped)."""
-    var (data, size) = mmap_file(file_path)
-    var reader = Reader(data)
+# -- split-file (multi-part) support ------------------------------------------
+#
+# llama.cpp's `llama-gguf-split` writes `<base>.gguf-NNNNN-of-NNNNN.gguf`
+# (5-digit zero-padded).  Every part is a valid GGUF file: the FIRST part
+# carries the full metadata, the others only `split.no` / `split.tensors.count`
+# / `split.count`.  Each part lists only its OWN tensors, and every tensor's
+# `offset` is relative to that part's own tensor-data section.  Loading a split
+# model therefore means mapping every part, taking the metadata from part 1,
+# and concatenating the per-part tensor tables (tagging each tensor with the
+# part that owns its bytes).
 
-    # Header.
+comptime GGUF_SPLIT_MAX = 64  # max part count probed for base-name lookup
+
+
+def _fmt5(n: Int) -> String:
+    """Zero-pad `n` to 5 digits (GGUF split part numbering)."""
+    var s = String(n)
+    while s.byte_length() < 5:
+        s = "0" + s
+    return s^
+
+
+def _str_to_int(s: String) -> Int:
+    var v = 0
+    var b = s.as_bytes()
+    for c in range(len(b)):
+        var x = Int(b[c])
+        if x >= 48 and x <= 57:
+            v = v * 10 + (x - 48)
+    return v
+
+
+def _is_split_part_path(path: String) -> Bool:
+    """True if `path` is a GGUF split part: `<base>.gguf-NNNNN-of-NNNNN.gguf`."""
+    var of = path.rfind("-of-")
+    if of < 6:
+        return False
+    if of + 14 != path.byte_length():
+        return False
+    var ext = String(path[byte=of + 9 : of + 14])
+    if ext != ".gguf":
+        return False
+    var bytes_ = path.as_bytes()
+    if Int(bytes_[of - 6]) != 45:  # '-' before the part number
+        return False
+    for c in range(of - 5, of):
+        var x = Int(bytes_[c])
+        if x < 48 or x > 57:
+            return False
+    for c in range(of + 4, of + 9):
+        var x = Int(bytes_[c])
+        if x < 48 or x > 57:
+            return False
+    return True
+
+
+def _split_part_base_and_total(path: String) -> Tuple[String, Int]:
+    """(base, total) for a split part path; base is `<...>.gguf`."""
+    var of = path.rfind("-of-")
+    var total = _str_to_int(String(path[byte=of + 4 : of + 9]))
+    var base = String(path[byte=0 : of - 6])
+    return (base, total)
+
+
+def _file_exists(path: String) -> Bool:
+    try:
+        var f = FileHandle(path, "r")
+        f.close()
+        return True
+    except:
+        return False
+
+
+def _find_split_total(base: String) -> Int:
+    """Probe `base-00001-of-NNNNN.gguf` for a small range of totals."""
+    for total in range(1, GGUF_SPLIT_MAX + 1):
+        var p = base + "-00001-of-" + _fmt5(total) + ".gguf"
+        if _file_exists(p):
+            return total
+    return 0
+
+
+def _parse_part(
+    data: Pointer[UInt8, MutUntrackedOrigin],
+    mut metadata: Dict[String, GGUFMetaValue],
+    mut tensors: List[GGUFTensor],
+    file_idx: Int,
+) raises -> Tuple[Int, Int]:
+    """Parse one GGUF file's header, metadata, and tensor table.
+
+    Fills `metadata` and `tensors` in place and returns (data_offset, version).
+    `file_idx` is stamped onto every tensor so the context can later locate
+    each tensor's bytes in the correct split part.
+    """
+    var reader = Reader(data)
     if (
         reader.read_u8() != UInt8(71)  # 'G'
         or reader.read_u8() != UInt8(71)  # 'G'
         or reader.read_u8() != UInt8(85)  # 'U'
         or reader.read_u8() != UInt8(70)  # 'F'
     ):
-        unimplemented("load_gguf: bad magic")
+        unimplemented("gguf: bad magic")
 
-    var context = GGUFContext(data, size)
-    context.version = Int(reader.read_u32())
-    context.tensor_count = Int(reader.read_u64())
-    context.meta_count = Int(reader.read_u64())
+    var version = Int(reader.read_u32())
+    var tensor_count = Int(reader.read_u64())
+    var meta_count = Int(reader.read_u64())
 
-    # Metadata key-value pairs.
-    for _ in range(context.meta_count):
+    for _ in range(meta_count):
         var key = reader.read_string()
         var value_type = Int(reader.read_u32())
         var value = GGUFMetaValue()
@@ -241,25 +378,96 @@ def load_gguf(file_path: String) raises -> GGUFContext:
             value.kind = 2
             value.float_val = bitcast[DType.float64](reader.read_u64())
         else:
-            unimplemented("load_gguf: unknown metadata type")
-        context.metadata[key] = value
+            unimplemented("gguf: unknown metadata type")
+        metadata[key] = value
 
-    # Tensor info table.
-    for _ in range(context.tensor_count):
+    for _ in range(tensor_count):
         var tensor = GGUFTensor()
         tensor.name = reader.read_string()
         tensor.n_dims = Int(reader.read_u32())
         if tensor.n_dims > GGUF_MAX_DIMS:
-            unimplemented("load_gguf: tensor rank too large")
+            unimplemented("gguf: tensor rank too large")
         for d in range(tensor.n_dims):
             tensor.dims[d] = Int(reader.read_u64())
         tensor.ggml_type = Int(reader.read_u32())
         tensor.offset = Int(reader.read_u64())
-        context.tensors.append(tensor)
+        tensor.file_idx = file_idx
+        tensors.append(tensor)
 
-    # Tensor payloads are 32-byte aligned.
-    context.data_offset = align_up(reader.offset, 32)
+    var data_offset = align_up(reader.offset, 32)
+    return (data_offset, version)
+
+
+def load_gguf_single(file_path: String) raises -> GGUFContext:
+    """Parse a single (non-split) GGUF file into a `GGUFContext`."""
+    var (data, size) = mmap_file(file_path)
+    var metadata = Dict[String, GGUFMetaValue]()
+    var tensors = List[GGUFTensor]()
+    var (data_offset, version) = _parse_part(data, metadata, tensors, 0)
+    var context = GGUFContext(data, size)
+    context.version = version
+    context.tensor_count = len(tensors)
+    context.meta_count = len(metadata)
+    context.data_offset = data_offset
+    context.parts.append(GGUFFilePart(file_path, data, size, data_offset))
+    for t in tensors:
+        context.tensors.append(t)  # file_idx 0 (stamped in _parse_part)
+    context.metadata = metadata^  # move the local into the context field
     return context^
+
+
+def load_gguf_split(base: String, total: Int) raises -> GGUFContext:
+    """Parse a split GGUF model (`base-NNNNN-of-TTTTT.gguf`, NNNNN in 1..total).
+
+    The first part carries the full metadata; each part carries only its own
+    tensor subset, with offsets relative to that part's data section.
+    """
+    var first_path = base + "-00001-of-" + _fmt5(total) + ".gguf"
+    var (first_data, first_size) = mmap_file(first_path)
+    var metadata = Dict[String, GGUFMetaValue]()
+    var first_tensors = List[GGUFTensor]()
+    var (first_data_offset, version) = _parse_part(
+        first_data, metadata, first_tensors, 0
+    )
+    var context = GGUFContext(first_data, first_size)
+    context.version = version
+    context.meta_count = len(metadata)
+    context.data_offset = first_data_offset
+    context.parts.append(
+        GGUFFilePart(first_path, first_data, first_size, first_data_offset)
+    )
+    for t in first_tensors:
+        context.tensors.append(t)  # file_idx 0 (stamped in _parse_part)
+    context.metadata = metadata^  # move the local into the context field
+    for i in range(2, total + 1):
+        var path = base + "-" + _fmt5(i) + "-of-" + _fmt5(total) + ".gguf"
+        var (data, size) = mmap_file(path)
+        var part_meta = Dict[String, GGUFMetaValue]()  # discarded (part 1 only)
+        var part_tensors = List[GGUFTensor]()
+        var (data_offset, _) = _parse_part(data, part_meta, part_tensors, i - 1)
+        context.parts.append(GGUFFilePart(path, data, size, data_offset))
+        for t in part_tensors:
+            context.tensors.append(t)
+    context.tensor_count = len(context.tensors)
+    return context^
+
+
+def load_gguf(file_path: String) raises -> GGUFContext:
+    """Parse a (possibly split) GGUF model into a `GGUFContext`.
+
+    Accepts a single `.gguf` file, a split part path
+    (`<base>.gguf-NNNNN-of-NNNNN.gguf`), or a split base name whose part files
+    exist on disk.
+    """
+    if _is_split_part_path(file_path):
+        var (base, total) = _split_part_base_and_total(file_path)
+        return load_gguf_split(base, total)
+    if _file_exists(file_path):
+        return load_gguf_single(file_path)
+    var total = _find_split_total(file_path)
+    if total > 0:
+        return load_gguf_split(file_path, total)
+    raise Error("load_gguf: file not found: " + file_path)
 
 
 # -- config helpers ---------------------------------------------------------

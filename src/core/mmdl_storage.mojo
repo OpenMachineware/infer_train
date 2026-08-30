@@ -511,9 +511,7 @@ def save_checkpoint_incremental(
             if old_t:
                 types.append(old_t.value().ggml_type)
                 var numel = _tensor_numel(old_t.value())
-                var raw = old.data.unsafe_offset(
-                    old.data_offset + old_t.value().offset
-                )
+                var raw = old.tensor_data_ptr(old_t.value())
                 b.append_bytes(
                     Span[UInt8, MutUntrackedOrigin](
                         unsafe_ptr=raw, length=_ggml_bytes(
@@ -758,9 +756,9 @@ def _restore2(
     if not t:
         return
     var numel = _tensor_numel(t.value())
-    var src = ctx.data.unsafe_offset(
-        ctx.data_offset + t.value().offset
-    ).unsafe_bitcast[Scalar[DType.float32]]()
+    var src = ctx.tensor_data_ptr(t.value()).unsafe_bitcast[
+        Scalar[DType.float32]
+    ]()
     for i in range(numel):
         dst.set(i, src.unsafe_load[width=1](offset=i))
 
@@ -772,9 +770,9 @@ def _restore1(
     if not t:
         return
     var numel = _tensor_numel(t.value())
-    var src = ctx.data.unsafe_offset(
-        ctx.data_offset + t.value().offset
-    ).unsafe_bitcast[Scalar[DType.float32]]()
+    var src = ctx.tensor_data_ptr(t.value()).unsafe_bitcast[
+        Scalar[DType.float32]
+    ]()
     for i in range(numel):
         dst.set(i, src.unsafe_load[width=1](offset=i))
 
@@ -784,9 +782,9 @@ def _restore_any(mut dst: AnyTensor, ctx: GGUFContext, name: String):
     if not t:
         return
     var numel = _tensor_numel(t.value())
-    var src = ctx.data.unsafe_offset(
-        ctx.data_offset + t.value().offset
-    ).unsafe_bitcast[Scalar[DType.float32]]()
+    var src = ctx.tensor_data_ptr(t.value()).unsafe_bitcast[
+        Scalar[DType.float32]
+    ]()
     var d = dst.data.unsafe_bitcast[Scalar[DType.float32]]()
     for i in range(numel):
         d.unsafe_store(i, src.unsafe_load[width=1](offset=i))
@@ -851,9 +849,7 @@ def strip_to_gguf(path_in: String, path_out: String) raises:
         var b = ByteBuf(64)
         b.append_bytes(
             Span[UInt8, MutUntrackedOrigin](
-                unsafe_ptr=old.data.unsafe_offset(
-                    old.data_offset + t.offset
-                ),
+                unsafe_ptr=old.tensor_data_ptr(t),
                 length=_ggml_bytes(t.ggml_type, numel),
             )
         )

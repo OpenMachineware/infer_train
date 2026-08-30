@@ -71,11 +71,43 @@ losses = m.finetune("What is 1+1?", "1+1 equals 2.", lr=1e-5)  # 边推边训
 ./infer_train quantize -i model.mmdl -o model_quantized.gguf -f Q4_K_M
 ```
 
+## GGUF 分卷（多文件）模型
+
+大模型常以*分卷* GGUF 分发——多个命名为 `<base>.gguf-NNNNN-of-NNNNN.gguf`
+（5 位补零）的分卷文件，由 llama.cpp 的 `llama-gguf-split` 生成。InferTrain
+可透明加载：
+
+```bash
+# 分割模型 (brew install llama.cpp)
+llama-gguf-split --split-max-size 600M model.gguf model.gguf
+# -> model.gguf-00001-of-00003.gguf  model.gguf-00002-of-00003.gguf  model.gguf-00003-of-00003.gguf
+
+# 加载任意一卷 —— 自动 mmap 并合并全部分卷
+./infer_train -m model.gguf-00001-of-00003.gguf -p "Hello" -n 64
+
+# Python API
+m = load_model("model.gguf-00001-of-00003.gguf")
+```
+
+工作原理：
+
+* 每个分卷都是合法 GGUF 文件，只含自己的 tensor 子集；**第一卷**携带完整
+  metadata（其余卷只有 `split.no` / `split.tensors.count` / `split.count`），
+  且每个 tensor 的 offset 相对自己所在卷的 data 段。
+* `load_gguf` 自动识别输入：分卷 part 路径（`…gguf-NNNNN-of-NNNNN.gguf`）
+  加载整个分卷；普通 `.gguf` 按单文件加载；磁盘上存在分卷文件的 base 名
+  会被展开为分卷加载。
+* 每个 tensor 都标记了字节所属的分卷（`GGUFTensor.file_idx`），反量化从
+  正确的映射读取——分卷模型与单文件数值完全一致。
+
+`make test-gguf-split` 验证这一点：将 1.5B 模型分别按单文件和 3 卷分卷加载，
+检查各卷反量化权重逐字节一致（`max_diff = 0.0`）。
+
 ## 核心功能
 
 | 功能 | 说明 |
 |---|---|
-| **推理** | 三种架构（qwen2 / hunyuan-dense / qwen35 混合 SSM），GGUF 权重直接加载（Q4_K/Q5_K/Q6_K/Q8_0/IQ4_NL/IQ4_XS），KV Cache（稠密 / Paged / 滑动窗口 / 内存自适应），llama.cpp 兼容采样 |
+| **推理** | 三种架构（qwen2 / hunyuan-dense / qwen35 混合 SSM），GGUF 权重直接加载（Q4_K/Q5_K/Q6_K/Q8_0/IQ4_NL/IQ4_XS），分卷/多文件 GGUF（`llama-gguf-split`，自动识别），KV Cache（稠密 / Paged / 滑动窗口 / 内存自适应），llama.cpp 兼容采样 |
 | **训练** | 反向算子、`run_with_grad` 自动微分、AdamW/SGD、`train_step`/`eval_step`、梯度累积、混合精度（AMP）、动态量化 |
 | **微调** | `finetune_step`（Mojo）与 `Model.finetune`（Python）——服务不停机，LoRA 风格只更新可训练子集 |
 | **量化** | 微调后重量化：FP16 → Q4_K_M / Q8_0 / NF4（`infer_train quantize`），量化文件兼容 GGUF 工具链 |
@@ -118,6 +150,7 @@ losses = m.finetune("What is 1+1?", "1+1 equals 2.", lr=1e-5)  # 边推边训
 make tp          # 构建 C 运行时辅助库 (线程池 + mmap)
 make test        # M1/M2 核心测试
 make test-m3     # 分词器 / 算子 / 前向验证
+make test-gguf-split  # GGUF 分卷（多文件）加载
 make test-m5     # IR 优化器 + JIT + torch.compile 后端
 make test-m6     # 训练套件
 make test-m7     # 所有测试 + M7 功能套件
