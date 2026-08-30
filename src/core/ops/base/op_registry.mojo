@@ -32,6 +32,12 @@ from ..cpu.add_cpu import add_cpu_dynamic, add_row_cpu
 from ..gpu.add_gpu import add_gpu_dynamic
 from ..cpu.swiglu_cpu import swiglu_cpu_dynamic
 from ..gpu.swiglu_gpu import swiglu_gpu_dynamic
+from ..gpu.fused_gpu import (
+    fused_matmul_add_bias_gpu,
+    fused_matmul_add_gpu,
+    fused_matmul_rms_norm_gpu,
+    fused_swiglu_matmul_gpu,
+)
 from ..attention.mha import mha_forward
 from ..attention.kv_cache import KVCacheLayer
 from ..quantized.matmul_quantized import (
@@ -738,7 +744,25 @@ def fused_matmul_add_bias_dispatch_cpu(
 def fused_matmul_add_bias_dispatch_gpu(
     inputs: List[AnyTensor],
 ) -> List[AnyTensor]:
-    return fused_matmul_add_bias_dispatch_cpu(inputs)
+    var dtype = inputs[0].dtype
+    if dtype == DType.float32:
+        var x = from_any[DType.float32, 2](inputs[0])
+        var w = from_any[DType.float32, 2](inputs[1])
+        var bias = from_any[DType.float32, 1](inputs[2])
+        var out = fused_matmul_add_bias_gpu[DType.float32](x, w, bias)
+        var results = List[AnyTensor]()
+        results.append(to_any[DType.float32, 2](out))
+        return results^
+    if dtype == DType.float16:
+        var x = from_any[DType.float16, 2](inputs[0])
+        var w = from_any[DType.float16, 2](inputs[1])
+        var bias = from_any[DType.float16, 1](inputs[2])
+        var out = fused_matmul_add_bias_gpu[DType.float16](x, w, bias)
+        var results = List[AnyTensor]()
+        results.append(to_any[DType.float16, 2](out))
+        return results^
+    unimplemented("fused_matmul_add_bias_gpu: unsupported dtype")
+    return List[AnyTensor]()
 
 
 def _fused_matmul_add_typed_cpu[dtype: DType](
@@ -768,7 +792,25 @@ def fused_matmul_add_dispatch_cpu(
 def fused_matmul_add_dispatch_gpu(
     inputs: List[AnyTensor],
 ) -> List[AnyTensor]:
-    return fused_matmul_add_dispatch_cpu(inputs)
+    var dtype = inputs[0].dtype
+    if dtype == DType.float32:
+        var x = from_any[DType.float32, 2](inputs[0])
+        var w = from_any[DType.float32, 2](inputs[1])
+        var b = from_any[DType.float32, 2](inputs[2])
+        var out = fused_matmul_add_gpu[DType.float32](x, w, b)
+        var results = List[AnyTensor]()
+        results.append(to_any[DType.float32, 2](out))
+        return results^
+    if dtype == DType.float16:
+        var x = from_any[DType.float16, 2](inputs[0])
+        var w = from_any[DType.float16, 2](inputs[1])
+        var b = from_any[DType.float16, 2](inputs[2])
+        var out = fused_matmul_add_gpu[DType.float16](x, w, b)
+        var results = List[AnyTensor]()
+        results.append(to_any[DType.float16, 2](out))
+        return results^
+    unimplemented("fused_matmul_add_gpu: unsupported dtype")
+    return List[AnyTensor]()
 
 
 def _fused_matmul_rms_norm_typed_cpu[dtype: DType](
@@ -797,7 +839,23 @@ def fused_matmul_rms_norm_dispatch_cpu(
 def fused_matmul_rms_norm_dispatch_gpu(
     inputs: List[AnyTensor],
 ) -> List[AnyTensor]:
-    return fused_matmul_rms_norm_dispatch_cpu(inputs)
+    var dtype = inputs[0].dtype
+    if dtype == DType.float32:
+        var x = from_any[DType.float32, 2](inputs[0])
+        var w = from_any[DType.float32, 2](inputs[1])
+        var out = fused_matmul_rms_norm_gpu[DType.float32](x, w)
+        var results = List[AnyTensor]()
+        results.append(to_any[DType.float32, 2](out))
+        return results^
+    if dtype == DType.float16:
+        var x = from_any[DType.float16, 2](inputs[0])
+        var w = from_any[DType.float16, 2](inputs[1])
+        var out = fused_matmul_rms_norm_gpu[DType.float16](x, w)
+        var results = List[AnyTensor]()
+        results.append(to_any[DType.float16, 2](out))
+        return results^
+    unimplemented("fused_matmul_rms_norm_gpu: unsupported dtype")
+    return List[AnyTensor]()
 
 
 def _fused_swiglu_matmul_typed_cpu[dtype: DType](
@@ -827,7 +885,25 @@ def fused_swiglu_matmul_dispatch_cpu(
 def fused_swiglu_matmul_dispatch_gpu(
     inputs: List[AnyTensor],
 ) -> List[AnyTensor]:
-    return fused_swiglu_matmul_dispatch_cpu(inputs)
+    var dtype = inputs[0].dtype
+    if dtype == DType.float32:
+        var gate = from_any[DType.float32, 2](inputs[0])
+        var up = from_any[DType.float32, 2](inputs[1])
+        var w = from_any[DType.float32, 2](inputs[2])
+        var out = fused_swiglu_matmul_gpu[DType.float32](gate, up, w)
+        var results = List[AnyTensor]()
+        results.append(to_any[DType.float32, 2](out))
+        return results^
+    if dtype == DType.float16:
+        var gate = from_any[DType.float16, 2](inputs[0])
+        var up = from_any[DType.float16, 2](inputs[1])
+        var w = from_any[DType.float16, 2](inputs[2])
+        var out = fused_swiglu_matmul_gpu[DType.float16](gate, up, w)
+        var results = List[AnyTensor]()
+        results.append(to_any[DType.float16, 2](out))
+        return results^
+    unimplemented("fused_swiglu_matmul_gpu: unsupported dtype")
+    return List[AnyTensor]()
 
 
 # -- rms_norm_weight dispatch (M6) ------------------------------------------

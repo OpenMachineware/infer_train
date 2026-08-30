@@ -34,6 +34,12 @@ from src.core.ops.gpu.add_gpu import (
     add_row_gpu,
     add_gpu_backward,
 )
+from src.core.ops.gpu.fused_gpu import (
+    fused_matmul_add_bias_gpu,
+    fused_matmul_add_gpu,
+    fused_matmul_rms_norm_gpu,
+    fused_swiglu_matmul_gpu,
+)
 from std.utils.static_tuple import StaticTuple
 from std.math import exp, cos, sin, sqrt
 
@@ -296,6 +302,127 @@ def test_add() raises:
         check_close(Float32(grads[1].get(i)), Float32(i + 1), Float32(1e-5), "add bwd b")
 
 
+def _silu(x: Float32) -> Float32:
+    if x < Float32(-20.0):
+        return Float32(0.0)
+    if x > Float32(20.0):
+        return x
+    return x / (Float32(1.0) + exp(-x))
+
+
+def test_fused_matmul_add_bias() raises:
+    # x [2,3], w [2,3] (weight-major), bias [2]
+    comptime M = 2
+    comptime K = 3
+    comptime N = 2
+    var x = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](M, K))
+    var w = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](N, K))
+    var bias = tensor_zeros[DType.float32, 1](StaticTuple[Int, 1](N))
+    for i in range(M * K):
+        x.set(i, Scalar[DType.float32](Float32(i + 1)))
+    for i in range(N * K):
+        w.set(i, Scalar[DType.float32](Float32(i + 1)))
+    bias.set(0, Scalar[DType.float32](Float32(10.0)))
+    bias.set(1, Scalar[DType.float32](Float32(20.0)))
+    var out = fused_matmul_add_bias_gpu[DType.float32](x, w, bias)
+    # y[i,j] = sum_k x[i,k]*w[j,k] + bias[j]
+    check_close(Float32(out.get(0)), 14.0 + 10.0, Float32(1e-4), "fmmab[0,0]")
+    check_close(Float32(out.get(1)), 32.0 + 20.0, Float32(1e-4), "fmmab[0,1]")
+    check_close(Float32(out.get(2)), 32.0 + 10.0, Float32(1e-4), "fmmab[1,0]")
+    check_close(Float32(out.get(3)), 77.0 + 20.0, Float32(1e-4), "fmmab[1,1]")
+
+
+def test_fused_matmul_add() raises:
+    comptime M = 2
+    comptime K = 3
+    comptime N = 2
+    var x = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](M, K))
+    var w = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](N, K))
+    var b = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](M, N))
+    for i in range(M * K):
+        x.set(i, Scalar[DType.float32](Float32(i + 1)))
+    for i in range(N * K):
+        w.set(i, Scalar[DType.float32](Float32(i + 1)))
+    for i in range(M * N):
+        b.set(i, Scalar[DType.float32](Float32(1.0)))
+    var out = fused_matmul_add_gpu[DType.float32](x, w, b)
+    check_close(Float32(out.get(0)), 14.0 + 1.0, Float32(1e-4), "fmma[0,0]")
+    check_close(Float32(out.get(1)), 32.0 + 1.0, Float32(1e-4), "fmma[0,1]")
+    check_close(Float32(out.get(2)), 32.0 + 1.0, Float32(1e-4), "fmma[1,0]")
+    check_close(Float32(out.get(3)), 77.0 + 1.0, Float32(1e-4), "fmma[1,1]")
+
+
+def test_fused_matmul_rms_norm() raises:
+    comptime M = 1
+    comptime K = 2
+    comptime N = 2
+    var x = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](M, K))
+    var w = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](N, K))
+    x.set(0, Scalar[DType.float32](Float32(1.0)))
+    x.set(1, Scalar[DType.float32](Float32(2.0)))
+    # w = identity (weight-major): w[0]=[1,0], w[1]=[0,1]
+    w.set(0, Scalar[DType.float32](Float32(1.0)))
+    w.set(1, Scalar[DType.float32](Float32(0.0)))
+    w.set(2, Scalar[DType.float32](Float32(0.0)))
+    w.set(3, Scalar[DType.float32](Float32(1.0)))
+    var out = fused_matmul_rms_norm_gpu[DType.float32](x, w)
+    # projected row = [1, 2]; rms = sqrt((1+4)/2 + eps)
+    var eps = Float32(1e-5)
+    var rms = sqrt(Float32(5.0) / Float32(2.0) + eps)
+    var inv = Float32(1.0) / rms
+    check_close(Float32(out.get(0)), 1.0 * inv, Float32(1e-4), "fmmrn[0,0]")
+    check_close(Float32(out.get(1)), 2.0 * inv, Float32(1e-4), "fmmrn[0,1]")
+
+
+def test_fused_swiglu_matmul() raises:
+    comptime M = 1
+    comptime F = 2
+    comptime N = 2
+    var gate = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](M, F))
+    var up = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](M, F))
+    var w = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](N, F))
+    gate.set(0, Scalar[DType.float32](Float32(1.0)))
+    gate.set(1, Scalar[DType.float32](Float32(-1.0)))
+    up.set(0, Scalar[DType.float32](Float32(2.0)))
+    up.set(1, Scalar[DType.float32](Float32(3.0)))
+    # w (weight-major [N,F]): w[0]=[1,1], w[1]=[1,0]
+    w.set(0, Scalar[DType.float32](Float32(1.0)))
+    w.set(1, Scalar[DType.float32](Float32(1.0)))
+    w.set(2, Scalar[DType.float32](Float32(1.0)))
+    w.set(3, Scalar[DType.float32](Float32(0.0)))
+    var out = fused_swiglu_matmul_gpu[DType.float32](gate, up, w)
+    var s1 = _silu(Float32(1.0))
+    var sn1 = _silu(Float32(-1.0))
+    # y[0,0] = s1*2*1 + sn1*3*1 ; y[0,1] = s1*2*1 + sn1*3*0
+    check_close(Float32(out.get(0)), s1 * 2.0 + sn1 * 3.0, Float32(1e-4), "fsmm[0,0]")
+    check_close(Float32(out.get(1)), s1 * 2.0, Float32(1e-4), "fsmm[0,1]")
+
+
+def test_fused_f16() raises:
+    # f16 path: fused_matmul_add_bias with a small matrix
+    comptime M = 2
+    comptime K = 2
+    comptime N = 2
+    var x = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, K))
+    var w = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](N, K))
+    var bias = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](N))
+    for i in range(M * K):
+        x.set(i, Scalar[DType.float16](Float32(i + 1)))
+    for i in range(N * K):
+        w.set(i, Scalar[DType.float16](Float32(i + 1)))
+    bias.set(0, Scalar[DType.float16](Float32(1.0)))
+    bias.set(1, Scalar[DType.float16](Float32(2.0)))
+    var out = fused_matmul_add_bias_gpu[DType.float16](x, w, bias)
+    # x=[[1,2],[3,4]], w=[[1,2],[3,4]] (weight-major), bias=[1,2]
+    # y[i,j]=sum_k x[i,k]*w[j,k]+bias[j]:
+    # y[0,0]=1*1+2*2+1=6 ; y[0,1]=1*3+2*4+2=13
+    # y[1,0]=3*1+4*2+1=12 ; y[1,1]=3*3+4*4+2=27
+    check_f16(Float32(out.get(0)), 6.0, "f16 fmmab[0,0]")
+    check_f16(Float32(out.get(1)), 13.0, "f16 fmmab[0,1]")
+    check_f16(Float32(out.get(2)), 12.0, "f16 fmmab[1,0]")
+    check_f16(Float32(out.get(3)), 27.0, "f16 fmmab[1,1]")
+
+
 def main() raises:
     print("metal:", has_metal_gpu())
     test_add()
@@ -305,4 +432,9 @@ def main() raises:
     test_softmax()
     test_rms_norm()
     test_matmul()
+    test_fused_matmul_add_bias()
+    test_fused_matmul_add()
+    test_fused_matmul_rms_norm()
+    test_fused_swiglu_matmul()
+    test_fused_f16()
     print("test_gpu_ops OK")
