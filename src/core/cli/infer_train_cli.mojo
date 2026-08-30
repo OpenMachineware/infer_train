@@ -26,6 +26,7 @@ from src.core.tensor import tensor_zeros, Tensor
 from src.core.ops.quantized.dequantize import dequantize_into
 from src.core.ops.quantized.requantize import requantize, QuantizedWeights
 from src.core.mmdl_storage import ByteBuf, _write_gguf, _kv_string, _kv_uint32
+from src.version import VERSION
 from std.utils.static_tuple import StaticTuple
 from std.sys import argv
 from std.io.file import FileHandle
@@ -80,6 +81,9 @@ struct CliArgs(Movable):
 
 def main() raises:
     var args = parse_args(argv())
+    if args.action == "version":
+        print("infer_train " + VERSION)
+        return
     if args.action == "help":
         print(help_text())
         return
@@ -108,6 +112,7 @@ Usage:
   infer_train quantize -i IN -o OUT -f FORMAT    requantize weights
   infer_train serve -m MODEL [--host H] [--port P]   HTTP server note
   infer_train --help                             this help
+  infer_train --version                          show version and exit
 
 llama.cpp-compatible options:
   -m, --model PATH          model (GGUF or .mmdl checkpoint)
@@ -151,6 +156,9 @@ def parse_args(arg_span: Span[StringSpan[ImmStaticOrigin], ImmStaticOrigin]) rai
             continue  # argv[0] = program name
         if a == "--help" or a == "-h":
             args.action = "help"
+            return args^
+        if a == "--version" or a == "-V":
+            args.action = "version"
             return args^
         if a == "quantize":
             args.action = "quantize"

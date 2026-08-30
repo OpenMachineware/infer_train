@@ -88,8 +88,8 @@ class Model:
     ) -> str:
         """Run the autoregressive loop and return the completion string.
 
-        The prompt is encoded with the Qwen2 BOS token (same as M3
-        ``main.mojo``).  Pass ``seed`` for reproducible sampling.
+        The prompt is encoded with the Qwen2 BOS token (same as the
+        ``infer_train`` CLI).  Pass ``seed`` for reproducible sampling.
         """
         if not prompt:
             raise ValueError("prompt must be a non-empty string")

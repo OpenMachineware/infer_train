@@ -5,6 +5,7 @@
 # build artifacts
 infer_train.mojopkg
 *.mojoc
+src/version.mojo
 test_core
 test_quant
 test_cpuops
@@ -12,7 +13,6 @@ test_registry
 test_e2e
 test_all_imports
 test_pkg
-main
 tests/test_json
 tests/test_tokenizer
 tests/test_ops

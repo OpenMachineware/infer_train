@@ -6,6 +6,10 @@ platforms = ["osx-arm64"]
 version = "0.2.1"
 
 [tasks]
+# Generate src/version.mojo from the `version` field of this file.
+version = "python tools/gen_version.py"
+# Build the CLI binary (generates src/version.mojo first, then `make cli`).
+build = "version && make cli"
 
 [dependencies]
 mojo = ">=1.0.0,<2"
