@@ -45,6 +45,8 @@ test-m3: tp
 test-gpu: tp
 	$(MOJO) build -I . tests/test_gpuops.mojo $(TP_XLINK) -o tests/test_gpuops
 	./tests/test_gpuops
+	$(MOJO) build -I . tests/test_gpu_pipeline.mojo $(TP_XLINK) -o tests/test_gpu_pipeline
+	./tests/test_gpu_pipeline
 
 # M5: the optimizer/CFG/JIT suites (Mojo executables).
 test-m5-mojo: tp
