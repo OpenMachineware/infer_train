@@ -11,7 +11,7 @@ SRC := src
 TP := python/infer_train/_lib/libinfer_train_tp.dylib
 TP_XLINK := -Xlinker $(TP)
 
-.PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 package clean tp cli
+.PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 test-gpu package clean tp cli
 
 # The C runtime helper library (thread pool + mmap + clock).
 tp:
@@ -38,6 +38,13 @@ test-m3: tp
 	./tests/test_sampler
 	$(MOJO) build -I . tests/test_forward.mojo $(TP_XLINK) -o tests/test_forward
 	./tests/test_forward
+	$(MAKE) test-gpu
+
+# GPU kernels (Metal).  Falls back to the CPU kernels on machines without a
+# Metal GPU, so it is safe to run everywhere.
+test-gpu: tp
+	$(MOJO) build -I . tests/test_gpuops.mojo $(TP_XLINK) -o tests/test_gpuops
+	./tests/test_gpuops
 
 # M5: the optimizer/CFG/JIT suites (Mojo executables).
 test-m5-mojo: tp

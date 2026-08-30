@@ -51,6 +51,13 @@ from ..cpu.swiglu_cpu import (
     swiglu_cpu_backward,
 )
 from ..cpu.embedding_cpu import embedding_cpu_dynamic, embedding_cpu_backward
+from ..gpu.matmul_gpu import matmul_gpu_dynamic, matmul_gpu_backward
+from ..gpu.add_gpu import add_gpu_dynamic, add_gpu_backward, add_row_gpu
+from ..gpu.rms_norm_gpu import rms_norm_gpu_dynamic, rms_norm_gpu_backward
+from ..gpu.softmax_gpu import softmax_gpu_dynamic, softmax_gpu_backward
+from ..gpu.rope_gpu import rope_gpu_dynamic, rope_gpu_backward_pos
+from ..gpu.swiglu_gpu import swiglu_gpu_dynamic, swiglu_gpu_backward
+from ..gpu.embedding_gpu import embedding_gpu_dynamic
 from ..loss.cross_entropy import cross_entropy_forward, cross_entropy_backward
 from ..attention.mha import _mha_seq_forward_typed, _mha_seq_backward_typed
 from std.memory.alloc import unsafe_alloc
@@ -247,13 +254,59 @@ def matmul_bwd_cpu(
 def matmul_fws_gpu(
     inputs: List[AnyTensor],
 ) -> Tuple[List[AnyTensor], List[AnyTensor]]:
-    return matmul_fws_cpu(inputs)
+    var dtype = inputs[0].dtype
+    if dtype == DType.float32:
+        var a = from_any[DType.float32, 2](inputs[0])
+        var b = from_any[DType.float32, 2](inputs[1])
+        var out = matmul_gpu_dynamic[DType.float32](a, b)
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float32, 2](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(to_any[DType.float32, 2](a))
+        saved.append(to_any[DType.float32, 2](b))
+        return (outputs^, saved^)
+    if dtype == DType.float16:
+        var a = from_any[DType.float16, 2](inputs[0])
+        var b = from_any[DType.float16, 2](inputs[1])
+        var out = matmul_gpu_dynamic[DType.float16](a, b)
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float16, 2](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(to_any[DType.float16, 2](a))
+        saved.append(to_any[DType.float16, 2](b))
+        return (outputs^, saved^)
+    unimplemented("matmul_fws_gpu: unsupported dtype")
+    return (List[AnyTensor](), List[AnyTensor]())
 
 
 def matmul_bwd_gpu(
     grad_outputs: List[AnyTensor], saved: List[AnyTensor]
 ) -> List[AnyTensor]:
-    return matmul_bwd_cpu(grad_outputs, saved)
+    var dtype = grad_outputs[0].dtype
+    var results = List[AnyTensor]()
+    results.reserve(8)
+    if dtype == DType.float32:
+        var g = from_any[DType.float32, 2](grad_outputs[0])
+        var grads = matmul_gpu_backward[DType.float32](
+            g, _rebuild2[DType.float32](saved)
+        )
+        results.append(to_any[DType.float32, 2](grads[0]))
+        results.append(to_any[DType.float32, 2](grads[1]))
+        return results^
+    if dtype == DType.float16:
+        var g = from_any[DType.float16, 2](grad_outputs[0])
+        var grads = matmul_gpu_backward[DType.float16](
+            g, _rebuild2[DType.float16](saved)
+        )
+        results.append(to_any[DType.float16, 2](grads[0]))
+        results.append(to_any[DType.float16, 2](grads[1]))
+        return results^
+    unimplemented("matmul_bwd_gpu: unsupported dtype")
+    return results^
 
 
 # -- lm_head (weight-major linear) --------------------------------------------
@@ -393,13 +446,59 @@ def add_bwd_cpu(
 def add_fws_gpu(
     inputs: List[AnyTensor],
 ) -> Tuple[List[AnyTensor], List[AnyTensor]]:
-    return add_fws_cpu(inputs)
+    var dtype = inputs[0].dtype
+    if dtype == DType.float32:
+        var a = from_any[DType.float32, 2](inputs[0])
+        var b = from_any[DType.float32, 2](inputs[1])
+        var out = add_gpu_dynamic[DType.float32](a, b)
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float32, 2](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(to_any[DType.float32, 2](a))
+        saved.append(to_any[DType.float32, 2](b))
+        return (outputs^, saved^)
+    if dtype == DType.float16:
+        var a = from_any[DType.float16, 2](inputs[0])
+        var b = from_any[DType.float16, 2](inputs[1])
+        var out = add_gpu_dynamic[DType.float16](a, b)
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float16, 2](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(to_any[DType.float16, 2](a))
+        saved.append(to_any[DType.float16, 2](b))
+        return (outputs^, saved^)
+    unimplemented("add_fws_gpu: unsupported dtype")
+    return (List[AnyTensor](), List[AnyTensor]())
 
 
 def add_bwd_gpu(
     grad_outputs: List[AnyTensor], saved: List[AnyTensor]
 ) -> List[AnyTensor]:
-    return add_bwd_cpu(grad_outputs, saved)
+    var dtype = grad_outputs[0].dtype
+    var results = List[AnyTensor]()
+    results.reserve(8)
+    if dtype == DType.float32:
+        var g = from_any[DType.float32, 2](grad_outputs[0])
+        var grads = add_gpu_backward[DType.float32, 0, 0](
+            g, _rebuild2[DType.float32](saved)
+        )
+        results.append(to_any[DType.float32, 2](grads[0]))
+        results.append(to_any[DType.float32, 2](grads[1]))
+        return results^
+    if dtype == DType.float16:
+        var g = from_any[DType.float16, 2](grad_outputs[0])
+        var grads = add_gpu_backward[DType.float16, 0, 0](
+            g, _rebuild2[DType.float16](saved)
+        )
+        results.append(to_any[DType.float16, 2](grads[0]))
+        results.append(to_any[DType.float16, 2](grads[1]))
+        return results^
+    unimplemented("add_bwd_gpu: unsupported dtype")
+    return results^
 
 
 # -- add_bias -----------------------------------------------------------------
@@ -464,12 +563,40 @@ def add_bias_bwd_cpu(
 def add_bias_fws_gpu(
     inputs: List[AnyTensor],
 ) -> Tuple[List[AnyTensor], List[AnyTensor]]:
-    return add_bias_fws_cpu(inputs)
+    var dtype = inputs[0].dtype
+    if dtype == DType.float32:
+        var x = from_any[DType.float32, 2](inputs[0])
+        var bias = from_any[DType.float32, 1](inputs[1])
+        var out = add_row_gpu[DType.float32](x, bias)
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float32, 2](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(to_any[DType.float32, 2](x))
+        saved.append(to_any[DType.float32, 1](bias))
+        return (outputs^, saved^)
+    if dtype == DType.float16:
+        var x = from_any[DType.float16, 2](inputs[0])
+        var bias = from_any[DType.float16, 1](inputs[1])
+        var out = add_row_gpu[DType.float16](x, bias)
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float16, 2](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(to_any[DType.float16, 2](x))
+        saved.append(to_any[DType.float16, 1](bias))
+        return (outputs^, saved^)
+    unimplemented("add_bias_fws_gpu: unsupported dtype")
+    return (List[AnyTensor](), List[AnyTensor]())
 
 
 def add_bias_bwd_gpu(
     grad_outputs: List[AnyTensor], saved: List[AnyTensor]
 ) -> List[AnyTensor]:
+    # The bias gradient is a column reduction over the (usually tall)
+    # grad_out; it stays on the CPU kernel.
     return add_bias_bwd_cpu(grad_outputs, saved)
 
 
@@ -533,13 +660,55 @@ def rms_norm_bwd_cpu(
 def rms_norm_fws_gpu(
     inputs: List[AnyTensor],
 ) -> Tuple[List[AnyTensor], List[AnyTensor]]:
-    return rms_norm_fws_cpu(inputs)
+    var dtype = inputs[0].dtype
+    if dtype == DType.float32:
+        var x = from_any[DType.float32, 2](inputs[0])
+        var out = rms_norm_gpu_dynamic[DType.float32](x)
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float32, 2](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(to_any[DType.float32, 2](x))
+        saved.append(to_any[DType.float32, 2](out))
+        return (outputs^, saved^)
+    if dtype == DType.float16:
+        var x = from_any[DType.float16, 2](inputs[0])
+        var out = rms_norm_gpu_dynamic[DType.float16](x)
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float16, 2](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(to_any[DType.float16, 2](x))
+        saved.append(to_any[DType.float16, 2](out))
+        return (outputs^, saved^)
+    unimplemented("rms_norm_fws_gpu: unsupported dtype")
+    return (List[AnyTensor](), List[AnyTensor]())
 
 
 def rms_norm_bwd_gpu(
     grad_outputs: List[AnyTensor], saved: List[AnyTensor]
 ) -> List[AnyTensor]:
-    return rms_norm_bwd_cpu(grad_outputs, saved)
+    var dtype = grad_outputs[0].dtype
+    var results = List[AnyTensor]()
+    results.reserve(8)
+    if dtype == DType.float32:
+        var g = from_any[DType.float32, 2](grad_outputs[0])
+        var grads = rms_norm_gpu_backward[DType.float32, 0](
+            g, _rebuild2[DType.float32](saved)
+        )
+        results.append(to_any[DType.float32, 2](grads[0]))
+        return results^
+    if dtype == DType.float16:
+        var g = from_any[DType.float16, 2](grad_outputs[0])
+        var grads = rms_norm_gpu_backward[DType.float16, 0](
+            g, _rebuild2[DType.float16](saved)
+        )
+        results.append(to_any[DType.float16, 2](grads[0]))
+        return results^
+    unimplemented("rms_norm_bwd_gpu: unsupported dtype")
+    return results^
 
 
 # -- rms_norm_weight ----------------------------------------------------------
@@ -683,13 +852,53 @@ def softmax_bwd_cpu(
 def softmax_fws_gpu(
     inputs: List[AnyTensor],
 ) -> Tuple[List[AnyTensor], List[AnyTensor]]:
-    return softmax_fws_cpu(inputs)
+    var dtype = inputs[0].dtype
+    if dtype == DType.float32:
+        var x = from_any[DType.float32, 2](inputs[0])
+        var out = softmax_gpu_dynamic[DType.float32](x)
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float32, 2](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(to_any[DType.float32, 2](out))
+        return (outputs^, saved^)
+    if dtype == DType.float16:
+        var x = from_any[DType.float16, 2](inputs[0])
+        var out = softmax_gpu_dynamic[DType.float16](x)
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float16, 2](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(to_any[DType.float16, 2](out))
+        return (outputs^, saved^)
+    unimplemented("softmax_fws_gpu: unsupported dtype")
+    return (List[AnyTensor](), List[AnyTensor]())
 
 
 def softmax_bwd_gpu(
     grad_outputs: List[AnyTensor], saved: List[AnyTensor]
 ) -> List[AnyTensor]:
-    return softmax_bwd_cpu(grad_outputs, saved)
+    var dtype = grad_outputs[0].dtype
+    var results = List[AnyTensor]()
+    results.reserve(8)
+    if dtype == DType.float32:
+        var g = from_any[DType.float32, 2](grad_outputs[0])
+        var grads = softmax_gpu_backward[DType.float32, 0](
+            g, _rebuild2[DType.float32](saved)
+        )
+        results.append(to_any[DType.float32, 2](grads[0]))
+        return results^
+    if dtype == DType.float16:
+        var g = from_any[DType.float16, 2](grad_outputs[0])
+        var grads = softmax_gpu_backward[DType.float16, 0](
+            g, _rebuild2[DType.float16](saved)
+        )
+        results.append(to_any[DType.float16, 2](grads[0]))
+        return results^
+    unimplemented("softmax_bwd_gpu: unsupported dtype")
+    return results^
 
 
 # -- rope ---------------------------------------------------------------------
@@ -763,13 +972,59 @@ def rope_bwd_cpu(
 def rope_fws_gpu(
     inputs: List[AnyTensor],
 ) -> Tuple[List[AnyTensor], List[AnyTensor]]:
-    return rope_fws_cpu(inputs)
+    var dtype = inputs[0].dtype
+    if dtype == DType.float32:
+        var x = from_any[DType.float32, 3](inputs[0])
+        var pos_t = from_any[DType.float32, 1](inputs[1])
+        var out = rope_gpu_dynamic[DType.float32](
+            x, Int(Float32(pos_t.get(0)))
+        )
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float32, 3](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(inputs[0])
+        saved.append(inputs[1])
+        return (outputs^, saved^)
+    if dtype == DType.float16:
+        var x = from_any[DType.float16, 3](inputs[0])
+        var pos_t = from_any[DType.float32, 1](inputs[1])
+        var out = rope_gpu_dynamic[DType.float16](
+            x, Int(Float32(pos_t.get(0)))
+        )
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float16, 3](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(inputs[0])
+        saved.append(inputs[1])
+        return (outputs^, saved^)
+    unimplemented("rope_fws_gpu: unsupported dtype")
+    return (List[AnyTensor](), List[AnyTensor]())
 
 
 def rope_bwd_gpu(
     grad_outputs: List[AnyTensor], saved: List[AnyTensor]
 ) -> List[AnyTensor]:
-    return rope_bwd_cpu(grad_outputs, saved)
+    var dtype = grad_outputs[0].dtype
+    var results = List[AnyTensor]()
+    results.reserve(8)
+    var pos_t = from_any[DType.float32, 1](saved[1])
+    var start_pos = Int(Float32(pos_t.get(0)))
+    if dtype == DType.float32:
+        var g = from_any[DType.float32, 3](grad_outputs[0])
+        var grad = rope_gpu_backward_pos[DType.float32](g, start_pos)
+        results.append(to_any[DType.float32, 3](grad))
+        return results^
+    if dtype == DType.float16:
+        var g = from_any[DType.float16, 3](grad_outputs[0])
+        var grad = rope_gpu_backward_pos[DType.float16](g, start_pos)
+        results.append(to_any[DType.float16, 3](grad))
+        return results^
+    unimplemented("rope_bwd_gpu: unsupported dtype")
+    return results^
 
 
 # -- swiglu -------------------------------------------------------------------
@@ -836,13 +1091,59 @@ def swiglu_bwd_cpu(
 def swiglu_fws_gpu(
     inputs: List[AnyTensor],
 ) -> Tuple[List[AnyTensor], List[AnyTensor]]:
-    return swiglu_fws_cpu(inputs)
+    var dtype = inputs[0].dtype
+    if dtype == DType.float32:
+        var gate = from_any[DType.float32, 2](inputs[0])
+        var up = from_any[DType.float32, 2](inputs[1])
+        var out = swiglu_gpu_dynamic[DType.float32](gate, up)
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float32, 2](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(to_any[DType.float32, 2](gate))
+        saved.append(to_any[DType.float32, 2](up))
+        return (outputs^, saved^)
+    if dtype == DType.float16:
+        var gate = from_any[DType.float16, 2](inputs[0])
+        var up = from_any[DType.float16, 2](inputs[1])
+        var out = swiglu_gpu_dynamic[DType.float16](gate, up)
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float16, 2](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(to_any[DType.float16, 2](gate))
+        saved.append(to_any[DType.float16, 2](up))
+        return (outputs^, saved^)
+    unimplemented("swiglu_fws_gpu: unsupported dtype")
+    return (List[AnyTensor](), List[AnyTensor]())
 
 
 def swiglu_bwd_gpu(
     grad_outputs: List[AnyTensor], saved: List[AnyTensor]
 ) -> List[AnyTensor]:
-    return swiglu_bwd_cpu(grad_outputs, saved)
+    var dtype = grad_outputs[0].dtype
+    var results = List[AnyTensor]()
+    results.reserve(8)
+    if dtype == DType.float32:
+        var g = from_any[DType.float32, 2](grad_outputs[0])
+        var grads = swiglu_gpu_backward[DType.float32, 0, 0](
+            g, _rebuild2[DType.float32](saved)
+        )
+        results.append(to_any[DType.float32, 2](grads[0]))
+        results.append(to_any[DType.float32, 2](grads[1]))
+        return results^
+    if dtype == DType.float16:
+        var g = from_any[DType.float16, 2](grad_outputs[0])
+        var grads = swiglu_gpu_backward[DType.float16, 0, 0](
+            g, _rebuild2[DType.float16](saved)
+        )
+        results.append(to_any[DType.float16, 2](grads[0]))
+        results.append(to_any[DType.float16, 2](grads[1]))
+        return results^
+    unimplemented("swiglu_bwd_gpu: unsupported dtype")
+    return results^
 
 
 # -- embedding ----------------------------------------------------------------
@@ -912,12 +1213,38 @@ def embedding_bwd_cpu(
 def embedding_fws_gpu(
     inputs: List[AnyTensor],
 ) -> Tuple[List[AnyTensor], List[AnyTensor]]:
-    return embedding_fws_cpu(inputs)
+    var dtype = inputs[1].dtype
+    var tokens = from_any[DType.int32, 1](inputs[0])
+    if dtype == DType.float32:
+        var table = from_any[DType.float32, 2](inputs[1])
+        var out = embedding_gpu_dynamic[DType.float32](tokens, table)
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float32, 2](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(inputs[0])
+        saved.append(inputs[1])
+        return (outputs^, saved^)
+    if dtype == DType.float16:
+        var table = from_any[DType.float16, 2](inputs[1])
+        var out = embedding_gpu_dynamic[DType.float16](tokens, table)
+        var outputs = List[AnyTensor]()
+        outputs.reserve(8)
+        outputs.append(to_any[DType.float16, 2](out))
+        var saved = List[AnyTensor]()
+        saved.reserve(16)
+        saved.append(inputs[0])
+        saved.append(inputs[1])
+        return (outputs^, saved^)
+    unimplemented("embedding_fws_gpu: unsupported dtype")
+    return (List[AnyTensor](), List[AnyTensor]())
 
 
 def embedding_bwd_gpu(
     grad_outputs: List[AnyTensor], saved: List[AnyTensor]
 ) -> List[AnyTensor]:
+    # Sparse scatter-add over the (usually huge) table; stays on the CPU kernel.
     return embedding_bwd_cpu(grad_outputs, saved)
 
 
