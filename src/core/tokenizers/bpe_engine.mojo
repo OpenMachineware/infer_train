@@ -1,10 +1,12 @@
 # core/tokenizers/bpe_engine.mojo
 #
-# M7: the shared GPT-2-style byte-level BPE engine behind every built-in
-# tokenizer flavor (Qwen / Llama / Hunyuan).  `BpeTokenizer` is the runtime
-# type used end-to-end; the per-flavor structs in this package
-# (QwenTokenizer / LlamaTokenizer / HunyuanTokenizer) construct it with the
-# right flavor tag, added tokens, and bos/eos ids.
+# M7: the generic byte-level BPE engine (GPT-2 style) - one of the two
+# mainstream LLM tokenization algorithms (the other being SentencePiece
+# Unigram/WordPiece, to be added as a second generic engine when a model
+# needs it).  `BpeTokenizer` is the runtime type used end-to-end for every
+# BPE family (Qwen / Llama / Hunyuan / ...); the families differ only in
+# data - the flavor tag, the added-token table and the bos/eos ids - which
+# `make_tokenizer` (registry.mojo) selects from the GGUF metadata.
 #
 # Data sources:
 #   * `tokenizer.json`  - vocab + merges + added tokens (streamed straight

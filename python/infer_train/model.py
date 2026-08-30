@@ -33,9 +33,9 @@ class Model:
         if not ptr:
             raise EngineError(
                 f"infer_train_load_model('{path}') failed (NULL). "
-                "Check that the .gguf exists and that tokenizer.json / "
-                "config.json sit next to it; generation also needs the "
-                "KV cache to fit prompt + max_tokens."
+                "Check that the .gguf exists (architecture and tokenizer "
+                "metadata are read from the GGUF itself); generation also "
+                "needs the KV cache to fit prompt + max_tokens."
             )
         self._ptr = ptr
         self._path = path

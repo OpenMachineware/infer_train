@@ -22,7 +22,7 @@ def main() raises:
     model.weights = weights^
     print("weights loaded")
 
-    var tokenizer = BpeTokenizer.load("tokenizer.json", model.ctx)
+    var tokenizer = BpeTokenizer.load("tests/data/tokenizer.json", model.ctx)
     var prompt_tokens = tokenizer.encode_with_bos("1+1=")
     print("prompt tokens:", len(prompt_tokens))
 

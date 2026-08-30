@@ -9,19 +9,12 @@
 #   * the trait contract through a generic helper.
 
 from src.core.gguf_loader import load_gguf
-from src.core.tokenizer import (
-    Tokenizer,
-    TokenizerFlavor,
-    DummyTokenizer,
-)
+from src.core.tokenizer import Tokenizer, TokenizerFlavor
 from src.core.tokenizers import (
     make_tokenizer,
     TokenizerSpec,
     TokenizerRegistry,
     register_tokenizer,
-    QwenTokenizer,
-    LlamaTokenizer,
-    HunyuanTokenizer,
     BpeTokenizer,
 )
 from src.core.tokenizers.bpe_engine import (
@@ -38,7 +31,7 @@ comptime MODEL_QWEN35 = "Qwen3.8-27B-UD-Q5_K_M.gguf"
 def main() raises:
     # ---- 1.5B (qwen flavor, tokenizer.json path) --------------------------
     var ctx_qwen = load_gguf(MODEL_1_5B)
-    var tok = make_tokenizer(ctx_qwen, "tokenizer.json")
+    var tok = make_tokenizer(ctx_qwen, "tests/data/tokenizer.json")
     check(tok.flavor_name() == "qwen", "1.5B flavor == qwen")
     check(tok.vocab_size() == 151936, "1.5B vocab_size")
     check(tok.bos_id() == 151646, "1.5B bos")
@@ -84,16 +77,16 @@ def main() raises:
     check(custom.flavor_name() == "custom", "registry override flavor")
     check(custom.bos_id() == 42 and custom.eos_id() == 43, "registry override ids")
 
-    # ---- typed flavor structs + trait conformance --------------------------
-    var qwen_tok = QwenTokenizer.load("tokenizer.json", ctx_qwen)
-    var hy_tok = HunyuanTokenizer.load_from_gguf(ctx_hy)
-    var llama_tok = LlamaTokenizer.load_from_gguf(ctx_hy)
-    print_tok_info[QwenTokenizer](qwen_tok)
-    print_tok_info[HunyuanTokenizer](hy_tok)
-    print_tok_info[LlamaTokenizer](llama_tok)
-    check(qwen_tok.vocab_size() == 151936, "QwenTokenizer vocab")
-    check(hy_tok.bos_id() == 127958, "HunyuanTokenizer bos")
-    check(llama_tok.vocab_size() == 128167, "LlamaTokenizer vocab")
+    # ---- generic engine + trait conformance --------------------------------
+    # One BPE engine for every BPE family: the flavor is data (tag +
+    # added-token table), auto-selected from the GGUF metadata.
+    var qwen_tok = BpeTokenizer.load("tests/data/tokenizer.json", ctx_qwen)
+    var hy_tok = make_tokenizer(ctx_hy, String(""))
+    print_tok_info[BpeTokenizer](qwen_tok)
+    print_tok_info[BpeTokenizer](hy_tok)
+    check(qwen_tok.vocab_size() == 151936, "qwen engine vocab")
+    check(hy_tok.bos_id() == 127958, "hunyuan engine bos")
+    check(hy_tok.vocab_size() == 128167, "hunyuan engine vocab")
 
     print("test_tokenizer_m7 OK")
 

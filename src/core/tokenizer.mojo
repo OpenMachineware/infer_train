@@ -4,10 +4,11 @@
 # tokenizer implementation.
 #
 # `Tokenizer` is the trait every tokenizer must conform to (encode / decode /
-# vocab_size / bos_id / eos_id / encode_with_bos).  The concrete engine is
-# `BpeTokenizer` in core/tokenizers/bpe_engine.mojo; the per-family structs
-# (`QwenTokenizer` / `LlamaTokenizer` / `HunyuanTokenizer`) live in
-# core/tokenizers/ and construct the engine with their flavor config.
+# vocab_size / bos_id / eos_id / encode_with_bos).  The concrete engine for
+# every BPE family is the generic `BpeTokenizer` in
+# core/tokenizers/bpe_engine.mojo; model families differ only in data (the
+# flavor tag, the added-token table and the bos/eos ids), selected from the
+# GGUF metadata by `make_tokenizer` (core/tokenizers/registry.mojo).
 #
 # Mojo 1.0 note: this toolchain has no usable trait-existential dynamic
 # dispatch (trait-typed values box to `AnyTrait`, but method calls on the

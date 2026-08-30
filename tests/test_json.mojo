@@ -67,7 +67,7 @@ def main() raises:
 
     print("step: flat config")
     # flat config file
-    var cfg = parse_json_flat_file("config.json")
+    var cfg = parse_json_flat_file("tests/data/config.json")
     assert_equal(flat_get_int(cfg, "hidden_size", 0), 1536, "hidden_size")
     assert_equal(flat_get_int(cfg, "num_hidden_layers", 0), 28, "layers")
     assert_equal(
@@ -87,7 +87,7 @@ def main() raises:
 
     print("step: streaming walk")
     # streaming walk over the real 7 MB tokenizer.json
-    var (data, size) = mmap_file("tokenizer.json")
+    var (data, size) = mmap_file("tests/data/tokenizer.json")
     var tok = JsonParser(data, size)
     tok.expect_byte(UInt8(123))  # '{'
     var vocab_count = 0

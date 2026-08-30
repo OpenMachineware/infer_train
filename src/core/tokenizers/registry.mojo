@@ -3,15 +3,16 @@
 # M7: tokenizer auto-selection and the custom-tokenizer registry.
 #
 # `make_tokenizer(ctx, tokenizer_json_path)` reads the GGUF tokenizer
-# metadata (`tokenizer.ggml.model` / `tokenizer.ggml.pre`) and returns the
-# matching flavor engine:
+# metadata (`tokenizer.ggml.model` / `tokenizer.ggml.pre`) and builds the
+# matching flavor of the shared BPE engine (`BpeTokenizer`) - the flavor is
+# data (tag + added-token table + bos/eos), not a separate engine:
 #
-#   pre/model          -> flavor            (struct that owns the config)
-#   qwen*, deepseek*   -> QwenTokenizer
-#   hunyuan*           -> HunyuanTokenizer
-#   llama*/smaug*/...  -> LlamaTokenizer
+#   pre/model          -> flavor tag
+#   qwen*, deepseek*   -> FLAVOR_QWEN
+#   hunyuan*           -> FLAVOR_HUNYUAN
+#   llama*/smaug*/...  -> FLAVOR_LLAMA
 #   (registry hit)     -> user-registered TokenizerSpec
-#   gpt2               -> LlamaTokenizer (plain GPT-2 BPE fallback)
+#   gpt2               -> plain GPT-2 BPE fallback
 #
 # `register_tokenizer(registry, name, spec)` adds a custom tokenizer.  The
 # vocab and merge table always come from the GGUF metadata
@@ -35,9 +36,6 @@ from .bpe_engine import (
     FLAVOR_GPT2,
     FLAVOR_CUSTOM,
 )
-from .qwen_tokenizer import QwenTokenizer
-from .llama_tokenizer import LlamaTokenizer
-from .hunyuan_tokenizer import HunyuanTokenizer
 from ..gguf_loader import (
     GGUFContext,
     get_meta_uint,
@@ -143,9 +141,9 @@ def make_tokenizer(
       2. `tokenizer.ggml.pre` / `tokenizer.ggml.model` metadata - the three
          built-in flavors;
       3. plain GPT-2 BPE.
-    A `tokenizer.json` next to the model (or at `tokenizer_json_path`)
-    supplies vocab/merges/added tokens when present; otherwise everything is
-    derived from the GGUF metadata alone.
+    An explicit, non-empty `tokenizer_json_path` supplies vocab/merges/
+    added tokens from a tokenizer.json; otherwise everything is derived
+    from the GGUF metadata alone (the default - the GGUF is self-contained).
     """
     var bos = get_meta_uint(ctx, "tokenizer.ggml.bos_token_id", 1)
     var model_tag = get_meta_str(ctx, "tokenizer.ggml.model", String(""))

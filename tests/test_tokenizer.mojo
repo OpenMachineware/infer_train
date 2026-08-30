@@ -11,7 +11,7 @@ comptime MODEL_PATH = "DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf"
 
 def main() raises:
     var ctx = load_gguf(MODEL_PATH)
-    var tokenizer = BpeTokenizer.load("tokenizer.json", ctx)
+    var tokenizer = BpeTokenizer.load("tests/data/tokenizer.json", ctx)
     print("vocab:", len(tokenizer._vocab))
     print("merges:", len(tokenizer._merges))
     print("decode table:", len(tokenizer._decode_table))
