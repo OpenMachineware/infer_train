@@ -12,7 +12,7 @@ TP := python/infer_train/_lib/libinfer_train_tp.dylib
 TP_XLINK := -Xlinker $(TP)
 
 .PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 test-gpu test-gguf-split \
-        package clean tp cli version
+        test-rpc package clean tp cli version rpc-server
 
 # The C runtime helper library (thread pool + mmap + clock).
 tp:
@@ -131,6 +131,17 @@ test-m7: test test-m3 test-m5-mojo test-m6-mojo test-m7-mojo test-m7-python
 cli: tp version
 	$(MOJO) build -I . src/core/cli/infer_train_cli.mojo $(TP_XLINK) -o infer_train
 
+# M8: the RPC worker binary (llama.cpp-style `llama-rpc-server`).
+rpc-server: tp version
+	$(MOJO) build -I . src/core/cli/infer_train_rpc_server.mojo $(TP_XLINK) \
+		-o infer_train_rpc_server
+
+# M8: multi-process RPC test - two localhost workers, -sm layer, output
+# must match the single-process run exactly (needs the 1.5B GGUF at the
+# repo root; SKIPs when absent).
+test-rpc: cli rpc-server
+	bash tools/test_rpc.sh
+
 # Precompile the source tree into a distributable .mojopkg.  The package name
 # is taken from the `-o` filename: `infer_train`.  Depends on version because
 # the CLI (compiled as part of the tree) imports src.version.
@@ -143,7 +154,7 @@ package: version
 # `pip install -e python/`), and all test executables (tests/test_* without
 # the .mojo source extension).
 clean:
-	rm -f infer_train.mojopkg infer_train
+	rm -f infer_train.mojopkg infer_train infer_train_rpc_server
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib
 	rm -f src/version.mojo

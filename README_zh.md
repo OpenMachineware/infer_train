@@ -103,6 +103,39 @@ m = load_model("model.gguf-00001-of-00003.gguf")
 `make test-gguf-split` 验证这一点：将 1.5B 模型分别按单文件和 3 卷分卷加载，
 检查各卷反量化权重逐字节一致（`max_diff = 0.0`）。
 
+## 多进程 / 多机 RPC（llama.cpp 风格）
+
+引擎可以像 llama.cpp 一样跨进程（单机）或跨机器分布式运行，命令行用法相同：
+独立的 worker 二进制（`infer_train_rpc_server`，对应 `llama-rpc-server`）+
+主 CLI 上的 `-sm` / `--rpc` 参数。
+
+```bash
+# 每个进程 / 机器一个 worker（各自 mmap 同一个 GGUF 文件）：
+./infer_train_rpc_server -m model.gguf --port 50052 &
+./infer_train_rpc_server -m model.gguf --port 50053 &
+
+# 把层切分到各 worker 上并生成：
+./infer_train -m model.gguf -sm layer \
+    --rpc 127.0.0.1:50052 --rpc 127.0.0.1:50053 \
+    -p "Hello" -n 64
+```
+
+工作原理：
+
+* `-sm layer`（层切分）：master（CLI）保留 embedding + 输出头与生成循环；
+  每个 `--rpc` 端点负责一段连续的层（28 层分到 3 个 worker → 10/9/9）以及
+  这些层的 KV / SSM 状态。每个 token 由 master 串联各 worker：
+  `embedding → worker 0 → worker 1 → … → output head → 采样`。
+* 线上协议为纯 TCP，4 字节长度前缀消息（`INIT` / `FORWARD` / `RESET` /
+  `PING`）；fp16 hidden state 以原始位模式过网，因此分布式运行与本地运行
+  **数值完全一致**。
+* `--rpc` 可重复、接受 `host:port`，因此同一条命令跨机器也能用
+  （把端点指向各 worker 的地址即可）。
+* `-sm row`（行并行）已接受但尚未实现。
+
+`make test-rpc` 在本地验证这一点：启动两个 localhost worker，同一段贪心
+生成分别跑一次本地、一次跨 worker，要求输出完全一致。
+
 ## 核心功能
 
 | 功能 | 说明 |
@@ -112,9 +145,10 @@ m = load_model("model.gguf-00001-of-00003.gguf")
 | **微调** | `finetune_step`（Mojo）与 `Model.finetune`（Python）——服务不停机，LoRA 风格只更新可训练子集 |
 | **量化** | 微调后重量化：FP16 → Q4_K_M / Q8_0 / NF4（`infer_train quantize`），量化文件兼容 GGUF 工具链 |
 | **存储** | 私有 `.mmdl` 检查点：权重 + 梯度 + AdamW m/v + 训练元数据；增量更新、delta 追加、断点续训；`strip_to_gguf` 导出纯权重 |
-| **分词** | `Tokenizer` trait + Qwen/Llama/Hunyuan 三实现，按 `tokenizer.ggml.model`/`tokenizer.ggml.pre` 自动选择，`register_tokenizer` 注册自定义分词器 |
+| **分词** | 每种算法一个通用引擎（GPT-2 byte-level BPE；SentencePiece 待补充）——模型家族只在数据上有差异（flavor 标签、附加 token、bos/eos），按 `tokenizer.ggml.model`/`tokenizer.ggml.pre` 自动选择，`register_tokenizer` 注册自定义分词器 |
+| **分布式** | 多进程 / 多机 RPC（llama.cpp 风格）：`infer_train_rpc_server` worker + `-sm layer` / `--rpc host:port`，层切分、每个 worker 持有自己的 KV/SSM 状态，与本地运行数值完全一致 |
 | **API** | C ABI + Python 绑定 + `torch.compile` 后端；OpenAI 兼容 HTTP 端点（`/v1/models`、`/v1/chat/completions`、`/v1/completions` SSE、`/v1/finetune`、`/v1/finetune/status`），`INFERTRAIN_API_KEY` 鉴权 |
-| **CLI** | `infer_train`：llama.cpp 核心参数（`-m -c -np --host --port --temp --top-p --top-k --repeat-penalty -t --no-cnv`）+ `--infer-train-*` 参数组 |
+| **CLI** | `infer_train`：llama.cpp 核心参数（`-m -c -np --host --port --temp --top-p --top-k --repeat-penalty -t --no-cnv -sm --rpc`）+ `--infer-train-*` 参数组；`infer_train_rpc_server` 为 RPC worker |
 
 ## 性能基准（Apple M1 Max，64 GB；InferTrain 为 CPU 多线程）
 
@@ -154,7 +188,9 @@ make test-gguf-split  # GGUF 分卷（多文件）加载
 make test-m5     # IR 优化器 + JIT + torch.compile 后端
 make test-m6     # 训练套件
 make test-m7     # 所有测试 + M7 功能套件
+make test-rpc    # 多进程 RPC（两个 localhost worker，-sm layer）
 make cli         # infer_train 二进制
+make rpc-server  # infer_train_rpc_server worker 二进制
 ```
 
 测试组成：Mojo 可执行文件（`tests/*.mojo`，`pixi run mojo build -I .` 编译）+ Python 验收套件（`tests/python/`）。Mojo 1.0 约束：统一 `def`、无运行时全局变量、 `fn` 已弃用；C 侧辅助库经 `-Xlinker` 链接（`tools/thread_pool.c`）。
@@ -163,6 +199,6 @@ make cli         # infer_train 二进制
 
 * **Qwen3.8 的 MTP（nextn_predict）模块未启用**——与 llama.cpp 默认单模型解码一致， MTP 投机解码留待 v1.1。
 * **NF4 为私有 GGML 扩展类型（30）**，llama.cpp 无法读取 NF4 权重；导出给 llama.cpp 请用 `-f Q4_K_M` / `Q8_0`。
-* 混合精度训练（AMP）为 fp32 主权重 + fp16 影子；FSDP/流水并行未实现。
+* 混合精度训练（AMP）为 fp32 主权重 + fp16 影子；行并行（`-sm row`，带 allreduce 的张量并行）尚未实现——RPC 传输层与层切分（`-sm layer`）已为其就绪。
 * GPU 后端（CUDA/ROCm）接口已就绪（见 PORTING_GUIDE），内核留待移植。
 * 更多算子 / 更多模型（MoE、VL）、更多平台（Windows/Linux 打包）。

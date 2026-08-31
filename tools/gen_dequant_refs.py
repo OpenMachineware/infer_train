@@ -110,8 +110,12 @@ def deq_fallback(gt, raw, numel):
 
 
 def parse_gguf(path):
+    # mmap instead of f.read(): the reference models can be 25+ GB and only a
+    # few KB of each are ever touched.
+    import mmap
+
     with open(path, "rb") as f:
-        data = f.read()
+        data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
     nt = int(np.frombuffer(data[8:16], dtype=np.uint64)[0])
     nkv = int(np.frombuffer(data[16:24], dtype=np.uint64)[0])
     off = 24
@@ -120,18 +124,18 @@ def parse_gguf(path):
         n = int(np.frombuffer(data[o:o + 8], dtype=np.uint64)[0])
         return data[o + 8:o + 8 + n], o + 8 + n
 
+    # GGUF value sizes in bytes (spec): 0 uint8, 1 int8, 2 uint16, 3 int16,
+    # 4 uint32, 5 int32, 6 float32, 7 bool, 10 uint64, 11 int64, 12 float64.
+    SIZES_V = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+
     for _ in range(nkv):
         key, off = rd_str(off)
         t = int(np.frombuffer(data[off:off + 4], dtype=np.uint32)[0])
         off += 4
         if t == 8:
             _, off = rd_str(off)
-        elif t in (0, 1):
-            off += 1
-        elif t in (2, 3):
-            off += 2
-        elif t in (4, 5, 6, 7):
-            off += 4
+        elif t in SIZES_V:
+            off += SIZES_V[t]
         elif t == 9:
             et = int(np.frombuffer(data[off:off + 4], dtype=np.uint32)[0])
             n = int(np.frombuffer(data[off + 4:off + 12], dtype=np.uint64)[0])
@@ -139,14 +143,12 @@ def parse_gguf(path):
             if et == 8:
                 for _ in range(n):
                     _, off = rd_str(off)
-            elif et in (0, 1):
-                off += n
+            elif et in SIZES_V:
+                off += n * SIZES_V[et]
             else:
-                off += n * (2 if et in (2, 3) else 4 if et in (4, 5, 6, 7) else 8)
-        elif t == 10:
-            off += 8
-        elif t == 12:
-            off += 8
+                raise ValueError(f"unsupported array element type {et}")
+        else:
+            raise ValueError(f"unsupported metadata type {t}")
     tensors = {}
     for _ in range(nt):
         name, off = rd_str(off)
@@ -167,16 +169,21 @@ SIZES = {0: 4, 1: 2, 8: 34, 12: 144, 13: 176, 14: 210, 20: 18, 23: 136}
 NBLK = {0: 1, 1: 1, 8: 32, 12: 256, 13: 256, 14: 256, 20: 32, 23: 256}
 N = 1024
 
+# The q35 references come from the Qwen3.6-35B-A3B (DSV4Pro-distill, MoE)
+# GGUF.  NOTE: this file only carries F32 / Q5_K / Q6_K tensors, so Q8_0 /
+# IQ4_NL / IQ4_XS coverage is temporarily lost (it came from the
+# Qwen3.8-27B-UD-Q5_K_M.gguf file, which is not present on this machine);
+# restore the 27B entries when that file is available again.
 PLAN = [
     ("Hy-MT2-7B-Q4_K_M.gguf", "blk.0.attn_k.weight", "dequant_ref_hy.npz_0.bin"),
     ("Hy-MT2-7B-Q4_K_M.gguf", "blk.0.attn_output.weight", "dequant_ref_hy.npz_1.bin"),
     ("Hy-MT2-7B-Q4_K_M.gguf", "token_embd.weight", "dequant_ref_hy.npz_2.bin"),
     ("Hy-MT2-7B-Q4_K_M.gguf", "output_norm.weight", "dequant_ref_hy.npz_3.bin"),
-    ("Qwen3.8-27B-UD-Q5_K_M.gguf", "blk.0.attn_norm.weight", "dequant_ref_q35.npz_0.bin"),
-    ("Qwen3.8-27B-UD-Q5_K_M.gguf", "blk.0.ssm_alpha.weight", "dequant_ref_q35.npz_1.bin"),
-    ("Qwen3.8-27B-UD-Q5_K_M.gguf", "blk.2.ffn_up.weight", "dequant_ref_q35.npz_2.bin"),
-    ("Qwen3.8-27B-UD-Q5_K_M.gguf", "blk.0.ffn_gate.weight", "dequant_ref_q35.npz_3.bin"),
-    ("Qwen3.8-27B-UD-Q5_K_M.gguf", "blk.0.attn_qkv.weight", "dequant_ref_q35.npz_4.bin"),
+    ("Qwen3.6-35B-A3B-DSV4Pro-Distill-MTP-Q5_K_M-imatrix.gguf", "blk.0.attn_norm.weight", "dequant_ref_q35.npz_0.bin"),
+    ("Qwen3.6-35B-A3B-DSV4Pro-Distill-MTP-Q5_K_M-imatrix.gguf", "blk.0.ssm_alpha.weight", "dequant_ref_q35.npz_1.bin"),
+    ("Qwen3.6-35B-A3B-DSV4Pro-Distill-MTP-Q5_K_M-imatrix.gguf", "blk.2.ffn_up_shexp.weight", "dequant_ref_q35.npz_2.bin"),
+    ("Qwen3.6-35B-A3B-DSV4Pro-Distill-MTP-Q5_K_M-imatrix.gguf", "blk.0.ffn_gate_shexp.weight", "dequant_ref_q35.npz_3.bin"),
+    ("Qwen3.6-35B-A3B-DSV4Pro-Distill-MTP-Q5_K_M-imatrix.gguf", "blk.0.attn_qkv.weight", "dequant_ref_q35.npz_4.bin"),
 ]
 
 

@@ -233,12 +233,21 @@ struct TransformerModel(Movable):
     var params: TransformerWeights  # dequantized fp16 weights
     var cache: KVCache
     var ssm_states: List[SSMLayerState]  # per recurrent layer (qwen35)
+    # M8: layer split (RPC).  The model only owns/loads layers
+    # [shard_lo, shard_hi) and, when `load_heads` is False, skips the
+    # embedding/output weights.  Defaults = the full local model.
+    var shard_lo: Int
+    var shard_hi: Int
+    var load_heads: Bool
 
     def __init__(
         out self,
         config: TransformerConfig,
         var ctx: GGUFContext,
         kv_cache_len: Int = DEFAULT_KV_CACHE_LEN,
+        shard_lo: Int = 0,
+        shard_hi: Int = -1,
+        load_heads: Bool = True,
     ):
         self.config = config
         self.ctx = ctx^
@@ -246,12 +255,26 @@ struct TransformerModel(Movable):
         self.params = TransformerWeights()
         self.cache = KVCache()
         self.ssm_states = List[SSMLayerState]()
+        self.shard_lo = shard_lo
+        self.shard_hi = config.n_layers if shard_hi < 0 else shard_hi
+        self.load_heads = load_heads
         self.load_weights()
         self.cache = KVCache(config.n_layers, config.n_kv_heads, kv_cache_len, config.head_dim)
+        # M8: only the shard's layers hold KV storage (the rest stay
+        # zero-length placeholders so absolute layer indexing is unchanged).
+        for l in range(config.n_layers):
+            if l < self.shard_lo or l >= self.shard_hi:
+                self.cache.layers[l] = KVCacheLayer(
+                    config.n_kv_heads, 0, config.head_dim
+                )
         # qwen35: recurrent layers keep no KV cache and carry SSM state.
         if config.arch == ARCH_QWEN35:
             for l in range(config.n_layers):
-                if config.is_recurrent(l):
+                if (
+                    config.is_recurrent(l)
+                    and l >= self.shard_lo
+                    and l < self.shard_hi
+                ):
                     self.cache.layers[l] = KVCacheLayer(
                         config.n_kv_heads, 0, config.head_dim
                     )
@@ -273,21 +296,27 @@ struct TransformerModel(Movable):
     def load_weights(mut self):
         var cfg = self.config
         var params = TransformerWeights()
-        params.token_embd = dequantize_weight(
-            self.ctx, find_tensor(self.ctx, "token_embd.weight").value()
-        )
-        params.output_norm_w = dequantize_vector(
-            self.ctx, find_tensor(self.ctx, "output_norm.weight").value()
-        )
-        var output_t = find_tensor(self.ctx, "output.weight")
-        if output_t:
-            params.output_w = dequantize_weight(
-                self.ctx, output_t.value()
+        # M8: the master of a layer split keeps only the embedding + output
+        # head; the workers keep only their layer range.
+        if self.load_heads:
+            params.token_embd = dequantize_weight(
+                self.ctx, find_tensor(self.ctx, "token_embd.weight").value()
             )
-        else:
-            params.output_w = params.token_embd  # tied embeddings
+            params.output_norm_w = dequantize_vector(
+                self.ctx, find_tensor(self.ctx, "output_norm.weight").value()
+            )
+            var output_t = find_tensor(self.ctx, "output.weight")
+            if output_t:
+                params.output_w = dequantize_weight(
+                    self.ctx, output_t.value()
+                )
+            else:
+                params.output_w = params.token_embd  # tied embeddings
         params.layers = List[LayerWeights]()
         for i in range(cfg.n_layers):
+            if i < self.shard_lo or i >= self.shard_hi:
+                params.layers.append(LayerWeights())  # empty placeholder
+                continue
             var lw = LayerWeights()
             var base = "blk." + String(i)
             lw.attn_norm_w = dequantize_vector(
@@ -437,7 +466,7 @@ struct TransformerModel(Movable):
             toks, self.params.token_embd
         )
 
-        for layer in range(cfg.n_layers):
+        for layer in range(self.shard_lo, self.shard_hi):
             if cfg.is_recurrent(layer):
                 x = self._layer_forward_ssm(layer, x)
             elif cfg.arch == ARCH_HUNYUAN:
@@ -447,6 +476,53 @@ struct TransformerModel(Movable):
             else:
                 x = self._layer_forward(layer, x, position)
         return x
+
+    # -- M8: layer-split (RPC) entry points -----------------------------------
+
+    def embed(mut self, token: Int) -> Tensor[DType.float16, 2]:
+        """Token -> embedding (the master's side of the layer split)."""
+        var toks = tensor_zeros[DType.int32, 1](StaticTuple[Int, 1](1))
+        toks.set(0, Scalar[DType.int32](token))
+        return embedding_cpu_dynamic[DType.float16](
+            toks, self.params.token_embd
+        )
+
+    def head(mut self, x: Tensor[DType.float16, 2]) -> Tensor[DType.float32, 1]:
+        """Final norm + lm_head: hidden state -> logits (master side)."""
+        var cfg = self.config
+        var xn = rms_norm_weight[DType.float16](
+            x, self.params.output_norm_w, cfg.norm_eps
+        )
+        var logits16 = matmul_weight_cpu_threaded[DType.float16](
+            xn, self.params.output_w
+        )
+        var logits = tensor_zeros[DType.float32, 1](
+            StaticTuple[Int, 1](cfg.vocab)
+        )
+        for i in range(cfg.vocab):
+            logits.set(i, Scalar[DType.float32](Float32(logits16.get(i))))
+        return logits
+
+    def forward_range(
+        mut self, position: Int, x: Tensor[DType.float16, 2]
+    ) raises -> Tensor[DType.float16, 2]:
+        """Run the shard's layers [shard_lo, shard_hi) on `x` (worker side).
+
+        The KV/SSM state of the shard's layers is updated in place, so a
+        worker can serve the whole generation sequence.
+        """
+        var cfg = self.config
+        var h = x
+        for layer in range(self.shard_lo, self.shard_hi):
+            if cfg.is_recurrent(layer):
+                h = self._layer_forward_ssm(layer, h)
+            elif cfg.arch == ARCH_HUNYUAN:
+                h = self._layer_forward_hunyuan(layer, h, position)
+            elif cfg.arch == ARCH_QWEN35:
+                h = self._layer_forward_q35_attn(layer, h, position)
+            else:
+                h = self._layer_forward(layer, h, position)
+        return h
 
     def _layer_forward(
         mut self, layer: Int, x: Tensor[DType.float16, 2], position: Int

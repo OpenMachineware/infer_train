@@ -34,6 +34,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
@@ -212,4 +213,119 @@ int64_t tp_now_ns(void) {
     if (info.denom == 0) mach_timebase_info(&info);
     uint64_t t = mach_absolute_time();
     return (int64_t)(t * info.numer / info.denom);
+}
+
+/* ---- M8: TCP helpers for the multi-process / multi-machine RPC layer ----
+ *
+ * Mojo 1.0's stdlib has no socket API, so the RPC transport (llama.cpp-style
+ * `--rpc` endpoints + `-sm layer` split) talks to plain TCP through these
+ * helpers.  Fds are returned as int64_t (-1 on error); it_tcp_send loops
+ * until the whole buffer is written, it_tcp_recv returns the number of
+ * bytes received (0 = peer closed, -1 = error).
+ *
+ *   int64_t it_tcp_listen(const char* host, int32_t port)
+ *        - AF_INET stream socket, SO_REUSEADDR, bound to `host`
+ *          ("" / "0.0.0.0" = INADDR_ANY) and listening.
+ *   int64_t it_tcp_accept(int64_t listen_fd)
+ *        - blocking accept; TCP_NODELAY on the accepted socket.
+ *   int64_t it_tcp_connect(const char* host, int32_t port)
+ *        - blocking connect via getaddrinfo; TCP_NODELAY.
+ *   int64_t it_tcp_send(int64_t fd, const uint8_t* data, int64_t len)
+ *        - writes all `len` bytes; returns len or -1.
+ *   int64_t it_tcp_recv(int64_t fd, uint8_t* buf, int64_t cap)
+ *        - one recv(); returns bytes read, 0 on EOF, -1 on error.
+ *   int32_t it_tcp_close(int64_t fd)
+ */
+#include <arpa/inet.h>
+#include <errno.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <stdio.h>
+#include <sys/socket.h>
+
+static int it_set_nodelay(int fd) {
+    int one = 1;
+    return setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+}
+
+int64_t it_tcp_listen(const char *host, int32_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    if (host == NULL || host[0] == '\0' || strcmp(host, "0.0.0.0") == 0) {
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    } else if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        close(fd);
+        return -1;
+    }
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+    if (listen(fd, 4) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+int64_t it_tcp_accept(int64_t listen_fd) {
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    int fd = accept((int)listen_fd, (struct sockaddr *)&addr, &len);
+    if (fd < 0) return -1;
+    it_set_nodelay(fd);
+    return fd;
+}
+
+int64_t it_tcp_connect(const char *host, int32_t port) {
+    struct addrinfo hints, *res = NULL;
+    char portbuf[16];
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    snprintf(portbuf, sizeof(portbuf), "%d", (int)port);
+    if (getaddrinfo(host, portbuf, &hints, &res) != 0 || res == NULL) {
+        return -1;
+    }
+    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd < 0) {
+        freeaddrinfo(res);
+        return -1;
+    }
+    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
+        close(fd);
+        freeaddrinfo(res);
+        return -1;
+    }
+    freeaddrinfo(res);
+    it_set_nodelay(fd);
+    return fd;
+}
+
+int64_t it_tcp_send(int64_t fd, const uint8_t *data, int64_t len) {
+    int64_t sent = 0;
+    while (sent < len) {
+        ssize_t n = send((int)fd, data + sent, (size_t)(len - sent), 0);
+        if (n <= 0) return -1;
+        sent += n;
+    }
+    return sent;
+}
+
+int64_t it_tcp_recv(int64_t fd, uint8_t *buf, int64_t cap) {
+    ssize_t n = recv((int)fd, buf, (size_t)cap, 0);
+    if (n < 0) return -1;
+    return (int64_t)n;
+}
+
+int32_t it_tcp_close(int64_t fd) {
+    if (fd >= 0) close((int)fd);
+    return 0;
 }

@@ -4,6 +4,8 @@
 
 # build artifacts
 infer_train.mojopkg
+infer_train
+infer_train_rpc_server
 *.mojoc
 src/version.mojo
 test_core

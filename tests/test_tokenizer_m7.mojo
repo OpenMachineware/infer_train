@@ -25,7 +25,11 @@ from src.core.tokenizers.bpe_engine import (
 
 comptime MODEL_1_5B = "DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf"
 comptime MODEL_HY = "Hy-MT2-7B-Q4_K_M.gguf"
-comptime MODEL_QWEN35 = "Qwen3.8-27B-UD-Q5_K_M.gguf"
+# The qwen35 tokenizer reference.  Was Qwen3.8-27B-UD-Q5_K_M.gguf; that file
+# is not present on this machine, so the Qwen3.6-35B-A3B GGUF stands in -
+# its tokenizer metadata (pre=qwen35, vocab 248320, bos/eos, merges) is
+# identical for every check below.
+comptime MODEL_QWEN35 = "Qwen3.6-35B-A3B-DSV4Pro-Distill-MTP-Q5_K_M-imatrix.gguf"
 
 
 def main() raises:
@@ -58,7 +62,7 @@ def main() raises:
     check_roundtrip(hy, "Translate to English: 今天天气很好。")
     check_roundtrip(hy, "Hello, world! 123")
 
-    # ---- Qwen3.8-27B (qwen35 -> qwen flavor, GGUF-only) -------------------
+    # ---- qwen35 (qwen35 -> qwen flavor, GGUF-only) -------------------------
     var ctx_35 = load_gguf(MODEL_QWEN35)
     var q35 = make_tokenizer(ctx_35, String(""))
     check(q35.flavor_name() == "qwen", "qwen35 flavor == qwen")

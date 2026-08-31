@@ -20,6 +20,7 @@ from src.core.transformer import (
     collect_weights,
     DEFAULT_KV_CACHE_LEN,
 )
+from src.core.rpc import RpcClient
 from src.core.tokenizers import make_tokenizer
 from src.core.sampler import Sampler, sample_dynamic, seed_sampler
 from src.core.tensor import tensor_zeros, Tensor
@@ -30,6 +31,9 @@ from src.version import VERSION
 from std.utils.static_tuple import StaticTuple
 from std.sys import argv
 from std.io.file import FileHandle
+from std.memory.alloc import unsafe_alloc
+from std.origin import MutUntrackedOrigin
+from std.collections import Span
 
 
 struct CliArgs(Movable):
@@ -54,6 +58,9 @@ struct CliArgs(Movable):
     var input: String
     var output: String
     var action: String  # generate / quantize / serve / help
+    # M8: multi-process / multi-machine RPC (llama.cpp-style)
+    var split_mode: String  # none / layer / row
+    var rpc_endpoints: List[String]  # --rpc HOST:PORT (repeatable)
 
     def __init__(out self):
         self.model = String("")
@@ -77,6 +84,8 @@ struct CliArgs(Movable):
         self.input = String("")
         self.output = String("")
         self.action = String("generate")
+        self.split_mode = String("none")
+        self.rpc_endpoints = List[String]()
 
 
 def main() raises:
@@ -99,6 +108,19 @@ def main() raises:
         return
     if args.model.byte_length() == 0:
         print("error: -m/--model is required (try --help)")
+        return
+    # M8: multi-process / multi-machine RPC (llama.cpp-style -sm/--rpc)
+    if args.split_mode == "row":
+        print(
+            "error: -sm row (row-parallel) is not implemented yet; "
+            + "use -sm layer"
+        )
+        return
+    if len(args.rpc_endpoints) > 0:
+        if args.split_mode != "layer":
+            print("error: --rpc requires -sm layer")
+            return
+        generate_distributed(args)
         return
     generate(args)
 
@@ -127,6 +149,11 @@ llama.cpp-compatible options:
       --seed N              sampling seed (default: random)
       --no-cnv              raw completion mode (no conversation)
   -np, --parallel N         parallel slots (accepted; single-slot engine)
+  -sm, --split-mode M       layer | row   (row: not implemented yet)
+      --rpc HOST:PORT       add an RPC worker endpoint (repeatable;
+                            requires -sm layer; run one
+                            infer_train_rpc_server -m MODEL --port PORT
+                            per endpoint)
 
 infer-train options:
       --infer-train-mode M  off | lora | full   (default off)
@@ -204,6 +231,12 @@ def parse_args(arg_span: Span[StringSpan[ImmStaticOrigin], ImmStaticOrigin]) rai
             args.no_cnv = True
         elif a == "-np" or a == "--parallel":
             _ = _next_int(arg_list, i)
+            i += 1
+        elif a == "-sm" or a == "--split-mode":
+            args.split_mode = _next(arg_list, i)
+            i += 1
+        elif a == "--rpc":
+            args.rpc_endpoints.append(_next(arg_list, i))
             i += 1
         elif a == "--infer-train-mode":
             args.mode = _next(arg_list, i)
@@ -339,6 +372,141 @@ def generate(args: CliArgs) raises:
         print(tokenizer.decode(one), end="")
         logits = model.forward(next_token, len(tokens) - 1)
     print()
+
+
+def generate_distributed(args: CliArgs) raises:
+    """M8: layer-split generation over RPC workers (llama.cpp -sm layer).
+
+    The master keeps the embedding + output head and the generation loop;
+    each `--rpc` worker owns a contiguous layer range (and its KV/SSM
+    state) and is chained per token.  The fp16 hidden state crosses the
+    wire losslessly, so the output is numerically identical to the local
+    run.
+    """
+    var ctx = load_gguf(args.model)
+    var config = load_config(ctx)
+    if config.n_heads > 0:
+        config.head_dim = config.hidden // config.n_heads
+    print("loaded:", args.model)
+    print(
+        "  arch layers:", config.n_layers,
+        "hidden:", config.hidden,
+        "vocab:", config.vocab,
+    )
+    var n = len(args.rpc_endpoints)
+    var base = config.n_layers // n
+    var rem = config.n_layers % n
+    # Connect, assign contiguous layer ranges (first `rem` workers get one
+    # extra layer), and make each worker load its shard.
+    var workers = List[RpcClient]()
+    for i in range(n):
+        var (host, port) = split_host_port(args.rpc_endpoints[i])
+        var client = RpcClient()
+        client.connect(host, port)
+        var lo = i * base + _min(i, rem)
+        var hi = (i + 1) * base + _min(i + 1, rem)
+        client.init_shard(lo, hi, args.ctx_size)
+        print(
+            "  rpc[" + String(i) + "] " + host + ":" + String(port)
+            + ": layers " + String(lo) + ".." + String(hi - 1)
+        )
+        workers.append(client^)
+    print("  split mode: layer (" + String(n) + " workers)")
+    # Master model: embedding + output head only (no layers, no KV cache).
+    var master = TransformerModel(
+        config, ctx^, args.ctx_size, shard_lo=0, shard_hi=0, load_heads=True
+    )
+    var tokenizer = make_tokenizer(master.ctx, String(""))
+    print("  tokenizer:", tokenizer.flavor_name(), "ctx:", args.ctx_size)
+
+    var tokens = tokenizer.encode_with_bos(args.prompt)
+    seed_sampler(Optional(args.seed) if args.seed >= 0 else None)
+    var sampler = Sampler(
+        temperature=args.temperature, top_k=args.top_k, top_p=args.top_p
+    )
+    var vocab = config.vocab
+    if len(tokens) + args.n_predict > args.ctx_size:
+        print(
+            "error: KV cache capacity " + String(args.ctx_size)
+            + " too small for "
+            + String(len(tokens) + args.n_predict) + " tokens"
+        )
+        return
+    var generated = List[Int]()
+    var counts = Dict[Int, Int]()
+    # prefill: chain the workers per token (no logits needed)
+    var x = master.embed(tokens[0])
+    for wi in range(len(workers)):
+        x = workers[wi].forward(0, x)
+    for i in range(1, len(tokens)):
+        x = master.embed(tokens[i])
+        for wi in range(len(workers)):
+            x = workers[wi].forward(i, x)
+    # decode loop
+    for step in range(args.n_predict):
+        var logits = master.head(x)
+        # repeat penalty over the generated history
+        if args.repeat_penalty != Float32(1.0):
+            var adjusted = tensor_zeros[DType.float32, 1](
+                StaticTuple[Int, 1](vocab)
+            )
+            for i in range(vocab):
+                var v = Float32(logits.get(i))
+                var c = counts.get(i, 0)
+                if c > 0:
+                    if v > Float32(0):
+                        v = v / args.repeat_penalty
+                    else:
+                        v = v * args.repeat_penalty
+                adjusted.set(i, Scalar[DType.float32](v))
+            logits = adjusted
+        var next_token = sample_dynamic[DType.float32](logits, sampler, tokens)
+        if next_token == tokenizer.eos_id():
+            break
+        generated.append(next_token)
+        tokens.append(next_token)
+        counts[next_token] = counts.get(next_token, 0) + 1
+        var one = List[Int]()
+        one.append(next_token)
+        print(tokenizer.decode(one), end="")
+        x = master.embed(next_token)
+        for wi in range(len(workers)):
+            x = workers[wi].forward(len(tokens) - 1, x)
+    print()
+    for wi in range(len(workers)):
+        workers[wi].close()
+
+
+def split_host_port(s: String) raises -> Tuple[String, Int]:
+    """Split a `host:port` RPC endpoint (port = digits after last ':')."""
+    var bytes = s.as_bytes()
+    var last = -1
+    for i in range(len(bytes)):
+        if bytes[i] == UInt8(58):  # ':'
+            last = i
+    if last < 0:
+        raise Error("bad --rpc endpoint (want host:port): " + s)
+    var host = String("")
+    if last > 0:
+        var buf = unsafe_alloc[UInt8](last)
+        for i in range(last):
+            buf.unsafe_store(i, bytes[i])
+        var span = Span[UInt8, MutUntrackedOrigin](unsafe_ptr=buf, length=last)
+        host = String(unsafe_from_utf8=span)
+        buf.unsafe_free()
+    var port = 0
+    for i in range(last + 1, len(bytes)):
+        var b = Int(bytes[i])
+        if b < 48 or b > 57:
+            raise Error("bad --rpc port in: " + s)
+        port = port * 10 + (b - 48)
+    if port <= 0 or port > 65535:
+        raise Error("bad --rpc port in: " + s)
+    return (host, port)
+
+
+def _min(a: Int, b: Int) -> Int:
+    return a if a < b else b
 
 
 def quantize_file(args: CliArgs) raises:

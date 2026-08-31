@@ -107,6 +107,43 @@ How it works:
 single file and as a 3-part split and checks that dequantized weights are
 byte-identical (`max_diff = 0.0`) across all parts.
 
+## Multi-Process / Multi-Machine RPC (llama.cpp-style)
+
+The engine can be distributed across processes (one machine) or machines
+with the same command-line usage as llama.cpp: a separate worker binary
+(`infer_train_rpc_server`, the counterpart of `llama-rpc-server`) plus the
+`-sm` / `--rpc` flags on the main CLI.
+
+```bash
+# one worker per process / machine (each mmaps the same GGUF file):
+./infer_train_rpc_server -m model.gguf --port 50052 &
+./infer_train_rpc_server -m model.gguf --port 50053 &
+
+# split the layers across the workers and generate:
+./infer_train -m model.gguf -sm layer \
+    --rpc 127.0.0.1:50052 --rpc 127.0.0.1:50053 \
+    -p "Hello" -n 64
+```
+
+How it works:
+
+* `-sm layer` (layer split): the master (the CLI) keeps the embedding +
+  output head and the generation loop; each `--rpc` endpoint owns a
+  contiguous layer range (28 layers over 3 workers → 10/9/9) plus the KV /
+  SSM state of those layers.  Per token the master chains the workers:
+  `embedding → worker 0 → worker 1 → … → output head → sample`.
+* The wire protocol is plain TCP with 4-byte length-prefixed messages
+  (`INIT` / `FORWARD` / `RESET` / `PING`); the fp16 hidden state crosses
+  the wire as raw bit patterns, so a distributed run is **numerically
+  identical** to the local one.
+* `--rpc` is repeatable and accepts `host:port`, so the same command line
+  works across machines (point the endpoints at the workers' addresses).
+* `-sm row` (row-parallel) is accepted but not implemented yet.
+
+`make test-rpc` verifies this locally: it starts two workers on localhost,
+runs the same greedy generation once locally and once across the workers,
+and requires the outputs to match exactly.
+
 ## Core Features
 
 | Feature | Description |
@@ -116,9 +153,10 @@ byte-identical (`max_diff = 0.0`) across all parts.
 | **Fine-tuning** | `finetune_step` (Mojo) and `Model.finetune` (Python) — no service downtime, LoRA-style updates on trainable subsets |
 | **Quantization** | Post-fine-tuning re-quantization: FP16 → Q4_K_M / Q8_0 / NF4 (`infer_train quantize`), compatible with GGUF toolchain |
 | **Storage** | Private `.mmdl` checkpoints: weights + gradients + AdamW m/v + training metadata; incremental updates, delta appends, checkpoint resumption; `strip_to_gguf` exports pure weights |
-| **Tokenization** | `Tokenizer` trait + Qwen/Llama/Hunyuan implementations, auto-selected by `tokenizer.ggml.model`/`tokenizer.ggml.pre`, `register_tokenizer` for custom tokenizers |
+| **Tokenization** | One generic engine per algorithm (GPT-2 byte-level BPE; SentencePiece to follow) — model families differ only in data (flavor tag, added tokens, bos/eos), auto-selected by `tokenizer.ggml.model`/`tokenizer.ggml.pre`, `register_tokenizer` for custom tokenizers |
+| **Distribution** | Multi-process / multi-machine RPC (llama.cpp-style): `infer_train_rpc_server` workers + `-sm layer` / `--rpc host:port`, layer-split with per-worker KV/SSM state, numerically identical to the local run |
 | **API** | C ABI + Python bindings + `torch.compile` backend; OpenAI-compatible HTTP endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/completions` SSE, `/v1/finetune`, `/v1/finetune/status`), `INFERTRAIN_API_KEY` authentication |
-| **CLI** | `infer_train`: llama.cpp core parameters (`-m -c -np --host --port --temp --top-p --top-k --repeat-penalty -t --no-cnv`) + `--infer-train-*` parameter group |
+| **CLI** | `infer_train`: llama.cpp core parameters (`-m -c -np --host --port --temp --top-p --top-k --repeat-penalty -t --no-cnv -sm --rpc`) + `--infer-train-*` parameter group; `infer_train_rpc_server` for RPC workers |
 
 ## Performance Benchmarks (Apple M1 Max, 64 GB; InferTrain is CPU multi-threaded)
 
@@ -158,7 +196,9 @@ make test-gguf-split  # GGUF split-file (multi-part) loading
 make test-m5     # IR optimizer + JIT + torch.compile backend
 make test-m6     # training suites
 make test-m7     # everything + the M7 feature suites
+make test-rpc    # multi-process RPC (two localhost workers, -sm layer)
 make cli         # the infer_train binary
+make rpc-server  # the infer_train_rpc_server worker binary
 ```
 
 Test composition: Mojo executables (`tests/*.mojo`, compiled with `pixi run mojo build -I .`) + Python acceptance suites (`tests/python/`). Mojo 1.0 constraints: `def`-only, no runtime globals, `fn` deprecated; C-side helpers linked via `-Xlinker` (`tools/thread_pool.c`).
@@ -167,6 +207,6 @@ Test composition: Mojo executables (`tests/*.mojo`, compiled with `pixi run mojo
 
 * **Qwen3.8 MTP (nextn_predict) module not enabled** — matches llama.cpp default single-model decoding; MTP speculative decoding deferred to v1.1.
 * **NF4 is a private GGML extended type (30)** — llama.cpp cannot read NF4 weights; export to llama.cpp using `-f Q4_K_M` / `Q8_0`.
-* Mixed precision training (AMP) uses fp32 master weights + fp16 shadow; FSDP/pipeline parallelism not implemented.
+* Mixed precision training (AMP) uses fp32 master weights + fp16 shadow; row-parallel (`-sm row`, tensor parallelism with allreduce) is not implemented yet — the RPC transport and layer split (`-sm layer`) are in place for it.
 * GPU backends (CUDA/ROCm) interfaces are ready (see PORTING_GUIDE), kernels remain for porting.
 * More ops / more models (MoE, VL), more platforms (Windows/Linux packaging).
