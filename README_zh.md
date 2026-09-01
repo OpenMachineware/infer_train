@@ -158,14 +158,14 @@ m = load_model("model.gguf-00001-of-00003.gguf")
 | Hy-MT2-7B（Q4_K_M, hunyuan-dense） | 4.6 GB | 0.82 t/s | 0.82 t/s | ~15 GB | 19.6 t/s | 4% |
 | Qwen3.8-27B（UD-Q5_K_M, qwen35 hybrid） | 19.7 GB | 0.23 t/s | 0.22 t/s | ~55 GB | 4.4 t/s | 5% |
 
-> ⚠️ **性能目标未达成**：M7 的「推理速度达 llama.cpp 85%」目标当前为 4–7%（CPU 基线）。数值正确性不受影响（与 llama.cpp 逐 token 一致），差距在 内核效率（标量 DeltaNet 递推、无 AMX 权重重排、逐元素注意力），完整分析、 32K 上下文内存数据与 v1.1 优化路线见 `docs/M7_PERFORMANCE_REPORT.md`； M5/M6 数据见 `docs/M5_PERFORMANCE_REPORT.md` 与 `docs/M6_TRAINING_REPORT.md`。
+> ⚠️ **性能目标未达成**：M7 的「推理速度达 llama.cpp 85%」目标当前为 4–7%（CPU 基线）。数值正确性不受影响（与 llama.cpp 逐 token 一致），差距在 内核效率（标量 DeltaNet 递推、无 AMX 权重重排、逐元素注意力），完整分析、 32K 上下文内存数据与后续版本优化路线见 `docs/M7_PERFORMANCE_REPORT.md`； M5/M6 数据见 `docs/M5_PERFORMANCE_REPORT.md` 与 `docs/M6_TRAINING_REPORT.md`。
 
 ## 已验证的数值正确性
 
 * **Hy-MT2-7B（hunyuan-dense）**：与 llama.cpp 逐 token 对比——连续 4 步贪心解码 token 完全一致，全 logits 向量相关系数 ≥ 0.9995。
 * **Qwen3.8-27B（qwen35 混合）**：单 token / 双 token / 6 步贪心解码与 llama.cpp 逐 token 一致（单 token logits 相关系数 0.9991）。
 * **1.5B（qwen2）**：M3 回归基准 `reference_logits_5.npy` 逐位一致（含新架构重构后）。
-* 所有 GGUF 反量化格式对 gguf-py（llama.cpp 官方 Python 实现）逐一校验。
+* 所有 GGUF 反量化格式对 gguf-py（llama.cpp 官方 Python 实现）逐一校验。FP32 反量化路径（`dequantize_into_f32` / `dequantize_q4_k_m_f32`）与 llama.cpp 的 `ggml-quants.c` **逐位一致**（Q4_K/Q5_K/Q6_K/Q8_0/IQ4_NL/IQ4_XS/F32，每 1024 值 0 失配）；fp16 推理路径存储的是精确值的一次 fp16 舍入（最大相对误差 4.85e-4，受 fp16 半 ULP 2⁻¹¹ ≈ 4.88e-4 约束）——分析与对训练的影响见 `docs/M7_PERFORMANCE_REPORT.md` §4。
 * M6 训练：与 PyTorch eager 逐位一致（loss 3.58 → 1.77）。
 
 ## 生态
@@ -197,8 +197,9 @@ make rpc-server  # infer_train_rpc_server worker 二进制
 
 ## 已知限制 / TODO
 
-* **Qwen3.8 的 MTP（nextn_predict）模块未启用**——与 llama.cpp 默认单模型解码一致， MTP 投机解码留待 v1.1。
+* **Qwen3.8 的 MTP（nextn_predict）模块未启用**——与 llama.cpp 默认单模型解码一致， MTP 投机解码留待后续版本。
 * **NF4 为私有 GGML 扩展类型（30）**，llama.cpp 无法读取 NF4 权重；导出给 llama.cpp 请用 `-f Q4_K_M` / `Q8_0`。
+* **fp16 反量化精度缺口**——推理权重是精确（FP32）反量化值的一次 fp16 舍入：每元素相对误差 ≤ 4.88e-4，确定性、对推理可忽略（逐 token 一致）、对微调影响远小于导出时的重量化误差，但会破坏与 FP32 初始化运行的跨引擎逐位复现。逐位一致的 FP32 路径（`dequantize_into_f32` / `dequantize_q4_k_m_f32`）已就绪；后续版本方向：量化点积内核（彻底消除该缺口）、FP32 微调初始化、按张量 fp32 选项——见 `docs/M7_PERFORMANCE_REPORT.md` §4。
 * 混合精度训练（AMP）为 fp32 主权重 + fp16 影子；行并行（`-sm row`，带 allreduce 的张量并行）尚未实现——RPC 传输层与层切分（`-sm layer`）已为其就绪。
 * GPU 后端（CUDA/ROCm）接口已就绪（见 PORTING_GUIDE），内核留待移植。
 * 更多算子 / 更多模型（MoE、VL）、更多平台（Windows/Linux 打包）。

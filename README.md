@@ -166,14 +166,14 @@ and requires the outputs to match exactly.
 | Hy-MT2-7B (Q4_K_M, hunyuan-dense) | 4.6 GB | 0.82 t/s | 0.82 t/s | ~15 GB | 19.6 t/s | 4% |
 | Qwen3.8-27B (UD-Q5_K_M, qwen35 hybrid) | 19.7 GB | 0.23 t/s | 0.22 t/s | ~55 GB | 4.4 t/s | 5% |
 
-> ⚠️ **Performance target not met**: M7's "reach 85% of llama.cpp" target currently sits at 4–7% (CPU baseline). Numerical correctness is unaffected (token-identical with llama.cpp); the gap is in kernel efficiency (scalar DeltaNet recurrence, no AMX weight reordering, element-wise attention). Full analysis, 32K context memory data, and v1.1 optimization roadmap are in `docs/M7_PERFORMANCE_REPORT.md`; M5/M6 data in `docs/M5_PERFORMANCE_REPORT.md` and `docs/M6_TRAINING_REPORT.md`.
+> ⚠️ **Performance target not met**: M7's "reach 85% of llama.cpp" target currently sits at 4–7% (CPU baseline). Numerical correctness is unaffected (token-identical with llama.cpp); the gap is in kernel efficiency (scalar DeltaNet recurrence, no AMX weight reordering, element-wise attention). Full analysis, 32K context memory data, and future version optimization roadmap are in `docs/M7_PERFORMANCE_REPORT.md`; M5/M6 data in `docs/M5_PERFORMANCE_REPORT.md` and `docs/M6_TRAINING_REPORT.md`.
 
 ## Verified Numerical Correctness
 
 * **Hy-MT2-7B (hunyuan-dense)**: Token-identical with llama.cpp — 4-step greedy decoding yields identical tokens, full logits vector correlation ≥ 0.9995.
 * **Qwen3.8-27B (qwen35 hybrid)**: 1-token / 2-token / 6-step greedy decoding matches llama.cpp token-for-token (single-token logits correlation 0.9991).
 * **1.5B (qwen2)**: M3 regression baseline `reference_logits_5.npy` bitwise identical (post-refactor).
-* All GGUF dequantization formats verified against gguf-py (llama.cpp official Python implementation).
+* All GGUF dequantization formats verified against gguf-py (llama.cpp official Python implementation). The FP32 dequantization path (`dequantize_into_f32` / `dequantize_q4_k_m_f32`) is **bit-exact** with llama.cpp's `ggml-quants.c` (0/1024 mismatches across Q4_K/Q5_K/Q6_K/Q8_0/IQ4_NL/IQ4_XS/F32); the fp16 inference path stores one fp16 rounding of the exact value (max rel. error 4.85e-4, bounded by the fp16 half-ULP 2⁻¹¹ ≈ 4.88e-4) — analysis and training impact in `docs/M7_PERFORMANCE_REPORT.md` §4.
 * M6 training: bitwise identical with PyTorch eager (loss 3.58 → 1.77).
 
 ## Ecosystem
@@ -205,8 +205,9 @@ Test composition: Mojo executables (`tests/*.mojo`, compiled with `pixi run mojo
 
 ## Known Limitations / TODO
 
-* **Qwen3.8 MTP (nextn_predict) module not enabled** — matches llama.cpp default single-model decoding; MTP speculative decoding deferred to v1.1.
+* **Qwen3.8 MTP (nextn_predict) module not enabled** — matches llama.cpp default single-model decoding; MTP speculative decoding deferred to future version.
 * **NF4 is a private GGML extended type (30)** — llama.cpp cannot read NF4 weights; export to llama.cpp using `-f Q4_K_M` / `Q8_0`.
+* **fp16 dequantization precision gap** — inference weights are the fp16 rounding of the exact (FP32) dequantized value: ≤ 4.88e-4 relative per element, deterministic, negligible for inference (token-identical) and for fine-tuning (far below the re-quantization error on export), but it breaks bit-reproducibility against FP32-initialized runs. The bit-exact FP32 path (`dequantize_into_f32` / `dequantize_q4_k_m_f32`) is in place; future version directions: quantized dot kernels (closes the gap entirely), FP32 fine-tune initialization, per-tensor fp32 option — see `docs/M7_PERFORMANCE_REPORT.md` §4.
 * Mixed precision training (AMP) uses fp32 master weights + fp16 shadow; row-parallel (`-sm row`, tensor parallelism with allreduce) is not implemented yet — the RPC transport and layer split (`-sm layer`) are in place for it.
 * GPU backends (CUDA/ROCm) interfaces are ready (see PORTING_GUIDE), kernels remain for porting.
 * More ops / more models (MoE, VL), more platforms (Windows/Linux packaging).
