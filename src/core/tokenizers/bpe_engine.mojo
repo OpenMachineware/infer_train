@@ -798,7 +798,8 @@ def _append_token_bytes(
     """Append the raw bytes a token's byte-level chars decode to.
 
     Chars that are part of the byte-level alphabet (printable ASCII, the
-    latin-1 supplement ranges, or the mapped 256..322 range) decode through
+    latin-1 supplement ranges, or the mapped 256..323 range - byte 173 is
+    the 68th mapped byte, codepoint 256+67 = 323 = `Ń`) decode through
     `_char_to_byte`; anything else (e.g. the 3-byte `｜` inside added tokens)
     passes through as raw UTF-8.
     """
@@ -831,7 +832,7 @@ def _append_token_bytes(
             (cp >= 33 and cp <= 126)
             or (cp >= 161 and cp <= 172)
             or (cp >= 174 and cp <= 255)
-            or (cp >= 256 and cp <= 322)
+            or (cp >= 256 and cp <= 323)
         )
         if is_byte_level:
             buf.unsafe_store(idx, UInt8(_char_to_byte(cp)))
@@ -876,7 +877,7 @@ def _token_byte_len(token: String) -> Int:
             (cp >= 33 and cp <= 126)
             or (cp >= 161 and cp <= 172)
             or (cp >= 174 and cp <= 255)
-            or (cp >= 256 and cp <= 322)
+            or (cp >= 256 and cp <= 323)
         )
         if is_byte_level:
             total += 1

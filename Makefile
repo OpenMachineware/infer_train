@@ -114,10 +114,13 @@ test-m7-python: tp
 		--emit shared-lib -o python/infer_train/_lib/libinfer_train.dylib
 	pixi run python -m pytest tests/python/test_finetune.py tests/python/test_server.py -v
 
-# Multi-model validation (needs the 7B / 27B GGUFs next to the repo root).
+# Multi-model validation (needs the 7B / 27B / Qwen3-0.6B GGUFs next to the
+# repo root; each test SKIPs when its model file is absent).
 test-m7-models: tp
 	$(MOJO) build -I . tests/test_hunyuan.mojo $(TP_XLINK) -o tests/test_hunyuan
 	./tests/test_hunyuan
+	$(MOJO) build -I . tests/test_qwen3.mojo $(TP_XLINK) -o tests/test_qwen3
+	./tests/test_qwen3
 
 test-m5: test test-m3 test-m5-mojo test-m4
 

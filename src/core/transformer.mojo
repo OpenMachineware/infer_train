@@ -5,7 +5,9 @@
 # M3 scope: Qwen2 (architecture `qwen2`), typed single-token forward.
 # M7 adds two more architectures, selected from the GGUF metadata:
 #
-#   ARCH_QWEN2    - qwen2/qwen2.5/qwen3 family (the M3 path)
+#   ARCH_QWEN2    - qwen2/qwen2.5 family (the M3 path)
+#   ARCH_QWEN3    - qwen3: Qwen2 + per-head Q/K RMSNorm applied before RoPE
+#                   (metadata prefix `qwen3.`)
 #   ARCH_HUNYUAN  - hunyuan-dense (Hy-MT2): per-head Q/K RMSNorm applied
 #                   *after* RoPE, Llama3-style ffn_norm, tied embeddings
 #   ARCH_QWEN35   - qwen35 (Qwen3.8-27B hybrid): Gated DeltaNet linear
@@ -61,6 +63,7 @@ comptime DEFAULT_KV_CACHE_LEN = 1024
 comptime ARCH_QWEN2 = Int8(0)
 comptime ARCH_HUNYUAN = Int8(1)
 comptime ARCH_QWEN35 = Int8(2)
+comptime ARCH_QWEN3 = Int8(3)
 
 
 def arch_name(arch: Int8) -> String:
@@ -68,6 +71,8 @@ def arch_name(arch: Int8) -> String:
         return String("hunyuan-dense")
     if arch == ARCH_QWEN35:
         return String("qwen35")
+    if arch == ARCH_QWEN3:
+        return String("qwen3")
     return String("qwen2")
 
 
@@ -473,6 +478,8 @@ struct TransformerModel(Movable):
                 x = self._layer_forward_hunyuan(layer, x, position)
             elif cfg.arch == ARCH_QWEN35:
                 x = self._layer_forward_q35_attn(layer, x, position)
+            elif cfg.arch == ARCH_QWEN3:
+                x = self._layer_forward_qwen3(layer, x, position)
             else:
                 x = self._layer_forward(layer, x, position)
         return x
@@ -520,6 +527,8 @@ struct TransformerModel(Movable):
                 h = self._layer_forward_hunyuan(layer, h, position)
             elif cfg.arch == ARCH_QWEN35:
                 h = self._layer_forward_q35_attn(layer, h, position)
+            elif cfg.arch == ARCH_QWEN3:
+                h = self._layer_forward_qwen3(layer, h, position)
             else:
                 h = self._layer_forward(layer, h, position)
         return h
@@ -537,6 +546,32 @@ struct TransformerModel(Movable):
             normed, lw.q_w, lw.k_w, lw.v_w, lw.o_w, lw.q_b, lw.k_b, lw.v_b,
             self.cache.layers[layer], position, cfg.n_heads, cfg.n_kv_heads,
             cfg.head_dim, cfg.rope_theta,
+        )
+        var resid = add_cpu_dynamic[DType.float16](x, attn)
+        var normed2 = rms_norm_weight[DType.float16](
+            resid, lw.ffn_norm_w, cfg.norm_eps
+        )
+        return _ffn_swiglu(normed2, lw, resid, cfg.ffn)
+
+    def _layer_forward_qwen3(
+        mut self, layer: Int, x: Tensor[DType.float16, 2], position: Int
+    ) -> Tensor[DType.float16, 2]:
+        """qwen3 layer: Qwen2 + per-head Q/K RMSNorm before RoPE."""
+        var cfg = self.config
+        var lw = self.params.layers[layer]
+        var normed = rms_norm_weight[DType.float16](
+            x, lw.attn_norm_w, cfg.norm_eps
+        )
+        var opts = MHAOptions()
+        opts.q_norm = True
+        opts.k_norm = True
+        opts.norm_before_rope = True
+        opts.norm_eps = cfg.norm_eps
+        var attn = mha_forward_v2[DType.float16](
+            normed, lw.q_w, lw.k_w, lw.v_w, lw.o_w, lw.q_b, lw.k_b, lw.v_b,
+            lw.attn_q_norm, lw.attn_k_norm, self.cache.layers[layer],
+            position, cfg.n_heads, cfg.n_kv_heads, cfg.head_dim,
+            cfg.rope_theta, opts,
         )
         var resid = add_cpu_dynamic[DType.float16](x, attn)
         var normed2 = rms_norm_weight[DType.float16](
@@ -928,6 +963,8 @@ def _arch_from_gguf(ctx: GGUFContext) -> Int8:
         return ARCH_HUNYUAN
     if arch == "qwen35":
         return ARCH_QWEN35
+    if arch == "qwen3":
+        return ARCH_QWEN3
     return ARCH_QWEN2
 
 
@@ -936,7 +973,9 @@ def load_config(ctx: GGUFContext) -> TransformerConfig:
     var config = TransformerConfig()
     config.arch = _arch_from_gguf(ctx)
     var prefix = "qwen2."
-    if config.arch == ARCH_HUNYUAN:
+    if config.arch == ARCH_QWEN3:
+        prefix = "qwen3."
+    elif config.arch == ARCH_HUNYUAN:
         prefix = "hunyuan-dense."
     elif config.arch == ARCH_QWEN35:
         prefix = "qwen35."

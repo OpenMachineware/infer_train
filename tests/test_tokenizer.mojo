@@ -56,6 +56,9 @@ def main() raises:
     check_roundtrip(tokenizer, "new\nline")
     check_roundtrip(tokenizer, "café")
     check_roundtrip(tokenizer, "你好世界")
+    # 等 = E7 AD 89: byte 0xAD is the last mapped byte-level char (cp 323 =
+    # `Ń`); the decode range must include it or the round-trip garbles.
+    check_roundtrip(tokenizer, "1+1等于几")
     check_roundtrip(tokenizer, "<think>")
     check_roundtrip(tokenizer, "<｜User｜>hi<｜Assistant｜>")
 

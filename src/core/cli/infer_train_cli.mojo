@@ -384,9 +384,9 @@ def generate_distributed(args: CliArgs) raises:
     run.
     """
     var ctx = load_gguf(args.model)
+    # head_dim comes from load_config (metadata key_length wins over
+    # hidden/n_heads; see load_model in runtime/inference.mojo).
     var config = load_config(ctx)
-    if config.n_heads > 0:
-        config.head_dim = config.hidden // config.n_heads
     print("loaded:", args.model)
     print(
         "  arch layers:", config.n_layers,

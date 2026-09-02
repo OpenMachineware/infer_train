@@ -53,9 +53,10 @@ def load_model(path: String) raises -> Model:
     tokenizer.json is read.
     """
     var ctx = load_gguf(path)
+    # head_dim comes from load_config: the metadata `attention.key_length`
+    # wins (Qwen3-0.6B: 128 != hidden/n_heads = 64; qwen35: 256 != 213),
+    # with hidden/n_heads as the fallback.
     var config = load_config(ctx)
-    if config.n_heads > 0:
-        config.head_dim = config.hidden // config.n_heads
 
     var weights = collect_weights(ctx)
     var model = TransformerModel(config, ctx^, DEFAULT_KV_CACHE_LEN)
