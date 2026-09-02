@@ -18,8 +18,13 @@ from .op_interface import (
     from_any,
     to_any,
 )
-from ..cpu.matmul_cpu import matmul_cpu_dynamic, matmul_weight_cpu
+from ..cpu.matmul_cpu import (
+    matmul_cpu_dynamic,
+    matmul_weight_cpu,
+    matmul_quantized_cpu as matmul_quantized_gguf_cpu,
+)
 from ..gpu.matmul_gpu import matmul_gpu_dynamic
+from ..quantized.quant_types import QuantType
 from ..cpu.rms_norm_cpu import rms_norm_cpu_dynamic
 from ..gpu.rms_norm_gpu import rms_norm_gpu_dynamic
 from ..cpu.softmax_cpu import softmax_cpu_dynamic
@@ -310,6 +315,50 @@ def matmul_quantized_dispatch_gpu(
     if dtype == DType.float16:
         return _matmul_q_typed_gpu[DType.float16](inputs)
     unimplemented("matmul_quantized_gpu: unsupported dtype")
+    return List[AnyTensor]()
+
+
+# -- matmul_quantized_cpu dispatch (M7: GGUF block formats) -----------------
+#
+# The erased interface cannot carry the comptime `quant_type`, so each
+# registered entry is specialized at compile time: the dispatch function
+# below fixes `quant_type` = Q4_K_M (the GGUF workhorse format) and
+# `group_size` = 32 as comptime parameters.  Other formats are available
+# through the typed API `matmul_quantized_gguf_cpu[dtype, QuantType.X, gs]`
+# in `ops/cpu/matmul_cpu.mojo`.
+#
+# inputs: [a (dtype, 2), b_quant (uint8, 2), scale (dtype, 1)]
+
+
+def _matmul_qcpu_typed[
+    dtype: DType,
+    quant_type: QuantType,
+    group_size: Int,
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
+    var a = from_any[dtype, 2](inputs[0])
+    var b_quant = from_any[DType.uint8, 2](inputs[1])
+    var scale = from_any[dtype, 1](inputs[2])
+    var out = matmul_quantized_gguf_cpu[dtype, quant_type, group_size](
+        a, b_quant, scale
+    )
+    var results = List[AnyTensor]()
+    results.append(to_any[dtype, 2](out))
+    return results^
+
+
+def matmul_quantized_cpu_dispatch(
+    inputs: List[AnyTensor],
+) -> List[AnyTensor]:
+    var dtype = inputs[0].dtype
+    if dtype == DType.float32:
+        return _matmul_qcpu_typed[DType.float32, QuantType.Q4_K_M, 32](
+            inputs
+        )
+    if dtype == DType.float16:
+        return _matmul_qcpu_typed[DType.float16, QuantType.Q4_K_M, 32](
+            inputs
+        )
+    unimplemented("matmul_quantized_cpu: unsupported dtype")
     return List[AnyTensor]()
 
 
@@ -1164,6 +1213,20 @@ struct OpRegistry(Movable):
                 _stub_backward,
                 Device.MetalGPU,
                 10,
+            ),
+        )
+        # matmul_quantized_cpu (M7: GGUF block-format quantized matmul;
+        # quant_type/group_size are comptime-fixed per registration - see
+        # the dispatch section header)
+        self.register(
+            "matmul_quantized_cpu",
+            OpInfo(
+                "matmul_quantized_cpu",
+                matmul_quantized_cpu_dispatch,
+                _stub_fws,
+                _stub_backward,
+                Device.CPU,
+                0,
             ),
         )
         # rms_norm_quantized

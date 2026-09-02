@@ -16,6 +16,19 @@
 from ...tensor import Tensor, tensor_zeros
 from ...utils import unimplemented
 from ...thread_pool import parallel_run
+from ..quantized.dequantize import (
+    dequantize_q4_K_M,
+    dequantize_q5_K,
+    dequantize_q6_K,
+    dequantize_q8_0,
+    dequantize_iq4_xs,
+)
+from ..quantized.quant_types import (
+    QuantType,
+    block_bytes,
+    block_elems,
+    group_size as quant_group_size,
+)
 from std.utils.static_tuple import StaticTuple
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
@@ -659,3 +672,77 @@ def matmul_weight_cpu_backward[dtype: DType](
     result.append(grad_x)
     result.append(grad_w)
     return result^
+
+
+# -- M7: generic quantized matmul (comptime-specialized) ---------------------
+#
+# `matmul_quantized_cpu` is the comptime-parameterized entry point for
+# GGUF block-format weights.  `quant_type` selects the dequantizer at
+# compile time (the `comptime if` below keeps only the chosen branch, so
+# each instantiation is a dedicated kernel), the weight is dequantized into
+# a dense `dtype` tensor, and the result is fed to `matmul_weight_cpu` -
+# the existing weight-major kernel with FP32 accumulation (see the module
+# header), which matches the GGUF [out, in] layout directly.
+#
+# For the GGUF block formats the scales (and mins) are packed inside every
+# quantized block - that is the llama.cpp `ggml-quants.c` layout - so the
+# `scale` / `zero_point` arguments are ignored for the current formats;
+# they are part of the generic signature for future formats that keep
+# their scales in a separate tensor.
+#
+# `group_size` is the sub-block (scale group) size; pass 0 to accept the
+# format's built-in layout, or the canonical size from
+# `quant_group_size(quant_type)` to assert it.
+
+
+def matmul_quantized_cpu[
+    dtype: DType,
+    quant_type: QuantType,
+    group_size: Int,
+](
+    a: Tensor[dtype, 2],
+    b_quant: Tensor[DType.uint8, 2],
+    scale: Tensor[dtype, 1],
+    zero_point: Optional[Tensor[dtype, 1]] = None,
+) -> Tensor[dtype, 2]:
+    """Quantized weight-major matmul: `y[i, j] = sum_k a[i, k] * b[j, k]`.
+
+    `a` is the activation [M, K] (FP16/FP32); `b_quant` is the quantized
+    weight [N, *] in the raw block layout of `quant_type` (row-major
+    super-blocks, N rows of K elements each); the result is [M, N] in
+    `dtype`.  The dequantization is bit-exact with llama.cpp's
+    `ggml-quants.c` (validated by `tests/test_dequant_m7.mojo`), and the
+    matmul reuses `matmul_weight_cpu`'s FP32-accumulation kernels.
+    """
+    var K = a.shape()[1]
+    var N = b_quant.shape()[0]
+    var be = block_elems(quant_type)
+    var bb = block_bytes(quant_type)
+    if be == 0 or K % be != 0:
+        unimplemented("matmul_quantized_cpu: K not a multiple of block size")
+    if b_quant.numel() != N * (K // be) * bb:
+        unimplemented("matmul_quantized_cpu: b_quant byte size mismatch")
+    if group_size != 0 and group_size != quant_group_size(quant_type):
+        unimplemented("matmul_quantized_cpu: group_size mismatch for format")
+
+    var b_deq = tensor_zeros[dtype, 2](StaticTuple[Int, 2](N, K))
+    var b_ptr = b_quant.data()
+    comptime if quant_type == QuantType.Q4_K_M:
+        dequantize_q4_K_M[dtype](b_ptr, 0, b_deq, N * K)
+    elif quant_type == QuantType.Q8_0:
+        dequantize_q8_0[dtype](b_ptr, 0, b_deq, N * K)
+    elif quant_type == QuantType.Q6_K:
+        dequantize_q6_K[dtype](b_ptr, 0, b_deq, N * K)
+    elif quant_type == QuantType.Q5_K:
+        dequantize_q5_K[dtype](b_ptr, 0, b_deq, N * K)
+    elif quant_type == QuantType.IQ4_XS:
+        dequantize_iq4_xs[dtype](b_ptr, 0, b_deq, N * K)
+    elif quant_type == QuantType.Q2_K:
+        unimplemented("matmul_quantized_cpu: Q2_K dequantizer not implemented")
+        return tensor_zeros[dtype, 2](StaticTuple[Int, 2](0, 0))
+    else:
+        unimplemented("matmul_quantized_cpu: unknown quant type")
+        return tensor_zeros[dtype, 2](StaticTuple[Int, 2](0, 0))
+    _ = scale
+    _ = zero_point
+    return matmul_weight_cpu[dtype](a, b_deq)

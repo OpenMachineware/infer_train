@@ -20,6 +20,7 @@ tests/test_tokenizer
 tests/test_ops
 tests/test_sampler
 tests/test_forward
+tests/test_thread_pool
 reference_dump.log
 
 # M4 Python artifacts

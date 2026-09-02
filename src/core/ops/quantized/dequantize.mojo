@@ -470,3 +470,93 @@ def dequantize_q4_k_m_f32(
         _dequantize_q4_k_block(
             data.unsafe_offset(offset + b * 144), dst, b * QK_K
         )
+
+
+# -- per-format public entry points (comptime dispatch) ----------------------
+#
+# `dequantize_into` / `dequantize_into_f32` select the format at runtime
+# from the GGUF metadata.  The per-format entry points below exist so
+# comptime-specialized operators (e.g. `matmul_quantized_cpu` in
+# `ops/cpu/matmul_cpu.mojo`) can pick the dequantizer at compile time with
+# a `comptime if`.  Each is a thin wrapper over the same block kernels
+# above, so the decode logic stays bit-exact with llama.cpp.
+
+
+def dequantize_q4_K_M[
+    dtype: DType
+](
+    data: Pointer[UInt8, MutUntrackedOrigin],
+    offset: Int,
+    dst: Tensor[dtype, 2],
+    numel: Int,
+):
+    """Q4_K (Q4_K_M scheme) -> `dtype`; bit-exact with `dequantize_row_q4_K`."""
+    var nb = numel // QK_K
+    for b in range(nb):
+        _dequantize_q4_k_block(
+            data.unsafe_offset(offset + b * 144), dst, b * QK_K
+        )
+
+
+def dequantize_q5_K[
+    dtype: DType
+](
+    data: Pointer[UInt8, MutUntrackedOrigin],
+    offset: Int,
+    dst: Tensor[dtype, 2],
+    numel: Int,
+):
+    """Q5_K -> `dtype`; bit-exact with `dequantize_row_q5_K`."""
+    var nb = numel // QK_K
+    for b in range(nb):
+        _dequantize_q5_k_block(
+            data.unsafe_offset(offset + b * 176), dst, b * QK_K
+        )
+
+
+def dequantize_q6_K[
+    dtype: DType
+](
+    data: Pointer[UInt8, MutUntrackedOrigin],
+    offset: Int,
+    dst: Tensor[dtype, 2],
+    numel: Int,
+):
+    """Q6_K -> `dtype`; bit-exact with `dequantize_row_q6_K`."""
+    var nb = numel // QK_K
+    for b in range(nb):
+        _dequantize_q6_k_block(
+            data.unsafe_offset(offset + b * 210), dst, b * QK_K
+        )
+
+
+def dequantize_q8_0[
+    dtype: DType
+](
+    data: Pointer[UInt8, MutUntrackedOrigin],
+    offset: Int,
+    dst: Tensor[dtype, 2],
+    numel: Int,
+):
+    """Q8_0 -> `dtype`; bit-exact with `dequantize_row_q8_0`."""
+    var nb = numel // 32
+    for b in range(nb):
+        _dequantize_q8_0_block(
+            data.unsafe_offset(offset + b * 34), dst, b * 32
+        )
+
+
+def dequantize_iq4_xs[
+    dtype: DType
+](
+    data: Pointer[UInt8, MutUntrackedOrigin],
+    offset: Int,
+    dst: Tensor[dtype, 2],
+    numel: Int,
+):
+    """IQ4_XS -> `dtype`; bit-exact with `dequantize_row_iq4_xs`."""
+    var nb = numel // QK_K
+    for b in range(nb):
+        _dequantize_iq4_xs_block(
+            data.unsafe_offset(offset + b * 136), dst, b * QK_K
+        )

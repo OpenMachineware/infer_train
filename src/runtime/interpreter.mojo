@@ -12,6 +12,16 @@
 #     gate+up / threaded lm_head), so independent-nodes parallelism comes
 #     from inside the kernels (see thread_pool.mojo and the M5 report).
 #
+# M9 additions (CPU scheduling):
+#   * The interpreter now integrates the Mojo-native work-stealing pool
+#     (core/scheduler/thread_pool.mojo).  The critical part is the FFI fix:
+#     when the engine runs as a shared library loaded by Python/C, no Mojo
+#     main() initializes the async runtime, so every `parallelize` inside a
+#     kernel would silently run inline (the "only the main thread works"
+#     bug).  `run()` / `run_with_grad()` therefore call `ensure_runtime()`
+#     first - idempotent and cheap - so the kernel-level pools always have a
+#     live thread pool to dispatch onto.
+#
 # M6 additions:
 #   * entry nodes consume the external inputs positionally: a node with
 #     `n_inputs = k` in its attrs takes the next k external inputs,
@@ -31,6 +41,7 @@ from ..core.ops.base.op_autograd import (
 )
 from ..core.utils import unimplemented
 from ..core.jit.jit_cache import JitCache
+from ..core.scheduler.thread_pool import ensure_runtime, worker_count
 
 
 struct Interpreter(Movable):
@@ -103,13 +114,28 @@ struct Interpreter(Movable):
                     pass
         return node_inputs^
 
+    def pool_workers(self) -> Int:
+        """The CPU pool's worker count for this run (>= 1).
+
+        Exposed so hosts can observe how many threads the kernels'
+        `parallelize` calls will dispatch onto.  Implies the runtime is
+        initialized.
+        """
+        return worker_count()
+
     def run(mut self, inputs: List[AnyTensor]) -> List[AnyTensor]:
         """Execute the graph and return the last node's outputs.
 
         Device scheduling lives in `OpRegistry.get`: a node's `device_hint`
         wins when set, otherwise the default device is used, otherwise the
         registry falls back to the first (CPU) implementation.
+
+        The first thing we do is `ensure_runtime()`: when the engine is a
+        shared library driven by Python/C, no Mojo main() started the async
+        runtime, and without it every kernel-level `parallelize` would run
+        inline on the caller (the "only the main thread works" bug).
         """
+        ensure_runtime()
         var order = self.graph.topo_sort()
         var cursor = 0
         for node_id in order:
@@ -170,6 +196,7 @@ struct Interpreter(Movable):
         All saved tensors are views over the forward buffers, and every
         node's saved list is cleared after its backward call.
         """
+        ensure_runtime()
         var order = self._forward_with_saved(inputs)
 
         if loss_node < 0 or loss_node >= len(self.graph.nodes):

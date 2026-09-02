@@ -12,7 +12,7 @@ TP := python/infer_train/_lib/libinfer_train_tp.dylib
 TP_XLINK := -Xlinker $(TP)
 
 .PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 test-gpu test-gguf-split \
-        test-rpc package clean tp cli version rpc-server
+        test-rpc test-thread-pool package clean tp cli version rpc-server
 
 # The C runtime helper library (thread pool + mmap + clock).
 tp:
@@ -141,6 +141,13 @@ rpc-server: tp version
 # repo root; SKIPs when absent).
 test-rpc: cli rpc-server
 	bash tools/test_rpc.sh
+
+# M9: the Mojo-native work-stealing CPU thread pool (runtime init,
+# correctness, exactly-once, and all-threads-loaded checks).
+test-thread-pool: tp
+	$(MOJO) build -I . tests/test_thread_pool.mojo $(TP_XLINK) \
+		-o tests/test_thread_pool
+	./tests/test_thread_pool
 
 # Precompile the source tree into a distributable .mojopkg.  The package name
 # is taken from the `-o` filename: `infer_train`.  Depends on version because
