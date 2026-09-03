@@ -193,9 +193,14 @@ struct KVCache(Movable):
         return len(self.layers)
 
     def capacity(self) -> Int:
-        if len(self.layers) > 0:
-            return self.layers[0].max_len
-        return 0
+        # Hybrid (qwen35) recurrent layers hold no KV storage (max_len 0),
+        # so the usable context length is the max over all layers - not
+        # necessarily layer 0 (which is recurrent in qwen35).
+        var cap = 0
+        for i in range(len(self.layers)):
+            if self.layers[i].max_len > cap:
+                cap = self.layers[i].max_len
+        return cap
 
     def filled(self) -> Int:
         if len(self.layers) > 0:
