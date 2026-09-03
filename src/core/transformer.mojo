@@ -2,22 +2,28 @@
 #
 # Decoder-only transformer runtime (M3 -> M7).
 #
-# M3 scope: Qwen2 (architecture `qwen2`), typed single-token forward.
-# M7 adds two more architectures, selected from the GGUF metadata:
+# Architecture selection is prefix-based and config-driven:
 #
-#   ARCH_QWEN2    - qwen2/qwen2.5 family (the M3 path)
-#   ARCH_QWEN3    - qwen3: Qwen2 + per-head Q/K RMSNorm applied before RoPE
-#                   (metadata prefix `qwen3.`)
-#   ARCH_HUNYUAN  - hunyuan-dense (Hy-MT2): per-head Q/K RMSNorm applied
-#                   *after* RoPE, Llama3-style ffn_norm, tied embeddings
-#   ARCH_QWEN35   - qwen35 (Qwen3.8-27B hybrid): Gated DeltaNet linear
-#                   attention layers every 3 of 4 layers (causal conv1d +
-#                   SiLU + per-head L2 norm + decayed delta-rule
-#                   recurrence + gated output norm) interleaved with
-#                   full-attention layers (fused Q+gate, QK-norm, MRoPE
-#                   over n_rot dims, sigmoid gate); the MTP block is not
-#                   used (llama.cpp's default single-model decode samples
-#                   from the main lm_head too).
+#   * `_arch_from_gguf` maps `general.architecture` to a *family* tag:
+#     anything starting with `qwen` (qwen2 / qwen3 / qwen35 / qwen35moe /
+#     future variants) -> ARCH_QWEN, and `hunyuan-dense` -> ARCH_HUNYUAN.
+#   * `load_config` uses the raw arch string as the metadata prefix
+#     (`<arch>.*`), so every qwen* variant resolves its own keys with no
+#     per-arch branch.  The differentiated behavior is read into capability
+#     flags on `TransformerConfig`, never decided by an `arch == "..."`
+#     check:
+#       - has_ssm            <- full_attention_interval > 0 (hybrid Gated
+#                               DeltaNet recurrent layers interleaved with
+#                               full-attention layers; the MTP block is
+#                               dropped, matching llama.cpp's main decode)
+#       - is_moe / n_experts <- expert_count > 0 (MoE FFN: routed experts +
+#                               gated shared expert; experts dequantized on
+#                               demand per selected expert)
+#       - has_qk_norm        <- blk.L.attn_q_norm.weight present
+#       - has_gate           <- attn_q out-dim == 2 * n_heads * head_dim
+#                               (fused Q+gate, qwen35/35moe)
+#       - has_post_attn_norm <- blk.L.post_attention_norm.weight present
+#       - norm_before_rope   <- qwen family (hunyuan-dense normalizes after)
 #
 # The forward calls the registered kernel implementations directly (the
 # same entry points the OpRegistry dispatches to), which keeps the compute
@@ -46,7 +52,6 @@ from .ops.cpu.matmul_cpu import (
 from .ops.cpu.add_cpu import add_cpu_dynamic, add_row_cpu
 from .ops.cpu.swiglu_cpu import swiglu_cpu_dynamic
 from .ops.attention.mha import (
-    mha_forward,
     mha_forward_v2,
     MHAOptions,
     rms_norm_heads,
@@ -59,25 +64,33 @@ from std.memory.unsafe import bitcast
 comptime DEFAULT_KV_CACHE_LEN = 1024
 
 # -- architecture tags --------------------------------------------------------
+#
+# `arch` is the model *family* tag, selected from `general.architecture` by
+# prefix: anything starting with `qwen` (qwen2 / qwen3 / qwen35 / qwen35moe /
+# future variants) maps to the unified ARCH_QWEN path, and `hunyuan-dense`
+# maps to ARCH_HUNYUAN.  The family-specific *behavior* (per-head Q/K norm,
+# QK-norm-before-RoPE, fused Q+gate, hybrid SSM layers, MoE FFN) is NOT
+# encoded in the tag - it is read from the GGUF metadata / tensor layout into
+# the capability flags on `TransformerConfig` (see `load_config`), so a new
+# qwen* variant needs no new arch branch.
 
+comptime ARCH_QWEN = Int8(0)  # unified qwen family (qwen2/3/35/35moe/...)
+comptime ARCH_HUNYUAN = Int8(1)  # hunyuan-dense
+# Legacy aliases (kept so existing imports/tests still compile):
 comptime ARCH_QWEN2 = Int8(0)
-comptime ARCH_HUNYUAN = Int8(1)
-comptime ARCH_QWEN35 = Int8(2)
-comptime ARCH_QWEN3 = Int8(3)
+comptime ARCH_QWEN3 = Int8(0)
+comptime ARCH_QWEN35 = Int8(0)
 
 
 def arch_name(arch: Int8) -> String:
     if arch == ARCH_HUNYUAN:
         return String("hunyuan-dense")
-    if arch == ARCH_QWEN35:
-        return String("qwen35")
-    if arch == ARCH_QWEN3:
-        return String("qwen3")
-    return String("qwen2")
+    return String("qwen")
 
 
 struct TransformerConfig(Copyable, Movable, ImplicitlyCopyable):
-    var arch: Int8
+    var arch: Int8  # family tag: ARCH_QWEN or ARCH_HUNYUAN
+    var arch_str: String  # raw general.architecture (metadata prefix + name)
     var n_layers: Int
     var hidden: Int
     var ffn: Int
@@ -89,7 +102,18 @@ struct TransformerConfig(Copyable, Movable, ImplicitlyCopyable):
     var norm_eps: Float32
     var bos_id: Int
     var eos_id: Int
-    # qwen35 extras
+    # -- capability flags (config-driven; populated by load_config) ---------
+    var has_qk_norm: Bool  # per-head Q/K RMSNorm (qwen3/35/35moe, hunyuan)
+    var norm_before_rope: Bool  # qwen: QK-norm before RoPE; hunyuan: after
+    var has_gate: Bool  # fused Q+gate attention output (qwen35/35moe)
+    var has_post_attn_norm: Bool  # post_attention_norm before the FFN
+    var has_ssm: Bool  # hybrid recurrent (Gated DeltaNet) layers present
+    var is_moe: Bool  # MoE FFN (routed experts + gated shared expert)
+    var n_experts: Int  # routed expert count
+    var n_experts_used: Int  # top-k experts per token
+    var expert_ffn: Int  # per-expert intermediate size
+    var shared_ffn: Int  # shared-expert intermediate size
+    # -- SSM + MRoPE params (hybrid qwen35/35moe) ----------------------------
     var n_rot: Int  # MRoPE rotated dims (0 = whole head)
     var rope_sections: StaticTuple[Int, 4]
     var ssm_d_conv: Int
@@ -101,7 +125,8 @@ struct TransformerConfig(Copyable, Movable, ImplicitlyCopyable):
     var n_nextn: Int
 
     def __init__(out self):
-        self.arch = ARCH_QWEN2
+        self.arch = ARCH_QWEN
+        self.arch_str = String("qwen2")
         self.n_layers = 0
         self.hidden = 0
         self.ffn = 0
@@ -113,6 +138,16 @@ struct TransformerConfig(Copyable, Movable, ImplicitlyCopyable):
         self.norm_eps = Float32(1e-6)
         self.bos_id = 1
         self.eos_id = 2
+        self.has_qk_norm = False
+        self.norm_before_rope = True
+        self.has_gate = False
+        self.has_post_attn_norm = False
+        self.has_ssm = False
+        self.is_moe = False
+        self.n_experts = 0
+        self.n_experts_used = 0
+        self.expert_ffn = 0
+        self.shared_ffn = 0
         self.n_rot = 0
         self.rope_sections = StaticTuple[Int, 4](fill=0)
         self.ssm_d_conv = 0
@@ -120,13 +155,20 @@ struct TransformerConfig(Copyable, Movable, ImplicitlyCopyable):
         self.ssm_dt_rank = 0
         self.ssm_n_group = 0
         self.ssm_d_inner = 0
-        self.full_attn_interval = 4
+        self.full_attn_interval = 0
         self.n_nextn = 0
 
     def is_recurrent(self, layer: Int) -> Bool:
-        if self.arch != ARCH_QWEN35:
+        if not self.has_ssm:
             return False
         return (layer + 1) % self.full_attn_interval != 0
+
+    def first_attn_layer(self) -> Int:
+        # Index of the first full-attention layer (used to probe the
+        # attention-layer capability flags from the tensor layout).
+        if self.has_ssm:
+            return self.full_attn_interval - 1
+        return 0
 
 
 struct LayerWeights(Copyable, Movable, ImplicitlyCopyable):
@@ -156,6 +198,16 @@ struct LayerWeights(Copyable, Movable, ImplicitlyCopyable):
     var ssm_alpha: Tensor[DType.float16, 2]
     var ssm_norm: Tensor[DType.float16, 1]
     var ssm_out: Tensor[DType.float16, 2]
+    # MoE FFN (qwen35moe): the router + shared expert are dequantized and
+    # kept resident (small); the routed experts stay quantized (the 3D
+    # GGUFTensors below) and are dequantized per selected expert on demand.
+    var moe_router: Tensor[DType.float16, 2]  # [n_experts, hidden]
+    var moe_sh_gate: Tensor[DType.float16, 2]  # [shared_ffn, hidden]
+    var moe_sh_up: Tensor[DType.float16, 2]  # [shared_ffn, hidden]
+    var moe_sh_down: Tensor[DType.float16, 2]  # [hidden, shared_ffn]
+    var moe_sh_gate_in: Tensor[DType.float16, 1]  # [hidden] shared gate
+    var moe_gate_up_exps: GGUFTensor  # [hidden, 2*expert_ffn, n_experts]
+    var moe_down_exps: GGUFTensor  # [expert_ffn, hidden, n_experts]
 
     def __init__(out self):
         self.attn_norm_w = Tensor[DType.float16, 1](StaticTuple[Int, 1](0))
@@ -183,6 +235,13 @@ struct LayerWeights(Copyable, Movable, ImplicitlyCopyable):
         self.ssm_alpha = Tensor[DType.float16, 2](StaticTuple[Int, 2](0, 0))
         self.ssm_norm = Tensor[DType.float16, 1](StaticTuple[Int, 1](0))
         self.ssm_out = Tensor[DType.float16, 2](StaticTuple[Int, 2](0, 0))
+        self.moe_router = Tensor[DType.float16, 2](StaticTuple[Int, 2](0, 0))
+        self.moe_sh_gate = Tensor[DType.float16, 2](StaticTuple[Int, 2](0, 0))
+        self.moe_sh_up = Tensor[DType.float16, 2](StaticTuple[Int, 2](0, 0))
+        self.moe_sh_down = Tensor[DType.float16, 2](StaticTuple[Int, 2](0, 0))
+        self.moe_sh_gate_in = Tensor[DType.float16, 1](StaticTuple[Int, 1](0))
+        self.moe_gate_up_exps = GGUFTensor()
+        self.moe_down_exps = GGUFTensor()
 
 
 struct TransformerWeights(Movable):
@@ -272,8 +331,9 @@ struct TransformerModel(Movable):
                 self.cache.layers[l] = KVCacheLayer(
                     config.n_kv_heads, 0, config.head_dim
                 )
-        # qwen35: recurrent layers keep no KV cache and carry SSM state.
-        if config.arch == ARCH_QWEN35:
+        # hybrid (SSM) models: recurrent layers keep no KV cache and carry
+        # SSM state.
+        if config.has_ssm:
             for l in range(config.n_layers):
                 if (
                     config.is_recurrent(l)
@@ -339,19 +399,49 @@ struct TransformerModel(Movable):
                 lw.post_attn_norm_w = dequantize_vector(
                     self.ctx, post_norm.value()
                 )
-            lw.gate_w = dequantize_weight(
-                self.ctx,
-                find_tensor(self.ctx, base + ".ffn_gate.weight").value(),
-            )
-            lw.up_w = dequantize_weight(
-                self.ctx,
-                find_tensor(self.ctx, base + ".ffn_up.weight").value(),
-            )
-            lw.down_w = dequantize_weight(
-                self.ctx,
-                find_tensor(self.ctx, base + ".ffn_down.weight").value(),
-            )
-            if cfg.arch == ARCH_QWEN35 and cfg.is_recurrent(i):
+            if cfg.is_moe:
+                # MoE FFN: router + shared expert resident; routed experts
+                # stay quantized (dequantized per selected expert on demand).
+                lw.moe_router = dequantize_weight(
+                    self.ctx,
+                    find_tensor(self.ctx, base + ".ffn_gate_inp.weight").value(),
+                )
+                lw.moe_sh_gate = dequantize_weight(
+                    self.ctx,
+                    find_tensor(self.ctx, base + ".ffn_gate_shexp.weight").value(),
+                )
+                lw.moe_sh_up = dequantize_weight(
+                    self.ctx,
+                    find_tensor(self.ctx, base + ".ffn_up_shexp.weight").value(),
+                )
+                lw.moe_sh_down = dequantize_weight(
+                    self.ctx,
+                    find_tensor(self.ctx, base + ".ffn_down_shexp.weight").value(),
+                )
+                lw.moe_sh_gate_in = dequantize_vector(
+                    self.ctx,
+                    find_tensor(self.ctx, base + ".ffn_gate_inp_shexp.weight").value(),
+                )
+                lw.moe_gate_up_exps = find_tensor(
+                    self.ctx, base + ".ffn_gate_up_exps.weight"
+                ).value()
+                lw.moe_down_exps = find_tensor(
+                    self.ctx, base + ".ffn_down_exps.weight"
+                ).value()
+            else:
+                lw.gate_w = dequantize_weight(
+                    self.ctx,
+                    find_tensor(self.ctx, base + ".ffn_gate.weight").value(),
+                )
+                lw.up_w = dequantize_weight(
+                    self.ctx,
+                    find_tensor(self.ctx, base + ".ffn_up.weight").value(),
+                )
+                lw.down_w = dequantize_weight(
+                    self.ctx,
+                    find_tensor(self.ctx, base + ".ffn_down.weight").value(),
+                )
+            if cfg.is_recurrent(i):
                 lw.q_w = dequantize_weight(
                     self.ctx,
                     find_tensor(self.ctx, base + ".attn_qkv.weight").value(),
@@ -474,14 +564,8 @@ struct TransformerModel(Movable):
         for layer in range(self.shard_lo, self.shard_hi):
             if cfg.is_recurrent(layer):
                 x = self._layer_forward_ssm(layer, x)
-            elif cfg.arch == ARCH_HUNYUAN:
-                x = self._layer_forward_hunyuan(layer, x, position)
-            elif cfg.arch == ARCH_QWEN35:
-                x = self._layer_forward_q35_attn(layer, x, position)
-            elif cfg.arch == ARCH_QWEN3:
-                x = self._layer_forward_qwen3(layer, x, position)
             else:
-                x = self._layer_forward(layer, x, position)
+                x = self._layer_forward_attn(layer, x, position)
         return x
 
     # -- M8: layer-split (RPC) entry points -----------------------------------
@@ -523,102 +607,31 @@ struct TransformerModel(Movable):
         for layer in range(self.shard_lo, self.shard_hi):
             if cfg.is_recurrent(layer):
                 h = self._layer_forward_ssm(layer, h)
-            elif cfg.arch == ARCH_HUNYUAN:
-                h = self._layer_forward_hunyuan(layer, h, position)
-            elif cfg.arch == ARCH_QWEN35:
-                h = self._layer_forward_q35_attn(layer, h, position)
-            elif cfg.arch == ARCH_QWEN3:
-                h = self._layer_forward_qwen3(layer, h, position)
             else:
-                h = self._layer_forward(layer, h, position)
+                h = self._layer_forward_attn(layer, h, position)
         return h
 
-    def _layer_forward(
+    def _layer_forward_attn(
         mut self, layer: Int, x: Tensor[DType.float16, 2], position: Int
     ) -> Tensor[DType.float16, 2]:
-        """Qwen2 layer (the M3 path, unchanged)."""
-        var cfg = self.config
-        var lw = self.params.layers[layer]
-        var normed = rms_norm_weight[DType.float16](
-            x, lw.attn_norm_w, cfg.norm_eps
-        )
-        var attn = mha_forward[DType.float16](
-            normed, lw.q_w, lw.k_w, lw.v_w, lw.o_w, lw.q_b, lw.k_b, lw.v_b,
-            self.cache.layers[layer], position, cfg.n_heads, cfg.n_kv_heads,
-            cfg.head_dim, cfg.rope_theta,
-        )
-        var resid = add_cpu_dynamic[DType.float16](x, attn)
-        var normed2 = rms_norm_weight[DType.float16](
-            resid, lw.ffn_norm_w, cfg.norm_eps
-        )
-        return _ffn_swiglu(normed2, lw, resid, cfg.ffn)
+        """Unified full-attention layer.
 
-    def _layer_forward_qwen3(
-        mut self, layer: Int, x: Tensor[DType.float16, 2], position: Int
-    ) -> Tensor[DType.float16, 2]:
-        """qwen3 layer: Qwen2 + per-head Q/K RMSNorm before RoPE."""
+        The per-head Q/K norm, norm-before-RoPE, fused Q+gate, and MRoPE
+        behavior is driven by the config capability flags (has_qk_norm,
+        norm_before_rope, has_gate, n_rot) rather than the arch tag, so
+        qwen2 / qwen3 / hunyuan-dense / qwen35 / qwen35moe all share this
+        one path.  The FFN is MoE when cfg.is_moe, else dense SwiGLU.
+        """
         var cfg = self.config
         var lw = self.params.layers[layer]
         var normed = rms_norm_weight[DType.float16](
             x, lw.attn_norm_w, cfg.norm_eps
         )
         var opts = MHAOptions()
-        opts.q_norm = True
-        opts.k_norm = True
-        opts.norm_before_rope = True
-        opts.norm_eps = cfg.norm_eps
-        var attn = mha_forward_v2[DType.float16](
-            normed, lw.q_w, lw.k_w, lw.v_w, lw.o_w, lw.q_b, lw.k_b, lw.v_b,
-            lw.attn_q_norm, lw.attn_k_norm, self.cache.layers[layer],
-            position, cfg.n_heads, cfg.n_kv_heads, cfg.head_dim,
-            cfg.rope_theta, opts,
-        )
-        var resid = add_cpu_dynamic[DType.float16](x, attn)
-        var normed2 = rms_norm_weight[DType.float16](
-            resid, lw.ffn_norm_w, cfg.norm_eps
-        )
-        return _ffn_swiglu(normed2, lw, resid, cfg.ffn)
-
-    def _layer_forward_hunyuan(
-        mut self, layer: Int, x: Tensor[DType.float16, 2], position: Int
-    ) -> Tensor[DType.float16, 2]:
-        """hunyuan-dense layer: RoPE *before* per-head Q/K RMSNorm."""
-        var cfg = self.config
-        var lw = self.params.layers[layer]
-        var normed = rms_norm_weight[DType.float16](
-            x, lw.attn_norm_w, cfg.norm_eps
-        )
-        var opts = MHAOptions()
-        opts.q_norm = True
-        opts.k_norm = True
-        opts.norm_before_rope = False
-        opts.norm_eps = cfg.norm_eps
-        var attn = mha_forward_v2[DType.float16](
-            normed, lw.q_w, lw.k_w, lw.v_w, lw.o_w, lw.q_b, lw.k_b, lw.v_b,
-            lw.attn_q_norm, lw.attn_k_norm, self.cache.layers[layer],
-            position, cfg.n_heads, cfg.n_kv_heads, cfg.head_dim,
-            cfg.rope_theta, opts,
-        )
-        var resid = add_cpu_dynamic[DType.float16](x, attn)
-        var normed2 = rms_norm_weight[DType.float16](
-            resid, lw.ffn_norm_w, cfg.norm_eps
-        )
-        return _ffn_swiglu(normed2, lw, resid, cfg.ffn)
-
-    def _layer_forward_q35_attn(
-        mut self, layer: Int, x: Tensor[DType.float16, 2], position: Int
-    ) -> Tensor[DType.float16, 2]:
-        """qwen35 full-attention layer (QK-norm + MRoPE + sigmoid gate)."""
-        var cfg = self.config
-        var lw = self.params.layers[layer]
-        var normed = rms_norm_weight[DType.float16](
-            x, lw.attn_norm_w, cfg.norm_eps
-        )
-        var opts = MHAOptions()
-        opts.q_norm = True
-        opts.k_norm = True
-        opts.norm_before_rope = True
-        opts.gate = True
+        opts.q_norm = cfg.has_qk_norm
+        opts.k_norm = cfg.has_qk_norm
+        opts.norm_before_rope = cfg.norm_before_rope
+        opts.gate = cfg.has_gate
         opts.n_rot = cfg.n_rot
         opts.norm_eps = cfg.norm_eps
         var attn = mha_forward_v2[DType.float16](
@@ -628,9 +641,18 @@ struct TransformerModel(Movable):
             cfg.rope_theta, opts,
         )
         var resid = add_cpu_dynamic[DType.float16](x, attn)
+        # FFN norm: post_attention_norm (hybrid qwen35/35moe) or ffn_norm
+        # (dense qwen2/3 + hunyuan).
+        var norm_w: Tensor[DType.float16, 1]
+        if cfg.has_post_attn_norm:
+            norm_w = lw.post_attn_norm_w
+        else:
+            norm_w = lw.ffn_norm_w
         var normed2 = rms_norm_weight[DType.float16](
-            resid, lw.post_attn_norm_w, cfg.norm_eps
+            resid, norm_w, cfg.norm_eps
         )
+        if cfg.is_moe:
+            return self._ffn_moe(layer, normed2, resid)
         return _ffn_swiglu(normed2, lw, resid, cfg.ffn)
 
     def _layer_forward_ssm(
@@ -641,7 +663,7 @@ struct TransformerModel(Movable):
         attn_norm -> wqkv/z/alpha/beta projections -> causal conv1d (SiLU)
         -> q/k L2 norm -> decayed delta-rule recurrence per value head ->
         RMSNorm(o, ssm_norm) * silu(z) -> ssm_out -> residual ->
-        post_attention_norm -> SwiGLU FFN -> residual.
+        post_attention_norm -> (MoE | SwiGLU) FFN -> residual.
         """
         var cfg = self.config
         var lw = self.params.layers[layer]
@@ -805,7 +827,143 @@ struct TransformerModel(Movable):
         var normed2 = rms_norm_weight[DType.float16](
             resid, lw.post_attn_norm_w, cfg.norm_eps
         )
+        if cfg.is_moe:
+            return self._ffn_moe(layer, normed2, resid)
         return _ffn_swiglu(normed2, lw, resid, cfg.ffn)
+
+    # -- MoE FFN (qwen35moe) -------------------------------------------------
+
+    def _ffn_moe(
+        mut self,
+        layer: Int,
+        normed: Tensor[DType.float16, 2],
+        resid: Tensor[DType.float16, 2],
+    ) -> Tensor[DType.float16, 2]:
+        """MoE FFN: router -> softmax -> top-k (renormalized) -> on-demand
+        dequantized expert SwiGLU (weighted sum) + gated shared expert.
+
+        Mirrors llama.cpp's `build_moe_ffn` (SOFTMAX gating, norm_w=true)
+        plus the qwen35moe shared-expert path.  The routed experts stay
+        quantized; only the `n_experts_used` selected per token are
+        dequantized (the full 3D expert stack would not fit in RAM).
+        """
+        var cfg = self.config
+        var lw = self.params.layers[layer]
+        var hidden = cfg.hidden
+        var expert_ffn = cfg.expert_ffn
+        var n_experts = cfg.n_experts
+        var top_k = cfg.n_experts_used
+        if top_k <= 0:
+            top_k = 1
+
+        # 1. Router logits [1, n_experts].
+        var logits = matmul_weight_cpu_threaded[DType.float16](
+            normed, lw.moe_router
+        )
+        # 2. Softmax over all experts (numerically stable).
+        var mx = Float32(-3.0e38)
+        for i in range(n_experts):
+            var v = Float32(logits.get(i))
+            if v > mx:
+                mx = v
+        var s = Float32(0)
+        var exps = List[Float32]()
+        for i in range(n_experts):
+            var e = exp(Float32(logits.get(i)) - mx)
+            exps.append(e)
+            s += e
+        # 3. Select the top-k experts; renormalize their softmax weights to
+        #    sum to 1 (llama.cpp build_moe_ffn: norm_w=true).
+        var used = List[Bool]()
+        for i in range(n_experts):
+            used.append(False)
+        var idx = List[Int]()
+        var raw = List[Float32]()
+        var wsum = Float32(0)
+        for t in range(top_k):
+            var best = 0
+            var bestv = Float32(-1.0)
+            for i in range(n_experts):
+                if not used[i]:
+                    var p = exps[i] / s
+                    if p > bestv:
+                        bestv = p
+                        best = i
+            used[best] = True
+            idx.append(best)
+            raw.append(bestv)
+            wsum += bestv
+        var wts = List[Float32]()
+        for t in range(top_k):
+            wts.append(raw[t] / wsum)
+
+        # 4. Routed experts (on-demand dequant) + weighted sum.
+        var out = tensor_zeros[DType.float16, 2](
+            StaticTuple[Int, 2](1, hidden)
+        )
+        for t in range(top_k):
+            var e = idx[t]
+            var gate_up = self._dequant_expert_gate_up(layer, e)
+            var gate = _row_view(gate_up, 0, expert_ffn, hidden)
+            var up = _row_view(gate_up, expert_ffn, expert_ffn, hidden)
+            var g = matmul_weight_cpu_threaded[DType.float16](normed, gate)
+            var u = matmul_weight_cpu_threaded[DType.float16](normed, up)
+            var h = swiglu_cpu_dynamic[DType.float16](g, u)
+            var down = self._dequant_expert_down(layer, e)
+            var eo = matmul_weight_cpu_threaded[DType.float16](h, down)
+            _axpy_scale(out, eo, wts[t])
+
+        # 4. Shared expert (resident) + sigmoid gate.
+        var sg = matmul_weight_cpu_threaded[DType.float16](
+            normed, lw.moe_sh_gate
+        )
+        var su = matmul_weight_cpu_threaded[DType.float16](
+            normed, lw.moe_sh_up
+        )
+        var sh = swiglu_cpu_dynamic[DType.float16](sg, su)
+        var so = matmul_weight_cpu_threaded[DType.float16](sh, lw.moe_sh_down)
+        var gate_scalar = _sigmoid_f32(_dot1(lw.moe_sh_gate_in, normed))
+        _axpy_scale(out, so, gate_scalar)
+
+        return add_cpu_dynamic[DType.float16](resid, out)
+
+    def _dequant_expert_gate_up(
+        mut self, layer: Int, e: Int
+    ) -> Tensor[DType.float16, 2]:
+        """Dequantize expert `e`'s fused gate_up [2*expert_ffn, hidden].
+
+        The 3D GGUF tensor is [hidden, 2*expert_ffn, n_experts] (ggml order,
+        innermost first); expert `e`'s slice is [hidden, 2*expert_ffn] and
+        starts at a super-block boundary, so a single `dequantize_into` over
+        the slice's byte range yields the [2*expert_ffn, hidden] weight.
+        """
+        var cfg = self.config
+        var t = self.params.layers[layer].moe_gate_up_exps
+        var (base, off) = self.ctx.tensor_data(t)
+        var slice_numel = cfg.hidden * (2 * cfg.expert_ffn)
+        var (elems, bytes) = _ggml_block(t.ggml_type)
+        var byte_off = off + (e * slice_numel // elems) * bytes
+        var out = tensor_zeros[DType.float16, 2](
+            StaticTuple[Int, 2](2 * cfg.expert_ffn, cfg.hidden)
+        )
+        dequantize_into(t.ggml_type, base, byte_off, out, slice_numel)
+        return out
+
+    def _dequant_expert_down(
+        mut self, layer: Int, e: Int
+    ) -> Tensor[DType.float16, 2]:
+        """Dequantize expert `e`'s down projection [hidden, expert_ffn]."""
+        var cfg = self.config
+        var t = self.params.layers[layer].moe_down_exps
+        var (base, off) = self.ctx.tensor_data(t)
+        var slice_numel = cfg.expert_ffn * cfg.hidden
+        var (elems, bytes) = _ggml_block(t.ggml_type)
+        var byte_off = off + (e * slice_numel // elems) * bytes
+        var out = tensor_zeros[DType.float16, 2](
+            StaticTuple[Int, 2](cfg.hidden, cfg.expert_ffn)
+        )
+        dequantize_into(t.ggml_type, base, byte_off, out, slice_numel)
+        return out
 
 
 # -- shared helpers ----------------------------------------------------------
@@ -823,6 +981,69 @@ def _ffn_swiglu(
     var h = swiglu_cpu_dynamic[DType.float16](g, u)
     var d = matmul_weight_cpu_threaded[DType.float16](h, lw.down_w)
     return add_cpu_dynamic[DType.float16](resid, d)
+
+
+# -- MoE helpers -------------------------------------------------------------
+
+
+def _ggml_block(ggml_type: Int) -> Tuple[Int, Int]:
+    """(elems_per_block, bytes_per_block) for a GGUF quant type (runtime).
+
+    Block sizes mirror llama.cpp's `ggml-quants.c`; used to map an element
+    index to a byte offset when dequantizing a slice of a 3D expert tensor.
+    """
+    if ggml_type == 13:  # Q5_K
+        return (256, 176)
+    if ggml_type == 14:  # Q6_K
+        return (256, 210)
+    if ggml_type == 12:  # Q4_K
+        return (256, 144)
+    if ggml_type == 8:  # Q8_0
+        return (32, 34)
+    if ggml_type == 20:  # IQ4_NL
+        return (32, 18)
+    if ggml_type == 23:  # IQ4_XS
+        return (256, 136)
+    if ggml_type == 30:  # NF4
+        return (64, 34)
+    if ggml_type == 1:  # F16
+        return (1, 2)
+    if ggml_type == 0:  # F32
+        return (1, 4)
+    return (1, 1)
+
+
+def _row_view(
+    x: Tensor[DType.float16, 2], row_start: Int, rows: Int, cols: Int
+) -> Tensor[DType.float16, 2]:
+    """Zero-copy view of `rows` rows of `x` starting at `row_start`."""
+    var ptr = x.data().unsafe_offset(row_start * cols)
+    return Tensor[DType.float16, 2](
+        StaticTuple[Int, 2](rows, cols), ptr, x.device()
+    )
+
+
+def _axpy_scale(
+    dst: Tensor[DType.float16, 2], x: Tensor[DType.float16, 2], scale: Float32
+):
+    """dst += scale * x (in place, flat indexing)."""
+    var n = dst.numel()
+    for i in range(n):
+        dst.set(
+            i,
+            Scalar[DType.float16](
+                Float32(dst.get(i)) + scale * Float32(x.get(i))
+            ),
+        )
+
+
+def _dot1(w: Tensor[DType.float16, 1], x: Tensor[DType.float16, 2]) -> Float32:
+    """Dot product of a rank-1 weight with the first row of `x`."""
+    var n = w.shape()[0]
+    var acc = Float32(0)
+    for i in range(n):
+        acc += Float32(w.get(i)) * Float32(x.get(i))
+    return acc
 
 
 def _sigmoid_f32(x: Float32) -> Float32:
@@ -958,27 +1179,39 @@ def dequantize_vector_opt(
 
 
 def _arch_from_gguf(ctx: GGUFContext) -> Int8:
+    """Map `general.architecture` to a family tag by prefix.
+
+    Any `qwen*` variant (qwen2 / qwen3 / qwen35 / qwen35moe / future) maps
+    to the unified ARCH_QWEN path; `hunyuan-dense` maps to ARCH_HUNYUAN.
+    The per-model behavior differences are NOT decided here - they are read
+    from the metadata / tensor layout into the config capability flags in
+    `load_config`, so a new qwen* variant needs no change to this function.
+    """
     var arch = get_meta_str(ctx, "general.architecture", String("qwen2"))
     if arch == "hunyuan-dense":
         return ARCH_HUNYUAN
-    if arch == "qwen35":
-        return ARCH_QWEN35
-    if arch == "qwen3":
-        return ARCH_QWEN3
-    return ARCH_QWEN2
+    if arch.startswith("qwen"):
+        return ARCH_QWEN
+    # Unknown architecture: fall back to the unified Qwen path (the
+    # prefix-based metadata read below still uses the real arch string).
+    return ARCH_QWEN
 
 
 def load_config(ctx: GGUFContext) -> TransformerConfig:
-    """Extract the architecture config from GGUF metadata."""
+    """Extract the architecture config from GGUF metadata.
+
+    The metadata prefix is the raw `general.architecture` string, so any
+    qwen* variant (qwen2 / qwen3 / qwen35 / qwen35moe / ...) resolves its
+    own `<arch>.*` keys without a per-arch branch.  The differentiated
+    behavior (hybrid SSM layers, MoE FFN, per-head Q/K norm, fused Q+gate,
+    post-attention norm) is decided by reading the corresponding metadata
+    keys and probing the tensor layout - never by an `arch == "..."` check.
+    """
     var config = TransformerConfig()
+    var arch_str = get_meta_str(ctx, "general.architecture", String("qwen2"))
+    config.arch_str = arch_str
     config.arch = _arch_from_gguf(ctx)
-    var prefix = "qwen2."
-    if config.arch == ARCH_QWEN3:
-        prefix = "qwen3."
-    elif config.arch == ARCH_HUNYUAN:
-        prefix = "hunyuan-dense."
-    elif config.arch == ARCH_QWEN35:
-        prefix = "qwen35."
+    var prefix = arch_str + "."
     config.n_layers = get_meta_uint(ctx, prefix + "block_count", 0)
     config.hidden = get_meta_uint(ctx, prefix + "embedding_length", 0)
     config.ffn = get_meta_uint(ctx, prefix + "feed_forward_length", 0)
@@ -996,7 +1229,13 @@ def load_config(ctx: GGUFContext) -> TransformerConfig:
     )
     config.bos_id = get_meta_uint(ctx, "tokenizer.ggml.bos_token_id", 1)
     config.eos_id = get_meta_uint(ctx, "tokenizer.ggml.eos_token_id", 2)
-    if config.arch == ARCH_QWEN35:
+
+    # -- hybrid SSM (recurrent) layers: present iff full_attention_interval > 0
+    config.full_attn_interval = get_meta_uint(
+        ctx, prefix + "full_attention_interval", 0
+    )
+    config.has_ssm = config.full_attn_interval > 0
+    if config.has_ssm:
         config.ssm_d_conv = get_meta_uint(ctx, prefix + "ssm.conv_kernel", 4)
         config.ssm_d_state = get_meta_uint(ctx, prefix + "ssm.state_size", 0)
         config.ssm_dt_rank = get_meta_uint(
@@ -1004,10 +1243,6 @@ def load_config(ctx: GGUFContext) -> TransformerConfig:
         )
         config.ssm_n_group = get_meta_uint(ctx, prefix + "ssm.group_count", 0)
         config.ssm_d_inner = get_meta_uint(ctx, prefix + "ssm.inner_size", 0)
-        config.full_attn_interval = get_meta_uint(
-            ctx, prefix + "full_attention_interval", 4
-        )
-        config.n_nextn = get_meta_uint(ctx, prefix + "nextn_predict_layers", 0)
         config.n_rot = get_meta_uint(ctx, prefix + "rope.dimension_count", 0)
         var sec = _read_meta_int_array(
             ctx, prefix + "rope.dimension_sections"
@@ -1015,19 +1250,56 @@ def load_config(ctx: GGUFContext) -> TransformerConfig:
         for i in range(4):
             if i < len(sec):
                 config.rope_sections[i] = sec[i]
-        # the MTP block is part of block_count; drop it (main layers only)
-        config.n_layers = config.n_layers - config.n_nextn
+
+    # -- MoE FFN: present iff expert_count > 0
+    config.n_experts = get_meta_uint(ctx, prefix + "expert_count", 0)
+    config.is_moe = config.n_experts > 0
+    if config.is_moe:
+        config.n_experts_used = get_meta_uint(
+            ctx, prefix + "expert_used_count", 0
+        )
+        config.expert_ffn = get_meta_uint(
+            ctx, prefix + "expert_feed_forward_length", 0
+        )
+        config.shared_ffn = get_meta_uint(
+            ctx, prefix + "expert_shared_feed_forward_length", 0
+        )
+        # MoE models may omit the dense feed_forward_length; the FFN width is
+        # the per-expert intermediate size.
+        if config.ffn == 0:
+            config.ffn = config.expert_ffn
+
+    # The MTP block is part of block_count; drop it (main layers only).
+    config.n_nextn = get_meta_uint(ctx, prefix + "nextn_predict_layers", 0)
+    config.n_layers = config.n_layers - config.n_nextn
+
     # Vocab size is the second dim of the embedding matrix.
     var embedding = find_tensor(ctx, "token_embd.weight")
     if embedding:
         config.vocab = embedding.value().dims[1]
-    # head_dim: qwen35/hunyuan-dense store the per-head key length in the
-    # metadata (hidden/n_heads is not integral for qwen35: 5120/24).
+    # head_dim: prefer the metadata key_length (hidden/n_heads is not
+    # integral for some variants, e.g. qwen35 5120/24).
     var key_len = get_meta_uint(ctx, prefix + "attention.key_length", 0)
     if key_len > 0:
         config.head_dim = key_len
     elif config.n_heads > 0:
         config.head_dim = config.hidden // config.n_heads
+
+    # -- attention-layer capabilities, probed from the first attn block ------
+    var base = "blk." + String(config.first_attn_layer())
+    config.has_qk_norm = find_tensor(
+        ctx, base + ".attn_q_norm.weight"
+    ) != None
+    var q_t = find_tensor(ctx, base + ".attn_q.weight")
+    if q_t:
+        # Fused Q+gate: the q projection outputs 2 * (n_heads * head_dim).
+        var q_out = q_t.value().dims[1]
+        config.has_gate = q_out == 2 * config.n_heads * config.head_dim
+    config.has_post_attn_norm = find_tensor(
+        ctx, base + ".post_attention_norm.weight"
+    ) != None
+    # Qwen normalizes Q/K before RoPE; hunyuan-dense after.
+    config.norm_before_rope = config.arch == ARCH_QWEN
     return config
 
 

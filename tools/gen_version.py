@@ -14,7 +14,6 @@ every build that compiles an entry:
     make server          # it-server binary (depends on `make version`)
     make cli             # it-cli binary (depends on `make version`)
     make rpc-server      # it-rpc-server binary (depends on `make version`)
-    make package         # make target (depends on `make version`)
 
 Run it manually any time the version in pixi.toml changes.
 """
