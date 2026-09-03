@@ -1,8 +1,8 @@
 # core/rpc/client.mojo
 #
 # M8: the master-side RPC client.  One `RpcClient` is one connection to one
-# worker (`infer_train_rpc_server` process); the CLI keeps a list of them
-# and chains them per token for the `-sm layer` split.
+# worker (`it-rpc-server` process); the master (it-cli) keeps a list of
+# them and chains them per token for the `-sm layer` split.
 #
 # Protocol (see net.mojo for the framing):
 #   INIT    [lo:i32][hi:i32][ctx_len:i32]

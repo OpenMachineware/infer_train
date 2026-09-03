@@ -45,12 +45,15 @@ struct Model(Movable):
         self.graph = graph^
 
 
-def load_model(path: String) raises -> Model:
+def load_model(
+    path: String, ctx_len: Int = DEFAULT_KV_CACHE_LEN
+) raises -> Model:
     """Load a GGUF, dequantize weights, build the transformer + tokenizer.
 
     Everything the engine needs (architecture dims, vocab, BPE merges,
     bos/eos ids) comes from the GGUF metadata; no sidecar config.json /
-    tokenizer.json is read.
+    tokenizer.json is read.  `ctx_len` sizes the KV cache (the CLI's
+    -c/--ctx-size; the C-API keeps the default).
     """
     var ctx = load_gguf(path)
     # head_dim comes from load_config: the metadata `attention.key_length`
@@ -59,7 +62,7 @@ def load_model(path: String) raises -> Model:
     var config = load_config(ctx)
 
     var weights = collect_weights(ctx)
-    var model = TransformerModel(config, ctx^, DEFAULT_KV_CACHE_LEN)
+    var model = TransformerModel(config, ctx^, ctx_len)
     model.weights = weights^
 
     # M7: auto-select the tokenizer flavor from the GGUF metadata
@@ -68,8 +71,15 @@ def load_model(path: String) raises -> Model:
     var tokenizer = make_tokenizer(model.ctx, String(""))
 
     var graph = build_graph(model)
+    # NOTE: the registry is left unregistered on purpose.  Referencing the
+    # GPU dispatch functions (register_default_ops) makes the in-process
+    # Metal compiler fail ("Metal Compiler failed to compile metallib") in
+    # *executable* builds - a Mojo 1.0 toolchain bug (shared-library builds
+    # are unaffected).  The typed-forward path (transformer.forward, used
+    # by it-cli / it-server / the C-API generate) never touches the
+    # registry; every Interpreter consumer (training, the M2-M5 tests)
+    # builds its own OpRegistry and calls register_default_ops itself.
     var registry = OpRegistry()
-    registry.register_default_ops()
     return Model(model^, tokenizer^, registry^, graph^)
 
 

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # M8: multi-process RPC test (llama.cpp-style -sm layer --rpc).
 #
-# Starts two infer_train_rpc_server workers on localhost, runs the same
-# greedy generation (--temp 0 --top-k 1) once locally and once across the
-# two workers, and requires the outputs to match exactly.  The fp16 hidden
-# state crosses the wire losslessly and every layer runs the same kernel
-# code, so a distributed run is numerically identical to the local one.
+# Starts two it-rpc-server workers on localhost, runs the same greedy
+# generation (--temp 0 --top-k 1) once locally and once across the two
+# workers (master: it-cli), and requires the outputs to match exactly.
+# The fp16 hidden state crosses the wire losslessly and every layer runs
+# the same kernel code, so a distributed run is numerically identical to
+# the local one.
 #
 # Usage: make test-rpc   (or: bash tools/test_rpc.sh)
 # Env:   RPC_TEST_MODEL (default: the 1.5B GGUF at the repo root),
@@ -25,9 +26,9 @@ P2="${RPC_PORT2:-50053}"
 L1="$(mktemp /tmp/infer_train_rpc1.XXXXXX.log)"
 L2="$(mktemp /tmp/infer_train_rpc2.XXXXXX.log)"
 
-./infer_train_rpc_server -m "$MODEL" --port "$P1" >"$L1" 2>&1 &
+./it-rpc-server -m "$MODEL" --port "$P1" >"$L1" 2>&1 &
 S1=$!
-./infer_train_rpc_server -m "$MODEL" --port "$P2" >"$L2" 2>&1 &
+./it-rpc-server -m "$MODEL" --port "$P2" >"$L2" 2>&1 &
 S2=$!
 trap 'kill $S1 $S2 2>/dev/null || true; rm -f "$L1" "$L2"' EXIT
 
@@ -47,7 +48,7 @@ N=16
 # gen <extra args...> -> the generated text (everything after the
 # "tokenizer:" header line, which differs between local and rpc runs).
 gen() {
-    ./infer_train -m "$MODEL" -p "$PROMPT" -n "$N" --seed 7 --temp 0 --top-k 1 \
+    ./it-cli -m "$MODEL" -p "$PROMPT" -n "$N" --seed 7 --temp 0 --top-k 1 \
         "$@" 2>/dev/null | sed -n '/tokenizer: /,$p' | tail -n +2
 }
 

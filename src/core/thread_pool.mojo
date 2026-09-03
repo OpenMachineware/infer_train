@@ -90,6 +90,13 @@ def num_pcores() -> Int:
     return Int(n)
 
 
+def now_ns() -> Int:
+    """Wall-clock nanoseconds (C tp_now_ns; monotonic on macOS)."""
+    _load_tp_library()
+    var t = external_call["tp_now_ns", Int64]()
+    return Int(t)
+
+
 def parallel_run(
     symbol: String,
     ctx: Pointer[UInt8, MutUntrackedOrigin],

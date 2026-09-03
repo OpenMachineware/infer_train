@@ -12,14 +12,16 @@ TP := python/infer_train/_lib/libinfer_train_tp.dylib
 TP_XLINK := -Xlinker $(TP)
 
 .PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 test-gpu test-gguf-split \
-        test-rpc test-thread-pool package clean tp cli version rpc-server
+        test-rpc test-thread-pool package clean tp server cli rpc-server \
+        infer_train version
 
 # The C runtime helper library (thread pool + mmap + clock).
 tp:
 	cc -O2 -shared -o $(TP) tools/thread_pool.c
 
 # Generate src/version.mojo from the `version` field of pixi.toml.  Every
-# build that compiles the CLI (cli, package) depends on this.
+# build that compiles an entry (server, cli, rpc-server, infer_train,
+# package) depends on this.
 version:
 	pixi run python tools/gen_version.py
 
@@ -130,14 +132,26 @@ test-m6: test-m6-mojo test-m6-python
 # M7: everything (regression suites + the M7 feature suites).
 test-m7: test test-m3 test-m5-mojo test-m6-mojo test-m7-mojo test-m7-python
 
-# The M7 CLI binary.
-cli: tp version
-	$(MOJO) build -I . src/core/cli/infer_train_cli.mojo $(TP_XLINK) -o infer_train
+# M10: the it-server binary (llama-server-compatible HTTP service; the
+# renamed M7 CLI - its generation role moved to it-cli, its RPC worker to
+# it-rpc-server).  Shared code: src/core/cli_common + src/core/http.
+server: tp version
+	$(MOJO) build -I . src/core/server-cli/it_server.mojo $(TP_XLINK) -o it-server
 
-# M8: the RPC worker binary (llama.cpp-style `llama-rpc-server`).
+# M10: the it-cli binary (llama-cli-compatible quick-verification CLI).
+cli: tp version
+	$(MOJO) build -I . src/core/cli/it_cli.mojo $(TP_XLINK) -o it-cli
+
+# M8: the it-rpc-server worker binary (llama.cpp-style `llama-rpc-server`),
+# split out of the main CLI in M10.
 rpc-server: tp version
-	$(MOJO) build -I . src/core/cli/infer_train_rpc_server.mojo $(TP_XLINK) \
-		-o infer_train_rpc_server
+	$(MOJO) build -I . src/core/server-cli/it_rpc_server.mojo $(TP_XLINK) \
+		-o it-rpc-server
+
+# Legacy alias: the old `infer_train` binary name now builds the it-server
+# entry (same code, different output name).
+infer_train: tp version
+	$(MOJO) build -I . src/core/server-cli/it_server.mojo $(TP_XLINK) -o infer_train
 
 # M8: multi-process RPC test - two localhost workers, -sm layer, output
 # must match the single-process run exactly (needs the 1.5B GGUF at the
@@ -164,7 +178,7 @@ package: version
 # `pip install -e python/`), and all test executables (tests/test_* without
 # the .mojo source extension).
 clean:
-	rm -f infer_train.mojopkg infer_train infer_train_rpc_server
+	rm -f infer_train.mojopkg it-server it-cli it-rpc-server infer_train
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib
 	rm -f src/version.mojo

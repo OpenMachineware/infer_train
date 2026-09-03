@@ -163,6 +163,15 @@ struct JsonParser:
         self.pos += 1
         return byte
 
+    # Public peek/advance for external streaming consumers (the it-server
+    # request-body parser in core/http walks object keys with them).
+
+    def peek(self) -> UInt8:
+        return self._peek()
+
+    def advance(mut self) -> UInt8:
+        return self._advance()
+
     def _skip_ws(mut self):
         while self.pos < self.size:
             var b = self._peek()

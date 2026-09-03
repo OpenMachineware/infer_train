@@ -5,13 +5,15 @@ The generated module exposes a single comptime constant::
 
     comptime VERSION: String = "0.2.1"
 
-which the CLI (``src/core/cli/infer_train_cli.mojo``) uses for
-``--version`` / ``-V``.  It is regenerated automatically before every
-build that compiles the CLI:
+which the entry points (``src/core/server-cli/it_server.mojo``,
+``src/core/cli/it_cli.mojo``, ``src/core/server-cli/it_rpc_server.mojo``)
+use for ``--version`` / ``-V``.  It is regenerated automatically before
+every build that compiles an entry:
 
     pixi run version     # pixi task
-    pixi run build       # version + CLI binary
-    make cli             # make target (depends on `make version`)
+    make server          # it-server binary (depends on `make version`)
+    make cli             # it-cli binary (depends on `make version`)
+    make rpc-server      # it-rpc-server binary (depends on `make version`)
     make package         # make target (depends on `make version`)
 
 Run it manually any time the version in pixi.toml changes.

@@ -1,25 +1,24 @@
-# core/cli/infer_train_rpc_server.mojo
+# core/server-cli/it_rpc_server.mojo
 #
-# M8: the RPC worker (the llama.cpp-style `llama-rpc-server`).
+# M8: the RPC worker (the llama.cpp-style `llama-rpc-server`), split out
+# of the main CLI as its own binary in M10.
 #
 # A standalone worker process that serves one master connection over TCP.
 # Like llama.cpp's rpc server it is a *device* process - but instead of a
 # bare device it loads the model itself (mmap'ing the same GGUF file the
 # master uses) and, at INIT, takes ownership of a contiguous layer range
 # [lo, hi) plus the KV/SSM state of those layers.  The master (the
-# `infer_train -sm layer --rpc ...` CLI) then chains the workers per token.
+# `it-cli -sm layer --rpc ...` CLI) then chains the workers per token.
 #
 # Protocol (see core/rpc/net.mojo): INIT -> FORWARD* -> RESET/PING, one
 # framed request/response at a time.
 #
 # Build:
-#   pixi run mojo build -I . src/core/cli/infer_train_rpc_server.mojo \
-#       -Xlinker python/infer_train/_lib/libinfer_train_tp.dylib \
-#       -o infer_train_rpc_server
+#   make rpc-server   # -> ./it-rpc-server
 #
 # Usage:
-#   infer_train_rpc_server -m model.gguf [--port 50052] [--host 0.0.0.0]
-#   infer_train_rpc_server --help
+#   it-rpc-server -m model.gguf [--port 50052] [--host 0.0.0.0]
+#   it-rpc-server --help
 
 from src.core.gguf_loader import load_gguf
 from src.core.transformer import (
@@ -50,20 +49,21 @@ from std.sys import argv
 
 def help_text() -> String:
     return """
-infer_train_rpc_server - an RPC worker for the infer_train layer split
+it-rpc-server - an RPC worker for the infer_train layer split
 
 Usage:
-  infer_train_rpc_server -m MODEL [options]
+  it-rpc-server -m MODEL [options]
 
 Options:
   -m, --model PATH    model file (GGUF), shared with the master
-      --port N        TCP port (default 50052)
+  -p, --port N        TCP port (default 50052)
       --host H        bind address (default 0.0.0.0)
   -h, --help          this help
   -V, --version       show version and exit
 
 The master assigns the layer range at connect time (INIT); this process
-serves exactly one master connection.
+serves exactly one master connection.  The master is `it-cli -sm layer
+--rpc HOST:PORT ...` (see the llama.cpp rpc-server usage).
 """
 
 
@@ -81,12 +81,12 @@ def main() raises:
             print(help_text())
             return
         if a == "--version" or a == "-V":
-            print("infer_train_rpc_server " + VERSION)
+            print("it-rpc-server " + VERSION)
             return
         if a == "-m" or a == "--model":
             model_path = _next(arg_list, i)
             i += 1
-        elif a == "--port":
+        elif a == "-p" or a == "--port":
             port = _next_int(arg_list, i)
             i += 1
         elif a == "--host":

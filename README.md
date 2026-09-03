@@ -10,10 +10,10 @@
 ```
 ┌─────────────────────────────── infer_train ───────────────────────────────┐
 │                                                                           │
-│  CLI (llama.cpp-compatible)        HTTP server (OpenAI-compatible)        │
-│  infer_train -m M -p P -n N       /v1/models /v1/chat/completions         │
-│  quantize / serve                 /v1/completions (SSE) /v1/finetune      │
-│  --infer-train-mode off|lora|full                                         │
+│  it-cli (llama-cli-compatible)    it-server (OpenAI-compatible HTTP)      │
+│  -m M -p P -n N -sm layer --rpc   /v1/models /v1/chat/completions         │
+│  it-rpc-server (RPC worker)       /v1/completions (SSE) /v1/finetune      │
+│  --infer-train-mode off|lora|full it-server quantize                      │
 │                          │                              │                │
 │  ┌───────────────────────▼──────────────────────────────▼──────────────┐  │
 │  │  Python bindings (C ABI)  ·  torch.compile backend "infer_train"     │  │
@@ -45,21 +45,25 @@ make test-m7
 
 # generate with the 1.5B model
 make cli
-./infer_train -m DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf \
+./it-cli -m DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf \
     -p "<｜User｜>What is 1+1?<｜Assistant｜><think>" -n 120 --seed 7
 
 # 7B translation model (Hy-MT2, hunyuan-dense)
-./infer_train -m Hy-MT2-7B-Q4_K_M.gguf \
+./it-cli -m Hy-MT2-7B-Q4_K_M.gguf \
     -p "Translate to English: 今天天气很好。" -n 64
 
 # 27B hybrid (Qwen3.8, Gated DeltaNet + full attention)
-./infer_train -m Qwen3.8-27B-UD-Q5_K_M.gguf -c 32768 -p "Hello world" -n 64
+./it-cli -m Qwen3.8-27B-UD-Q5_K_M.gguf -c 32768 -p "Hello world" -n 64
 
-# OpenAI-compatible HTTP server
-INFERTRAIN_MODEL=DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf \
-    python -m infer_train.server --port 8080
+# OpenAI-compatible HTTP server (native Mojo binary, llama-server-compatible)
+make server
+./it-server -m DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf --port 8080
 curl http://127.0.0.1:8080/v1/completions \
     -d '{"prompt":"1+1=","max_tokens":32,"temperature":0.6}'
+
+# OpenAI-compatible HTTP server (Python wrapper, concurrent)
+INFERTRAIN_MODEL=DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf \
+    python -m infer_train.server --port 8080
 
 # Python API
 from infer_train import load_model
@@ -68,7 +72,7 @@ print(m.generate("1+1=", max_tokens=32, seed=7))
 losses = m.finetune("What is 1+1?", "1+1 equals 2.", lr=1e-5)  # on-the-fly fine-tuning
 
 # post-fine-tuning re-quantization (.mmdl -> Q4_K_M / Q8_0 / NF4)
-./infer_train quantize -i model.mmdl -o model_quantized.gguf -f Q4_K_M
+./it-server quantize -i model.mmdl -o model_quantized.gguf -f Q4_K_M
 ```
 
 ## GGUF Split Files (Multi-Part Models)
@@ -83,7 +87,7 @@ llama-gguf-split --split-max-size 600M model.gguf model.gguf
 # -> model.gguf-00001-of-00003.gguf  model.gguf-00002-of-00003.gguf  model.gguf-00003-of-00003.gguf
 
 # load any part — all parts are memory-mapped and merged automatically
-./infer_train -m model.gguf-00001-of-00003.gguf -p "Hello" -n 64
+./it-cli -m model.gguf-00001-of-00003.gguf -p "Hello" -n 64
 
 # Python API
 m = load_model("model.gguf-00001-of-00003.gguf")
@@ -111,23 +115,23 @@ byte-identical (`max_diff = 0.0`) across all parts.
 
 The engine can be distributed across processes (one machine) or machines
 with the same command-line usage as llama.cpp: a separate worker binary
-(`infer_train_rpc_server`, the counterpart of `llama-rpc-server`) plus the
-`-sm` / `--rpc` flags on the main CLI.
+(`it-rpc-server`, the counterpart of `llama-rpc-server`) plus the
+`-sm` / `--rpc` flags on `it-cli`.
 
 ```bash
 # one worker per process / machine (each mmaps the same GGUF file):
-./infer_train_rpc_server -m model.gguf --port 50052 &
-./infer_train_rpc_server -m model.gguf --port 50053 &
+./it-rpc-server -m model.gguf --port 50052 &
+./it-rpc-server -m model.gguf --port 50053 &
 
 # split the layers across the workers and generate:
-./infer_train -m model.gguf -sm layer \
+./it-cli -m model.gguf -sm layer \
     --rpc 127.0.0.1:50052 --rpc 127.0.0.1:50053 \
     -p "Hello" -n 64
 ```
 
 How it works:
 
-* `-sm layer` (layer split): the master (the CLI) keeps the embedding +
+* `-sm layer` (layer split): the master (`it-cli`) keeps the embedding +
   output head and the generation loop; each `--rpc` endpoint owns a
   contiguous layer range (28 layers over 3 workers → 10/9/9) plus the KV /
   SSM state of those layers.  Per token the master chains the workers:
@@ -151,12 +155,12 @@ and requires the outputs to match exactly.
 | **Inference** | Three architectures (qwen2 / hunyuan-dense / qwen35 hybrid SSM), direct GGUF weight loading (Q4_K/Q5_K/Q6_K/Q8_0/IQ4_NL/IQ4_XS), split/multi-part GGUF (`llama-gguf-split`, auto-detected), KV Cache (dense / Paged / sliding window / adaptive memory), llama.cpp-compatible sampling |
 | **Training** | Backward operators, `run_with_grad` automatic differentiation, AdamW/SGD, `train_step`/`eval_step`, gradient accumulation, mixed precision (AMP), dynamic quantization |
 | **Fine-tuning** | `finetune_step` (Mojo) and `Model.finetune` (Python) — no service downtime, LoRA-style updates on trainable subsets |
-| **Quantization** | Post-fine-tuning re-quantization: FP16 → Q4_K_M / Q8_0 / NF4 (`infer_train quantize`), compatible with GGUF toolchain |
+| **Quantization** | Post-fine-tuning re-quantization: FP16 → Q4_K_M / Q8_0 / NF4 (`it-server quantize`), compatible with GGUF toolchain |
 | **Storage** | Private `.mmdl` checkpoints: weights + gradients + AdamW m/v + training metadata; incremental updates, delta appends, checkpoint resumption; `strip_to_gguf` exports pure weights |
 | **Tokenization** | One generic engine per algorithm (GPT-2 byte-level BPE; SentencePiece to follow) — model families differ only in data (flavor tag, added tokens, bos/eos), auto-selected by `tokenizer.ggml.model`/`tokenizer.ggml.pre`, `register_tokenizer` for custom tokenizers |
-| **Distribution** | Multi-process / multi-machine RPC (llama.cpp-style): `infer_train_rpc_server` workers + `-sm layer` / `--rpc host:port`, layer-split with per-worker KV/SSM state, numerically identical to the local run |
+| **Distribution** | Multi-process / multi-machine RPC (llama.cpp-style): `it-rpc-server` workers + `-sm layer` / `--rpc host:port` on `it-cli`, layer-split with per-worker KV/SSM state, numerically identical to the local run |
 | **API** | C ABI + Python bindings + `torch.compile` backend; OpenAI-compatible HTTP endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/completions` SSE, `/v1/finetune`, `/v1/finetune/status`), `INFERTRAIN_API_KEY` authentication |
-| **CLI** | `infer_train`: llama.cpp core parameters (`-m -c -np --host --port --temp --top-p --top-k --repeat-penalty -t --no-cnv -sm --rpc`) + `--infer-train-*` parameter group; `infer_train_rpc_server` for RPC workers |
+| **CLI** | Three entry points over one shared core: `it-cli` (llama-cli-compatible quick verification: `-m -p -c -n --temp --top-p --top-k --repeat-penalty -t --seed -sm --rpc`), `it-server` (llama-server-compatible OpenAI HTTP service + `quantize`), `it-rpc-server` (RPC worker); all take the `--infer-train-*` parameter group |
 
 ## Performance Benchmarks (Apple M1 Max, 64 GB; InferTrain is CPU multi-threaded)
 
@@ -197,8 +201,9 @@ make test-m5     # IR optimizer + JIT + torch.compile backend
 make test-m6     # training suites
 make test-m7     # everything + the M7 feature suites
 make test-rpc    # multi-process RPC (two localhost workers, -sm layer)
-make cli         # the infer_train binary
-make rpc-server  # the infer_train_rpc_server worker binary
+make cli         # the it-cli binary (llama-cli-compatible)
+make server      # the it-server binary (llama-server-compatible HTTP)
+make rpc-server  # the it-rpc-server worker binary (llama-rpc-server-compatible)
 ```
 
 Test composition: Mojo executables (`tests/*.mojo`, compiled with `pixi run mojo build -I .`) + Python acceptance suites (`tests/python/`). Mojo 1.0 constraints: `def`-only, no runtime globals, `fn` deprecated; C-side helpers linked via `-Xlinker` (`tools/thread_pool.c`).

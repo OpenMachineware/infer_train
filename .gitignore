@@ -5,7 +5,9 @@
 # build artifacts
 infer_train.mojopkg
 infer_train
-infer_train_rpc_server
+it-server
+it-cli
+it-rpc-server
 *.mojoc
 src/version.mojo
 test_core
@@ -21,6 +23,9 @@ tests/test_ops
 tests/test_sampler
 tests/test_forward
 tests/test_thread_pool
+tests/test_gguf_split
+tests/test_gpu_pipeline
+tests/test_gpuops
 reference_dump.log
 
 # M4 Python artifacts

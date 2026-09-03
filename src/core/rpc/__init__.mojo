@@ -4,12 +4,12 @@
 #
 # One generic transport (plain TCP, length-prefixed messages) plus a
 # layer-split distribution strategy (`-sm layer`): each `--rpc HOST:PORT`
-# endpoint is a worker process (`infer_train_rpc_server`) that owns a
-# contiguous range of transformer layers and their KV/SSM state; the master
-# (the CLI) keeps the embedding + output head and chains the workers per
-# token.  The protocol is deliberately small (INIT / FORWARD / RESET /
-# PING) so a second distribution strategy (row-parallel, `-sm row`) can be
-# added later on the same transport.
+# endpoint is a worker process (`it-rpc-server`) that owns a contiguous
+# range of transformer layers and their KV/SSM state; the master (it-cli)
+# keeps the embedding + output head and chains the workers per token.
+# The protocol is deliberately small (INIT / FORWARD / RESET / PING) so a
+# second distribution strategy (row-parallel, `-sm row`) can be added
+# later on the same transport.
 #
 # Public surface:
 #   * `RpcClient`  - master-side connection to one worker

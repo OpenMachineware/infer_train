@@ -3,7 +3,7 @@
 # M8: the RPC transport - Mojo bindings over the C TCP helpers in
 # tools/thread_pool.c (`it_tcp_*`), plus the message framing and the
 # little serialization helpers shared by the master (`RpcClient`) and the
-# worker (`infer_train_rpc_server`).
+# worker (`it-rpc-server`).
 #
 # Wire format: every message is a 4-byte little-endian payload length
 # followed by the payload.  The payload starts with a 1-byte command tag
