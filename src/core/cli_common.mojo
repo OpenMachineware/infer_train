@@ -78,6 +78,11 @@ struct CliArgs(Movable):
     var api_keys: List[String]  # --api-key (repeatable)
     var no_webui: Bool  # accepted (the Mojo server has no WebUI)
     var metrics: Bool  # accepted (ignored)
+    # M8: CPU performance analysis (the `profile` subcommand)
+    var simd_autotune: Bool  # --simd-autotune: run the SIMD width search
+    var jit_stats: Bool  # --jit-stats: print JIT compiles + hit rate
+    var jit_specialize: Bool  # --jit-specialize: enable JIT shape
+    # specialization on the CPU path (off by default: the generic kernel)
 
     def __init__(out self):
         self.model = String("")
@@ -107,6 +112,9 @@ struct CliArgs(Movable):
         self.api_keys = List[String]()
         self.no_webui = False
         self.metrics = False
+        self.simd_autotune = False
+        self.jit_stats = False
+        self.jit_specialize = False
 
 
 def parse_args(
@@ -143,6 +151,8 @@ def parse_args(
             args.action = "serve"
         elif a == "generate":
             args.action = "generate"  # it-server: hint to it-cli; it-cli: no-op
+        elif a == "profile":
+            args.action = "profile"  # M8: CPU perf analysis (it-cli)
         elif a == "-m" or a == "--model":
             args.model = _next(arg_list, i)
             i += 1
@@ -200,6 +210,12 @@ def parse_args(
             args.no_webui = True
         elif a == "--metrics":
             args.metrics = True
+        elif a == "--simd-autotune":
+            args.simd_autotune = True  # M8: profile subcommand
+        elif a == "--jit-stats":
+            args.jit_stats = True  # M8: profile subcommand
+        elif a == "--jit-specialize":
+            args.jit_specialize = True  # M8: CPU JIT shape specialization
         elif a == "--infer-train-mode":
             args.mode = _next(arg_list, i)
             i += 1
@@ -783,4 +799,17 @@ infer-train options:
       --infer-train-lr F    fine-tuning learning rate (default 1e-5)
       --infer-train-lora-path P   LoRA adapter checkpoint (.mmdl)
       --infer-train-accum-steps N  gradient accumulation steps
+
+ M8 CPU performance analysis (it-cli profile):
+   it-cli profile [-m MODEL] --simd-autotune   benchmark the 64/128/256-bit
+                                               SIMD widths for the model's
+                                               row lengths and print the
+                                               fastest width per dim
+   it-cli profile [-m MODEL] --jit-stats       print the JIT shape-
+                                               specialization compile count
+                                               and cache hit rate
+   it-cli profile [-m MODEL] --jit-specialize  run the benchmark through
+                                               the JIT shape-specialized
+                                               fused kernel (off by default:
+                                               the generic kernel)
 """

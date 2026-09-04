@@ -10,7 +10,7 @@
 ```
 ┌─────────────────────────────── infer_train ───────────────────────────────┐
 │                                                                           │
-│  it-cli (llama-cli-compatible)    it-server (OpenAI-compatible HTTP)      │
+│  it-cli                           it-server (OpenAI-compatible HTTP)      │
 │  -m M -p P -n N -sm layer --rpc   /v1/models /v1/chat/completions         │
 │  it-rpc-server (RPC worker)       /v1/completions (SSE) /v1/finetune      │
 │  --infer-train-mode off|lora|full it-server quantize                      │
@@ -55,7 +55,7 @@ make cli
 # 27B hybrid (Qwen3.8, Gated DeltaNet + full attention)
 ./it-cli -m Qwen3.8-27B-UD-Q5_K_M.gguf -c 32768 -p "Hello world" -n 64
 
-# OpenAI-compatible HTTP server (native Mojo binary, llama-server-compatible)
+# OpenAI-compatible HTTP server
 make server
 ./it-server -m DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf --port 8080
 curl http://127.0.0.1:8080/v1/completions \
@@ -111,11 +111,10 @@ How it works:
 single file and as a 3-part split and checks that dequantized weights are
 byte-identical (`max_diff = 0.0`) across all parts.
 
-## Multi-Process / Multi-Machine RPC (llama.cpp-style)
+## Multi-Process / Multi-Machine RPC
 
 The engine can be distributed across processes (one machine) or machines
-with the same command-line usage as llama.cpp: a separate worker binary
-(`it-rpc-server`, the counterpart of `llama-rpc-server`) plus the
+with command-line usage: a separate worker binary(`it-rpc-server`) plus the
 `-sm` / `--rpc` flags on `it-cli`.
 
 ```bash
@@ -158,9 +157,9 @@ and requires the outputs to match exactly.
 | **Quantization** | Post-fine-tuning re-quantization: FP16 → Q4_K_M / Q8_0 / NF4 (`it-server quantize`), compatible with GGUF toolchain |
 | **Storage** | Private `.mmdl` checkpoints: weights + gradients + AdamW m/v + training metadata; incremental updates, delta appends, checkpoint resumption; `strip_to_gguf` exports pure weights |
 | **Tokenization** | One generic engine per algorithm (GPT-2 byte-level BPE; SentencePiece to follow) — model families differ only in data (flavor tag, added tokens, bos/eos), auto-selected by `tokenizer.ggml.model`/`tokenizer.ggml.pre`, `register_tokenizer` for custom tokenizers |
-| **Distribution** | Multi-process / multi-machine RPC (llama.cpp-style): `it-rpc-server` workers + `-sm layer` / `--rpc host:port` on `it-cli`, layer-split with per-worker KV/SSM state, numerically identical to the local run |
+| **Distribution** | Multi-process / multi-machine RPC: `it-rpc-server` workers + `-sm layer` / `--rpc host:port` on `it-cli`, layer-split with per-worker KV/SSM state, numerically identical to the local run |
 | **API** | C ABI + Python bindings + `torch.compile` backend; OpenAI-compatible HTTP endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/completions` SSE, `/v1/finetune`, `/v1/finetune/status`), `INFERTRAIN_API_KEY` authentication |
-| **CLI** | Three entry points over one shared core: `it-cli` (llama-cli-compatible quick verification: `-m -p -c -n --temp --top-p --top-k --repeat-penalty -t --seed -sm --rpc`), `it-server` (llama-server-compatible OpenAI HTTP service + `quantize`), `it-rpc-server` (RPC worker); all take the `--infer-train-*` parameter group |
+| **CLI** | Three entry points over one shared core: `it-cli` (quick verification: `-m -p -c -n --temp --top-p --top-k --repeat-penalty -t --seed -sm --rpc`), `it-server` (OpenAI HTTP service + `quantize`), `it-rpc-server` (RPC worker); all take the `--infer-train-*` parameter group |
 
 ## Performance Benchmarks (Apple M1 Max, 64 GB; InferTrain is CPU multi-threaded)
 
@@ -201,9 +200,9 @@ make test-m5     # IR optimizer + JIT + torch.compile backend
 make test-m6     # training suites
 make test-m7     # everything + the M7 feature suites
 make test-rpc    # multi-process RPC (two localhost workers, -sm layer)
-make cli         # the it-cli binary (llama-cli-compatible)
-make server      # the it-server binary (llama-server-compatible HTTP)
-make rpc-server  # the it-rpc-server worker binary (llama-rpc-server-compatible)
+make cli         # the it-cli binary
+make server      # the it-server binary
+make rpc-server  # the it-rpc-server worker binary
 ```
 
 Test composition: Mojo executables (`tests/*.mojo`, compiled with `pixi run mojo build -I .`) + Python acceptance suites (`tests/python/`). Mojo 1.0 constraints: `def`-only, no runtime globals, `fn` deprecated; C-side helpers linked via `-Xlinker` (`tools/thread_pool.c`).

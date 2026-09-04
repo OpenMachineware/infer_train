@@ -20,26 +20,31 @@ from std.utils.static_tuple import StaticTuple
 comptime W_F16 = 8
 
 
-def _jit_matmul_weight[M: Int, N: Int, K: Int](
+def _jit_matmul_weight[M: Int, N: Int, K: Int, W: Int = W_F16](
     x: Tensor[DType.float16, 2], w: Tensor[DType.float16, 2]
 ) -> Tensor[DType.float16, 2]:
     """y = W @ x with comptime shapes: the k loop is fully unrolled and
-    the SIMD width is fixed at compile time."""
+    the SIMD width is fixed at compile time.
+
+    `W` is the SIMD lane count (comptime); the default 8 lanes (128-bit)
+    keeps the M5 instantiation.  The M8 SIMD autotuner passes 4/8/16
+    (64/128/256-bit) chosen per shape.
+    """
     var out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, N))
-    var k_main = (K // W_F16) * W_F16
+    var k_main = (K // W) * W
     for i in range(M):
         for j in range(N):
-            var acc = SIMD[DType.float32, W_F16](0)
+            var acc = SIMD[DType.float32, W](0)
             var k = 0
             while k < k_main:  # comptime trip count (K fixed)
-                var xv = x.data().unsafe_load[width=W_F16](
+                var xv = x.data().unsafe_load[width=W](
                     offset=i * K + k
                 ).cast[DType.float32]()
-                var wv = w.data().unsafe_load[width=W_F16](
+                var wv = w.data().unsafe_load[width=W](
                     offset=j * K + k
                 ).cast[DType.float32]()
                 acc = acc + xv * wv
-                k += W_F16
+                k += W
             var total = Float32(acc.reduce_add())
             var k2 = k_main
             while k2 < K:  # comptime tail
@@ -51,17 +56,18 @@ def _jit_matmul_weight[M: Int, N: Int, K: Int](
     return out
 
 
-def jit_ffn[M: Int, F: Int, K: Int](
+def jit_ffn[M: Int, F: Int, K: Int, W: Int = W_F16](
     x: Tensor[DType.float16, 2],
     gate_w: Tensor[DType.float16, 2],
     up_w: Tensor[DType.float16, 2],
     down_w: Tensor[DType.float16, 2],
 ) -> Tensor[DType.float16, 2]:
-    """Comptime-shape-specialized SwiGLU FFN (M tokens, F ffn, K hidden)."""
-    var g = _jit_matmul_weight[M, F, K](x, gate_w)
-    var u = _jit_matmul_weight[M, F, K](x, up_w)
+    """Comptime-shape-specialized SwiGLU FFN (M tokens, F ffn, K hidden),
+    with the SIMD lane width `W` of the projection k-loops (comptime)."""
+    var g = _jit_matmul_weight[M, F, K, W](x, gate_w)
+    var u = _jit_matmul_weight[M, F, K, W](x, up_w)
     var h = swiglu_cpu_dynamic[DType.float16](g, u)
-    return _jit_matmul_weight[M, K, F](h, down_w)
+    return _jit_matmul_weight[M, K, F, W](h, down_w)
 
 
 def jit_ffn_key(m: Int, f: Int, k: Int) -> String:

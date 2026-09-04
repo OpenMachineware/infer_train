@@ -9,14 +9,18 @@ from ...utils import unimplemented
 from std.math import sqrt
 
 
-def _rms_norm_cpu_kernel[dtype: DType](
+def _rms_norm_cpu_kernel[dtype: DType, simd_width: Int = 0](
     x: Tensor[dtype, 2], dim: Int, eps: Float32
 ) -> Tensor[dtype, 2]:
-    """out[i, j] = x[i, j] / sqrt(mean(x[i, :]^2) + eps)."""
+    """out[i, j] = x[i, j] / sqrt(mean(x[i, :]^2) + eps).
+
+    `simd_width` is the SIMD lane count (comptime); 0 selects the legacy
+    per-dtype width (8 lanes f16 / 4 lanes f32).
+    """
     var batch = x.shape()[0]
     var out = tensor_zeros[dtype, 2](x.shape())
 
-    comptime W = 8 if dtype == DType.float16 else 4
+    comptime W = simd_width if simd_width > 0 else (8 if dtype == DType.float16 else 4)
     var d_main = (dim // W) * W
 
     for i in range(batch):
@@ -48,18 +52,42 @@ def _rms_norm_cpu_kernel[dtype: DType](
     return out
 
 
-def rms_norm_cpu[dtype: DType, dim: Int](
+def rms_norm_cpu[dtype: DType, dim: Int, simd_width: Int = 0](
     x: Tensor[dtype, 2], eps: Float32 = Float32(1e-5)
 ) -> Tensor[dtype, 2]:
     if x.shape()[1] != dim:
         unimplemented("rms_norm_cpu: static dim mismatch")
-    return _rms_norm_cpu_kernel[dtype](x, dim, eps)
+    return _rms_norm_cpu_kernel[dtype, simd_width](x, dim, eps)
 
 
-def rms_norm_cpu_dynamic[dtype: DType](
+def rms_norm_cpu_dynamic[dtype: DType, simd_width: Int = 0](
     x: Tensor[dtype, 2], eps: Float32 = Float32(1e-5)
 ) -> Tensor[dtype, 2]:
-    return _rms_norm_cpu_kernel[dtype](x, x.shape()[1], eps)
+    return _rms_norm_cpu_kernel[dtype, simd_width](x, x.shape()[1], eps)
+
+
+def rms_norm_cpu_autotuned[dtype: DType](
+    x: Tensor[dtype, 2], width_bits: Int, eps: Float32 = Float32(1e-5)
+) -> Tensor[dtype, 2]:
+    """Run the RMSNorm kernel specialized for `width_bits` (64/128/256).
+
+    `width_bits` is a runtime value (the autotuner's choice); each branch
+    calls a comptime instantiation with a literal lane width, so the SIMD
+    width stays a compile-time parameter of the kernel.
+    """
+    var dim = x.shape()[1]
+    comptime if dtype == DType.float16:
+        if width_bits == 256:
+            return _rms_norm_cpu_kernel[dtype, 16](x, dim, eps)
+        elif width_bits == 64:
+            return _rms_norm_cpu_kernel[dtype, 4](x, dim, eps)
+        return _rms_norm_cpu_kernel[dtype, 8](x, dim, eps)
+    else:
+        if width_bits == 256:
+            return _rms_norm_cpu_kernel[dtype, 8](x, dim, eps)
+        elif width_bits == 64:
+            return _rms_norm_cpu_kernel[dtype, 2](x, dim, eps)
+        return _rms_norm_cpu_kernel[dtype, 4](x, dim, eps)
 
 
 def rms_norm_cpu_forward_with_saved[dtype: DType, dim: Int](

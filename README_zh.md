@@ -10,7 +10,7 @@
 ```
 ┌─────────────────────────────── infer_train ───────────────────────────────┐
 │                                                                           │
-│  it-cli (llama-cli 兼容)          it-server (OpenAI 兼容 HTTP)            │
+│  it-cli                            it-server (OpenAI 兼容 HTTP)            │
 │  -m M -p P -n N -sm layer --rpc   /v1/models /v1/chat/completions         │
 │  it-rpc-server (RPC worker)       /v1/completions (SSE) /v1/finetune      │
 │  --infer-train-mode off|lora|full it-server quantize                      │
@@ -55,7 +55,7 @@ make cli
 # 27B 混合模型 (Qwen3.8, Gated DeltaNet + 全注意力)
 ./it-cli -m Qwen3.8-27B-UD-Q5_K_M.gguf -c 32768 -p "Hello world" -n 64
 
-# OpenAI 兼容 HTTP 服务器（原生 Mojo 二进制，llama-server 兼容）
+# OpenAI 兼容 HTTP 服务器
 make server
 ./it-server -m DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf --port 8080
 curl http://127.0.0.1:8080/v1/completions \
@@ -107,11 +107,10 @@ m = load_model("model.gguf-00001-of-00003.gguf")
 `make test-gguf-split` 验证这一点：将 1.5B 模型分别按单文件和 3 卷分卷加载，
 检查各卷反量化权重逐字节一致（`max_diff = 0.0`）。
 
-## 多进程 / 多机 RPC（llama.cpp 风格）
+## 多进程 / 多机 RPC
 
-引擎可以像 llama.cpp 一样跨进程（单机）或跨机器分布式运行，命令行用法相同：
-独立的 worker 二进制（`it-rpc-server`，对应 `llama-rpc-server`）+
-`it-cli` 上的 `-sm` / `--rpc` 参数。
+引擎可以像跨进程（单机）或跨机器分布式运行，命令行用法：
+独立的 worker 二进制（`it-rpc-server`）+ `it-cli` 上的 `-sm` / `--rpc` 参数。
 
 ```bash
 # 每个进程 / 机器一个 worker（各自 mmap 同一个 GGUF 文件）：
@@ -150,9 +149,9 @@ m = load_model("model.gguf-00001-of-00003.gguf")
 | **量化** | 微调后重量化：FP16 → Q4_K_M / Q8_0 / NF4（`it-server quantize`），量化文件兼容 GGUF 工具链 |
 | **存储** | 私有 `.mmdl` 检查点：权重 + 梯度 + AdamW m/v + 训练元数据；增量更新、delta 追加、断点续训；`strip_to_gguf` 导出纯权重 |
 | **分词** | 每种算法一个通用引擎（GPT-2 byte-level BPE；SentencePiece 待补充）——模型家族只在数据上有差异（flavor 标签、附加 token、bos/eos），按 `tokenizer.ggml.model`/`tokenizer.ggml.pre` 自动选择，`register_tokenizer` 注册自定义分词器 |
-| **分布式** | 多进程 / 多机 RPC（llama.cpp 风格）：`it-rpc-server` worker + `it-cli` 上的 `-sm layer` / `--rpc host:port`，层切分、每个 worker 持有自己的 KV/SSM 状态，与本地运行数值完全一致 |
+| **分布式** | 多进程 / 多机 RPC：`it-rpc-server` worker + `it-cli` 上的 `-sm layer` / `--rpc host:port`，层切分、每个 worker 持有自己的 KV/SSM 状态，与本地运行数值完全一致 |
 | **API** | C ABI + Python 绑定 + `torch.compile` 后端；OpenAI 兼容 HTTP 端点（`/v1/models`、`/v1/chat/completions`、`/v1/completions` SSE、`/v1/finetune`、`/v1/finetune/status`），`INFERTRAIN_API_KEY` 鉴权 |
-| **CLI** | 三个入口共用同一套核心：`it-cli`（llama-cli 兼容的快速验证：`-m -p -c -n --temp --top-p --top-k --repeat-penalty -t --seed -sm --rpc`）、`it-server`（llama-server 兼容的 OpenAI HTTP 服务 + `quantize`）、`it-rpc-server`（RPC worker）；均支持 `--infer-train-*` 参数组 |
+| **CLI** | 三个入口共用同一套核心：`it-cli`（快速验证：`-m -p -c -n --temp --top-p --top-k --repeat-penalty -t --seed -sm --rpc`）、`it-server`（OpenAI HTTP 服务 + `quantize`）、`it-rpc-server`（RPC worker）；均支持 `--infer-train-*` 参数组 |
 
 ## 性能基准（Apple M1 Max，64 GB；InferTrain 为 CPU 多线程）
 
@@ -193,9 +192,9 @@ make test-m5     # IR 优化器 + JIT + torch.compile 后端
 make test-m6     # 训练套件
 make test-m7     # 所有测试 + M7 功能套件
 make test-rpc    # 多进程 RPC（两个 localhost worker，-sm layer）
-make cli         # it-cli 二进制（llama-cli 兼容）
-make server      # it-server 二进制（llama-server 兼容 HTTP）
-make rpc-server  # it-rpc-server worker 二进制（llama-rpc-server 兼容）
+make cli         # it-cli 二进制
+make server      # it-server 二进制
+make rpc-server  # it-rpc-server worker 二进制
 ```
 
 测试组成：Mojo 可执行文件（`tests/*.mojo`，`pixi run mojo build -I .` 编译）+ Python 验收套件（`tests/python/`）。Mojo 1.0 约束：统一 `def`、无运行时全局变量、 `fn` 已弃用；C 侧辅助库经 `-Xlinker` 链接（`tools/thread_pool.c`）。

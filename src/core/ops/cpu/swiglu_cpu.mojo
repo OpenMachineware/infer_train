@@ -18,14 +18,16 @@ def _silu(x: Float32) -> Float32:
     return x / (Float32(1.0) + exp(-x))
 
 
-def _swiglu_cpu_kernel[dtype: DType](
+def _swiglu_cpu_kernel[dtype: DType, simd_width: Int = 0](
     gate: Tensor[dtype, 2], up: Tensor[dtype, 2]
 ) -> Tensor[dtype, 2]:
+    """out = silu(gate) * up, computed in f32.  `simd_width` is the SIMD
+    lane count (comptime); 0 selects the legacy per-dtype width."""
     if gate.shape() != up.shape():
         unimplemented("swiglu_cpu: shape mismatch")
     var out = tensor_zeros[dtype, 2](gate.shape())
     var n = gate.numel()
-    comptime W = W_F16 if dtype == DType.float16 else W_F32
+    comptime W = simd_width if simd_width > 0 else (W_F16 if dtype == DType.float16 else W_F32)
     var n_main = (n // W) * W
     var i = 0
     while i < n_main:
@@ -49,20 +51,42 @@ def _swiglu_cpu_kernel[dtype: DType](
     return out
 
 
-def swiglu_cpu[dtype: DType, rows: Int, cols: Int](
+def swiglu_cpu[dtype: DType, rows: Int, cols: Int, simd_width: Int = 0](
     gate: Tensor[dtype, 2], up: Tensor[dtype, 2]
 ) -> Tensor[dtype, 2]:
     """Comptime-shaped SwiGLU."""
     if gate.shape() != StaticTuple[Int, 2](rows, cols):
         unimplemented("swiglu_cpu: static shape mismatch")
-    return _swiglu_cpu_kernel[dtype](gate, up)
+    return _swiglu_cpu_kernel[dtype, simd_width](gate, up)
 
 
-def swiglu_cpu_dynamic[dtype: DType](
+def swiglu_cpu_dynamic[dtype: DType, simd_width: Int = 0](
     gate: Tensor[dtype, 2], up: Tensor[dtype, 2]
 ) -> Tensor[dtype, 2]:
     """Runtime-shaped SwiGLU."""
-    return _swiglu_cpu_kernel[dtype](gate, up)
+    return _swiglu_cpu_kernel[dtype, simd_width](gate, up)
+
+
+def swiglu_cpu_autotuned[dtype: DType](
+    gate: Tensor[dtype, 2], up: Tensor[dtype, 2], width_bits: Int
+) -> Tensor[dtype, 2]:
+    """SwiGLU specialized for `width_bits` (64/128/256).
+
+    `width_bits` is a runtime value (the autotuner's choice); each branch
+    calls a comptime instantiation with a literal lane width.
+    """
+    comptime if dtype == DType.float16:
+        if width_bits == 256:
+            return _swiglu_cpu_kernel[dtype, 16](gate, up)
+        elif width_bits == 64:
+            return _swiglu_cpu_kernel[dtype, 4](gate, up)
+        return _swiglu_cpu_kernel[dtype, 8](gate, up)
+    else:
+        if width_bits == 256:
+            return _swiglu_cpu_kernel[dtype, 8](gate, up)
+        elif width_bits == 64:
+            return _swiglu_cpu_kernel[dtype, 2](gate, up)
+        return _swiglu_cpu_kernel[dtype, 4](gate, up)
 
 
 def swiglu_cpu_forward_with_saved[dtype: DType, rows: Int, cols: Int](

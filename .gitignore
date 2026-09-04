@@ -2,8 +2,15 @@
 .pixi/*
 !.pixi/config.toml
 
+# IDE/Editor files
+.idea/
+.vscode/
+
+# AI files
+AGENTS.md
+CLAUDE.md
+
 # build artifacts
-infer_train.mojopkg
 infer_train
 it-server
 it-cli
@@ -34,3 +41,7 @@ python/*.egg-info/
 python/build/
 __pycache__/
 .pytest_cache/
+
+*.gguf
+llama.cpp-0.3.0/
+modular-mojo-v1.0.0/

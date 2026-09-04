@@ -33,6 +33,8 @@ from std.utils.static_tuple import StaticTuple
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
 from std.memory.alloc import unsafe_alloc
+from std.math import sqrt
+from ..fused.matmul_rms_norm import fused_matmul_rms_norm
 
 comptime W_F16 = 8  # 8 x f16 = 128-bit NEON/SSE vector
 comptime W_F32 = 4  # 4 x f32 = 128-bit NEON/SSE vector
@@ -746,3 +748,217 @@ def matmul_quantized_cpu[
     _ = scale
     _ = zero_point
     return matmul_weight_cpu[dtype](a, b_deq)
+
+
+# -- M8: JIT shape specialization for the fused matmul + RMSNorm op ----------
+#
+# `fused_matmul_rms_norm` (ops/fused) is the runtime-shaped generic kernel.
+# For the hot model shapes we additionally compile
+# `_fused_matmul_rms_norm_specialized[M, N, K, W, UNROLL, TILE]`:
+#
+#   * M/N/K fix every loop bound at compile time (the comptime-JIT model
+#     of M5: "compiling" a new shape is instantiating this kernel);
+#   * W is the SIMD lane width chosen by the SIMD autotuner (task 1);
+#   * UNROLL widens the effective k-loop vector to W*UNROLL lanes;
+#   * TILE > 0 blocks the k loop into TILE-element tiles (a register
+#     pressure knob); TILE = 0 keeps the single-accumulator structure.
+#
+# The runtime entry is `JitCache.run_fused_jit` (jit/jit_cache.mojo): it
+# builds the shape signature from the runtime (M, N, K), asks the cache
+# for the compiled kernel (`get_or_compile`), and runs it.  Shapes without
+# a compiled specialization fall back to the generic kernel and are
+# recorded (Mojo 1.0 has no runtime codegen).  The entry lives in
+# jit_cache.mojo because Mojo 1.0 rejects circular imports and jit_cache
+# already depends on this module.
+
+
+def _fused_matmul_rms_norm_specialized[
+    M: Int, N: Int, K: Int, W: Int, UNROLL: Int = 1, TILE: Int = 0
+](
+    x: Tensor[DType.float16, 2],
+    w: Tensor[DType.float16, 2],
+    eps: Float32,
+) -> Tensor[DType.float16, 2]:
+    """y = rms_norm(x @ w^T, eps) with comptime M/N/K/W/UNROLL/TILE.
+
+    f16 inputs, f32 accumulation (the M3 numerics rule), result cast back
+    to f16 on store - identical numerics to the generic fused kernel,
+    with the loop structure fixed at compile time.
+    """
+    comptime VW = W * UNROLL
+    var out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, N))
+    comptime k_vec = (K // VW) * VW
+    comptime n_vec = (N // W) * W
+    for i in range(M):
+        # pass 1: y[i, :] = x[i, :] @ w^T (dot products, f32 accumulation)
+        for j in range(N):
+            comptime if TILE > 0:
+                # k loop blocked into TILE-element tiles (comptime bound)
+                comptime k_tile = (TILE // VW) * VW if TILE >= VW else VW
+                var total = Float32(0)
+                var k = 0
+                while k < k_vec:
+                    var acc = SIMD[DType.float32, VW](0)
+                    var k_end = k + k_tile
+                    if k_end > k_vec:
+                        k_end = k_vec
+                    while k < k_end:
+                        var xv = x.data().unsafe_load[width=VW](
+                            offset=i * K + k
+                        ).cast[DType.float32]()
+                        var wv = w.data().unsafe_load[width=VW](
+                            offset=j * K + k
+                        ).cast[DType.float32]()
+                        acc = acc + xv * wv
+                        k += VW
+                    total += Float32(acc.reduce_add())
+                while k < K:
+                    total += Float32(x.get(i * K + k)) * Float32(
+                        w.get(j * K + k)
+                    )
+                    k += 1
+                out.set(i * N + j, Scalar[DType.float16](total))
+            else:
+                var acc = SIMD[DType.float32, VW](0)
+                var k = 0
+                while k < k_vec:
+                    var xv = x.data().unsafe_load[width=VW](
+                        offset=i * K + k
+                    ).cast[DType.float32]()
+                    var wv = w.data().unsafe_load[width=VW](
+                        offset=j * K + k
+                    ).cast[DType.float32]()
+                    acc = acc + xv * wv
+                    k += VW
+                var total = Float32(acc.reduce_add())
+                while k < K:
+                    total += Float32(x.get(i * K + k)) * Float32(
+                        w.get(j * K + k)
+                    )
+                    k += 1
+                out.set(i * N + j, Scalar[DType.float16](total))
+        # pass 2: RMSNorm the row in place (SIMD width W)
+        var ss = Float32(0)
+        var j = 0
+        while j < n_vec:
+            var v = out.data().unsafe_load[width=W](
+                offset=i * N + j
+            ).cast[DType.float32]()
+            ss += Float32((v * v).reduce_add())
+            j += W
+        while j < N:
+            var v = Float32(out.get(i * N + j))
+            ss += v * v
+            j += 1
+        var inv = Float32(1.0) / sqrt(ss / Float32(N) + eps)
+        j = 0
+        while j < n_vec:
+            var v = out.data().unsafe_load[width=W](
+                offset=i * N + j
+            ).cast[DType.float32]()
+            out.data().unsafe_store(
+                i * N + j, (v * SIMD[DType.float32, W](inv)).cast[DType.float16]()
+            )
+            j += W
+        while j < N:
+            var v = Float32(out.get(i * N + j))
+            out.set(i * N + j, Scalar[DType.float16](v * inv))
+    return out
+
+
+def fused_matmul_rms_norm_key(m: Int, n: Int, k: Int) -> String:
+    """The shape signature of a fused matmul+rmsnorm (M, N, K)."""
+    return (
+        "fused/" + String(m) + String("/") + String(n) + String("/") + String(k)
+    )
+
+
+struct CompiledFusedKernel(Copyable):
+    """A compiled fused kernel: the executable result of one shape
+    specialization.
+
+    `run` dispatches to the comptime-specialized instantiation for
+    (m, n, k) at the SIMD bit width the kernel was compiled with; a shape
+    without a compiled specialization runs the generic kernel (the M5
+    comptime-JIT fallback).
+    """
+    var key: String
+    var m: Int
+    var n: Int
+    var k: Int
+    var width: Int  # SIMD bit width (64/128/256)
+
+    def __init__(out self, key: String, m: Int, n: Int, k: Int, width: Int):
+        self.key = key
+        self.m = m
+        self.n = n
+        self.k = k
+        self.width = width
+
+    def __init__(out self, *, copy: CompiledFusedKernel):
+        self.key = copy.key
+        self.m = copy.m
+        self.n = copy.n
+        self.k = copy.k
+        self.width = copy.width
+
+    def run(
+        self,
+        x: Tensor[DType.float16, 2],
+        w: Tensor[DType.float16, 2],
+        eps: Float32,
+    ) -> Tensor[DType.float16, 2]:
+        # The specialized shape table (comptime instantiations).  The two
+        # 1.5B-model FFN shapes (hidden 1536, ffn 8960) plus a small test
+        # shape that exercises the UNROLL/TILE knobs.
+        if self.m == 1 and self.n == 8960 and self.k == 1536:
+            if self.width == 256:
+                return _fused_matmul_rms_norm_specialized[1, 8960, 1536, 16](
+                    x, w, eps
+                )
+            elif self.width == 64:
+                return _fused_matmul_rms_norm_specialized[1, 8960, 1536, 4](
+                    x, w, eps
+                )
+            return _fused_matmul_rms_norm_specialized[1, 8960, 1536, 8](
+                x, w, eps
+            )
+        if self.m == 1 and self.n == 1536 and self.k == 8960:
+            if self.width == 256:
+                return _fused_matmul_rms_norm_specialized[1, 1536, 8960, 16](
+                    x, w, eps
+                )
+            elif self.width == 64:
+                return _fused_matmul_rms_norm_specialized[1, 1536, 8960, 4](
+                    x, w, eps
+                )
+            return _fused_matmul_rms_norm_specialized[1, 1536, 8960, 8](
+                x, w, eps
+            )
+        if self.m == 2 and self.n == 256 and self.k == 128:
+            if self.width == 256:
+                return _fused_matmul_rms_norm_specialized[2, 256, 128, 16, 2, 64](
+                    x, w, eps
+                )
+            elif self.width == 64:
+                return _fused_matmul_rms_norm_specialized[2, 256, 128, 4, 2, 32](
+                    x, w, eps
+                )
+            return _fused_matmul_rms_norm_specialized[2, 256, 128, 8, 2, 64](
+                x, w, eps
+            )
+        # shape without a compiled specialization: the generic kernel
+        return fused_matmul_rms_norm[DType.float16](x, w, eps)
+
+
+def compile_fused_kernel(m: Int, n: Int, k: Int, width: Int) -> CompiledFusedKernel:
+    """The compile function for fused matmul+rmsnorm specializations.
+
+    Passed to `JitCache.get_or_compile` as a thin function value - the
+    Mojo 1.0 form of the task's `compile_fn: Function` parameter (a
+    top-level function; thin functions cannot capture state, so the shape
+    is passed explicitly).
+    """
+    return CompiledFusedKernel(
+        fused_matmul_rms_norm_key(m, n, k), m, n, k, width
+    )

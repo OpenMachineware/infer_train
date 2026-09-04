@@ -11,9 +11,9 @@ SRC := src
 TP := python/infer_train/_lib/libinfer_train_tp.dylib
 TP_XLINK := -Xlinker $(TP)
 
-.PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 test-gpu test-gguf-split \
-        test-rpc test-thread-pool clean tp server cli rpc-server \
-        infer_train version
+.PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 test-m8 test-gpu \
+        test-gguf-split test-rpc test-thread-pool clean tp server cli \
+        rpc-server infer_train version
 
 # The C runtime helper library (thread pool + mmap + clock).
 tp:
@@ -69,6 +69,13 @@ test-m5-mojo: tp
 	./tests/test_optimizer
 	$(MOJO) build -I . tests/test_jit.mojo $(TP_XLINK) -o tests/test_jit
 	./tests/test_jit
+
+# M8: SIMD adaptive width + JIT shape specialization (CPU path).
+test-m8: tp
+	$(MOJO) build -I . tests/test_simd_utils.mojo $(TP_XLINK) -o tests/test_simd_utils
+	./tests/test_simd_utils
+	$(MOJO) build -I . tests/test_jit_cache.mojo $(TP_XLINK) -o tests/test_jit_cache
+	./tests/test_jit_cache
 
 # M6: training - backward gradient checks, the AdamW/SGD optimizers, the
 # Mojo training loop, and the PyTorch training acceptance suite.

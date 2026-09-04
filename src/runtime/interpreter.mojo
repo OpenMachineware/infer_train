@@ -39,8 +39,10 @@ from ..core.ops.base.op_autograd import (
     accumulate_any,
     ones_like_any,
 )
+from ..core.tensor import Tensor
 from ..core.utils import unimplemented
 from ..core.jit.jit_cache import JitCache
+from ..core.simd_utils import AutotuneCache
 from ..core.scheduler.thread_pool import ensure_runtime, worker_count
 
 
@@ -49,12 +51,23 @@ struct Interpreter(Movable):
     var registry: OpRegistry
     var jit_cache: JitCache
     var jit_enabled: Bool
+    var simd_autotune: Bool  # M8: opt-in SIMD width autotuning
+    var autotune_cache: AutotuneCache
+    var autotune_done: Bool
 
-    def __init__(out self, var graph: Graph, var registry: OpRegistry):
+    def __init__(
+        out self,
+        var graph: Graph,
+        var registry: OpRegistry,
+        simd_autotune: Bool = False,
+    ):
         self.graph = graph^
         self.registry = registry^
         self.jit_cache = JitCache()
         self.jit_enabled = True
+        self.simd_autotune = simd_autotune
+        self.autotune_cache = AutotuneCache()
+        self.autotune_done = False
 
     def _is_jit_node(self, node_id: Int) -> Bool:
         if not self.jit_enabled:
@@ -69,15 +82,36 @@ struct Interpreter(Movable):
     def _run_jit_ffn(
         mut self, node_id: Int, inputs: List[AnyTensor]
     ) -> List[AnyTensor]:
-        """Dispatch a jit-marked swiglu_ffn node through the JIT cache."""
+        """Dispatch a jit-marked swiglu_ffn node through the JIT cache.
+
+        With M8 SIMD autotuning on, the projection k-loop width comes from
+        the autotune cache (benchmarked once for the input shapes); the
+        default path keeps the legacy 128-bit width.
+        """
         var x = from_any[DType.float16, 2](inputs[0])
         var gw = from_any[DType.float16, 2](inputs[1])
         var uw = from_any[DType.float16, 2](inputs[2])
         var dw = from_any[DType.float16, 2](inputs[3])
-        var out = self.jit_cache.run_ffn(x, gw, uw, dw)
+        var out: Tensor[DType.float16, 2]
+        if self.simd_autotune:
+            var width = self.autotune_cache.get(x.shape()[1])
+            out = self.jit_cache.run_ffn_width(x, gw, uw, dw, width)
+        else:
+            out = self.jit_cache.run_ffn(x, gw, uw, dw)
         var results = List[AnyTensor]()
         results.append(to_any[DType.float16, 2](out))
         return results^
+
+    def _autotune_inputs(mut self, inputs: List[AnyTensor]):
+        """M8: benchmark the SIMD widths for the input row lengths (once,
+        on the first run when simd_autotune is enabled)."""
+        for t in inputs:
+            if t.rank == 2:
+                var dim = t.shape[1]
+                if t.dtype == DType.float16:
+                    self.autotune_cache.autotune_f16(dim)
+                else:
+                    self.autotune_cache.autotune_f32(dim)
 
     def _entry_take_count(self, node_id: Int, remaining: Int) -> Int:
         """How many external inputs this entry node consumes.
@@ -136,6 +170,11 @@ struct Interpreter(Movable):
         inline on the caller (the "only the main thread works" bug).
         """
         ensure_runtime()
+        # M8: the autotune stage runs once, before the first dispatch,
+        # benchmarking the SIMD widths for the input row lengths.
+        if self.simd_autotune and not self.autotune_done:
+            self._autotune_inputs(inputs)
+            self.autotune_done = True
         var order = self.graph.topo_sort()
         var cursor = 0
         for node_id in order:
