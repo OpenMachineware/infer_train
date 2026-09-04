@@ -665,7 +665,7 @@ def _mha_typed_cpu(
     cache.v = vc_tensor
     cache.max_len = kc_tensor.shape()[1]
     cache.filled = start_pos
-    var out = mha_forward[DType.float16](
+    var out = mha_forward(
         x,
         wq,
         wk,

@@ -215,6 +215,21 @@ int64_t tp_now_ns(void) {
     return (int64_t)(t * info.numer / info.denom);
 }
 
+/* Q4-resident: the process's current memory footprint in bytes
+ * (macOS phys_footprint - what Activity Monitor reports; 0 on failure).
+ * Used by tests/test_gguf.mojo to verify that a quantized-resident model
+ * stays far below the dequantized (2x fp16) footprint. */
+#include <mach/mach.h>
+uint64_t it_rss_bytes(void) {
+    struct task_vm_info info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info,
+                  &count) != KERN_SUCCESS) {
+        return 0;
+    }
+    return (uint64_t)info.phys_footprint;
+}
+
 /* ---- M8: TCP helpers for the multi-process / multi-machine RPC layer ----
  *
  * Mojo 1.0's stdlib has no socket API, so the RPC transport (llama.cpp-style

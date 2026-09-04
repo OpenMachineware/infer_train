@@ -12,6 +12,8 @@
 #     value       = d * sc * q                      (q centered at 32)
 #   * Q8_0 block  = 34 bytes:  d(2) qs(32)
 #     value       = d * qs[i]                       (signed int8)
+#   * Q4_0 block  = 18 bytes:  d(2) qs(16)
+#     value       = d * (q - 8)                     (unsigned 4-bit)
 #   * IQ4_NL      = 18 bytes:  d(2) qs(16)
 #     value       = d * kvalues_iq4nl[q]            (4-bit codebook)
 #   * IQ4_XS      = 136 bytes: d(2) scales_h(2) scales_l(4) qs(128)
@@ -29,12 +31,22 @@
 #
 # All output tensors are pre-allocated by the caller (the MemoryPool owns
 # the bulk buffers).
+#
+# Block mode (Q4-resident): `dequantize_blocks` / `dequantize_block` decode
+# one or a few blocks (super-blocks) at a time into a caller-owned scratch
+# buffer instead of the whole tensor.  The fused quantized matmul
+# (`matmul_quantized_cpu` in `ops/cpu/matmul_cpu.mojo`) uses this to
+# dequantize a block, accumulate it into the dot product, and discard it -
+# the dequantized values never leave the kernel scope, so a quantized
+# weight's resident footprint stays its on-disk (Q4) size.
 
 from ...tensor import Tensor
 from ...utils import unimplemented
+from .quant_types import QuantType, block_elems
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
 from std.memory.unsafe import bitcast
+from std.utils.static_tuple import StaticTuple
 
 comptime QK_K = 256
 comptime GGML_F32 = 0
@@ -215,6 +227,24 @@ def _dequantize_q8_0_block[
         _store_dequant(dst, base + i, d * Float32(q))
 
 
+def _dequantize_q4_0_block[
+    dtype: DType
+](block: Pointer[UInt8, MutUntrackedOrigin], dst: Tensor[dtype, 2], base: Int,):
+    """Q4_0 block: 32-element blocks, fp16 delta + unsigned 4-bit quants.
+
+    Mirrors `dequantize_row_q4_0` in ggml-quants.c: the block is
+    `d(2 bytes fp16) + qs(16 bytes, 2 quants per byte)` and every value is
+    `d * (q - 8)`, computed in FP32.
+    """
+    var half = block.unsafe_bitcast[Scalar[DType.float16]]()
+    var d = Float32(half.unsafe_load[width=1](offset=0))
+    var qs = block.unsafe_offset(2)
+    for j in range(16):
+        var b = Int(qs.unsafe_load[width=1](offset=j))
+        _store_dequant(dst, base + j, d * (Float32(b & 0xF) - Float32(8)))
+        _store_dequant(dst, base + 16 + j, d * (Float32(b >> 4) - Float32(8)))
+
+
 def _dequantize_q5_k_block[
     dtype: DType
 ](block: Pointer[UInt8, MutUntrackedOrigin], dst: Tensor[dtype, 2], base: Int,):
@@ -378,6 +408,12 @@ def _dequantize_dispatch[
         for b in range(nb):
             _dequantize_q8_0_block(
                 data.unsafe_offset(offset + b * 34), dst, b * 32
+            )
+    elif ggml_type == GGML_Q4_0:
+        var nb = numel // 32
+        for b in range(nb):
+            _dequantize_q4_0_block(
+                data.unsafe_offset(offset + b * 18), dst, b * 32
             )
     elif ggml_type == GGML_IQ4_NL:
         var nb = numel // 32
@@ -560,3 +596,103 @@ def dequantize_iq4_xs[
         _dequantize_iq4_xs_block(
             data.unsafe_offset(offset + b * 136), dst, b * QK_K
         )
+
+
+def dequantize_q4_0[
+    dtype: DType
+](
+    data: Pointer[UInt8, MutUntrackedOrigin],
+    offset: Int,
+    dst: Tensor[dtype, 2],
+    numel: Int,
+):
+    """Q4_0 -> `dtype`; bit-exact with `dequantize_row_q4_0`."""
+    var nb = numel // 32
+    for b in range(nb):
+        _dequantize_q4_0_block(data.unsafe_offset(offset + b * 18), dst, b * 32)
+
+
+# -- block mode (Q4-resident, per-block dequantization) -------------------
+#
+# `dequantize_into` / `dequantize_into_f32` decode a whole tensor.  The
+# block-mode entry points below decode exactly `n_blocks` consecutive
+# blocks (super-blocks) into a caller-owned scratch buffer, so the fused
+# quantized matmul can dequantize one block, fold it into the dot product,
+# and discard it before the next block: the dequantized values never leave
+# the kernel scope, and the weight's resident footprint stays its on-disk
+# (Q4) size instead of doubling into fp16/fp32.
+#
+# The decode is the same bit-exact block kernels used by the whole-tensor
+# path (a zero-copy `Tensor` view over the scratch pointer), so block mode
+# and whole-tensor mode agree element for element.
+
+
+def dequantize_blocks[
+    dtype: DType,
+    quant_type: QuantType,
+](
+    data: Pointer[UInt8, MutUntrackedOrigin],
+    offset: Int,
+    dst: Pointer[Scalar[dtype], MutUntrackedOrigin],
+    n_blocks: Int,
+):
+    """Dequantize `n_blocks` consecutive blocks of `quant_type` into `dst`.
+
+    `data + offset` must point at the first block; `dst` must hold
+    `n_blocks * block_elems(quant_type)` elements.  `quant_type` is a
+    comptime parameter, so only the chosen format's decode survives
+    compilation (the Q4_K_M / Q4_0 workhorses included).
+    """
+    comptime be = block_elems(quant_type)
+    var view = Tensor[dtype, 2](
+        StaticTuple[Int, 2](1, n_blocks * be), dst
+    )
+    comptime if quant_type == QuantType.Q4_K_M:
+        for b in range(n_blocks):
+            _dequantize_q4_k_block(
+                data.unsafe_offset(offset + b * 144), view, b * be
+            )
+    elif quant_type == QuantType.Q4_0:
+        for b in range(n_blocks):
+            _dequantize_q4_0_block(
+                data.unsafe_offset(offset + b * 18), view, b * be
+            )
+    elif quant_type == QuantType.Q8_0:
+        for b in range(n_blocks):
+            _dequantize_q8_0_block(
+                data.unsafe_offset(offset + b * 34), view, b * be
+            )
+    elif quant_type == QuantType.Q6_K:
+        for b in range(n_blocks):
+            _dequantize_q6_k_block(
+                data.unsafe_offset(offset + b * 210), view, b * be
+            )
+    elif quant_type == QuantType.Q5_K:
+        for b in range(n_blocks):
+            _dequantize_q5_k_block(
+                data.unsafe_offset(offset + b * 176), view, b * be
+            )
+    elif quant_type == QuantType.IQ4_XS:
+        for b in range(n_blocks):
+            _dequantize_iq4_xs_block(
+                data.unsafe_offset(offset + b * 136), view, b * be
+            )
+    elif quant_type == QuantType.Q2_K:
+        unimplemented("dequantize_blocks: Q2_K dequantizer not implemented")
+    else:
+        unimplemented("dequantize_blocks: unknown quant type")
+
+
+def dequantize_block[
+    dtype: DType,
+    quant_type: QuantType,
+](
+    data: Pointer[UInt8, MutUntrackedOrigin],
+    offset: Int,
+    dst: Pointer[Scalar[dtype], MutUntrackedOrigin],
+):
+    """Dequantize exactly one block (super-block) of `quant_type` into
+    `dst` (`block_elems(quant_type)` elements).  The one-block form of
+    `dequantize_blocks` - the inner-loop primitive of the fused quantized
+    matmul."""
+    dequantize_blocks[dtype, quant_type](data, offset, dst, 1)

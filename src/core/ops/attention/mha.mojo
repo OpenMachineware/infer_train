@@ -27,6 +27,7 @@ from ..cpu.matmul_cpu import (
     matmul_weight_cpu_threaded,
     matmul_weight_3_threaded,
 )
+from ..quantized.qweight import QWeight, qweight_from_fp16
 from ..cpu.add_cpu import add_row_cpu
 from ..cpu.rope_cpu import (
     rope_cpu_dynamic,
@@ -92,42 +93,50 @@ struct MHAOptions(Copyable, Movable, ImplicitlyCopyable):
         self.norm_eps = Float32(1e-6)
 
 
-def mha_forward[dtype: DType](
-    x: Tensor[dtype, 2],
-    wq: Tensor[dtype, 2],
-    wk: Tensor[dtype, 2],
-    wv: Tensor[dtype, 2],
-    wo: Tensor[dtype, 2],
-    bq: Tensor[dtype, 1],
-    bk: Tensor[dtype, 1],
-    bv: Tensor[dtype, 1],
+def mha_forward(
+    x: Tensor[DType.float16, 2],
+    wq: Tensor[DType.float16, 2],
+    wk: Tensor[DType.float16, 2],
+    wv: Tensor[DType.float16, 2],
+    wo: Tensor[DType.float16, 2],
+    bq: Tensor[DType.float16, 1],
+    bk: Tensor[DType.float16, 1],
+    bv: Tensor[DType.float16, 1],
     mut cache: KVCacheLayer,
     start_pos: Int,
     n_heads: Int,
     n_kv_heads: Int,
     head_dim: Int,
     rope_theta: Float32,
-) -> Tensor[dtype, 2]:
-    """M3/M7: the classic Qwen2 path (no Q/K norms, full RoPE, no gate)."""
+) -> Tensor[DType.float16, 2]:
+    """M3/M7: the classic Qwen2 path (no Q/K norms, full RoPE, no gate).
+
+    M11: fp16-only (the cached decode path is fp16 by design); the fp16
+    weights are wrapped as `QWeight`s and projected through the same
+    Q4-resident path as the quantized models.
+    """
     var opts = MHAOptions()
-    return mha_forward_v2[dtype](
-        x, wq, wk, wv, wo, bq, bk, bv, Tensor[dtype, 1](StaticTuple[Int, 1](0)),
-        Tensor[dtype, 1](StaticTuple[Int, 1](0)), cache, start_pos, n_heads,
-        n_kv_heads, head_dim, rope_theta, opts,
+    var ds = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](1))
+    return mha_forward_v2(
+        x, qweight_from_fp16(wq), qweight_from_fp16(wk),
+        qweight_from_fp16(wv), qweight_from_fp16(wo), bq, bk, bv,
+        Tensor[DType.float16, 1](StaticTuple[Int, 1](0)),
+        Tensor[DType.float16, 1](StaticTuple[Int, 1](0)), cache, start_pos, n_heads,
+        n_kv_heads, head_dim, rope_theta, opts, ds,
     )
 
 
-def mha_forward_v2[dtype: DType](
-    x: Tensor[dtype, 2],
-    wq: Tensor[dtype, 2],
-    wk: Tensor[dtype, 2],
-    wv: Tensor[dtype, 2],
-    wo: Tensor[dtype, 2],
-    bq: Tensor[dtype, 1],
-    bk: Tensor[dtype, 1],
-    bv: Tensor[dtype, 1],
-    q_norm_w: Tensor[dtype, 1],
-    k_norm_w: Tensor[dtype, 1],
+def mha_forward_v2(
+    x: Tensor[DType.float16, 2],
+    wq: QWeight,
+    wk: QWeight,
+    wv: QWeight,
+    wo: QWeight,
+    bq: Tensor[DType.float16, 1],
+    bk: Tensor[DType.float16, 1],
+    bv: Tensor[DType.float16, 1],
+    q_norm_w: Tensor[DType.float16, 1],
+    k_norm_w: Tensor[DType.float16, 1],
     mut cache: KVCacheLayer,
     start_pos: Int,
     n_heads: Int,
@@ -135,29 +144,33 @@ def mha_forward_v2[dtype: DType](
     head_dim: Int,
     rope_theta: Float32,
     opts: MHAOptions,
-) -> Tensor[dtype, 2]:
-    """Generalized single-token MHA (M7).
+    dummy_scale: Tensor[DType.float16, 1],
+) -> Tensor[DType.float16, 2]:
+    """Generalized single-token MHA (M7), Q4-resident (M11).
 
     Qwen2 (defaults) -> identical to `mha_forward`.  hunyuan-dense and
     qwen35 full-attention layers pass the q/k norm weights and variant
     switches.  K/V are stored into the cache *after* RoPE/normalization.
+
+    The Q/K/V/O projections are `QWeight`s: quantized weights are
+    projected through the fused per-block-dequant matmul (`QWeight.proj`
+    -> `matmul_quantized_cpu`, the dequantized values never leave the
+    kernel scope), materialized fp16 weights through the threaded
+    weight-major kernel.  Everything else (bias, RoPE, per-head Q/K norm,
+    gate, KV cache, softmax) is unchanged from the M7 fp16 path.
     """
-    var hidden = x.shape()[1]
-    var kv_hidden = wk.shape()[0]
-    var q_width = wq.shape()[0]
-    var q_flat = tensor_zeros[dtype, 2](StaticTuple[Int, 2](1, q_width))
-    var k_flat = tensor_zeros[dtype, 2](StaticTuple[Int, 2](1, kv_hidden))
-    var v_flat = tensor_zeros[dtype, 2](StaticTuple[Int, 2](1, kv_hidden))
-    matmul_weight_3_threaded[dtype](x, wq, wk, wv, q_flat, k_flat, v_flat)
+    var q_flat = wq.proj(x, dummy_scale)
+    var k_flat = wk.proj(x, dummy_scale)
+    var v_flat = wv.proj(x, dummy_scale)
     if bq.numel() > 0:
-        q_flat = add_row_cpu[dtype](q_flat, bq)
+        q_flat = add_row_cpu[DType.float16](q_flat, bq)
     if bk.numel() > 0:
-        k_flat = add_row_cpu[dtype](k_flat, bk)
+        k_flat = add_row_cpu[DType.float16](k_flat, bk)
     if bv.numel() > 0:
-        v_flat = add_row_cpu[dtype](v_flat, bv)
+        v_flat = add_row_cpu[DType.float16](v_flat, bv)
     # qwen35 fuses Q+gate into wq ([q0,g0,q1,g1,...] per head): gather the
     # query part explicitly instead of the plain reshape.
-    var q3 = tensor_zeros[dtype, 3](
+    var q3 = tensor_zeros[DType.float16, 3](
         StaticTuple[Int, 3](n_heads, 1, head_dim)
     )
     if opts.gate:
@@ -165,28 +178,28 @@ def mha_forward_v2[dtype: DType](
             for d in range(head_dim):
                 q3.set(h * head_dim + d, q_flat.get(h * 2 * head_dim + d))
     else:
-        q3 = _qkv_reshape[dtype](q_flat, n_heads, head_dim)
-    var k3 = _qkv_reshape[dtype](k_flat, n_kv_heads, head_dim)
-    var v3 = _qkv_reshape[dtype](v_flat, n_kv_heads, head_dim)
+        q3 = _qkv_reshape[DType.float16](q_flat, n_heads, head_dim)
+    var k3 = _qkv_reshape[DType.float16](k_flat, n_kv_heads, head_dim)
+    var v3 = _qkv_reshape[DType.float16](v_flat, n_kv_heads, head_dim)
 
     if opts.q_norm and opts.norm_before_rope:
-        q3 = rms_norm_heads[dtype](q3, q_norm_w, opts.norm_eps)
+        q3 = rms_norm_heads[DType.float16](q3, q_norm_w, opts.norm_eps)
     if opts.k_norm and opts.norm_before_rope:
-        k3 = rms_norm_heads[dtype](k3, k_norm_w, opts.norm_eps)
+        k3 = rms_norm_heads[DType.float16](k3, k_norm_w, opts.norm_eps)
 
     var q_rot = q3
     var k_rot = k3
     if opts.n_rot > 0 and opts.n_rot < head_dim:
-        q_rot = rope_cpu_rot[dtype](q3, start_pos, rope_theta, opts.n_rot)
-        k_rot = rope_cpu_rot[dtype](k3, start_pos, rope_theta, opts.n_rot)
+        q_rot = rope_cpu_rot[DType.float16](q3, start_pos, rope_theta, opts.n_rot)
+        k_rot = rope_cpu_rot[DType.float16](k3, start_pos, rope_theta, opts.n_rot)
     else:
-        q_rot = rope_cpu_dynamic[dtype](q3, start_pos, rope_theta)
-        k_rot = rope_cpu_dynamic[dtype](k3, start_pos, rope_theta)
+        q_rot = rope_cpu_dynamic[DType.float16](q3, start_pos, rope_theta)
+        k_rot = rope_cpu_dynamic[DType.float16](k3, start_pos, rope_theta)
 
     if opts.q_norm and not opts.norm_before_rope:
-        q_rot = rms_norm_heads[dtype](q_rot, q_norm_w, opts.norm_eps)
+        q_rot = rms_norm_heads[DType.float16](q_rot, q_norm_w, opts.norm_eps)
     if opts.k_norm and not opts.norm_before_rope:
-        k_rot = rms_norm_heads[dtype](k_rot, k_norm_w, opts.norm_eps)
+        k_rot = rms_norm_heads[DType.float16](k_rot, k_norm_w, opts.norm_eps)
 
     # store K/V into the cache (dense or paged; M7 1.4)
     var max_len = cache.max_len
@@ -206,7 +219,7 @@ def mha_forward_v2[dtype: DType](
     if first < 0:
         first = 0
     var scale = Float32(1.0) / sqrt(Float32(head_dim))
-    var out = tensor_zeros[dtype, 3](
+    var out = tensor_zeros[DType.float16, 3](
         StaticTuple[Int, 3](n_heads, 1, head_dim)
     )
 
@@ -259,7 +272,7 @@ def mha_forward_v2[dtype: DType](
                 else:
                     vv = cache.get_v(kv_head, first + i, d)
                 acc += scores[i] * vv
-            out.set(h * head_dim + d, Scalar[dtype](acc))
+            out.set(h * head_dim + d, Scalar[DType.float16](acc))
 
     if opts.gate:
         # qwen35: fused Q+gate projection - the gate lives in the second
@@ -272,10 +285,10 @@ def mha_forward_v2[dtype: DType](
                 var s = Float32(1.0) / (Float32(1.0) + exp(-g))
                 out.set(
                     h * head_dim + d,
-                    Scalar[dtype](Float32(out.get(h * head_dim + d)) * s),
+                    Scalar[DType.float16](Float32(out.get(h * head_dim + d)) * s),
                 )
-    var out_flat = _flat_view[dtype](out, n_heads * head_dim)
-    return matmul_weight_cpu_threaded[dtype](out_flat, wo)
+    var out_flat = _flat_view[DType.float16](out, n_heads * head_dim)
+    return wo.proj(out_flat, dummy_scale)
 
 
 def rms_norm_heads[dtype: DType](
@@ -358,22 +371,22 @@ def multi_head_attention[dtype: DType, num_heads: Int, head_dim: Int](
     return out
 
 
-def mha_forward_with_saved[dtype: DType](
-    x: Tensor[dtype, 2],
-    wq: Tensor[dtype, 2],
-    wk: Tensor[dtype, 2],
-    wv: Tensor[dtype, 2],
-    wo: Tensor[dtype, 2],
-    bq: Tensor[dtype, 1],
-    bk: Tensor[dtype, 1],
-    bv: Tensor[dtype, 1],
+def mha_forward_with_saved(
+    x: Tensor[DType.float16, 2],
+    wq: Tensor[DType.float16, 2],
+    wk: Tensor[DType.float16, 2],
+    wv: Tensor[DType.float16, 2],
+    wo: Tensor[DType.float16, 2],
+    bq: Tensor[DType.float16, 1],
+    bk: Tensor[DType.float16, 1],
+    bv: Tensor[DType.float16, 1],
     mut cache: KVCacheLayer,
     start_pos: Int,
     n_heads: Int,
     n_kv_heads: Int,
     head_dim: Int,
     rope_theta: Float32,
-) -> Tuple[Tensor[dtype, 2], List[Tensor[dtype, 2]]]:
+) -> Tuple[Tensor[DType.float16, 2], List[Tensor[DType.float16, 2]]]:
     var out = mha_forward(
         x,
         wq,
@@ -390,7 +403,7 @@ def mha_forward_with_saved[dtype: DType](
         head_dim,
         rope_theta,
     )
-    var saved = List[Tensor[dtype, 2]]()
+    var saved = List[Tensor[DType.float16, 2]]()
     saved.append(x)
     return (out, saved^)
 

@@ -12,8 +12,8 @@ TP := python/infer_train/_lib/libinfer_train_tp.dylib
 TP_XLINK := -Xlinker $(TP)
 
 .PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 test-m8 test-gpu \
-        test-gguf-split test-rpc test-thread-pool clean tp server cli \
-        rpc-server infer_train version
+        test-gguf-split test-gguf test-rpc test-thread-pool clean tp server \
+        cli rpc-server infer_train version
 
 # The C runtime helper library (thread pool + mmap + clock).
 tp:
@@ -47,6 +47,7 @@ test-m3: tp
 	$(MOJO) build -I . tests/test_forward.mojo $(TP_XLINK) -o tests/test_forward
 	./tests/test_forward
 	$(MAKE) test-gguf-split
+	$(MAKE) test-gguf
 	$(MAKE) test-gpu
 
 # GPU kernels (Metal).  Falls back to the CPU kernels on machines without a
@@ -62,6 +63,13 @@ test-gpu: tp
 test-gguf-split: tp
 	$(MOJO) build -I . tests/test_gguf_split.mojo $(TP_XLINK) -o tests/test_gguf_split
 	./tests/test_gguf_split
+
+# M11: Q4-resident weights - the 27B memory budget (< 25 GB after load +
+# full page touch) and the quantized-vs-dequantized forward match.  Needs
+# the model files next to the repo root; reports SKIP if absent.
+test-gguf: tp
+	$(MOJO) build -I . tests/test_gguf.mojo $(TP_XLINK) -o tests/test_gguf
+	./tests/test_gguf
 
 # M5: the optimizer/CFG/JIT suites (Mojo executables).
 test-m5-mojo: tp

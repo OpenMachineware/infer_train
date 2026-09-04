@@ -1567,8 +1567,9 @@ def infer_train_finetune_create(
         var m_p = unsafe_alloc[Scalar[DType.float32]](vocab * hidden)
         var v_p = unsafe_alloc[Scalar[DType.float32]](vocab * hidden)
         ft[0] = FTState(w_p, m_p, v_p, vocab, hidden, 0, lr)
-        # seed the adapter from the model's current head (fp16 -> fp32)
-        var head = model[0].transformer.params.output_w
+        # seed the adapter from the model's current head (fp16 -> fp32);
+        # M11: head_fp16() dequantizes the Q4-resident head on demand
+        var head = model[0].transformer.head_fp16()
         for i in range(vocab * hidden):
             ft[0].w.unsafe_store(
                 i, Scalar[DType.float32](Float32(head.get(i)))
@@ -1665,8 +1666,9 @@ def infer_train_finetune_step(
                         - lr * update
                     ),
                 )
-        # sync the fp16 head back into the model (inference sees it now)
-        var head = model[0].transformer.params.output_w
+        # sync the fp16 head back into the model (inference sees it now);
+        # M11: set_head_fp16() installs it in both load modes
+        var head = model[0].transformer.head_fp16()
         for i in range(vocab * hidden):
             head.set(
                 i,
@@ -1674,6 +1676,7 @@ def infer_train_finetune_step(
                     Float32(ft[0].w.unsafe_load(offset=i))
                 ),
             )
+        model[0].transformer.set_head_fp16(head)
         probs.unsafe_free()
         return loss
     except:

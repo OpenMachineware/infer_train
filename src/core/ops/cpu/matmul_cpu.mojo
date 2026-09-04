@@ -16,13 +16,7 @@
 from ...tensor import Tensor, tensor_zeros
 from ...utils import unimplemented
 from ...thread_pool import parallel_run
-from ..quantized.dequantize import (
-    dequantize_q4_K_M,
-    dequantize_q5_K,
-    dequantize_q6_K,
-    dequantize_q8_0,
-    dequantize_iq4_xs,
-)
+from ..quantized.dequantize import dequantize_blocks
 from ..quantized.quant_types import (
     QuantType,
     block_bytes,
@@ -680,11 +674,26 @@ def matmul_weight_cpu_backward[dtype: DType](
 #
 # `matmul_quantized_cpu` is the comptime-parameterized entry point for
 # GGUF block-format weights.  `quant_type` selects the dequantizer at
-# compile time (the `comptime if` below keeps only the chosen branch, so
-# each instantiation is a dedicated kernel), the weight is dequantized into
-# a dense `dtype` tensor, and the result is fed to `matmul_weight_cpu` -
-# the existing weight-major kernel with FP32 accumulation (see the module
-# header), which matches the GGUF [out, in] layout directly.
+# compile time (the `comptime if` inside `dequantize_blocks` keeps only
+# the chosen branch, so each instantiation is a dedicated kernel).
+#
+# Q4-resident (the M11 change): the weight is NEVER dequantized into a
+# dense tensor.  The kernel walks the K dimension in block units and, for
+# every block, calls `dequantize_blocks` to decode exactly that one block
+# into a small scratch buffer, folds the block into the SIMD accumulator,
+# and discards it before the next block - the dequantized data does not
+# leave the kernel scope.  Peak extra memory is one block (256 x f16 =
+# 512 B for the K formats), so a quantized weight's resident footprint
+# stays its on-disk (Q4) size instead of doubling into fp16.
+#
+# Numerics: the per-block decode is the same bit-exact `ggml-quants.c`
+# kernels used by the whole-tensor path (validated by
+# `tests/test_dequant_m7.mojo`), and the SIMD accumulation order matches
+# `matmul_weight_cpu` (f32 accumulation, see the module header), so for
+# M == 1 the result is bit-identical to dequantize-then-matmul.  For
+# M > 1 each input row runs the same single-row kernel (the block is
+# re-decoded per row); the engine's decode path is single-token, so this
+# is the common case.
 #
 # For the GGUF block formats the scales (and mins) are packed inside every
 # quantized block - that is the llama.cpp `ggml-quants.c` layout - so the
@@ -695,6 +704,51 @@ def matmul_weight_cpu_backward[dtype: DType](
 # `group_size` is the sub-block (scale group) size; pass 0 to accept the
 # format's built-in layout, or the canonical size from
 # `quant_group_size(quant_type)` to assert it.
+
+
+def _matmul_quantized_row_kernel[
+    dtype: DType,
+    quant_type: QuantType,
+](
+    x: Pointer[Scalar[dtype], MutUntrackedOrigin],
+    b: Pointer[UInt8, MutUntrackedOrigin],
+    dst: Pointer[Scalar[dtype], MutUntrackedOrigin],
+    N: Int,
+    nb: Int,
+):
+    """Fused per-block dequant + dot product for one input row.
+
+    `x` is the row [K]; `b` is the quantized weight [N, nb blocks]; `dst`
+    receives the N dot products.  For each output row j the K dimension is
+    walked block by block: one block is dequantized into the scratch
+    buffer, folded into the f32 SIMD accumulator, and discarded.  The
+    scratch (one block, e.g. 256 x f16 = 512 B) is the kernel's only
+    extra allocation - the dequantized values never leave this scope.
+    """
+    comptime be = block_elems(quant_type)
+    comptime bb = block_bytes(quant_type)
+    comptime W = 8 if dtype == DType.float16 else 4
+    comptime be_chunks = be // W
+    var scratch = unsafe_alloc[Scalar[dtype]](be)
+    for j in range(N):
+        var acc = SIMD[DType.float32, W](0)
+        var row = b.unsafe_offset(j * nb * bb)
+        var k = 0
+        for blk in range(nb):
+            dequantize_blocks[dtype, quant_type](row, blk * bb, scratch, 1)
+            var l = 0
+            while l < be_chunks:
+                var xv = x.unsafe_load[width=W](
+                    offset=k + l * W
+                ).cast[DType.float32]()
+                var wv = scratch.unsafe_load[width=W](
+                    offset=l * W
+                ).cast[DType.float32]()
+                acc = acc + xv * wv
+                l += 1
+            k += be
+        dst.unsafe_store(j, acc.reduce_add().cast[dtype]())
+    scratch.unsafe_free()
 
 
 def matmul_quantized_cpu[
@@ -713,41 +767,41 @@ def matmul_quantized_cpu[
     weight [N, *] in the raw block layout of `quant_type` (row-major
     super-blocks, N rows of K elements each); the result is [M, N] in
     `dtype`.  The dequantization is bit-exact with llama.cpp's
-    `ggml-quants.c` (validated by `tests/test_dequant_m7.mojo`), and the
-    matmul reuses `matmul_weight_cpu`'s FP32-accumulation kernels.
+    `ggml-quants.c` and happens per block INSIDE the matmul kernel (see
+    the module section header): no dense dequantized copy of the weight
+    is ever materialized.
     """
+    var M = a.shape()[0]
     var K = a.shape()[1]
     var N = b_quant.shape()[0]
     var be = block_elems(quant_type)
     var bb = block_bytes(quant_type)
     if be == 0 or K % be != 0:
         unimplemented("matmul_quantized_cpu: K not a multiple of block size")
+    comptime W = 8 if dtype == DType.float16 else 4
+    if K % W != 0:
+        unimplemented("matmul_quantized_cpu: K not a multiple of SIMD width")
     if b_quant.numel() != N * (K // be) * bb:
         unimplemented("matmul_quantized_cpu: b_quant byte size mismatch")
     if group_size != 0 and group_size != quant_group_size(quant_type):
         unimplemented("matmul_quantized_cpu: group_size mismatch for format")
-
-    var b_deq = tensor_zeros[dtype, 2](StaticTuple[Int, 2](N, K))
-    var b_ptr = b_quant.data()
-    comptime if quant_type == QuantType.Q4_K_M:
-        dequantize_q4_K_M[dtype](b_ptr, 0, b_deq, N * K)
-    elif quant_type == QuantType.Q8_0:
-        dequantize_q8_0[dtype](b_ptr, 0, b_deq, N * K)
-    elif quant_type == QuantType.Q6_K:
-        dequantize_q6_K[dtype](b_ptr, 0, b_deq, N * K)
-    elif quant_type == QuantType.Q5_K:
-        dequantize_q5_K[dtype](b_ptr, 0, b_deq, N * K)
-    elif quant_type == QuantType.IQ4_XS:
-        dequantize_iq4_xs[dtype](b_ptr, 0, b_deq, N * K)
-    elif quant_type == QuantType.Q2_K:
-        unimplemented("matmul_quantized_cpu: Q2_K dequantizer not implemented")
-        return tensor_zeros[dtype, 2](StaticTuple[Int, 2](0, 0))
-    else:
-        unimplemented("matmul_quantized_cpu: unknown quant type")
-        return tensor_zeros[dtype, 2](StaticTuple[Int, 2](0, 0))
     _ = scale
     _ = zero_point
-    return matmul_weight_cpu[dtype](a, b_deq)
+
+    var out = tensor_zeros[dtype, 2](StaticTuple[Int, 2](M, N))
+    var a_ptr = a.data()
+    var b_ptr = b_quant.data()
+    var out_ptr = out.data()
+    var nb = K // be
+    for i in range(M):
+        _matmul_quantized_row_kernel[dtype, quant_type](
+            a_ptr.unsafe_offset(i * K),
+            b_ptr,
+            out_ptr.unsafe_offset(i * N),
+            N,
+            nb,
+        )
+    return out
 
 
 # -- M8: JIT shape specialization for the fused matmul + RMSNorm op ----------

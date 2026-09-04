@@ -562,7 +562,8 @@ struct FinetuneSession(Movable):
         self.t = 0
         self.lr = lr
         # Seed the adapter from the model's current head (fp16 -> fp32).
-        var head = model_p[0].transformer.params.output_w
+        # M11: head_fp16() dequantizes the Q4-resident head on demand.
+        var head = model_p[0].transformer.head_fp16()
         for i in range(vocab * hidden):
             self.w.unsafe_store(
                 i, Scalar[DType.float32](Float32(head.get(i)))
@@ -650,7 +651,9 @@ struct FinetuneSession(Movable):
                     ),
                 )
         # Sync the fp16 head back into the model (inference sees it now).
-        var head = model_p[0].transformer.params.output_w
+        # M11: set_head_fp16() installs it as the forward's head in both
+        # the Q4-resident and the legacy dequantized modes.
+        var head = model_p[0].transformer.head_fp16()
         for i in range(vocab * hidden):
             head.set(
                 i,
@@ -658,6 +661,7 @@ struct FinetuneSession(Movable):
                     Float32(self.w.unsafe_load(offset=i))
                 ),
             )
+        model_p[0].transformer.set_head_fp16(head)
         probs.unsafe_free()
         return loss
 

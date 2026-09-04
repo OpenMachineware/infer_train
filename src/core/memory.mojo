@@ -68,6 +68,22 @@ def munmap_file(ptr: Pointer[UInt8, MutUntrackedOrigin], size: Int):
     ](ptr, Int64(size))
 
 
+def process_rss_bytes() -> Int:
+    """The process's current memory footprint in bytes (macOS
+    `phys_footprint`; 0 when the C helper is unavailable).
+
+    Q4-resident: with weights kept in their quantized on-disk layout
+    (mmap-backed, paged lazily), this measures how much of the model is
+    actually resident - the number the `tests/test_gguf.mojo` memory
+    budget asserts against.
+    """
+    _load_tp_library()
+    var r = external_call["it_rss_bytes", Int64]()
+    if r < 0:
+        return 0
+    return Int(r)
+
+
 struct MemoryPool:
     var _base: Pointer[UInt8, MutUntrackedOrigin]
     var _size: Int

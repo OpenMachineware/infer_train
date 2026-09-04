@@ -13,11 +13,14 @@
 
 from .memory import mmap_file, munmap_file
 from .utils import align_up, unimplemented
+from .tensor import Tensor
+from .ops.quantized.quant_types import QuantType
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
 from std.collections import Span
 from std.utils.static_tuple import StaticTuple
 from std.memory.unsafe import bitcast
+from std.memory.alloc import unsafe_alloc
 
 # GGUF value types (see the GGUF spec).
 comptime GGUF_UINT8 = 0
@@ -84,6 +87,67 @@ struct GGUFTensor(Copyable, Movable, ImplicitlyCopyable):
         self.ggml_type = 0
         self.offset = 0
         self.file_idx = 0
+
+
+struct GGUFQuantInfo(Copyable, Movable, ImplicitlyCopyable):
+    """Per-tensor quantization metadata (the Q4-resident contract).
+
+    Stored behind `Tensor.quantization_info` (an opaque `Pointer[UInt8]`)
+    by `GGUFContext.load_tensor`.  `quant_type` is the `QuantType` tag of
+    the comptime-specialized dequantizer/matmul kernel (-1 when the format
+    has no block kernel: F16/F32, IQ4_NL, NF4).  For every GGUF block
+    format the per-block scales (and mins) live *inside* the quantized
+    bytes, so the global `scale` is 0.0 and `group_size` is the sub-block
+    (scale-group) element count.
+    """
+
+    var ggml_type: Int  # raw GGUF ggml type (2 Q4_0, 12 Q4_K, 13 Q5_K, ...)
+    var quant_type: Int8  # QuantType tag, or -1 (no comptime block kernel)
+    var group_size: Int  # elements per scale group (32 for block formats)
+    var block_bytes: Int  # bytes per block (18 Q4_0, 144 Q4_K, 176 Q5_K, ...)
+    var block_elems: Int  # elements per block (32 Q4_0/Q8_0, 256 K formats)
+    var scale: Float32  # global scale (0.0: scales are packed per block)
+
+    def __init__(out self):
+        self.ggml_type = 0
+        self.quant_type = Int8(-1)
+        self.group_size = 0
+        self.block_bytes = 0
+        self.block_elems = 0
+        self.scale = Float32(0.0)
+
+
+def ggml_quant_info(ggml_type: Int) -> Tuple[Int, Int, Int, Int8]:
+    """(block_elems, block_bytes, group_size, quant_type tag) for a GGUF
+    ggml type.
+
+    Block sizes mirror llama.cpp's `ggml-quants.c`.  The `quant_type` tag
+    matches `QuantType` (ops/quantized/quant_types.mojo); -1 means the
+    format has no comptime quantized-matmul kernel (F16/F32, IQ4_NL, NF4)
+    and must be materialized to fp16 by the caller.
+    """
+    if ggml_type == 2:  # Q4_0
+        return (32, 18, 32, QuantType.Q4_0._tag)
+    if ggml_type == 12:  # Q4_K (Q4_K_M)
+        return (256, 144, 32, QuantType.Q4_K_M._tag)
+    if ggml_type == 13:  # Q5_K
+        return (256, 176, 32, QuantType.Q5_K._tag)
+    if ggml_type == 14:  # Q6_K
+        return (256, 210, 32, QuantType.Q6_K._tag)
+    if ggml_type == 8:  # Q8_0
+        return (32, 34, 32, QuantType.Q8_0._tag)
+    if ggml_type == 23:  # IQ4_XS
+        return (256, 136, 32, QuantType.IQ4_XS._tag)
+    if ggml_type == 20:  # IQ4_NL
+        return (32, 18, 0, Int8(-1))
+    if ggml_type == 30:  # NF4
+        return (64, 34, 0, Int8(-1))
+    if ggml_type == 0:  # F32
+        return (1, 4, 0, Int8(-1))
+    if ggml_type == 1:  # F16
+        return (1, 2, 0, Int8(-1))
+    unimplemented("gguf: unsupported ggml type " + String(ggml_type))
+    return (1, 1, 0, Int8(-1))
 
 
 struct GGUFFilePart(Copyable, Movable, ImplicitlyCopyable):
@@ -200,6 +264,49 @@ struct GGUFContext(Movable):
         """Base pointer directly at `t`'s payload bytes (owning part aware)."""
         var (base, off) = self.tensor_data(t)
         return base.unsafe_offset(off)
+
+    def load_tensor(self, t: GGUFTensor) -> Tensor[DType.uint8, 2]:
+        """Materialize `t` as a zero-copy `Tensor[UInt8, 2]` that KEEPS its
+        on-disk layout (Q4-resident).
+
+        No dequantization happens here: the bytes keep their quantized
+        block layout (Q4_K_M / Q4_0 / Q5_K / Q6_K / Q8_0 / IQ4_XS) - or,
+        for F16/F32 tensors, their raw 2/4-byte-per-element layout.  The
+        quantization metadata (`quant_type`, `scale`, `group_size`, block
+        sizes) is stored in the returned tensor's `quantization_info`
+        field (a heap `GGUFQuantInfo`), so consumers such as
+        `matmul_quantized_cpu` dequantize per block at compute time and
+        the weight's resident footprint stays its on-disk size instead of
+        doubling into fp16.
+
+        Shape: rank-2 tensors come back as [dims[1], bytes_per_row] - the
+        [out, in] layout the weight-major kernels expect (GGUF dims are
+        ggml-ordered, innermost first); rank-1 tensors as [1, total_bytes].
+        The storage is a view over the memory-mapped file: it must outlive
+        the owning `GGUFContext` mapping (released by `munmap_all`).
+        """
+        if t.n_dims > 2:
+            unimplemented("load_tensor: rank-3 tensors use GGUFTensor views")
+        var numel = 1
+        for d in range(t.n_dims):
+            numel *= t.dims[d]
+        var (be, bb, gs, tag) = ggml_quant_info(t.ggml_type)
+        var shape: StaticTuple[Int, 2]
+        if t.n_dims >= 2:
+            shape = StaticTuple[Int, 2](t.dims[1], (numel // t.dims[1]) * bb // be)
+        else:
+            shape = StaticTuple[Int, 2](1, numel * bb // be)
+        var ptr = self.tensor_data_ptr(t).unsafe_bitcast[Scalar[DType.uint8]]()
+        var out = Tensor[DType.uint8, 2](shape, ptr)
+        var info = unsafe_alloc[GGUFQuantInfo](1)
+        info[unsafe_offset=0].ggml_type = t.ggml_type
+        info[unsafe_offset=0].quant_type = tag
+        info[unsafe_offset=0].group_size = gs
+        info[unsafe_offset=0].block_bytes = bb
+        info[unsafe_offset=0].block_elems = be
+        info[unsafe_offset=0].scale = Float32(0.0)  # block formats pack scales per block
+        out.set_quantization_info(info.unsafe_bitcast[UInt8]())
+        return out
 
     def munmap_all(mut self):
         """Release every part's memory mapping (call once when done)."""

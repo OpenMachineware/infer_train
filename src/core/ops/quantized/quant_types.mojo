@@ -33,6 +33,7 @@ struct QuantType(Copyable, Equatable, Movable, ImplicitlyCopyable):
     comptime Q5_K = QuantType(Int8(3))  # Q5_K super-block, ggml 13
     comptime Q2_K = QuantType(Int8(4))  # Q2_K super-block, ggml 11 (reserved)
     comptime IQ4_XS = QuantType(Int8(5))  # IQ4_XS super-block, ggml 23
+    comptime Q4_0 = QuantType(Int8(6))  # 32-element blocks, ggml 2
 
     def __eq__(self, other: Self) -> Bool:
         return self._tag == other._tag
@@ -55,6 +56,8 @@ def ggml_type(quant_type: QuantType) -> Int:
         return 11
     if quant_type == QuantType.IQ4_XS:
         return 23
+    if quant_type == QuantType.Q4_0:
+        return 2
     return -1
 
 
@@ -77,6 +80,8 @@ def num_bits(quant_type: QuantType) -> Int:
         return 2
     if quant_type == QuantType.IQ4_XS:
         return 4
+    if quant_type == QuantType.Q4_0:
+        return 4
     return 0
 
 
@@ -93,6 +98,7 @@ def group_size(quant_type: QuantType) -> Int:
         or quant_type == QuantType.Q5_K
         or quant_type == QuantType.Q2_K
         or quant_type == QuantType.IQ4_XS
+        or quant_type == QuantType.Q4_0
     ):
         return 32
     return 0
@@ -116,6 +122,8 @@ def block_bytes(quant_type: QuantType) -> Int:
         return 56
     if quant_type == QuantType.IQ4_XS:
         return 136
+    if quant_type == QuantType.Q4_0:
+        return 18
     return 0
 
 
@@ -125,5 +133,7 @@ def block_elems(quant_type: QuantType) -> Int:
     Q8_0 blocks hold 32 elements; every K-quant super-block holds 256.
     """
     if quant_type == QuantType.Q8_0:
+        return 32
+    if quant_type == QuantType.Q4_0:
         return 32
     return 256
