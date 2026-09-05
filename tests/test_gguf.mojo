@@ -23,7 +23,7 @@ from src.core.gguf_loader import (
     load_gguf,
 )
 from src.core.transformer import TransformerModel, load_config
-from src.core.memory import process_rss_bytes
+from src.core.memory import process_resident_bytes, process_rss_bytes
 from src.core.ops.quantized.dequantize import (
     dequantize_into,
     dequantize_blocks,
@@ -66,11 +66,18 @@ def _max_logit_diff(
     return m
 
 
-def _touch_all(ctx: GGUFContext) -> Int:
-    """Fault in every mapped tensor page (mmap is lazy); returns the
-    number of payload bytes touched.  This is what makes the RSS
-    measurement meaningful for a quantized-resident model."""
+def _touch_all(ctx: GGUFContext) -> Tuple[Int, Int]:
+    """Fault in every mapped tensor page (mmap is lazy); returns
+    (payload bytes touched, checksum).
+
+    The checksum MUST escape the function (it is printed by the caller):
+    with a per-tensor checksum that is discarded inside the loop, the
+    compiler dead-code-eliminates the whole touch loop (verified: the
+    resident delta then stays at the KV-cache size instead of growing by
+    the payload), which makes the memory measurement vacuous.
+    """
     var total = 0
+    var checksum = 0
     for t in ctx.tensors:
         var numel = 1
         for d in range(t.n_dims):
@@ -82,7 +89,6 @@ def _touch_all(ctx: GGUFContext) -> Int:
         var (base, off) = ctx.tensor_data(t)
         var p = base.unsafe_offset(off)
         var i = 0
-        var checksum = 0
         while i + 16 <= n_bytes:
             var v = p.unsafe_load[width=16](offset=i)
             checksum += Int(v.reduce_add())
@@ -90,9 +96,8 @@ def _touch_all(ctx: GGUFContext) -> Int:
         while i < n_bytes:
             checksum += Int(p.unsafe_load[width=1](offset=i))
             i += 1
-        _ = checksum
         total += n_bytes
-    return total
+    return (total, checksum)
 
 
 # -- 1. Q4_0 dequantizer (whole-tensor + block mode) -------------------------
@@ -157,20 +162,44 @@ def check_27b_memory() raises:
         print("SKIP: 27B model not present")
         return
     var rss0 = process_rss_bytes()
+    var res0 = process_resident_bytes()
     var ctx = load_gguf(MODEL_27B)
     var config = load_config(ctx)
     # M11 default: quantized-resident (no flag).  The legacy path would
     # dequantize every weight to fp16 here (~54 GB for this model).
     var model = TransformerModel(config, ctx^, 512)
-    var touched = _touch_all(model.ctx)
+    var (touched, checksum) = _touch_all(model.ctx)
     var rss1 = process_rss_bytes()
+    var res1 = process_resident_bytes()
     print("27B quantized payload touched:", _gib(touched), "GiB")
-    print("rss before load:      ", _gib(rss0), "GiB")
-    print("rss after load+touch: ", _gib(rss1), "GiB")
+    print("touch checksum (non-zero = pages really faulted in):", checksum)
+    print("footprint before load:      ", _gib(rss0), "GiB")
+    print("footprint after load+touch: ", _gib(rss1), "GiB")
+    print("resident after load+touch:  ", _gib(res1), "GiB (incl. file pages)")
+    # The committed (anonymous) footprint must stay small: the legacy
+    # full-dequantize path materializes ~2x the payload as fp16 and would
+    # blow this budget (and swap on a 64 GB machine).  The quantized
+    # weights are file-backed, so they do NOT count against it.
     if rss1 >= 25 * 1024 * 1024 * 1024:
-        print("FAIL: memory after 27B load", _gib(rss1), "GiB >= 25 GiB")
+        print("FAIL: footprint after 27B load", _gib(rss1), "GiB >= 25 GiB")
         raise Error("27B memory budget exceeded")
-    print("27B memory OK (< 25 GiB, quantized-resident)")
+    # The TOTAL physical RAM (footprint + the mmap'd file's resident pages)
+    # must stay at the on-disk payload size, not 2x it.  Under memory
+    # pressure the OS evicts clean file pages, so the resident delta can be
+    # BELOW the payload - that is the reclaimable behavior we want, not a
+    # failure.  It must never EXCEED payload + overhead.
+    var res_delta = res1 - res0
+    var budget = touched + 2 * 1024 * 1024 * 1024
+    if res_delta > budget:
+        print(
+            "FAIL: resident delta",
+            _gib(res_delta),
+            "GiB exceeds payload + 2 GiB = ",
+            _gib(budget),
+            "GiB (weights NOT staying quantized-resident)",
+        )
+        raise Error("27B resident budget exceeded")
+    print("27B memory OK (footprint < 25 GiB, resident ~= payload)")
 
 
 # -- 3. quantized-resident vs dequantized forward ----------------------------

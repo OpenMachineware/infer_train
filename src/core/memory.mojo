@@ -76,9 +76,34 @@ def process_rss_bytes() -> Int:
     (mmap-backed, paged lazily), this measures how much of the model is
     actually resident - the number the `tests/test_gguf.mojo` memory
     budget asserts against.
+
+    NOTE: macOS `phys_footprint` EXCLUDES clean file-backed pages (they
+    are reclaimable page cache, not committed memory).  An mmap'd
+    quantized model's resident file pages are reported by
+    `process_resident_bytes` instead; use it for the total physical RAM
+    a fully-touched model occupies.
     """
     _load_tp_library()
     var r = external_call["it_rss_bytes", Int64]()
+    if r < 0:
+        return 0
+    return Int(r)
+
+
+def process_resident_bytes() -> Int:
+    """The process's TOTAL resident bytes (macOS
+    `mach_task_basic_info.resident_size`), INCLUDING the mmap'd model
+    file's resident pages.
+
+    Q4-resident measurement: after faulting in every mapped page, this
+    must be ~= the model's on-disk (quantized) payload size - NOT 2x it.
+    The legacy full-dequantize path materializes ~2x the payload as
+    anonymous fp16, which shows up in BOTH this number and
+    `process_rss_bytes`; the quantized path shows up only here (as
+    reclaimable file pages) and keeps the footprint small.
+    """
+    _load_tp_library()
+    var r = external_call["it_resident_bytes", Int64]()
     if r < 0:
         return 0
     return Int(r)

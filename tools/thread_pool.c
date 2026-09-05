@@ -220,14 +220,38 @@ int64_t tp_now_ns(void) {
  * Used by tests/test_gguf.mojo to verify that a quantized-resident model
  * stays far below the dequantized (2x fp16) footprint. */
 #include <mach/mach.h>
+static int it_task_vm_info(struct task_vm_info *info) {
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    return task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)info,
+                     &count) == KERN_SUCCESS;
+}
 uint64_t it_rss_bytes(void) {
     struct task_vm_info info;
-    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
-    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info,
-                  &count) != KERN_SUCCESS) {
+    if (!it_task_vm_info(&info)) {
         return 0;
     }
     return (uint64_t)info.phys_footprint;
+}
+
+/* Q4-resident (measurement): the process's TOTAL resident bytes,
+ * INCLUDING the mmap'd model file's resident pages.
+ *
+ * On macOS `phys_footprint` (it_rss_bytes) EXCLUDES clean file-backed
+ * pages - they are reclaimable page cache, not committed memory.  So a
+ * fully-touched quantized-resident model shows up almost entirely in
+ * `mach_task_basic_info.resident_size` instead.  tools/check_mem.mojo
+ * reports both: the footprint delta proves the weights were NOT
+ * materialized to fp16 (the committed memory stays small), and the
+ * resident delta shows the total physical RAM the model occupies
+ * (expected ~= the on-disk payload size). */
+uint64_t it_resident_bytes(void) {
+    mach_task_basic_info_data_t info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info,
+                  &count) != KERN_SUCCESS) {
+        return 0;
+    }
+    return (uint64_t)info.resident_size;
 }
 
 /* ---- M8: TCP helpers for the multi-process / multi-machine RPC layer ----
