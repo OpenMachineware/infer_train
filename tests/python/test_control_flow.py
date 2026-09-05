@@ -144,7 +144,9 @@ def test_torch_while_loop_all_const_unrolls_at_compile_time():
         def body(i, acc):
             return i + 1, acc + i
 
-        return torch.while_loop(cond, body, (torch.tensor(0), torch.tensor(0)))[1]
+        return torch.while_loop(
+            cond, body, (torch.tensor(0), torch.tensor(0))
+        )[1]
 
     gm = _export(model)
     compiled = infer_train_backend(gm, [])
@@ -208,7 +210,9 @@ def test_torch_compile_while_loop_fixed_steps():
         def body(i, acc):
             return i + 1, acc * x
 
-        return torch.while_loop(cond, body, (torch.tensor(0), torch.ones_like(x)))[1]
+        return torch.while_loop(
+            cond, body, (torch.tensor(0), torch.ones_like(x))
+        )[1]
 
     x = torch.randn(2, 4)
     compiled = torch.compile(model, backend="infer_train")

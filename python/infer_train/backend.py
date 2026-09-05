@@ -237,7 +237,9 @@ def _cond_spec_from_node(
     # torch.cond layout: (pred, true_fn, false_fn, operands) or
     # (pred, true_fn, false_fn) with operands in kwargs["operands"].
     if len(args) >= 4:
-        pred, true_spec, false_spec, operands = args[0], args[1], args[2], args[3]
+        pred, true_spec, false_spec, operands = (
+            args[0], args[1], args[2], args[3]
+        )
     elif len(args) == 3 and node.kwargs.get("operands") is not None:
         pred, true_spec, false_spec = args
         operands = node.kwargs["operands"]
@@ -311,13 +313,17 @@ def _cond_runner(
     else:
         pred_value = env[spec.pred] if isinstance(spec.pred, str) else spec.pred
         if isinstance(pred_value, torch.Tensor):
-            pred_value = bool(pred_value.item() if pred_value.numel() == 1 else pred_value)
+            pred_value = bool(
+                pred_value.item() if pred_value.numel() == 1 else pred_value
+            )
         truth = bool(pred_value)
     operands = [env[n] for n in spec.operand_names]
     if truth:
         plan = spec._plans[0]
         if plan is None:
-            plan = _build_subplan(spec.true_gm, operands, spec.strict, shape_mode)
+            plan = _build_subplan(
+                spec.true_gm, operands, spec.strict, shape_mode
+            )
             spec._plans = (plan, spec._plans[1])
         return plan(*operands)
     plan = spec._plans[1]
@@ -341,12 +347,16 @@ def _while_runner(
     cond_plan = spec._plans[0]
     if cond_plan is None:
         examples = list(carried) + list(additional)
-        cond_plan = _build_subplan(spec.cond_gm, examples, spec.strict, shape_mode)
+        cond_plan = _build_subplan(
+            spec.cond_gm, examples, spec.strict, shape_mode
+        )
         spec._plans = (cond_plan, spec._plans[1])
     body_plan = spec._plans[1]
     if body_plan is None:
         examples = list(carried) + list(additional)
-        body_plan = _build_subplan(spec.body_gm, examples, spec.strict, shape_mode)
+        body_plan = _build_subplan(
+            spec.body_gm, examples, spec.strict, shape_mode
+        )
         spec._plans = (spec._plans[0], body_plan)
     if shape_mode:
         # shape inference only: zero iterations, return carried shapes
@@ -356,7 +366,9 @@ def _while_runner(
         cond_value = cond_plan(*carried, *additional)
         cond_tensor = _to_tuple(cond_value)[0]
         if isinstance(cond_tensor, torch.Tensor):
-            keep = bool(cond_tensor.item() if cond_tensor.numel() == 1 else cond_tensor)
+            keep = bool(
+                cond_tensor.item() if cond_tensor.numel() == 1 else cond_tensor
+            )
         else:
             keep = bool(cond_tensor)
         if not keep:
@@ -626,8 +638,12 @@ def _translate_node(
             and x.dtype == w.dtype
             and (x.shape[1] == w.shape[0] or x.shape[1] == w.shape[1])
         ):
-            xname = node.args[1].name if opname == "addmm" else node.args[0].name
-            wname = node.args[2].name if opname == "addmm" else node.args[1].name
+            xname = (
+                node.args[1].name if opname == "addmm" else node.args[0].name
+            )
+            wname = (
+                node.args[2].name if opname == "addmm" else node.args[1].name
+            )
             bias_name = None
             bias_shape_ok = (
                 bias is not None
@@ -680,7 +696,9 @@ def _translate_node(
                 return _Op(
                     name=name,
                     kind="native",
-                    composite=[("fused_matmul_add_bias", [xname, wname, bias_name])],
+                    composite=[
+                        ("fused_matmul_add_bias", [xname, wname, bias_name])
+                    ],
                     fx_node=node,
                 )
             # torch semantics: y = x @ w^T (+ bias).  With w stored
@@ -693,7 +711,11 @@ def _translate_node(
                 steps.append(("matmul", [xname, wname]))
             if bias_name is not None:
                 steps.append(("add_bias", ["__out0__", bias_name]))
-            elif bias is not None and isinstance(bias, torch.Tensor) and bias.dim() == 0:
+            elif (
+                bias is not None
+                and isinstance(bias, torch.Tensor)
+                and bias.dim() == 0
+            ):
                 # scalar bias: fall back to torch for the whole node
                 steps = []
             if steps:
@@ -767,7 +789,9 @@ def _translate_node(
     # kernel's fixed epsilon)
     if opname == "rms_norm":
         x = arg_tensor(0)
-        weight = kwargs.get("weight", node.args[2] if len(node.args) > 2 else None)
+        weight = kwargs.get(
+            "weight", node.args[2] if len(node.args) > 2 else None
+        )
         eps = kwargs.get("eps", node.args[3] if len(node.args) > 3 else None)
         if isinstance(weight, torch.fx.Node):
             weight = env_shapes.get(weight.name)
@@ -792,7 +816,9 @@ def _translate_node(
                 name=name,
                 kind="native",
                 engine_op="fused_matmul_rms_norm",
-                arg_names=[src_op.composite[0][1][0], src_op.composite[0][1][1]],
+                arg_names=[
+                    src_op.composite[0][1][0], src_op.composite[0][1][1]
+                ],
                 fx_node=node,
             )
         if (
@@ -931,7 +957,8 @@ def translate_graph(
 
     # shape env: placeholder tensors + traced tensor metadata
     env_shapes: Dict[str, Any] = {}
-    for node, example in zip(gm.graph.find_nodes(op="placeholder"), example_inputs):
+    placeholders = gm.graph.find_nodes(op="placeholder")
+    for node, example in zip(placeholders, example_inputs):
         env_shapes[node.name] = example
 
     stats = {
@@ -962,7 +989,9 @@ def translate_graph(
             except Exception:
                 pass
         elif node.op == "call_function":
-            if not any(isinstance(a, torch.fx.Node) for a in node.args) and not any(
+            if not any(
+                isinstance(a, torch.fx.Node) for a in node.args
+            ) and not any(
                 isinstance(v, torch.fx.Node) for v in node.kwargs.values()
             ):
                 const_names.add(node.name)
@@ -997,7 +1026,9 @@ def translate_graph(
                     if spec.static:
                         pred = spec.pred
                         truth = bool(
-                            pred.item() if isinstance(pred, torch.Tensor) else pred
+                            pred.item()
+                            if isinstance(pred, torch.Tensor)
+                            else pred
                         )
                         if not truth:
                             chosen = spec.false_gm
@@ -1054,7 +1085,9 @@ def translate_graph(
                         out_shape = (x.shape[0], w.shape[0])
                     else:
                         out_shape = (x.shape[0], w.shape[1])
-                    env_shapes[node.name] = torch.empty(out_shape, dtype=x.dtype)
+                    env_shapes[node.name] = torch.empty(
+                        out_shape, dtype=x.dtype
+                    )
             except Exception:
                 pass
         elif op.kind == "fallback":
@@ -1201,7 +1234,9 @@ class CompiledInferTrain:
 
         # task 5: the M4 backend runs on CPU; accept CUDA inputs by moving
         # them here (and back on output) with a warning.
-        orig_devices = [a.device if isinstance(a, torch.Tensor) else None for a in inputs]
+        orig_devices = [
+            a.device if isinstance(a, torch.Tensor) else None for a in inputs
+        ]
         moved = False
         for i, a in enumerate(inputs):
             if isinstance(a, torch.Tensor) and a.device.type == "cuda":
@@ -1264,7 +1299,9 @@ class CompiledInferTrain:
                 spec = node.args[0]
                 if isinstance(spec, tuple):
                     outputs = tuple(_materialize_output(a, env) for a in spec)
-                elif isinstance(spec, list) or type(spec).__name__ == "immutable_list":
+                elif isinstance(spec, list) or (
+                    type(spec).__name__ == "immutable_list"
+                ):
                     items = [_materialize_output(a, env) for a in spec]
                     outputs = items[0] if len(items) == 1 else tuple(items)
                 else:

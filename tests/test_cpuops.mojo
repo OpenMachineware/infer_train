@@ -4,6 +4,7 @@ from src.core.ops.cpu.softmax_cpu import softmax_cpu
 from src.core.tensor import Tensor, tensor_zeros
 from std.utils.static_tuple import StaticTuple
 
+
 def main():
     # matmul 2x3 @ 3x2 = 2x2
     var a = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](2, 3))

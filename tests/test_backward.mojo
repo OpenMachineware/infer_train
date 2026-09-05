@@ -105,7 +105,9 @@ def _dot3(a: Tensor[DType.float32, 3], b: Tensor[DType.float32, 3]) -> Float32:
     return total
 
 
-def check_close(actual: Float32, expected: Float32, tol: Float32, label: String):
+def check_close(
+    actual: Float32, expected: Float32, tol: Float32, label: String
+):
     var diff = actual - expected
     if diff < 0:
         diff = -diff
@@ -247,10 +249,16 @@ def test_add():
     var grads = add_cpu_backward[DType.float32, 2, 3](go, saved)
     for i in range(go.numel()):
         check_close(
-            Float32(grads[0].get(i)), Float32(go.get(i)), Float32(1e-6), "add gx"
+            Float32(grads[0].get(i)),
+            Float32(go.get(i)),
+            Float32(1e-6),
+            "add gx",
         )
         check_close(
-            Float32(grads[1].get(i)), Float32(go.get(i)), Float32(1e-6), "add gy"
+            Float32(grads[1].get(i)),
+            Float32(go.get(i)),
+            Float32(1e-6),
+            "add gy",
         )
 
 
@@ -269,9 +277,7 @@ def test_add_bias():
         )
     for j in range(3):
         var expect = Float32(go.get(j)) + Float32(go.get(3 + j))
-        check_close(
-            Float32(grads[1].get(j)), expect, Float32(1e-6), "ab gbias"
-        )
+        check_close(Float32(grads[1].get(j)), expect, Float32(1e-6), "ab gbias")
 
 
 def test_rms_norm():
@@ -521,7 +527,7 @@ def test_cross_entropy():
     targets.set(1, Scalar[DType.int32](3))
     targets.set(2, Scalar[DType.int32](0))
     _fill2(logits, state, 0.7)
-    var loss_t = cross_entropy_forward[DType.float32](logits, targets)
+    _ = cross_entropy_forward[DType.float32](logits, targets)
     var ones = tensor_zeros[DType.float32, 1](StaticTuple[Int, 1](1))
     ones.set(0, Scalar[DType.float32](Float32(1.0)))
     var grad = cross_entropy_backward[DType.float32](ones, logits, targets)
@@ -535,9 +541,7 @@ def test_cross_entropy():
             Float32(cross_entropy_loss[DType.float32, 4](lp, targets))
             - Float32(cross_entropy_loss[DType.float32, 4](lm, targets))
         ) / (2.0 * EPS)
-        check_close(
-            Float32(grad.get(i)), numeric, Float32(1e-2), "ce grad"
-        )
+        check_close(Float32(grad.get(i)), numeric, Float32(1e-2), "ce grad")
     # rows must sum to ~0
     for r in range(3):
         var s = Float32(0)
@@ -636,7 +640,9 @@ def test_interpreter_run_with_grad():
     a0["n_inputs"] = AttrValue(1)
     var x_id = graph.add_node("identity", List[Int](), a0)
     var norm = graph.add_node("rms_norm", _one(x_id), Dict[String, AttrValue]())
-    var add_id = graph.add_node("add", _two(norm, norm), Dict[String, AttrValue]())
+    var add_id = graph.add_node(
+        "add", _two(norm, norm), Dict[String, AttrValue]()
+    )
     _ = add_id
 
     var x = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](1, 4))
@@ -659,6 +665,8 @@ def test_interpreter_run_with_grad():
     var expected = rms_norm_cpu_backward[DType.float32, 4](twice, fws[1])
     for i in range(4):
         check_close(
-            Float32(gx.get(i)), Float32(expected[0].get(i)), Float32(1e-4),
+            Float32(gx.get(i)),
+            Float32(expected[0].get(i)),
+            Float32(1e-4),
             "run_with_grad gx",
         )

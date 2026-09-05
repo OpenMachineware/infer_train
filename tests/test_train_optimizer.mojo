@@ -18,7 +18,9 @@ from std.utils.static_tuple import StaticTuple
 from std.os.os import abort
 
 
-def check_close(actual: Float32, expected: Float32, tol: Float32, label: String):
+def check_close(
+    actual: Float32, expected: Float32, tol: Float32, label: String
+):
     var diff = actual - expected
     if diff < 0:
         diff = -diff
@@ -65,54 +67,74 @@ def _accumulate(mut opt: AdamW, vals: List[Float32]):
 
 
 def test_adamw_matches_torch_reference():
-    var p = _make_param(_l4(Float32(1.0), Float32(-2.0), Float32(3.0), Float32(0.5)))
+    var p = _make_param(
+        _l4(Float32(1.0), Float32(-2.0), Float32(3.0), Float32(0.5))
+    )
     var opt = AdamW(Float32(0.1))
     opt.set_group_hyperparams(0, Float32(0.1), Float32(0.01))
     opt.add_param[DType.float32, 2](p)
 
-    _accumulate(opt, _l4(Float32(0.5), Float32(-0.25), Float32(1.0), Float32(-0.75)))
+    _accumulate(
+        opt, _l4(Float32(0.5), Float32(-0.25), Float32(1.0), Float32(-0.75))
+    )
     opt.step()
     opt.zero_grad()
     var expect1 = _l4(
-        Float32(0.899000049), Float32(-1.898000002),
-        Float32(2.897000074), Float32(0.5995),
+        Float32(0.899000049),
+        Float32(-1.898000002),
+        Float32(2.897000074),
+        Float32(0.5995),
     )
     for i in range(4):
         check_close(Float32(p.get(i)), expect1[i], Float32(2e-6), "adamw step1")
 
-    _accumulate(opt, _l4(Float32(0.1), Float32(0.2), Float32(-0.3), Float32(0.4)))
+    _accumulate(
+        opt, _l4(Float32(0.1), Float32(0.2), Float32(-0.3), Float32(0.4))
+    )
     opt.step()
     opt.zero_grad()
     var expect2 = _l4(
-        Float32(0.817796946), Float32(-1.890289545),
-        Float32(2.851318121), Float32(0.622984886),
+        Float32(0.817796946),
+        Float32(-1.890289545),
+        Float32(2.851318121),
+        Float32(0.622984886),
     )
     for i in range(4):
         check_close(Float32(p.get(i)), expect2[i], Float32(2e-6), "adamw step2")
 
-    _accumulate(opt, _l4(Float32(-0.5), Float32(0.5), Float32(0.25), Float32(-0.125)))
+    _accumulate(
+        opt, _l4(Float32(-0.5), Float32(0.5), Float32(0.25), Float32(-0.125))
+    )
     opt.step()
     opt.zero_grad()
     var expect3 = _l4(
-        Float32(0.817426682), Float32(-1.939788222),
-        Float32(2.801415205), Float32(0.650083184),
+        Float32(0.817426682),
+        Float32(-1.939788222),
+        Float32(2.801415205),
+        Float32(0.650083184),
     )
     for i in range(4):
         check_close(Float32(p.get(i)), expect3[i], Float32(2e-6), "adamw step3")
 
 
 def test_adamw_zero_grad():
-    var p = _make_param(_l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0)))
+    var p = _make_param(
+        _l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0))
+    )
     var opt = AdamW(Float32(0.1))
     opt.add_param[DType.float32, 2](p)
-    _accumulate(opt, _l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0)))
+    _accumulate(
+        opt, _l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0))
+    )
     opt.zero_grad()
     # with a zero gradient only the (decoupled) weight decay moves the
     # parameter: p = p - lr * wd * p
     opt.step()
     for i in range(4):
         check_close(
-            Float32(p.get(i)), Float32(1.0 - 0.1 * 0.01), Float32(1e-6),
+            Float32(p.get(i)),
+            Float32(1.0 - 0.1 * 0.01),
+            Float32(1e-6),
             "zero_grad wd step1",
         )
     opt.step()
@@ -127,38 +149,58 @@ def test_adamw_zero_grad():
 
 def test_adamw_param_groups():
     # two parameters, different group lr: 0.1 vs 0.0 (frozen)
-    var p1 = _make_param(_l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0)))
-    var p2 = _make_param(_l4(Float32(2.0), Float32(2.0), Float32(2.0), Float32(2.0)))
+    var p1 = _make_param(
+        _l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0))
+    )
+    var p2 = _make_param(
+        _l4(Float32(2.0), Float32(2.0), Float32(2.0), Float32(2.0))
+    )
     var opt = AdamW(Float32(0.1))
     opt.add_param[DType.float32, 2](p1, 0)
     opt.add_param[DType.float32, 2](p2, 0)
     var g = List[AnyTensor]()
-    g.append(_make_grad(_l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0))))
-    g.append(_make_grad(_l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0))))
+    g.append(
+        _make_grad(_l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0)))
+    )
+    g.append(
+        _make_grad(_l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0)))
+    )
     opt.accumulate_grads(g)
     opt.step()
     # same group, same hyperparameters: p1 = 1 - lr*(mhat + wd*1),
     # p2 = 2 - lr*(mhat + wd*2) with mhat = vhat = 1 at step 1
     for i in range(4):
-        check_close(Float32(p1.get(i)), Float32(0.899), Float32(2e-6), "group p1")
-        check_close(Float32(p2.get(i)), Float32(1.898), Float32(2e-6), "group p2")
+        check_close(
+            Float32(p1.get(i)), Float32(0.899), Float32(2e-6), "group p1"
+        )
+        check_close(
+            Float32(p2.get(i)), Float32(1.898), Float32(2e-6), "group p2"
+        )
     # freeze group 0: a second step must not move p1/p2
     opt.set_group_hyperparams(0, Float32(0.0), Float32(0.0))
     var before = Float32(p1.get(0))
-    g2 = List[AnyTensor]()
-    g2.append(_make_grad(_l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0))))
-    g2.append(_make_grad(_l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0))))
+    var g2 = List[AnyTensor]()
+    g2.append(
+        _make_grad(_l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0)))
+    )
+    g2.append(
+        _make_grad(_l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0)))
+    )
     opt.accumulate_grads(g2)
     opt.step()
     check_close(Float32(p1.get(0)), before, Float32(1e-6), "frozen group")
 
 
 def test_sgd_momentum():
-    var p = _make_param(_l4(Float32(2.0), Float32(3.0), Float32(4.0), Float32(5.0)))
+    var p = _make_param(
+        _l4(Float32(2.0), Float32(3.0), Float32(4.0), Float32(5.0))
+    )
     var opt = SGD(Float32(0.1), Float32(0.9))
     opt.add_param[DType.float32, 2](p)
     var g = List[AnyTensor]()
-    g.append(_make_grad(_l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0))))
+    g.append(
+        _make_grad(_l4(Float32(1.0), Float32(1.0), Float32(1.0), Float32(1.0)))
+    )
     opt.accumulate_grads(g)
     opt.step()
     # buf = 1.0; p = 2 - 0.1*1 = 1.9

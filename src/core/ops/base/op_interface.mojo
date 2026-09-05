@@ -20,7 +20,7 @@ from std.utils.static_tuple import StaticTuple
 comptime ANYTENSOR_MAX_RANK = 8
 
 
-struct AnyTensor(Copyable, Movable, ImplicitlyCopyable):
+struct AnyTensor(Copyable, ImplicitlyCopyable, Movable):
     """Type-erased tensor handle used by the operator registry.
 
     The shape is stored in a fixed `StaticTuple` so `AnyTensor` stays
@@ -54,9 +54,7 @@ struct AnyTensor(Copyable, Movable, ImplicitlyCopyable):
         self.requires_grad = False
 
 
-def to_any[dtype: DType, rank: Int](
-    tensor: Tensor[dtype, rank]
-) -> AnyTensor:
+def to_any[dtype: DType, rank: Int](tensor: Tensor[dtype, rank]) -> AnyTensor:
     """Wrap a static tensor as a type-erased `AnyTensor` (zero copy)."""
     var shape = StaticTuple[Int, ANYTENSOR_MAX_RANK](fill=0)
     var static_shape = tensor.shape()
@@ -72,18 +70,18 @@ def to_any[dtype: DType, rank: Int](
     )
 
 
-def _static_shape[rank: Int](
-    shape: StaticTuple[Int, ANYTENSOR_MAX_RANK]
-) -> StaticTuple[Int, rank]:
+def _static_shape[
+    rank: Int
+](shape: StaticTuple[Int, ANYTENSOR_MAX_RANK]) -> StaticTuple[Int, rank]:
     var result = StaticTuple[Int, rank](fill=0)
     for i in range(rank):
         result[i] = shape[i]
     return result
 
 
-def from_any[dtype: DType, rank: Int](
-    any_tensor: AnyTensor
-) -> Tensor[dtype, rank]:
+def from_any[
+    dtype: DType, rank: Int
+](any_tensor: AnyTensor) -> Tensor[dtype, rank]:
     """Rebuild a static tensor *view* over the same storage (zero copy)."""
     var shape = _static_shape[rank](any_tensor.shape)
     var data = any_tensor.data.unsafe_bitcast[Scalar[dtype]]()
@@ -106,17 +104,15 @@ def from_any[dtype: DType, rank: Int](
 # ---------------------------------------------------------------------------
 
 
-struct OpInfo(Copyable, Movable, ImplicitlyCopyable):
+struct OpInfo(Copyable, ImplicitlyCopyable, Movable):
     """Metadata and function pointers for one (name, device) op impl."""
 
     var name: String
     var forward: def(List[AnyTensor]) thin -> List[AnyTensor]
-    var forward_with_saved: def(
-        List[AnyTensor]
-    ) thin -> Tuple[List[AnyTensor], List[AnyTensor]]
-    var backward: def(
+    var forward_with_saved: def(List[AnyTensor]) thin -> Tuple[
         List[AnyTensor], List[AnyTensor]
-    ) thin -> List[AnyTensor]
+    ]
+    var backward: def(List[AnyTensor], List[AnyTensor]) thin -> List[AnyTensor]
     var device: Device
     var priority: Int
 
@@ -124,12 +120,10 @@ struct OpInfo(Copyable, Movable, ImplicitlyCopyable):
         out self,
         name: String,
         forward: def(List[AnyTensor]) thin -> List[AnyTensor],
-        forward_with_saved: def(
-            List[AnyTensor]
-        ) thin -> Tuple[List[AnyTensor], List[AnyTensor]],
-        backward: def(
+        forward_with_saved: def(List[AnyTensor]) thin -> Tuple[
             List[AnyTensor], List[AnyTensor]
-        ) thin -> List[AnyTensor],
+        ],
+        backward: def(List[AnyTensor], List[AnyTensor]) thin -> List[AnyTensor],
         device: Device,
         priority: Int = 0,
     ):

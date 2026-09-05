@@ -21,9 +21,7 @@ from ..cpu.matmul_cpu import matmul_cpu_dynamic
 from ..gpu.matmul_gpu import matmul_gpu_dynamic
 
 
-def _cast[dst: DType, src: DType](
-    tensor: Tensor[src, 2]
-) -> Tensor[dst, 2]:
+def _cast[dst: DType, src: DType](tensor: Tensor[src, 2]) -> Tensor[dst, 2]:
     """Elementwise dtype cast (used when weight dtype != activation dtype)."""
     var out = tensor_zeros[dst, 2](tensor.shape())
     for i in range(tensor.numel()):
@@ -106,9 +104,9 @@ def matmul_quantized_backward[
     granularity: QuantGranularity,
     group_size: Int,
     is_symmetric: Bool,
-](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]]:
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+]:
     _ = grad_out
     _ = saved
     _ = format

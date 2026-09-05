@@ -20,9 +20,11 @@ from std.utils.static_tuple import StaticTuple
 comptime W_F16 = 8
 
 
-def _jit_matmul_weight[M: Int, N: Int, K: Int, W: Int = W_F16](
-    x: Tensor[DType.float16, 2], w: Tensor[DType.float16, 2]
-) -> Tensor[DType.float16, 2]:
+def _jit_matmul_weight[
+    M: Int, N: Int, K: Int, W: Int = W_F16
+](x: Tensor[DType.float16, 2], w: Tensor[DType.float16, 2]) -> Tensor[
+    DType.float16, 2
+]:
     """y = W @ x with comptime shapes: the k loop is fully unrolled and
     the SIMD width is fixed at compile time.
 
@@ -37,26 +39,30 @@ def _jit_matmul_weight[M: Int, N: Int, K: Int, W: Int = W_F16](
             var acc = SIMD[DType.float32, W](0)
             var k = 0
             while k < k_main:  # comptime trip count (K fixed)
-                var xv = x.data().unsafe_load[width=W](
-                    offset=i * K + k
-                ).cast[DType.float32]()
-                var wv = w.data().unsafe_load[width=W](
-                    offset=j * K + k
-                ).cast[DType.float32]()
+                var xv = (
+                    x.data()
+                    .unsafe_load[width=W](offset=i * K + k)
+                    .cast[DType.float32]()
+                )
+                var wv = (
+                    w.data()
+                    .unsafe_load[width=W](offset=j * K + k)
+                    .cast[DType.float32]()
+                )
                 acc = acc + xv * wv
                 k += W
             var total = Float32(acc.reduce_add())
             var k2 = k_main
             while k2 < K:  # comptime tail
-                total += Float32(x.get(i * K + k2)) * Float32(
-                    w.get(j * K + k2)
-                )
+                total += Float32(x.get(i * K + k2)) * Float32(w.get(j * K + k2))
                 k2 += 1
             out.set(i * N + j, Scalar[DType.float16](total))
     return out
 
 
-def jit_ffn[M: Int, F: Int, K: Int, W: Int = W_F16](
+def jit_ffn[
+    M: Int, F: Int, K: Int, W: Int = W_F16
+](
     x: Tensor[DType.float16, 2],
     gate_w: Tensor[DType.float16, 2],
     up_w: Tensor[DType.float16, 2],
@@ -72,7 +78,12 @@ def jit_ffn[M: Int, F: Int, K: Int, W: Int = W_F16](
 
 def jit_ffn_key(m: Int, f: Int, k: Int) -> String:
     return (
-        String("ffn/") + String(m) + String("/") + String(f) + String("/") + String(k)
+        String("ffn/")
+        + String(m)
+        + String("/")
+        + String(f)
+        + String("/")
+        + String(k)
     )
 
 

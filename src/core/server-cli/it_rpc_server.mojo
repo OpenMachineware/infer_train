@@ -103,14 +103,21 @@ def main() raises:
     var config = load_config(ctx)
     print("rpc server: model", model_path)
     print(
-        "  arch:", arch_name(config.arch),
-        "layers:", config.n_layers,
-        "hidden:", config.hidden,
-        "vocab:", config.vocab,
+        "  arch:",
+        arch_name(config.arch),
+        "layers:",
+        config.n_layers,
+        "hidden:",
+        config.hidden,
+        "vocab:",
+        config.vocab,
     )
     var listen_fd = tcp_listen(host, port)
     print(
-        "  listening on", host, ":", port,
+        "  listening on",
+        host,
+        ":",
+        port,
         "- waiting for master (the layer shard loads on INIT)",
     )
     var client_fd = tcp_accept(listen_fd)

@@ -21,11 +21,19 @@ def main() raises:
     # plain-text cases: must match llama.cpp exactly
     check_enc(tokenizer, "Hello", [9707])
     check_enc(tokenizer, "Hello world", [9707, 1879])
-    check_enc(tokenizer, "Hello, world! 123", [9707, 11, 1879, 0, 220, 16, 17, 18])
+    check_enc(
+        tokenizer, "Hello, world! 123", [9707, 11, 1879, 0, 220, 16, 17, 18]
+    )
     check_enc(tokenizer, "1+1=", [16, 10, 16, 28])
     check_enc(tokenizer, "2+2=?", [17, 10, 17, 19884])
-    check_enc(tokenizer, "What is the capital of France?", [3838, 374, 279, 6722, 315, 9625, 30])
-    check_enc(tokenizer, "The capital of France is", [785, 6722, 315, 9625, 374])
+    check_enc(
+        tokenizer,
+        "What is the capital of France?",
+        [3838, 374, 279, 6722, 315, 9625, 30],
+    )
+    check_enc(
+        tokenizer, "The capital of France is", [785, 6722, 315, 9625, 374]
+    )
     check_enc(tokenizer, "   leading spaces", [256, 6388, 12621])
     check_enc(tokenizer, "new\nline", [931, 198, 1056])
     check_enc(tokenizer, "café", [924, 58858])
@@ -33,7 +41,23 @@ def main() raises:
     check_enc(
         tokenizer,
         "It's a test. It's 'ok'. 100%",
-        [2132, 594, 264, 1273, 13, 1084, 594, 364, 562, 4427, 220, 16, 15, 15, 4],
+        [
+            2132,
+            594,
+            264,
+            1273,
+            13,
+            1084,
+            594,
+            364,
+            562,
+            4427,
+            220,
+            16,
+            15,
+            15,
+            4,
+        ],
     )
 
     # added-token cases: HF-style ids (llama.cpp differs on some of these)
@@ -65,18 +89,32 @@ def main() raises:
     print("test_tokenizer OK")
 
 
-def check_enc(
-    tokenizer: BpeTokenizer, text: String, expected: List[Int]
-):
+def check_enc(tokenizer: BpeTokenizer, text: String, expected: List[Int]):
     var tokens = tokenizer.encode(text)
     if len(tokens) != len(expected):
-        print("FAIL len:", text, "actual:", len(tokens), "expected:", len(expected))
+        print(
+            "FAIL len:",
+            text,
+            "actual:",
+            len(tokens),
+            "expected:",
+            len(expected),
+        )
         for t in tokens:
             print("  got", t)
         abort()
     for i in range(len(expected)):
         if tokens[i] != expected[i]:
-            print("FAIL:", text, "index", i, "actual:", tokens[i], "expected:", expected[i])
+            print(
+                "FAIL:",
+                text,
+                "index",
+                i,
+                "actual:",
+                tokens[i],
+                "expected:",
+                expected[i],
+            )
             abort()
 
 

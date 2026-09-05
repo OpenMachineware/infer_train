@@ -138,16 +138,13 @@ def _is_special_token(token: String) -> Bool:
             break
         # U+FF5C ｜ = 0xEF 0xBD 0x9C (UTF-8)
         if b == UInt8(0xEF) and i + 2 < n - 1:
-            if (
-                bytes[i + 1] == UInt8(0xBD)
-                and bytes[i + 2] == UInt8(0x9C)
-            ):
+            if bytes[i + 1] == UInt8(0xBD) and bytes[i + 2] == UInt8(0x9C):
                 has_bar = True
                 break
     return has_bar
 
 
-struct AddedToken(Copyable, Movable, ImplicitlyCopyable):
+struct AddedToken(Copyable, ImplicitlyCopyable, Movable):
     var id: Int
     var content: String
     var special: Bool
@@ -185,8 +182,10 @@ def _byte_to_char(byte: Int) -> Int:
 
 def _char_to_byte(cp: Int) -> Int:
     """Inverse of `_byte_to_char` (unicode codepoint -> byte)."""
-    if (cp >= 33 and cp <= 126) or (cp >= 161 and cp <= 172) or (
-        cp >= 174 and cp <= 255
+    if (
+        (cp >= 33 and cp <= 126)
+        or (cp >= 161 and cp <= 172)
+        or (cp >= 174 and cp <= 255)
     ):
         return cp
     var n = cp - 256
@@ -252,9 +251,7 @@ struct BpeTokenizer(Movable, Tokenizer):
     # -- construction -------------------------------------------------------
 
     @staticmethod
-    def load(
-        tokenizer_json_path: String, ctx: GGUFContext
-    ) raises -> Self:
+    def load(tokenizer_json_path: String, ctx: GGUFContext) raises -> Self:
         """Load tokenizer.json, using GGUF metadata for decode/bos/eos.
 
         The flavor is detected from the GGUF metadata (tokenizer.ggml.model
@@ -265,7 +262,9 @@ struct BpeTokenizer(Movable, Tokenizer):
         tokenizer._parse_tokenizer_json(tokenizer_json_path)
         tokenizer._bos_id = get_meta_uint(ctx, "tokenizer.ggml.bos_token_id", 1)
         tokenizer._eos_id = get_meta_uint(ctx, "tokenizer.ggml.eos_token_id", 2)
-        tokenizer._add_bos = get_meta_uint(ctx, "tokenizer.ggml.add_bos_token", 0) != 0
+        tokenizer._add_bos = (
+            get_meta_uint(ctx, "tokenizer.ggml.add_bos_token", 0) != 0
+        )
         tokenizer._build_decode_table(ctx)
         tokenizer._flavor = detect_flavor(ctx, tokenizer._bos_id)
         return tokenizer^
@@ -280,7 +279,9 @@ struct BpeTokenizer(Movable, Tokenizer):
         tokenizer._parse_tokenizer_json(tokenizer_json_path)
         tokenizer._bos_id = get_meta_uint(ctx, "tokenizer.ggml.bos_token_id", 1)
         tokenizer._eos_id = get_meta_uint(ctx, "tokenizer.ggml.eos_token_id", 2)
-        tokenizer._add_bos = get_meta_uint(ctx, "tokenizer.ggml.add_bos_token", 0) != 0
+        tokenizer._add_bos = (
+            get_meta_uint(ctx, "tokenizer.ggml.add_bos_token", 0) != 0
+        )
         tokenizer._build_decode_table(ctx)
         tokenizer._flavor = flavor
         return tokenizer^
@@ -303,7 +304,9 @@ struct BpeTokenizer(Movable, Tokenizer):
         tokenizer._merges = merge_dict^
         tokenizer._bos_id = get_meta_uint(ctx, "tokenizer.ggml.bos_token_id", 1)
         tokenizer._eos_id = get_meta_uint(ctx, "tokenizer.ggml.eos_token_id", 2)
-        tokenizer._add_bos = get_meta_uint(ctx, "tokenizer.ggml.add_bos_token", 0) != 0
+        tokenizer._add_bos = (
+            get_meta_uint(ctx, "tokenizer.ggml.add_bos_token", 0) != 0
+        )
         tokenizer._flavor = detect_flavor(ctx, tokenizer._bos_id)
         return tokenizer^
 
@@ -386,9 +389,7 @@ struct BpeTokenizer(Movable, Tokenizer):
             var buf = unsafe_alloc[UInt8](4)
             var idx = 0
             var n = utf8_encode(cp, buf, idx)
-            var span = Span[UInt8, MutUntrackedOrigin](
-                unsafe_ptr=buf, length=n
-            )
+            var span = Span[UInt8, MutUntrackedOrigin](unsafe_ptr=buf, length=n)
             self._sym_table.append(String(unsafe_from_utf8=span))
 
     def _parse_tokenizer_json(mut self, path: String) raises:
@@ -505,7 +506,6 @@ struct BpeTokenizer(Movable, Tokenizer):
             if parser._peek() == UInt8(44):  # ','
                 _ = parser._advance()
 
-
     def _build_decode_table(mut self, ctx: GGUFContext):
         """Decode table = GGUF token list (full model vocab) + JSON
         added-token overrides; padded when the GGUF list is absent."""
@@ -599,9 +599,7 @@ struct BpeTokenizer(Movable, Tokenizer):
             self._bpe_piece(tokens, bytes, p, piece_end)
             p = piece_end
 
-    def _match_piece(
-        self, bytes: Span[UInt8, _], p: Int, end: Int
-    ) -> Int:
+    def _match_piece(self, bytes: Span[UInt8, _], p: Int, end: Int) -> Int:
         """Match one GPT-2 regex alternative at `p`; return the end offset.
 
         Alternatives are tried in regex order (leftmost wins)."""
@@ -638,11 +636,7 @@ struct BpeTokenizer(Movable, Tokenizer):
 
         # A2: [^\r\n\p{L}\p{N}]?\p{L}+
         var q = p
-        if (
-            not (b == 13 or b == 10)
-            and not _is_letter(b)
-            and not _is_number(b)
-        ):
+        if not (b == 13 or b == 10) and not _is_letter(b) and not _is_number(b):
             q += 1
         var letters = 0
         while q < end and _is_letter(Int(bytes[q])):
@@ -765,9 +759,7 @@ struct BpeTokenizer(Movable, Tokenizer):
         for token in tokens:
             if token >= 0 and token < len(self._decode_table):
                 idx = _append_token_bytes(self._decode_table[token], buf, idx)
-        var span = Span[UInt8, MutUntrackedOrigin](
-            unsafe_ptr=buf, length=total
-        )
+        var span = Span[UInt8, MutUntrackedOrigin](unsafe_ptr=buf, length=total)
         return String(unsafe_from_utf8=span)
 
     def vocab_size(self) -> Int:
@@ -783,7 +775,7 @@ struct BpeTokenizer(Movable, Tokenizer):
 def _pair_key(a: String, b: String) -> String:
     """BPE pair key: `a + " " + b`."""
     var with_space = a + " "
-    return (with_space + b)^
+    return with_space + b
 
 
 def _join_symbols(a: String, b: String) -> String:
@@ -892,29 +884,29 @@ def _token_byte_len(token: String) -> Int:
 
 def read_gguf_token_list(context: GGUFContext) -> List[String]:
     """Read the `tokenizer.ggml.tokens` string array (ordered by id)."""
-    var value = context.metadata.get(
-        "tokenizer.ggml.tokens", GGUFMetaValue()
-    )
+    var value = context.metadata.get("tokenizer.ggml.tokens", GGUFMetaValue())
     if value.kind != 5 or value.arr_len <= 0:
         return List[String]()
     var reader = Reader(context.data)
     reader.offset = value.arr_offset
     var tokens = List[String]()
-    for i in range(value.arr_len):
+    var count = 0
+    while count < value.arr_len:
         tokens.append(reader.read_string())
+        count += 1
     return tokens^
 
 
 def read_gguf_merge_list(context: GGUFContext) -> List[String]:
     """Read the `tokenizer.ggml.merges` string array (ordered by rank)."""
-    var value = context.metadata.get(
-        "tokenizer.ggml.merges", GGUFMetaValue()
-    )
+    var value = context.metadata.get("tokenizer.ggml.merges", GGUFMetaValue())
     if value.kind != 5 or value.arr_len <= 0:
         return List[String]()
     var reader = Reader(context.data)
     reader.offset = value.arr_offset
     var merges = List[String]()
-    for i in range(value.arr_len):
+    var count = 0
+    while count < value.arr_len:
         merges.append(reader.read_string())
+        count += 1
     return merges^

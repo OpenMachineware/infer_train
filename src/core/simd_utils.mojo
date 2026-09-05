@@ -60,20 +60,24 @@ def f32_accumulate[width: Int](v: SIMD[DType.float32, width]) -> Float32:
     return Float32(v.reduce_add())
 
 
-def load_f32[dtype: DType, width: Int](
-    t: Tensor[dtype, 2], offset: Int
-) -> SIMD[DType.float32, width]:
+def load_f32[
+    dtype: DType, width: Int
+](t: Tensor[dtype, 2], offset: Int) -> SIMD[DType.float32, width]:
     """Widen a `width`-lane load of `t` to f32."""
-    return t.data().unsafe_load[width=width](
-        offset=offset
-    ).cast[DType.float32]()
+    return (
+        t.data().unsafe_load[width=width](offset=offset).cast[DType.float32]()
+    )
 
 
-def store_scalar[dtype: DType](mut t: Tensor[dtype, 2], offset: Int, v: Float32):
+def store_scalar[
+    dtype: DType
+](mut t: Tensor[dtype, 2], offset: Int, v: Float32):
     t.set(offset, Scalar[dtype](v))
 
 
-def dot_product[dtype: DType](
+def dot_product[
+    dtype: DType
+](
     a: Tensor[dtype, 2],
     b: Tensor[dtype, 2],
     a_base: Int,
@@ -91,12 +95,16 @@ def dot_product[dtype: DType](
     var acc = SIMD[DType.float32, W](0)
     var i = 0
     while i < k_main:
-        var av = a.data().unsafe_load[width=W](
-            offset=a_base + i
-        ).cast[DType.float32]()
-        var bv = b.data().unsafe_load[width=W](
-            offset=b_base + i
-        ).cast[DType.float32]()
+        var av = (
+            a.data()
+            .unsafe_load[width=W](offset=a_base + i)
+            .cast[DType.float32]()
+        )
+        var bv = (
+            b.data()
+            .unsafe_load[width=W](offset=b_base + i)
+            .cast[DType.float32]()
+        )
         acc = acc + av * bv
         i += W
     var total = Float32(acc.reduce_add())
@@ -106,22 +114,24 @@ def dot_product[dtype: DType](
     return total
 
 
-def elementwise_sum_squares[dtype: DType, width: Int = 0](
-    t: Tensor[dtype, 2], base: Int, n: Int
-) -> Float32:
+def elementwise_sum_squares[
+    dtype: DType, width: Int = 0
+](t: Tensor[dtype, 2], base: Int, n: Int) -> Float32:
     """sum of squares of t[base : base+n], computed in f32.
 
     `width` is the SIMD lane count (comptime); 0 selects the legacy
     per-dtype width (8 lanes f16 / 4 lanes f32).
     """
-    comptime W = width if width > 0 else (W_F16 if dtype == DType.float16 else W_F32)
+    comptime W = width if width > 0 else (
+        W_F16 if dtype == DType.float16 else W_F32
+    )
     var n_main = (n // W) * W
     var acc = SIMD[DType.float32, W](0)
     var i = 0
     while i < n_main:
-        var v = t.data().unsafe_load[width=W](
-            offset=base + i
-        ).cast[DType.float32]()
+        var v = (
+            t.data().unsafe_load[width=W](offset=base + i).cast[DType.float32]()
+        )
         acc = acc + v * v
         i += W
     var total = Float32(acc.reduce_add())
@@ -132,7 +142,7 @@ def elementwise_sum_squares[dtype: DType, width: Int = 0](
     return total
 
 
-# -- M8: adaptive SIMD width ----------------------------------------------------
+# -- M8: adaptive SIMD width ---------------------------------------------------
 
 
 def is_power_of_two(n: Int) -> Bool:
@@ -201,6 +211,7 @@ struct AutotuneResult(Movable):
     `sink` is the accumulated benchmark value: the caller must use it
     (print it) or the compiler deletes the whole timed loop.
     """
+
     var dim: Int
     var best: Int  # winning bit width (64/128/256)
     var ns64: Int64
@@ -225,9 +236,9 @@ struct AutotuneResult(Movable):
         self.sink = sink
 
 
-def _time_width[dtype: DType, width: Int](
-    t: Tensor[dtype, 2], n: Int, iters: Int
-) -> Tuple[Int64, Float32]:
+def _time_width[
+    dtype: DType, width: Int
+](t: Tensor[dtype, 2], n: Int, iters: Int) -> Tuple[Int64, Float32]:
     """Time `iters` passes of the canonical inner loop at `width` lanes.
 
     The read window rotates per iteration so the loop body depends on the
@@ -295,6 +306,7 @@ struct AutotuneCache(Movable):
     The cache is a struct (no runtime globals): the Interpreter and the
     CLI each own an instance.
     """
+
     var widths: Dict[String, Int]  # "simd/<dim>" -> bit width
 
     def __init__(out self):

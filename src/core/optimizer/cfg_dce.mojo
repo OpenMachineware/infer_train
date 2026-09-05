@@ -11,15 +11,12 @@ from ..cfg import CFGGraph, CFGBlock, CFGEdge
 def cfg_dce(mut cfg: CFGGraph) -> Int:
     """Remove unreachable blocks; returns the number removed."""
     var n = len(cfg.blocks)
-    var reachable = List[Bool]()
-    for i in range(n):
-        reachable.append(False)
+    var reachable = List[Bool](length=n, fill=False)
 
     var stack = List[Int]()
     stack.append(cfg.entry)
     while len(stack) > 0:
-        var current = stack[len(stack) - 1]
-        stack.pop()
+        var current = stack.pop()
         if current < 0 or current >= n or reachable[current]:
             continue
         reachable[current] = True

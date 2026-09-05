@@ -7,9 +7,11 @@ from ...utils import unimplemented
 from std.math import exp
 
 
-def _softmax_cpu_kernel[dtype: DType](
-    x: Tensor[dtype, 2], dim: Int
-) -> Tensor[dtype, 2] where dtype.is_floating_point():
+def _softmax_cpu_kernel[
+    dtype: DType
+](x: Tensor[dtype, 2], dim: Int) -> Tensor[
+    dtype, 2
+] where dtype.is_floating_point():
     var batch = x.shape()[0]
     var out = tensor_zeros[dtype, 2](x.shape())
 
@@ -63,23 +65,23 @@ def _softmax_cpu_kernel[dtype: DType](
     return out
 
 
-def softmax_cpu[dtype: DType, dim: Int](
-    x: Tensor[dtype, 2]
-) -> Tensor[dtype, 2] where dtype.is_floating_point():
+def softmax_cpu[
+    dtype: DType, dim: Int
+](x: Tensor[dtype, 2]) -> Tensor[dtype, 2] where dtype.is_floating_point():
     if x.shape()[1] != dim:
         unimplemented("softmax_cpu: static dim mismatch")
     return _softmax_cpu_kernel[dtype](x, dim)
 
 
-def softmax_cpu_dynamic[dtype: DType](
-    x: Tensor[dtype, 2]
-) -> Tensor[dtype, 2] where dtype.is_floating_point():
+def softmax_cpu_dynamic[
+    dtype: DType
+](x: Tensor[dtype, 2]) -> Tensor[dtype, 2] where dtype.is_floating_point():
     return _softmax_cpu_kernel[dtype](x, x.shape()[1])
 
 
-def softmax_cpu_forward_with_saved[dtype: DType, dim: Int](
-    x: Tensor[dtype, 2]
-) -> Tuple[
+def softmax_cpu_forward_with_saved[
+    dtype: DType, dim: Int
+](x: Tensor[dtype, 2]) -> Tuple[
     Tensor[dtype, 2], List[Tensor[dtype, 2]]
 ] where dtype.is_floating_point():
     var out = softmax_cpu[dtype, dim](x)
@@ -88,9 +90,11 @@ def softmax_cpu_forward_with_saved[dtype: DType, dim: Int](
     return (out, saved^)
 
 
-def softmax_cpu_backward[dtype: DType, dim: Int](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]]:
+def softmax_cpu_backward[
+    dtype: DType, dim: Int
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+]:
     """Backward for row-wise softmax.
 
     grad_x[i,j] = p[i,j] * (grad_out[i,j] - sum_k grad_out[i,k] * p[i,k])

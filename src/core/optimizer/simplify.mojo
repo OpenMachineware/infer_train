@@ -61,10 +61,7 @@ def dag_simplify(mut dag: Dag) -> Int:
                 dag.nodes[i].op = OP_CONST  # placeholder: dce drops it
                 dag.nodes[i].inputs = List[Int]()
                 simplified += 1
-        elif (
-            dag.nodes[i].op == OP_ADD_BIAS
-            and len(dag.nodes[i].inputs) == 2
-        ):
+        elif dag.nodes[i].op == OP_ADD_BIAS and len(dag.nodes[i].inputs) == 2:
             if _is_zero_const(dag, dag.nodes[i].inputs[1]):
                 _ = _rewire_inputs(dag, i, dag.nodes[i].inputs[0])
                 dag.nodes[i].op = OP_CONST  # placeholder: dce drops it

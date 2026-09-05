@@ -19,11 +19,9 @@ comptime W_F16 = 8
 comptime W_F32 = 4
 
 
-def _fused_matmul_rms_norm_kernel[dtype: DType](
-    x: Tensor[dtype, 2],
-    w: Tensor[dtype, 2],
-    eps: Float32,
-) -> Tensor[dtype, 2]:
+def _fused_matmul_rms_norm_kernel[
+    dtype: DType
+](x: Tensor[dtype, 2], w: Tensor[dtype, 2], eps: Float32,) -> Tensor[dtype, 2]:
     var M = x.shape()[0]
     var K = x.shape()[1]
     var N = w.shape()[0]
@@ -40,19 +38,21 @@ def _fused_matmul_rms_norm_kernel[dtype: DType](
             var acc = SIMD[DType.float32, W](0)
             var k = 0
             while k < k_main:
-                var xv = x.data().unsafe_load[width=W](
-                    offset=i * K + k
-                ).cast[DType.float32]()
-                var wv = w.data().unsafe_load[width=W](
-                    offset=j * K + k
-                ).cast[DType.float32]()
+                var xv = (
+                    x.data()
+                    .unsafe_load[width=W](offset=i * K + k)
+                    .cast[DType.float32]()
+                )
+                var wv = (
+                    w.data()
+                    .unsafe_load[width=W](offset=j * K + k)
+                    .cast[DType.float32]()
+                )
                 acc = acc + xv * wv
                 k += W
             var total = Float32(acc.reduce_add())
             while k < K:
-                total += Float32(x.get(i * K + k)) * Float32(
-                    w.get(j * K + k)
-                )
+                total += Float32(x.get(i * K + k)) * Float32(w.get(j * K + k))
                 k += 1
             out.set(i * N + j, Scalar[dtype](total))
             j += 1
@@ -60,9 +60,11 @@ def _fused_matmul_rms_norm_kernel[dtype: DType](
         var ss = Float32(0)
         j = 0
         while j < n_main:
-            var v = out.data().unsafe_load[width=W](
-                offset=i * N + j
-            ).cast[DType.float32]()
+            var v = (
+                out.data()
+                .unsafe_load[width=W](offset=i * N + j)
+                .cast[DType.float32]()
+            )
             ss += Float32((v * v).reduce_add())
             j += W
         while j < N:
@@ -72,9 +74,11 @@ def _fused_matmul_rms_norm_kernel[dtype: DType](
         var inv = Float32(1.0) / sqrt(ss / Float32(N) + eps)
         j = 0
         while j < n_main:
-            var v = out.data().unsafe_load[width=W](
-                offset=i * N + j
-            ).cast[DType.float32]()
+            var v = (
+                out.data()
+                .unsafe_load[width=W](offset=i * N + j)
+                .cast[DType.float32]()
+            )
             out.data().unsafe_store(
                 i * N + j, (v * SIMD[DType.float32, W](inv)).cast[dtype]()
             )
@@ -86,9 +90,9 @@ def _fused_matmul_rms_norm_kernel[dtype: DType](
     return out
 
 
-def _dispatch[dtype: DType](
-    x: Tensor[dtype, 2], w: Tensor[dtype, 2], eps: Float32
-) -> Tensor[dtype, 2]:
+def _dispatch[
+    dtype: DType
+](x: Tensor[dtype, 2], w: Tensor[dtype, 2], eps: Float32) -> Tensor[dtype, 2]:
     comptime if dtype == DType.float16:
         var x16 = Tensor[DType.float16, 2](
             x.shape(),
@@ -128,7 +132,9 @@ def _dispatch[dtype: DType](
         return tensor_zeros[dtype, 2](StaticTuple[Int, 2](0, 0))
 
 
-def fused_matmul_rms_norm[dtype: DType](
+def fused_matmul_rms_norm[
+    dtype: DType
+](
     x: Tensor[dtype, 2],
     w: Tensor[dtype, 2],
     eps: Float32 = Float32(1e-5),

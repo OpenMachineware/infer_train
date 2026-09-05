@@ -13,9 +13,9 @@ from std.utils.static_tuple import StaticTuple
 from std.math import log, exp
 
 
-def cross_entropy_loss[dtype: DType, vocab_size: Int](
-    logits: Tensor[dtype, 2], targets: Tensor[DType.int32, 1]
-) -> Scalar[dtype]:
+def cross_entropy_loss[
+    dtype: DType, vocab_size: Int
+](logits: Tensor[dtype, 2], targets: Tensor[DType.int32, 1]) -> Scalar[dtype]:
     """Mean cross-entropy loss over the batch (scalar return)."""
     var batch = logits.shape()[0]
     var vocab = logits.shape()[1]
@@ -40,18 +40,20 @@ def cross_entropy_loss[dtype: DType, vocab_size: Int](
     return Scalar[dtype](total / Float32(batch))
 
 
-def cross_entropy_forward[dtype: DType](
-    logits: Tensor[dtype, 2], targets: Tensor[DType.int32, 1]
-) -> Tensor[dtype, 1]:
+def cross_entropy_forward[
+    dtype: DType
+](logits: Tensor[dtype, 2], targets: Tensor[DType.int32, 1]) -> Tensor[
+    dtype, 1
+]:
     """Loss as a rank-1 [1] tensor (the registry/autograd shape)."""
     var out = tensor_zeros[dtype, 1](StaticTuple[Int, 1](1))
-    out.set(
-        0, cross_entropy_loss[dtype, 0](logits, targets)
-    )
+    out.set(0, cross_entropy_loss[dtype, 0](logits, targets))
     return out
 
 
-def cross_entropy_backward[dtype: DType](
+def cross_entropy_backward[
+    dtype: DType
+](
     grad_loss: Tensor[dtype, 1],
     logits: Tensor[dtype, 2],
     targets: Tensor[DType.int32, 1],
@@ -81,7 +83,5 @@ def cross_entropy_backward[dtype: DType](
             var onehot = Float32(0)
             if j == target:
                 onehot = Float32(1.0)
-            grad_logits.set(
-                base + j, Scalar[dtype]((p - onehot) * g)
-            )
+            grad_logits.set(base + j, Scalar[dtype]((p - onehot) * g))
     return grad_logits

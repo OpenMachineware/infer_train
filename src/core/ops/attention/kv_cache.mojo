@@ -41,9 +41,7 @@ struct KVCacheLayer(Copyable, Movable):
     var block_table: List[Int]  # position page -> block index (paged)
     var window: Int  # sliding window; 0 = unlimited
 
-    def __init__(
-        out self, n_kv_heads: Int, max_len: Int, head_dim: Int
-    ):
+    def __init__(out self, n_kv_heads: Int, max_len: Int, head_dim: Int):
         self.k = tensor_zeros[DType.float16, 3](
             StaticTuple[Int, 3](n_kv_heads, max_len, head_dim)
         )
@@ -68,9 +66,7 @@ struct KVCacheLayer(Copyable, Movable):
             self.block_table.append(b)
         self.window = existing.window
 
-    def enable_paged(
-        mut self, page_size: Int, n_kv_heads: Int, head_dim: Int
-    ):
+    def enable_paged(mut self, page_size: Int, n_kv_heads: Int, head_dim: Int):
         """Switch this layer to paged storage (blocks of `page_size`)."""
         if page_size < 1:
             unimplemented("KVCacheLayer.enable_paged: bad page size")
@@ -110,11 +106,14 @@ struct KVCacheLayer(Copyable, Movable):
             return Float32(
                 self.k.get(
                     (block * self.k.shape()[1] + head) * self.k.shape()[2]
-                    + off * self.head_dim_of() + d
+                    + off * self.head_dim_of()
+                    + d
                 )
             )
         var slot = self.storage_pos(position)
-        return Float32(self.k.get((head * self.max_len + slot) * self.k.shape()[2] + d))
+        return Float32(
+            self.k.get((head * self.max_len + slot) * self.k.shape()[2] + d)
+        )
 
     def get_v(self, head: Int, position: Int, d: Int) -> Float32:
         if self.page_size > 0:
@@ -124,17 +123,19 @@ struct KVCacheLayer(Copyable, Movable):
             return Float32(
                 self.v.get(
                     (block * self.v.shape()[1] + head) * self.v.shape()[2]
-                    + off * self.head_dim_of() + d
+                    + off * self.head_dim_of()
+                    + d
                 )
             )
         var slot = self.storage_pos(position)
-        return Float32(self.v.get((head * self.max_len + slot) * self.v.shape()[2] + d))
+        return Float32(
+            self.v.get((head * self.max_len + slot) * self.v.shape()[2] + d)
+        )
 
     def head_dim_of(self) -> Int:
         if self.page_size > 0:
             return self.k.shape()[2] // self.page_size
         return self.k.shape()[2]
-
 
     def set_kv(
         mut self, head: Int, position: Int, d: Int, kv: Float32, vv: Float32
@@ -145,12 +146,14 @@ struct KVCacheLayer(Copyable, Movable):
             var block = self.block_table[page]
             self.k.set(
                 (block * self.k.shape()[1] + head) * self.k.shape()[2]
-                + off * self.head_dim_of() + d,
+                + off * self.head_dim_of()
+                + d,
                 Scalar[DType.float16](kv),
             )
             self.v.set(
                 (block * self.v.shape()[1] + head) * self.v.shape()[2]
-                + off * self.head_dim_of() + d,
+                + off * self.head_dim_of()
+                + d,
                 Scalar[DType.float16](vv),
             )
             return
@@ -185,9 +188,7 @@ struct KVCache(Movable):
     ):
         self.layers = List[KVCacheLayer]()
         for _ in range(num_layers):
-            self.layers.append(
-                KVCacheLayer(n_kv_heads, max_len, head_dim)
-            )
+            self.layers.append(KVCacheLayer(n_kv_heads, max_len, head_dim))
 
     def num_layers(self) -> Int:
         return len(self.layers)
@@ -215,9 +216,7 @@ struct KVCache(Movable):
         for i in range(len(self.layers)):
             self.layers[i].set_window(window)
 
-    def enable_paged(
-        mut self, page_size: Int, n_kv_heads: Int, head_dim: Int
-    ):
+    def enable_paged(mut self, page_size: Int, n_kv_heads: Int, head_dim: Int):
         for i in range(len(self.layers)):
             self.layers[i].enable_paged(page_size, n_kv_heads, head_dim)
 
@@ -252,7 +251,9 @@ struct KVCache(Movable):
         return max_len
 
 
-def kv_cache_append[dtype: DType](
+def kv_cache_append[
+    dtype: DType
+](
     mut cache: KVCacheLayer,
     key: Tensor[dtype, 3],
     value: Tensor[dtype, 3],
@@ -268,7 +269,10 @@ def kv_cache_append[dtype: DType](
     for h in range(n_kv):
         for d in range(head_dim):
             cache.set_kv(
-                h, position, d, Float32(key.get(h * head_dim + d)),
+                h,
+                position,
+                d,
+                Float32(key.get(h * head_dim + d)),
                 Float32(value.get(h * head_dim + d)),
             )
     if position + 1 > cache.filled:

@@ -33,7 +33,8 @@ from std.os import getenv
 
 
 def help_text() -> String:
-    return """
+    return (
+        """
 it-server - an infer_train HTTP server (llama-server-compatible)
 
 Usage:
@@ -51,7 +52,9 @@ llama-server-compatible options:
                           INFERTRAIN_API_KEY env var)
       --no-webui          accepted (the Mojo server has no WebUI)
       --metrics           accepted (ignored)
-""" + common_options_text() + """
+"""
+        + common_options_text()
+        + """
 Endpoints (OpenAI-compatible):
   GET  /health
   GET  /v1/models
@@ -68,6 +71,7 @@ quantize subcommand:
 Local generation lives in `it-cli` (llama-cli-compatible); the
 multi-process / multi-machine RPC worker is `it-rpc-server`.
 """
+    )
 
 
 def main() raises:
@@ -85,7 +89,7 @@ def main() raises:
         print(
             "hint: local generation is `it-cli` (llama-cli-compatible);",
         )
-        print("      e.g. it-cli -m MODEL -p \"prompt\" -n 64")
+        print('      e.g. it-cli -m MODEL -p "prompt" -n 64')
         return
     if args.model.byte_length() == 0:
         print("error: -m/--model is required (try --help)")
@@ -107,11 +111,11 @@ def main() raises:
     print("loaded:", args.model)
     print(
         "  arch layers:",
-        model_p[0].transformer.config.n_layers,
+        model_p[unsafe_offset=0].transformer.config.n_layers,
         "hidden:",
-        model_p[0].transformer.config.hidden,
+        model_p[unsafe_offset=0].transformer.config.hidden,
         "vocab:",
-        model_p[0].transformer.config.vocab,
+        model_p[unsafe_offset=0].transformer.config.vocab,
     )
     var server = ServerState(
         model_p,

@@ -182,13 +182,15 @@ def run_work_stealing[
     # Explicit capture list: `func` by immutable reference (it is a value
     # that outlives the synchronous call), the counter pointer and the two
     # sizes by value.  No implicit capture of any local.
-    def steal(task_id: Int) {imm func, imm counter, imm n_work_items, imm chunk_size}:
+    def steal(
+        task_id: Int,
+    ) {imm func, imm counter, imm n_work_items, imm chunk_size}:
         while True:
             # Claim the next chunk id.  `fetch_add` returns the prior value,
             # so this is an atomic "take the next slot" over the shared queue.
-            var prev = Atomic[DType.int64].fetch_add[
-                ordering=Ordering.RELAXED
-            ](counter, Int64(1))
+            var prev = Atomic[DType.int64].fetch_add[ordering=Ordering.RELAXED](
+                counter, Int64(1)
+            )
             var start = Int(prev) * chunk_size
             if start >= n_work_items:
                 break
@@ -228,9 +230,9 @@ struct WorkStealingPool(Movable):
             return worker_count()
         return self.nworkers
 
-    def run[FuncType: def(Int) -> None](
-        self, func: FuncType, n_work_items: Int
-    ) -> Int:
+    def run[
+        FuncType: def(Int) -> None
+    ](self, func: FuncType, n_work_items: Int) -> Int:
         """Dispatch `n_work_items` items of `func` onto the pool."""
         return run_work_stealing(func, n_work_items, self.workers())
 
@@ -253,6 +255,7 @@ def parallel_fill(
     - the pointer keeps its origin (no `Int` transcode) and no local value is
     captured implicitly.
     """
+
     def fill(i: Int) {imm buf, imm value}:
         buf.unsafe_offset(i).unsafe_store(val=value)
 
@@ -263,7 +266,7 @@ def parallel_fill(
 # worker reads fields from the struct instead of capturing outer locals
 # directly (the issue-#2 fix).  The struct is small and register-passable;
 # the large payload it points to (`buf`) lives on the heap.
-struct FillContext(Movable, ImplicitlyCopyable):
+struct FillContext(ImplicitlyCopyable, Movable):
     var buf: Pointer[Float32, MutUntrackedOrigin]
     var value: Float32
     var n: Int
@@ -286,6 +289,7 @@ def parallel_fill_ctx(ctx: FillContext, nworkers: Int = 0) -> Int:
     context struct (captured by pointer) - it captures no outer local value,
     which is the pattern that avoids the legacy capture-garbage bug.
     """
+
     def fill(i: Int) {imm ctx}:
         ctx.buf.unsafe_offset(i).unsafe_store(val=ctx.value)
 

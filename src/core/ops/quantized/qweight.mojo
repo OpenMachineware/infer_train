@@ -33,7 +33,7 @@ from .quant_types import QuantType
 from std.utils.static_tuple import StaticTuple
 
 
-struct QWeight(Copyable, Movable, ImplicitlyCopyable):
+struct QWeight(Copyable, ImplicitlyCopyable, Movable):
     """A projection weight kept in its on-disk format (Q4-resident).
 
     See the module docstring for the two payload variants.  `n_out` /

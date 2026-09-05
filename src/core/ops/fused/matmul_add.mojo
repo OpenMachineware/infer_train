@@ -2,8 +2,10 @@
 #
 # M5 fused kernels: matmul + add in a single pass.
 #
-#   fused_matmul_add_bias(x, w, bias)  y[i, j] = sum_k x[i, k] * w[j, k] + bias[j]
-#   fused_matmul_add(x, w, b)          y[i, j] = sum_k x[i, k] * w[j, k] + b[i, j]
+#   fused_matmul_add_bias(x, w, bias)
+#       y[i, j] = sum_k x[i, k] * w[j, k] + bias[j]
+#   fused_matmul_add(x, w, b)
+#       y[i, j] = sum_k x[i, k] * w[j, k] + b[i, j]
 #
 # `w` is weight-major ([out, in], the GGUF layout) so the inner dot product
 # walks contiguous rows of both operands.  f16 inputs widen per element and
@@ -18,11 +20,15 @@ comptime W_F16 = 8  # 8 x f16 = 128-bit NEON/SSE vector
 comptime W_F32 = 4  # 4 x f32 = 128-bit NEON/SSE vector
 
 
-def _fused_matmul_add_bias_kernel[dtype: DType](
+def _fused_matmul_add_bias_kernel[
+    dtype: DType
+](
     x: Tensor[dtype, 2],
     w: Tensor[dtype, 2],
     bias: Tensor[dtype, 1],
-) -> Tensor[dtype, 2]:
+) -> Tensor[
+    dtype, 2
+]:
     var M = x.shape()[0]
     var K = x.shape()[1]
     var N = w.shape()[0]
@@ -38,30 +44,36 @@ def _fused_matmul_add_bias_kernel[dtype: DType](
             var acc = SIMD[DType.float32, W](0)
             var k = 0
             while k < k_main:
-                var xv = x.data().unsafe_load[width=W](
-                    offset=i * K + k
-                ).cast[DType.float32]()
-                var wv = w.data().unsafe_load[width=W](
-                    offset=j * K + k
-                ).cast[DType.float32]()
+                var xv = (
+                    x.data()
+                    .unsafe_load[width=W](offset=i * K + k)
+                    .cast[DType.float32]()
+                )
+                var wv = (
+                    w.data()
+                    .unsafe_load[width=W](offset=j * K + k)
+                    .cast[DType.float32]()
+                )
                 acc = acc + xv * wv
                 k += W
             var total = Float32(acc.reduce_add())
             while k < K:
-                total += Float32(x.get(i * K + k)) * Float32(
-                    w.get(j * K + k)
-                )
+                total += Float32(x.get(i * K + k)) * Float32(w.get(j * K + k))
                 k += 1
             total += Float32(bias.get(j))
             out.set(i * N + j, Scalar[dtype](total))
     return out
 
 
-def _fused_matmul_add_kernel[dtype: DType](
+def _fused_matmul_add_kernel[
+    dtype: DType
+](
     x: Tensor[dtype, 2],
     w: Tensor[dtype, 2],
     b: Tensor[dtype, 2],
-) -> Tensor[dtype, 2]:
+) -> Tensor[
+    dtype, 2
+]:
     var M = x.shape()[0]
     var K = x.shape()[1]
     var N = w.shape()[0]
@@ -77,30 +89,36 @@ def _fused_matmul_add_kernel[dtype: DType](
             var acc = SIMD[DType.float32, W](0)
             var k = 0
             while k < k_main:
-                var xv = x.data().unsafe_load[width=W](
-                    offset=i * K + k
-                ).cast[DType.float32]()
-                var wv = w.data().unsafe_load[width=W](
-                    offset=j * K + k
-                ).cast[DType.float32]()
+                var xv = (
+                    x.data()
+                    .unsafe_load[width=W](offset=i * K + k)
+                    .cast[DType.float32]()
+                )
+                var wv = (
+                    w.data()
+                    .unsafe_load[width=W](offset=j * K + k)
+                    .cast[DType.float32]()
+                )
                 acc = acc + xv * wv
                 k += W
             var total = Float32(acc.reduce_add())
             while k < K:
-                total += Float32(x.get(i * K + k)) * Float32(
-                    w.get(j * K + k)
-                )
+                total += Float32(x.get(i * K + k)) * Float32(w.get(j * K + k))
                 k += 1
             total += Float32(b.get(i * N + j))
             out.set(i * N + j, Scalar[dtype](total))
     return out
 
 
-def _dispatch_matmul_add_bias[dtype: DType](
+def _dispatch_matmul_add_bias[
+    dtype: DType
+](
     x: Tensor[dtype, 2],
     w: Tensor[dtype, 2],
     bias: Tensor[dtype, 1],
-) -> Tensor[dtype, 2]:
+) -> Tensor[
+    dtype, 2
+]:
     comptime if dtype == DType.float16:
         var x16 = Tensor[DType.float16, 2](
             x.shape(),
@@ -150,11 +168,15 @@ def _dispatch_matmul_add_bias[dtype: DType](
         return tensor_zeros[dtype, 2](StaticTuple[Int, 2](0, 0))
 
 
-def _dispatch_matmul_add[dtype: DType](
+def _dispatch_matmul_add[
+    dtype: DType
+](
     x: Tensor[dtype, 2],
     w: Tensor[dtype, 2],
     b: Tensor[dtype, 2],
-) -> Tensor[dtype, 2]:
+) -> Tensor[
+    dtype, 2
+]:
     comptime if dtype == DType.float16:
         var x16 = Tensor[DType.float16, 2](
             x.shape(),
@@ -204,28 +226,40 @@ def _dispatch_matmul_add[dtype: DType](
         return tensor_zeros[dtype, 2](StaticTuple[Int, 2](0, 0))
 
 
-def fused_matmul_add_bias[dtype: DType](
+def fused_matmul_add_bias[
+    dtype: DType
+](
     x: Tensor[dtype, 2],
     w: Tensor[dtype, 2],
     bias: Tensor[dtype, 1],
-) -> Tensor[dtype, 2]:
+) -> Tensor[
+    dtype, 2
+]:
     """Fused linear: y = x @ w^T + bias with w stored [out, in]."""
     return _dispatch_matmul_add_bias[dtype](x, w, bias)
 
 
-def fused_matmul_add[dtype: DType](
+def fused_matmul_add[
+    dtype: DType
+](
     x: Tensor[dtype, 2],
     w: Tensor[dtype, 2],
     b: Tensor[dtype, 2],
-) -> Tensor[dtype, 2]:
+) -> Tensor[
+    dtype, 2
+]:
     """Fused matmul + elementwise add: y = x @ w^T + b."""
     return _dispatch_matmul_add[dtype](x, w, b)
 
 
 # M2 placeholder name kept for source compatibility.
-def matmul_add_fused[dtype: DType](
+def matmul_add_fused[
+    dtype: DType
+](
     a: Tensor[dtype, 2],
     b: Tensor[dtype, 2],
     bias: Tensor[dtype, 2],
-) -> Tensor[dtype, 2]:
+) -> Tensor[
+    dtype, 2
+]:
     return fused_matmul_add[dtype](a, b, bias)

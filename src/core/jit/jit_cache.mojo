@@ -42,7 +42,9 @@ comptime JIT_FFN_K = 1536
 
 struct JitCache(Movable):
     var compiled: Dict[String, Int]  # shape key -> 1 when compiled
-    var fused_kernels: Dict[String, CompiledFusedKernel]  # M8: fused shape -> kernel
+    var fused_kernels: Dict[
+        String, CompiledFusedKernel
+    ]  # M8: fused shape -> kernel
     var compiles: Int  # M8: JIT compile count (misses that produced a kernel)
     var hits: Int  # M8: cache hits
     var misses: Int  # M8: cache misses

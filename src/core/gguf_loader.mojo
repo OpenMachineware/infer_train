@@ -47,7 +47,7 @@ comptime GGML_Q6_K = 14
 comptime GGUF_MAX_DIMS = 4
 
 
-struct GGUFMetaValue(Copyable, Movable, ImplicitlyCopyable):
+struct GGUFMetaValue(Copyable, ImplicitlyCopyable, Movable):
     """Tagged union for a GGUF metadata value (see module docstring)."""
 
     var kind: Int8  # 0 uint, 1 int, 2 float, 3 bool, 4 string, 5 array
@@ -72,7 +72,7 @@ struct GGUFMetaValue(Copyable, Movable, ImplicitlyCopyable):
         self.arr_offset = 0
 
 
-struct GGUFTensor(Copyable, Movable, ImplicitlyCopyable):
+struct GGUFTensor(Copyable, ImplicitlyCopyable, Movable):
     var name: String
     var n_dims: Int
     var dims: StaticTuple[Int, GGUF_MAX_DIMS]
@@ -89,7 +89,7 @@ struct GGUFTensor(Copyable, Movable, ImplicitlyCopyable):
         self.file_idx = 0
 
 
-struct GGUFQuantInfo(Copyable, Movable, ImplicitlyCopyable):
+struct GGUFQuantInfo(Copyable, ImplicitlyCopyable, Movable):
     """Per-tensor quantization metadata (the Q4-resident contract).
 
     Stored behind `Tensor.quantization_info` (an opaque `Pointer[UInt8]`)
@@ -150,7 +150,7 @@ def ggml_quant_info(ggml_type: Int) -> Tuple[Int, Int, Int, Int8]:
     return (1, 1, 0, Int8(-1))
 
 
-struct GGUFFilePart(Copyable, Movable, ImplicitlyCopyable):
+struct GGUFFilePart(Copyable, ImplicitlyCopyable, Movable):
     """One memory-mapped split file of a (possibly multi-part) GGUF model.
 
     A single-file model is a one-element list of these.  `data_offset` is the
@@ -237,9 +237,7 @@ struct GGUFContext(Movable):
     var data_offset: Int  # byte offset where tensor payloads begin (part 0)
     var parts: List[GGUFFilePart]  # one per split file (>= 1)
 
-    def __init__(
-        out self, data: Pointer[UInt8, MutUntrackedOrigin], size: Int
-    ):
+    def __init__(out self, data: Pointer[UInt8, MutUntrackedOrigin], size: Int):
         self.data = data
         self.size = size
         self.version = 0
@@ -260,7 +258,9 @@ struct GGUFContext(Movable):
         var part = self.parts[t.file_idx]
         return (part.data, part.data_offset + t.offset)
 
-    def tensor_data_ptr(self, t: GGUFTensor) -> Pointer[UInt8, MutUntrackedOrigin]:
+    def tensor_data_ptr(
+        self, t: GGUFTensor
+    ) -> Pointer[UInt8, MutUntrackedOrigin]:
         """Base pointer directly at `t`'s payload bytes (owning part aware)."""
         var (base, off) = self.tensor_data(t)
         return base.unsafe_offset(off)
@@ -293,7 +293,9 @@ struct GGUFContext(Movable):
         var (be, bb, gs, tag) = ggml_quant_info(t.ggml_type)
         var shape: StaticTuple[Int, 2]
         if t.n_dims >= 2:
-            shape = StaticTuple[Int, 2](t.dims[1], (numel // t.dims[1]) * bb // be)
+            shape = StaticTuple[Int, 2](
+                t.dims[1], (numel // t.dims[1]) * bb // be
+            )
         else:
             shape = StaticTuple[Int, 2](1, numel * bb // be)
         var ptr = self.tensor_data_ptr(t).unsafe_bitcast[Scalar[DType.uint8]]()
@@ -304,7 +306,9 @@ struct GGUFContext(Movable):
         info[unsafe_offset=0].group_size = gs
         info[unsafe_offset=0].block_bytes = bb
         info[unsafe_offset=0].block_elems = be
-        info[unsafe_offset=0].scale = Float32(0.0)  # block formats pack scales per block
+        info[unsafe_offset=0].scale = Float32(
+            0.0
+        )  # block formats pack scales per block
         out.set_quantization_info(info.unsafe_bitcast[UInt8]())
         return out
 
@@ -364,13 +368,14 @@ def _str_to_int(s: String) -> Int:
 
 
 def _is_split_part_path(path: String) -> Bool:
-    """True if `path` is a GGUF split part: `<base>.gguf-NNNNN-of-NNNNN.gguf`."""
+    """True if `path` is a GGUF split part: `<base>.gguf-NNNNN-of-NNNNN.gguf`.
+    """
     var of = path.rfind("-of-")
     if of < 6:
         return False
     if of + 14 != path.byte_length():
         return False
-    var ext = String(path[byte=of + 9 : of + 14])
+    var ext = String(path[byte = of + 9 : of + 14])
     if ext != ".gguf":
         return False
     var bytes_ = path.as_bytes()
@@ -390,8 +395,8 @@ def _is_split_part_path(path: String) -> Bool:
 def _split_part_base_and_total(path: String) -> Tuple[String, Int]:
     """(base, total) for a split part path; base is `<...>.gguf`."""
     var of = path.rfind("-of-")
-    var total = _str_to_int(String(path[byte=of + 4 : of + 9]))
-    var base = String(path[byte=0 : of - 6])
+    var total = _str_to_int(String(path[byte = of + 4 : of + 9]))
+    var base = String(path[byte = 0 : of - 6])
     return (base, total)
 
 

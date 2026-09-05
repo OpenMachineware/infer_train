@@ -39,8 +39,17 @@ def main() raises:
     var ctx = load_gguf(MODEL_PATH)
     var config = load_config(ctx)
     print("arch:", arch_name(config.arch), "layers:", config.n_layers)
-    print("hidden:", config.hidden, "ffn:", config.ffn, "heads:", config.n_heads)
-    print("kv:", config.n_kv_heads, "head_dim:", config.head_dim, "vocab:", config.vocab)
+    print(
+        "hidden:", config.hidden, "ffn:", config.ffn, "heads:", config.n_heads
+    )
+    print(
+        "kv:",
+        config.n_kv_heads,
+        "head_dim:",
+        config.head_dim,
+        "vocab:",
+        config.vocab,
+    )
     print("rope:", config.rope_theta, "eps:", config.norm_eps)
     check(config.arch == ARCH_QWEN3, "arch detection")
     check(config.n_layers == 28, "layer count")
@@ -57,12 +66,16 @@ def main() raises:
     model.weights = weights^
 
     var tokenizer = make_tokenizer(model.ctx, String(""))
-    print("tokenizer:", tokenizer.flavor_name(), "vocab:", tokenizer.vocab_size())
+    print(
+        "tokenizer:", tokenizer.flavor_name(), "vocab:", tokenizer.vocab_size()
+    )
 
     # single-token forward sanity (prefill a few prompt tokens)
     var tokens = tokenizer.encode_with_bos("What is 1+1?")
     print("prompt tokens:", len(tokens))
-    var logits = tensor_zeros[DType.float32, 1](StaticTuple[Int, 1](config.vocab))
+    var logits = tensor_zeros[DType.float32, 1](
+        StaticTuple[Int, 1](config.vocab)
+    )
     for i in range(len(tokens)):
         logits = model.forward(tokens[i], i)
     var mx = Float32(-3.0e38)
@@ -79,7 +92,9 @@ def main() raises:
 
     # short generation
     seed_sampler(Optional(7))
-    var sampler = Sampler(temperature=Float32(0.6), top_k=40, top_p=Float32(0.95))
+    var sampler = Sampler(
+        temperature=Float32(0.6), top_k=40, top_p=Float32(0.95)
+    )
     var generated = List[Int]()
     for _ in range(48):
         var next_token = sample_dynamic[DType.float32](logits, sampler, tokens)

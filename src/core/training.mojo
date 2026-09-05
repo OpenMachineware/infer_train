@@ -30,7 +30,7 @@ from std.math import sqrt
 from ..runtime.interpreter import Interpreter
 
 
-struct TrainConfig(Copyable, Movable, ImplicitlyCopyable):
+struct TrainConfig(Copyable, ImplicitlyCopyable, Movable):
     var n_layers: Int
     var hidden: Int
     var ffn: Int
@@ -53,7 +53,7 @@ struct TrainConfig(Copyable, Movable, ImplicitlyCopyable):
         self.eps = Float32(1e-5)
 
 
-struct LayerParams(Copyable, Movable, ImplicitlyCopyable):
+struct LayerParams(Copyable, ImplicitlyCopyable, Movable):
     var attn_norm_w: Tensor[DType.float32, 1]
     var q_w: Tensor[DType.float32, 2]
     var k_w: Tensor[DType.float32, 2]
@@ -137,7 +137,8 @@ struct TrainModel(Movable):
             StaticTuple[Int, 2](vocab, hidden)
         )
         self.layers = List[LayerParams]()
-        for l in range(config.n_layers):
+        var layer_count = 0
+        while layer_count < config.n_layers:
             var lp = LayerParams()
             lp.attn_norm_w = tensor_zeros[DType.float32, 1](
                 StaticTuple[Int, 1](hidden)
@@ -176,16 +177,13 @@ struct TrainModel(Movable):
                 StaticTuple[Int, 2](hidden, ffn)
             )
             self.layers.append(lp^)
+            layer_count += 1
 
-        self.cfg_tensor = tensor_zeros[DType.int32, 1](
-            StaticTuple[Int, 1](3)
-        )
+        self.cfg_tensor = tensor_zeros[DType.int32, 1](StaticTuple[Int, 1](3))
         self.cfg_tensor.set(0, Scalar[DType.int32](n_heads))
         self.cfg_tensor.set(1, Scalar[DType.int32](config.n_kv_heads))
         self.cfg_tensor.set(2, Scalar[DType.int32](head_dim))
-        self.pos_theta = tensor_zeros[DType.float32, 1](
-            StaticTuple[Int, 1](2)
-        )
+        self.pos_theta = tensor_zeros[DType.float32, 1](StaticTuple[Int, 1](2))
         self.pos_theta.set(0, Scalar[DType.float32](Float32(0)))
         self.pos_theta.set(1, Scalar[DType.float32](config.rope_theta))
 
@@ -228,9 +226,7 @@ struct TrainModel(Movable):
             _fill_weight(self.layers[l].up_w, state)
             _fill_weight(self.layers[l].down_w, state)
         for i in range(self.cfg.hidden):
-            self.output_norm_w.set(
-                i, Scalar[DType.float32](Float32(1.0))
-            )
+            self.output_norm_w.set(i, Scalar[DType.float32](Float32(1.0)))
         for l in range(self.cfg.n_layers):
             for i in range(self.cfg.hidden):
                 self.layers[l].attn_norm_w.set(
@@ -244,24 +240,21 @@ struct TrainModel(Movable):
 
     def _build_graph(mut self):
         var graph = Graph()
-        var embed_id = graph.add_node(
-            "embedding", List[Int](), _entry_attrs(2)
-        )
+        var embed_id = graph.add_node("embedding", List[Int](), _entry_attrs(2))
         # shared mha_seq config inputs
-        var cfg_id = graph.add_node(
-            "identity", List[Int](), _entry_attrs(1)
-        )
-        var pos_id = graph.add_node(
-            "identity", List[Int](), _entry_attrs(1)
-        )
+        var cfg_id = graph.add_node("identity", List[Int](), _entry_attrs(1))
+        var pos_id = graph.add_node("identity", List[Int](), _entry_attrs(1))
         var current = embed_id
-        for l in range(self.cfg.n_layers):
+        var layer_idx = 0
+        while layer_idx < self.cfg.n_layers:
             var wids = List[Int]()
-            for i in range(12):
+            var wcount = 0
+            while wcount < 12:
                 var wnode = graph.add_node(
                     "identity", List[Int](), _entry_attrs(1)
                 )
                 wids.append(wnode)
+                wcount += 1
             # attn_norm, q, k, v, o, qb, kb, vb, ffn_norm, gate, up, down
             var normed1 = graph.add_node(
                 "rms_norm_weight", _in2(current, wids[0]), _no_attrs()
@@ -272,12 +265,8 @@ struct TrainModel(Movable):
             attn_inputs.insert(0, normed1)
             attn_inputs.append(cfg_id)
             attn_inputs.append(pos_id)
-            var attn = graph.add_node(
-                "mha_seq", attn_inputs, _no_attrs()
-            )
-            var resid1 = graph.add_node(
-                "add", _in2(current, attn), _no_attrs()
-            )
+            var attn = graph.add_node("mha_seq", attn_inputs, _no_attrs())
+            var resid1 = graph.add_node("add", _in2(current, attn), _no_attrs())
             var normed2 = graph.add_node(
                 "rms_norm_weight", _in2(resid1, wids[8]), _no_attrs()
             )
@@ -288,12 +277,11 @@ struct TrainModel(Movable):
             ffn_inputs.append(wids[11])
             var ffn = graph.add_node("swiglu_ffn", ffn_inputs, _no_attrs())
             current = graph.add_node("add", _in2(resid1, ffn), _no_attrs())
+            layer_idx += 1
         var out_norm_id = graph.add_node(
             "identity", List[Int](), _entry_attrs(1)
         )
-        var out_w_id = graph.add_node(
-            "identity", List[Int](), _entry_attrs(1)
-        )
+        var out_w_id = graph.add_node("identity", List[Int](), _entry_attrs(1))
         var final_norm = graph.add_node(
             "rms_norm_weight", _in2(current, out_norm_id), _no_attrs()
         )
@@ -333,7 +321,9 @@ struct TrainModel(Movable):
     # -- input list assembly -------------------------------------------------
 
     def build_inputs(
-        mut self, tokens: Tensor[DType.int32, 1], targets: Tensor[DType.int32, 1]
+        mut self,
+        tokens: Tensor[DType.int32, 1],
+        targets: Tensor[DType.int32, 1],
     ) -> List[AnyTensor]:
         """Assemble the external input list in the entry-node order."""
         var inputs = List[AnyTensor]()
@@ -381,11 +371,15 @@ struct TrainModel(Movable):
             var loss_t = result[0][0]
             if loss_t.dtype == DType.float32:
                 loss = Float32(
-                    loss_t.data.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load[width=1](offset=0)
+                    loss_t.data.unsafe_bitcast[
+                        Scalar[DType.float32]
+                    ]().unsafe_load[width=1](offset=0)
                 )
             else:
                 loss = Float32(
-                    loss_t.data.unsafe_bitcast[Scalar[DType.float16]]().unsafe_load[width=1](offset=0)
+                    loss_t.data.unsafe_bitcast[
+                        Scalar[DType.float16]
+                    ]().unsafe_load[width=1](offset=0)
                 )
         if self.amp:
             self.scaler.scale_grads(result[1])
@@ -416,7 +410,9 @@ struct TrainModel(Movable):
         return (loss, result[1].copy())
 
     def eval_step(
-        mut self, tokens: Tensor[DType.int32, 1], targets: Tensor[DType.int32, 1]
+        mut self,
+        tokens: Tensor[DType.int32, 1],
+        targets: Tensor[DType.int32, 1],
     ) -> Tuple[Float32, Float32]:
         """Forward-only eval: returns (loss, token accuracy)."""
         var inputs = self.build_inputs(tokens, targets)
@@ -426,11 +422,15 @@ struct TrainModel(Movable):
             var loss_t = outputs[0]
             if loss_t.dtype == DType.float32:
                 loss = Float32(
-                    loss_t.data.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load[width=1](offset=0)
+                    loss_t.data.unsafe_bitcast[
+                        Scalar[DType.float32]
+                    ]().unsafe_load[width=1](offset=0)
                 )
             else:
                 loss = Float32(
-                    loss_t.data.unsafe_bitcast[Scalar[DType.float16]]().unsafe_load[width=1](offset=0)
+                    loss_t.data.unsafe_bitcast[
+                        Scalar[DType.float16]
+                    ]().unsafe_load[width=1](offset=0)
                 )
         # accuracy: argmax of the logits vs targets
         var logits = no_grad_any()
@@ -447,7 +447,9 @@ struct TrainModel(Movable):
                 var best = 0
                 var best_v = Float32(data.unsafe_load[width=1](offset=0))
                 for j in range(cols):
-                    var v = Float32(data.unsafe_load[width=1](offset=i * cols + j))
+                    var v = Float32(
+                        data.unsafe_load[width=1](offset=i * cols + j)
+                    )
                     if v > best_v:
                         best_v = v
                         best = j
@@ -459,7 +461,9 @@ struct TrainModel(Movable):
                 var best = 0
                 var best_v = Float32(data.unsafe_load[width=1](offset=0))
                 for j in range(cols):
-                    var v = Float32(data.unsafe_load[width=1](offset=i * cols + j))
+                    var v = Float32(
+                        data.unsafe_load[width=1](offset=i * cols + j)
+                    )
                     if v > best_v:
                         best_v = v
                         best = j
@@ -503,7 +507,7 @@ def _in2(a: Int, b: Int) -> List[Int]:
 # autograd path is untouched - this is built ON TOP of train_step).
 
 
-struct FinetuneMode(Copyable, Equatable, Movable, ImplicitlyCopyable):
+struct FinetuneMode(Copyable, Equatable, ImplicitlyCopyable, Movable):
     var _tag: Int8
 
     def __init__(out self, tag: Int8):

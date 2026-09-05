@@ -18,25 +18,25 @@ def _silu(x: Float32) -> Float32:
     return x / (Float32(1.0) + exp(-x))
 
 
-def _swiglu_cpu_kernel[dtype: DType, simd_width: Int = 0](
-    gate: Tensor[dtype, 2], up: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def _swiglu_cpu_kernel[
+    dtype: DType, simd_width: Int = 0
+](gate: Tensor[dtype, 2], up: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """out = silu(gate) * up, computed in f32.  `simd_width` is the SIMD
     lane count (comptime); 0 selects the legacy per-dtype width."""
     if gate.shape() != up.shape():
         unimplemented("swiglu_cpu: shape mismatch")
     var out = tensor_zeros[dtype, 2](gate.shape())
     var n = gate.numel()
-    comptime W = simd_width if simd_width > 0 else (W_F16 if dtype == DType.float16 else W_F32)
+    comptime W = simd_width if simd_width > 0 else (
+        W_F16 if dtype == DType.float16 else W_F32
+    )
     var n_main = (n // W) * W
     var i = 0
     while i < n_main:
-        var gv = gate.data().unsafe_load[width=W](
-            offset=i
-        ).cast[DType.float32]()
-        var uv = up.data().unsafe_load[width=W](
-            offset=i
-        ).cast[DType.float32]()
+        var gv = (
+            gate.data().unsafe_load[width=W](offset=i).cast[DType.float32]()
+        )
+        var uv = up.data().unsafe_load[width=W](offset=i).cast[DType.float32]()
         # per-lane silu: vector loads, scalar exp, scalar stores (SIMD
         # lane inserts are miscompiled in Mojo 1.0)
         for lane in range(W):
@@ -51,25 +51,27 @@ def _swiglu_cpu_kernel[dtype: DType, simd_width: Int = 0](
     return out
 
 
-def swiglu_cpu[dtype: DType, rows: Int, cols: Int, simd_width: Int = 0](
-    gate: Tensor[dtype, 2], up: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def swiglu_cpu[
+    dtype: DType, rows: Int, cols: Int, simd_width: Int = 0
+](gate: Tensor[dtype, 2], up: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Comptime-shaped SwiGLU."""
     if gate.shape() != StaticTuple[Int, 2](rows, cols):
         unimplemented("swiglu_cpu: static shape mismatch")
     return _swiglu_cpu_kernel[dtype, simd_width](gate, up)
 
 
-def swiglu_cpu_dynamic[dtype: DType, simd_width: Int = 0](
-    gate: Tensor[dtype, 2], up: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def swiglu_cpu_dynamic[
+    dtype: DType, simd_width: Int = 0
+](gate: Tensor[dtype, 2], up: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Runtime-shaped SwiGLU."""
     return _swiglu_cpu_kernel[dtype, simd_width](gate, up)
 
 
-def swiglu_cpu_autotuned[dtype: DType](
-    gate: Tensor[dtype, 2], up: Tensor[dtype, 2], width_bits: Int
-) -> Tensor[dtype, 2]:
+def swiglu_cpu_autotuned[
+    dtype: DType
+](gate: Tensor[dtype, 2], up: Tensor[dtype, 2], width_bits: Int) -> Tensor[
+    dtype, 2
+]:
     """SwiGLU specialized for `width_bits` (64/128/256).
 
     `width_bits` is a runtime value (the autotuner's choice); each branch
@@ -89,9 +91,11 @@ def swiglu_cpu_autotuned[dtype: DType](
         return _swiglu_cpu_kernel[dtype, 4](gate, up)
 
 
-def swiglu_cpu_forward_with_saved[dtype: DType, rows: Int, cols: Int](
-    gate: Tensor[dtype, 2], up: Tensor[dtype, 2]
-) -> Tuple[Tensor[dtype, 2], List[Tensor[dtype, 2]]]:
+def swiglu_cpu_forward_with_saved[
+    dtype: DType, rows: Int, cols: Int
+](gate: Tensor[dtype, 2], up: Tensor[dtype, 2]) -> Tuple[
+    Tensor[dtype, 2], List[Tensor[dtype, 2]]
+]:
     var out = swiglu_cpu[dtype, rows, cols](gate, up)
     var saved = List[Tensor[dtype, 2]]()
     saved.append(gate)
@@ -109,9 +113,11 @@ def _silu_deriv(x: Float32, silu_x: Float32) -> Float32:
     return sig * (Float32(1.0) + x - silu_x)
 
 
-def swiglu_cpu_backward[dtype: DType, rows: Int, cols: Int](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]]:
+def swiglu_cpu_backward[
+    dtype: DType, rows: Int, cols: Int
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+]:
     """Backward for SwiGLU: out = silu(gate) * up.
 
     grad_up   = grad_out * silu(gate)

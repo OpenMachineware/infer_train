@@ -47,7 +47,7 @@ def _rms_norm_kernel_f32(
     var ss = Float32(0.0)
     var i = tid
     while i < n:
-        var v = x[base + i]
+        var v = x[unsafe_offset=base + i]
         ss += v * v
         i += BLOCK
     var ss_all = block_sum[block_size=BLOCK](ss)
@@ -56,7 +56,7 @@ def _rms_norm_kernel_f32(
 
     i = tid
     while i < n:
-        dst[base + i] = x[base + i] * inv
+        dst[unsafe_offset=base + i] = x[unsafe_offset=base + i] * inv
         i += BLOCK
 
 
@@ -74,7 +74,7 @@ def _rms_norm_kernel_f16(
     var ss = Float32(0.0)
     var i = tid
     while i < n:
-        var v = Float32(x[base + i])
+        var v = Float32(x[unsafe_offset=base + i])
         ss += v * v
         i += BLOCK
     var ss_all = block_sum[block_size=BLOCK](ss)
@@ -83,7 +83,9 @@ def _rms_norm_kernel_f16(
 
     i = tid
     while i < n:
-        dst[base + i] = Scalar[DType.float16](Float32(x[base + i]) * inv)
+        dst[unsafe_offset=base + i] = Scalar[DType.float16](
+            Float32(x[unsafe_offset=base + i]) * inv
+        )
         i += BLOCK
 
 
@@ -106,9 +108,9 @@ def _rms_norm_bwd_kernel_f32(
     var s = Float32(0.0)
     var i = tid
     while i < n:
-        var xv = x[base + i]
+        var xv = x[unsafe_offset=base + i]
         ss += xv * xv
-        s += grad_out[base + i] * y[base + i]
+        s += grad_out[unsafe_offset=base + i] * y[unsafe_offset=base + i]
         i += BLOCK
     var ss_all = block_sum[block_size=BLOCK](ss)
     var s_all = block_sum[block_size=BLOCK](s)
@@ -117,7 +119,9 @@ def _rms_norm_bwd_kernel_f32(
 
     i = tid
     while i < n:
-        dst[base + i] = (grad_out[base + i] - y[base + i] * k) / r
+        dst[unsafe_offset=base + i] = (
+            grad_out[unsafe_offset=base + i] - y[unsafe_offset=base + i] * k
+        ) / r
         i += BLOCK
 
 
@@ -138,9 +142,11 @@ def _rms_norm_bwd_kernel_f16(
     var s = Float32(0.0)
     var i = tid
     while i < n:
-        var xv = Float32(x[base + i])
+        var xv = Float32(x[unsafe_offset=base + i])
         ss += xv * xv
-        s += Float32(grad_out[base + i]) * Float32(y[base + i])
+        s += Float32(grad_out[unsafe_offset=base + i]) * Float32(
+            y[unsafe_offset=base + i]
+        )
         i += BLOCK
     var ss_all = block_sum[block_size=BLOCK](ss)
     var s_all = block_sum[block_size=BLOCK](s)
@@ -149,8 +155,12 @@ def _rms_norm_bwd_kernel_f16(
 
     i = tid
     while i < n:
-        dst[base + i] = Scalar[DType.float16](
-            (Float32(grad_out[base + i]) - Float32(y[base + i]) * k) / r
+        dst[unsafe_offset=base + i] = Scalar[DType.float16](
+            (
+                Float32(grad_out[unsafe_offset=base + i])
+                - Float32(y[unsafe_offset=base + i]) * k
+            )
+            / r
         )
         i += BLOCK
 
@@ -158,28 +168,40 @@ def _rms_norm_bwd_kernel_f16(
 # -- launch helpers -----------------------------------------------------------
 
 
-def _rms_norm_gpu_launch[dtype: DType](
-    ctx: DeviceContext, x: Tensor[dtype, 2], eps: Float32
-) raises -> Tensor[dtype, 2]:
+def _rms_norm_gpu_launch[
+    dtype: DType
+](ctx: DeviceContext, x: Tensor[dtype, 2], eps: Float32) raises -> Tensor[
+    dtype, 2
+]:
     var dim = x.shape()[1]
     var x_buf = upload[dtype, 2](ctx, x)
     var dst_buf = ctx.enqueue_create_buffer[dtype](x.numel())
     comptime if dtype == DType.float16:
         ctx.enqueue_function[_rms_norm_kernel_f16](
-            x_buf, dst_buf, Int32(dim), eps,
-            grid_dim=x.shape()[0], block_dim=BLOCK,
+            x_buf,
+            dst_buf,
+            Int32(dim),
+            eps,
+            grid_dim=x.shape()[0],
+            block_dim=BLOCK,
         )
     else:
         ctx.enqueue_function[_rms_norm_kernel_f32](
-            x_buf, dst_buf, Int32(dim), eps,
-            grid_dim=x.shape()[0], block_dim=BLOCK,
+            x_buf,
+            dst_buf,
+            Int32(dim),
+            eps,
+            grid_dim=x.shape()[0],
+            block_dim=BLOCK,
         )
     var out = download2[dtype](ctx, dst_buf, x.shape())
     ctx.synchronize()
     return out
 
 
-def _rms_norm_bwd_gpu_launch[dtype: DType](
+def _rms_norm_bwd_gpu_launch[
+    dtype: DType
+](
     ctx: DeviceContext,
     grad_out: Tensor[dtype, 2],
     x: Tensor[dtype, 2],
@@ -193,13 +215,25 @@ def _rms_norm_bwd_gpu_launch[dtype: DType](
     var dst_buf = ctx.enqueue_create_buffer[dtype](x.numel())
     comptime if dtype == DType.float16:
         ctx.enqueue_function[_rms_norm_bwd_kernel_f16](
-            go_buf, x_buf, y_buf, dst_buf, Int32(dim), eps,
-            grid_dim=x.shape()[0], block_dim=BLOCK,
+            go_buf,
+            x_buf,
+            y_buf,
+            dst_buf,
+            Int32(dim),
+            eps,
+            grid_dim=x.shape()[0],
+            block_dim=BLOCK,
         )
     else:
         ctx.enqueue_function[_rms_norm_bwd_kernel_f32](
-            go_buf, x_buf, y_buf, dst_buf, Int32(dim), eps,
-            grid_dim=x.shape()[0], block_dim=BLOCK,
+            go_buf,
+            x_buf,
+            y_buf,
+            dst_buf,
+            Int32(dim),
+            eps,
+            grid_dim=x.shape()[0],
+            block_dim=BLOCK,
         )
     var out = download2[dtype](ctx, dst_buf, x.shape())
     ctx.synchronize()
@@ -209,9 +243,9 @@ def _rms_norm_bwd_gpu_launch[dtype: DType](
 # -- public entry points ------------------------------------------------------
 
 
-def rms_norm_gpu[dtype: DType, dim: Int](
-    x: Tensor[dtype, 2], eps: Float32 = Float32(1e-5)
-) -> Tensor[dtype, 2]:
+def rms_norm_gpu[
+    dtype: DType, dim: Int
+](x: Tensor[dtype, 2], eps: Float32 = Float32(1e-5)) -> Tensor[dtype, 2]:
     """Comptime-dim GPU RMSNorm (CPU fallback on any GPU error)."""
     if x.shape()[1] != dim:
         unimplemented("rms_norm_gpu: static dim mismatch")
@@ -224,9 +258,9 @@ def rms_norm_gpu[dtype: DType, dim: Int](
         return rms_norm_cpu[dtype, dim](x, eps)
 
 
-def rms_norm_gpu_dynamic[dtype: DType](
-    x: Tensor[dtype, 2], eps: Float32 = Float32(1e-5)
-) -> Tensor[dtype, 2]:
+def rms_norm_gpu_dynamic[
+    dtype: DType
+](x: Tensor[dtype, 2], eps: Float32 = Float32(1e-5)) -> Tensor[dtype, 2]:
     """Runtime-dim GPU RMSNorm (CPU fallback on any GPU error)."""
     if not gpu_available[dtype]():
         return rms_norm_cpu_dynamic[dtype](x, eps)
@@ -237,9 +271,11 @@ def rms_norm_gpu_dynamic[dtype: DType](
         return rms_norm_cpu_dynamic[dtype](x, eps)
 
 
-def rms_norm_gpu_forward_with_saved[dtype: DType, dim: Int](
-    x: Tensor[dtype, 2], eps: Float32 = Float32(1e-5)
-) -> Tuple[Tensor[dtype, 2], List[Tensor[dtype, 2]]]:
+def rms_norm_gpu_forward_with_saved[
+    dtype: DType, dim: Int
+](x: Tensor[dtype, 2], eps: Float32 = Float32(1e-5)) -> Tuple[
+    Tensor[dtype, 2], List[Tensor[dtype, 2]]
+]:
     var out = rms_norm_gpu[dtype, dim](x, eps)
     var saved = List[Tensor[dtype, 2]]()
     saved.append(x)
@@ -247,9 +283,11 @@ def rms_norm_gpu_forward_with_saved[dtype: DType, dim: Int](
     return (out, saved^)
 
 
-def rms_norm_gpu_backward[dtype: DType, dim: Int](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]]:
+def rms_norm_gpu_backward[
+    dtype: DType, dim: Int
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+]:
     """Backward for unweighted RMSNorm.
 
     With r_i = sqrt(ss_i/N + eps) and s_i = sum_j grad_out[i,j] * y[i,j]:

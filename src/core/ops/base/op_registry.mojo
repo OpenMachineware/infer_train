@@ -127,9 +127,7 @@ from .op_autograd import (
 # -- matmul dispatch --------------------------------------------------------
 
 
-def _matmul_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _matmul_typed_cpu[dtype: DType](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var a = from_any[dtype, 2](inputs[0])
     var b = from_any[dtype, 2](inputs[1])
     var out = matmul_cpu_dynamic[dtype](a, b)
@@ -138,9 +136,7 @@ def _matmul_typed_cpu[dtype: DType](
     return results^
 
 
-def _matmul_typed_gpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _matmul_typed_gpu[dtype: DType](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var a = from_any[dtype, 2](inputs[0])
     var b = from_any[dtype, 2](inputs[1])
     var out = matmul_gpu_dynamic[dtype](a, b)
@@ -172,9 +168,9 @@ def matmul_dispatch_gpu(inputs: List[AnyTensor]) -> List[AnyTensor]:
 # -- rms_norm dispatch ------------------------------------------------------
 
 
-def _rms_norm_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _rms_norm_typed_cpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var x = from_any[dtype, 2](inputs[0])
     var out = rms_norm_cpu_dynamic[dtype](x)
     var results = List[AnyTensor]()
@@ -182,9 +178,9 @@ def _rms_norm_typed_cpu[dtype: DType](
     return results^
 
 
-def _rms_norm_typed_gpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _rms_norm_typed_gpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var x = from_any[dtype, 2](inputs[0])
     var out = rms_norm_gpu_dynamic[dtype](x)
     var results = List[AnyTensor]()
@@ -215,9 +211,9 @@ def rms_norm_dispatch_gpu(inputs: List[AnyTensor]) -> List[AnyTensor]:
 # -- softmax dispatch ------------------------------------------------------
 
 
-def _softmax_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor] where dtype.is_floating_point():
+def _softmax_typed_cpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor] where dtype.is_floating_point():
     var x = from_any[dtype, 2](inputs[0])
     var out = softmax_cpu_dynamic[dtype](x)
     var results = List[AnyTensor]()
@@ -225,9 +221,9 @@ def _softmax_typed_cpu[dtype: DType](
     return results^
 
 
-def _softmax_typed_gpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor] where dtype.is_floating_point():
+def _softmax_typed_gpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor] where dtype.is_floating_point():
     var x = from_any[dtype, 2](inputs[0])
     var out = softmax_gpu_dynamic[dtype](x)
     var results = List[AnyTensor]()
@@ -258,9 +254,9 @@ def softmax_dispatch_gpu(inputs: List[AnyTensor]) -> List[AnyTensor]:
 # -- quantized matmul dispatch ---------------------------------------------
 
 
-def _matmul_q_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _matmul_q_typed_cpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     comptime format = QuantFormat.Q8_0
     comptime granularity = QuantGranularity.PerTensor
     comptime group_size = 0
@@ -276,9 +272,9 @@ def _matmul_q_typed_cpu[dtype: DType](
     return results^
 
 
-def _matmul_q_typed_gpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _matmul_q_typed_gpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     comptime format = QuantFormat.Q8_0
     comptime granularity = QuantGranularity.PerTensor
     comptime group_size = 0
@@ -351,13 +347,9 @@ def matmul_quantized_cpu_dispatch(
 ) -> List[AnyTensor]:
     var dtype = inputs[0].dtype
     if dtype == DType.float32:
-        return _matmul_qcpu_typed[DType.float32, QuantType.Q4_K_M, 32](
-            inputs
-        )
+        return _matmul_qcpu_typed[DType.float32, QuantType.Q4_K_M, 32](inputs)
     if dtype == DType.float16:
-        return _matmul_qcpu_typed[DType.float16, QuantType.Q4_K_M, 32](
-            inputs
-        )
+        return _matmul_qcpu_typed[DType.float16, QuantType.Q4_K_M, 32](inputs)
     unimplemented("matmul_quantized_cpu: unsupported dtype")
     return List[AnyTensor]()
 
@@ -365,9 +357,9 @@ def matmul_quantized_cpu_dispatch(
 # -- quantized rms_norm dispatch -------------------------------------------
 
 
-def _rms_norm_q_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _rms_norm_q_typed_cpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     comptime format = QuantFormat.Q8_0
     comptime granularity = QuantGranularity.PerTensor
     comptime group_size = 0
@@ -394,10 +386,9 @@ def rms_norm_quantized_dispatch_cpu(
     return List[AnyTensor]()
 
 
-
-def _rms_norm_q_typed_gpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _rms_norm_q_typed_gpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     comptime format = QuantFormat.Q8_0
     comptime granularity = QuantGranularity.PerTensor
     comptime group_size = 0
@@ -424,13 +415,12 @@ def rms_norm_quantized_dispatch_gpu(
     return List[AnyTensor]()
 
 
-
 # -- embedding dispatch -----------------------------------------------------
 
 
-def _embedding_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _embedding_typed_cpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var tokens = from_any[DType.int32, 1](inputs[0])
     var table = from_any[dtype, 2](inputs[1])
     var out = embedding_cpu_dynamic[dtype](tokens, table)
@@ -439,9 +429,9 @@ def _embedding_typed_cpu[dtype: DType](
     return results^
 
 
-def _embedding_typed_gpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _embedding_typed_gpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var tokens = from_any[DType.int32, 1](inputs[0])
     var table = from_any[dtype, 2](inputs[1])
     var out = embedding_gpu_dynamic[dtype](tokens, table)
@@ -473,9 +463,7 @@ def embedding_dispatch_gpu(inputs: List[AnyTensor]) -> List[AnyTensor]:
 # -- rope dispatch ----------------------------------------------------------
 
 
-def _rope_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _rope_typed_cpu[dtype: DType](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var x = from_any[dtype, 3](inputs[0])
     var pos_tensor = from_any[DType.float32, 1](inputs[1])
     var start_pos = Int(Float32(pos_tensor.get(0)))
@@ -485,9 +473,7 @@ def _rope_typed_cpu[dtype: DType](
     return results^
 
 
-def _rope_typed_gpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _rope_typed_gpu[dtype: DType](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var x = from_any[dtype, 3](inputs[0])
     var pos_tensor = from_any[DType.float32, 1](inputs[1])
     var start_pos = Int(Float32(pos_tensor.get(0)))
@@ -520,9 +506,7 @@ def rope_dispatch_gpu(inputs: List[AnyTensor]) -> List[AnyTensor]:
 # -- add dispatch -----------------------------------------------------------
 
 
-def _add_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _add_typed_cpu[dtype: DType](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var a = from_any[dtype, 2](inputs[0])
     var b = from_any[dtype, 2](inputs[1])
     var out = add_cpu_dynamic[dtype](a, b)
@@ -531,9 +515,7 @@ def _add_typed_cpu[dtype: DType](
     return results^
 
 
-def _add_typed_gpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _add_typed_gpu[dtype: DType](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var a = from_any[dtype, 2](inputs[0])
     var b = from_any[dtype, 2](inputs[1])
     var out = add_gpu_dynamic[dtype](a, b)
@@ -565,9 +547,9 @@ def add_dispatch_gpu(inputs: List[AnyTensor]) -> List[AnyTensor]:
 # -- add_bias dispatch (M5: registered so the optimizer IR can use it) ------
 
 
-def _add_bias_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _add_bias_typed_cpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var x = from_any[dtype, 2](inputs[0])
     var bias = from_any[dtype, 1](inputs[1])
     var out = add_row_cpu[dtype](x, bias)
@@ -593,9 +575,7 @@ def add_bias_dispatch_gpu(inputs: List[AnyTensor]) -> List[AnyTensor]:
 # -- swiglu dispatch --------------------------------------------------------
 
 
-def _swiglu_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _swiglu_typed_cpu[dtype: DType](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var gate = from_any[dtype, 2](inputs[0])
     var up = from_any[dtype, 2](inputs[1])
     var out = swiglu_cpu_dynamic[dtype](gate, up)
@@ -604,9 +584,7 @@ def _swiglu_typed_cpu[dtype: DType](
     return results^
 
 
-def _swiglu_typed_gpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _swiglu_typed_gpu[dtype: DType](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var gate = from_any[dtype, 2](inputs[0])
     var up = from_any[dtype, 2](inputs[1])
     var out = swiglu_gpu_dynamic[dtype](gate, up)
@@ -641,9 +619,7 @@ def swiglu_dispatch_gpu(inputs: List[AnyTensor]) -> List[AnyTensor]:
 # The K/V cache tensors are mutated in place; outputs: [attention_out].
 
 
-def _mha_typed_cpu(
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _mha_typed_cpu(inputs: List[AnyTensor]) -> List[AnyTensor]:
     """fp16 MHA through the erased interface (the KV cache is fp16)."""
     var x = from_any[DType.float16, 2](inputs[0])
     var wq = from_any[DType.float16, 2](inputs[1])
@@ -711,13 +687,17 @@ def lm_head_dispatch_cpu(inputs: List[AnyTensor]) -> List[AnyTensor]:
         var x = from_any[DType.float32, 2](inputs[0])
         var w = from_any[DType.float32, 2](inputs[1])
         var results = List[AnyTensor]()
-        results.append(to_any[DType.float32, 2](matmul_weight_cpu[DType.float32](x, w)))
+        results.append(
+            to_any[DType.float32, 2](matmul_weight_cpu[DType.float32](x, w))
+        )
         return results^
     if dtype == DType.float16:
         var x = from_any[DType.float16, 2](inputs[0])
         var w = from_any[DType.float16, 2](inputs[1])
         var results = List[AnyTensor]()
-        results.append(to_any[DType.float16, 2](matmul_weight_cpu[DType.float16](x, w)))
+        results.append(
+            to_any[DType.float16, 2](matmul_weight_cpu[DType.float16](x, w))
+        )
         return results^
     unimplemented("lm_head_cpu: unsupported dtype")
     return List[AnyTensor]()
@@ -730,9 +710,9 @@ def lm_head_dispatch_gpu(inputs: List[AnyTensor]) -> List[AnyTensor]:
 # -- swiglu_ffn dispatch (x -> down(silu(x@gate) * (x@up))) ----------------
 
 
-def _swiglu_ffn_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _swiglu_ffn_typed_cpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var x = from_any[dtype, 2](inputs[0])
     var gate_w = from_any[dtype, 2](inputs[1])
     var up_w = from_any[dtype, 2](inputs[2])
@@ -766,9 +746,9 @@ def swiglu_ffn_dispatch_gpu(inputs: List[AnyTensor]) -> List[AnyTensor]:
 # back to the CPU kernels until the Metal backend lands.
 
 
-def _fused_matmul_add_bias_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _fused_matmul_add_bias_typed_cpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var x = from_any[dtype, 2](inputs[0])
     var w = from_any[dtype, 2](inputs[1])
     var bias = from_any[dtype, 1](inputs[2])
@@ -814,9 +794,9 @@ def fused_matmul_add_bias_dispatch_gpu(
     return List[AnyTensor]()
 
 
-def _fused_matmul_add_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _fused_matmul_add_typed_cpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var x = from_any[dtype, 2](inputs[0])
     var w = from_any[dtype, 2](inputs[1])
     var b = from_any[dtype, 2](inputs[2])
@@ -862,9 +842,9 @@ def fused_matmul_add_dispatch_gpu(
     return List[AnyTensor]()
 
 
-def _fused_matmul_rms_norm_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _fused_matmul_rms_norm_typed_cpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var x = from_any[dtype, 2](inputs[0])
     var w = from_any[dtype, 2](inputs[1])
     var out = fused_matmul_rms_norm[dtype](x, w)
@@ -907,9 +887,9 @@ def fused_matmul_rms_norm_dispatch_gpu(
     return List[AnyTensor]()
 
 
-def _fused_swiglu_matmul_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _fused_swiglu_matmul_typed_cpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var gate = from_any[dtype, 2](inputs[0])
     var up = from_any[dtype, 2](inputs[1])
     var w = from_any[dtype, 2](inputs[2])
@@ -958,9 +938,9 @@ def fused_swiglu_matmul_dispatch_gpu(
 # -- rms_norm_weight dispatch (M6) ------------------------------------------
 
 
-def _rms_norm_weight_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _rms_norm_weight_typed_cpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var x = from_any[dtype, 2](inputs[0])
     var w = from_any[dtype, 1](inputs[1])
     var out = rms_norm_weight_cpu[dtype](x, w)
@@ -998,9 +978,9 @@ def mha_seq_dispatch_gpu(inputs: List[AnyTensor]) -> List[AnyTensor]:
 # -- cross_entropy dispatch (M6) ---------------------------------------------
 
 
-def _cross_entropy_typed_cpu[dtype: DType](
-    inputs: List[AnyTensor]
-) -> List[AnyTensor]:
+def _cross_entropy_typed_cpu[
+    dtype: DType
+](inputs: List[AnyTensor]) -> List[AnyTensor]:
     var logits = from_any[dtype, 2](inputs[0])
     var targets = from_any[DType.int32, 1](inputs[1])
     var loss = cross_entropy_forward[dtype](logits, targets)

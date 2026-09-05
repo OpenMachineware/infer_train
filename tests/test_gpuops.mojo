@@ -85,7 +85,10 @@ def test_swiglu() raises:
             Float32(grads[1].get(i)), silu, Float32(1e-4), "swiglu bwd up"
         )
         check_close(
-            Float32(grads[0].get(i)), u * dsilu, Float32(1e-4), "swiglu bwd gate"
+            Float32(grads[0].get(i)),
+            u * dsilu,
+            Float32(1e-4),
+            "swiglu bwd gate",
         )
 
 
@@ -131,12 +134,20 @@ def test_rope() raises:
     var y = rope_gpu_dynamic[DType.float32](x, 1, Float32(1.0))
     var c1 = cos(Float32(1.0))
     var s1 = sin(Float32(1.0))
-    check_close(Float32(y.get(0)), 1.0 * c1 - 3.0 * s1, Float32(1e-5), "rope t0 d0")
-    check_close(Float32(y.get(2)), 1.0 * s1 + 3.0 * c1, Float32(1e-5), "rope t0 d2")
+    check_close(
+        Float32(y.get(0)), 1.0 * c1 - 3.0 * s1, Float32(1e-5), "rope t0 d0"
+    )
+    check_close(
+        Float32(y.get(2)), 1.0 * s1 + 3.0 * c1, Float32(1e-5), "rope t0 d2"
+    )
     var c2 = cos(Float32(2.0))
     var s2 = sin(Float32(2.0))
-    check_close(Float32(y.get(4)), 5.0 * c2 - 7.0 * s2, Float32(1e-5), "rope t1 d0")
-    check_close(Float32(y.get(6)), 5.0 * s2 + 7.0 * c2, Float32(1e-5), "rope t1 d2")
+    check_close(
+        Float32(y.get(4)), 5.0 * c2 - 7.0 * s2, Float32(1e-5), "rope t1 d0"
+    )
+    check_close(
+        Float32(y.get(6)), 5.0 * s2 + 7.0 * c2, Float32(1e-5), "rope t1 d2"
+    )
 
     # backward: inverse rotation
     var g = tensor_zeros[DType.float32, 3](StaticTuple[Int, 3](1, 2, 4))
@@ -144,8 +155,15 @@ def test_rope() raises:
         g.set(i, Scalar[DType.float32](Float32(i + 1)))
     var gy = rope_gpu_backward_pos[DType.float32](g, 1, Float32(1.0))
     # grad_x0 = g0*c + g1*s ; for t0: g0=1,g1=3 -> 1*c1+3*s1
-    check_close(Float32(gy.get(0)), 1.0 * c1 + 3.0 * s1, Float32(1e-5), "rope bwd t0 d0")
-    check_close(Float32(gy.get(2)), -1.0 * s1 + 3.0 * c1, Float32(1e-5), "rope bwd t0 d2")
+    check_close(
+        Float32(gy.get(0)), 1.0 * c1 + 3.0 * s1, Float32(1e-5), "rope bwd t0 d0"
+    )
+    check_close(
+        Float32(gy.get(2)),
+        -1.0 * s1 + 3.0 * c1,
+        Float32(1e-5),
+        "rope bwd t0 d2",
+    )
 
 
 def test_softmax() raises:
@@ -181,7 +199,9 @@ def test_softmax() raises:
     # grad_x[i,j] = p[i,j]*(go[i,j] - sum_k go[i,k]*p[i,k]) = p[i,j]*(1 - 1) = 0
     # since sum_k p[i,k] = 1 and go is all ones.
     for i in range(R * C):
-        check_close(Float32(grads[0].get(i)), Float32(0.0), Float32(1e-5), "softmax bwd")
+        check_close(
+            Float32(grads[0].get(i)), Float32(0.0), Float32(1e-5), "softmax bwd"
+        )
 
 
 def test_rms_norm() raises:
@@ -214,7 +234,9 @@ def test_rms_norm() raises:
     for j in range(C):
         s += Float32(out.get(j))
     for j in range(C):
-        var expected = (Float32(1.0) - Float32(out.get(j)) * s / Float32(C)) / rms
+        var expected = (
+            Float32(1.0) - Float32(out.get(j)) * s / Float32(C)
+        ) / rms
         check_close(
             Float32(grads[0].get(j)), expected, Float32(1e-4), "rmsnorm bwd"
         )
@@ -256,7 +278,9 @@ def test_matmul() raises:
     check_close(Float32(grads[0].get(1)), 7.0, Float32(1e-4), "mm bwd a[0,1]")
     check_close(Float32(grads[0].get(2)), 11.0, Float32(1e-4), "mm bwd a[0,2]")
     # grad_b[k,j] = sum_i a[i,k]*go[i,j]; grad_b is [K,N]=[3,2], index k*2+j
-    # grad_b[0,0] = 1*1+4*1 = 5 ; grad_b[1,0] = 2*1+5*1 = 7 ; grad_b[2,0] = 3*1+6*1 = 9
+    # grad_b[0,0] = 1*1+4*1 = 5
+    # grad_b[1,0] = 2*1+5*1 = 7
+    # grad_b[2,0] = 3*1+6*1 = 9
     check_close(Float32(grads[1].get(0)), 5.0, Float32(1e-4), "mm bwd b[0,0]")
     check_close(Float32(grads[1].get(2)), 7.0, Float32(1e-4), "mm bwd b[1,0]")
     check_close(Float32(grads[1].get(4)), 9.0, Float32(1e-4), "mm bwd b[2,0]")
@@ -298,8 +322,12 @@ def test_add() raises:
     saved.append(x)
     var grads = add_gpu_backward[DType.float32, R, C](g, saved)
     for i in range(R * C):
-        check_close(Float32(grads[0].get(i)), Float32(i + 1), Float32(1e-5), "add bwd a")
-        check_close(Float32(grads[1].get(i)), Float32(i + 1), Float32(1e-5), "add bwd b")
+        check_close(
+            Float32(grads[0].get(i)), Float32(i + 1), Float32(1e-5), "add bwd a"
+        )
+        check_close(
+            Float32(grads[1].get(i)), Float32(i + 1), Float32(1e-5), "add bwd b"
+        )
 
 
 def _silu(x: Float32) -> Float32:
@@ -394,7 +422,9 @@ def test_fused_swiglu_matmul() raises:
     var s1 = _silu(Float32(1.0))
     var sn1 = _silu(Float32(-1.0))
     # y[0,0] = s1*2*1 + sn1*3*1 ; y[0,1] = s1*2*1 + sn1*3*0
-    check_close(Float32(out.get(0)), s1 * 2.0 + sn1 * 3.0, Float32(1e-4), "fsmm[0,0]")
+    check_close(
+        Float32(out.get(0)), s1 * 2.0 + sn1 * 3.0, Float32(1e-4), "fsmm[0,0]"
+    )
     check_close(Float32(out.get(1)), s1 * 2.0, Float32(1e-4), "fsmm[0,1]")
 
 

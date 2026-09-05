@@ -39,9 +39,9 @@ from std.utils.static_tuple import StaticTuple
 from std.math import exp, sqrt
 
 
-def _qkv_reshape[dtype: DType](
-    x: Tensor[dtype, 2], n_heads: Int, head_dim: Int
-) -> Tensor[dtype, 3]:
+def _qkv_reshape[
+    dtype: DType
+](x: Tensor[dtype, 2], n_heads: Int, head_dim: Int) -> Tensor[dtype, 3]:
     """View [T, n_heads*head_dim] as [n_heads, T, head_dim] (T must be 1)."""
     var n_tokens = x.shape()[0]
     if n_tokens != 1:
@@ -53,9 +53,9 @@ def _qkv_reshape[dtype: DType](
     )
 
 
-def _flat_view[dtype: DType](
-    x: Tensor[dtype, 3], hidden: Int
-) -> Tensor[dtype, 2]:
+def _flat_view[
+    dtype: DType
+](x: Tensor[dtype, 3], hidden: Int) -> Tensor[dtype, 2]:
     """View [n_heads, 1, head_dim] as [1, hidden]."""
     if x.shape()[1] != 1 or x.numel() != hidden:
         unimplemented("mha: bad reshape to flat")
@@ -64,7 +64,7 @@ def _flat_view[dtype: DType](
     )
 
 
-struct MHAOptions(Copyable, Movable, ImplicitlyCopyable):
+struct MHAOptions(Copyable, ImplicitlyCopyable, Movable):
     """Variant switches for the generalized single-token MHA (M7).
 
     * `q_norm`/`k_norm`: per-head RMSNorm on Q/K with the passed weight
@@ -118,11 +118,24 @@ def mha_forward(
     var opts = MHAOptions()
     var ds = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](1))
     return mha_forward_v2(
-        x, qweight_from_fp16(wq), qweight_from_fp16(wk),
-        qweight_from_fp16(wv), qweight_from_fp16(wo), bq, bk, bv,
+        x,
+        qweight_from_fp16(wq),
+        qweight_from_fp16(wk),
+        qweight_from_fp16(wv),
+        qweight_from_fp16(wo),
+        bq,
+        bk,
+        bv,
         Tensor[DType.float16, 1](StaticTuple[Int, 1](0)),
-        Tensor[DType.float16, 1](StaticTuple[Int, 1](0)), cache, start_pos, n_heads,
-        n_kv_heads, head_dim, rope_theta, opts, ds,
+        Tensor[DType.float16, 1](StaticTuple[Int, 1](0)),
+        cache,
+        start_pos,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        rope_theta,
+        opts,
+        ds,
     )
 
 
@@ -187,11 +200,15 @@ def mha_forward_v2(
     if opts.k_norm and opts.norm_before_rope:
         k3 = rms_norm_heads[DType.float16](k3, k_norm_w, opts.norm_eps)
 
-    var q_rot = q3
-    var k_rot = k3
+    var q_rot: Tensor[DType.float16, 3]
+    var k_rot: Tensor[DType.float16, 3]
     if opts.n_rot > 0 and opts.n_rot < head_dim:
-        q_rot = rope_cpu_rot[DType.float16](q3, start_pos, rope_theta, opts.n_rot)
-        k_rot = rope_cpu_rot[DType.float16](k3, start_pos, rope_theta, opts.n_rot)
+        q_rot = rope_cpu_rot[DType.float16](
+            q3, start_pos, rope_theta, opts.n_rot
+        )
+        k_rot = rope_cpu_rot[DType.float16](
+            k3, start_pos, rope_theta, opts.n_rot
+        )
     else:
         q_rot = rope_cpu_dynamic[DType.float16](q3, start_pos, rope_theta)
         k_rot = rope_cpu_dynamic[DType.float16](k3, start_pos, rope_theta)
@@ -208,7 +225,10 @@ def mha_forward_v2(
     for h in range(n_kv_heads):
         for d in range(head_dim):
             cache.set_kv(
-                h, start_pos, d, Float32(k_rot.get(h * head_dim + d)),
+                h,
+                start_pos,
+                d,
+                Float32(k_rot.get(h * head_dim + d)),
                 Float32(v3.get(h * head_dim + d)),
             )
     if start_pos + 1 > cache.filled:
@@ -236,11 +256,9 @@ def mha_forward_v2(
             var k_base = (kv_head * max_len + t) * head_dim
             for d in range(head_dim):
                 var qv = Float32(q_rot.get(h * head_dim + d))
-                var kv = Float32(0)
+                var kv: Float32
                 if dense:
-                    kv = Float32(
-                        k_ptr.unsafe_load[width=1](offset=k_base + d)
-                    )
+                    kv = Float32(k_ptr.unsafe_load[width=1](offset=k_base + d))
                 else:
                     kv = cache.get_k(kv_head, t, d)
                 acc += qv * kv
@@ -261,7 +279,7 @@ def mha_forward_v2(
         for d in range(head_dim):
             var acc = Float32(0)
             for i in range(n_scores):
-                var vv = Float32(0)
+                var vv: Float32
                 if dense:
                     vv = Float32(
                         v_ptr.unsafe_load[width=1](
@@ -279,23 +297,27 @@ def mha_forward_v2(
         # half of `q_flat`, interleaved per head: [q0, g0, q1, g1, ...]
         for h in range(n_heads):
             for d in range(head_dim):
-                var g = Float32(
-                    q_flat.get(h * 2 * head_dim + head_dim + d)
-                )
+                var g = Float32(q_flat.get(h * 2 * head_dim + head_dim + d))
                 var s = Float32(1.0) / (Float32(1.0) + exp(-g))
                 out.set(
                     h * head_dim + d,
-                    Scalar[DType.float16](Float32(out.get(h * head_dim + d)) * s),
+                    Scalar[DType.float16](
+                        Float32(out.get(h * head_dim + d)) * s
+                    ),
                 )
     var out_flat = _flat_view[DType.float16](out, n_heads * head_dim)
     return wo.proj(out_flat, dummy_scale)
 
 
-def rms_norm_heads[dtype: DType](
+def rms_norm_heads[
+    dtype: DType
+](
     x: Tensor[dtype, 3],
     weight: Tensor[dtype, 1],
     eps: Float32,
-) -> Tensor[dtype, 3]:
+) -> Tensor[
+    dtype, 3
+]:
     """Per-head RMSNorm over the last dim (shared weight across heads).
 
     out[h, t, d] = x[h, t, d] / sqrt(mean(x[h, t, :]^2) + eps) * w[d]
@@ -325,7 +347,9 @@ def rms_norm_heads[dtype: DType](
     return out
 
 
-def multi_head_attention[dtype: DType, num_heads: Int, head_dim: Int](
+def multi_head_attention[
+    dtype: DType, num_heads: Int, head_dim: Int
+](
     query: Tensor[dtype, 3], key: Tensor[dtype, 3], value: Tensor[dtype, 3]
 ) -> Tensor[dtype, 3]:
     """Bare stateless MHA over [n_heads, T, head_dim] tensors (no cache).
@@ -344,9 +368,9 @@ def multi_head_attention[dtype: DType, num_heads: Int, head_dim: Int](
             for t2 in range(t + 1):  # causal
                 var acc = Float32(0)
                 for d in range(head_dim):
-                    acc += Float32(query.get((h * n_tokens + t) * head_dim + d)) * Float32(
-                        key.get((h * n_tokens + t2) * head_dim + d)
-                    )
+                    acc += Float32(
+                        query.get((h * n_tokens + t) * head_dim + d)
+                    ) * Float32(key.get((h * n_tokens + t2) * head_dim + d))
                 scores.append(acc * scale)
             var mx = Float32(-3.0e38)
             for i in range(len(scores)):
@@ -365,9 +389,7 @@ def multi_head_attention[dtype: DType, num_heads: Int, head_dim: Int](
                     acc += scores[t2] * Float32(
                         value.get((h * n_tokens + t2) * head_dim + d)
                     )
-                out.set(
-                    (h * n_tokens + t) * head_dim + d, Scalar[dtype](acc)
-                )
+                out.set((h * n_tokens + t) * head_dim + d, Scalar[dtype](acc))
     return out
 
 
@@ -408,9 +430,11 @@ def mha_forward_with_saved(
     return (out, saved^)
 
 
-def mha_backward[dtype: DType](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]]:
+def mha_backward[
+    dtype: DType
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+]:
     """Typed stub - the cached MHA backward lives behind the registry's
     erased dispatcher (see `mha_backward_erased` below); this typed entry
     only exists for API parity."""
@@ -429,7 +453,9 @@ def mha_backward[dtype: DType](
 # Q/K/V + softmax + matmul chain the M6 spec asks for.
 
 
-def _mha_seq_forward_typed[dtype: DType](
+def _mha_seq_forward_typed[
+    dtype: DType
+](
     x: Tensor[dtype, 2],
     wq: Tensor[dtype, 2],
     wk: Tensor[dtype, 2],
@@ -472,9 +498,7 @@ def _mha_seq_forward_typed[dtype: DType](
     # NOTE: the flat layout is [M, n_heads*head_dim] with the head index
     # fastest, so a plain [n_heads, M, head_dim] *view* would scramble the
     # heads for M > 1.  Gather explicitly.
-    var q3 = tensor_zeros[dtype, 3](
-        StaticTuple[Int, 3](n_heads, M, head_dim)
-    )
+    var q3 = tensor_zeros[dtype, 3](StaticTuple[Int, 3](n_heads, M, head_dim))
     var k3 = tensor_zeros[dtype, 3](
         StaticTuple[Int, 3](n_kv_heads, M, head_dim)
     )
@@ -502,12 +526,8 @@ def _mha_seq_forward_typed[dtype: DType](
     var k_rot = rope_cpu_dynamic[dtype](k3, start_pos, rope_theta)
 
     var scale = Float32(1.0) / sqrt(Float32(head_dim))
-    var p = tensor_zeros[dtype, 3](
-        StaticTuple[Int, 3](n_heads, M, M)
-    )
-    var o = tensor_zeros[dtype, 3](
-        StaticTuple[Int, 3](n_heads, M, head_dim)
-    )
+    var p = tensor_zeros[dtype, 3](StaticTuple[Int, 3](n_heads, M, M))
+    var o = tensor_zeros[dtype, 3](StaticTuple[Int, 3](n_heads, M, head_dim))
     for h in range(n_heads):
         var kv = h * n_kv_heads // n_heads
         for t in range(M):
@@ -532,9 +552,7 @@ def _mha_seq_forward_typed[dtype: DType](
             for i in range(len(scores)):
                 scores[i] = scores[i] * inv
             for t2 in range(t + 1):
-                p.set(
-                    (h * M + t) * M + t2, Scalar[dtype](scores[t2])
-                )
+                p.set((h * M + t) * M + t2, Scalar[dtype](scores[t2]))
             for d in range(head_dim):
                 var acc = Float32(0)
                 for t2 in range(t + 1):
@@ -554,7 +572,9 @@ def _mha_seq_forward_typed[dtype: DType](
     return (out, q_rot, k_rot, v3, p, o_flat)
 
 
-def _mha_seq_backward_typed[dtype: DType](
+def _mha_seq_backward_typed[
+    dtype: DType
+](
     grad_out: Tensor[dtype, 2],
     x: Tensor[dtype, 2],
     wq: Tensor[dtype, 2],
@@ -589,7 +609,8 @@ def _mha_seq_backward_typed[dtype: DType](
     var hidden = x.shape()[1]
     var scale = Float32(1.0) / sqrt(Float32(head_dim))
 
-    # 1. output projection: grad_o_flat = grad_out @ wo; grad_wo = grad_out^T @ o
+    # 1. output projection: grad_o_flat = grad_out @ wo;
+    #    grad_wo = grad_out^T @ o
     var mw_saved = List[Tensor[dtype, 2]]()
     mw_saved.append(o_flat)
     mw_saved.append(wo)
@@ -636,13 +657,9 @@ def _mha_seq_backward_typed[dtype: DType](
                     grad_v.set(
                         (kv * M + t2) * head_dim + d,
                         Scalar[dtype](
-                            Float32(
-                                grad_v.get((kv * M + t2) * head_dim + d)
-                            )
+                            Float32(grad_v.get((kv * M + t2) * head_dim + d))
                             + pt
-                            * Float32(
-                                grad_o.get((h * M + t) * head_dim + d)
-                            )
+                            * Float32(grad_o.get((h * M + t) * head_dim + d))
                         ),
                     )
                 # grad_qrot / grad_krot
@@ -650,27 +667,19 @@ def _mha_seq_backward_typed[dtype: DType](
                     grad_qrot.set(
                         (h * M + t) * head_dim + d,
                         Scalar[dtype](
-                            Float32(
-                                grad_qrot.get((h * M + t) * head_dim + d)
-                            )
+                            Float32(grad_qrot.get((h * M + t) * head_dim + d))
                             + gs
                             * scale
-                            * Float32(
-                                k_rot.get((kv * M + t2) * head_dim + d)
-                            )
+                            * Float32(k_rot.get((kv * M + t2) * head_dim + d))
                         ),
                     )
                     grad_krot.set(
                         (kv * M + t2) * head_dim + d,
                         Scalar[dtype](
-                            Float32(
-                                grad_krot.get((kv * M + t2) * head_dim + d)
-                            )
+                            Float32(grad_krot.get((kv * M + t2) * head_dim + d))
                             + gs
                             * scale
-                            * Float32(
-                                q_rot.get((h * M + t) * head_dim + d)
-                            )
+                            * Float32(q_rot.get((h * M + t) * head_dim + d))
                         ),
                     )
 
@@ -684,15 +693,9 @@ def _mha_seq_backward_typed[dtype: DType](
 
     # 3. flatten + bias gradients (explicit scatter back to the flat layout)
     var kv_hidden = wk.shape()[0]
-    var grad_q_flat = tensor_zeros[dtype, 2](
-        StaticTuple[Int, 2](M, hidden)
-    )
-    var grad_k_flat = tensor_zeros[dtype, 2](
-        StaticTuple[Int, 2](M, kv_hidden)
-    )
-    var grad_v_flat = tensor_zeros[dtype, 2](
-        StaticTuple[Int, 2](M, kv_hidden)
-    )
+    var grad_q_flat = tensor_zeros[dtype, 2](StaticTuple[Int, 2](M, hidden))
+    var grad_k_flat = tensor_zeros[dtype, 2](StaticTuple[Int, 2](M, kv_hidden))
+    var grad_v_flat = tensor_zeros[dtype, 2](StaticTuple[Int, 2](M, kv_hidden))
     for t in range(M):
         for h in range(n_heads):
             for d in range(head_dim):
@@ -718,20 +721,23 @@ def _mha_seq_backward_typed[dtype: DType](
             grad_bq.set(
                 j,
                 Scalar[dtype](
-                    Float32(grad_bq.get(j)) + Float32(grad_q_flat.get(i * hidden + j))
+                    Float32(grad_bq.get(j))
+                    + Float32(grad_q_flat.get(i * hidden + j))
                 ),
             )
         for j in range(kv_hidden):
             grad_bk.set(
                 j,
                 Scalar[dtype](
-                    Float32(grad_bk.get(j)) + Float32(grad_k_flat.get(i * kv_hidden + j))
+                    Float32(grad_bk.get(j))
+                    + Float32(grad_k_flat.get(i * kv_hidden + j))
                 ),
             )
             grad_bv.set(
                 j,
                 Scalar[dtype](
-                    Float32(grad_bv.get(j)) + Float32(grad_v_flat.get(i * kv_hidden + j))
+                    Float32(grad_bv.get(j))
+                    + Float32(grad_v_flat.get(i * kv_hidden + j))
                 ),
             )
 
@@ -770,9 +776,9 @@ def _mha_seq_backward_typed[dtype: DType](
     )
 
 
-def _add_t2[dtype: DType](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def _add_t2[
+    dtype: DType
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Element-wise tensor add used by the MHA backward accumulation."""
     var out = tensor_zeros[dtype, 2](a.shape())
     for i in range(a.numel()):

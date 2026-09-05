@@ -35,9 +35,9 @@ def _numel_of[rank: Int](shape: StaticTuple[Int, rank]) -> Int:
     return total
 
 
-def _compute_strides[rank: Int](
-    shape: StaticTuple[Int, rank]
-) -> StaticTuple[Int, rank]:
+def _compute_strides[
+    rank: Int
+](shape: StaticTuple[Int, rank]) -> StaticTuple[Int, rank]:
     """Row-major strides; `strides[i] = strides[i+1] * shape[i+1]`."""
     var strides = StaticTuple[Int, rank](fill=1)
     var i = rank - 2
@@ -47,7 +47,7 @@ def _compute_strides[rank: Int](
     return strides
 
 
-struct Tensor[dtype: DType, rank: Int](Copyable, Movable, ImplicitlyCopyable):
+struct Tensor[dtype: DType, rank: Int](Copyable, ImplicitlyCopyable, Movable):
     var _shape: StaticTuple[Int, Self.rank]
     var _strides: StaticTuple[Int, Self.rank]
     var _numel: Int
@@ -140,9 +140,11 @@ struct Tensor[dtype: DType, rank: Int](Copyable, Movable, ImplicitlyCopyable):
 
     # -- views --------------------------------------------------------------
 
-    def reshape[new_rank: Int](
-        self, new_shape: StaticTuple[Int, new_rank]
-    ) -> Tensor[Self.dtype, new_rank]:
+    def reshape[
+        new_rank: Int
+    ](self, new_shape: StaticTuple[Int, new_rank]) -> Tensor[
+        Self.dtype, new_rank
+    ]:
         """Return a zero-copy view with a new rank and shape.
 
         `new_rank` is a comptime parameter so the resulting tensor type is
@@ -184,9 +186,7 @@ struct Tensor[dtype: DType, rank: Int](Copyable, Movable, ImplicitlyCopyable):
 
     def grad(
         self,
-    ) -> Optional[
-        Pointer[Tensor[Self.dtype, Self.rank], MutUntrackedOrigin]
-    ]:
+    ) -> Optional[Pointer[Tensor[Self.dtype, Self.rank], MutUntrackedOrigin]]:
         return self._grad
 
     def set_grad(
@@ -221,9 +221,11 @@ struct Tensor[dtype: DType, rank: Int](Copyable, Movable, ImplicitlyCopyable):
         self._quant = info
 
 
-def tensor_zeros[dtype: DType, rank: Int](
-    shape: StaticTuple[Int, rank], device: Device = Device.CPU
-) -> Tensor[dtype, rank]:
+def tensor_zeros[
+    dtype: DType, rank: Int
+](shape: StaticTuple[Int, rank], device: Device = Device.CPU) -> Tensor[
+    dtype, rank
+]:
     """Allocate a zero-initialized tensor of the given shape."""
     var out = Tensor[dtype, rank](shape, device)
     var zero = Scalar[dtype](0)
@@ -232,9 +234,9 @@ def tensor_zeros[dtype: DType, rank: Int](
     return out
 
 
-def tensor_copy[dtype: DType, rank: Int](
-    src: Tensor[dtype, rank]
-) -> Tensor[dtype, rank]:
+def tensor_copy[
+    dtype: DType, rank: Int
+](src: Tensor[dtype, rank]) -> Tensor[dtype, rank]:
     """Deep-copy a tensor's payload (used by device transfers)."""
     var out = Tensor[dtype, rank](src.shape(), src.device())
     for i in range(src.numel()):
@@ -242,9 +244,9 @@ def tensor_copy[dtype: DType, rank: Int](
     return out
 
 
-def copy_to_device[dtype: DType, rank: Int](
-    src: Tensor[dtype, rank], device: Device
-) -> Tensor[dtype, rank]:
+def copy_to_device[
+    dtype: DType, rank: Int
+](src: Tensor[dtype, rank], device: Device) -> Tensor[dtype, rank]:
     """Copy `src` into a tensor tagged with the target `device`.
 
     Lives here (not in device.mojo) because it needs the full `Tensor` type;
@@ -253,8 +255,8 @@ def copy_to_device[dtype: DType, rank: Int](
     return src.to_device(device)
 
 
-def copy_to_host[dtype: DType, rank: Int](
-    src: Tensor[dtype, rank]
-) -> Tensor[dtype, rank]:
+def copy_to_host[
+    dtype: DType, rank: Int
+](src: Tensor[dtype, rank]) -> Tensor[dtype, rank]:
     """Copy a (possibly device-resident) tensor back to host memory."""
     return src.to_device(Device.CPU)

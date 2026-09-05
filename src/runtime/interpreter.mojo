@@ -74,9 +74,7 @@ struct Interpreter(Movable):
             return False
         if self.graph.nodes[node_id].op_type != "swiglu_ffn":
             return False
-        var jit_attr = self.graph.nodes[node_id].attrs.get(
-            "jit", AttrValue(0)
-        )
+        var jit_attr = self.graph.nodes[node_id].attrs.get("jit", AttrValue(0))
         return jit_attr.int_val == 1
 
     def _run_jit_ffn(
@@ -109,9 +107,9 @@ struct Interpreter(Movable):
             if t.rank == 2:
                 var dim = t.shape[1]
                 if t.dtype == DType.float16:
-                    self.autotune_cache.autotune_f16(dim)
+                    _ = self.autotune_cache.autotune_f16(dim)
                 else:
-                    self.autotune_cache.autotune_f32(dim)
+                    _ = self.autotune_cache.autotune_f32(dim)
 
     def _entry_take_count(self, node_id: Int, remaining: Int) -> Int:
         """How many external inputs this entry node consumes.
@@ -133,9 +131,7 @@ struct Interpreter(Movable):
         external input list positionally)."""
         var node_inputs = List[AnyTensor]()
         if len(self.graph.nodes[node_id].inputs) == 0:
-            var take = self._entry_take_count(
-                node_id, len(inputs) - cursor
-            )
+            var take = self._entry_take_count(node_id, len(inputs) - cursor)
             for i in range(take):
                 node_inputs.append(inputs[cursor + i])
             cursor += take
@@ -178,9 +174,7 @@ struct Interpreter(Movable):
         var order = self.graph.topo_sort()
         var cursor = 0
         for node_id in order:
-            var node_inputs = self._collect_node_inputs(
-                node_id, inputs, cursor
-            )
+            var node_inputs = self._collect_node_inputs(node_id, inputs, cursor)
 
             if self._is_jit_node(node_id):
                 var jit_outputs = self._run_jit_ffn(node_id, node_inputs)
@@ -202,16 +196,12 @@ struct Interpreter(Movable):
         except:
             return List[AnyTensor]()
 
-    def _forward_with_saved(
-        mut self, inputs: List[AnyTensor]
-    ) -> List[Int]:
+    def _forward_with_saved(mut self, inputs: List[AnyTensor]) -> List[Int]:
         """Forward pass that also records every node's saved tensors."""
         var order = self.graph.topo_sort()
         var cursor = 0
         for node_id in order:
-            var node_inputs = self._collect_node_inputs(
-                node_id, inputs, cursor
-            )
+            var node_inputs = self._collect_node_inputs(node_id, inputs, cursor)
             var op = self.registry.get(
                 self.graph.nodes[node_id].op_type,
                 self.graph.nodes[node_id].device_hint,
@@ -249,10 +239,7 @@ struct Interpreter(Movable):
                 seed.append(ones_like_any(t))
         except:
             pass
-        try:
-            grads[loss_node] = seed^
-        except:
-            pass
+        grads[loss_node] = seed^
 
         var input_grads = List[AnyTensor]()
         var entry_grads = Dict[Int, List[AnyTensor]]()
@@ -274,10 +261,7 @@ struct Interpreter(Movable):
                     # entry node: the returned grads belong to the
                     # external inputs; keep them per-node so the final
                     # list follows the external input order
-                    try:
-                        entry_grads[node_id] = bw^
-                    except:
-                        pass
+                    entry_grads[node_id] = bw^
                 else:
                     var j = 0
                     for input_id in self.graph.nodes[node_id].inputs:
@@ -287,9 +271,7 @@ struct Interpreter(Movable):
                         j += 1
                         if g.numel == 0:
                             continue
-                        var bucket = grads.get(
-                            input_id, List[AnyTensor]()
-                        )
+                        var bucket = grads.get(input_id, List[AnyTensor]())
                         if len(bucket) == 0:
                             bucket.append(g)
                         else:
@@ -302,10 +284,7 @@ struct Interpreter(Movable):
                                 accumulate_any(acc, g)
                             else:
                                 bucket.append(g)
-                        try:
-                            grads[input_id] = bucket^
-                        except:
-                            pass
+                        grads[input_id] = bucket^
                 # release the saved tensors of this node
                 self.graph.nodes[node_id].saved = List[AnyTensor]()
             i -= 1
@@ -316,7 +295,6 @@ struct Interpreter(Movable):
             for g in egrads:
                 if g.numel > 0:
                     input_grads.append(g)
-
 
         if len(order) == 0:
             return (List[AnyTensor](), input_grads^)

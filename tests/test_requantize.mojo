@@ -30,7 +30,9 @@ def main():
     check_roundtrip(src, q8, Float32(0.02), "q8_0")
 
     var q4 = requantize_q4_k(src, n)
-    check(q4.ggml_type == 12 and len(q4.data) == (n // 256) * 144, "q4_k layout")
+    check(
+        q4.ggml_type == 12 and len(q4.data) == (n // 256) * 144, "q4_k layout"
+    )
     check_roundtrip(src, q4, Float32(0.10), "q4_k")
 
     var nf = requantize_nf4(src, n)
@@ -60,7 +62,9 @@ def check_roundtrip(
     for i in range(len(quant.data)):
         buf.set(i, Scalar[DType.uint8](quant.data[i]))
 
-    dequantize_into(quant.ggml_type, buf.data().unsafe_bitcast[UInt8](), 0, dst, n)
+    dequantize_into(
+        quant.ggml_type, buf.data().unsafe_bitcast[UInt8](), 0, dst, n
+    )
 
     var max_err = Float32(0)
     for i in range(n):
@@ -70,7 +74,10 @@ def check_roundtrip(
         if err > max_err:
             max_err = err
 
-    check(max_err < tol, name + " roundtrip tolerance (max " + String(max_err) + ")")
+    check(
+        max_err < tol,
+        name + " roundtrip tolerance (max " + String(max_err) + ")",
+    )
 
 
 def check(cond: Bool, name: String):

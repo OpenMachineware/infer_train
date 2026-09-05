@@ -32,7 +32,7 @@ def main() raises:
         # top-5
         var top5 = List[Int]()
         var top5v = List[Float32]()
-        for k in range(5):
+        for _ in range(5):
             var best = -1
             var best_v = Float32(-3.0e38)
             for j in range(logits.shape()[0]):

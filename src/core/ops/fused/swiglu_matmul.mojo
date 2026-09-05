@@ -2,7 +2,8 @@
 #
 # M5 fused kernel: SwiGLU + matmul in one kernel.
 #
-#   fused_swiglu_matmul(g, u, w):  y[i, j] = sum_f silu(g[i, f]) * u[i, f] * w[j, f]
+#   fused_swiglu_matmul(g, u, w):
+#       y[i, j] = sum_f silu(g[i, f]) * u[i, f] * w[j, f]
 #
 # This is the Qwen2 FFN down-projection pattern (down(swiglu(gate, up))):
 # the SwiGLU activation is never materialized - it is computed on the fly
@@ -26,11 +27,15 @@ def _silu_scalar(x: Float32) -> Float32:
     return x / (Float32(1.0) + exp(-x))
 
 
-def _fused_swiglu_matmul_kernel[dtype: DType](
+def _fused_swiglu_matmul_kernel[
+    dtype: DType
+](
     gate: Tensor[dtype, 2],
     up: Tensor[dtype, 2],
     w: Tensor[dtype, 2],
-) -> Tensor[dtype, 2]:
+) -> Tensor[
+    dtype, 2
+]:
     var M = gate.shape()[0]
     var F = gate.shape()[1]
     var N = w.shape()[0]
@@ -46,37 +51,45 @@ def _fused_swiglu_matmul_kernel[dtype: DType](
             var total = Float32(0)
             var f = 0
             while f < f_main:
-                var gv = gate.data().unsafe_load[width=W](
-                    offset=i * F + f
-                ).cast[DType.float32]()
-                var uv = up.data().unsafe_load[width=W](
-                    offset=i * F + f
-                ).cast[DType.float32]()
-                var wv = w.data().unsafe_load[width=W](
-                    offset=j * F + f
-                ).cast[DType.float32]()
+                var gv = (
+                    gate.data()
+                    .unsafe_load[width=W](offset=i * F + f)
+                    .cast[DType.float32]()
+                )
+                var uv = (
+                    up.data()
+                    .unsafe_load[width=W](offset=i * F + f)
+                    .cast[DType.float32]()
+                )
+                var wv = (
+                    w.data()
+                    .unsafe_load[width=W](offset=j * F + f)
+                    .cast[DType.float32]()
+                )
                 # silu per lane (scalar exp; lane writes are miscompiled in
                 # Mojo 1.0 SIMD, so accumulate the products into `total`)
                 for lane in range(W):
-                    total += (
-                        _silu_scalar(gv[lane]) * uv[lane] * wv[lane]
-                    )
+                    total += _silu_scalar(gv[lane]) * uv[lane] * wv[lane]
                 f += W
             while f < F:
                 var sg = _silu_scalar(Float32(gate.get(i * F + f)))
-                total += sg * Float32(up.get(i * F + f)) * Float32(
-                    w.get(j * F + f)
+                total += (
+                    sg * Float32(up.get(i * F + f)) * Float32(w.get(j * F + f))
                 )
                 f += 1
             out.set(i * N + j, Scalar[dtype](total))
     return out
 
 
-def _dispatch[dtype: DType](
+def _dispatch[
+    dtype: DType
+](
     gate: Tensor[dtype, 2],
     up: Tensor[dtype, 2],
     w: Tensor[dtype, 2],
-) -> Tensor[dtype, 2]:
+) -> Tensor[
+    dtype, 2
+]:
     comptime if dtype == DType.float16:
         var g16 = Tensor[DType.float16, 2](
             gate.shape(),
@@ -126,10 +139,14 @@ def _dispatch[dtype: DType](
         return tensor_zeros[dtype, 2](StaticTuple[Int, 2](0, 0))
 
 
-def fused_swiglu_matmul[dtype: DType](
+def fused_swiglu_matmul[
+    dtype: DType
+](
     gate: Tensor[dtype, 2],
     up: Tensor[dtype, 2],
     w: Tensor[dtype, 2],
-) -> Tensor[dtype, 2]:
+) -> Tensor[
+    dtype, 2
+]:
     """y = silu(gate) * up @ w^T with w stored [out, in]."""
     return _dispatch[dtype](gate, up, w)

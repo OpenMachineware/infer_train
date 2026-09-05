@@ -40,11 +40,8 @@ def dag_memory_plan(mut dag: Dag) -> MemoryPlan:
     var n = len(dag.nodes)
     var plan = MemoryPlan()
 
-    var first_use = List[Int]()
-    var last_use = List[Int]()
-    for i in range(n):
-        first_use.append(1 << 30)
-        last_use.append(-1)
+    var first_use = List[Int](length=n, fill=1 << 30)
+    var last_use = List[Int](length=n, fill=-1)
     # graph outputs stay alive until the end
     for out in dag.outputs:
         last_use[out] = n

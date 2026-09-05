@@ -10,6 +10,11 @@ import numpy as np
 
 GGUF = "DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf"
 
+# GGML metadata type -> element size in bytes.
+TYPE_SIZE = {
+    0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8
+}
+
 f = open(GGUF, "rb")
 magic = f.read(4)
 ver, n_t, n_m = struct.unpack("<IQQ", f.read(20))
@@ -30,10 +35,10 @@ for _ in range(n_m):
             for _ in range(ln):
                 rs()
         else:
-            sz = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}[et]
+            sz = TYPE_SIZE[et]
             f.read(sz * ln)
     else:
-        sz = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}[t]
+        sz = TYPE_SIZE[t]
         f.read(sz)
 
 tensors = {}
@@ -60,8 +65,10 @@ def get_scale_min_k4_vec(j, scales):
 def deq_q5k(raw, numel):
     nb = numel // 256
     blocks = np.frombuffer(raw, dtype=np.uint8).reshape(nb, 176)
-    d = blocks[:, 0:4].reshape(-1).view(np.float16).reshape(nb, 2).astype(np.float32)[:, 0]
-    dmin = blocks[:, 0:4].reshape(-1).view(np.float16).reshape(nb, 2).astype(np.float32)[:, 1]
+    dm = blocks[:, 0:4].reshape(-1).view(np.float16).reshape(nb, 2)
+    dm = dm.astype(np.float32)
+    d = dm[:, 0]
+    dmin = dm[:, 1]
     scales = blocks[:, 4:16]
     qh = blocks[:, 16:48]
     qs = blocks[:, 48:176]
@@ -164,7 +171,9 @@ print("weights loaded")
 import numpy as _np
 
 def rmsnorm(x, w):
-    rms = _np.sqrt(_np.mean(x.astype(_np.float64) ** 2, axis=-1, keepdims=True) + EPS)
+    rms = _np.sqrt(
+        _np.mean(x.astype(_np.float64) ** 2, axis=-1, keepdims=True) + EPS
+    )
     return (x / rms).astype(_np.float32) * w
 
 def rope(x, pos):
@@ -212,5 +221,8 @@ V = _np.zeros((N_LAYERS, N_KV, 64, HEAD_DIM), dtype=_np.float32)
 for i, tok in enumerate(toks):
     logits = forward(tok, i, K, V)[0]
     rrow = ref[i+1]
-    print(f"step {i}: top5 {_np.argsort(logits)[::-1][:5].tolist()} ref {_np.argsort(rrow)[::-1][:5].tolist()} corr {_np.corrcoef(logits, rrow)[0,1]:.5f}")
+    top5 = _np.argsort(logits)[::-1][:5].tolist()
+    rtop5 = _np.argsort(rrow)[::-1][:5].tolist()
+    corr = _np.corrcoef(logits, rrow)[0, 1]
+    print(f"step {i}: top5 {top5} ref {rtop5} corr {corr:.5f}")
 print("DONE")

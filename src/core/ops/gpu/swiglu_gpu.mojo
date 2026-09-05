@@ -41,8 +41,8 @@ def _swiglu_kernel_f32(
     var i = global_idx.x
     var stride = grid_dim.x * block_dim.x
     while i < n_i:
-        var g = gate[i]
-        var u = up[i]
+        var g = gate[unsafe_offset=i]
+        var u = up[unsafe_offset=i]
         # silu with overflow guards (mirrors the CPU kernel)
         var silu_g: Float32
         if g < Float32(-20.0):
@@ -51,7 +51,7 @@ def _swiglu_kernel_f32(
             silu_g = g
         else:
             silu_g = g / (Float32(1.0) + exp(-g))
-        dst[i] = silu_g * u
+        dst[unsafe_offset=i] = silu_g * u
         i += stride
 
 
@@ -65,8 +65,8 @@ def _swiglu_kernel_f16(
     var i = global_idx.x
     var stride = grid_dim.x * block_dim.x
     while i < n_i:
-        var g = Float32(gate[i])
-        var u = Float32(up[i])
+        var g = Float32(gate[unsafe_offset=i])
+        var u = Float32(up[unsafe_offset=i])
         var silu_g: Float32
         if g < Float32(-20.0):
             silu_g = Float32(0.0)
@@ -74,7 +74,7 @@ def _swiglu_kernel_f16(
             silu_g = g
         else:
             silu_g = g / (Float32(1.0) + exp(-g))
-        dst[i] = Scalar[DType.float16](silu_g * u)
+        dst[unsafe_offset=i] = Scalar[DType.float16](silu_g * u)
         i += stride
 
 
@@ -90,9 +90,9 @@ def _swiglu_bwd_kernel_f32(
     var i = global_idx.x
     var stride = grid_dim.x * block_dim.x
     while i < n_i:
-        var g = gate[i]
-        var u = up[i]
-        var go = grad_out[i]
+        var g = gate[unsafe_offset=i]
+        var u = up[unsafe_offset=i]
+        var go = grad_out[unsafe_offset=i]
         var silu_g: Float32
         if g < Float32(-20.0):
             silu_g = Float32(0.0)
@@ -109,8 +109,8 @@ def _swiglu_bwd_kernel_f32(
         else:
             sig = Float32(1.0) / (Float32(1.0) + exp(-g))
         var dsilu = sig * (Float32(1.0) + g - silu_g)
-        grad_up[i] = go * silu_g
-        grad_gate[i] = go * u * dsilu
+        grad_up[unsafe_offset=i] = go * silu_g
+        grad_gate[unsafe_offset=i] = go * u * dsilu
         i += stride
 
 
@@ -126,9 +126,9 @@ def _swiglu_bwd_kernel_f16(
     var i = global_idx.x
     var stride = grid_dim.x * block_dim.x
     while i < n_i:
-        var g = Float32(gate[i])
-        var u = Float32(up[i])
-        var go = Float32(grad_out[i])
+        var g = Float32(gate[unsafe_offset=i])
+        var u = Float32(up[unsafe_offset=i])
+        var go = Float32(grad_out[unsafe_offset=i])
         var silu_g: Float32
         if g < Float32(-20.0):
             silu_g = Float32(0.0)
@@ -144,15 +144,17 @@ def _swiglu_bwd_kernel_f16(
         else:
             sig = Float32(1.0) / (Float32(1.0) + exp(-g))
         var dsilu = sig * (Float32(1.0) + g - silu_g)
-        grad_up[i] = Scalar[DType.float16](go * silu_g)
-        grad_gate[i] = Scalar[DType.float16](go * u * dsilu)
+        grad_up[unsafe_offset=i] = Scalar[DType.float16](go * silu_g)
+        grad_gate[unsafe_offset=i] = Scalar[DType.float16](go * u * dsilu)
         i += stride
 
 
 # -- launch helpers -----------------------------------------------------------
 
 
-def _swiglu_gpu_launch[dtype: DType](
+def _swiglu_gpu_launch[
+    dtype: DType
+](
     ctx: DeviceContext, gate: Tensor[dtype, 2], up: Tensor[dtype, 2]
 ) raises -> Tensor[dtype, 2]:
     if gate.shape() != up.shape():
@@ -163,20 +165,30 @@ def _swiglu_gpu_launch[dtype: DType](
     var dst_buf = ctx.enqueue_create_buffer[dtype](n)
     comptime if dtype == DType.float16:
         ctx.enqueue_function[_swiglu_kernel_f16](
-            gate_buf, up_buf, dst_buf, Int32(n),
-            grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+            gate_buf,
+            up_buf,
+            dst_buf,
+            Int32(n),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
         )
     else:
         ctx.enqueue_function[_swiglu_kernel_f32](
-            gate_buf, up_buf, dst_buf, Int32(n),
-            grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+            gate_buf,
+            up_buf,
+            dst_buf,
+            Int32(n),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
         )
     var out = download2[dtype](ctx, dst_buf, gate.shape())
     ctx.synchronize()
     return out
 
 
-def _swiglu_bwd_gpu_launch[dtype: DType](
+def _swiglu_bwd_gpu_launch[
+    dtype: DType
+](
     ctx: DeviceContext,
     grad_out: Tensor[dtype, 2],
     gate: Tensor[dtype, 2],
@@ -190,13 +202,25 @@ def _swiglu_bwd_gpu_launch[dtype: DType](
     var gu_buf = ctx.enqueue_create_buffer[dtype](n)
     comptime if dtype == DType.float16:
         ctx.enqueue_function[_swiglu_bwd_kernel_f16](
-            go_buf, gate_buf, up_buf, gg_buf, gu_buf, Int32(n),
-            grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+            go_buf,
+            gate_buf,
+            up_buf,
+            gg_buf,
+            gu_buf,
+            Int32(n),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
         )
     else:
         ctx.enqueue_function[_swiglu_bwd_kernel_f32](
-            go_buf, gate_buf, up_buf, gg_buf, gu_buf, Int32(n),
-            grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+            go_buf,
+            gate_buf,
+            up_buf,
+            gg_buf,
+            gu_buf,
+            Int32(n),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
         )
     var grad_gate = download2[dtype](ctx, gg_buf, grad_out.shape())
     var grad_up = download2[dtype](ctx, gu_buf, grad_out.shape())
@@ -207,9 +231,9 @@ def _swiglu_bwd_gpu_launch[dtype: DType](
 # -- public entry points ------------------------------------------------------
 
 
-def swiglu_gpu[dtype: DType, rows: Int, cols: Int](
-    gate: Tensor[dtype, 2], up: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def swiglu_gpu[
+    dtype: DType, rows: Int, cols: Int
+](gate: Tensor[dtype, 2], up: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Comptime-shaped GPU SwiGLU (CPU fallback on any GPU error)."""
     if gate.shape() != StaticTuple[Int, 2](rows, cols):
         unimplemented("swiglu_gpu: static shape mismatch")
@@ -222,9 +246,9 @@ def swiglu_gpu[dtype: DType, rows: Int, cols: Int](
         return swiglu_cpu[dtype, rows, cols](gate, up)
 
 
-def swiglu_gpu_dynamic[dtype: DType](
-    gate: Tensor[dtype, 2], up: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def swiglu_gpu_dynamic[
+    dtype: DType
+](gate: Tensor[dtype, 2], up: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Runtime-shaped GPU SwiGLU (CPU fallback on any GPU error)."""
     if not gpu_available[dtype]():
         return swiglu_cpu_dynamic[dtype](gate, up)
@@ -235,9 +259,11 @@ def swiglu_gpu_dynamic[dtype: DType](
         return swiglu_cpu_dynamic[dtype](gate, up)
 
 
-def swiglu_gpu_forward_with_saved[dtype: DType, rows: Int, cols: Int](
-    gate: Tensor[dtype, 2], up: Tensor[dtype, 2]
-) -> Tuple[Tensor[dtype, 2], List[Tensor[dtype, 2]]]:
+def swiglu_gpu_forward_with_saved[
+    dtype: DType, rows: Int, cols: Int
+](gate: Tensor[dtype, 2], up: Tensor[dtype, 2]) -> Tuple[
+    Tensor[dtype, 2], List[Tensor[dtype, 2]]
+]:
     var out = swiglu_gpu[dtype, rows, cols](gate, up)
     var saved = List[Tensor[dtype, 2]]()
     saved.append(gate)
@@ -245,9 +271,11 @@ def swiglu_gpu_forward_with_saved[dtype: DType, rows: Int, cols: Int](
     return (out, saved^)
 
 
-def swiglu_gpu_backward[dtype: DType, rows: Int, cols: Int](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]]:
+def swiglu_gpu_backward[
+    dtype: DType, rows: Int, cols: Int
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+]:
     """Backward for SwiGLU: out = silu(gate) * up.
 
     grad_up   = grad_out * silu(gate)

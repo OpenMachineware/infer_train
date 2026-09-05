@@ -4,6 +4,7 @@ from src.core.tensor import Tensor, tensor_zeros
 from src.core.device import Device
 from std.utils.static_tuple import StaticTuple
 
+
 def main():
     var reg = OpRegistry()
     reg.register_default_ops()

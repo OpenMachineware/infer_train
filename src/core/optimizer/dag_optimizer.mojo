@@ -33,7 +33,7 @@ from .dce import dag_dce
 from .memory_plan import dag_memory_plan, MemoryPlan
 
 
-struct OptimizeStats(Copyable, Movable, ImplicitlyCopyable):
+struct OptimizeStats(Copyable, ImplicitlyCopyable, Movable):
     var folded: Int
     var simplified: Int
     var cse_removed: Int

@@ -577,9 +577,7 @@ def dequantize_q8_0[
     """Q8_0 -> `dtype`; bit-exact with `dequantize_row_q8_0`."""
     var nb = numel // 32
     for b in range(nb):
-        _dequantize_q8_0_block(
-            data.unsafe_offset(offset + b * 34), dst, b * 32
-        )
+        _dequantize_q8_0_block(data.unsafe_offset(offset + b * 34), dst, b * 32)
 
 
 def dequantize_iq4_xs[
@@ -644,9 +642,7 @@ def dequantize_blocks[
     compilation (the Q4_K_M / Q4_0 workhorses included).
     """
     comptime be = block_elems(quant_type)
-    var view = Tensor[dtype, 2](
-        StaticTuple[Int, 2](1, n_blocks * be), dst
-    )
+    var view = Tensor[dtype, 2](StaticTuple[Int, 2](1, n_blocks * be), dst)
     comptime if quant_type == QuantType.Q4_K_M:
         for b in range(n_blocks):
             _dequantize_q4_k_block(

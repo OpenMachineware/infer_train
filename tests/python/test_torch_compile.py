@@ -49,7 +49,11 @@ def run_engine(op_name, tensors):
             h.free()
     snap = snaps[0]
     dtype = {0: torch.float32, 1: torch.float16, 2: torch.int32}[snap.dtype]
-    return torch.frombuffer(bytearray(snap.data), dtype=dtype).reshape(snap.shape).clone()
+    return (
+        torch.frombuffer(bytearray(snap.data), dtype=dtype)
+        .reshape(snap.shape)
+        .clone()
+    )
 
 
 class MiniRMSNorm(torch.nn.Module):
@@ -328,7 +332,9 @@ def test_strict_mode_raises_on_unmapped_op():
     import torch._dynamo as dynamo
 
     gm, guards = dynamo.export(model)(example)
-    with pytest.raises(UnsupportedOpError, match="has no engine implementation"):
+    with pytest.raises(
+        UnsupportedOpError, match="has no engine implementation"
+    ):
         infer_train_backend(gm, [example], strict=True)
     # non-strict mode falls back to torch and stays correct
     compiled = infer_train_backend(gm, [example])

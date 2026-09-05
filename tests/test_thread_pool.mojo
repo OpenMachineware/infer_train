@@ -122,13 +122,11 @@ def test_work_stealing_all_threads_loaded():
     peak.unsafe_offset(0).unsafe_store(val=Int64(0))
 
     def probe(i: Int) {imm active, imm peak}:
-        var prev = Atomic[DType.int64].fetch_add[
-            ordering=Ordering.RELAXED
-        ](active, Int64(1))
-        var now = Int(prev) + 1
-        Atomic[DType.int64].max[ordering=Ordering.RELAXED](
-            peak, Int64(now)
+        var prev = Atomic[DType.int64].fetch_add[ordering=Ordering.RELAXED](
+            active, Int64(1)
         )
+        var now = Int(prev) + 1
+        Atomic[DType.int64].max[ordering=Ordering.RELAXED](peak, Int64(now))
         var t = 0
         while t < _SPIN:
             t += 1
@@ -232,9 +230,7 @@ def test_work_stealing_static_distribution():
     check(used >= 1, "static-distribution returned < 1 worker")
     for i in range(n):
         if results[i] != i * scale:
-            print(
-                "FAIL: static-distribution results[", i, "] = ", results[i]
-            )
+            print("FAIL: static-distribution results[", i, "] = ", results[i])
             abort()
     print("  static-distribution (comptime if) OK, workers =", used)
 

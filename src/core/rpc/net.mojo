@@ -51,9 +51,7 @@ def tcp_listen(host: String, port: Int) raises -> Int64:
         Int32,
     ](_cstr(host), Int32(port))
     if fd < 0:
-        raise Error(
-            "tcp_listen: cannot bind " + host + ":" + String(port)
-        )
+        raise Error("tcp_listen: cannot bind " + host + ":" + String(port))
     return fd
 
 

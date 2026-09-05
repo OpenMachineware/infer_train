@@ -24,7 +24,9 @@ def check(condition: Bool, label: String):
         abort()
 
 
-def check_close(actual: Float32, expected: Float32, tol: Float32, label: String):
+def check_close(
+    actual: Float32, expected: Float32, tol: Float32, label: String
+):
     var diff = actual - expected
     if diff < 0:
         diff = -diff
@@ -54,9 +56,7 @@ def _make_config() -> TrainConfig:
     return cfg
 
 
-def _make_data() -> Tuple[
-    Tensor[DType.int32, 1], Tensor[DType.int32, 1]
-]:
+def _make_data() -> Tuple[Tensor[DType.int32, 1], Tensor[DType.int32, 1]]:
     # 8 tokens with "next token = token + 1 (mod 32)" targets: learnable
     var tokens = tensor_zeros[DType.int32, 1](StaticTuple[Int, 1](8))
     var targets = tensor_zeros[DType.int32, 1](StaticTuple[Int, 1](8))
@@ -84,7 +84,9 @@ def test_loss_decreases():
         first,
         "->",
         last,
-        "(", len_placeholder(), ")",
+        "(",
+        len_placeholder(),
+        ")",
     )
     check(last < first, "train loss must decrease")
     check(first - last > Float32(0.1), "loss must decrease meaningfully")
@@ -101,7 +103,7 @@ def test_gradient_accumulation():
     var targets = data[1]
     var p0 = Float32(model.token_embd.get(0))
     # first 3 mini-batches: no optimizer step
-    for i in range(3):
+    for _ in range(3):
         var r = train_step(model, tokens, targets, 4)
         _ = r
     check_close(
@@ -110,9 +112,7 @@ def test_gradient_accumulation():
     # the 4th mini-batch triggers the step
     var r4 = train_step(model, tokens, targets, 4)
     _ = r4
-    check(
-        Float32(model.token_embd.get(0)) != p0, "accum step fires"
-    )
+    check(Float32(model.token_embd.get(0)) != p0, "accum step fires")
 
 
 def test_amp_scaler_and_training():
@@ -121,11 +121,9 @@ def test_amp_scaler_and_training():
     var clean = List[AnyTensor]()
     var g = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](1, 4))
     clean.append(to_any[DType.float32, 2](g))
-    for i in range(2000):
+    for _ in range(2000):
         scaler.update(False)
-    check(
-        scaler.current_scale() > Float32(65536.0), "scaler grows"
-    )
+    check(scaler.current_scale() > Float32(65536.0), "scaler grows")
     # an Inf gradient backs the scale off
     var ginf = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](1, 4))
     ginf.set(0, Scalar[DType.float32](Float32(1.0) / Float32(0.0)))
@@ -194,7 +192,7 @@ def test_eval_accuracy():
     var tokens = data[0]
     var targets = data[1]
     # train a few steps first
-    for step in range(10):
+    for _ in range(10):
         _ = train_step(model, tokens, targets)
     var e = eval_step(model, tokens, targets)
     check(e[1] >= Float32(0) and e[1] <= Float32(1), "accuracy in range")

@@ -167,16 +167,12 @@ def make_tokenizer(
                 if key == hit_name:
                     found = True
         if found:
-            engine._flavor = flavor_tag(
-                extra.value().entries[hit_name].flavor
-            )
+            engine._flavor = flavor_tag(extra.value().entries[hit_name].flavor)
             engine._bos_id = extra.value().entries[hit_name].bos
             engine._eos_id = extra.value().entries[hit_name].eos
             engine._added = List[AddedToken]()
             for i in range(len(extra.value().entries[hit_name].added)):
-                engine._added.append(
-                    extra.value().entries[hit_name].added[i]
-                )
+                engine._added.append(extra.value().entries[hit_name].added[i])
     return engine^
 
 

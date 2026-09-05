@@ -13,7 +13,8 @@
 # `core/quantization.mojo` (and `Device` in `core/device.mojo`), which is
 # the pattern known to work with `comptime if` in this toolchain.
 
-struct QuantType(Copyable, Equatable, Movable, ImplicitlyCopyable):
+
+struct QuantType(Copyable, Equatable, ImplicitlyCopyable, Movable):
     """Quantization format tag (compile-time value).
 
     The values mirror the GGUF block formats in llama.cpp's

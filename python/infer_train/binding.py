@@ -159,7 +159,9 @@ def _setup_prototypes():
     _lib.infer_train_free_buffer.restype = None
 
     # M7: inference-time fine-tuning + tokenizer access
-    _lib.infer_train_finetune_create.argtypes = [ctypes.c_void_p, ctypes.c_float]
+    _lib.infer_train_finetune_create.argtypes = [
+        ctypes.c_void_p, ctypes.c_float,
+    ]
     _lib.infer_train_finetune_create.restype = ctypes.c_void_p
     _lib.infer_train_finetune_step.argtypes = [
         ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64,

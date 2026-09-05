@@ -53,10 +53,10 @@ def _embedding_kernel_f32(
         var k = i % hidden_i
         var v: Float32 = Float32(0.0)
         if t < n_tok_i:
-            var token = Int(tokens[t])
+            var token = Int(tokens[unsafe_offset=t])
             if token >= 0 and token < vocab_i:
-                v = table[token * hidden_i + k]
-        dst[i] = v
+                v = table[unsafe_offset=token * hidden_i + k]
+        dst[unsafe_offset=i] = v
         i += stride
 
 
@@ -79,17 +79,19 @@ def _embedding_kernel_f16(
         var k = i % hidden_i
         var v: Scalar[DType.float16] = Scalar[DType.float16](0.0)
         if t < n_tok_i:
-            var token = Int(tokens[t])
+            var token = Int(tokens[unsafe_offset=t])
             if token >= 0 and token < vocab_i:
-                v = table[token * hidden_i + k]
-        dst[i] = v
+                v = table[unsafe_offset=token * hidden_i + k]
+        dst[unsafe_offset=i] = v
         i += stride
 
 
 # -- launch helpers -----------------------------------------------------------
 
 
-def _embedding_gpu_launch[dtype: DType](
+def _embedding_gpu_launch[
+    dtype: DType
+](
     ctx: DeviceContext, tokens: Tensor[DType.int32, 1], table: Tensor[dtype, 2]
 ) raises -> Tensor[dtype, 2]:
     var n_tokens = tokens.shape()[0]
@@ -101,15 +103,25 @@ def _embedding_gpu_launch[dtype: DType](
     var dst_buf = ctx.enqueue_create_buffer[dtype](n)
     comptime if dtype == DType.float16:
         ctx.enqueue_function[_embedding_kernel_f16](
-            tok_buf, table_buf, dst_buf,
-            Int32(hidden), Int32(vocab), Int32(n_tokens),
-            grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+            tok_buf,
+            table_buf,
+            dst_buf,
+            Int32(hidden),
+            Int32(vocab),
+            Int32(n_tokens),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
         )
     else:
         ctx.enqueue_function[_embedding_kernel_f32](
-            tok_buf, table_buf, dst_buf,
-            Int32(hidden), Int32(vocab), Int32(n_tokens),
-            grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+            tok_buf,
+            table_buf,
+            dst_buf,
+            Int32(hidden),
+            Int32(vocab),
+            Int32(n_tokens),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
         )
     var out = download2[dtype](
         ctx, dst_buf, StaticTuple[Int, 2](n_tokens, hidden)
@@ -121,9 +133,9 @@ def _embedding_gpu_launch[dtype: DType](
 # -- public entry points ------------------------------------------------------
 
 
-def embedding_gpu[dtype: DType, hidden: Int, vocab: Int](
-    tokens: Tensor[DType.int32, 1], table: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def embedding_gpu[
+    dtype: DType, hidden: Int, vocab: Int
+](tokens: Tensor[DType.int32, 1], table: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Comptime-shaped GPU embedding lookup (CPU fallback on any GPU error)."""
     if table.shape() != StaticTuple[Int, 2](vocab, hidden):
         unimplemented("embedding_gpu: static shape mismatch")
@@ -136,9 +148,9 @@ def embedding_gpu[dtype: DType, hidden: Int, vocab: Int](
         return embedding_cpu[dtype, hidden, vocab](tokens, table)
 
 
-def embedding_gpu_dynamic[dtype: DType](
-    tokens: Tensor[DType.int32, 1], table: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def embedding_gpu_dynamic[
+    dtype: DType
+](tokens: Tensor[DType.int32, 1], table: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Runtime-shaped GPU embedding lookup (CPU fallback on any GPU error)."""
     if not gpu_available[dtype]():
         return embedding_cpu_dynamic[dtype](tokens, table)
@@ -149,9 +161,11 @@ def embedding_gpu_dynamic[dtype: DType](
         return embedding_cpu_dynamic[dtype](tokens, table)
 
 
-def embedding_gpu_forward_with_saved[dtype: DType, hidden: Int, vocab: Int](
-    tokens: Tensor[DType.int32, 1], table: Tensor[dtype, 2]
-) -> Tuple[Tensor[dtype, 2], List[Tensor[dtype, 2]]]:
+def embedding_gpu_forward_with_saved[
+    dtype: DType, hidden: Int, vocab: Int
+](tokens: Tensor[DType.int32, 1], table: Tensor[dtype, 2]) -> Tuple[
+    Tensor[dtype, 2], List[Tensor[dtype, 2]]
+]:
     var out = embedding_gpu[dtype, hidden, vocab](tokens, table)
     # only the table is rank-2; the tokens ride along in the registry's
     # erased saved list (see op_registry.embedding).
@@ -160,13 +174,16 @@ def embedding_gpu_forward_with_saved[dtype: DType, hidden: Int, vocab: Int](
     return (out, saved^)
 
 
-def embedding_gpu_backward[dtype: DType, hidden: Int, vocab: Int](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]]:
+def embedding_gpu_backward[
+    dtype: DType, hidden: Int, vocab: Int
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+]:
     """Backward for the token embedding lookup (sparse update).
 
     Kept on the CPU kernel: it is a scatter-add over the (usually huge) table
-    that only touches the rows of tokens present in the batch.  `saved` = [table].
+    that only touches the rows of tokens present in the batch.  `saved`
+    holds [table].
     """
     var table = saved[0]
     # The token ids are not part of the rank-2 saved list; reconstruct them is

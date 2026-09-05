@@ -49,16 +49,18 @@ def grid1d(n: Int, block: Int) -> Int:
     return (n + block - 1) // block
 
 
-def upload[dtype: DType, rank: Int](
-    ctx: DeviceContext, t: Tensor[dtype, rank]
-) raises -> DeviceBuffer[dtype]:
+def upload[
+    dtype: DType, rank: Int
+](ctx: DeviceContext, t: Tensor[dtype, rank]) raises -> DeviceBuffer[dtype]:
     """Create a device buffer and asynchronously copy `t` into it."""
     var buf = ctx.enqueue_create_buffer[dtype](t.numel())
     ctx.enqueue_copy[dtype](buf, t.data())
     return buf
 
 
-def download1[dtype: DType](
+def download1[
+    dtype: DType
+](
     ctx: DeviceContext, buf: DeviceBuffer[dtype], shape: StaticTuple[Int, 1]
 ) raises -> Tensor[dtype, 1]:
     """Create a host tensor of `shape` and asynchronously copy `buf` into it."""
@@ -67,7 +69,9 @@ def download1[dtype: DType](
     return t
 
 
-def download2[dtype: DType](
+def download2[
+    dtype: DType
+](
     ctx: DeviceContext, buf: DeviceBuffer[dtype], shape: StaticTuple[Int, 2]
 ) raises -> Tensor[dtype, 2]:
     """Create a host tensor of `shape` and asynchronously copy `buf` into it."""
@@ -76,7 +80,9 @@ def download2[dtype: DType](
     return t
 
 
-def download3[dtype: DType](
+def download3[
+    dtype: DType
+](
     ctx: DeviceContext, buf: DeviceBuffer[dtype], shape: StaticTuple[Int, 3]
 ) raises -> Tensor[dtype, 3]:
     """Create a host tensor of `shape` and asynchronously copy `buf` into it."""

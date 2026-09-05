@@ -23,7 +23,7 @@ def seed_sampler(seed: Optional[Int] = None):
         std.random.seed(t)
 
 
-struct Sampler(Copyable, Movable, ImplicitlyCopyable):
+struct Sampler(Copyable, ImplicitlyCopyable, Movable):
     var temperature: Float32
     var top_k: Int
     var top_p: Float32
@@ -55,9 +55,7 @@ def _topk_partial(probs: List[Float32], limit: Int) -> List[Int]:
     """
     var n = len(probs)
     var order = List[Int]()
-    var used = List[Bool]()
-    for i in range(n):
-        used.append(False)
+    var used = List[Bool](length=n, fill=False)
     var count = 0
     while count < limit and count < n:
         var best = -1
@@ -74,7 +72,9 @@ def _topk_partial(probs: List[Float32], limit: Int) -> List[Int]:
     return order^
 
 
-def sample[dtype: DType, vocab_size: Int](
+def sample[
+    dtype: DType, vocab_size: Int
+](
     logits: Tensor[dtype, 1],
     sampler: Sampler,
     generated_tokens: List[Int],
@@ -103,7 +103,9 @@ def sample[dtype: DType, vocab_size: Int](
     return _sample_from_probs(probs, sampler)
 
 
-def sample_dynamic[dtype: DType](
+def sample_dynamic[
+    dtype: DType
+](
     logits: Tensor[dtype, 1],
     sampler: Sampler,
     generated_tokens: List[Int],
@@ -212,9 +214,9 @@ def _sample_from_probs(mut probs: List[Float32], sampler: Sampler) -> Int:
     return vocab_size - 1
 
 
-def greedy_sample[dtype: DType, vocab_size: Int](
-    logits: Tensor[dtype, 1]
-) -> Int:
+def greedy_sample[
+    dtype: DType, vocab_size: Int
+](logits: Tensor[dtype, 1]) -> Int:
     """Argmax over the logits (no randomness)."""
     var best = 0
     var best_value = logits.get(0)

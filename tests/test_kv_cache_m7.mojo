@@ -3,7 +3,11 @@
 # M7 KV-cache features: paged attention round-trip, sliding-window
 # semantics, and context-length adaptation.
 
-from src.core.ops.attention.kv_cache import KVCache, KVCacheLayer, kv_cache_append
+from src.core.ops.attention.kv_cache import (
+    KVCache,
+    KVCacheLayer,
+    kv_cache_append,
+)
 from src.core.tensor import tensor_zeros
 from std.utils.static_tuple import StaticTuple
 

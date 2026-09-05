@@ -293,7 +293,7 @@ def _next_f32(arg_list: List[String], i: Int) raises -> Float32:
     return -f if neg else f
 
 
-# -- shared model loading -------------------------------------------------------
+# -- shared model loading ------------------------------------------------------
 
 
 def load_model_heap(
@@ -308,8 +308,8 @@ def load_model_heap(
     buffers are MutUntrackedOrigin and the process reclaims them at exit.
     """
     var mp = unsafe_alloc[Model](1)
-    mp[0] = load_model(path, ctx_size)
-    return mp^
+    mp[unsafe_offset=0] = load_model(path, ctx_size)
+    return mp
 
 
 def print_banner(
@@ -331,7 +331,7 @@ def print_banner(
     print("  tokenizer:", tokenizer.flavor_name(), "ctx:", ctx_size)
 
 
-# -- generation state (local) ---------------------------------------------------
+# -- generation state (local) --------------------------------------------------
 #
 # One GenState is one in-flight generation: the KV cache state (inside the
 # shared model) plus the token history, the repeat-penalty counts and the
@@ -389,7 +389,7 @@ struct GenState(Movable):
         repeat_penalty: Float32,
         seed: Int,
     ) raises:
-        var vocab = model_p[0].transformer.config.vocab
+        var vocab = model_p[unsafe_offset=0].transformer.config.vocab
         seed_sampler(Optional(seed) if seed >= 0 else None)
         self.model_p = model_p
         self.sampler = Sampler(
@@ -398,27 +398,30 @@ struct GenState(Movable):
         self.tokens = List[Int]()
         self.counts = Dict[Int, Int]()
         self.generated = List[Int]()
-        self.logits = tensor_zeros[DType.float32, 1](
-            StaticTuple[Int, 1](vocab)
-        )
+        self.logits = tensor_zeros[DType.float32, 1](StaticTuple[Int, 1](vocab))
         self.repeat_penalty = repeat_penalty
         self.n_predict = n_predict
         self.step_count = 0
         self.done = False
 
     def prefill(mut self, prompt: String) raises:
-        var tokens = self.model_p[0].tokenizer.encode_with_bos(prompt)
-        var capacity = self.model_p[0].transformer.cache.capacity()
+        var tokens = self.model_p[unsafe_offset=0].tokenizer.encode_with_bos(
+            prompt
+        )
+        var capacity = self.model_p[
+            unsafe_offset=0
+        ].transformer.cache.capacity()
         if len(tokens) + self.n_predict > capacity:
             raise Error(
-                "KV cache capacity " + String(capacity)
+                "KV cache capacity "
+                + String(capacity)
                 + " too small for "
                 + String(len(tokens) + self.n_predict)
                 + " tokens"
             )
         self.tokens = tokens^
         for i in range(len(self.tokens)):
-            self.logits = self.model_p[0].transformer.forward(
+            self.logits = self.model_p[unsafe_offset=0].transformer.forward(
                 self.tokens[i], i
             )
 
@@ -427,21 +430,21 @@ struct GenState(Movable):
         if self.done or self.step_count >= self.n_predict:
             self.done = True
             return -1
-        var vocab = self.model_p[0].transformer.config.vocab
+        var vocab = self.model_p[unsafe_offset=0].transformer.config.vocab
         adjust_repeat_penalty(
             self.logits, self.counts, self.repeat_penalty, vocab
         )
         var t = sample_dynamic[DType.float32](
             self.logits, self.sampler, self.tokens
         )
-        if t == self.model_p[0].tokenizer.eos_id():
+        if t == self.model_p[unsafe_offset=0].tokenizer.eos_id():
             self.done = True
             return -1
         self.tokens.append(t)
         self.counts[t] = self.counts.get(t, 0) + 1
         self.generated.append(t)
         self.step_count += 1
-        self.logits = self.model_p[0].transformer.forward(
+        self.logits = self.model_p[unsafe_offset=0].transformer.forward(
             t, len(self.tokens) - 1
         )
         return t
@@ -449,13 +452,13 @@ struct GenState(Movable):
     def decode_token(self, t: Int) -> String:
         var one = List[Int]()
         one.append(t)
-        return self.model_p[0].tokenizer.decode(one)
+        return self.model_p[unsafe_offset=0].tokenizer.decode(one)
 
     def decode_all(self) -> String:
-        return self.model_p[0].tokenizer.decode(self.generated)
+        return self.model_p[unsafe_offset=0].tokenizer.decode(self.generated)
 
 
-# -- generation state (distributed, -sm layer --rpc) ----------------------------
+# -- generation state (distributed, -sm layer --rpc) ---------------------------
 #
 # The master keeps the embedding + output head and the generation loop;
 # each `--rpc` worker owns a contiguous layer range (and its KV/SSM state)
@@ -516,8 +519,16 @@ struct DistributedInference(Movable):
             var hi = (i + 1) * base + _min(i + 1, rem)
             client.init_shard(lo, hi, ctx_size)
             print(
-                "  rpc[" + String(i) + "] " + host + ":" + String(port)
-                + ": layers " + String(lo) + ".." + String(hi - 1)
+                "  rpc["
+                + String(i)
+                + "] "
+                + host
+                + ":"
+                + String(port)
+                + ": layers "
+                + String(lo)
+                + ".."
+                + String(hi - 1)
             )
             workers.append(client^)
         print("  split mode: layer (" + String(n) + " workers)")
@@ -551,7 +562,8 @@ struct DistributedInference(Movable):
         self.tokens = self.tokenizer.encode_with_bos(prompt)
         if len(self.tokens) + self.n_predict > self.ctx_size:
             raise Error(
-                "KV cache capacity " + String(self.ctx_size)
+                "KV cache capacity "
+                + String(self.ctx_size)
                 + " too small for "
                 + String(len(self.tokens) + self.n_predict)
                 + " tokens"
@@ -575,9 +587,7 @@ struct DistributedInference(Movable):
         adjust_repeat_penalty(
             logits, self.counts, self.repeat_penalty, self.config.vocab
         )
-        var t = sample_dynamic[DType.float32](
-            logits, self.sampler, self.tokens
-        )
+        var t = sample_dynamic[DType.float32](logits, self.sampler, self.tokens)
         if t == self.tokenizer.eos_id():
             self.done = True
             return -1
@@ -603,7 +613,7 @@ struct DistributedInference(Movable):
             self.workers[wi].close()
 
 
-# -- helpers ---------------------------------------------------------------------
+# -- helpers -------------------------------------------------------------------
 
 
 def split_host_port(s: String) raises -> Tuple[String, Int]:
@@ -657,7 +667,7 @@ def basename(path: String) -> String:
     return out
 
 
-# -- quantize (shared tool, exposed via `it-server quantize`) ---------------------
+# -- quantize (shared tool, exposed via `it-server quantize`) ------------------
 
 
 def quantize_file(args: CliArgs) raises:
@@ -698,15 +708,17 @@ def quantize_file(args: CliArgs) raises:
             block = 32
         elif args.quant_format == "NF4":
             block = 64
-        if (t.ggml_type == 1 or t.ggml_type == 0) and numel >= block and numel % block == 0:
+        if (
+            (t.ggml_type == 1 or t.ggml_type == 0)
+            and numel >= block
+            and numel % block == 0
+        ):
             # F16 / F32 -> requantize (block-aligned tensors only)
             var fp16 = tensor_zeros[DType.float16, 2](
                 StaticTuple[Int, 2](1, numel)
             )
             var (src, off) = ctx.tensor_data(t)
-            dequantize_into(
-                t.ggml_type, src, off, fp16, numel
-            )
+            dequantize_into(t.ggml_type, src, off, fp16, numel)
             var src1 = fp16.reshape[1](StaticTuple[Int, 1](numel))
             var quant = requantize(src1, numel, args.quant_format)
             types.append(quant.ggml_type)
@@ -718,9 +730,7 @@ def quantize_file(args: CliArgs) raises:
                 StaticTuple[Int, 2](1, numel)
             )
             var (src, off) = ctx.tensor_data(t)
-            dequantize_into(
-                t.ggml_type, src, off, fp16, numel
-            )
+            dequantize_into(t.ggml_type, src, off, fp16, numel)
             types.append(1)
             for i in range(numel):
                 var u = _f16_bits(Float32(fp16.get(i)))
@@ -769,7 +779,7 @@ def _quant_bytes(ggml_type: Int, numel: Int) -> Int:
     return 0
 
 
-# -- shared help text -------------------------------------------------------------
+# -- shared help text ----------------------------------------------------------
 
 
 def common_options_text() -> String:

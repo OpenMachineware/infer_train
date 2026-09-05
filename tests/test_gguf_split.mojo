@@ -4,7 +4,8 @@
 # (src/core/gguf_loader.mojo).
 #
 # The DeepSeek-R1-Distill-Qwen-1.5B model is split with llama.cpp's
-# `llama-gguf-split` into `DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf-NNNNN-of-00003.gguf`.
+# `llama-gguf-split` into parts named
+# `DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf-NNNNN-of-00003.gguf`.
 # Loading the split model must yield the same tensors (and metadata) as loading
 # the original single file: same tensor count, same per-tensor dims/type, and
 # byte-identical dequantized weights (verifying each tensor is read from the
@@ -22,7 +23,9 @@ from src.core.gguf_loader import (
 from src.core.transformer import dequantize_vector, dequantize_weight
 
 comptime SINGLE = "DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf"
-comptime SPLIT_PART = "DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf-00001-of-00003.gguf"
+comptime SPLIT_PART = (
+    "DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf-00001-of-00003.gguf"
+)
 
 
 def _file_exists(path: String) -> Bool:
@@ -34,7 +37,9 @@ def _file_exists(path: String) -> Bool:
         return False
 
 
-def _max_diff1(a: Tensor[DType.float16, 1], b: Tensor[DType.float16, 1]) -> Float32:
+def _max_diff1(
+    a: Tensor[DType.float16, 1], b: Tensor[DType.float16, 1]
+) -> Float32:
     var n = a.numel()
     var m = Float32(0.0)
     for i in range(n):
@@ -44,7 +49,9 @@ def _max_diff1(a: Tensor[DType.float16, 1], b: Tensor[DType.float16, 1]) -> Floa
     return m
 
 
-def _max_diff2(a: Tensor[DType.float16, 2], b: Tensor[DType.float16, 2]) -> Float32:
+def _max_diff2(
+    a: Tensor[DType.float16, 2], b: Tensor[DType.float16, 2]
+) -> Float32:
     var n = a.numel()
     var m = Float32(0.0)
     for i in range(n):

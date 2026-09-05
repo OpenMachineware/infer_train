@@ -53,9 +53,11 @@ def _matmul_kernel_f32(
         var acc = Float32(0.0)
         var k = 0
         while k < K_i:
-            acc += a[row * K_i + k] * b[k * N_i + col]
+            acc += (
+                a[unsafe_offset=row * K_i + k] * b[unsafe_offset=k * N_i + col]
+            )
             k += 1
-        dst[i] = acc
+        dst[unsafe_offset=i] = acc
         i += stride
 
 
@@ -78,11 +80,11 @@ def _matmul_kernel_f16(
         var acc = Float32(0.0)
         var k = 0
         while k < K_i:
-            acc += (
-                Float32(a[row * K_i + k]) * Float32(b[k * N_i + col])
+            acc += Float32(a[unsafe_offset=row * K_i + k]) * Float32(
+                b[unsafe_offset=k * N_i + col]
             )
             k += 1
-        dst[i] = Scalar[DType.float16](acc)
+        dst[unsafe_offset=i] = Scalar[DType.float16](acc)
         i += stride
 
 
@@ -105,9 +107,12 @@ def _matmul_bwd_a_kernel_f32(
         var acc = Float32(0.0)
         var j = 0
         while j < N_i:
-            acc += grad_out[row * N_i + j] * b[k * N_i + j]
+            acc += (
+                grad_out[unsafe_offset=row * N_i + j]
+                * b[unsafe_offset=k * N_i + j]
+            )
             j += 1
-        dst[i] = acc
+        dst[unsafe_offset=i] = acc
         i += stride
 
 
@@ -129,12 +134,11 @@ def _matmul_bwd_a_kernel_f16(
         var acc = Float32(0.0)
         var j = 0
         while j < N_i:
-            acc += (
-                Float32(grad_out[row * N_i + j])
-                * Float32(b[k * N_i + j])
+            acc += Float32(grad_out[unsafe_offset=row * N_i + j]) * Float32(
+                b[unsafe_offset=k * N_i + j]
             )
             j += 1
-        dst[i] = Scalar[DType.float16](acc)
+        dst[unsafe_offset=i] = Scalar[DType.float16](acc)
         i += stride
 
 
@@ -156,9 +160,12 @@ def _matmul_bwd_b_kernel_f32(
         var acc = Float32(0.0)
         var row = 0
         while row < Int(M):
-            acc += a[row * Int(K) + k] * grad_out[row * Int(N) + j]
+            acc += (
+                a[unsafe_offset=row * Int(K) + k]
+                * grad_out[unsafe_offset=row * Int(N) + j]
+            )
             row += 1
-        dst[i] = acc
+        dst[unsafe_offset=i] = acc
         i += stride
 
 
@@ -179,19 +186,20 @@ def _matmul_bwd_b_kernel_f16(
         var acc = Float32(0.0)
         var row = 0
         while row < Int(M):
-            acc += (
-                Float32(a[row * Int(K) + k])
-                * Float32(grad_out[row * Int(N) + j])
+            acc += Float32(a[unsafe_offset=row * Int(K) + k]) * Float32(
+                grad_out[unsafe_offset=row * Int(N) + j]
             )
             row += 1
-        dst[i] = Scalar[DType.float16](acc)
+        dst[unsafe_offset=i] = Scalar[DType.float16](acc)
         i += stride
 
 
 # -- launch helpers -----------------------------------------------------------
 
 
-def _matmul_gpu_launch[dtype: DType](
+def _matmul_gpu_launch[
+    dtype: DType
+](
     ctx: DeviceContext, a: Tensor[dtype, 2], b: Tensor[dtype, 2]
 ) raises -> Tensor[dtype, 2]:
     var M = a.shape()[0]
@@ -205,22 +213,34 @@ def _matmul_gpu_launch[dtype: DType](
     var dst_buf = ctx.enqueue_create_buffer[dtype](n)
     comptime if dtype == DType.float16:
         ctx.enqueue_function[_matmul_kernel_f16](
-            a_buf, b_buf, dst_buf, Int32(M), Int32(K), Int32(N),
-            grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+            a_buf,
+            b_buf,
+            dst_buf,
+            Int32(M),
+            Int32(K),
+            Int32(N),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
         )
     else:
         ctx.enqueue_function[_matmul_kernel_f32](
-            a_buf, b_buf, dst_buf, Int32(M), Int32(K), Int32(N),
-            grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+            a_buf,
+            b_buf,
+            dst_buf,
+            Int32(M),
+            Int32(K),
+            Int32(N),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
         )
-    var out = download2[dtype](
-        ctx, dst_buf, StaticTuple[Int, 2](M, N)
-    )
+    var out = download2[dtype](ctx, dst_buf, StaticTuple[Int, 2](M, N))
     ctx.synchronize()
     return out
 
 
-def _matmul_bwd_gpu_launch[dtype: DType](
+def _matmul_bwd_gpu_launch[
+    dtype: DType
+](
     ctx: DeviceContext,
     grad_out: Tensor[dtype, 2],
     a: Tensor[dtype, 2],
@@ -236,28 +256,48 @@ def _matmul_bwd_gpu_launch[dtype: DType](
     var gb_buf = ctx.enqueue_create_buffer[dtype](K * N)
     comptime if dtype == DType.float16:
         ctx.enqueue_function[_matmul_bwd_a_kernel_f16](
-            go_buf, b_buf, ga_buf, Int32(M), Int32(K), Int32(N),
-            grid_dim=grid1d(M * K, BLOCK), block_dim=BLOCK,
+            go_buf,
+            b_buf,
+            ga_buf,
+            Int32(M),
+            Int32(K),
+            Int32(N),
+            grid_dim=grid1d(M * K, BLOCK),
+            block_dim=BLOCK,
         )
         ctx.enqueue_function[_matmul_bwd_b_kernel_f16](
-            a_buf, go_buf, gb_buf, Int32(M), Int32(K), Int32(N),
-            grid_dim=grid1d(K * N, BLOCK), block_dim=BLOCK,
+            a_buf,
+            go_buf,
+            gb_buf,
+            Int32(M),
+            Int32(K),
+            Int32(N),
+            grid_dim=grid1d(K * N, BLOCK),
+            block_dim=BLOCK,
         )
     else:
         ctx.enqueue_function[_matmul_bwd_a_kernel_f32](
-            go_buf, b_buf, ga_buf, Int32(M), Int32(K), Int32(N),
-            grid_dim=grid1d(M * K, BLOCK), block_dim=BLOCK,
+            go_buf,
+            b_buf,
+            ga_buf,
+            Int32(M),
+            Int32(K),
+            Int32(N),
+            grid_dim=grid1d(M * K, BLOCK),
+            block_dim=BLOCK,
         )
         ctx.enqueue_function[_matmul_bwd_b_kernel_f32](
-            a_buf, go_buf, gb_buf, Int32(M), Int32(K), Int32(N),
-            grid_dim=grid1d(K * N, BLOCK), block_dim=BLOCK,
+            a_buf,
+            go_buf,
+            gb_buf,
+            Int32(M),
+            Int32(K),
+            Int32(N),
+            grid_dim=grid1d(K * N, BLOCK),
+            block_dim=BLOCK,
         )
-    var grad_a = download2[dtype](
-        ctx, ga_buf, StaticTuple[Int, 2](M, K)
-    )
-    var grad_b = download2[dtype](
-        ctx, gb_buf, StaticTuple[Int, 2](K, N)
-    )
+    var grad_a = download2[dtype](ctx, ga_buf, StaticTuple[Int, 2](M, K))
+    var grad_b = download2[dtype](ctx, gb_buf, StaticTuple[Int, 2](K, N))
     ctx.synchronize()
     return (grad_a, grad_b)
 
@@ -265,9 +305,9 @@ def _matmul_bwd_gpu_launch[dtype: DType](
 # -- public entry points ------------------------------------------------------
 
 
-def matmul_gpu[dtype: DType, M: Int, N: Int, K: Int](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def matmul_gpu[
+    dtype: DType, M: Int, N: Int, K: Int
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Comptime-shaped GPU matmul (CPU fallback on any GPU error)."""
     if a.shape() != StaticTuple[Int, 2](M, K):
         unimplemented("matmul_gpu: static shape mismatch")
@@ -280,9 +320,9 @@ def matmul_gpu[dtype: DType, M: Int, N: Int, K: Int](
         return matmul_cpu[dtype, M, N, K](a, b)
 
 
-def matmul_gpu_dynamic[dtype: DType](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def matmul_gpu_dynamic[
+    dtype: DType
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Runtime-shaped GPU matmul (CPU fallback on any GPU error)."""
     if not gpu_available[dtype]():
         return matmul_cpu_dynamic[dtype](a, b)
@@ -293,9 +333,11 @@ def matmul_gpu_dynamic[dtype: DType](
         return matmul_cpu_dynamic[dtype](a, b)
 
 
-def matmul_gpu_forward_with_saved[dtype: DType](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tuple[Tensor[dtype, 2], List[Tensor[dtype, 2]]]:
+def matmul_gpu_forward_with_saved[
+    dtype: DType
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tuple[
+    Tensor[dtype, 2], List[Tensor[dtype, 2]]
+]:
     var out = matmul_gpu_dynamic[dtype](a, b)
     var saved = List[Tensor[dtype, 2]]()
     saved.append(a)
@@ -303,9 +345,11 @@ def matmul_gpu_forward_with_saved[dtype: DType](
     return (out, saved^)
 
 
-def matmul_gpu_backward[dtype: DType](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]]:
+def matmul_gpu_backward[
+    dtype: DType
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+]:
     """Backward for out = a @ b.
 
     grad_a = grad_out @ b^T; grad_b = a^T @ grad_out.  `saved` = [a, b].

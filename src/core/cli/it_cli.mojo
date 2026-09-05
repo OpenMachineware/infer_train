@@ -40,7 +40,8 @@ from std.sys import argv
 
 
 def help_text() -> String:
-    return """
+    return (
+        """
 it-cli - an infer_train quick-verification CLI (llama-cli-compatible)
 
 Usage:
@@ -59,24 +60,28 @@ llama-cli-compatible options:
       --rpc HOST:PORT       add an RPC worker endpoint (repeatable;
                              requires -sm layer; run one
                              it-rpc-server -m MODEL --port PORT per endpoint)
-""" + common_options_text() + """
+"""
+        + common_options_text()
+        + """
 Serving lives in `it-server` (llama-server-compatible HTTP service);
 weight requantization in `it-server quantize`.
 """
+    )
 
 
 def run_local(args: CliArgs) raises:
     var mp = load_model_heap(args.model, args.ctx_size)
     print_banner(
         args.model,
-        mp[0].transformer.config,
+        mp[unsafe_offset=0].transformer.config,
         args.ctx_size,
-        mp[0].tokenizer,
+        mp[unsafe_offset=0].tokenizer,
     )
     if args.mode != "off":
         print("  infer-train mode:", args.mode, "lr:", args.lr)
         print(
-            "  (fine-tuning runs through the finetune API; see it-server /v1/finetune)"
+            "  (fine-tuning runs through the finetune API; see it-server"
+            " /v1/finetune)"
         )
     var g = GenState(
         mp,
@@ -118,9 +123,7 @@ def run_profile(args: CliArgs) raises:
     fused kernel; off by default (the generic kernel).
     """
     if not args.simd_autotune and not args.jit_stats:
-        print(
-            "profile: nothing to do (use --simd-autotune and/or --jit-stats)"
-        )
+        print("profile: nothing to do (use --simd-autotune and/or --jit-stats)")
         return
     # model row lengths when a model is given, defaults otherwise
     var hidden = 1536
@@ -130,9 +133,7 @@ def run_profile(args: CliArgs) raises:
         var config = load_config(ctx)
         hidden = config.hidden
         ffn = config.ffn
-        print(
-            "profile:", args.model, "hidden:", hidden, "ffn:", ffn
-        )
+        print("profile:", args.model, "hidden:", hidden, "ffn:", ffn)
     # the k-loop SIMD width of the JIT benchmark: the autotuner's choice
     # for the hidden dim when --simd-autotune is also given (task 1 <->
     # task 2), the 128-bit default otherwise
@@ -149,45 +150,62 @@ def run_profile(args: CliArgs) raises:
                 f16_width = r.best
             # r.sink is printed so the compiler keeps the timed loops alive
             print(
-                "  dim", dim,
-                ": 64-bit", r.ns64, "ns | 128-bit", r.ns128,
-                "ns | 256-bit", r.ns256, "ns -> best", r.best, "bit",
-                "(heuristic:", get_optimal_simd_width(
-                    dim, is_power_of_two(dim)
-                ), "bit, sink", r.sink, ")",
+                "  dim",
+                dim,
+                ": 64-bit",
+                r.ns64,
+                "ns | 128-bit",
+                r.ns128,
+                "ns | 256-bit",
+                r.ns256,
+                "ns -> best",
+                r.best,
+                "bit",
+                "(heuristic:",
+                get_optimal_simd_width(dim, is_power_of_two(dim)),
+                "bit, sink",
+                r.sink,
+                ")",
             )
     if args.jit_stats:
         print("== JIT shape specialization stats (fused matmul+rmsnorm) ==")
         print(
-            "  specialize:", args.jit_specialize,
-            "k-loop width:", f16_width, "bit",
+            "  specialize:",
+            args.jit_specialize,
+            "k-loop width:",
+            f16_width,
+            "bit",
         )
         var cache = JitCache()
         var x = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](1, hidden))
-        var w = tensor_zeros[DType.float16, 2](
-            StaticTuple[Int, 2](ffn, hidden)
-        )
+        var w = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](ffn, hidden))
         _fill_f16(x, 3, Float32(1.0))
         _fill_f16(w, 4, Float32(0.02))
         # model shape: with --jit-specialize the first run compiles and the
         # rest hit the cache; without it the generic kernel runs (default)
-        for i in range(3):
+        var warmup = 0
+        while warmup < 3:
             _ = cache.run_fused_jit(
                 x, w, Float32(1e-5), args.jit_specialize, f16_width
             )
+            warmup += 1
         # an off-table shape: miss -> generic fallback, recorded
         var x2 = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](2, 64))
-        var w2 = tensor_zeros[DType.float16, 2](
-            StaticTuple[Int, 2](128, 64)
-        )
+        var w2 = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](128, 64))
         _fill_f16(x2, 5, Float32(1.0))
         _fill_f16(w2, 6, Float32(0.02))
         _ = cache.run_fused_jit(
             x2, w2, Float32(1e-5), args.jit_specialize, f16_width
         )
         print(
-            "  compiles:", cache.compiles, "hits:", cache.hits,
-            "misses:", cache.misses, "hit rate:", cache.hit_rate(),
+            "  compiles:",
+            cache.compiles,
+            "hits:",
+            cache.hits,
+            "misses:",
+            cache.misses,
+            "hit rate:",
+            cache.hit_rate(),
         )
 
 
@@ -232,17 +250,21 @@ def main() raises:
         return
     if args.action == "serve":
         print(
-            "hint: serving is `it-server` (llama-server-compatible HTTP service);",
+            (
+                "hint: serving is `it-server` (llama-server-compatible HTTP"
+                " service);"
+            ),
         )
         print("      e.g. it-server -m MODEL --host 127.0.0.1 --port 8080")
         return
     if args.action == "quantize":
         print(
-            "hint: quantization is `it-server quantize` (the renamed CLI keeps it);",
+            (
+                "hint: quantization is `it-server quantize` (the renamed CLI"
+                " keeps it);"
+            ),
         )
-        print(
-            "      e.g. it-server quantize -i IN -o OUT -f Q4_K_M"
-        )
+        print("      e.g. it-server quantize -i IN -o OUT -f Q4_K_M")
         return
     if args.model.byte_length() == 0:
         print("error: -m/--model is required (try --help)")

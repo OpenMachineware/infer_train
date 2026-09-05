@@ -81,9 +81,9 @@ def rms_norm_quantized_backward[
     granularity: QuantGranularity,
     group_size: Int,
     is_symmetric: Bool,
-](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]]:
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+]:
     _ = grad_out
     _ = saved
     _ = format

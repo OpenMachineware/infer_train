@@ -445,20 +445,22 @@ def save_checkpoint(
             var b = ByteBuf(64)
             _append_f32_any(b, g)
             bytes.append(b^)
-        var st_ptr = model.opt.groups[0].entries[i].state.unsafe_bitcast[AdamState]()
-        if st_ptr[0].m.numel > 0:
+        var st_ptr = (
+            model.opt.groups[0].entries[i].state.unsafe_bitcast[AdamState]()
+        )
+        if st_ptr[unsafe_offset=0].m.numel > 0:
             names.append("opt.m." + pnames[i])
             dims.append(_copy_int_list(pdims[i]))
             types.append(GGML_F32)
             var bm = ByteBuf(64)
-            _append_f32_any(bm, st_ptr[0].m)
+            _append_f32_any(bm, st_ptr[unsafe_offset=0].m)
             bytes.append(bm^)
-        if st_ptr[0].v.numel > 0:
+        if st_ptr[unsafe_offset=0].v.numel > 0:
             names.append("opt.v." + pnames[i])
             dims.append(_copy_int_list(pdims[i]))
             types.append(GGML_F32)
             var bv = ByteBuf(64)
-            _append_f32_any(bv, st_ptr[0].v)
+            _append_f32_any(bv, st_ptr[unsafe_offset=0].v)
             bytes.append(bv^)
 
     var handle = FileHandle(path, "w")
@@ -514,9 +516,8 @@ def save_checkpoint_incremental(
                 var raw = old.tensor_data_ptr(old_t.value())
                 b.append_bytes(
                     Span[UInt8, MutUntrackedOrigin](
-                        unsafe_ptr=raw, length=_ggml_bytes(
-                            old_t.value().ggml_type, numel
-                        )
+                        unsafe_ptr=raw,
+                        length=_ggml_bytes(old_t.value().ggml_type, numel),
                     )
                 )
             else:
@@ -533,20 +534,22 @@ def save_checkpoint_incremental(
             var b = ByteBuf(64)
             _append_f32_any(b, g)
             bytes.append(b^)
-        var st_ptr2 = model.opt.groups[0].entries[i].state.unsafe_bitcast[AdamState]()
-        if st_ptr2[0].m.numel > 0:
+        var st_ptr2 = (
+            model.opt.groups[0].entries[i].state.unsafe_bitcast[AdamState]()
+        )
+        if st_ptr2[unsafe_offset=0].m.numel > 0:
             names.append("opt.m." + pnames[i])
             dims.append(_copy_int_list(pdims[i]))
             types.append(GGML_F32)
             var bm = ByteBuf(64)
-            _append_f32_any(bm, st_ptr2[0].m)
+            _append_f32_any(bm, st_ptr2[unsafe_offset=0].m)
             bytes.append(bm^)
-        if st_ptr2[0].v.numel > 0:
+        if st_ptr2[unsafe_offset=0].v.numel > 0:
             names.append("opt.v." + pnames[i])
             dims.append(_copy_int_list(pdims[i]))
             types.append(GGML_F32)
             var bv = ByteBuf(64)
-            _append_f32_any(bv, st_ptr2[0].v)
+            _append_f32_any(bv, st_ptr2[unsafe_offset=0].v)
             bytes.append(bv^)
 
     var handle = FileHandle(path, "w")
@@ -660,7 +663,9 @@ def append_delta(
     handle2.close()
 
 
-def _find_delta_offsets(ctx: GGUFContext, data: Pointer[UInt8, MutUntrackedOrigin], size: Int) -> List[Int]:
+def _find_delta_offsets(
+    ctx: GGUFContext, data: Pointer[UInt8, MutUntrackedOrigin], size: Int
+) -> List[Int]:
     """Read the MMDX trailer and return the MMDT chunk offsets."""
     _ = ctx
     var out = List[Int]()
@@ -671,9 +676,7 @@ def _find_delta_offsets(ctx: GGUFContext, data: Pointer[UInt8, MutUntrackedOrigi
     for i in range(4):
         if tail.unsafe_load[width=1](offset=i) != m[i]:
             return out^
-    var index_offset = Int(
-        _read_u32_ptr(tail, 4)
-    )
+    var index_offset = Int(_read_u32_ptr(tail, 4))
     if index_offset <= 0 or index_offset >= size:
         return out^
     var index = data.unsafe_offset(index_offset)
@@ -740,11 +743,11 @@ def load_checkpoint(
             _restore_any(
                 model.opt.groups[0].entries[i].grad, ctx, "grad." + pnames[i]
             )
-            var st_ptr = model.opt.groups[0].entries[i].state.unsafe_bitcast[
-                AdamState
-            ]()
-            _restore_any(st_ptr[0].m, ctx, "opt.m." + pnames[i])
-            _restore_any(st_ptr[0].v, ctx, "opt.v." + pnames[i])
+            var st_ptr = (
+                model.opt.groups[0].entries[i].state.unsafe_bitcast[AdamState]()
+            )
+            _restore_any(st_ptr[unsafe_offset=0].m, ctx, "opt.m." + pnames[i])
+            _restore_any(st_ptr[unsafe_offset=0].v, ctx, "opt.v." + pnames[i])
     model.opt.groups[0].lr = meta.lr
     return meta^
 

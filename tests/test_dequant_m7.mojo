@@ -84,8 +84,12 @@ def check_model(
         abort()
     if tensor.value().ggml_type != ggml_type:
         print(
-            "FAIL: type mismatch for", name, "actual:",
-            tensor.value().ggml_type, "expected:", ggml_type,
+            "FAIL: type mismatch for",
+            name,
+            "actual:",
+            tensor.value().ggml_type,
+            "expected:",
+            ggml_type,
         )
         abort()
     var numel = 1024
@@ -98,9 +102,7 @@ def check_model(
     var ref_size = Int(handle.seek(0, UInt8(2)))
     _ = handle.seek(0, UInt8(0))
     var raw = unsafe_alloc[UInt8](ref_size)
-    var span = Span[UInt8, MutUntrackedOrigin](
-        unsafe_ptr=raw, length=ref_size
-    )
+    var span = Span[UInt8, MutUntrackedOrigin](unsafe_ptr=raw, length=ref_size)
     var read_count = handle.read[DType.uint8](span)
     handle.close()
     if read_count != ref_size:
@@ -128,8 +130,16 @@ def check_model(
             max_rel = rel
         if rel > Float32(5e-3):
             print(
-                "FAIL:", name, "index", i, "got:", got, "ref:", ref_val,
-                "rel:", rel,
+                "FAIL:",
+                name,
+                "index",
+                i,
+                "got:",
+                got,
+                "ref:",
+                ref_val,
+                "rel:",
+                rel,
             )
             abort()
     print("  ok:", name, "type", ggml_type, "n", n, "max_rel:", max_rel)

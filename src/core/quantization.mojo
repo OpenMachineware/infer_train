@@ -27,7 +27,7 @@ from std.utils.static_tuple import StaticTuple
 # ---------------------------------------------------------------------------
 
 
-struct QuantFormat(Copyable, Equatable, Movable, ImplicitlyCopyable):
+struct QuantFormat(Copyable, Equatable, ImplicitlyCopyable, Movable):
     var _tag: Int8
 
     def __init__(out self, tag: Int8):
@@ -47,7 +47,7 @@ struct QuantFormat(Copyable, Equatable, Movable, ImplicitlyCopyable):
         return self._tag != other._tag
 
 
-struct QuantGranularity(Copyable, Equatable, Movable, ImplicitlyCopyable):
+struct QuantGranularity(Copyable, Equatable, ImplicitlyCopyable, Movable):
     var _tag: Int8
 
     def __init__(out self, tag: Int8):
@@ -70,7 +70,7 @@ struct QuantGranularity(Copyable, Equatable, Movable, ImplicitlyCopyable):
 # ---------------------------------------------------------------------------
 
 
-struct QuantizationInfo(Copyable, Movable, ImplicitlyCopyable):
+struct QuantizationInfo(Copyable, ImplicitlyCopyable, Movable):
     var format: QuantFormat
     var granularity: QuantGranularity
     var group_size: Int
@@ -115,9 +115,9 @@ def _qmax_for[format: QuantFormat]() -> Int:
     return qmax
 
 
-def _scale_index[granularity: QuantGranularity, group_size: Int, rank: Int](
-    flat_index: Int, numel: Int, rows: Int
-) -> Int:
+def _scale_index[
+    granularity: QuantGranularity, group_size: Int, rank: Int
+](flat_index: Int, numel: Int, rows: Int) -> Int:
     """Map a flat element index to its scale/zero-point vector index."""
     var idx = 0
     comptime if granularity == QuantGranularity.PerRow:
@@ -134,9 +134,9 @@ def _scale_index[granularity: QuantGranularity, group_size: Int, rank: Int](
     return idx
 
 
-def _scale_length[granularity: QuantGranularity, group_size: Int, rank: Int](
-    numel: Int, rows: Int
-) -> Int:
+def _scale_length[
+    granularity: QuantGranularity, group_size: Int, rank: Int
+](numel: Int, rows: Int) -> Int:
     var length = 1
     comptime if granularity == QuantGranularity.PerRow:
         length = rows
@@ -203,9 +203,7 @@ def quantize_dynamic[
     granularity: QuantGranularity,
     group_size: Int,
     is_symmetric: Bool,
-](
-    tensor: Tensor[dtype, rank]
-) -> Tuple[Tensor[dtype, rank], QuantizationInfo]:
+](tensor: Tensor[dtype, rank]) -> Tuple[Tensor[dtype, rank], QuantizationInfo]:
     """Compute scales from `tensor`, quantize, and return tensor + info.
 
     Scale length depends on `granularity`; `comptime if` selects the correct
@@ -243,9 +241,9 @@ def _dynamic_scale_zp[
     granularity: QuantGranularity,
     group_size: Int,
     is_symmetric: Bool,
-](
-    tensor: Tensor[dtype, rank]
-) -> Tuple[Tensor[DType.float32, 1], Optional[Tensor[DType.float32, 1]]]:
+](tensor: Tensor[dtype, rank]) -> Tuple[
+    Tensor[DType.float32, 1], Optional[Tensor[DType.float32, 1]]
+]:
     """Derive per-tensor / per-row / per-group scale and zero point."""
     var numel = tensor.numel()
     var rows = 1
@@ -253,9 +251,7 @@ def _dynamic_scale_zp[
         rows = tensor.shape()[0]
 
     var qmax = _qmax_for[format]()
-    var scale_len = _scale_length[granularity, group_size, rank](
-        numel, rows
-    )
+    var scale_len = _scale_length[granularity, group_size, rank](numel, rows)
     var scale = tensor_zeros[DType.float32, 1](StaticTuple[Int, 1](scale_len))
     var zero_point: Optional[Tensor[DType.float32, 1]] = None
 
@@ -265,9 +261,9 @@ def _dynamic_scale_zp[
             StaticTuple[Int, 1](scale_len)
         )
         for r in range(rows):
-            _fill_scale_zp[
-                is_symmetric
-            ](mins.get(r), maxs.get(r), qmax, scale, zp_tensor, r)
+            _fill_scale_zp[is_symmetric](
+                mins.get(r), maxs.get(r), qmax, scale, zp_tensor, r
+            )
         comptime if not is_symmetric:
             zero_point = zp_tensor^
     elif granularity == QuantGranularity.PerGroup:
@@ -315,7 +311,9 @@ def _dynamic_scale_zp[
     return (scale^, zero_point)
 
 
-def _fill_scale_zp[is_symmetric: Bool](
+def _fill_scale_zp[
+    is_symmetric: Bool
+](
     mn: Float32,
     mx: Float32,
     qmax: Int,
@@ -331,21 +329,20 @@ def _fill_scale_zp[is_symmetric: Bool](
         var diff = mx - mn
         if diff == 0:
             diff = 1
-        scale.set(
-            slot, Scalar[DType.float32](diff / Float32(2 * qmax + 1))
-        )
+        scale.set(slot, Scalar[DType.float32](diff / Float32(2 * qmax + 1)))
         zero_point.set(
             slot,
             Scalar[DType.float32](
-                -Float32(qmax + 1)
-                - mn * Float32(2 * qmax + 1) / diff
+                -Float32(qmax + 1) - mn * Float32(2 * qmax + 1) / diff
             ),
         )
 
 
-def _per_row_ranges[dtype: DType, rank: Int](
-    tensor: Tensor[dtype, rank]
-) -> Tuple[Tensor[DType.float32, 1], Tensor[DType.float32, 1]]:
+def _per_row_ranges[
+    dtype: DType, rank: Int
+](tensor: Tensor[dtype, rank]) -> Tuple[
+    Tensor[DType.float32, 1], Tensor[DType.float32, 1]
+]:
     """Return (min-per-row, max-per-row) for a rank-2 tensor."""
     var rows = tensor.shape()[0]
     var cols = tensor.shape()[1]

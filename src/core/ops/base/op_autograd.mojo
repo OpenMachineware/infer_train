@@ -73,9 +73,7 @@ def no_grad_any() -> AnyTensor:
     """A zero-numel AnyTensor used as the "no gradient" sentinel."""
     var buf = unsafe_alloc[UInt8](1)
     var shape = StaticTuple[Int, 8](fill=0)
-    return AnyTensor(
-        DType.float32, 1, shape, 0, Device.CPU, buf
-    )
+    return AnyTensor(DType.float32, 1, shape, 0, Device.CPU, buf)
 
 
 def _is_no_grad(t: AnyTensor) -> Bool:
@@ -85,30 +83,22 @@ def _is_no_grad(t: AnyTensor) -> Bool:
 def ones_like_any(t: AnyTensor) -> AnyTensor:
     """A tensor of ones with `t`'s dtype and shape (loss seed gradient)."""
     if t.dtype == DType.float32 and t.rank == 1:
-        var out = tensor_zeros[DType.float32, 1](
-            _shape_n[1](t.shape)
-        )
+        var out = tensor_zeros[DType.float32, 1](_shape_n[1](t.shape))
         for i in range(out.numel()):
             out.set(i, Scalar[DType.float32](Float32(1.0)))
         return to_any[DType.float32, 1](out)
     if t.dtype == DType.float16 and t.rank == 1:
-        var out = tensor_zeros[DType.float16, 1](
-            _shape_n[1](t.shape)
-        )
+        var out = tensor_zeros[DType.float16, 1](_shape_n[1](t.shape))
         for i in range(out.numel()):
             out.set(i, Scalar[DType.float16](Float32(1.0)))
         return to_any[DType.float16, 1](out)
     if t.dtype == DType.float32 and t.rank == 2:
-        var out = tensor_zeros[DType.float32, 2](
-            _shape_n[2](t.shape)
-        )
+        var out = tensor_zeros[DType.float32, 2](_shape_n[2](t.shape))
         for i in range(out.numel()):
             out.set(i, Scalar[DType.float32](Float32(1.0)))
         return to_any[DType.float32, 2](out)
     if t.dtype == DType.float16 and t.rank == 2:
-        var out = tensor_zeros[DType.float16, 2](
-            _shape_n[2](t.shape)
-        )
+        var out = tensor_zeros[DType.float16, 2](_shape_n[2](t.shape))
         for i in range(out.numel()):
             out.set(i, Scalar[DType.float16](Float32(1.0)))
         return to_any[DType.float16, 2](out)
@@ -116,9 +106,7 @@ def ones_like_any(t: AnyTensor) -> AnyTensor:
     return no_grad_any()
 
 
-def _shape_n[rank: Int](
-    shape: StaticTuple[Int, 8]
-) -> StaticTuple[Int, rank]:
+def _shape_n[rank: Int](shape: StaticTuple[Int, 8]) -> StaticTuple[Int, rank]:
     var result = StaticTuple[Int, rank](fill=0)
     for i in range(rank):
         result[i] = shape[i]
@@ -178,9 +166,7 @@ def accumulate_any(mut dest: AnyTensor, delta: AnyTensor):
     unimplemented("accumulate_any: unsupported dtype/rank")
 
 
-def _rebuild2[dtype: DType](
-    saved: List[AnyTensor]
-) -> List[Tensor[dtype, 2]]:
+def _rebuild2[dtype: DType](saved: List[AnyTensor]) -> List[Tensor[dtype, 2]]:
     """Rebuild a typed rank-2 saved list from erased AnyTensors."""
     var result = List[Tensor[dtype, 2]]()
     result.reserve(len(saved))
@@ -912,9 +898,7 @@ def rope_fws_cpu(
     if dtype == DType.float32:
         var x = from_any[DType.float32, 3](inputs[0])
         var pos_t = from_any[DType.float32, 1](inputs[1])
-        var out = rope_cpu_dynamic[DType.float32](
-            x, Int(Float32(pos_t.get(0)))
-        )
+        var out = rope_cpu_dynamic[DType.float32](x, Int(Float32(pos_t.get(0))))
         var outputs = List[AnyTensor]()
         outputs.reserve(8)
         outputs.append(to_any[DType.float32, 3](out))
@@ -926,9 +910,7 @@ def rope_fws_cpu(
     if dtype == DType.float16:
         var x = from_any[DType.float16, 3](inputs[0])
         var pos_t = from_any[DType.float32, 1](inputs[1])
-        var out = rope_cpu_dynamic[DType.float16](
-            x, Int(Float32(pos_t.get(0)))
-        )
+        var out = rope_cpu_dynamic[DType.float16](x, Int(Float32(pos_t.get(0))))
         var outputs = List[AnyTensor]()
         outputs.reserve(8)
         outputs.append(to_any[DType.float16, 3](out))
@@ -952,17 +934,13 @@ def rope_bwd_cpu(
     if dtype == DType.float32:
         var g = from_any[DType.float32, 3](grad_outputs[0])
         var x = from_any[DType.float32, 3](saved[0])
-        var grad = rope_cpu_backward[DType.float32, 0, 0](
-            g, x, start_pos
-        )
+        var grad = rope_cpu_backward[DType.float32, 0, 0](g, x, start_pos)
         results.append(to_any[DType.float32, 3](grad))
         return results^
     if dtype == DType.float16:
         var g = from_any[DType.float16, 3](grad_outputs[0])
         var x = from_any[DType.float16, 3](saved[0])
-        var grad = rope_cpu_backward[DType.float16, 0, 0](
-            g, x, start_pos
-        )
+        var grad = rope_cpu_backward[DType.float16, 0, 0](g, x, start_pos)
         results.append(to_any[DType.float16, 3](grad))
         return results^
     unimplemented("rope_bwd_cpu: unsupported dtype")
@@ -976,9 +954,7 @@ def rope_fws_gpu(
     if dtype == DType.float32:
         var x = from_any[DType.float32, 3](inputs[0])
         var pos_t = from_any[DType.float32, 1](inputs[1])
-        var out = rope_gpu_dynamic[DType.float32](
-            x, Int(Float32(pos_t.get(0)))
-        )
+        var out = rope_gpu_dynamic[DType.float32](x, Int(Float32(pos_t.get(0))))
         var outputs = List[AnyTensor]()
         outputs.reserve(8)
         outputs.append(to_any[DType.float32, 3](out))
@@ -990,9 +966,7 @@ def rope_fws_gpu(
     if dtype == DType.float16:
         var x = from_any[DType.float16, 3](inputs[0])
         var pos_t = from_any[DType.float32, 1](inputs[1])
-        var out = rope_gpu_dynamic[DType.float16](
-            x, Int(Float32(pos_t.get(0)))
-        )
+        var out = rope_gpu_dynamic[DType.float16](x, Int(Float32(pos_t.get(0))))
         var outputs = List[AnyTensor]()
         outputs.reserve(8)
         outputs.append(to_any[DType.float16, 3](out))
@@ -1191,18 +1165,14 @@ def embedding_bwd_cpu(
     if dtype == DType.float32:
         var g = from_any[DType.float32, 2](grad_outputs[0])
         var table = from_any[DType.float32, 2](saved[1])
-        var grad = embedding_cpu_backward[DType.float32, 0, 0](
-            g, tokens, table
-        )
+        var grad = embedding_cpu_backward[DType.float32, 0, 0](g, tokens, table)
         results.append(no_grad_any())
         results.append(to_any[DType.float32, 2](grad))
         return results^
     if dtype == DType.float16:
         var g = from_any[DType.float16, 2](grad_outputs[0])
         var table = from_any[DType.float16, 2](saved[1])
-        var grad = embedding_cpu_backward[DType.float16, 0, 0](
-            g, tokens, table
-        )
+        var grad = embedding_cpu_backward[DType.float16, 0, 0](g, tokens, table)
         results.append(no_grad_any())
         results.append(to_any[DType.float16, 2](grad))
         return results^
@@ -1304,7 +1274,9 @@ def swiglu_ffn_fws_cpu(
     return (List[AnyTensor](), List[AnyTensor]())
 
 
-def _swiglu_ffn_bwd_typed[dtype: DType](
+def _swiglu_ffn_bwd_typed[
+    dtype: DType
+](
     grad_out: Tensor[dtype, 2],
     x: Tensor[dtype, 2],
     g: Tensor[dtype, 2],
@@ -1681,6 +1653,8 @@ def _round_i(v: Float32) -> Int:
     if v >= Float32(0.0):
         return Int(v + Float32(0.5))
     return Int(v - Float32(0.5))
+
+
 # inputs: [x(B,N)]; outputs: [q(i8 as i32-coded), scale(f32 [1]), zp(f32 [1])]
 
 
@@ -1696,9 +1670,7 @@ def dynamic_quantize_fws_cpu(
         cols = 1
     var scale = tensor_zeros[DType.float32, 1](StaticTuple[Int, 1](1))
     var zp = tensor_zeros[DType.float32, 1](StaticTuple[Int, 1](1))
-    var q = tensor_zeros[DType.int32, 2](
-        StaticTuple[Int, 2](rows, cols)
-    )
+    var q = tensor_zeros[DType.int32, 2](StaticTuple[Int, 2](rows, cols))
     var mx = Float32(0)
     var mn = Float32(0)
     var first = True
@@ -1795,9 +1767,7 @@ def dynamic_dequantize_fws_cpu(
     var rows = numel // cols
     if cols < 1:
         cols = 1
-    var out = tensor_zeros[DType.float32, 2](
-        StaticTuple[Int, 2](rows, cols)
-    )
+    var out = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](rows, cols))
     for i in range(numel):
         out.set(i, Scalar[DType.float32](s * Float32(Int(q.get(i)) + 128) + z))
     var outputs = List[AnyTensor]()
@@ -1862,16 +1832,16 @@ def mha_fws_cpu(
     var kv_hidden = wk.shape()[0]
     var max_len = kc.shape()[1]
 
-    var q_flat = tensor_zeros[DType.float16, 2](
-        StaticTuple[Int, 2](1, hidden)
-    )
+    var q_flat = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](1, hidden))
     var k_flat = tensor_zeros[DType.float16, 2](
         StaticTuple[Int, 2](1, kv_hidden)
     )
     var v_flat = tensor_zeros[DType.float16, 2](
         StaticTuple[Int, 2](1, kv_hidden)
     )
-    matmul_weight_3_threaded[DType.float16](x, wq, wk, wv, q_flat, k_flat, v_flat)
+    matmul_weight_3_threaded[DType.float16](
+        x, wq, wk, wv, q_flat, k_flat, v_flat
+    )
     q_flat = add_row_cpu[DType.float16](q_flat, bq)
     k_flat = add_row_cpu[DType.float16](k_flat, bk)
     v_flat = add_row_cpu[DType.float16](v_flat, bv)
@@ -1907,9 +1877,7 @@ def mha_fws_cpu(
 
     var seq = start_pos + 1
     var scale = Float32(1.0) / sqrt(Float32(head_dim))
-    var p = tensor_zeros[DType.float16, 3](
-        StaticTuple[Int, 3](n_heads, 1, seq)
-    )
+    var p = tensor_zeros[DType.float16, 3](StaticTuple[Int, 3](n_heads, 1, seq))
     var o = tensor_zeros[DType.float16, 3](
         StaticTuple[Int, 3](n_heads, 1, head_dim)
     )
@@ -2009,9 +1977,7 @@ def mha_bwd_cpu(
     var mw_saved = List[Tensor[DType.float16, 2]]()
     mw_saved.append(o_flat)
     mw_saved.append(wo)
-    var mw_grads = matmul_weight_cpu_backward[DType.float16](
-        grad_out, mw_saved
-    )
+    var mw_grads = matmul_weight_cpu_backward[DType.float16](grad_out, mw_saved)
     var grad_o_flat = mw_grads[0]
     var grad_wo = mw_grads[1]
     var grad_o = Tensor[DType.float16, 3](
@@ -2046,9 +2012,9 @@ def mha_bwd_cpu(
                     h * head_dim + d,
                     Scalar[DType.float16](
                         Float32(grad_qrot.get(h * head_dim + d))
-                        + gs * scale * Float32(
-                            kc.get((kv * max_len + t2) * head_dim + d)
-                        )
+                        + gs
+                        * scale
+                        * Float32(kc.get((kv * max_len + t2) * head_dim + d))
                     ),
                 )
                 if t2 == start_pos:
@@ -2146,9 +2112,7 @@ def _add_t2_f16(
 ) -> Tensor[DType.float16, 2]:
     var out = tensor_zeros[DType.float16, 2](a.shape())
     for i in range(a.numel()):
-        out.set(
-            i, Scalar[DType.float16](Float32(a.get(i)) + Float32(b.get(i)))
-        )
+        out.set(i, Scalar[DType.float16](Float32(a.get(i)) + Float32(b.get(i))))
     return out
 
 

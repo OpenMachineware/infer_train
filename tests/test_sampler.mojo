@@ -17,9 +17,7 @@ def main():
     # renormalization, drawn every single time.
     var logits = tensor_zeros[DType.float32, 1](StaticTuple[Int, 1](64))
     logits.set(7, Scalar[DType.float32](Float32(10.0)))
-    var sampler = Sampler(
-        temperature=Float32(1.0), top_k=0, top_p=Float32(0.5)
-    )
+    var sampler = Sampler(temperature=Float32(1.0), top_k=0, top_p=Float32(0.5))
     seed_sampler(1234)
     for i in range(100):
         var history = List[Int]()
@@ -39,7 +37,7 @@ def main():
     seed_sampler(99)
     var saw2 = False
     var saw5 = False
-    for i in range(200):
+    for _ in range(200):
         var history = List[Int]()
         var token = sample_dynamic[DType.float32](logits2, sampler2, history)
         if token == 2:
@@ -47,7 +45,9 @@ def main():
         if token == 5:
             saw5 = True
     if not saw2 or not saw5:
-        print("FAIL: two-candidate sampling unreachable, saw2", saw2, "saw5", saw5)
+        print(
+            "FAIL: two-candidate sampling unreachable, saw2", saw2, "saw5", saw5
+        )
         abort()
     print("two-candidate sampling OK")
     print("test_sampler OK")

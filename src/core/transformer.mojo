@@ -90,7 +90,7 @@ def arch_name(arch: Int8) -> String:
     return String("qwen")
 
 
-struct TransformerConfig(Copyable, Movable, ImplicitlyCopyable):
+struct TransformerConfig(Copyable, ImplicitlyCopyable, Movable):
     var arch: Int8  # family tag: ARCH_QWEN or ARCH_HUNYUAN
     var arch_str: String  # raw general.architecture (metadata prefix + name)
     var n_layers: Int
@@ -173,7 +173,7 @@ struct TransformerConfig(Copyable, Movable, ImplicitlyCopyable):
         return 0
 
 
-struct LayerWeights(Copyable, Movable, ImplicitlyCopyable):
+struct LayerWeights(Copyable, ImplicitlyCopyable, Movable):
     var attn_norm_w: Tensor[DType.float16, 1]
     var q_w: Tensor[DType.float16, 2]
     var k_w: Tensor[DType.float16, 2]
@@ -221,9 +221,7 @@ struct LayerWeights(Copyable, Movable, ImplicitlyCopyable):
         self.k_b = Tensor[DType.float16, 1](StaticTuple[Int, 1](0))
         self.v_b = Tensor[DType.float16, 1](StaticTuple[Int, 1](0))
         self.ffn_norm_w = Tensor[DType.float16, 1](StaticTuple[Int, 1](0))
-        self.post_attn_norm_w = Tensor[DType.float16, 1](
-            StaticTuple[Int, 1](0)
-        )
+        self.post_attn_norm_w = Tensor[DType.float16, 1](StaticTuple[Int, 1](0))
         self.gate_w = Tensor[DType.float16, 2](StaticTuple[Int, 2](0, 0))
         self.up_w = Tensor[DType.float16, 2](StaticTuple[Int, 2](0, 0))
         self.down_w = Tensor[DType.float16, 2](StaticTuple[Int, 2](0, 0))
@@ -275,7 +273,7 @@ struct TransformerWeights(Movable):
 # are materialized fp16 (a few KB each), and the layers are `LayerQView`s.
 
 
-struct LayerQView(Copyable, Movable, ImplicitlyCopyable):
+struct LayerQView(Copyable, ImplicitlyCopyable, Movable):
     var attn_norm_w: Tensor[DType.float16, 1]
     var q_w: QWeight
     var k_w: QWeight
@@ -317,9 +315,7 @@ struct LayerQView(Copyable, Movable, ImplicitlyCopyable):
         self.k_b = Tensor[DType.float16, 1](StaticTuple[Int, 1](0))
         self.v_b = Tensor[DType.float16, 1](StaticTuple[Int, 1](0))
         self.ffn_norm_w = Tensor[DType.float16, 1](StaticTuple[Int, 1](0))
-        self.post_attn_norm_w = Tensor[DType.float16, 1](
-            StaticTuple[Int, 1](0)
-        )
+        self.post_attn_norm_w = Tensor[DType.float16, 1](StaticTuple[Int, 1](0))
         self.gate_w = QWeight()
         self.up_w = QWeight()
         self.down_w = QWeight()
@@ -446,7 +442,9 @@ struct TransformerModel(Movable):
         else:
             self.load_weights()
             self._build_fp16_views()
-        self.cache = KVCache(config.n_layers, config.n_kv_heads, kv_cache_len, config.head_dim)
+        self.cache = KVCache(
+            config.n_layers, config.n_kv_heads, kv_cache_len, config.head_dim
+        )
         # M8: only the shard's layers hold KV storage (the rest stay
         # zero-length placeholders so absolute layer indexing is unchanged).
         for l in range(config.n_layers):
@@ -495,9 +493,7 @@ struct TransformerModel(Movable):
             )
             var output_t = find_tensor(self.ctx, "output.weight")
             if output_t:
-                params.output_w = dequantize_weight(
-                    self.ctx, output_t.value()
-                )
+                params.output_w = dequantize_weight(self.ctx, output_t.value())
             else:
                 params.output_w = params.token_embd  # tied embeddings
         params.layers = List[LayerWeights]()
@@ -527,23 +523,33 @@ struct TransformerModel(Movable):
                 # stay quantized (dequantized per selected expert on demand).
                 lw.moe_router = dequantize_weight(
                     self.ctx,
-                    find_tensor(self.ctx, base + ".ffn_gate_inp.weight").value(),
+                    find_tensor(
+                        self.ctx, base + ".ffn_gate_inp.weight"
+                    ).value(),
                 )
                 lw.moe_sh_gate = dequantize_weight(
                     self.ctx,
-                    find_tensor(self.ctx, base + ".ffn_gate_shexp.weight").value(),
+                    find_tensor(
+                        self.ctx, base + ".ffn_gate_shexp.weight"
+                    ).value(),
                 )
                 lw.moe_sh_up = dequantize_weight(
                     self.ctx,
-                    find_tensor(self.ctx, base + ".ffn_up_shexp.weight").value(),
+                    find_tensor(
+                        self.ctx, base + ".ffn_up_shexp.weight"
+                    ).value(),
                 )
                 lw.moe_sh_down = dequantize_weight(
                     self.ctx,
-                    find_tensor(self.ctx, base + ".ffn_down_shexp.weight").value(),
+                    find_tensor(
+                        self.ctx, base + ".ffn_down_shexp.weight"
+                    ).value(),
                 )
                 lw.moe_sh_gate_in = dequantize_vector(
                     self.ctx,
-                    find_tensor(self.ctx, base + ".ffn_gate_inp_shexp.weight").value(),
+                    find_tensor(
+                        self.ctx, base + ".ffn_gate_inp_shexp.weight"
+                    ).value(),
                 )
                 lw.moe_gate_up_exps = find_tensor(
                     self.ctx, base + ".ffn_gate_up_exps.weight"
@@ -629,14 +635,10 @@ struct TransformerModel(Movable):
                 )
                 var q_norm = find_tensor(self.ctx, base + ".attn_q_norm.weight")
                 if q_norm:
-                    lw.attn_q_norm = dequantize_vector(
-                        self.ctx, q_norm.value()
-                    )
+                    lw.attn_q_norm = dequantize_vector(self.ctx, q_norm.value())
                 var k_norm = find_tensor(self.ctx, base + ".attn_k_norm.weight")
                 if k_norm:
-                    lw.attn_k_norm = dequantize_vector(
-                        self.ctx, k_norm.value()
-                    )
+                    lw.attn_k_norm = dequantize_vector(self.ctx, k_norm.value())
             params.layers.append(lw^)
         self.params = params^
 
@@ -695,23 +697,33 @@ struct TransformerModel(Movable):
                 # zero-copy row views - never dequantized wholesale).
                 lw.moe_router = load_qweight(
                     self.ctx,
-                    find_tensor(self.ctx, base + ".ffn_gate_inp.weight").value(),
+                    find_tensor(
+                        self.ctx, base + ".ffn_gate_inp.weight"
+                    ).value(),
                 )
                 lw.moe_sh_gate = load_qweight(
                     self.ctx,
-                    find_tensor(self.ctx, base + ".ffn_gate_shexp.weight").value(),
+                    find_tensor(
+                        self.ctx, base + ".ffn_gate_shexp.weight"
+                    ).value(),
                 )
                 lw.moe_sh_up = load_qweight(
                     self.ctx,
-                    find_tensor(self.ctx, base + ".ffn_up_shexp.weight").value(),
+                    find_tensor(
+                        self.ctx, base + ".ffn_up_shexp.weight"
+                    ).value(),
                 )
                 lw.moe_sh_down = load_qweight(
                     self.ctx,
-                    find_tensor(self.ctx, base + ".ffn_down_shexp.weight").value(),
+                    find_tensor(
+                        self.ctx, base + ".ffn_down_shexp.weight"
+                    ).value(),
                 )
                 lw.moe_sh_gate_in = dequantize_vector(
                     self.ctx,
-                    find_tensor(self.ctx, base + ".ffn_gate_inp_shexp.weight").value(),
+                    find_tensor(
+                        self.ctx, base + ".ffn_gate_inp_shexp.weight"
+                    ).value(),
                 )
                 lw.moe_gate_up_exps = find_tensor(
                     self.ctx, base + ".ffn_gate_up_exps.weight"
@@ -799,14 +811,10 @@ struct TransformerModel(Movable):
                 )
                 var q_norm = find_tensor(self.ctx, base + ".attn_q_norm.weight")
                 if q_norm:
-                    lw.attn_q_norm = dequantize_vector(
-                        self.ctx, q_norm.value()
-                    )
+                    lw.attn_q_norm = dequantize_vector(self.ctx, q_norm.value())
                 var k_norm = find_tensor(self.ctx, base + ".attn_k_norm.weight")
                 if k_norm:
-                    lw.attn_k_norm = dequantize_vector(
-                        self.ctx, k_norm.value()
-                    )
+                    lw.attn_k_norm = dequantize_vector(self.ctx, k_norm.value())
             qparams.layers.append(lw^)
         self.qparams = qparams^
 
@@ -916,7 +924,9 @@ struct TransformerModel(Movable):
             toks, self.params.token_embd
         )
 
-    def forward(mut self, token: Int, position: Int) raises -> Tensor[DType.float32, 1]:
+    def forward(
+        mut self, token: Int, position: Int
+    ) raises -> Tensor[DType.float32, 1]:
         """One autoregressive step: `token` at absolute `position`.
 
         Returns the f32 logits [vocab] for sampling the next token.
@@ -1018,10 +1028,24 @@ struct TransformerModel(Movable):
         opts.n_rot = cfg.n_rot
         opts.norm_eps = cfg.norm_eps
         var attn = mha_forward_v2(
-            normed, lw.q_w, lw.k_w, lw.v_w, lw.o_w, lw.q_b, lw.k_b, lw.v_b,
-            lw.attn_q_norm, lw.attn_k_norm, self.cache.layers[layer],
-            position, cfg.n_heads, cfg.n_kv_heads, cfg.head_dim,
-            cfg.rope_theta, opts, self._dummy_scale,
+            normed,
+            lw.q_w,
+            lw.k_w,
+            lw.v_w,
+            lw.o_w,
+            lw.q_b,
+            lw.k_b,
+            lw.v_b,
+            lw.attn_q_norm,
+            lw.attn_k_norm,
+            self.cache.layers[layer],
+            position,
+            cfg.n_heads,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            cfg.rope_theta,
+            opts,
+            self._dummy_scale,
         )
         var resid = add_cpu_dynamic[DType.float16](x, attn)
         # FFN norm: post_attention_norm (hybrid qwen35/35moe) or ffn_norm
@@ -1055,9 +1079,7 @@ struct TransformerModel(Movable):
         var s = cfg.ssm_d_state
         var n_kv = n_k * s  # 2048 = 16 heads * 128
         var n_vv = cfg.ssm_d_inner  # 6144 = 48 heads * 128
-        var gated = tensor_zeros[DType.float16, 2](
-            StaticTuple[Int, 2](1, n_vv)
-        )
+        var gated = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](1, n_vv))
         var normed = rms_norm_weight[DType.float16](
             x, lw.attn_norm_w, cfg.norm_eps
         )
@@ -1143,9 +1165,14 @@ struct TransformerModel(Movable):
                             offset=state_base + j * s + i
                         )
                     )
-                    var kv = Float32(
-                        conv_p.unsafe_load[width=1](offset=n_kv + kh * s + j)
-                    ) * k_inv
+                    var kv = (
+                        Float32(
+                            conv_p.unsafe_load[width=1](
+                                offset=n_kv + kh * s + j
+                            )
+                        )
+                        * k_inv
+                    )
                     state_p.unsafe_store(
                         state_base + j * s + i,
                         Scalar[DType.float32](sv * gamma),
@@ -1177,9 +1204,7 @@ struct TransformerModel(Movable):
                         state_p.unsafe_load[width=1](
                             offset=state_base + j * s + i
                         )
-                    ) * Float32(
-                        qkv_p.unsafe_load[width=1](offset=kh * s + j)
-                    )
+                    ) * Float32(qkv_p.unsafe_load[width=1](offset=kh * s + j))
                 o.append(acc * q_inv * q_scale)
             # gated output norm: RMSNorm(o, ssm_norm) * silu(z)
             var o_ss = Float32(0)
@@ -1193,7 +1218,6 @@ struct TransformerModel(Movable):
                     h * s + i,
                     Scalar[DType.float16](o[i] * o_inv * wv * z_act),
                 )
-
 
         var attn_out = lw.ssm_out.proj(gated, self._dummy_scale)
         var resid = add_cpu_dynamic[DType.float16](x, attn_out)
@@ -1245,13 +1269,12 @@ struct TransformerModel(Movable):
             s += e
         # 3. Select the top-k experts; renormalize their softmax weights to
         #    sum to 1 (llama.cpp build_moe_ffn: norm_w=true).
-        var used = List[Bool]()
-        for i in range(n_experts):
-            used.append(False)
+        var used = List[Bool](length=n_experts, fill=False)
         var idx = List[Int]()
         var raw = List[Float32]()
         var wsum = Float32(0)
-        for t in range(top_k):
+        var selected = 0
+        while selected < top_k:
             var best = 0
             var bestv = Float32(-1.0)
             for i in range(n_experts):
@@ -1264,6 +1287,7 @@ struct TransformerModel(Movable):
             idx.append(best)
             raw.append(bestv)
             wsum += bestv
+            selected += 1
         var wts = List[Float32]()
         for t in range(top_k):
             wts.append(raw[t] / wsum)
@@ -1273,9 +1297,7 @@ struct TransformerModel(Movable):
         #    per-block-dequant matmul - nothing is dequantized wholesale);
         #    legacy: on-demand dequantized fp16 (the full 3D expert stack
         #    would not fit in RAM).
-        var out = tensor_zeros[DType.float16, 2](
-            StaticTuple[Int, 2](1, hidden)
-        )
+        var out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](1, hidden))
         for t in range(top_k):
             var e = idx[t]
             var gate_up = self._expert_gate_up(layer, e)
@@ -1336,9 +1358,7 @@ struct TransformerModel(Movable):
             return qweight_from_fp16(out)
         var q = QWeight()
         q.data = Tensor[DType.uint8, 2](
-            StaticTuple[Int, 2](
-                2 * cfg.expert_ffn, (cfg.hidden // be) * bb
-            ),
+            StaticTuple[Int, 2](2 * cfg.expert_ffn, (cfg.hidden // be) * bb),
             base.unsafe_offset(byte_off),
         )
         q.quantized = True
@@ -1364,9 +1384,7 @@ struct TransformerModel(Movable):
             return qweight_from_fp16(out)
         var q = QWeight()
         q.data = Tensor[DType.uint8, 2](
-            StaticTuple[Int, 2](
-                cfg.hidden, (cfg.expert_ffn // be) * bb
-            ),
+            StaticTuple[Int, 2](cfg.hidden, (cfg.expert_ffn // be) * bb),
             base.unsafe_offset(byte_off),
         )
         q.quantized = True
@@ -1513,9 +1531,11 @@ def _softplus_f32(x: Float32) -> Float32:
     return log(Float32(1.0) + exp(x))
 
 
-def rms_norm_weight[dtype: DType](
-    x: Tensor[dtype, 2], weight: Tensor[dtype, 1], eps: Float32
-) -> Tensor[dtype, 2]:
+def rms_norm_weight[
+    dtype: DType
+](x: Tensor[dtype, 2], weight: Tensor[dtype, 1], eps: Float32) -> Tensor[
+    dtype, 2
+]:
     """RMSNorm with a learned weight: out = x / sqrt(mean(x^2) + eps) * w.
 
     (Qwen2 applies the norm *weight* multiplicatively after normalizing;
@@ -1534,9 +1554,11 @@ def rms_norm_weight[dtype: DType](
         var acc = SIMD[DType.float32, W](0)
         var j = 0
         while j < cols_main:
-            var v = x.data().unsafe_load[width=W](
-                offset=base + j
-            ).cast[DType.float32]()
+            var v = (
+                x.data()
+                .unsafe_load[width=W](offset=base + j)
+                .cast[DType.float32]()
+            )
             acc = acc + v * v
             j += W
         var ss = Float32(acc.reduce_add())
@@ -1547,12 +1569,16 @@ def rms_norm_weight[dtype: DType](
         var inv = Float32(1.0) / sqrt(ss / Float32(cols) + eps)
         j = 0
         while j < cols_main:
-            var v = x.data().unsafe_load[width=W](
-                offset=base + j
-            ).cast[DType.float32]()
-            var wv = weight.data().unsafe_load[width=W](
-                offset=j
-            ).cast[DType.float32]()
+            var v = (
+                x.data()
+                .unsafe_load[width=W](offset=base + j)
+                .cast[DType.float32]()
+            )
+            var wv = (
+                weight.data()
+                .unsafe_load[width=W](offset=j)
+                .cast[DType.float32]()
+            )
             out.data().unsafe_store(
                 base + j,
                 (v * SIMD[DType.float32, W](inv) * wv).cast[dtype](),
@@ -1584,7 +1610,7 @@ def dequantize_weight(
     Rank-1 tensors (norms, biases) are materialized as `[d0, 1]`.
     """
     var numel = tensor_numel(tensor)
-    var shape = StaticTuple[Int, 2](0, 0)
+    var shape: StaticTuple[Int, 2]
     if tensor.n_dims >= 2:
         shape = StaticTuple[Int, 2](tensor.dims[1], tensor.dims[0])
     else:
@@ -1606,9 +1632,7 @@ def dequantize_vector(
 ) -> Tensor[DType.float16, 1]:
     """Dequantize a rank-1 GGUF tensor into a rank-1 fp16 tensor."""
     var numel = tensor_numel(tensor)
-    var tmp = tensor_zeros[DType.float16, 2](
-        StaticTuple[Int, 2](1, numel)
-    )
+    var tmp = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](1, numel))
     var (src, off) = ctx.tensor_data(tensor)
     dequantize_into(
         tensor.ggml_type,
@@ -1650,7 +1674,13 @@ def load_qweight(ctx: GGUFContext, t: GGUFTensor) -> QWeight:
     else:
         qw.n_out = t.dims[0]
         qw.n_in = 1
-    if tag >= 0 and be > 1 and t.n_dims >= 2 and t.dims[0] % be == 0 and numel >= be:
+    if (
+        tag >= 0
+        and be > 1
+        and t.n_dims >= 2
+        and t.dims[0] % be == 0
+        and numel >= be
+    ):
         qw.data = ctx.load_tensor(t)
         qw.quantized = True
     else:
@@ -1671,12 +1701,8 @@ def embedding_row_quantized(
     var t = Int(toks.get(0))
     if not w.quantized:
         var ptr = w.fp16.data().unsafe_offset(t * w.n_in)
-        return Tensor[DType.float16, 2](
-            StaticTuple[Int, 2](1, w.n_in), ptr
-        )
-    var out = tensor_zeros[DType.float16, 2](
-        StaticTuple[Int, 2](1, w.n_in)
-    )
+        return Tensor[DType.float16, 2](StaticTuple[Int, 2](1, w.n_in), ptr)
+    var out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](1, w.n_in))
     var row_bytes = w.data.shape()[1]
     var row_ptr = w.data.data().unsafe_offset(t * row_bytes)
     dequantize_into(w.ggml_type, row_ptr, 0, out, w.n_in)
@@ -1754,9 +1780,7 @@ def load_config(ctx: GGUFContext) -> TransformerConfig:
         get_meta_float(ctx, prefix + "rope.freq_base", 10000.0)
     )
     config.norm_eps = Float32(
-        get_meta_float(
-            ctx, prefix + "attention.layer_norm_rms_epsilon", 1e-6
-        )
+        get_meta_float(ctx, prefix + "attention.layer_norm_rms_epsilon", 1e-6)
     )
     config.bos_id = get_meta_uint(ctx, "tokenizer.ggml.bos_token_id", 1)
     config.eos_id = get_meta_uint(ctx, "tokenizer.ggml.eos_token_id", 2)
@@ -1775,9 +1799,7 @@ def load_config(ctx: GGUFContext) -> TransformerConfig:
         config.ssm_n_group = get_meta_uint(ctx, prefix + "ssm.group_count", 0)
         config.ssm_d_inner = get_meta_uint(ctx, prefix + "ssm.inner_size", 0)
         config.n_rot = get_meta_uint(ctx, prefix + "rope.dimension_count", 0)
-        var sec = _read_meta_int_array(
-            ctx, prefix + "rope.dimension_sections"
-        )
+        var sec = _read_meta_int_array(ctx, prefix + "rope.dimension_sections")
         for i in range(4):
             if i < len(sec):
                 config.rope_sections[i] = sec[i]
@@ -1818,17 +1840,15 @@ def load_config(ctx: GGUFContext) -> TransformerConfig:
 
     # -- attention-layer capabilities, probed from the first attn block ------
     var base = "blk." + String(config.first_attn_layer())
-    config.has_qk_norm = find_tensor(
-        ctx, base + ".attn_q_norm.weight"
-    ) != None
+    config.has_qk_norm = find_tensor(ctx, base + ".attn_q_norm.weight") != None
     var q_t = find_tensor(ctx, base + ".attn_q.weight")
     if q_t:
         # Fused Q+gate: the q projection outputs 2 * (n_heads * head_dim).
         var q_out = q_t.value().dims[1]
         config.has_gate = q_out == 2 * config.n_heads * config.head_dim
-    config.has_post_attn_norm = find_tensor(
-        ctx, base + ".post_attention_norm.weight"
-    ) != None
+    config.has_post_attn_norm = (
+        find_tensor(ctx, base + ".post_attention_norm.weight") != None
+    )
     # Qwen normalizes Q/K before RoPE; hunyuan-dense after.
     config.norm_before_rope = config.arch == ARCH_QWEN
     return config
@@ -1843,12 +1863,14 @@ def _read_meta_int_array(ctx: GGUFContext, key: String) -> List[Int]:
     var reader = Reader(ctx.data)
     reader.offset = value.arr_offset
     var out = List[Int]()
-    for i in range(value.arr_len):
+    var count = 0
+    while count < value.arr_len:
         var raw = reader.read_u32()
         if value.arr_type == 5:  # INT32
             out.append(Int(bitcast[DType.int32](raw)))
         else:
             out.append(Int(raw))
+        count += 1
     return out^
 
 

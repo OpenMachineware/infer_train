@@ -153,10 +153,18 @@ def test_registry():
     registry.register_default_ops()
     # every M3 op must be present and dispatchable
     var names = List[String]()
-    for n in ["embedding", "rope", "add", "swiglu", "mha", "lm_head", "swiglu_ffn"]:
+    for n in [
+        "embedding",
+        "rope",
+        "add",
+        "swiglu",
+        "mha",
+        "lm_head",
+        "swiglu_ffn",
+    ]:
         names.append(n)
     for name in names:
-        var op = registry.get(name, None)
+        _ = registry.get(name, None)
         print("  registry:", name, "ok")
 
     # erased round-trip: add two small f16 tensors through the registry
@@ -171,8 +179,24 @@ def test_registry():
     inputs.append(to_any[DType.float16, 2](b))
     var op = registry.get("add", None)
     var results = op.forward(inputs)
-    check_f16(Float32(results[0].data.unsafe_bitcast[Scalar[DType.float16]]().unsafe_load[width=1](offset=0)), 4.0, "registry add[0]")
-    check_f16(Float32(results[0].data.unsafe_bitcast[Scalar[DType.float16]]().unsafe_load[width=1](offset=1)), 6.0, "registry add[1]")
+    check_f16(
+        Float32(
+            results[0]
+            .data.unsafe_bitcast[Scalar[DType.float16]]()
+            .unsafe_load[width=1](offset=0)
+        ),
+        4.0,
+        "registry add[0]",
+    )
+    check_f16(
+        Float32(
+            results[0]
+            .data.unsafe_bitcast[Scalar[DType.float16]]()
+            .unsafe_load[width=1](offset=1)
+        ),
+        6.0,
+        "registry add[1]",
+    )
 
 
 # -- matmul_quantized (M7: comptime-specialized GGUF block formats) ----------
@@ -196,7 +220,8 @@ def write_f16(buf: Tensor[DType.uint8, 2], idx: Int, value: Float32):
 
 
 def build_q4_k_row(buf: Tensor[DType.uint8, 2], base: Int, d: Float32):
-    """One Q4_K super-block (144 bytes, 256 elements) with deq[k] = d * (k % 16).
+    """One Q4_K super-block (144 bytes, 256 elements) with
+    deq[k] = d * (k % 16).
 
     dmin = 0 and the 12 scale bytes are [1,1,1,1,0,0,0,0,1,1,1,1], which
     unpacks to (sc, m) = (1, 0) for all 8 sub-blocks per
@@ -324,11 +349,9 @@ def test_matmul_quantized_q8_0_f32():
         for j in range(N):
             var expected = Float32(0.0)
             for k in range(K):
-                var deq = (
-                    Float32(0.5) * Float32(k - 16)
-                    if j == 0
-                    else Float32(-0.25) * Float32(15 - k)
-                )
+                var deq = Float32(0.5) * Float32(k - 16) if j == 0 else Float32(
+                    -0.25
+                ) * Float32(15 - k)
                 expected += Float32(k % 5) * deq
             check_f32(
                 Float32(out.get(i * N + j)),
@@ -390,11 +413,9 @@ def test_matmul_quantized_q8_0_f16():
         for j in range(N):
             var expected = Float32(0.0)
             for k in range(K):
-                var deq = (
-                    Float32(0.5) * Float32(k - 16)
-                    if j == 0
-                    else Float32(-0.25) * Float32(15 - k)
-                )
+                var deq = Float32(0.5) * Float32(k - 16) if j == 0 else Float32(
+                    -0.25
+                ) * Float32(15 - k)
                 expected += Float32(k % 5) * deq
             var expected16 = Float32(Scalar[DType.float16](expected))
             check_f32(

@@ -22,9 +22,9 @@ def _round_i(v: Float32) -> Int:
     return Int(v - Float32(0.5))
 
 
-def dynamic_quantize_symmetric[dtype: DType](
-    x: Tensor[dtype, 2], bits: Int = 8
-) -> Tuple[Tensor[DType.int32, 2], Float32]:
+def dynamic_quantize_symmetric[
+    dtype: DType
+](x: Tensor[dtype, 2], bits: Int = 8) -> Tuple[Tensor[DType.int32, 2], Float32]:
     """Symmetric quantization: scale = max(|x|) / (2^(bits-1) - 1)."""
     var numel = x.numel()
     var mx = Float32(0)
@@ -53,9 +53,11 @@ def dynamic_quantize_symmetric[dtype: DType](
     return (q, scale)
 
 
-def dynamic_quantize_asymmetric[dtype: DType](
-    x: Tensor[dtype, 2], bits: Int = 8
-) -> Tuple[Tensor[DType.int32, 2], Float32, Float32]:
+def dynamic_quantize_asymmetric[
+    dtype: DType
+](x: Tensor[dtype, 2], bits: Int = 8) -> Tuple[
+    Tensor[DType.int32, 2], Float32, Float32
+]:
     """Asymmetric quantization: scale = (max-min)/(2^bits-1), zero_point
     = min (quantized code 0 maps to the minimum)."""
     var numel = x.numel()

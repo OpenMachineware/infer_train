@@ -46,9 +46,11 @@ def execute_dag(
     var registry = OpRegistry()
     registry.register_default_ops()
     var results = List[AnyTensor]()
-    for i in range(len(dag.nodes)):
+    var count = 0
+    while count < len(dag.nodes):
         var dummy = tensor_zeros[DType.float32, 1](StaticTuple[Int, 1](1))
         results.append(to_any[DType.float32, 1](dummy))
+        count += 1
 
     var input_cursor = 0
     for i in range(len(dag.nodes)):

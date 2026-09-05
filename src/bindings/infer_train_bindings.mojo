@@ -29,8 +29,8 @@
 #   infer_train_generate(model, prompt, max_tokens,
 #                        temperature, top_p, top_k, seed, verbose)
 #                                                      -> char* | NULL
-#                        (seed < 0 means None; free with infer_train_free_string)
-#   infer_train_model_info(model, key) -> Int64        (config queries, -1 unknown)
+#                     (seed < 0 means None; free with infer_train_free_string)
+#   infer_train_model_info(model, key) -> Int64   (config queries, -1 unknown)
 #   infer_train_reset_cache(model)                     (new conversation)
 #   infer_train_free_model(model)
 #   infer_train_free_string(s)
@@ -84,7 +84,10 @@ from src.core.ops.cpu.matmul_cpu import (
     matmul_weight_cpu,
     matmul_weight_cpu_threaded,
 )
-from src.core.ops.fused.matmul_add import fused_matmul_add_bias, fused_matmul_add
+from src.core.ops.fused.matmul_add import (
+    fused_matmul_add_bias,
+    fused_matmul_add,
+)
 from src.core.ops.fused.matmul_rms_norm import fused_matmul_rms_norm
 from src.core.ops.fused.swiglu_matmul import fused_swiglu_matmul
 from src.runtime.inference import Model, load_model, generate
@@ -119,7 +122,6 @@ from src.core.ops.base.op_autograd import (
     cross_entropy_fws_cpu,
     cross_entropy_bwd_cpu,
 )
-
 
 
 # -- dtype codes (C ABI convention) ------------------------------------------
@@ -187,10 +189,9 @@ def _elem_size_of(dtype: DType) -> Int:
 # -- lifecycle ---------------------------------------------------------------
 #
 
+
 @export
-def it_mw_worker(
-    ctx: Pointer[UInt8, MutUntrackedOrigin], idx: Int64
-) abi("C"):
+def it_mw_worker(ctx: Pointer[UInt8, MutUntrackedOrigin], idx: Int64) abi("C"):
     # The context is an Int64 array [x, w, out, M, K, N, dtype]; the
     # typed pointers are rebuilt with `unsafe_from_address` (plain loads -
     # safe on pool threads).  Mojo-side *struct* contexts are avoided:
@@ -220,12 +221,12 @@ def it_mw_worker(
             var acc = SIMD[DType.float32, 8](0)
             var k = 0
             while k < k_main:
-                var xv = xp.unsafe_load[width=8](
-                    offset=i * K + k
-                ).cast[DType.float32]()
-                var wv = wp.unsafe_load[width=8](
-                    offset=j * K + k
-                ).cast[DType.float32]()
+                var xv = xp.unsafe_load[width=8](offset=i * K + k).cast[
+                    DType.float32
+                ]()
+                var wv = wp.unsafe_load[width=8](offset=j * K + k).cast[
+                    DType.float32
+                ]()
                 acc = acc + xv * wv
                 k += 8
             var total = Float32(acc.reduce_add())
@@ -261,7 +262,6 @@ def it_mw_worker(
                 )
                 k += 1
             op32.unsafe_store(i * N + j, Scalar[DType.float32](total))
-
 
 
 @export
@@ -312,12 +312,12 @@ def it_mw_multi_worker(
             var acc = SIMD[DType.float32, 8](0)
             var k = 0
             while k < k_main:
-                var xv = xp.unsafe_load[width=8](
-                    offset=i * K + k
-                ).cast[DType.float32]()
-                var wv = wp.unsafe_load[width=8](
-                    offset=j * K + k
-                ).cast[DType.float32]()
+                var xv = xp.unsafe_load[width=8](offset=i * K + k).cast[
+                    DType.float32
+                ]()
+                var wv = wp.unsafe_load[width=8](offset=j * K + k).cast[
+                    DType.float32
+                ]()
                 acc = acc + xv * wv
                 k += 8
             var total = Float32(acc.reduce_add())
@@ -371,7 +371,7 @@ def infer_train_load_model(
     try:
         var path_s = _cstr_to_string(path)
         var m = unsafe_alloc[Model](1)
-        m[0] = load_model(path_s)
+        m[unsafe_offset=0] = load_model(path_s)
         return Optional(m.unsafe_bitcast[UInt8]())
     except:
         return None
@@ -397,7 +397,7 @@ def infer_train_generate(
         if seed >= 0:
             opt_seed = Optional(Int(seed))
         var out = generate(
-            model[0],
+            model[unsafe_offset=0],
             prompt_s,
             Int(max_tokens),
             temperature,
@@ -420,7 +420,7 @@ def infer_train_model_info(
         return -1
     var model = m.value().unsafe_bitcast[Model]()
     var k = _cstr_to_string(key)
-    var cfg = model[0].transformer.config
+    var cfg = model[unsafe_offset=0].transformer.config
     if k == "n_layers":
         return Int64(cfg.n_layers)
     if k == "hidden":
@@ -440,7 +440,7 @@ def infer_train_model_info(
     if k == "eos":
         return Int64(cfg.eos_id)
     if k == "ctx_len":
-        return Int64(model[0].transformer.cache.capacity())
+        return Int64(model[unsafe_offset=0].transformer.cache.capacity())
     return -1
 
 
@@ -451,7 +451,7 @@ def infer_train_reset_cache(
     if not m:
         return
     var model = m.value().unsafe_bitcast[Model]()
-    model[0].transformer.reset_cache()
+    model[unsafe_offset=0].transformer.reset_cache()
 
 
 @export
@@ -469,7 +469,8 @@ def _free_model_contents(mut model: Model):
     Tensor storage is `Pointer[..., MutUntrackedOrigin]` (never freed by any
     destructor), so we walk the dequantized weights, the KV cache and the
     GGUF file buffer explicitly.  The tokenizer/registry internals are owned
-    by the struct fields themselves and are released by `unsafe_deinit_pointee()`.
+    by the struct fields themselves and are released by
+    `unsafe_deinit_pointee()`.
     """
     _free_buffer[DType.float16, 2](model.transformer.params.token_embd)
     _free_buffer[DType.float16, 1](model.transformer.params.output_norm_w)
@@ -501,10 +502,7 @@ def infer_train_free_model(
     if not m:
         return
     var model = m.value().unsafe_bitcast[Model]()
-    try:
-        _free_model_contents(model[0])
-    except:
-        pass
+    _free_model_contents(model[unsafe_offset=0])
     model.unsafe_deinit_pointee()
     # M4 note: `model.unsafe_free()` is deliberately NOT called.  In Mojo
     # 1.0 shared-library builds, freeing a heap struct whose fields own
@@ -564,11 +562,9 @@ def infer_train_tensor_create(
     var buf = unsafe_alloc[UInt8](nbytes, alignment=64)
     for i in range(nbytes):
         buf.unsafe_offset(i).unsafe_store(val=data.unsafe_load(offset=i))
-    var any = AnyTensor(
-        dtype, Int(rank), static_shape, numel, Device.CPU, buf
-    )
+    var any = AnyTensor(dtype, Int(rank), static_shape, numel, Device.CPU, buf)
     var t = unsafe_alloc[CTensor](1)
-    t[0] = CTensor(any, buf)
+    t[unsafe_offset=0] = CTensor(any, buf)
     return Optional(t.unsafe_bitcast[UInt8]())
 
 
@@ -579,7 +575,7 @@ def infer_train_tensor_dtype(
     if not t:
         return -1
     var ct = t.value().unsafe_bitcast[CTensor]()
-    return _code_from_dtype(ct[0].any.dtype)
+    return _code_from_dtype(ct[unsafe_offset=0].any.dtype)
 
 
 @export
@@ -589,7 +585,7 @@ def infer_train_tensor_rank(
     if not t:
         return -1
     var ct = t.value().unsafe_bitcast[CTensor]()
-    return Int64(ct[0].any.rank)
+    return Int64(ct[unsafe_offset=0].any.rank)
 
 
 @export
@@ -599,7 +595,7 @@ def infer_train_tensor_numel(
     if not t:
         return -1
     var ct = t.value().unsafe_bitcast[CTensor]()
-    return Int64(ct[0].any.numel)
+    return Int64(ct[unsafe_offset=0].any.numel)
 
 
 @export
@@ -607,14 +603,17 @@ def infer_train_tensor_shape(
     t: Optional[Pointer[UInt8, MutUntrackedOrigin]],
     out_shape: Pointer[Int64, MutUntrackedOrigin],
 ) abi("C") -> Int64:
-    """Write the dims into `out_shape` (caller provides `rank` slots); returns rank."""
+    """
+    Write the dims into `out_shape` (caller provides `rank` slots);
+    returns rank.
+    """
     if not t:
         return -1
     var ct = t.value().unsafe_bitcast[CTensor]()
-    var rank = ct[0].any.rank
+    var rank = ct[unsafe_offset=0].any.rank
     for i in range(rank):
         out_shape.unsafe_offset(i).unsafe_store(
-            val=Int64(ct[0].any.shape[i])
+            val=Int64(ct[unsafe_offset=0].any.shape[i])
         )
     return Int64(rank)
 
@@ -628,10 +627,12 @@ def infer_train_tensor_copy_out(
     if not t:
         return -1
     var ct = t.value().unsafe_bitcast[CTensor]()
-    var nbytes = ct[0].any.numel * _elem_size_of(ct[0].any.dtype)
+    var nbytes = ct[unsafe_offset=0].any.numel * _elem_size_of(
+        ct[unsafe_offset=0].any.dtype
+    )
     for i in range(nbytes):
         dst.unsafe_offset(i).unsafe_store(
-            val=ct[0].any.data.unsafe_load(offset=i)
+            val=ct[unsafe_offset=0].any.data.unsafe_load(offset=i)
         )
     return Int64(nbytes)
 
@@ -643,7 +644,7 @@ def infer_train_tensor_free(
     if not t:
         return
     var ct = t.value().unsafe_bitcast[CTensor]()
-    ct[0].owned.unsafe_free()
+    ct[unsafe_offset=0].owned.unsafe_free()
     ct.unsafe_free()
 
 
@@ -689,7 +690,7 @@ def _collect_inputs(
             unsafe_from_address=Int(addr)
         )
         var ct = hp.unsafe_bitcast[CTensor]()
-        input_list.append(ct[0].any)
+        input_list.append(ct[unsafe_offset=0].any)
     return input_list^
 
 
@@ -785,9 +786,7 @@ def _check_op_inputs(op: String, inputs: List[AnyTensor]) -> Bool:
             return False
         if table.rank != 2:
             return False
-        return (
-            table.dtype == DType.float32 or table.dtype == DType.float16
-        )
+        return table.dtype == DType.float32 or table.dtype == DType.float16
     if op == "fused_matmul_add_bias":
         if len(inputs) != 3:
             return False
@@ -815,9 +814,7 @@ def _check_op_inputs(op: String, inputs: List[AnyTensor]) -> Bool:
             return False
         if x2.shape[1] != w2.shape[1]:
             return False
-        return (
-            b2.shape[0] == x2.shape[0] and b2.shape[1] == w2.shape[0]
-        )
+        return b2.shape[0] == x2.shape[0] and b2.shape[1] == w2.shape[0]
     if op == "fused_matmul_rms_norm":
         if len(inputs) != 2:
             return False
@@ -907,16 +904,12 @@ def _check_op_inputs(op: String, inputs: List[AnyTensor]) -> Bool:
             return False
         if pr.dtype != DType.float32:
             return False
-        return (
-            xr.dtype == DType.float32 or xr.dtype == DType.float16
-        )
+        return xr.dtype == DType.float32 or xr.dtype == DType.float16
     # mha and anything else stay off the C API whitelist.
     return False
 
 
-def _run_op_native(
-    op: String, inputs: List[AnyTensor]
-) -> Optional[AnyTensor]:
+def _run_op_native(op: String, inputs: List[AnyTensor]) -> Optional[AnyTensor]:
     """Run one whitelisted op by calling the kernels directly.
 
     The M1 registry dispatch functions build their result list with
@@ -1331,7 +1324,11 @@ def _check_grad_shapes(
     if op == "swiglu":
         return g.rank == 2 and g.shape == x.shape
     if op == "swiglu_ffn":
-        return g.rank == 2 and g.shape[0] == x.shape[0] and g.shape[1] == x.shape[1]
+        return (
+            g.rank == 2
+            and g.shape[0] == x.shape[0]
+            and g.shape[1] == x.shape[1]
+        )
     if op == "embedding":
         var table = inputs[1]
         return (
@@ -1415,44 +1412,41 @@ def infer_train_run_backward(
     parallel arrays carry its metadata.  Returns 0 on success, -1 on any
     validation error (never aborts).
     """
-    try:
-        var op = _cstr_to_string(op_ptr)
-        var input_list = _collect_inputs(inputs, Int(n_inputs))
-        var grad_list = _collect_inputs(grads, Int(n_grads))
-        if not _check_op_inputs(op, input_list):
-            return -1
-        if not _check_grad_shapes(op, input_list, grad_list):
-            return -1
-        var result = _run_backward_native(op, input_list, grad_list)
-        var n = len(result)
-        if n > 8:
-            n = 8
-        out_n.unsafe_offset(0).unsafe_store(val=Int64(n))
-        for i in range(n):
-            var any = result[i]
-            if any.numel == 0:
-                out_addrs.unsafe_offset(i).unsafe_store(val=Int64(0))
-                out_dtype.unsafe_offset(i).unsafe_store(val=Int64(0))
-                out_rank.unsafe_offset(i).unsafe_store(val=Int64(0))
-                out_numel.unsafe_offset(i).unsafe_store(val=Int64(0))
-                out_nbytes.unsafe_offset(i).unsafe_store(val=Int64(0))
-                continue
-            out_addrs.unsafe_offset(i).unsafe_store(val=Int64(Int(any.data)))
-            out_dtype.unsafe_offset(i).unsafe_store(
-                val=Int64(_code_from_dtype(any.dtype))
-            )
-            out_rank.unsafe_offset(i).unsafe_store(val=Int64(any.rank))
-            for j in range(any.rank):
-                out_shape.unsafe_offset(i * 8 + j).unsafe_store(
-                    val=Int64(any.shape[j])
-                )
-            out_numel.unsafe_offset(i).unsafe_store(val=Int64(any.numel))
-            out_nbytes.unsafe_offset(i).unsafe_store(
-                val=Int64(any.numel * _elem_size_of(any.dtype))
-            )
-        return 0
-    except:
+    var op = _cstr_to_string(op_ptr)
+    var input_list = _collect_inputs(inputs, Int(n_inputs))
+    var grad_list = _collect_inputs(grads, Int(n_grads))
+    if not _check_op_inputs(op, input_list):
         return -1
+    if not _check_grad_shapes(op, input_list, grad_list):
+        return -1
+    var result = _run_backward_native(op, input_list, grad_list)
+    var n = len(result)
+    if n > 8:
+        n = 8
+    out_n.unsafe_offset(0).unsafe_store(val=Int64(n))
+    for i in range(n):
+        var any = result[i]
+        if any.numel == 0:
+            out_addrs.unsafe_offset(i).unsafe_store(val=Int64(0))
+            out_dtype.unsafe_offset(i).unsafe_store(val=Int64(0))
+            out_rank.unsafe_offset(i).unsafe_store(val=Int64(0))
+            out_numel.unsafe_offset(i).unsafe_store(val=Int64(0))
+            out_nbytes.unsafe_offset(i).unsafe_store(val=Int64(0))
+            continue
+        out_addrs.unsafe_offset(i).unsafe_store(val=Int64(Int(any.data)))
+        out_dtype.unsafe_offset(i).unsafe_store(
+            val=Int64(_code_from_dtype(any.dtype))
+        )
+        out_rank.unsafe_offset(i).unsafe_store(val=Int64(any.rank))
+        for j in range(any.rank):
+            out_shape.unsafe_offset(i * 8 + j).unsafe_store(
+                val=Int64(any.shape[j])
+            )
+        out_numel.unsafe_offset(i).unsafe_store(val=Int64(any.numel))
+        out_nbytes.unsafe_offset(i).unsafe_store(
+            val=Int64(any.numel * _elem_size_of(any.dtype))
+        )
+    return 0
 
 
 # -- M6: stateless AdamW step (for the PyTorch comparison tests) -------------
@@ -1477,35 +1471,32 @@ def infer_train_adamw_step(
     The step counter is read from / written back to *step_ptr.  Returns 0
     on success, -1 on validation error.
     """
-    try:
-        var ct_p = param_ptr.unsafe_bitcast[CTensor]()
-        var ct_g = grad_ptr.unsafe_bitcast[CTensor]()
-        var ct_m = m_ptr.unsafe_bitcast[CTensor]()
-        var ct_v = v_ptr.unsafe_bitcast[CTensor]()
-        var p = ct_p[0].any
-        var g = ct_g[0].any
-        var m = ct_m[0].any
-        var v = ct_v[0].any
-        if (
-            p.dtype != g.dtype
-            or p.numel != g.numel
-            or m.numel != p.numel
-            or v.numel != p.numel
-            or m.dtype != DType.float32
-            or v.dtype != DType.float32
-        ):
-            return -1
-        var t = Int(step_ptr.unsafe_load(offset=0))
-        if p.dtype == DType.float32:
-            adamw_step_raw[DType.float32](p, g, m, v, t, lr, b1, b2, eps, wd)
-        elif p.dtype == DType.float16:
-            adamw_step_raw[DType.float16](p, g, m, v, t, lr, b1, b2, eps, wd)
-        else:
-            return -1
-        step_ptr.unsafe_offset(0).unsafe_store(val=Int64(t))
-        return 0
-    except:
+    var ct_p = param_ptr.unsafe_bitcast[CTensor]()
+    var ct_g = grad_ptr.unsafe_bitcast[CTensor]()
+    var ct_m = m_ptr.unsafe_bitcast[CTensor]()
+    var ct_v = v_ptr.unsafe_bitcast[CTensor]()
+    var p = ct_p[unsafe_offset=0].any
+    var g = ct_g[unsafe_offset=0].any
+    var m = ct_m[unsafe_offset=0].any
+    var v = ct_v[unsafe_offset=0].any
+    if (
+        p.dtype != g.dtype
+        or p.numel != g.numel
+        or m.numel != p.numel
+        or v.numel != p.numel
+        or m.dtype != DType.float32
+        or v.dtype != DType.float32
+    ):
         return -1
+    var t = Int(step_ptr.unsafe_load(offset=0))
+    if p.dtype == DType.float32:
+        adamw_step_raw[DType.float32](p, g, m, v, t, lr, b1, b2, eps, wd)
+    elif p.dtype == DType.float16:
+        adamw_step_raw[DType.float16](p, g, m, v, t, lr, b1, b2, eps, wd)
+    else:
+        return -1
+    step_ptr.unsafe_offset(0).unsafe_store(val=Int64(t))
+    return 0
 
 
 @export
@@ -1513,7 +1504,7 @@ def infer_train_free_buffer(p: Pointer[UInt8, MutUntrackedOrigin]) abi("C"):
     p.unsafe_free()
 
 
-# -- M7: inference-time fine-tuning (LoRA-style output adapter) ---------------
+# -- M7: inference-time fine-tuning (LoRA-style output adapter) --------------
 #
 # `infer_train_finetune_*` adapts the model *while it serves*: a persistent
 # fp32 copy of the output head (vocab x hidden) + AdamW moments.  Each step
@@ -1556,29 +1547,26 @@ def infer_train_finetune_create(
     m: Optional[Pointer[UInt8, MutUntrackedOrigin]],
     lr: Float32,
 ) abi("C") -> Optional[Pointer[UInt8, MutUntrackedOrigin]]:
-    try:
-        if not m:
-            return None
-        var model = m.value().unsafe_bitcast[Model]()
-        var vocab = model[0].transformer.config.vocab
-        var hidden = model[0].transformer.config.hidden
-        var ft = unsafe_alloc[FTState](1)
-        var w_p = unsafe_alloc[Scalar[DType.float32]](vocab * hidden)
-        var m_p = unsafe_alloc[Scalar[DType.float32]](vocab * hidden)
-        var v_p = unsafe_alloc[Scalar[DType.float32]](vocab * hidden)
-        ft[0] = FTState(w_p, m_p, v_p, vocab, hidden, 0, lr)
-        # seed the adapter from the model's current head (fp16 -> fp32);
-        # M11: head_fp16() dequantizes the Q4-resident head on demand
-        var head = model[0].transformer.head_fp16()
-        for i in range(vocab * hidden):
-            ft[0].w.unsafe_store(
-                i, Scalar[DType.float32](Float32(head.get(i)))
-            )
-            ft[0].m.unsafe_store(i, Scalar[DType.float32](0))
-            ft[0].v.unsafe_store(i, Scalar[DType.float32](0))
-        return Optional(ft.unsafe_bitcast[UInt8]())
-    except:
+    if not m:
         return None
+    var model = m.value().unsafe_bitcast[Model]()
+    var vocab = model[unsafe_offset=0].transformer.config.vocab
+    var hidden = model[unsafe_offset=0].transformer.config.hidden
+    var ft = unsafe_alloc[FTState](1)
+    var w_p = unsafe_alloc[Scalar[DType.float32]](vocab * hidden)
+    var m_p = unsafe_alloc[Scalar[DType.float32]](vocab * hidden)
+    var v_p = unsafe_alloc[Scalar[DType.float32]](vocab * hidden)
+    ft[unsafe_offset=0] = FTState(w_p, m_p, v_p, vocab, hidden, 0, lr)
+    # seed the adapter from the model's current head (fp16 -> fp32);
+    # M11: head_fp16() dequantizes the Q4-resident head on demand
+    var head = model[unsafe_offset=0].transformer.head_fp16()
+    for i in range(vocab * hidden):
+        ft[unsafe_offset=0].w.unsafe_store(
+            i, Scalar[DType.float32](Float32(head.get(i)))
+        )
+        ft[unsafe_offset=0].m.unsafe_store(i, Scalar[DType.float32](0))
+        ft[unsafe_offset=0].v.unsafe_store(i, Scalar[DType.float32](0))
+    return Optional(ft.unsafe_bitcast[UInt8]())
 
 
 @export
@@ -1595,9 +1583,11 @@ def infer_train_finetune_step(
             return Float32(0)
         var ft = ft_p.value().unsafe_bitcast[FTState]()
         var model = m.value().unsafe_bitcast[Model]()
-        var vocab = ft[0].vocab
-        var hidden = ft[0].hidden
-        var h = model[0].transformer.forward_hidden(Int(token), Int(position))
+        var vocab = ft[unsafe_offset=0].vocab
+        var hidden = ft[unsafe_offset=0].hidden
+        var h = model[unsafe_offset=0].transformer.forward_hidden(
+            Int(token), Int(position)
+        )
         if target < 0:
             return Float32(0)  # forward-only: cache/SSM state advanced
         var target_i = Int(target)
@@ -1610,16 +1600,14 @@ def infer_train_finetune_step(
         for i in range(vocab):
             var acc = Float32(0)
             for j in range(hidden):
-                acc += Float32(ft[0].w.unsafe_load(offset=i * hidden + j)) * Float32(
-                    h.get(j)
-                )
+                acc += Float32(
+                    ft[unsafe_offset=0].w.unsafe_load(offset=i * hidden + j)
+                ) * Float32(h.get(j))
             probs.unsafe_store(i, Scalar[DType.float32](acc))
             if acc > mx:
                 mx = acc
         for i in range(vocab):
-            var e = exp_f32(
-                Float32(probs.unsafe_load(offset=i)) - mx
-            )
+            var e = exp_f32(Float32(probs.unsafe_load(offset=i)) - mx)
             probs.unsafe_store(i, Scalar[DType.float32](e))
             lsum += e
         var inv = Float32(1.0) / lsum
@@ -1632,10 +1620,10 @@ def infer_train_finetune_step(
             if i == target_i:
                 loss = -log_f32(p)
         # AdamW update: dW[i, j] = (p_i - 1[i==target]) * h[j]
-        ft[0].t += 1
+        ft[unsafe_offset=0].t += 1
         var b1 = Float32(0.9)
         var b2 = Float32(0.999)
-        var t = Float32(ft[0].t)
+        var t = Float32(ft[unsafe_offset=0].t)
         var bc1 = Float32(1.0) - pow_f32(b1, t)
         var bc2 = Float32(1.0) - pow_f32(b2, t)
         if bc1 < Float32(1e-12):
@@ -1650,33 +1638,47 @@ def infer_train_finetune_step(
                 var g = (
                     Float32(probs.unsafe_load(offset=i)) - label
                 ) * Float32(h.get(j))
-                var m_v = b1 * Float32(ft[0].m.unsafe_load(offset=base + j)) + (
-                    Float32(1.0) - b1
-                ) * g
-                var v_v = b2 * Float32(ft[0].v.unsafe_load(offset=base + j)) + (
-                    Float32(1.0) - b2
-                ) * g * g
-                ft[0].m.unsafe_store(base + j, Scalar[DType.float32](m_v))
-                ft[0].v.unsafe_store(base + j, Scalar[DType.float32](v_v))
+                var m_v = (
+                    b1
+                    * Float32(
+                        ft[unsafe_offset=0].m.unsafe_load(offset=base + j)
+                    )
+                    + (Float32(1.0) - b1) * g
+                )
+                var v_v = (
+                    b2
+                    * Float32(
+                        ft[unsafe_offset=0].v.unsafe_load(offset=base + j)
+                    )
+                    + (Float32(1.0) - b2) * g * g
+                )
+                ft[unsafe_offset=0].m.unsafe_store(
+                    base + j, Scalar[DType.float32](m_v)
+                )
+                ft[unsafe_offset=0].v.unsafe_store(
+                    base + j, Scalar[DType.float32](v_v)
+                )
                 var update = (m_v / bc1) / (sqrt_f32(v_v / bc2) + eps)
-                ft[0].w.unsafe_store(
+                ft[unsafe_offset=0].w.unsafe_store(
                     base + j,
                     Scalar[DType.float32](
-                        Float32(ft[0].w.unsafe_load(offset=base + j))
+                        Float32(
+                            ft[unsafe_offset=0].w.unsafe_load(offset=base + j)
+                        )
                         - lr * update
                     ),
                 )
         # sync the fp16 head back into the model (inference sees it now);
         # M11: set_head_fp16() installs it in both load modes
-        var head = model[0].transformer.head_fp16()
+        var head = model[unsafe_offset=0].transformer.head_fp16()
         for i in range(vocab * hidden):
             head.set(
                 i,
                 Scalar[DType.float16](
-                    Float32(ft[0].w.unsafe_load(offset=i))
+                    Float32(ft[unsafe_offset=0].w.unsafe_load(offset=i))
                 ),
             )
-        model[0].transformer.set_head_fp16(head)
+        model[unsafe_offset=0].transformer.set_head_fp16(head)
         probs.unsafe_free()
         return loss
     except:
@@ -1690,9 +1692,9 @@ def infer_train_finetune_free(
     if not ft_p:
         return
     var ft = ft_p.value().unsafe_bitcast[FTState]()
-    ft[0].w.unsafe_free()
-    ft[0].m.unsafe_free()
-    ft[0].v.unsafe_free()
+    ft[unsafe_offset=0].w.unsafe_free()
+    ft[unsafe_offset=0].m.unsafe_free()
+    ft[unsafe_offset=0].v.unsafe_free()
     # shell leaks until process exit (same policy as infer_train_free_model)
 
 
@@ -1702,18 +1704,17 @@ def infer_train_encode(
     text: Pointer[UInt8, MutUntrackedOrigin],
     out_n: Pointer[Int64, MutUntrackedOrigin],
 ) abi("C") -> Optional[Pointer[UInt8, MutUntrackedOrigin]]:
-    try:
-        if not m:
-            return None
-        var model = m.value().unsafe_bitcast[Model]()
-        var tokens = model[0].tokenizer.encode_with_bos(_cstr_to_string(text))
-        var buf = unsafe_alloc[Scalar[DType.int32]](len(tokens))
-        for i in range(len(tokens)):
-            buf.unsafe_store(i, Scalar[DType.int32](tokens[i]))
-        out_n.unsafe_store(val=Int64(len(tokens)))
-        return Optional(buf.unsafe_bitcast[UInt8]())
-    except:
+    if not m:
         return None
+    var model = m.value().unsafe_bitcast[Model]()
+    var tokens = model[unsafe_offset=0].tokenizer.encode_with_bos(
+        _cstr_to_string(text)
+    )
+    var buf = unsafe_alloc[Scalar[DType.int32]](len(tokens))
+    for i in range(len(tokens)):
+        buf.unsafe_store(i, Scalar[DType.int32](tokens[i]))
+    out_n.unsafe_store(val=Int64(len(tokens)))
+    return Optional(buf.unsafe_bitcast[UInt8]())
 
 
 @export
@@ -1722,16 +1723,15 @@ def infer_train_decode(
     tokens: Pointer[Int64, MutUntrackedOrigin],
     n: Int64,
 ) abi("C") -> Optional[Pointer[UInt8, MutUntrackedOrigin]]:
-    try:
-        if not m:
-            return None
-        var model = m.value().unsafe_bitcast[Model]()
-        var list = List[Int]()
-        for i in range(Int(n)):
-            list.append(Int(tokens.unsafe_load(offset=i)))
-        return Optional(_string_to_cstr(model[0].tokenizer.decode(list)))
-    except:
+    if not m:
         return None
+    var model = m.value().unsafe_bitcast[Model]()
+    var list = List[Int]()
+    for i in range(Int(n)):
+        list.append(Int(tokens.unsafe_load(offset=i)))
+    return Optional(
+        _string_to_cstr(model[unsafe_offset=0].tokenizer.decode(list))
+    )
 
 
 def exp_f32(x: Float32) -> Float32:
@@ -1773,8 +1773,10 @@ def infer_train_forward_logits(
         if not m:
             return None
         var model = m.value().unsafe_bitcast[Model]()
-        var logits = model[0].transformer.forward(Int(token), Int(position))
-        var vocab = model[0].transformer.config.vocab
+        var logits = model[unsafe_offset=0].transformer.forward(
+            Int(token), Int(position)
+        )
+        var vocab = model[unsafe_offset=0].transformer.config.vocab
         var buf = unsafe_alloc[Scalar[DType.float32]](vocab)
         for i in range(vocab):
             buf.unsafe_store(i, logits.get(i))

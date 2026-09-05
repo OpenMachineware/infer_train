@@ -105,7 +105,7 @@ def _make_key(dag: Dag, node_id: Int) -> NodeKey:
         in1,
         in2,
         chash,
-        hashed
+        hashed,
     )
 
 

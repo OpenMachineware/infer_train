@@ -44,7 +44,7 @@ def main():
     var (l1, _) = finetune_step(model, tokens, targets)
     print("step1 loss:", l1)
     for _ in range(29):
-        var (l, _) = finetune_step(model, tokens, targets)
+        _ = finetune_step(model, tokens, targets)
     var (loss1, _) = eval_step(model, tokens, targets)
     print("loss after full finetune:", loss1)
     check(loss1 < loss0, "full finetune lowers loss")
@@ -71,7 +71,11 @@ def main():
     check(FinetuneMode.Lora != FinetuneMode.Full, "mode tags")
     var names = param_names(model2)
     check(len(names) == 1 + 2 * 12 + 2, "param name count")
-    check(names[0] == "token_embd.weight" and names[len(names) - 1] == "output.weight", "name order")
+    check(
+        names[0] == "token_embd.weight"
+        and names[len(names) - 1] == "output.weight",
+        "name order",
+    )
 
     print("test_finetune OK")
 

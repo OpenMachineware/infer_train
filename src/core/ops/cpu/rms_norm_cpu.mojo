@@ -9,9 +9,9 @@ from ...utils import unimplemented
 from std.math import sqrt
 
 
-def _rms_norm_cpu_kernel[dtype: DType, simd_width: Int = 0](
-    x: Tensor[dtype, 2], dim: Int, eps: Float32
-) -> Tensor[dtype, 2]:
+def _rms_norm_cpu_kernel[
+    dtype: DType, simd_width: Int = 0
+](x: Tensor[dtype, 2], dim: Int, eps: Float32) -> Tensor[dtype, 2]:
     """out[i, j] = x[i, j] / sqrt(mean(x[i, :]^2) + eps).
 
     `simd_width` is the SIMD lane count (comptime); 0 selects the legacy
@@ -20,7 +20,9 @@ def _rms_norm_cpu_kernel[dtype: DType, simd_width: Int = 0](
     var batch = x.shape()[0]
     var out = tensor_zeros[dtype, 2](x.shape())
 
-    comptime W = simd_width if simd_width > 0 else (8 if dtype == DType.float16 else 4)
+    comptime W = simd_width if simd_width > 0 else (
+        8 if dtype == DType.float16 else 4
+    )
     var d_main = (dim // W) * W
 
     for i in range(batch):
@@ -52,23 +54,25 @@ def _rms_norm_cpu_kernel[dtype: DType, simd_width: Int = 0](
     return out
 
 
-def rms_norm_cpu[dtype: DType, dim: Int, simd_width: Int = 0](
-    x: Tensor[dtype, 2], eps: Float32 = Float32(1e-5)
-) -> Tensor[dtype, 2]:
+def rms_norm_cpu[
+    dtype: DType, dim: Int, simd_width: Int = 0
+](x: Tensor[dtype, 2], eps: Float32 = Float32(1e-5)) -> Tensor[dtype, 2]:
     if x.shape()[1] != dim:
         unimplemented("rms_norm_cpu: static dim mismatch")
     return _rms_norm_cpu_kernel[dtype, simd_width](x, dim, eps)
 
 
-def rms_norm_cpu_dynamic[dtype: DType, simd_width: Int = 0](
-    x: Tensor[dtype, 2], eps: Float32 = Float32(1e-5)
-) -> Tensor[dtype, 2]:
+def rms_norm_cpu_dynamic[
+    dtype: DType, simd_width: Int = 0
+](x: Tensor[dtype, 2], eps: Float32 = Float32(1e-5)) -> Tensor[dtype, 2]:
     return _rms_norm_cpu_kernel[dtype, simd_width](x, x.shape()[1], eps)
 
 
-def rms_norm_cpu_autotuned[dtype: DType](
-    x: Tensor[dtype, 2], width_bits: Int, eps: Float32 = Float32(1e-5)
-) -> Tensor[dtype, 2]:
+def rms_norm_cpu_autotuned[
+    dtype: DType
+](x: Tensor[dtype, 2], width_bits: Int, eps: Float32 = Float32(1e-5)) -> Tensor[
+    dtype, 2
+]:
     """Run the RMSNorm kernel specialized for `width_bits` (64/128/256).
 
     `width_bits` is a runtime value (the autotuner's choice); each branch
@@ -90,9 +94,11 @@ def rms_norm_cpu_autotuned[dtype: DType](
         return _rms_norm_cpu_kernel[dtype, 4](x, dim, eps)
 
 
-def rms_norm_cpu_forward_with_saved[dtype: DType, dim: Int](
-    x: Tensor[dtype, 2], eps: Float32 = Float32(1e-5)
-) -> Tuple[Tensor[dtype, 2], List[Tensor[dtype, 2]]]:
+def rms_norm_cpu_forward_with_saved[
+    dtype: DType, dim: Int
+](x: Tensor[dtype, 2], eps: Float32 = Float32(1e-5)) -> Tuple[
+    Tensor[dtype, 2], List[Tensor[dtype, 2]]
+]:
     var out = rms_norm_cpu[dtype, dim](x, eps)
     var saved = List[Tensor[dtype, 2]]()
     saved.append(x)
@@ -100,9 +106,11 @@ def rms_norm_cpu_forward_with_saved[dtype: DType, dim: Int](
     return (out, saved^)
 
 
-def rms_norm_cpu_backward[dtype: DType, dim: Int](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]]:
+def rms_norm_cpu_backward[
+    dtype: DType, dim: Int
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+]:
     """Backward for unweighted RMSNorm: y = x / sqrt(mean(x^2) + eps).
 
     With r_i = sqrt(ss_i/N + eps) and s_i = sum_j grad_out[i,j] * y[i,j]:
@@ -132,8 +140,7 @@ def rms_norm_cpu_backward[dtype: DType, dim: Int](
         var k = s / Float32(cols)
         for j in range(cols):
             var v = (
-                Float32(grad_out.get(base + j))
-                - Float32(y.get(base + j)) * k
+                Float32(grad_out.get(base + j)) - Float32(y.get(base + j)) * k
             ) / r
             grad_x.set(base + j, Scalar[dtype](v))
     var result = List[Tensor[dtype, 2]]()
@@ -141,7 +148,9 @@ def rms_norm_cpu_backward[dtype: DType, dim: Int](
     return result^
 
 
-def rms_norm_weight_cpu[dtype: DType](
+def rms_norm_weight_cpu[
+    dtype: DType
+](
     x: Tensor[dtype, 2],
     weight: Tensor[dtype, 1],
     eps: Float32 = Float32(1e-5),
@@ -173,7 +182,9 @@ def rms_norm_weight_cpu[dtype: DType](
     return out
 
 
-def rms_norm_weight_cpu_forward_with_saved[dtype: DType](
+def rms_norm_weight_cpu_forward_with_saved[
+    dtype: DType
+](
     x: Tensor[dtype, 2],
     weight: Tensor[dtype, 1],
     eps: Float32 = Float32(1e-5),
@@ -198,7 +209,9 @@ def rms_norm_weight_cpu_forward_with_saved[dtype: DType](
     return (out, saved^)
 
 
-def rms_norm_weight_cpu_backward[dtype: DType](
+def rms_norm_weight_cpu_backward[
+    dtype: DType
+](
     grad_out: Tensor[dtype, 2],
     saved: List[Tensor[dtype, 2]],
     weight: Tensor[dtype, 1],
@@ -232,16 +245,13 @@ def rms_norm_weight_cpu_backward[dtype: DType](
             grad_w.set(
                 j,
                 Scalar[dtype](
-                    Float32(grad_w.get(j))
-                    + go * Float32(z.get(base + j))
+                    Float32(grad_w.get(j)) + go * Float32(z.get(base + j))
                 ),
             )
             s += gz * Float32(z.get(base + j))
         var k = s / Float32(cols)
         for j in range(cols):
-            var gz = Float32(grad_out.get(base + j)) * Float32(
-                weight.get(j)
-            )
+            var gz = Float32(grad_out.get(base + j)) * Float32(weight.get(j))
             var v = (gz - Float32(z.get(base + j)) * k) / r
             grad_x.set(base + j, Scalar[dtype](v))
     return (grad_x, grad_w)

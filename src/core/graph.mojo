@@ -9,7 +9,7 @@ from .ops.base.op_interface import AnyTensor
 comptime NodeID = Int
 
 
-struct AttrValue(Copyable, Movable, ImplicitlyCopyable):
+struct AttrValue(Copyable, ImplicitlyCopyable, Movable):
     """Small tagged union for operator attributes (stand-in for `Any`)."""
 
     var kind: Int8  # 0 = int, 1 = float, 2 = string

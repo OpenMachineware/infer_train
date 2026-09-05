@@ -100,9 +100,7 @@ def generate(
     """
     var tokens = model.tokenizer.encode_with_bos(prompt)
     seed_sampler(seed)
-    var sampler = Sampler(
-        temperature=temperature, top_k=top_k, top_p=top_p
-    )
+    var sampler = Sampler(temperature=temperature, top_k=top_k, top_p=top_p)
     var capacity = model.transformer.cache.capacity()
     if len(tokens) + max_tokens > capacity:
         raise Error(
@@ -124,9 +122,7 @@ def generate(
 
     # decode loop
     for _ in range(max_tokens):
-        var next_token = sample_dynamic[DType.float32](
-            logits, sampler, tokens
-        )
+        var next_token = sample_dynamic[DType.float32](logits, sampler, tokens)
         if next_token == model.tokenizer.eos_id():
             if verbose:
                 print("[eos]")

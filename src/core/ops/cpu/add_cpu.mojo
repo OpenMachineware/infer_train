@@ -9,16 +9,18 @@ from ...simd_utils import W_F16, W_F32
 from std.utils.static_tuple import StaticTuple
 
 
-def _add_cpu_kernel[dtype: DType, simd_width: Int = 0](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def _add_cpu_kernel[
+    dtype: DType, simd_width: Int = 0
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Element-wise add.  `simd_width` is the SIMD lane count (comptime);
     0 selects the legacy per-dtype width."""
     if a.shape() != b.shape():
         unimplemented("add_cpu: shape mismatch")
     var out = tensor_zeros[dtype, 2](a.shape())
     var n = a.numel()
-    comptime W = simd_width if simd_width > 0 else (W_F16 if dtype == DType.float16 else W_F32)
+    comptime W = simd_width if simd_width > 0 else (
+        W_F16 if dtype == DType.float16 else W_F32
+    )
     var n_main = (n // W) * W
     var i = 0
     while i < n_main:
@@ -32,9 +34,9 @@ def _add_cpu_kernel[dtype: DType, simd_width: Int = 0](
     return out
 
 
-def _add_row_cpu_kernel[dtype: DType, simd_width: Int = 0](
-    x: Tensor[dtype, 2], bias: Tensor[dtype, 1]
-) -> Tensor[dtype, 2]:
+def _add_row_cpu_kernel[
+    dtype: DType, simd_width: Int = 0
+](x: Tensor[dtype, 2], bias: Tensor[dtype, 1]) -> Tensor[dtype, 2]:
     """out[i, j] = x[i, j] + bias[j].  `simd_width` is the SIMD lane count
     (comptime); 0 selects the legacy per-dtype width."""
     var rows = x.shape()[0]
@@ -42,7 +44,9 @@ def _add_row_cpu_kernel[dtype: DType, simd_width: Int = 0](
     if bias.shape()[0] != cols:
         unimplemented("add_row_cpu: bias length mismatch")
     var out = tensor_zeros[dtype, 2](x.shape())
-    comptime W = simd_width if simd_width > 0 else (W_F16 if dtype == DType.float16 else W_F32)
+    comptime W = simd_width if simd_width > 0 else (
+        W_F16 if dtype == DType.float16 else W_F32
+    )
     var cols_main = (cols // W) * W
     for i in range(rows):
         var base = i * cols
@@ -58,32 +62,34 @@ def _add_row_cpu_kernel[dtype: DType, simd_width: Int = 0](
     return out
 
 
-def add_cpu[dtype: DType, rows: Int, cols: Int, simd_width: Int = 0](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def add_cpu[
+    dtype: DType, rows: Int, cols: Int, simd_width: Int = 0
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Comptime-shaped element-wise add."""
     if a.shape() != StaticTuple[Int, 2](rows, cols):
         unimplemented("add_cpu: static shape mismatch")
     return _add_cpu_kernel[dtype, simd_width](a, b)
 
 
-def add_cpu_dynamic[dtype: DType, simd_width: Int = 0](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def add_cpu_dynamic[
+    dtype: DType, simd_width: Int = 0
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Runtime-shaped element-wise add."""
     return _add_cpu_kernel[dtype, simd_width](a, b)
 
 
-def add_row_cpu[dtype: DType, simd_width: Int = 0](
-    x: Tensor[dtype, 2], bias: Tensor[dtype, 1]
-) -> Tensor[dtype, 2]:
+def add_row_cpu[
+    dtype: DType, simd_width: Int = 0
+](x: Tensor[dtype, 2], bias: Tensor[dtype, 1]) -> Tensor[dtype, 2]:
     """Broadcast a rank-1 bias across the rows of `x`."""
     return _add_row_cpu_kernel[dtype, simd_width](x, bias)
 
 
-def add_cpu_autotuned[dtype: DType](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2], width_bits: Int
-) -> Tensor[dtype, 2]:
+def add_cpu_autotuned[
+    dtype: DType
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2], width_bits: Int) -> Tensor[
+    dtype, 2
+]:
     """Element-wise add specialized for `width_bits` (64/128/256).
 
     `width_bits` is a runtime value (the autotuner's choice); each branch
@@ -103,9 +109,11 @@ def add_cpu_autotuned[dtype: DType](
         return _add_cpu_kernel[dtype, 4](a, b)
 
 
-def add_cpu_forward_with_saved[dtype: DType, rows: Int, cols: Int](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tuple[Tensor[dtype, 2], List[Tensor[dtype, 2]]]:
+def add_cpu_forward_with_saved[
+    dtype: DType, rows: Int, cols: Int
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tuple[
+    Tensor[dtype, 2], List[Tensor[dtype, 2]]
+]:
     var out = add_cpu[dtype, rows, cols](a, b)
     var saved = List[Tensor[dtype, 2]]()
     saved.append(a)
@@ -113,9 +121,11 @@ def add_cpu_forward_with_saved[dtype: DType, rows: Int, cols: Int](
     return (out, saved^)
 
 
-def add_cpu_backward[dtype: DType, rows: Int, cols: Int, simd_width: Int = 0](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]]:
+def add_cpu_backward[
+    dtype: DType, rows: Int, cols: Int, simd_width: Int = 0
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+]:
     """Backward for element-wise add: both inputs get a copy of grad_out.
 
     `saved` = [a, b] (unused here - add is linear with identity Jacobian).
@@ -126,7 +136,9 @@ def add_cpu_backward[dtype: DType, rows: Int, cols: Int, simd_width: Int = 0](
     var grad_a = tensor_zeros[dtype, 2](grad_out.shape())
     var grad_b = tensor_zeros[dtype, 2](grad_out.shape())
     var n = grad_out.numel()
-    comptime W = simd_width if simd_width > 0 else (W_F16 if dtype == DType.float16 else W_F32)
+    comptime W = simd_width if simd_width > 0 else (
+        W_F16 if dtype == DType.float16 else W_F32
+    )
     var n_main = (n // W) * W
     var i = 0
     while i < n_main:
@@ -145,9 +157,11 @@ def add_cpu_backward[dtype: DType, rows: Int, cols: Int, simd_width: Int = 0](
     return result^
 
 
-def add_row_cpu_backward[dtype: DType](
-    grad_out: Tensor[dtype, 2], bias: Tensor[dtype, 1]
-) -> Tuple[Tensor[dtype, 2], Tensor[dtype, 1]]:
+def add_row_cpu_backward[
+    dtype: DType
+](grad_out: Tensor[dtype, 2], bias: Tensor[dtype, 1]) -> Tuple[
+    Tensor[dtype, 2], Tensor[dtype, 1]
+]:
     """Backward for `add_row_cpu` (row broadcast bias add).
 
     grad_x = grad_out; grad_bias[j] = sum_i grad_out[i, j].

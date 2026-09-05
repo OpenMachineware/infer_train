@@ -27,7 +27,7 @@ from std.utils.static_tuple import StaticTuple
 # -- shared state -------------------------------------------------------------
 
 
-struct ParamEntry(Copyable, Movable, ImplicitlyCopyable):
+struct ParamEntry(Copyable, ImplicitlyCopyable, Movable):
     var param: AnyTensor
     var grad: AnyTensor  # fp32 accumulation buffer (optimizer-owned)
     var state: Pointer[UInt8, MutUntrackedOrigin]
@@ -51,7 +51,9 @@ struct ParamGroup(Copyable, Movable):
     var weight_decay: Float32
 
     def __init__(
-        out self, lr: Float32 = Float32(1e-3), weight_decay: Float32 = Float32(0)
+        out self,
+        lr: Float32 = Float32(1e-3),
+        weight_decay: Float32 = Float32(0),
     ):
         self.entries = List[ParamEntry]()
         self.lr = lr
@@ -228,9 +230,9 @@ struct AdamW(Movable):
         var g0 = ParamGroup(lr, weight_decay)
         self.groups.append(g0^)
 
-    def add_param[dtype: DType, rank: Int](
-        mut self, mut param: Tensor[dtype, rank], group_index: Int = 0
-    ):
+    def add_param[
+        dtype: DType, rank: Int
+    ](mut self, mut param: Tensor[dtype, rank], group_index: Int = 0):
         """Register `param` (a caller-owned tensor) with the optimizer.
 
         Allocates the persistent fp32 gradient buffer and the AdamW state
@@ -243,7 +245,7 @@ struct AdamW(Movable):
         var m = _alloc_f32_like(any)
         var v = _alloc_f32_like(any)
         var state = unsafe_alloc[AdamState](1)
-        state[0] = AdamState(
+        state[unsafe_offset=0] = AdamState(
             m,
             v,
             m.data.unsafe_bitcast[Scalar[DType.float32]](),
@@ -315,18 +317,16 @@ struct AdamW(Movable):
                 if entry.frozen:
                     continue  # M7 LoRA: frozen params keep their values
                 var state = entry.state.unsafe_bitcast[AdamState]()
-                state[0].t += 1
-                var t = state[0].t
+                state[unsafe_offset=0].t += 1
+                var t = state[unsafe_offset=0].t
                 var numel = entry.param.numel
-                var m = state[0].m.data.unsafe_bitcast[
+                var m = state[unsafe_offset=0].m.data.unsafe_bitcast[
                     Scalar[DType.float32]
                 ]()
-                var v = state[0].v.data.unsafe_bitcast[
+                var v = state[unsafe_offset=0].v.data.unsafe_bitcast[
                     Scalar[DType.float32]
                 ]()
-                var g = entry.grad.data.unsafe_bitcast[
-                    Scalar[DType.float32]
-                ]()
+                var g = entry.grad.data.unsafe_bitcast[Scalar[DType.float32]]()
                 var p = entry.param
                 var bc1 = Float32(1.0) - pow(b1, Float32(t))
                 var bc2 = Float32(1.0) - pow(b2, Float32(t))
@@ -336,14 +336,22 @@ struct AdamW(Movable):
                     bc2 = Float32(1e-12)
                 for i in range(numel):
                     var gv = Float32(g.unsafe_load[width=1](offset=i))
-                    var mv = b1 * Float32(m.unsafe_load[width=1](offset=i)) + one_m_b1 * gv
-                    var vv = b2 * Float32(v.unsafe_load[width=1](offset=i)) + one_m_b2 * gv * gv
+                    var mv = (
+                        b1 * Float32(m.unsafe_load[width=1](offset=i))
+                        + one_m_b1 * gv
+                    )
+                    var vv = (
+                        b2 * Float32(v.unsafe_load[width=1](offset=i))
+                        + one_m_b2 * gv * gv
+                    )
                     m.unsafe_store(i, Scalar[DType.float32](mv))
                     v.unsafe_store(i, Scalar[DType.float32](vv))
                     var mh = mv / bc1
                     var vh = vv / bc2
                     var pv = Float32(
-                        p.data.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load[width=1](offset=i)
+                        p.data.unsafe_bitcast[
+                            Scalar[DType.float32]
+                        ]().unsafe_load[width=1](offset=i)
                     )
                     var update = mh / (sqrt(vh) + Float32(self.eps)) + wd * pv
                     _set_param_scaled(p, pv - lr * update, i)
@@ -367,16 +375,16 @@ struct SGD(Movable):
         var g0 = ParamGroup(lr, weight_decay)
         self.groups.append(g0^)
 
-    def add_param[dtype: DType, rank: Int](
-        mut self, mut param: Tensor[dtype, rank], group_index: Int = 0
-    ):
+    def add_param[
+        dtype: DType, rank: Int
+    ](mut self, mut param: Tensor[dtype, rank], group_index: Int = 0):
         if group_index < 0 or group_index >= len(self.groups):
             unimplemented("SGD.add_param: bad group index")
         var any = to_any[dtype, rank](param)
         var grad = _alloc_f32_like(any)
         var buf = _alloc_f32_like(any)
         var state = unsafe_alloc[SGDState](1)
-        state[0] = SGDState(
+        state[unsafe_offset=0] = SGDState(
             buf, buf.data.unsafe_bitcast[Scalar[DType.float32]]()
         )
         param.set_opt_state(state.unsafe_bitcast[UInt8]())
@@ -411,21 +419,23 @@ struct SGD(Movable):
             var wd = Float32(group.weight_decay)
             for entry in group.entries:
                 var state = entry.state.unsafe_bitcast[SGDState]()
-                state[0].t += 1
+                state[unsafe_offset=0].t += 1
                 var numel = entry.param.numel
-                var buf = state[0].buf.data.unsafe_bitcast[
+                var buf = state[unsafe_offset=0].buf.data.unsafe_bitcast[
                     Scalar[DType.float32]
                 ]()
-                var g = entry.grad.data.unsafe_bitcast[
-                    Scalar[DType.float32]
-                ]()
+                var g = entry.grad.data.unsafe_bitcast[Scalar[DType.float32]]()
                 var p = entry.param
                 for i in range(numel):
                     var gv = Float32(g.unsafe_load[width=1](offset=i))
-                    var bv = mu * Float32(buf.unsafe_load[width=1](offset=i)) + gv
+                    var bv = (
+                        mu * Float32(buf.unsafe_load[width=1](offset=i)) + gv
+                    )
                     buf.unsafe_store(i, Scalar[DType.float32](bv))
                     var pv = Float32(
-                        p.data.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load[width=1](offset=i)
+                        p.data.unsafe_bitcast[
+                            Scalar[DType.float32]
+                        ]().unsafe_load[width=1](offset=i)
                     )
                     var update = bv + wd * pv
                     _set_param_scaled(p, pv - lr * update, i)
@@ -435,7 +445,9 @@ struct SGD(Movable):
 #
 
 
-def adamw_step_raw[dtype: DType](
+def adamw_step_raw[
+    dtype: DType
+](
     mut param: AnyTensor,
     mut grad: AnyTensor,
     mut m: AnyTensor,
@@ -465,15 +477,22 @@ def adamw_step_raw[dtype: DType](
         var vp = v.data.unsafe_bitcast[Scalar[DType.float32]]()
         for i in range(numel):
             var gv = Float32(g.unsafe_load[width=1](offset=i))
-            var mv = b1 * Float32(mp.unsafe_load[width=1](offset=i)) + one_m_b1 * gv
-            var vv = b2 * Float32(vp.unsafe_load[width=1](offset=i)) + one_m_b2 * gv * gv
+            var mv = (
+                b1 * Float32(mp.unsafe_load[width=1](offset=i)) + one_m_b1 * gv
+            )
+            var vv = (
+                b2 * Float32(vp.unsafe_load[width=1](offset=i))
+                + one_m_b2 * gv * gv
+            )
             mp.unsafe_store(i, Scalar[DType.float32](mv))
             vp.unsafe_store(i, Scalar[DType.float32](vv))
             var pv = Float32(p.unsafe_load[width=1](offset=i))
             p.unsafe_store(
                 i,
                 Scalar[DType.float32](
-                    pv - lr * (mv / bc1 / (sqrt(vv / bc2) + eps) + weight_decay * pv)
+                    pv
+                    - lr
+                    * (mv / bc1 / (sqrt(vv / bc2) + eps) + weight_decay * pv)
                 ),
             )
     elif dtype == DType.float16:
@@ -483,15 +502,22 @@ def adamw_step_raw[dtype: DType](
         var vp = v.data.unsafe_bitcast[Scalar[DType.float32]]()
         for i in range(numel):
             var gv = Float32(g.unsafe_load[width=1](offset=i))
-            var mv = b1 * Float32(mp.unsafe_load[width=1](offset=i)) + one_m_b1 * gv
-            var vv = b2 * Float32(vp.unsafe_load[width=1](offset=i)) + one_m_b2 * gv * gv
+            var mv = (
+                b1 * Float32(mp.unsafe_load[width=1](offset=i)) + one_m_b1 * gv
+            )
+            var vv = (
+                b2 * Float32(vp.unsafe_load[width=1](offset=i))
+                + one_m_b2 * gv * gv
+            )
             mp.unsafe_store(i, Scalar[DType.float32](mv))
             vp.unsafe_store(i, Scalar[DType.float32](vv))
             var pv = Float32(p.unsafe_load[width=1](offset=i))
             p.unsafe_store(
                 i,
                 Scalar[DType.float16](
-                    pv - lr * (mv / bc1 / (sqrt(vv / bc2) + eps) + weight_decay * pv)
+                    pv
+                    - lr
+                    * (mv / bc1 / (sqrt(vv / bc2) + eps) + weight_decay * pv)
                 ),
             )
     else:

@@ -3,6 +3,7 @@ from src.core.device import Device, get_default_device, has_metal_gpu
 from src.core.memory import MemoryPool
 from std.utils.static_tuple import StaticTuple
 
+
 def main():
     print("metal:", has_metal_gpu())
     print("default device:", get_default_device().name())
@@ -16,7 +17,7 @@ def main():
     var c = tensor_copy[DType.float32, 2](t)
     print("copy get4:", c.get(4))
     var pool = MemoryPool(1024)
-    var p = pool.allocate(128)
+    _ = pool.allocate(128)
     print("pool offset:", pool.used(), "capacity:", pool.capacity())
     pool.reset()
     print("pool after reset:", pool.used())

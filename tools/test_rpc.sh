@@ -39,7 +39,11 @@ for log in "$L1" "$L2"; do
         grep -q "listening" "$log" 2>/dev/null && break
         sleep 0.1
     done
-    grep -q "listening" "$log" || { echo "FAIL: worker did not start"; cat "$log"; exit 1; }
+    grep -q "listening" "$log" || {
+        echo "FAIL: worker did not start"
+        cat "$log"
+        exit 1
+    }
 done
 
 PROMPT="What is 1+1? Answer with just the number."
@@ -61,8 +65,12 @@ echo "$OUT_RPC"
 
 # The workers must have received the layer assignment (28 layers / 2).
 # (Mojo print separates arguments with spaces: "layers 0 .. 13".)
-grep -q "shard ready: layers 0 .. 13" "$L1" || { echo "FAIL: worker 1 shard"; cat "$L1"; exit 1; }
-grep -q "shard ready: layers 14 .. 27" "$L2" || { echo "FAIL: worker 2 shard"; cat "$L2"; exit 1; }
+grep -q "shard ready: layers 0 .. 13" "$L1" || {
+    echo "FAIL: worker 1 shard"; cat "$L1"; exit 1
+}
+grep -q "shard ready: layers 14 .. 27" "$L2" || {
+    echo "FAIL: worker 2 shard"; cat "$L2"; exit 1
+}
 
 if [ -z "$OUT_LOCAL" ] || [ -z "$OUT_RPC" ]; then
     echo "FAIL: empty output"

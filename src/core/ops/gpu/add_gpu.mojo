@@ -43,7 +43,7 @@ def _add_kernel_f32(
     var i = global_idx.x
     var stride = grid_dim.x * block_dim.x
     while i < n_i:
-        dst[i] = a[i] + b[i]
+        dst[unsafe_offset=i] = a[unsafe_offset=i] + b[unsafe_offset=i]
         i += stride
 
 
@@ -57,7 +57,7 @@ def _add_kernel_f16(
     var i = global_idx.x
     var stride = grid_dim.x * block_dim.x
     while i < n_i:
-        dst[i] = a[i] + b[i]
+        dst[unsafe_offset=i] = a[unsafe_offset=i] + b[unsafe_offset=i]
         i += stride
 
 
@@ -74,7 +74,7 @@ def _add_row_kernel_f32(
     var stride = grid_dim.x * block_dim.x
     while i < n_i:
         var j = i % cols_i
-        dst[i] = x[i] + bias[j]
+        dst[unsafe_offset=i] = x[unsafe_offset=i] + bias[unsafe_offset=j]
         i += stride
 
 
@@ -91,7 +91,7 @@ def _add_row_kernel_f16(
     var stride = grid_dim.x * block_dim.x
     while i < n_i:
         var j = i % cols_i
-        dst[i] = x[i] + bias[j]
+        dst[unsafe_offset=i] = x[unsafe_offset=i] + bias[unsafe_offset=j]
         i += stride
 
 
@@ -104,7 +104,7 @@ def _copy_kernel_f32(
     var i = global_idx.x
     var stride = grid_dim.x * block_dim.x
     while i < n_i:
-        dst[i] = src[i]
+        dst[unsafe_offset=i] = src[unsafe_offset=i]
         i += stride
 
 
@@ -117,14 +117,16 @@ def _copy_kernel_f16(
     var i = global_idx.x
     var stride = grid_dim.x * block_dim.x
     while i < n_i:
-        dst[i] = src[i]
+        dst[unsafe_offset=i] = src[unsafe_offset=i]
         i += stride
 
 
 # -- launch helpers -----------------------------------------------------------
 
 
-def _add_gpu_launch[dtype: DType](
+def _add_gpu_launch[
+    dtype: DType
+](
     ctx: DeviceContext, a: Tensor[dtype, 2], b: Tensor[dtype, 2]
 ) raises -> Tensor[dtype, 2]:
     if a.shape() != b.shape():
@@ -135,20 +137,30 @@ def _add_gpu_launch[dtype: DType](
     var dst_buf = ctx.enqueue_create_buffer[dtype](n)
     comptime if dtype == DType.float16:
         ctx.enqueue_function[_add_kernel_f16](
-            a_buf, b_buf, dst_buf, Int32(n),
-            grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+            a_buf,
+            b_buf,
+            dst_buf,
+            Int32(n),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
         )
     else:
         ctx.enqueue_function[_add_kernel_f32](
-            a_buf, b_buf, dst_buf, Int32(n),
-            grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+            a_buf,
+            b_buf,
+            dst_buf,
+            Int32(n),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
         )
     var out = download2[dtype](ctx, dst_buf, a.shape())
     ctx.synchronize()
     return out
 
 
-def _add_row_gpu_launch[dtype: DType](
+def _add_row_gpu_launch[
+    dtype: DType
+](
     ctx: DeviceContext, x: Tensor[dtype, 2], bias: Tensor[dtype, 1]
 ) raises -> Tensor[dtype, 2]:
     var cols = x.shape()[1]
@@ -160,34 +172,50 @@ def _add_row_gpu_launch[dtype: DType](
     var dst_buf = ctx.enqueue_create_buffer[dtype](n)
     comptime if dtype == DType.float16:
         ctx.enqueue_function[_add_row_kernel_f16](
-            x_buf, bias_buf, dst_buf, Int32(cols), Int32(n),
-            grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+            x_buf,
+            bias_buf,
+            dst_buf,
+            Int32(cols),
+            Int32(n),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
         )
     else:
         ctx.enqueue_function[_add_row_kernel_f32](
-            x_buf, bias_buf, dst_buf, Int32(cols), Int32(n),
-            grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+            x_buf,
+            bias_buf,
+            dst_buf,
+            Int32(cols),
+            Int32(n),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
         )
     var out = download2[dtype](ctx, dst_buf, x.shape())
     ctx.synchronize()
     return out
 
 
-def _copy_gpu_launch[dtype: DType](
-    ctx: DeviceContext, src: Tensor[dtype, 2]
-) raises -> Tensor[dtype, 2]:
+def _copy_gpu_launch[
+    dtype: DType
+](ctx: DeviceContext, src: Tensor[dtype, 2]) raises -> Tensor[dtype, 2]:
     var n = src.numel()
     var src_buf = upload[dtype, 2](ctx, src)
     var dst_buf = ctx.enqueue_create_buffer[dtype](n)
     comptime if dtype == DType.float16:
         ctx.enqueue_function[_copy_kernel_f16](
-            src_buf, dst_buf, Int32(n),
-            grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+            src_buf,
+            dst_buf,
+            Int32(n),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
         )
     else:
         ctx.enqueue_function[_copy_kernel_f32](
-            src_buf, dst_buf, Int32(n),
-            grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+            src_buf,
+            dst_buf,
+            Int32(n),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
         )
     var out = download2[dtype](ctx, dst_buf, src.shape())
     ctx.synchronize()
@@ -197,9 +225,9 @@ def _copy_gpu_launch[dtype: DType](
 # -- public entry points ------------------------------------------------------
 
 
-def add_gpu[dtype: DType, rows: Int, cols: Int](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def add_gpu[
+    dtype: DType, rows: Int, cols: Int
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Comptime-shaped GPU element-wise add (CPU fallback on any GPU error)."""
     if a.shape() != StaticTuple[Int, 2](rows, cols):
         unimplemented("add_gpu: static shape mismatch")
@@ -212,9 +240,9 @@ def add_gpu[dtype: DType, rows: Int, cols: Int](
         return add_cpu[dtype, rows, cols](a, b)
 
 
-def add_gpu_dynamic[dtype: DType](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def add_gpu_dynamic[
+    dtype: DType
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Runtime-shaped GPU element-wise add (CPU fallback on any GPU error)."""
     if not gpu_available[dtype]():
         return add_cpu_dynamic[dtype](a, b)
@@ -225,9 +253,9 @@ def add_gpu_dynamic[dtype: DType](
         return add_cpu_dynamic[dtype](a, b)
 
 
-def add_row_gpu[dtype: DType](
-    x: Tensor[dtype, 2], bias: Tensor[dtype, 1]
-) -> Tensor[dtype, 2]:
+def add_row_gpu[
+    dtype: DType
+](x: Tensor[dtype, 2], bias: Tensor[dtype, 1]) -> Tensor[dtype, 2]:
     """GPU row-broadcast bias add: out[i, j] = x[i, j] + bias[j]."""
     if not gpu_available[dtype]():
         return add_row_cpu[dtype](x, bias)
@@ -238,9 +266,11 @@ def add_row_gpu[dtype: DType](
         return add_row_cpu[dtype](x, bias)
 
 
-def add_gpu_forward_with_saved[dtype: DType, rows: Int, cols: Int](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tuple[Tensor[dtype, 2], List[Tensor[dtype, 2]]]:
+def add_gpu_forward_with_saved[
+    dtype: DType, rows: Int, cols: Int
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tuple[
+    Tensor[dtype, 2], List[Tensor[dtype, 2]]
+]:
     var out = add_gpu[dtype, rows, cols](a, b)
     var saved = List[Tensor[dtype, 2]]()
     saved.append(a)
@@ -248,9 +278,11 @@ def add_gpu_forward_with_saved[dtype: DType, rows: Int, cols: Int](
     return (out, saved^)
 
 
-def add_gpu_backward[dtype: DType, rows: Int, cols: Int](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]]:
+def add_gpu_backward[
+    dtype: DType, rows: Int, cols: Int
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+]:
     """Backward for element-wise add: both inputs get a copy of grad_out."""
     _ = saved
     if not gpu_available[dtype]():

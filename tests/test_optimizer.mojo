@@ -30,7 +30,10 @@ from src.core.optimizer.dag_ir import (
 )
 from src.core.optimizer.dag_optimizer import optimize_dag, summarize_dag
 from src.core.optimizer.verify import verify_dags, clone_dag, execute_dag
-from src.core.optimizer.shape_inference import set_input_shape, dag_shape_inference
+from src.core.optimizer.shape_inference import (
+    set_input_shape,
+    dag_shape_inference,
+)
 from src.core.optimizer.constant_fold import dag_constant_fold
 from src.core.optimizer.simplify import dag_simplify
 from src.core.optimizer.cse import dag_cse
@@ -63,9 +66,7 @@ def _one(a: Int) -> List[Int]:
     return l^
 
 
-def _fill_f32(
-    mut t: Tensor[DType.float32, 2], seed: Int, scale: Float32
-):
+def _fill_f32(mut t: Tensor[DType.float32, 2], seed: Int, scale: Float32):
     var n = t.numel()
     for i in range(n):
         var v = Float32((i * 7 + seed * 13) % 101) / Float32(101.0) * scale
@@ -73,17 +74,13 @@ def _fill_f32(
 
 
 def _make_const(rows: Int, cols: Int, seed: Int) -> AnyTensor:
-    var t = tensor_zeros[DType.float32, 2](
-        StaticTuple[Int, 2](rows, cols)
-    )
+    var t = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](rows, cols))
     _fill_f32(t, seed, 1)
     return to_any[DType.float32, 2](t)
 
 
 def _zero_const(rows: Int, cols: Int) -> AnyTensor:
-    var t = tensor_zeros[DType.float32, 2](
-        StaticTuple[Int, 2](rows, cols)
-    )
+    var t = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](rows, cols))
     return to_any[DType.float32, 2](t)
 
 
@@ -102,7 +99,7 @@ def build_test_dag(mut dag: Dag, mut inputs: List[AnyTensor]):
     var ab = dag.add_node(OP_ADD_BIAS, _in(lm0, bias), 0)
     var rn = dag.add_node(OP_RMS_NORM, _one(ab), 0)
     var lm1 = dag.add_node(OP_LM_HEAD, _in(x, w), 0)  # CSE dup
-    var soft = dag.add_node(OP_SOFTMAX, _one(lm1), 0)  # dead
+    _ = dag.add_node(OP_SOFTMAX, _one(lm1), 0)  # dead
     var z = dag.add_node(OP_ADD, _in(rn, zero), 0)  # x + 0 -> x
     var cs = dag.add_node(OP_ADD, _in(c1, c2), 0)  # const fold
     var out = dag.add_node(OP_ADD, _in(z, cs), 0)
@@ -133,12 +130,21 @@ def main():
 
     print("after pipeline: ", summarize_dag(dag))
     print(
-        "  folded=", stats.folded, " simplified=", stats.simplified,
-        " cse=", stats.cse_removed, " fused=", stats.fused,
-        " dce=", stats.dce_removed,
+        "  folded=",
+        stats.folded,
+        " simplified=",
+        stats.simplified,
+        " cse=",
+        stats.cse_removed,
+        " fused=",
+        stats.fused,
+        " dce=",
+        stats.dce_removed,
     )
-    check("pipeline preserves outputs (verify_dags)",
-          verify_dags(original, dag, inputs))
+    check(
+        "pipeline preserves outputs (verify_dags)",
+        verify_dags(original, dag, inputs),
+    )
     check("constant fold ran", stats.folded >= 1)
     check("simplify ran (x + 0 -> x)", stats.simplified >= 1)
     check("cse removed the duplicate lm_head", stats.cse_removed >= 1)
@@ -186,7 +192,7 @@ def main():
     var n_blocks = 16
     var w_const = chain.add_const(_make_const(6, 6, 7), "Wc")
     var prev = h
-    for b in range(n_blocks):
+    for _ in range(n_blocks):
         var lm = chain.add_node(OP_LM_HEAD, _in(prev, w_const), 0)
         var rn = chain.add_node(OP_RMS_NORM, _one(lm), 0)
         prev = rn
@@ -195,13 +201,18 @@ def main():
     _ = dag_shape_inference(chain)
     var plan = dag_memory_plan(chain)
     var reduction_pct = (
-        (plan.baseline_bytes - plan.planned_bytes) * 100
-        // plan.baseline_bytes
+        (plan.baseline_bytes - plan.planned_bytes) * 100 // plan.baseline_bytes
     )
     print(
-        "  memory plan: baseline=", plan.baseline_bytes,
-        "B planned=", plan.planned_bytes, "B (", reduction_pct, "% smaller)",
-        " slots=", plan.n_slots,
+        "  memory plan: baseline=",
+        plan.baseline_bytes,
+        "B planned=",
+        plan.planned_bytes,
+        "B (",
+        reduction_pct,
+        "% smaller)",
+        " slots=",
+        plan.n_slots,
     )
     check("memory plan reduces peak >= 20%", reduction_pct >= 20)
 
@@ -213,8 +224,10 @@ def main():
     chain_inputs.append(to_any[DType.float32, 2](cx))
     var cstats = optimize_dag(chain)
     print("  chain after pipeline: ", summarize_dag(chain))
-    check("chain graph verifies after pipeline",
-          verify_dags(chain_copy, chain, chain_inputs))
+    check(
+        "chain graph verifies after pipeline",
+        verify_dags(chain_copy, chain, chain_inputs),
+    )
     check("chain fusion fused all blocks", cstats.fused == n_blocks)
 
     # ------------------------------------------------------------------
@@ -228,7 +241,9 @@ def main():
     var cbias = c_dag.add_const(_make_const(6, 1, 23), "bias")
     var ccond = c_dag.add_const(_make_const(1, 1, 24), "cond")
     # make the condition a 1.0 (true)
-    var ccond_t = from_any[DType.float32, 2](c_dag.nodes[ccond].const_data.value())
+    var ccond_t = from_any[DType.float32, 2](
+        c_dag.nodes[ccond].const_data.value()
+    )
     ccond_t.set(0, Scalar[DType.float32](1.0))
     var t_lm = c_dag.add_node(OP_LM_HEAD, _in(cx_in, cw1), 0)
     var t_ab = c_dag.add_node(OP_ADD_BIAS, _in(t_lm, cbias), 0)
@@ -258,13 +273,24 @@ def main():
         for k in range(len(cfg_ref)):
             var diff = _max_abs_diff(cfg_ref[k], cfg_dag_ref[k])
             if diff > Float32(1e-4):
-                print("  [cfg] output ", k, " diff=", diff, " numel ref=", cfg_ref[k].numel, " got=", cfg_dag_ref[k].numel)
+                print(
+                    "  [cfg] output ",
+                    k,
+                    " diff=",
+                    diff,
+                    " numel ref=",
+                    cfg_ref[k].numel,
+                    " got=",
+                    cfg_dag_ref[k].numel,
+                )
                 cfg_match = False
     else:
         print("  [cfg] output count ", len(cfg_ref), " vs ", len(cfg_dag_ref))
         cfg_match = False
     check("cfg_to_dag output matches CFG interpreter", cfg_match)
-    check("cfg pipeline fused the then-branch linear", lower_res.stats.fused >= 1)
+    check(
+        "cfg pipeline fused the then-branch linear", lower_res.stats.fused >= 1
+    )
     print("  lowered dag: ", summarize_dag(lower_res.dag))
 
     # static while: unrolls `trips` times
@@ -273,7 +299,9 @@ def main():
     set_input_shape(w_dag, wh, _shape(2, 6), 0)
     var ww = w_dag.add_const(_make_const(6, 6, 31), "Ww")
     var wcond = w_dag.add_const(_make_const(1, 1, 32), "cond")
-    var wcond_t = from_any[DType.float32, 2](w_dag.nodes[wcond].const_data.value())
+    var wcond_t = from_any[DType.float32, 2](
+        w_dag.nodes[wcond].const_data.value()
+    )
     wcond_t.set(0, Scalar[DType.float32](1.0))
     var body_lm = w_dag.add_node(OP_LM_HEAD, _in(wh, ww), 0)
     var body_rn = w_dag.add_node(OP_RMS_NORM, _one(body_lm), 0)

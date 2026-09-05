@@ -144,9 +144,7 @@ def requantize_q8_0(
 # -- Q4_K (llama.cpp quantize_row_q4_K_ref) -----------------------------------
 
 
-def _pack_scale_min(
-    j: Int, ls: Int, lm: Int, mut scales: List[UInt8]
-):
+def _pack_scale_min(j: Int, ls: Int, lm: Int, mut scales: List[UInt8]):
     if j < 4:
         scales[j] = UInt8(ls)
         scales[j + 4] = UInt8(lm)
@@ -223,19 +221,13 @@ def requantize_q4_k(
         for _ in range(QK_K):
             L.append(0)
         for j in range(8):
-            var d = (
-                Float32(max_scale / Float32(63.0)) * Float32(ls_list[j])
-            )
+            var d = Float32(max_scale / Float32(63.0)) * Float32(ls_list[j])
             if d == Float32(0):
                 continue
-            var dm = (
-                Float32(max_min / Float32(63.0)) * Float32(lm_list[j])
-            )
+            var dm = Float32(max_min / Float32(63.0)) * Float32(lm_list[j])
             for l in range(32):
                 var q = Int(
-                    round(
-                        (Float32(src.get(i * QK_K + j * 32 + l)) + dm) / d
-                    )
+                    round((Float32(src.get(i * QK_K + j * 32 + l)) + dm) / d)
                 )
                 if q > 15:
                     q = 15

@@ -190,9 +190,7 @@ def check_forward_match(model_path: String, n_tokens: Int, tol: Float32) raises:
     # legacy full-dequantize path
     var ctx2 = load_gguf(model_path)
     var config2 = load_config(ctx2)
-    var m2 = TransformerModel(
-        config2, ctx2^, 512, quant_resident=False
-    )
+    var m2 = TransformerModel(config2, ctx2^, 512, quant_resident=False)
     var logits2 = m2.forward(100, 0)
     for i in range(1, n_tokens):
         logits2 = m2.forward(100, i)

@@ -146,9 +146,7 @@ struct JsonParser:
     var size: Int
     var pos: Int
 
-    def __init__(
-        out self, data: Pointer[UInt8, MutUntrackedOrigin], size: Int
-    ):
+    def __init__(out self, data: Pointer[UInt8, MutUntrackedOrigin], size: Int):
         self.data = data
         self.size = size
         self.pos = 0
@@ -172,11 +170,18 @@ struct JsonParser:
     def advance(mut self) -> UInt8:
         return self._advance()
 
+    def skip(mut self):
+        """Advance one byte, discarding it (the value is not needed)."""
+        self.pos += 1
+
     def _skip_ws(mut self):
         while self.pos < self.size:
             var b = self._peek()
-            if b == UInt8(32) or b == UInt8(9) or b == UInt8(10) or b == UInt8(
-                13
+            if (
+                b == UInt8(32)
+                or b == UInt8(9)
+                or b == UInt8(10)
+                or b == UInt8(13)
             ):
                 self.pos += 1
             else:
@@ -230,8 +235,8 @@ struct JsonParser:
                             == UInt8(117)
                         ):
                             var low = self._read_hex4(p + 2)
-                            cp = 0x10000 + ((cp - 0xD800) << 10) + (
-                                low - 0xDC00
+                            cp = (
+                                0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00)
                             )
                             p += 6
                     out_idx = utf8_encode(cp, buf, out_idx)
@@ -265,7 +270,7 @@ struct JsonParser:
         var negative = False
         if self._peek() == UInt8(45):  # '-'
             negative = True
-            self._advance()
+            self.skip()
         var value = 0
         while self._peek() >= UInt8(48) and self._peek() <= UInt8(57):
             value = value * 10 + Int(self._advance()) - 48
@@ -277,24 +282,24 @@ struct JsonParser:
         var start = self.pos
         var is_float = False
         if self._peek() == UInt8(45):  # '-'
-            self._advance()
+            self.skip()
         while self._peek() >= UInt8(48) and self._peek() <= UInt8(57):
-            self._advance()
+            self.skip()
         if self._peek() == UInt8(46):  # '.'
             is_float = True
-            self._advance()
+            self.skip()
             while self._peek() >= UInt8(48) and self._peek() <= UInt8(57):
-                self._advance()
+                self.skip()
         var b = self._peek()
         if b == UInt8(101) or b == UInt8(69):  # 'e' / 'E'
             is_float = True
-            self._advance()
-            if (
-                self._peek() == UInt8(43) or self._peek() == UInt8(45)
+            self.skip()
+            if self._peek() == UInt8(43) or self._peek() == UInt8(
+                45
             ):  # +/- exponent sign
-                self._advance()
+                self.skip()
             while self._peek() >= UInt8(48) and self._peek() <= UInt8(57):
-                self._advance()
+                self.skip()
         var end = self.pos
         var span = Span[UInt8, MutUntrackedOrigin](
             unsafe_ptr=self.data.unsafe_offset(start), length=end - start
@@ -317,10 +322,10 @@ struct JsonParser:
         self._skip_ws()
         var b = self._peek()
         if b == UInt8(123):  # '{'
-            _ = self._advance()
+            self.skip()
             self._skip_ws()
             if self._peek() == UInt8(125):  # '}'
-                _ = self._advance()
+                self.skip()
                 return
             while True:
                 self._skip_ws()
@@ -334,27 +339,27 @@ struct JsonParser:
                 self._skip_ws()
                 var c = self._peek()
                 if c == UInt8(44):  # ','
-                    _ = self._advance()
+                    self.skip()
                     continue
                 if c == UInt8(125):  # '}'
-                    _ = self._advance()
+                    self.skip()
                     return
                 raise Error("json: expected ',' or '}' in skip")
         elif b == UInt8(91):  # '['
-            _ = self._advance()
+            self.skip()
             self._skip_ws()
             if self._peek() == UInt8(93):  # ']'
-                _ = self._advance()
+                self.skip()
                 return
             while True:
                 self.skip_value()
                 self._skip_ws()
                 var c = self._peek()
                 if c == UInt8(44):  # ','
-                    _ = self._advance()
+                    self.skip()
                     continue
                 if c == UInt8(93):  # ']'
-                    _ = self._advance()
+                    self.skip()
                     return
                 raise Error("json: expected ',' or ']' in skip")
         elif b == UInt8(34):  # '"'
@@ -366,9 +371,7 @@ struct JsonParser:
                 self._expect_ascii("false")
             else:
                 self._expect_ascii("null")
-        elif (
-            b == UInt8(45) or (b >= UInt8(48) and b <= UInt8(57))
-        ):
+        elif b == UInt8(45) or (b >= UInt8(48) and b <= UInt8(57)):
             _ = self.parse_number()
         else:
             raise Error("json: unexpected value in skip")
@@ -408,8 +411,8 @@ struct JsonParser:
                             == UInt8(117)
                         ):
                             var low = self._read_hex4(p + 2)
-                            cp = 0x10000 + ((cp - 0xD800) << 10) + (
-                                low - 0xDC00
+                            cp = (
+                                0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00)
                             )
                             p += 6
                     decoded += _utf8_len(cp)
@@ -552,7 +555,7 @@ def parse_json_flat_file(path: String) raises -> Dict[String, JsonScalar]:
     while True:
         parser.skip_ws()
         if parser._peek() == UInt8(125):  # '}'
-            _ = parser._advance()
+            parser.skip()
             break
         var key = parser.parse_string()
         parser.skip_ws()
@@ -576,45 +579,41 @@ def parse_json_flat_file(path: String) raises -> Dict[String, JsonScalar]:
             result[key] = JsonScalar()
         parser.skip_ws()
         if parser._peek() == UInt8(44):  # ','
-            _ = parser._advance()
+            parser.skip()
     return result^
 
 
 def flat_get_int(
     values: Dict[String, JsonScalar], key: String, default: Int
 ) -> Int:
-    try:
-        return values.get(key, JsonScalar()).as_int()
-    except:
-        pass
+    var v = values.get(key)
+    if v:
+        return v.value().as_int()
     return default
 
 
 def flat_get_float(
     values: Dict[String, JsonScalar], key: String, default: Float64
 ) -> Float64:
-    try:
-        return values.get(key, JsonScalar()).as_float()
-    except:
-        pass
+    var v = values.get(key)
+    if v:
+        return v.value().as_float()
     return default
 
 
 def flat_get_bool(
     values: Dict[String, JsonScalar], key: String, default: Bool
 ) -> Bool:
-    try:
-        return values.get(key, JsonScalar()).as_bool()
-    except:
-        pass
+    var v = values.get(key)
+    if v:
+        return v.value().as_bool()
     return default
 
 
 def flat_get_str(
     values: Dict[String, JsonScalar], key: String, default: String
 ) -> String:
-    try:
-        return values.get(key, JsonScalar()).as_str()
-    except:
-        pass
+    var v = values.get(key)
+    if v:
+        return v.value().as_str()
     return default

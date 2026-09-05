@@ -237,7 +237,9 @@ class FinetuneSession:
 
 def _encode(model: "Model", text: str) -> list:
     n = ctypes.c_int64(0)
-    ptr = _lib.infer_train_encode(model._ptr, text.encode("utf-8"), ctypes.byref(n))
+    ptr = _lib.infer_train_encode(
+        model._ptr, text.encode("utf-8"), ctypes.byref(n)
+    )
     if not ptr:
         raise EngineError("infer_train_encode failed")
     try:

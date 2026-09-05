@@ -1,5 +1,6 @@
 #!/usr/bin/env python
-"""Generate gguf-py-validated dequant reference bins for tests/test_dequant_m7.mojo.
+"""Generate gguf-py-validated dequant reference bins for
+tests/test_dequant_m7.mojo.
 
 Uses gguf-py when importable (authoritative); falls back to a bundled pure
 numpy implementation of the same llama.cpp formulas otherwise.
@@ -11,7 +12,10 @@ import numpy as np
 
 # -- pure-numpy fallback reference (llama.cpp ggml-quants.c formulas) ---------
 
-KV = np.array([-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113], dtype=np.float32)
+KV = np.array(
+    [-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113],
+    dtype=np.float32,
+)
 
 
 def scale_min_k4(j, scales):
@@ -38,44 +42,59 @@ def deq_fallback(gt, raw, numel):
         for b in range(numel // 256):
             blk = a[b * 144:(b + 1) * 144]
             d = np.frombuffer(blk[:2], dtype=np.float16)[0].astype(np.float32)
-            dmin = np.frombuffer(blk[2:4], dtype=np.float16)[0].astype(np.float32)
+            dmin = (
+                np.frombuffer(blk[2:4], dtype=np.float16)[0].astype(np.float32)
+            )
             scales = blk[4:16]
             qs = blk[16:144]
             for sb in range(8):
                 sc, m = scale_min_k4(sb, scales)
                 ql_base = (sb // 2) * 32
-                nib = qs[ql_base:ql_base + 32] & 0xF if sb % 2 == 0 else qs[ql_base:ql_base + 32] >> 4
-                out[b * 256 + sb * 32:b * 256 + (sb + 1) * 32] = d * sc * nib - dmin * m
+                ql = qs[ql_base:ql_base + 32]
+                nib = ql & 0xF if sb % 2 == 0 else ql >> 4
+                out[
+                    b * 256 + sb * 32:b * 256 + (sb + 1) * 32
+                ] = d * sc * nib - dmin * m
         return out
     if gt == 13:  # Q5_K
         for b in range(numel // 256):
             blk = a[b * 176:(b + 1) * 176]
             d = np.frombuffer(blk[:2], dtype=np.float16)[0].astype(np.float32)
-            dmin = np.frombuffer(blk[2:4], dtype=np.float16)[0].astype(np.float32)
+            dmin = (
+                np.frombuffer(blk[2:4], dtype=np.float16)[0].astype(np.float32)
+            )
             scales = blk[4:16]
             qh = blk[16:48]
             qs = blk[48:176]
             for sb in range(8):
                 sc, m = scale_min_k4(sb, scales)
                 ql_base = (sb // 2) * 32
-                nib = (qs[ql_base:ql_base + 32] & 0xF) if sb % 2 == 0 else (qs[ql_base:ql_base + 32] >> 4)
+                ql = qs[ql_base:ql_base + 32]
+                nib = (ql & 0xF) if sb % 2 == 0 else (ql >> 4)
                 add = np.where((qh & (1 << sb)) != 0, 16, 0)
-                out[b * 256 + sb * 32:b * 256 + (sb + 1) * 32] = d * sc * (nib + add) - dmin * m
+                out[
+                    b * 256 + sb * 32:b * 256 + (sb + 1) * 32
+                ] = d * sc * (nib + add) - dmin * m
         return out
     if gt == 14:  # Q6_K
         for b in range(numel // 256):
             blk = a[b * 210:(b + 1) * 210]
-            d = np.frombuffer(blk[208:210], dtype=np.float16)[0].astype(np.float32)
+            d = np.frombuffer(
+                blk[208:210], dtype=np.float16
+            )[0].astype(np.float32)
             ql = blk[0:128].astype(np.int32)
             qh = blk[128:192].astype(np.int32)
             sc = blk[192:208].astype(np.int8).astype(np.float32)
             for n in range(2):
                 for l in range(32):
                     si = l // 16
-                    q1 = ((ql[64 * n + l] & 0xF) | ((qh[32 * n + l] & 3) << 4)) - 32
-                    q2 = ((ql[64 * n + l + 32] & 0xF) | (((qh[32 * n + l] >> 2) & 3) << 4)) - 32
-                    q3 = ((ql[64 * n + l] >> 4) | (((qh[32 * n + l] >> 4) & 3) << 4)) - 32
-                    q4 = ((ql[64 * n + l + 32] >> 4) | (((qh[32 * n + l] >> 6) & 3) << 4)) - 32
+                    ql_lo = ql[64 * n + l]
+                    ql_hi = ql[64 * n + l + 32]
+                    qh_v = qh[32 * n + l]
+                    q1 = ((ql_lo & 0xF) | ((qh_v & 3) << 4)) - 32
+                    q2 = ((ql_hi & 0xF) | (((qh_v >> 2) & 3) << 4)) - 32
+                    q3 = ((ql_lo >> 4) | (((qh_v >> 4) & 3) << 4)) - 32
+                    q4 = ((ql_hi >> 4) | (((qh_v >> 6) & 3) << 4)) - 32
                     base = b * 256 + n * 128 + l
                     out[base] = d * sc[8 * n + si] * q1
                     out[base + 32] = d * sc[8 * n + si + 2] * q2
@@ -104,7 +123,9 @@ def deq_fallback(gt, raw, numel):
                 dl = d * (ls - 32)
                 q = qs[ib * 16:(ib + 1) * 16]
                 out[b * 256 + ib * 32:b * 256 + ib * 32 + 16] = dl * KV[q & 0xF]
-                out[b * 256 + ib * 32 + 16:b * 256 + ib * 32 + 32] = dl * KV[q >> 4]
+                out[
+                    b * 256 + ib * 32 + 16:b * 256 + ib * 32 + 32
+                ] = dl * KV[q >> 4]
         return out
     raise ValueError(f"unsupported type {gt}")
 
@@ -126,7 +147,9 @@ def parse_gguf(path):
 
     # GGUF value sizes in bytes (spec): 0 uint8, 1 int8, 2 uint16, 3 int16,
     # 4 uint32, 5 int32, 6 float32, 7 bool, 10 uint64, 11 int64, 12 float64.
-    SIZES_V = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+    SIZES_V = {
+        0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8
+    }
 
     for _ in range(nkv):
         key, off = rd_str(off)
@@ -155,7 +178,11 @@ def parse_gguf(path):
         name = name.decode("utf8")
         nd = int(np.frombuffer(data[off:off + 4], dtype=np.uint32)[0])
         off += 4
-        dims = tuple(int(x) for x in np.frombuffer(data[off:off + 8 * nd], dtype=np.uint64))
+        dims = tuple(
+            int(x) for x in np.frombuffer(
+                data[off:off + 8 * nd], dtype=np.uint64
+            )
+        )
         off += 8 * nd
         gt = int(np.frombuffer(data[off:off + 4], dtype=np.uint32)[0])
         off += 4
@@ -174,16 +201,18 @@ N = 1024
 # IQ4_NL / IQ4_XS coverage is temporarily lost (it came from the
 # Qwen3.8-27B-UD-Q5_K_M.gguf file, which is not present on this machine);
 # restore the 27B entries when that file is available again.
+HY = "Hy-MT2-7B-Q4_K_M.gguf"
+Q35 = "Qwen3.6-35B-A3B-DSV4Pro-Distill-MTP-Q5_K_M-imatrix.gguf"
 PLAN = [
-    ("Hy-MT2-7B-Q4_K_M.gguf", "blk.0.attn_k.weight", "dequant_ref_hy.npz_0.bin"),
-    ("Hy-MT2-7B-Q4_K_M.gguf", "blk.0.attn_output.weight", "dequant_ref_hy.npz_1.bin"),
-    ("Hy-MT2-7B-Q4_K_M.gguf", "token_embd.weight", "dequant_ref_hy.npz_2.bin"),
-    ("Hy-MT2-7B-Q4_K_M.gguf", "output_norm.weight", "dequant_ref_hy.npz_3.bin"),
-    ("Qwen3.6-35B-A3B-DSV4Pro-Distill-MTP-Q5_K_M-imatrix.gguf", "blk.0.attn_norm.weight", "dequant_ref_q35.npz_0.bin"),
-    ("Qwen3.6-35B-A3B-DSV4Pro-Distill-MTP-Q5_K_M-imatrix.gguf", "blk.0.ssm_alpha.weight", "dequant_ref_q35.npz_1.bin"),
-    ("Qwen3.6-35B-A3B-DSV4Pro-Distill-MTP-Q5_K_M-imatrix.gguf", "blk.2.ffn_up_shexp.weight", "dequant_ref_q35.npz_2.bin"),
-    ("Qwen3.6-35B-A3B-DSV4Pro-Distill-MTP-Q5_K_M-imatrix.gguf", "blk.0.ffn_gate_shexp.weight", "dequant_ref_q35.npz_3.bin"),
-    ("Qwen3.6-35B-A3B-DSV4Pro-Distill-MTP-Q5_K_M-imatrix.gguf", "blk.0.attn_qkv.weight", "dequant_ref_q35.npz_4.bin"),
+    (HY, "blk.0.attn_k.weight", "dequant_ref_hy.npz_0.bin"),
+    (HY, "blk.0.attn_output.weight", "dequant_ref_hy.npz_1.bin"),
+    (HY, "token_embd.weight", "dequant_ref_hy.npz_2.bin"),
+    (HY, "output_norm.weight", "dequant_ref_hy.npz_3.bin"),
+    (Q35, "blk.0.attn_norm.weight", "dequant_ref_q35.npz_0.bin"),
+    (Q35, "blk.0.ssm_alpha.weight", "dequant_ref_q35.npz_1.bin"),
+    (Q35, "blk.2.ffn_up_shexp.weight", "dequant_ref_q35.npz_2.bin"),
+    (Q35, "blk.0.ffn_gate_shexp.weight", "dequant_ref_q35.npz_3.bin"),
+    (Q35, "blk.0.attn_qkv.weight", "dequant_ref_q35.npz_4.bin"),
 ]
 
 
@@ -195,8 +224,14 @@ def gen_with_gguf_py(dest):
 
     QT = {'Q4_K': q.Q4_K, 'Q5_K': q.Q5_K, 'Q6_K': q.Q6_K, 'Q8_0': q.Q8_0,
           'IQ4_NL': q.IQ4_NL, 'IQ4_XS': q.IQ4_XS}
-    SZ = {'Q4_K': 144, 'Q5_K': 176, 'Q6_K': 210, 'Q8_0': 34, 'IQ4_NL': 18, 'IQ4_XS': 136}
-    NB = {'Q4_K': 256, 'Q5_K': 256, 'Q6_K': 256, 'Q8_0': 32, 'IQ4_NL': 32, 'IQ4_XS': 256}
+    SZ = {
+        'Q4_K': 144, 'Q5_K': 176, 'Q6_K': 210, 'Q8_0': 34,
+        'IQ4_NL': 18, 'IQ4_XS': 136,
+    }
+    NB = {
+        'Q4_K': 256, 'Q5_K': 256, 'Q6_K': 256, 'Q8_0': 32,
+        'IQ4_NL': 32, 'IQ4_XS': 256,
+    }
     readers = {}
     for model, name, out in PLAN:
         r = readers.get(model) or GGUFReader(model)
@@ -210,8 +245,13 @@ def gen_with_gguf_py(dest):
             ref = np.frombuffer(t.data, dtype=np.float16)[:N].astype(np.float32)
         else:
             nbytes = (N // NB[tn]) * SZ[tn]
-            arr = np.frombuffer(t.data[:nbytes], dtype=np.uint8).reshape((-1, SZ[tn]))
-            ref = QT[tn].dequantize_blocks(arr).reshape(-1)[:N].astype(np.float32)
+            arr = np.frombuffer(
+                t.data[:nbytes], dtype=np.uint8
+            ).reshape((-1, SZ[tn]))
+            ref = (
+                QT[tn].dequantize_blocks(arr).reshape(-1)[:N]
+                .astype(np.float32)
+            )
         ref.tofile(dest + out)
 
 
@@ -220,7 +260,10 @@ def gen_fallback(dest):
         data, tensors, data_off = parse_gguf(model)
         gt, dims, to = tensors[name]
         numel = int(np.prod(dims))
-        nbytes = (N // NBLK[gt]) * SIZES[gt] if gt not in (0, 1) else N * SIZES[gt]
+        if gt in (0, 1):
+            nbytes = N * SIZES[gt]
+        else:
+            nbytes = (N // NBLK[gt]) * SIZES[gt]
         raw = data[data_off + to:data_off + to + nbytes]
         if gt in (0, 1):
             ref = deq_fallback(gt, raw, N)

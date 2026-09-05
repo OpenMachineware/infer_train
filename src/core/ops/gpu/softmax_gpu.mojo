@@ -47,7 +47,7 @@ def _softmax_kernel_f32(
     var mx = Float32(-3.402823466e38)
     var i = tid
     while i < n:
-        var v = x[base + i]
+        var v = x[unsafe_offset=base + i]
         if v > mx:
             mx = v
         i += BLOCK
@@ -56,14 +56,16 @@ def _softmax_kernel_f32(
     var total = Float32(0.0)
     i = tid
     while i < n:
-        total += exp(x[base + i] - mx_all)
+        total += exp(x[unsafe_offset=base + i] - mx_all)
         i += BLOCK
     var total_all = block_sum[block_size=BLOCK](total)
     var inv = Float32(1.0) / total_all
 
     i = tid
     while i < n:
-        dst[base + i] = exp(x[base + i] - mx_all) * inv
+        dst[unsafe_offset=base + i] = (
+            exp(x[unsafe_offset=base + i] - mx_all) * inv
+        )
         i += BLOCK
 
 
@@ -80,7 +82,7 @@ def _softmax_kernel_f16(
     var mx = Float32(-3.402823466e38)
     var i = tid
     while i < n:
-        var v = Float32(x[base + i])
+        var v = Float32(x[unsafe_offset=base + i])
         if v > mx:
             mx = v
         i += BLOCK
@@ -89,15 +91,15 @@ def _softmax_kernel_f16(
     var total = Float32(0.0)
     i = tid
     while i < n:
-        total += exp(Float32(x[base + i]) - mx_all)
+        total += exp(Float32(x[unsafe_offset=base + i]) - mx_all)
         i += BLOCK
     var total_all = block_sum[block_size=BLOCK](total)
     var inv = Float32(1.0) / total_all
 
     i = tid
     while i < n:
-        dst[base + i] = Scalar[DType.float16](
-            exp(Float32(x[base + i]) - mx_all) * inv
+        dst[unsafe_offset=base + i] = Scalar[DType.float16](
+            exp(Float32(x[unsafe_offset=base + i]) - mx_all) * inv
         )
         i += BLOCK
 
@@ -116,13 +118,15 @@ def _softmax_bwd_kernel_f32(
     var dot = Float32(0.0)
     var i = tid
     while i < n:
-        dot += grad_out[base + i] * p[base + i]
+        dot += grad_out[unsafe_offset=base + i] * p[unsafe_offset=base + i]
         i += BLOCK
     var dot_all = block_sum[block_size=BLOCK](dot)
 
     i = tid
     while i < n:
-        dst[base + i] = p[base + i] * (grad_out[base + i] - dot_all)
+        dst[unsafe_offset=base + i] = p[unsafe_offset=base + i] * (
+            grad_out[unsafe_offset=base + i] - dot_all
+        )
         i += BLOCK
 
 
@@ -140,14 +144,17 @@ def _softmax_bwd_kernel_f16(
     var dot = Float32(0.0)
     var i = tid
     while i < n:
-        dot += Float32(grad_out[base + i]) * Float32(p[base + i])
+        dot += Float32(grad_out[unsafe_offset=base + i]) * Float32(
+            p[unsafe_offset=base + i]
+        )
         i += BLOCK
     var dot_all = block_sum[block_size=BLOCK](dot)
 
     i = tid
     while i < n:
-        dst[base + i] = Scalar[DType.float16](
-            Float32(p[base + i]) * (Float32(grad_out[base + i]) - dot_all)
+        dst[unsafe_offset=base + i] = Scalar[DType.float16](
+            Float32(p[unsafe_offset=base + i])
+            * (Float32(grad_out[unsafe_offset=base + i]) - dot_all)
         )
         i += BLOCK
 
@@ -155,29 +162,37 @@ def _softmax_bwd_kernel_f16(
 # -- launch helpers -----------------------------------------------------------
 
 
-def _softmax_gpu_launch[dtype: DType](
-    ctx: DeviceContext, x: Tensor[dtype, 2]
-) raises -> Tensor[dtype, 2]:
+def _softmax_gpu_launch[
+    dtype: DType
+](ctx: DeviceContext, x: Tensor[dtype, 2]) raises -> Tensor[dtype, 2]:
     var batch = x.shape()[0]
     var dim = x.shape()[1]
     var x_buf = upload[dtype, 2](ctx, x)
     var dst_buf = ctx.enqueue_create_buffer[dtype](x.numel())
     comptime if dtype == DType.float16:
         ctx.enqueue_function[_softmax_kernel_f16](
-            x_buf, dst_buf, Int32(dim),
-            grid_dim=batch, block_dim=BLOCK,
+            x_buf,
+            dst_buf,
+            Int32(dim),
+            grid_dim=batch,
+            block_dim=BLOCK,
         )
     else:
         ctx.enqueue_function[_softmax_kernel_f32](
-            x_buf, dst_buf, Int32(dim),
-            grid_dim=batch, block_dim=BLOCK,
+            x_buf,
+            dst_buf,
+            Int32(dim),
+            grid_dim=batch,
+            block_dim=BLOCK,
         )
     var out = download2[dtype](ctx, dst_buf, x.shape())
     ctx.synchronize()
     return out
 
 
-def _softmax_bwd_gpu_launch[dtype: DType](
+def _softmax_bwd_gpu_launch[
+    dtype: DType
+](
     ctx: DeviceContext, grad_out: Tensor[dtype, 2], p: Tensor[dtype, 2]
 ) raises -> Tensor[dtype, 2]:
     var dim = p.shape()[1]
@@ -186,13 +201,21 @@ def _softmax_bwd_gpu_launch[dtype: DType](
     var dst_buf = ctx.enqueue_create_buffer[dtype](p.numel())
     comptime if dtype == DType.float16:
         ctx.enqueue_function[_softmax_bwd_kernel_f16](
-            go_buf, p_buf, dst_buf, Int32(dim),
-            grid_dim=p.shape()[0], block_dim=BLOCK,
+            go_buf,
+            p_buf,
+            dst_buf,
+            Int32(dim),
+            grid_dim=p.shape()[0],
+            block_dim=BLOCK,
         )
     else:
         ctx.enqueue_function[_softmax_bwd_kernel_f32](
-            go_buf, p_buf, dst_buf, Int32(dim),
-            grid_dim=p.shape()[0], block_dim=BLOCK,
+            go_buf,
+            p_buf,
+            dst_buf,
+            Int32(dim),
+            grid_dim=p.shape()[0],
+            block_dim=BLOCK,
         )
     var out = download2[dtype](ctx, dst_buf, p.shape())
     ctx.synchronize()
@@ -202,9 +225,9 @@ def _softmax_bwd_gpu_launch[dtype: DType](
 # -- public entry points ------------------------------------------------------
 
 
-def softmax_gpu[dtype: DType, dim: Int](
-    x: Tensor[dtype, 2]
-) -> Tensor[dtype, 2] where dtype.is_floating_point():
+def softmax_gpu[
+    dtype: DType, dim: Int
+](x: Tensor[dtype, 2]) -> Tensor[dtype, 2] where dtype.is_floating_point():
     """Comptime-dim GPU stable softmax (CPU fallback on any GPU error)."""
     if x.shape()[1] != dim:
         unimplemented("softmax_gpu: static dim mismatch")
@@ -217,9 +240,9 @@ def softmax_gpu[dtype: DType, dim: Int](
         return softmax_cpu[dtype, dim](x)
 
 
-def softmax_gpu_dynamic[dtype: DType](
-    x: Tensor[dtype, 2]
-) -> Tensor[dtype, 2] where dtype.is_floating_point():
+def softmax_gpu_dynamic[
+    dtype: DType
+](x: Tensor[dtype, 2]) -> Tensor[dtype, 2] where dtype.is_floating_point():
     """Runtime-dim GPU stable softmax (CPU fallback on any GPU error)."""
     if not gpu_available[dtype]():
         return softmax_cpu_dynamic[dtype](x)
@@ -230,18 +253,22 @@ def softmax_gpu_dynamic[dtype: DType](
         return softmax_cpu_dynamic[dtype](x)
 
 
-def softmax_gpu_forward_with_saved[dtype: DType, dim: Int](
-    x: Tensor[dtype, 2]
-) -> Tuple[Tensor[dtype, 2], List[Tensor[dtype, 2]]] where dtype.is_floating_point():
+def softmax_gpu_forward_with_saved[
+    dtype: DType, dim: Int
+](x: Tensor[dtype, 2]) -> Tuple[
+    Tensor[dtype, 2], List[Tensor[dtype, 2]]
+] where dtype.is_floating_point():
     var out = softmax_gpu[dtype, dim](x)
     var saved = List[Tensor[dtype, 2]]()
     saved.append(out)
     return (out, saved^)
 
 
-def softmax_gpu_backward[dtype: DType, dim: Int](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]] where dtype.is_floating_point():
+def softmax_gpu_backward[
+    dtype: DType, dim: Int
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+] where dtype.is_floating_point():
     """Backward for row-wise softmax.
 
     grad_x[i,j] = p[i,j] * (grad_out[i,j] - sum_k grad_out[i,k] * p[i,k])

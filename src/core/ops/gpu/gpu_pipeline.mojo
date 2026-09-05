@@ -68,9 +68,11 @@ def _pipe_linear_kernel_f32(
         var acc = Float32(0.0)
         var k = 0
         while k < K_i:
-            acc += x[row * K_i + k] * w[col * K_i + k]
+            acc += (
+                x[unsafe_offset=row * K_i + k] * w[unsafe_offset=col * K_i + k]
+            )
             k += 1
-        dst[i] = acc + bias[col]
+        dst[unsafe_offset=i] = acc + bias[unsafe_offset=col]
         i += stride
 
 
@@ -94,9 +96,13 @@ def _pipe_linear_kernel_f16(
         var acc = Float32(0.0)
         var k = 0
         while k < K_i:
-            acc += Float32(x[row * K_i + k]) * Float32(w[col * K_i + k])
+            acc += Float32(x[unsafe_offset=row * K_i + k]) * Float32(
+                w[unsafe_offset=col * K_i + k]
+            )
             k += 1
-        dst[i] = Scalar[DType.float16](acc + Float32(bias[col]))
+        dst[unsafe_offset=i] = Scalar[DType.float16](
+            acc + Float32(bias[unsafe_offset=col])
+        )
         i += stride
 
 
@@ -122,9 +128,7 @@ def _pipe_add_kernel_f16(
     var i = global_idx.x
     var stride = grid_dim.x * block_dim.x
     while i < Int(n):
-        dst[i] = Scalar[DType.float16](
-            Float32(a[i]) + Float32(b[i])
-        )
+        dst[i] = Scalar[DType.float16](Float32(a[i]) + Float32(b[i]))
         i += stride
 
 
@@ -184,19 +188,21 @@ struct GpuPipeline:
 
     # -- host <-> device boundaries ---------------------------------------
 
-    def to_device2[dtype: DType](
-        self, t: Tensor[dtype, 2]
-    ) raises -> DeviceBuffer[dtype]:
+    def to_device2[
+        dtype: DType
+    ](self, t: Tensor[dtype, 2]) raises -> DeviceBuffer[dtype]:
         """Upload a rank-2 tensor (async, no sync)."""
         return upload[dtype, 2](self.ctx, t)
 
-    def to_device1[dtype: DType](
-        self, t: Tensor[dtype, 1]
-    ) raises -> DeviceBuffer[dtype]:
+    def to_device1[
+        dtype: DType
+    ](self, t: Tensor[dtype, 1]) raises -> DeviceBuffer[dtype]:
         """Upload a rank-1 tensor (async, no sync)."""
         return upload[dtype, 1](self.ctx, t)
 
-    def to_host2[dtype: DType](
+    def to_host2[
+        dtype: DType
+    ](
         self, buf: DeviceBuffer[dtype], shape: StaticTuple[Int, 2]
     ) raises -> Tensor[dtype, 2]:
         """Download a rank-2 buffer and synchronize (the single sync point)."""
@@ -206,7 +212,9 @@ struct GpuPipeline:
 
     # -- GPU-resident ops (enqueue only, no sync) -------------------------
 
-    def linear[dtype: DType](
+    def linear[
+        dtype: DType
+    ](
         self,
         x: DeviceBuffer[dtype],
         w: DeviceBuffer[dtype],
@@ -219,46 +227,80 @@ struct GpuPipeline:
         var dst = self.ctx.enqueue_create_buffer[dtype](M * N)
         comptime if dtype == DType.float16:
             self.ctx.enqueue_function[_pipe_linear_kernel_f16](
-                x, w, bias, dst, Int32(M), Int32(K), Int32(N),
-                grid_dim=grid1d(M * N, BLOCK), block_dim=BLOCK,
+                x,
+                w,
+                bias,
+                dst,
+                Int32(M),
+                Int32(K),
+                Int32(N),
+                grid_dim=grid1d(M * N, BLOCK),
+                block_dim=BLOCK,
             )
         else:
             self.ctx.enqueue_function[_pipe_linear_kernel_f32](
-                x, w, bias, dst, Int32(M), Int32(K), Int32(N),
-                grid_dim=grid1d(M * N, BLOCK), block_dim=BLOCK,
+                x,
+                w,
+                bias,
+                dst,
+                Int32(M),
+                Int32(K),
+                Int32(N),
+                grid_dim=grid1d(M * N, BLOCK),
+                block_dim=BLOCK,
             )
         return dst
 
-    def add2[dtype: DType](
+    def add2[
+        dtype: DType
+    ](
         self, a: DeviceBuffer[dtype], b: DeviceBuffer[dtype], n: Int
     ) raises -> DeviceBuffer[dtype]:
         """y = a + b elementwise (async)."""
         var dst = self.ctx.enqueue_create_buffer[dtype](n)
         comptime if dtype == DType.float16:
             self.ctx.enqueue_function[_pipe_add_kernel_f16](
-                a, b, dst, Int32(n),
-                grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+                a,
+                b,
+                dst,
+                Int32(n),
+                grid_dim=grid1d(n, BLOCK),
+                block_dim=BLOCK,
             )
         else:
             self.ctx.enqueue_function[_pipe_add_kernel_f32](
-                a, b, dst, Int32(n),
-                grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+                a,
+                b,
+                dst,
+                Int32(n),
+                grid_dim=grid1d(n, BLOCK),
+                block_dim=BLOCK,
             )
         return dst
 
-    def swiglu[dtype: DType](
+    def swiglu[
+        dtype: DType
+    ](
         self, gate: DeviceBuffer[dtype], up: DeviceBuffer[dtype], n: Int
     ) raises -> DeviceBuffer[dtype]:
         """y = silu(gate) * up elementwise (async)."""
         var dst = self.ctx.enqueue_create_buffer[dtype](n)
         comptime if dtype == DType.float16:
             self.ctx.enqueue_function[_pipe_swiglu_kernel_f16](
-                gate, up, dst, Int32(n),
-                grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+                gate,
+                up,
+                dst,
+                Int32(n),
+                grid_dim=grid1d(n, BLOCK),
+                block_dim=BLOCK,
             )
         else:
             self.ctx.enqueue_function[_pipe_swiglu_kernel_f32](
-                gate, up, dst, Int32(n),
-                grid_dim=grid1d(n, BLOCK), block_dim=BLOCK,
+                gate,
+                up,
+                dst,
+                Int32(n),
+                grid_dim=grid1d(n, BLOCK),
+                block_dim=BLOCK,
             )
         return dst

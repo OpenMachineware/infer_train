@@ -29,7 +29,9 @@ comptime MODEL_HY = "Hy-MT2-7B-Q4_K_M.gguf"
 # is not present on this machine, so the Qwen3.6-35B-A3B GGUF stands in -
 # its tokenizer metadata (pre=qwen35, vocab 248320, bos/eos, merges) is
 # identical for every check below.
-comptime MODEL_QWEN35 = "Qwen3.6-35B-A3B-DSV4Pro-Distill-MTP-Q5_K_M-imatrix.gguf"
+comptime MODEL_QWEN35 = (
+    "Qwen3.6-35B-A3B-DSV4Pro-Distill-MTP-Q5_K_M-imatrix.gguf"
+)
 
 
 def main() raises:
@@ -42,8 +44,10 @@ def main() raises:
     check(tok.eos_id() == 151643, "1.5B eos")
     check_enc(tok, "Hello", [9707])
     var with_bos = tok.encode_with_bos("Hello")
-    check(len(with_bos) == 2 and with_bos[0] == 151646 and with_bos[1] == 9707,
-          "encode_with_bos")
+    check(
+        len(with_bos) == 2 and with_bos[0] == 151646 and with_bos[1] == 9707,
+        "encode_with_bos",
+    )
 
     # ---- Hy-MT2 (hunyuan flavor, GGUF-only: no tokenizer.json) ------------
     var ctx_hy = load_gguf(MODEL_HY)
@@ -56,7 +60,8 @@ def main() raises:
     # llama.cpp reference (`llama-tokenize --stdin --ids`):
     # [28573, 311, 6498, 25, 220, 104944, 105242, 102722, 1811]
     check_enc(
-        hy, "Translate to English: 今天天气很好。",
+        hy,
+        "Translate to English: 今天天气很好。",
         [28573, 311, 6498, 25, 220, 104944, 105242, 102722, 1811],
     )
     check_roundtrip(hy, "Translate to English: 今天天气很好。")
@@ -79,7 +84,9 @@ def main() raises:
     check(registry.size() == 1, "registry size")
     var custom = make_tokenizer(ctx_qwen, String(""), Optional(registry^))
     check(custom.flavor_name() == "custom", "registry override flavor")
-    check(custom.bos_id() == 42 and custom.eos_id() == 43, "registry override ids")
+    check(
+        custom.bos_id() == 42 and custom.eos_id() == 43, "registry override ids"
+    )
 
     # ---- generic engine + trait conformance --------------------------------
     # One BPE engine for every BPE family: the flavor is data (tag +
@@ -111,15 +118,28 @@ def check(cond: Bool, name: String):
 def check_enc(tok: BpeTokenizer, text: String, expected: List[Int]):
     var tokens = tok.encode(text)
     if len(tokens) != len(expected):
-        print("FAIL len:", text, "actual:", len(tokens), "expected:", len(expected))
+        print(
+            "FAIL len:",
+            text,
+            "actual:",
+            len(tokens),
+            "expected:",
+            len(expected),
+        )
         for t in tokens:
             print("  got", t)
         abort()
     for i in range(len(expected)):
         if tokens[i] != expected[i]:
             print(
-                "FAIL:", text, "index", i, "actual:", tokens[i],
-                "expected:", expected[i],
+                "FAIL:",
+                text,
+                "index",
+                i,
+                "actual:",
+                tokens[i],
+                "expected:",
+                expected[i],
             )
             abort()
 

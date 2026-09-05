@@ -16,17 +16,14 @@ from .dag_ir import (
 def dag_dce(mut dag: Dag) -> Int:
     """Drop unreachable nodes; returns the number removed."""
     var n = len(dag.nodes)
-    var live = List[Bool]()
-    for i in range(n):
-        live.append(False)
+    var live = List[Bool](length=n, fill=False)
 
     # worklist from the outputs
     var stack = List[Int]()
     for out in dag.outputs:
         stack.append(out)
     while len(stack) > 0:
-        var current = stack[len(stack) - 1]
-        stack.pop()
+        var current = stack.pop()
         if current < 0 or current >= n or live[current]:
             continue
         live[current] = True

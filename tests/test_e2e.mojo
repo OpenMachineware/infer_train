@@ -6,6 +6,7 @@ from src.runtime.interpreter import Interpreter
 from src.core.sampler import Sampler, greedy_sample, sample
 from std.utils.static_tuple import StaticTuple
 
+
 def main():
     var reg = OpRegistry()
     reg.register_default_ops()
@@ -16,7 +17,7 @@ def main():
     var n0 = graph.add_node("matmul", List[Int](), attrs0)
     var attrs1 = Dict[String, AttrValue]()
     attrs1["dim"] = AttrValue(4)
-    var n1 = graph.add_node("rms_norm", [n0], attrs1)
+    _ = graph.add_node("rms_norm", [n0], attrs1)
 
     # inputs: a (2x3), b (3x4)
     var a = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](2, 3))

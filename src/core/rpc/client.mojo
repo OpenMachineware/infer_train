@@ -56,8 +56,12 @@ struct RpcClient(Movable):
         var resp = self.call(payload)
         return len(resp) > 0 and resp[0] == RPC_OK
 
-    def init_shard(mut self, lo: Int, hi: Int, ctx_len: Int) raises -> Int:
-        """Ask the worker to load model layers [lo, hi); returns hidden."""
+    def init_shard(mut self, lo: Int, hi: Int, ctx_len: Int) raises:
+        """Ask the worker to load model layers [lo, hi).
+
+        The worker's hidden size is stored on `self.hidden` (used by
+        `forward` to reshape the response).
+        """
         var payload = List[UInt8]()
         payload.append(UInt8(CMD_INIT))
         append_i32(payload, lo)
@@ -66,11 +70,12 @@ struct RpcClient(Movable):
         var resp = self.call(payload)
         if len(resp) < 5 or resp[0] != RPC_OK:
             raise Error(
-                "rpc init failed on " + self.endpoint + ": "
+                "rpc init failed on "
+                + self.endpoint
+                + ": "
                 + rpc_err_string(resp)
             )
         self.hidden = read_i32_le(resp, 1)
-        return self.hidden
 
     def forward(
         mut self, position: Int, x: Tensor[DType.float16, 2]
@@ -85,7 +90,9 @@ struct RpcClient(Movable):
         var resp = self.call(payload)
         if len(resp) < 2 or resp[0] != RPC_OK:
             raise Error(
-                "rpc forward failed on " + self.endpoint + ": "
+                "rpc forward failed on "
+                + self.endpoint
+                + ": "
                 + rpc_err_string(resp)
             )
         # copy resp[1:] (Mojo 1.0: no List slicing)
@@ -100,7 +107,9 @@ struct RpcClient(Movable):
         var resp = self.call(payload)
         if len(resp) < 1 or resp[0] != RPC_OK:
             raise Error(
-                "rpc reset failed on " + self.endpoint + ": "
+                "rpc reset failed on "
+                + self.endpoint
+                + ": "
                 + rpc_err_string(resp)
             )
 

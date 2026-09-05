@@ -107,13 +107,9 @@ def main():
         "rms_norm: 64/128/256-bit match legacy",
         _max_diff_f16(legacy, rms_norm_cpu_autotuned[DType.float16](x, 64))
         < Float32(1e-3)
-        and _max_diff_f16(
-            legacy, rms_norm_cpu_autotuned[DType.float16](x, 128)
-        )
+        and _max_diff_f16(legacy, rms_norm_cpu_autotuned[DType.float16](x, 128))
         < Float32(1e-3)
-        and _max_diff_f16(
-            legacy, rms_norm_cpu_autotuned[DType.float16](x, 256)
-        )
+        and _max_diff_f16(legacy, rms_norm_cpu_autotuned[DType.float16](x, 256))
         < Float32(1e-3),
     )
 
@@ -124,17 +120,11 @@ def main():
     var aref = add_cpu_dynamic[DType.float16](a, b)
     check(
         "add: 64/128/256-bit match legacy",
-        _max_diff_f16(
-            aref, add_cpu_autotuned[DType.float16](a, b, 64)
-        )
+        _max_diff_f16(aref, add_cpu_autotuned[DType.float16](a, b, 64))
         < Float32(1e-6)
-        and _max_diff_f16(
-            aref, add_cpu_autotuned[DType.float16](a, b, 128)
-        )
+        and _max_diff_f16(aref, add_cpu_autotuned[DType.float16](a, b, 128))
         < Float32(1e-6)
-        and _max_diff_f16(
-            aref, add_cpu_autotuned[DType.float16](a, b, 256)
-        )
+        and _max_diff_f16(aref, add_cpu_autotuned[DType.float16](a, b, 256))
         < Float32(1e-6),
     )
 
@@ -145,17 +135,11 @@ def main():
     var sref = swiglu_cpu_dynamic[DType.float16](g, u)
     check(
         "swiglu: 64/128/256-bit match legacy",
-        _max_diff_f16(
-            sref, swiglu_cpu_autotuned[DType.float16](g, u, 64)
-        )
+        _max_diff_f16(sref, swiglu_cpu_autotuned[DType.float16](g, u, 64))
         < Float32(1e-3)
-        and _max_diff_f16(
-            sref, swiglu_cpu_autotuned[DType.float16](g, u, 128)
-        )
+        and _max_diff_f16(sref, swiglu_cpu_autotuned[DType.float16](g, u, 128))
         < Float32(1e-3)
-        and _max_diff_f16(
-            sref, swiglu_cpu_autotuned[DType.float16](g, u, 256)
-        )
+        and _max_diff_f16(sref, swiglu_cpu_autotuned[DType.float16](g, u, 256))
         < Float32(1e-3),
     )
 
@@ -179,7 +163,9 @@ def main():
                 d = -d
             if d > maxd:
                 maxd = d
-    check("f32 add: 64/128/256-bit match legacy (odd len)", maxd < Float32(1e-6))
+    check(
+        "f32 add: 64/128/256-bit match legacy (odd len)", maxd < Float32(1e-6)
+    )
 
     # 3. the runtime autotuner
     var r = autotune_width_f16(1536)
@@ -189,9 +175,18 @@ def main():
     )
     # r.sink is printed so the compiler keeps the timed loops alive
     print(
-        "  autotune f16 dim=1536: 64-bit", r.ns64, "ns, 128-bit", r.ns128,
-        "ns, 256-bit", r.ns256, "ns -> best", r.best, "bit",
-        "(sink", r.sink, ")",
+        "  autotune f16 dim=1536: 64-bit",
+        r.ns64,
+        "ns, 128-bit",
+        r.ns128,
+        "ns, 256-bit",
+        r.ns256,
+        "ns -> best",
+        r.best,
+        "bit",
+        "(sink",
+        r.sink,
+        ")",
     )
     var r32 = autotune_width_f32(1536)
     check(
@@ -199,9 +194,17 @@ def main():
         r32.best == 64 or r32.best == 128 or r32.best == 256,
     )
     print(
-        "  autotune f32 dim=1536: 64-bit", r32.ns64, "ns, 128-bit",
-        r32.ns128, "ns, 256-bit", r32.ns256, "ns -> best", r32.best,
-        "bit (sink", r32.sink, ")",
+        "  autotune f32 dim=1536: 64-bit",
+        r32.ns64,
+        "ns, 128-bit",
+        r32.ns128,
+        "ns, 256-bit",
+        r32.ns256,
+        "ns -> best",
+        r32.best,
+        "bit (sink",
+        r32.sink,
+        ")",
     )
 
     var cache = AutotuneCache()

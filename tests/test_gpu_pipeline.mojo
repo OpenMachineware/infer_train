@@ -90,7 +90,7 @@ def main() raises:
 
     # synchronous per-op: re-uploads the weights and syncs after every layer
     var t0 = monotonic()
-    for it in range(ITERS):
+    for _ in range(ITERS):
         var cc = x
         for i in range(L):
             cc = fused_matmul_add_bias_gpu[DType.float16](cc, ws[i], bs[i])
@@ -100,7 +100,7 @@ def main() raises:
 
     # pipeline: weights already on the device, one sync per pass
     var t2 = monotonic()
-    for it in range(ITERS):
+    for _ in range(ITERS):
         var cc2 = pipe.to_device2[DType.float16](x)
         for i in range(L):
             cc2 = pipe.linear[DType.float16](cc2, wbufs[i], bbufs[i], M, K, N)

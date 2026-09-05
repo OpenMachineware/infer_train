@@ -37,7 +37,9 @@ struct CfgToDagResult(Movable):
     var guards: List[Guard]
     var success: Bool
 
-    def __init__(out self, var dag: Dag, var guards: List[Guard], success: Bool):
+    def __init__(
+        out self, var dag: Dag, var guards: List[Guard], success: Bool
+    ):
         self.dag = dag^
         self.guards = guards^
         self.success = success
@@ -130,8 +132,7 @@ def _lower_cfg(
     queue.append(cfg.entry)
 
     while len(queue) > 0:
-        var block_id = queue[len(queue) - 1]
-        queue.pop()
+        var block_id = queue.pop()
         if visited.get(block_id, False):
             continue
         visited[block_id] = True
@@ -160,7 +161,8 @@ def _lower_cfg(
                 if cfg.blocks[block_id].static_trips >= 0:
                     var body = _targets_of(cfg, block_id, 1)
                     var exit = _targets_of(cfg, block_id, 2)
-                    for trip in range(cfg.blocks[block_id].static_trips):
+                    var trip_count = 0
+                    while trip_count < cfg.blocks[block_id].static_trips:
                         var next_remap = Dict[Int, Int]()
                         # inherit loop-invariant mappings (entry/consts);
                         # body nodes are re-copied each iteration so their
@@ -177,6 +179,7 @@ def _lower_cfg(
                                 out_dag, cfg.dag, node_id, next_remap
                             )
                         remap = next_remap^
+                        trip_count += 1
                     queue.append(exit)
                 else:
                     queue.append(taken)

@@ -41,7 +41,7 @@ from std.origin import MutUntrackedOrigin
 from std.collections import Span
 
 
-# -- byte/string helpers ---------------------------------------------------------
+# -- byte/string helpers -------------------------------------------------------
 
 
 def _append_string(mut out: List[UInt8], s: String):
@@ -147,7 +147,7 @@ def json_escape(s: String) -> String:
     for i in range(len(b)):
         var c = Int(b[i])
         if c == 34:  # '"'
-            _append_string(out, String("\\\""))
+            _append_string(out, String('\\"'))
         elif c == 92:  # '\\'
             _append_string(out, String("\\\\"))
         elif c == 10:
@@ -164,7 +164,7 @@ def json_escape(s: String) -> String:
     return _bytes_to_string(out)
 
 
-# -- HTTP/1.1 request reading ------------------------------------------------------
+# -- HTTP/1.1 request reading --------------------------------------------------
 
 
 struct HttpRequest(Movable):
@@ -269,7 +269,7 @@ def read_request(fd: Int64) raises -> HttpRequest:
     return req^
 
 
-# -- HTTP/1.1 responses -------------------------------------------------------------
+# -- HTTP/1.1 responses --------------------------------------------------------
 
 
 def _status_text(status: Int) -> String:
@@ -302,9 +302,9 @@ def send_json(fd: Int64, status: Int, body: String) raises:
 
 def send_error(fd: Int64, status: Int, message: String) raises:
     var w = JsonWriter()
-    w.append("{\"error\": {\"message\": \"")
+    w.append('{"error": {"message": "')
     w.esc(message)
-    w.append("\", \"type\": \"invalid_request_error\"}}")
+    w.append('", "type": "invalid_request_error"}}')
     send_json(fd, status, w.done())
 
 
@@ -331,7 +331,7 @@ def send_sse_done(fd: Int64) raises:
     tcp_send(fd, out)
 
 
-# -- JSON response writer -------------------------------------------------------------
+# -- JSON response writer ------------------------------------------------------
 
 
 struct JsonWriter(Movable):
@@ -358,7 +358,7 @@ struct JsonWriter(Movable):
         return _bytes_to_string(self.out)
 
 
-# -- request-body parsing (OpenAI completion / finetune fields) ----------------------
+# -- request-body parsing (OpenAI completion / finetune fields) ----------------
 
 
 struct RequestParams(Movable):
@@ -395,7 +395,7 @@ def _parse_messages(mut parser: JsonParser) raises -> String:
     var parts = List[String]()
     parser.skip_ws()
     if parser.peek() == UInt8(93):  # ']'
-        parser.advance()
+        parser.skip()
         return String("")
     while True:
         parser.skip_ws()
@@ -405,7 +405,7 @@ def _parse_messages(mut parser: JsonParser) raises -> String:
             parser.skip_ws()
             var c = parser.peek()
             if c == UInt8(125):  # '}'
-                parser.advance()
+                parser.skip()
                 break
             var key = parser.parse_string()
             parser.skip_ws()
@@ -417,20 +417,20 @@ def _parse_messages(mut parser: JsonParser) raises -> String:
             parser.skip_ws()
             var c2 = parser.peek()
             if c2 == UInt8(44):  # ','
-                parser.advance()
+                parser.skip()
                 continue
             if c2 == UInt8(125):  # '}'
-                parser.advance()
+                parser.skip()
                 break
             raise Error("json: bad message object")
         parts.append(content + String("\n"))
         parser.skip_ws()
         var c3 = parser.peek()
         if c3 == UInt8(44):  # ','
-            parser.advance()
+            parser.skip()
             continue
         if c3 == UInt8(93):  # ']'
-            parser.advance()
+            parser.skip()
             break
         raise Error("json: bad messages array")
     var joined = String("")
@@ -476,10 +476,10 @@ def parse_request(body: List[UInt8]) raises -> RequestParams:
             p.top_k = parser.parse_int_raw()
         elif key == "seed":
             if parser.peek() == UInt8(110):  # 'n' of null
-                parser.advance()
-                parser.advance()
-                parser.advance()
-                parser.advance()
+                parser.skip()
+                parser.skip()
+                parser.skip()
+                parser.skip()
                 p.seed = -1
             else:
                 p.seed = parser.parse_int_raw()
@@ -496,7 +496,7 @@ def parse_request(body: List[UInt8]) raises -> RequestParams:
         parser.skip_ws()
         var c2 = parser.peek()
         if c2 == UInt8(44):  # ','
-            parser.advance()
+            parser.skip()
             continue
         if c2 == UInt8(125):  # '}'
             break
@@ -505,7 +505,7 @@ def parse_request(body: List[UInt8]) raises -> RequestParams:
     return p^
 
 
-# -- inference-time fine-tuning (LoRA-style output-head adapter) ---------------------
+# -- inference-time fine-tuning (LoRA-style output-head adapter) ---------------
 #
 # Same math as the C-API infer_train_finetune_* (bindings): a persistent
 # fp32 copy of the output head + AdamW moments; each step computes the
@@ -552,8 +552,8 @@ struct FinetuneSession(Movable):
         model_p: Pointer[Model, MutUntrackedOrigin],
         lr: Float32,
     ) raises:
-        var vocab = model_p[0].transformer.config.vocab
-        var hidden = model_p[0].transformer.config.hidden
+        var vocab = model_p[unsafe_offset=0].transformer.config.vocab
+        var hidden = model_p[unsafe_offset=0].transformer.config.hidden
         self.w = unsafe_alloc[Scalar[DType.float32]](vocab * hidden)
         self.m = unsafe_alloc[Scalar[DType.float32]](vocab * hidden)
         self.v = unsafe_alloc[Scalar[DType.float32]](vocab * hidden)
@@ -563,11 +563,9 @@ struct FinetuneSession(Movable):
         self.lr = lr
         # Seed the adapter from the model's current head (fp16 -> fp32).
         # M11: head_fp16() dequantizes the Q4-resident head on demand.
-        var head = model_p[0].transformer.head_fp16()
+        var head = model_p[unsafe_offset=0].transformer.head_fp16()
         for i in range(vocab * hidden):
-            self.w.unsafe_store(
-                i, Scalar[DType.float32](Float32(head.get(i)))
-            )
+            self.w.unsafe_store(i, Scalar[DType.float32](Float32(head.get(i))))
             self.m.unsafe_store(i, Scalar[DType.float32](0))
             self.v.unsafe_store(i, Scalar[DType.float32](0))
 
@@ -584,7 +582,9 @@ struct FinetuneSession(Movable):
         target: Int,
     ) raises -> Float32:
         """One forward step; one AdamW update when target >= 0."""
-        var h = model_p[0].transformer.forward_hidden(token, position)
+        var h = model_p[unsafe_offset=0].transformer.forward_hidden(
+            token, position
+        )
         if target < 0:
             return Float32(0)  # forward-only: cache/SSM state advanced
         var vocab = self.vocab
@@ -596,9 +596,9 @@ struct FinetuneSession(Movable):
         for i in range(vocab):
             var acc = Float32(0)
             for j in range(hidden):
-                acc += Float32(self.w.unsafe_load(offset=i * hidden + j)) * Float32(
-                    h.get(j)
-                )
+                acc += Float32(
+                    self.w.unsafe_load(offset=i * hidden + j)
+                ) * Float32(h.get(j))
             probs.unsafe_store(i, Scalar[DType.float32](acc))
             if acc > mx:
                 mx = acc
@@ -634,12 +634,14 @@ struct FinetuneSession(Movable):
                 var g = (
                     Float32(probs.unsafe_load(offset=i)) - label
                 ) * Float32(h.get(j))
-                var m_v = b1 * Float32(self.m.unsafe_load(offset=base + j)) + (
-                    Float32(1.0) - b1
-                ) * g
-                var v_v = b2 * Float32(self.v.unsafe_load(offset=base + j)) + (
-                    Float32(1.0) - b2
-                ) * g * g
+                var m_v = (
+                    b1 * Float32(self.m.unsafe_load(offset=base + j))
+                    + (Float32(1.0) - b1) * g
+                )
+                var v_v = (
+                    b2 * Float32(self.v.unsafe_load(offset=base + j))
+                    + (Float32(1.0) - b2) * g * g
+                )
                 self.m.unsafe_store(base + j, Scalar[DType.float32](m_v))
                 self.v.unsafe_store(base + j, Scalar[DType.float32](v_v))
                 var update = (m_v / bc1) / (_sqrt_f32(v_v / bc2) + eps)
@@ -653,20 +655,18 @@ struct FinetuneSession(Movable):
         # Sync the fp16 head back into the model (inference sees it now).
         # M11: set_head_fp16() installs it as the forward's head in both
         # the Q4-resident and the legacy dequantized modes.
-        var head = model_p[0].transformer.head_fp16()
+        var head = model_p[unsafe_offset=0].transformer.head_fp16()
         for i in range(vocab * hidden):
             head.set(
                 i,
-                Scalar[DType.float16](
-                    Float32(self.w.unsafe_load(offset=i))
-                ),
+                Scalar[DType.float16](Float32(self.w.unsafe_load(offset=i))),
             )
-        model_p[0].transformer.set_head_fp16(head)
+        model_p[unsafe_offset=0].transformer.set_head_fp16(head)
         probs.unsafe_free()
         return loss
 
 
-# -- fine-tune job bookkeeping --------------------------------------------------------
+# -- fine-tune job bookkeeping -------------------------------------------------
 
 
 struct FinetuneJob(Movable):
@@ -689,30 +689,30 @@ struct FinetuneJob(Movable):
 
     def to_json(self) -> String:
         var w = JsonWriter()
-        w.append("{\"id\": \"")
+        w.append('{"id": "')
         w.esc(self.id)
-        w.append("\", \"status\": \"")
+        w.append('", "status": "')
         w.esc(self.status)
-        w.append("\", \"steps\": ")
+        w.append('", "steps": ')
         w.int(self.steps)
         if self.has_loss:
-            w.append(", \"loss\": ")
+            w.append(', "loss": ')
             w.f32(self.loss)
-        w.append(", \"losses\": [")
+        w.append(', "losses": [')
         for i in range(len(self.losses)):
             if i > 0:
                 w.append(String(", "))
             w.f32(self.losses[i])
         w.append("]")
         if self.error.byte_length() > 0:
-            w.append(", \"error\": \"")
+            w.append(', "error": "')
             w.esc(self.error)
-            w.append("\"")
+            w.append('"')
         w.append("}")
         return w.done()
 
 
-# -- the server ------------------------------------------------------------------------
+# -- the server ----------------------------------------------------------------
 
 
 struct ServerState(Movable):
@@ -753,9 +753,13 @@ struct ServerState(Movable):
     def run(mut self, host: String, port: Int) raises:
         var listen_fd = tcp_listen(host, port)
         print("it-server: serving on http://" + host + ":" + String(port))
-        print("  model: " + self.model_path + " (name: " + self.model_name + ")")
+        print(
+            "  model: " + self.model_path + " (name: " + self.model_name + ")"
+        )
         print("  endpoints: /health /v1/models /v1/completions")
-        print("             /v1/chat/completions /v1/finetune /v1/finetune/status")
+        print(
+            "             /v1/chat/completions /v1/finetune /v1/finetune/status"
+        )
         while True:
             var fd = tcp_accept(listen_fd)
             try:
@@ -777,14 +781,12 @@ struct ServerState(Movable):
                 if prefix[i] != wb[i]:
                     ok = False
             if ok:
-                bearer = _slice_str(authorization, 7, authorization.byte_length())
+                bearer = _slice_str(
+                    authorization, 7, authorization.byte_length()
+                )
         for i in range(len(self.api_keys)):
-            if (
-                bearer.byte_length() > 0
-                and self.api_keys[i] == bearer
-            ) or (
-                x_api_key.byte_length() > 0
-                and self.api_keys[i] == x_api_key
+            if (bearer.byte_length() > 0 and self.api_keys[i] == bearer) or (
+                x_api_key.byte_length() > 0 and self.api_keys[i] == x_api_key
             ):
                 return True
         return False
@@ -796,24 +798,22 @@ struct ServerState(Movable):
             return
         if req.method == "GET" and req.path == "/health":
             var w = JsonWriter()
-            w.append("{\"status\": \"ok\", \"model\": \"")
+            w.append('{"status": "ok", "model": "')
             w.esc(self.model_name)
-            w.append("\"}")
+            w.append('"}')
             send_json(fd, 200, w.done())
         elif req.method == "GET" and req.path == "/v1/models":
             var w = JsonWriter()
-            w.append(
-                "{\"object\": \"list\", \"data\": [{\"id\": \""
-            )
+            w.append('{"object": "list", "data": [{"id": "')
             w.esc(self.model_name)
             w.append(
-                "\", \"object\": \"model\", \"created\": 0,"
-                " \"owned_by\": \"infer_train\"}]}"
+                '", "object": "model", "created": 0,'
+                ' "owned_by": "infer_train"}]}'
             )
             send_json(fd, 200, w.done())
         elif req.method == "GET" and req.path == "/v1/finetune/status":
             var w = JsonWriter()
-            w.append("{\"object\": \"list\", \"data\": [")
+            w.append('{"object": "list", "data": [')
             for i in range(len(self.jobs)):
                 if i > 0:
                     w.append(String(", "))
@@ -836,11 +836,9 @@ struct ServerState(Movable):
             return
         if params.max_tokens < 1:
             params.max_tokens = 1
-        self.model_p[0].transformer.reset_cache()
+        self.model_p[unsafe_offset=0].transformer.reset_cache()
         var created = now_ns() / 1000000
-        var cmpl_id = (
-            ("chatcmpl-" if chat else "cmpl-") + String(created)
-        )
+        var cmpl_id = ("chatcmpl-" if chat else "cmpl-") + String(created)
         if params.stream:
             self._completions_sse(fd, cmpl_id, created, params)
             return
@@ -863,43 +861,36 @@ struct ServerState(Movable):
         var text = g.decode_all()
         var n = len(g.generated)
         var w = JsonWriter()
-        w.append("{\"id\": \"")
+        w.append('{"id": "')
         w.esc(cmpl_id)
         if chat:
-            w.append(
-                "\", \"object\": \"chat.completion\", \"created\": "
-            )
+            w.append('", "object": "chat.completion", "created": ')
             w.int(created)
-            w.append(", \"model\": \"")
+            w.append(', "model": "')
             w.esc(self.model_name)
             w.append(
-                "\", \"choices\": [{\"index\": 0, \"message\": "
-                "{\"role\": \"assistant\", \"content\": \""
+                '", "choices": [{"index": 0, "message": '
+                '{"role": "assistant", "content": "'
             )
             w.esc(text)
-            w.append("\"}, \"finish_reason\": \"")
+            w.append('"}, "finish_reason": "')
             w.append(finish)
             w.append(
-                "\"}], \"usage\": {\"prompt_tokens\": 0,"
-                " \"completion_tokens\": 0, \"total_tokens\": 0}}"
+                '"}], "usage": {"prompt_tokens": 0,'
+                ' "completion_tokens": 0, "total_tokens": 0}}'
             )
         else:
-            w.append(
-                "\", \"object\": \"text_completion\", \"created\": "
-            )
+            w.append('", "object": "text_completion", "created": ')
             w.int(created)
-            w.append(", \"model\": \"")
+            w.append(', "model": "')
             w.esc(self.model_name)
-            w.append("\", \"choices\": [{\"text\": \"")
+            w.append('", "choices": [{"text": "')
             w.esc(text)
-            w.append("\", \"index\": 0, \"finish_reason\": \"")
+            w.append('", "index": 0, "finish_reason": "')
             w.append(finish)
-            w.append(
-                "\"}], \"usage\": {\"prompt_tokens\": 0,"
-                " \"completion_tokens\": "
-            )
+            w.append('"}], "usage": {"prompt_tokens": 0, "completion_tokens": ')
             w.int(n)
-            w.append(", \"total_tokens\": ")
+            w.append(', "total_tokens": ')
             w.int(n)
             w.append("}}")
         send_json(fd, 200, w.done())
@@ -930,33 +921,26 @@ struct ServerState(Movable):
                 break
             var piece = g.decode_token(t)
             var w = JsonWriter()
-            w.append("{\"id\": \"")
+            w.append('{"id": "')
             w.esc(cmpl_id)
-            w.append(
-                "\", \"object\": \"text_completion\", \"created\": "
-            )
+            w.append('", "object": "text_completion", "created": ')
             w.int(created)
-            w.append(", \"model\": \"")
+            w.append(', "model": "')
             w.esc(self.model_name)
-            w.append("\", \"choices\": [{\"text\": \"")
+            w.append('", "choices": [{"text": "')
             w.esc(piece)
-            w.append("\", \"index\": 0, \"finish_reason\": null}]}")
+            w.append('", "index": 0, "finish_reason": null}]}')
             send_sse_event(fd, w.done())
         var w2 = JsonWriter()
-        w2.append("{\"id\": \"")
+        w2.append('{"id": "')
         w2.esc(cmpl_id)
-        w2.append(
-            "\", \"object\": \"text_completion\", \"created\": "
-        )
+        w2.append('", "object": "text_completion", "created": ')
         w2.int(created)
-        w2.append(", \"model\": \"")
+        w2.append(', "model": "')
         w2.esc(self.model_name)
-        w2.append(
-            "\", \"choices\": [{\"text\": \"\", \"index\": 0,"
-            " \"finish_reason\": \""
-        )
+        w2.append('", "choices": [{"text": "", "index": 0, "finish_reason": "')
         w2.append(finish)
-        w2.append("\"}]}")
+        w2.append('"}]}')
         send_sse_event(fd, w2.done())
         send_sse_done(fd)
 
@@ -966,34 +950,33 @@ struct ServerState(Movable):
             params.input_text.byte_length() == 0
             or params.target_text.byte_length() == 0
         ):
-            send_error(
-                fd, 400, "finetune needs 'input' and 'target' fields"
-            )
+            send_error(fd, 400, "finetune needs 'input' and 'target' fields")
             return
         var job = FinetuneJob()
         self.job_seq += 1
         job.id = "ft-" + String(now_ns() / 1000000) + "-" + String(self.job_seq)
-        job.status = "running"
+        # status is set to "done"/"failed" by the try/except below before the
+        # response is built, so there is no observable "running" state.
         try:
-            self.model_p[0].transformer.reset_cache()
-            var prompt_tokens = self.model_p[0].tokenizer.encode_with_bos(
-                params.input_text
-            )
-            var target_tokens = self.model_p[0].tokenizer.encode_with_bos(
-                params.target_text
-            )
-            var eos = self.model_p[0].tokenizer.eos_id()
+            self.model_p[unsafe_offset=0].transformer.reset_cache()
+            var prompt_tokens = self.model_p[
+                unsafe_offset=0
+            ].tokenizer.encode_with_bos(params.input_text)
+            var target_tokens = self.model_p[
+                unsafe_offset=0
+            ].tokenizer.encode_with_bos(params.target_text)
+            var eos = self.model_p[unsafe_offset=0].tokenizer.eos_id()
             target_tokens.append(eos)
             var session = FinetuneSession(self.model_p, params.lr)
             var pos = 0
             for i in range(len(prompt_tokens)):
-                session.step(self.model_p, prompt_tokens[i], pos, -1)
+                # Forward-only step (target < 0): advances the KV/SSM state,
+                # the returned loss is 0 and not recorded for the prompt.
+                var _ = session.step(self.model_p, prompt_tokens[i], pos, -1)
                 pos += 1
             for i in range(len(target_tokens)):
                 var target = (
-                    target_tokens[i + 1]
-                    if i + 1 < len(target_tokens)
-                    else eos
+                    target_tokens[i + 1] if i + 1 < len(target_tokens) else eos
                 )
                 var loss = session.step(
                     self.model_p, target_tokens[i], pos, target
@@ -1011,25 +994,25 @@ struct ServerState(Movable):
         # Build the response from the job *before* moving it into the
         # job list (FinetuneJob is Movable, not copyable).
         var w = JsonWriter()
-        w.append("{\"id\": \"")
+        w.append('{"id": "')
         w.esc(job.id)
-        w.append("\", \"status\": \"")
+        w.append('", "status": "')
         w.esc(job.status)
-        w.append("\", \"steps\": ")
+        w.append('", "steps": ')
         w.int(job.steps)
         if job.has_loss:
-            w.append(", \"loss\": ")
+            w.append(', "loss": ')
             w.f32(job.loss)
-        w.append(", \"losses\": [")
+        w.append(', "losses": [')
         for i in range(len(job.losses)):
             if i > 0:
                 w.append(String(", "))
             w.f32(job.losses[i])
         w.append("]")
         if job.error.byte_length() > 0:
-            w.append(", \"error\": \"")
+            w.append(', "error": "')
             w.esc(job.error)
-            w.append("\"")
+            w.append('"')
         w.append("}")
         var resp = w.done()
         self.jobs.append(job^)

@@ -15,9 +15,9 @@ from ...utils import unimplemented
 from std.math import cos, sin, exp, log
 
 
-def _rope_cpu_kernel[dtype: DType](
-    x: Tensor[dtype, 3], start_pos: Int, theta: Float32
-) -> Tensor[dtype, 3]:
+def _rope_cpu_kernel[
+    dtype: DType
+](x: Tensor[dtype, 3], start_pos: Int, theta: Float32) -> Tensor[dtype, 3]:
     var n_heads = x.shape()[0]
     var n_tokens = x.shape()[1]
     var head_dim = x.shape()[2]
@@ -48,7 +48,9 @@ def _rope_cpu_kernel[dtype: DType](
     return out
 
 
-def rope_cpu[dtype: DType, n_heads: Int, head_dim: Int](
+def rope_cpu[
+    dtype: DType, n_heads: Int, head_dim: Int
+](
     x: Tensor[dtype, 3], start_pos: Int, theta: Float32 = Float32(10000.0)
 ) -> Tensor[dtype, 3]:
     """Comptime-shaped RoPE (n_heads/head_dim are constants)."""
@@ -57,19 +59,25 @@ def rope_cpu[dtype: DType, n_heads: Int, head_dim: Int](
     return _rope_cpu_kernel[dtype](x, start_pos, theta)
 
 
-def rope_cpu_dynamic[dtype: DType](
+def rope_cpu_dynamic[
+    dtype: DType
+](
     x: Tensor[dtype, 3], start_pos: Int, theta: Float32 = Float32(10000.0)
 ) -> Tensor[dtype, 3]:
     """Runtime-shaped RoPE."""
     return _rope_cpu_kernel[dtype](x, start_pos, theta)
 
 
-def rope_cpu_rot[dtype: DType](
+def rope_cpu_rot[
+    dtype: DType
+](
     x: Tensor[dtype, 3],
     start_pos: Int,
     theta: Float32,
     n_rot: Int,
-) -> Tensor[dtype, 3]:
+) -> Tensor[
+    dtype, 3
+]:
     """Partial RoPE: rotate the first `n_rot` dims, pass the rest through.
 
     qwen35's MRoPE rotates only `rope.dimension_count` (64) of the 256
@@ -116,7 +124,9 @@ def rope_cpu_forward_with_saved[
     return (out, saved^)
 
 
-def rope_cpu_backward[dtype: DType, n_heads: Int, head_dim: Int](
+def rope_cpu_backward[
+    dtype: DType, n_heads: Int, head_dim: Int
+](
     grad_out: Tensor[dtype, 3],
     x: Tensor[dtype, 3],
     start_pos: Int,
@@ -139,19 +149,13 @@ def rope_cpu_backward[dtype: DType, n_heads: Int, head_dim: Int](
             var pos = Float32(start_pos + t)
             var base = (h * n_tokens + t) * hd
             for d in range(half):
-                var freq = exp(
-                    Float32(-2 * d) / Float32(hd) * ln_theta
-                )
+                var freq = exp(Float32(-2 * d) / Float32(hd) * ln_theta)
                 var angle = pos * freq
                 var c = cos(angle)
                 var s = sin(angle)
                 var g0 = Float32(grad_out.get(base + d))
                 var g1 = Float32(grad_out.get(base + d + half))
-                grad_x.set(
-                    base + d, Scalar[dtype](g0 * c + g1 * s)
-                )
-                grad_x.set(
-                    base + d + half, Scalar[dtype](-g0 * s + g1 * c)
-                )
+                grad_x.set(base + d, Scalar[dtype](g0 * c + g1 * s))
+                grad_x.set(base + d + half, Scalar[dtype](-g0 * s + g1 * c))
     _ = x
     return grad_x

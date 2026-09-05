@@ -91,7 +91,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _send_error(self, message, status=400):
-        self._send_json({"error": {"message": message, "type": "invalid_request_error"}}, status)
+        self._send_json(
+            {"error": {"message": message, "type": "invalid_request_error"}},
+            status,
+        )
 
     def _read_body(self):
         length = int(self.headers.get("Content-Length", "0"))
@@ -109,7 +112,9 @@ class _Handler(BaseHTTPRequestHandler):
         if not _api_key_ok(self.headers):
             return self._send_error("invalid API key", 401)
         if self.path == "/health":
-            return self._send_json({"status": "ok", "model": self._model()._path})
+            return self._send_json(
+                {"status": "ok", "model": self._model()._path}
+            )
         if self.path == "/v1/models":
             return self._send_json({
                 "object": "list",
@@ -168,7 +173,9 @@ class _Handler(BaseHTTPRequestHandler):
         top_k = int(body.get("top_k", 40))
         seed = body.get("seed")
         if stream:
-            return self._completions_sse(prompt, max_tokens, temperature, top_p, top_k, seed)
+            return self._completions_sse(
+                prompt, max_tokens, temperature, top_p, top_k, seed
+            )
         model = self._model()
         model.reset_cache()
         out = model.generate(
@@ -185,10 +192,16 @@ class _Handler(BaseHTTPRequestHandler):
             "created": int(time.time()),
             "model": os.path.basename(model._path),
             "choices": [{"text": out, "index": 0, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 0, "completion_tokens": len(out), "total_tokens": len(out)},
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": len(out),
+                "total_tokens": len(out),
+            },
         })
 
-    def _completions_sse(self, prompt, max_tokens, temperature, top_p, top_k, seed):
+    def _completions_sse(
+        self, prompt, max_tokens, temperature, top_p, top_k, seed
+    ):
         model = self._model()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -208,11 +221,15 @@ class _Handler(BaseHTTPRequestHandler):
             cmpl_id = "cmpl-%d" % int(time.time() * 1000)
             finish = "length"
             for _ in range(max_tokens):
-                next_token = _sample_token(logits, temperature, top_k, top_p, rng)
+                next_token = _sample_token(
+                    logits, temperature, top_k, top_p, rng
+                )
                 if next_token == eos:
                     finish = "stop"
                     break
-                ptr = _lib.infer_train_forward_logits(model._ptr, next_token, pos)
+                ptr = _lib.infer_train_forward_logits(
+                    model._ptr, next_token, pos
+                )
                 pos += 1
                 logits = self._read_logits(ptr)
                 piece = self._decode_token(model, next_token)
@@ -221,9 +238,14 @@ class _Handler(BaseHTTPRequestHandler):
                     "object": "text_completion",
                     "created": int(time.time()),
                     "model": os.path.basename(model._path),
-                    "choices": [{"text": piece, "index": 0, "finish_reason": None}],
+                    "choices": [
+                        {"text": piece, "index": 0, "finish_reason": None}
+                    ],
                 }
-                self.wfile.write(("data: " + json.dumps(data, ensure_ascii=False) + "\n\n").encode())
+                self.wfile.write(
+                    ("data: " + json.dumps(data, ensure_ascii=False) + "\n\n")
+                    .encode()
+                )
                 self.wfile.flush()
             done = {
                 "id": cmpl_id,
@@ -237,7 +259,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
         except Exception as exc:
             try:
-                self.wfile.write(("data: " + json.dumps({"error": str(exc)}) + "\n\n").encode())
+                self.wfile.write(
+                    ("data: " + json.dumps({"error": str(exc)}) + "\n\n")
+                    .encode()
+                )
                 self.wfile.flush()
             except Exception:
                 pass
@@ -249,7 +274,8 @@ class _Handler(BaseHTTPRequestHandler):
             vocab = self._model().info("vocab") or 0
             import ctypes
 
-            return list(ctypes.cast(ptr, ctypes.POINTER(ctypes.c_float))[:vocab])
+            logits = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_float))
+            return list(logits[:vocab])
         finally:
             _lib.infer_train_free_buffer(ptr)
 
@@ -290,16 +316,24 @@ class _Handler(BaseHTTPRequestHandler):
                 "message": {"role": "assistant", "content": out},
                 "finish_reason": "stop",
             }],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
         })
 
     # -- fine-tuning -----------------------------------------------------------
 
     def _finetune(self, body):
-        input_text = body.get("input") or body.get("input_text") or body.get("prompt")
+        input_text = (
+            body.get("input") or body.get("input_text") or body.get("prompt")
+        )
         target_text = body.get("target") or body.get("target_text")
         if not input_text or not target_text:
-            return self._send_error("finetune needs 'input' and 'target' fields", 400)
+            return self._send_error(
+                "finetune needs 'input' and 'target' fields", 400
+            )
         lr = float(body.get("lr", 1e-5))
         job_id = "ft-%d" % int(time.time() * 1000)
         with _JOBS_LOCK:
@@ -319,8 +353,12 @@ class _Handler(BaseHTTPRequestHandler):
                 losses = model.finetune(input_text, target_text, lr=lr)
                 with _JOBS_LOCK:
                     _FINETUNE_JOBS[job_id]["status"] = "done"
-                    _FINETUNE_JOBS[job_id]["losses"] = [float(l) for l in losses]
-                    _FINETUNE_JOBS[job_id]["loss"] = float(losses[-1]) if losses else None
+                    _FINETUNE_JOBS[job_id]["losses"] = [
+                        float(l) for l in losses
+                    ]
+                    _FINETUNE_JOBS[job_id]["loss"] = (
+                        float(losses[-1]) if losses else None
+                    )
                     _FINETUNE_JOBS[job_id]["steps"] = len(losses)
             except Exception as exc:
                 with _JOBS_LOCK:
@@ -342,15 +380,25 @@ def make_server(model_path, host="127.0.0.1", port=8080, ctx_size=512):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="infer_train HTTP server (M7)")
-    parser.add_argument("-m", "--model", default=os.environ.get("INFERTRAIN_MODEL", ""))
-    parser.add_argument("--host", default=os.environ.get("INFERTRAIN_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("INFERTRAIN_PORT", "8080")))
+    parser.add_argument(
+        "-m", "--model", default=os.environ.get("INFERTRAIN_MODEL", "")
+    )
+    parser.add_argument(
+        "--host", default=os.environ.get("INFERTRAIN_HOST", "127.0.0.1")
+    )
+    parser.add_argument(
+        "--port", type=int,
+        default=int(os.environ.get("INFERTRAIN_PORT", "8080")),
+    )
     parser.add_argument("-c", "--ctx-size", type=int, default=512)
     args = parser.parse_args(argv)
     if not args.model:
         raise SystemExit("error: set INFERTRAIN_MODEL or pass -m MODEL")
     server = make_server(args.model, args.host, args.port, args.ctx_size)
-    print(f"infer_train server on http://{args.host}:{args.port} (model: {args.model})")
+    print(
+        f"infer_train server on http://{args.host}:{args.port} "
+        f"(model: {args.model})"
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

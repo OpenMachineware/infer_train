@@ -33,7 +33,7 @@ def ts_name(kind: Int) -> String:
     return "ts?"
 
 
-struct CFGEdge(Copyable, Movable, ImplicitlyCopyable):
+struct CFGEdge(Copyable, ImplicitlyCopyable, Movable):
     var src: Int
     var dst: Int
     var kind: Int  # 0 fallthrough/jump, 1 true, 2 false
@@ -81,9 +81,7 @@ struct CFGGraph(Movable):
     def add_node_to_block(mut self, block: Int, node_id: Int):
         self.blocks[block].nodes.append(node_id)
 
-    def set_terminator(
-        mut self, block: Int, kind: Int, cond_node: Int = -1
-    ):
+    def set_terminator(mut self, block: Int, kind: Int, cond_node: Int = -1):
         self.blocks[block].terminator = kind
         self.blocks[block].cond_node = cond_node
 

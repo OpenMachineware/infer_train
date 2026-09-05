@@ -14,7 +14,7 @@ from std.sys.info import (
 )
 
 
-struct Device(Copyable, Equatable, Movable, ImplicitlyCopyable):
+struct Device(Copyable, Equatable, ImplicitlyCopyable, Movable):
     """Backend device tag (enum-like, see module docstring)."""
 
     var _tag: Int8

@@ -51,13 +51,13 @@ def _matmul_kernel_f16(
             var acc = SIMD[DType.float32, W_F16](0)
             for k in range(K):
                 var a_ik = Float32(a.get(i * K + k))
-                var b_row = b.data().unsafe_load[width=W_F16](
-                    offset=k * N + j
-                ).cast[DType.float32]()
+                var b_row = (
+                    b.data()
+                    .unsafe_load[width=W_F16](offset=k * N + j)
+                    .cast[DType.float32]()
+                )
                 acc = acc + a_ik * b_row
-            out.data().unsafe_store(
-                i * N + j, acc.cast[DType.float16]()
-            )
+            out.data().unsafe_store(i * N + j, acc.cast[DType.float16]())
             j += W_F16
         while j < N:
             var acc = Float32(0)
@@ -85,9 +85,7 @@ def _matmul_kernel_f32(
             var acc = SIMD[DType.float32, W_F32](0)
             for k in range(K):
                 var a_ik = Float32(a.get(i * K + k))
-                var b_row = b.data().unsafe_load[width=W_F32](
-                    offset=k * N + j
-                )
+                var b_row = b.data().unsafe_load[width=W_F32](offset=k * N + j)
                 acc = acc + a_ik * b_row
             out.data().unsafe_store(i * N + j, acc)
             j += W_F32
@@ -100,9 +98,9 @@ def _matmul_kernel_f32(
     return out
 
 
-def _matmul_cpu_kernel[dtype: DType](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def _matmul_cpu_kernel[
+    dtype: DType
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Dispatch to the concrete per-dtype kernel.
 
     The views are pointer bitcasts (zero copy): Mojo 1.0's `comptime if`
@@ -149,9 +147,9 @@ def _matmul_cpu_kernel[dtype: DType](
         return tensor_zeros[dtype, 2](StaticTuple[Int, 2](0, 0))
 
 
-def matmul_cpu[dtype: DType, M: Int, N: Int, K: Int](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def matmul_cpu[
+    dtype: DType, M: Int, N: Int, K: Int
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Comptime-shaped matmul: M/N/K are compile-time constants.
 
     This is the static-shape entry point used when shapes are known at
@@ -168,9 +166,9 @@ def matmul_cpu[dtype: DType, M: Int, N: Int, K: Int](
     return _matmul_cpu_kernel[dtype](a, b)
 
 
-def matmul_cpu_dynamic[dtype: DType](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def matmul_cpu_dynamic[
+    dtype: DType
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Runtime-shaped matmul; M/N/K are read from the tensors."""
     return _matmul_cpu_kernel[dtype](a, b)
 
@@ -178,7 +176,8 @@ def matmul_cpu_dynamic[dtype: DType](
 def _matmul_weight_kernel_f16(
     x: Tensor[DType.float16, 2], w: Tensor[DType.float16, 2]
 ) -> Tensor[DType.float16, 2]:
-    """y[i, j] = sum_k x[i, k] * w[j, k]; w is stored [out, in] (GGUF layout)."""
+    """y[i, j] = sum_k x[i, k] * w[j, k]; w is stored [out, in] (GGUF layout).
+    """
     var M = x.shape()[0]
     var K = x.shape()[1]
     var N = w.shape()[0]
@@ -191,19 +190,21 @@ def _matmul_weight_kernel_f16(
             var acc = SIMD[DType.float32, W_F16](0)
             var k = 0
             while k < k_main:
-                var xv = x.data().unsafe_load[width=W_F16](
-                    offset=i * K + k
-                ).cast[DType.float32]()
-                var wv = w.data().unsafe_load[width=W_F16](
-                    offset=j * K + k
-                ).cast[DType.float32]()
+                var xv = (
+                    x.data()
+                    .unsafe_load[width=W_F16](offset=i * K + k)
+                    .cast[DType.float32]()
+                )
+                var wv = (
+                    w.data()
+                    .unsafe_load[width=W_F16](offset=j * K + k)
+                    .cast[DType.float32]()
+                )
                 acc = acc + xv * wv
                 k += W_F16
             var total = Float32(acc.reduce_add())
             while k < K:
-                total += Float32(x.get(i * K + k)) * Float32(
-                    w.get(j * K + k)
-                )
+                total += Float32(x.get(i * K + k)) * Float32(w.get(j * K + k))
                 k += 1
             out.set(i * N + j, Scalar[DType.float16](total))
     return out
@@ -230,17 +231,15 @@ def _matmul_weight_kernel_f32(
                 k += W_F32
             var total = Float32(acc.reduce_add())
             while k < K:
-                total += Float32(x.get(i * K + k)) * Float32(
-                    w.get(j * K + k)
-                )
+                total += Float32(x.get(i * K + k)) * Float32(w.get(j * K + k))
                 k += 1
             out.set(i * N + j, Scalar[DType.float32](total))
     return out
 
 
-def matmul_weight_cpu[dtype: DType](
-    x: Tensor[dtype, 2], w: Tensor[dtype, 2]
-) -> Tensor[dtype, 2]:
+def matmul_weight_cpu[
+    dtype: DType
+](x: Tensor[dtype, 2], w: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
     """Weight-major linear: y = W @ x where W is stored [out, in].
 
     This is the layout GGUF files actually carry (dims are ggml-ordered,
@@ -297,11 +296,15 @@ def matmul_weight_cpu[dtype: DType](
 # typed pointers with `unsafe_from_address` (plain loads).
 
 
-def matmul_weight_cpu_threaded[dtype: DType](
+def matmul_weight_cpu_threaded[
+    dtype: DType
+](
     x: Tensor[dtype, 2],
     w: Tensor[dtype, 2],
     nthreads: Int = 0,
-) -> Tensor[dtype, 2]:
+) -> Tensor[
+    dtype, 2
+]:
     """Multithreaded weight-major matmul (see the module section header).
 
     Falls back to the single-threaded kernel below the parallelization
@@ -338,7 +341,9 @@ def matmul_weight_cpu_threaded[dtype: DType](
     return out
 
 
-def _matmul_multi_threaded[dtype: DType](
+def _matmul_multi_threaded[
+    dtype: DType
+](
     x1: Tensor[dtype, 2],
     w1: Tensor[dtype, 2],
     x2: Tensor[dtype, 2],
@@ -378,9 +383,16 @@ def _matmul_multi_threaded[dtype: DType](
     hdr.unsafe_offset(13).unsafe_store(val=Int64(Int(out3.data())))
 
     print(
-        "[multi] ctx: x=", Int(x1.data()), " w=", Int(w1.data()),
-        " out1=", Int(out1.data()), " out2=", Int(out2.data()),
-        " out3=", Int(out3.data()),
+        "[multi] ctx: x=",
+        Int(x1.data()),
+        " w=",
+        Int(w1.data()),
+        " out1=",
+        Int(out1.data()),
+        " out2=",
+        Int(out2.data()),
+        " out3=",
+        Int(out3.data()),
     )
     var raw = hdr.unsafe_bitcast[UInt8]()
     var rc = parallel_run(
@@ -395,7 +407,9 @@ def _matmul_multi_threaded[dtype: DType](
     return (out1, out2, out3)
 
 
-def matmul_weight_3_threaded[dtype: DType](
+def matmul_weight_3_threaded[
+    dtype: DType
+](
     x: Tensor[dtype, 2],
     w1: Tensor[dtype, 2],
     w2: Tensor[dtype, 2],
@@ -457,7 +471,9 @@ def matmul_weight_3_threaded[dtype: DType](
         o3 = matmul_weight_cpu[dtype](x, w3)
 
 
-def matmul_weight_2_threaded[dtype: DType](
+def matmul_weight_2_threaded[
+    dtype: DType
+](
     x: Tensor[dtype, 2],
     w1: Tensor[dtype, 2],
     w2: Tensor[dtype, 2],
@@ -495,17 +511,17 @@ def matmul_weight_2_threaded[dtype: DType](
     hdr.unsafe_offset(12).unsafe_store(val=Int64(Int(o2.data())))
 
     var raw = hdr.unsafe_bitcast[UInt8]()
-    var rc = parallel_run(
-        String("it_mw_multi_worker"), raw, n1 + n2, nthreads
-    )
+    var rc = parallel_run(String("it_mw_multi_worker"), raw, n1 + n2, nthreads)
     if rc != 0:
         o1 = matmul_weight_cpu[dtype](x, w1)
         o2 = matmul_weight_cpu[dtype](x, w2)
 
 
-def matmul_cpu_forward_with_saved[dtype: DType](
-    a: Tensor[dtype, 2], b: Tensor[dtype, 2]
-) -> Tuple[Tensor[dtype, 2], List[Tensor[dtype, 2]]]:
+def matmul_cpu_forward_with_saved[
+    dtype: DType
+](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tuple[
+    Tensor[dtype, 2], List[Tensor[dtype, 2]]
+]:
     """Forward pass that also returns the inputs for the backward pass.
 
     The saved tensors are *views* (they share the input buffers) so no large
@@ -518,9 +534,11 @@ def matmul_cpu_forward_with_saved[dtype: DType](
     return (out, saved^)
 
 
-def matmul_cpu_backward[dtype: DType](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]]:
+def matmul_cpu_backward[
+    dtype: DType
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+]:
     """Backward for `matmul_cpu_dynamic`: out = a @ b (a[M,K], b[K,N]).
 
     grad_a[i,k] = sum_j grad_out[i,j] * b[k,j]
@@ -545,12 +563,16 @@ def matmul_cpu_backward[dtype: DType](
             var acc = SIMD[DType.float32, W](0)
             var j = 0
             while j < n_main:
-                var gv = grad_out.data().unsafe_load[width=W](
-                    offset=i * N + j
-                ).cast[DType.float32]()
-                var bv = b.data().unsafe_load[width=W](
-                    offset=k * N + j
-                ).cast[DType.float32]()
+                var gv = (
+                    grad_out.data()
+                    .unsafe_load[width=W](offset=i * N + j)
+                    .cast[DType.float32]()
+                )
+                var bv = (
+                    b.data()
+                    .unsafe_load[width=W](offset=k * N + j)
+                    .cast[DType.float32]()
+                )
                 acc = acc + gv * bv
                 j += W
             var total = Float32(acc.reduce_add())
@@ -577,9 +599,11 @@ def matmul_cpu_backward[dtype: DType](
     return result^
 
 
-def matmul_weight_cpu_forward_with_saved[dtype: DType](
-    x: Tensor[dtype, 2], w: Tensor[dtype, 2]
-) -> Tuple[Tensor[dtype, 2], List[Tensor[dtype, 2]]]:
+def matmul_weight_cpu_forward_with_saved[
+    dtype: DType
+](x: Tensor[dtype, 2], w: Tensor[dtype, 2]) -> Tuple[
+    Tensor[dtype, 2], List[Tensor[dtype, 2]]
+]:
     """Forward for the weight-major linear (y = W @ x, W stored [out, in])
     plus the inputs needed by the backward pass."""
     var out = matmul_weight_cpu[dtype](x, w)
@@ -589,9 +613,11 @@ def matmul_weight_cpu_forward_with_saved[dtype: DType](
     return (out, saved^)
 
 
-def matmul_weight_cpu_backward[dtype: DType](
-    grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]
-) -> List[Tensor[dtype, 2]]:
+def matmul_weight_cpu_backward[
+    dtype: DType
+](grad_out: Tensor[dtype, 2], saved: List[Tensor[dtype, 2]]) -> List[
+    Tensor[dtype, 2]
+]:
     """Backward for `matmul_weight_cpu`: y = x @ w^T (x[M,K], w[N,K]).
 
     grad_x[i,k] = sum_j grad_out[i,j] * w[j,k]   (grad_out @ w)
@@ -616,12 +642,16 @@ def matmul_weight_cpu_backward[dtype: DType](
             var g = Float32(grad_out.get(i * N + j))
             var k = 0
             while k < k_main:
-                var xv = grad_x.data().unsafe_load[width=W](
-                    offset=i * K + k
-                ).cast[DType.float32]()
-                var wv = w.data().unsafe_load[width=W](
-                    offset=j * K + k
-                ).cast[DType.float32]()
+                var xv = (
+                    grad_x.data()
+                    .unsafe_load[width=W](offset=i * K + k)
+                    .cast[DType.float32]()
+                )
+                var wv = (
+                    w.data()
+                    .unsafe_load[width=W](offset=j * K + k)
+                    .cast[DType.float32]()
+                )
                 grad_x.data().unsafe_store(
                     i * K + k,
                     (xv + SIMD[DType.float32, W](g) * wv).cast[dtype](),
@@ -643,12 +673,16 @@ def matmul_weight_cpu_backward[dtype: DType](
             var g = Float32(grad_out.get(i * N + j))
             var k = 0
             while k < k_main:
-                var wv = grad_w.data().unsafe_load[width=W](
-                    offset=j * K + k
-                ).cast[DType.float32]()
-                var xv = x.data().unsafe_load[width=W](
-                    offset=i * K + k
-                ).cast[DType.float32]()
+                var wv = (
+                    grad_w.data()
+                    .unsafe_load[width=W](offset=j * K + k)
+                    .cast[DType.float32]()
+                )
+                var xv = (
+                    x.data()
+                    .unsafe_load[width=W](offset=i * K + k)
+                    .cast[DType.float32]()
+                )
                 grad_w.data().unsafe_store(
                     j * K + k,
                     (wv + SIMD[DType.float32, W](g) * xv).cast[dtype](),
@@ -738,12 +772,12 @@ def _matmul_quantized_row_kernel[
             dequantize_blocks[dtype, quant_type](row, blk * bb, scratch, 1)
             var l = 0
             while l < be_chunks:
-                var xv = x.unsafe_load[width=W](
-                    offset=k + l * W
-                ).cast[DType.float32]()
-                var wv = scratch.unsafe_load[width=W](
-                    offset=l * W
-                ).cast[DType.float32]()
+                var xv = x.unsafe_load[width=W](offset=k + l * W).cast[
+                    DType.float32
+                ]()
+                var wv = scratch.unsafe_load[width=W](offset=l * W).cast[
+                    DType.float32
+                ]()
                 acc = acc + xv * wv
                 l += 1
             k += be
@@ -857,12 +891,16 @@ def _fused_matmul_rms_norm_specialized[
                     if k_end > k_vec:
                         k_end = k_vec
                     while k < k_end:
-                        var xv = x.data().unsafe_load[width=VW](
-                            offset=i * K + k
-                        ).cast[DType.float32]()
-                        var wv = w.data().unsafe_load[width=VW](
-                            offset=j * K + k
-                        ).cast[DType.float32]()
+                        var xv = (
+                            x.data()
+                            .unsafe_load[width=VW](offset=i * K + k)
+                            .cast[DType.float32]()
+                        )
+                        var wv = (
+                            w.data()
+                            .unsafe_load[width=VW](offset=j * K + k)
+                            .cast[DType.float32]()
+                        )
                         acc = acc + xv * wv
                         k += VW
                     total += Float32(acc.reduce_add())
@@ -876,12 +914,16 @@ def _fused_matmul_rms_norm_specialized[
                 var acc = SIMD[DType.float32, VW](0)
                 var k = 0
                 while k < k_vec:
-                    var xv = x.data().unsafe_load[width=VW](
-                        offset=i * K + k
-                    ).cast[DType.float32]()
-                    var wv = w.data().unsafe_load[width=VW](
-                        offset=j * K + k
-                    ).cast[DType.float32]()
+                    var xv = (
+                        x.data()
+                        .unsafe_load[width=VW](offset=i * K + k)
+                        .cast[DType.float32]()
+                    )
+                    var wv = (
+                        w.data()
+                        .unsafe_load[width=VW](offset=j * K + k)
+                        .cast[DType.float32]()
+                    )
                     acc = acc + xv * wv
                     k += VW
                 var total = Float32(acc.reduce_add())
@@ -895,9 +937,11 @@ def _fused_matmul_rms_norm_specialized[
         var ss = Float32(0)
         var j = 0
         while j < n_vec:
-            var v = out.data().unsafe_load[width=W](
-                offset=i * N + j
-            ).cast[DType.float32]()
+            var v = (
+                out.data()
+                .unsafe_load[width=W](offset=i * N + j)
+                .cast[DType.float32]()
+            )
             ss += Float32((v * v).reduce_add())
             j += W
         while j < N:
@@ -907,11 +951,14 @@ def _fused_matmul_rms_norm_specialized[
         var inv = Float32(1.0) / sqrt(ss / Float32(N) + eps)
         j = 0
         while j < n_vec:
-            var v = out.data().unsafe_load[width=W](
-                offset=i * N + j
-            ).cast[DType.float32]()
+            var v = (
+                out.data()
+                .unsafe_load[width=W](offset=i * N + j)
+                .cast[DType.float32]()
+            )
             out.data().unsafe_store(
-                i * N + j, (v * SIMD[DType.float32, W](inv)).cast[DType.float16]()
+                i * N + j,
+                (v * SIMD[DType.float32, W](inv)).cast[DType.float16](),
             )
             j += W
         while j < N:
@@ -936,6 +983,7 @@ struct CompiledFusedKernel(Copyable):
     without a compiled specialization runs the generic kernel (the M5
     comptime-JIT fallback).
     """
+
     var key: String
     var m: Int
     var n: Int
@@ -991,13 +1039,13 @@ struct CompiledFusedKernel(Copyable):
             )
         if self.m == 2 and self.n == 256 and self.k == 128:
             if self.width == 256:
-                return _fused_matmul_rms_norm_specialized[2, 256, 128, 16, 2, 64](
-                    x, w, eps
-                )
+                return _fused_matmul_rms_norm_specialized[
+                    2, 256, 128, 16, 2, 64
+                ](x, w, eps)
             elif self.width == 64:
-                return _fused_matmul_rms_norm_specialized[2, 256, 128, 4, 2, 32](
-                    x, w, eps
-                )
+                return _fused_matmul_rms_norm_specialized[
+                    2, 256, 128, 4, 2, 32
+                ](x, w, eps)
             return _fused_matmul_rms_norm_specialized[2, 256, 128, 8, 2, 64](
                 x, w, eps
             )
@@ -1005,7 +1053,9 @@ struct CompiledFusedKernel(Copyable):
         return fused_matmul_rms_norm[DType.float16](x, w, eps)
 
 
-def compile_fused_kernel(m: Int, n: Int, k: Int, width: Int) -> CompiledFusedKernel:
+def compile_fused_kernel(
+    m: Int, n: Int, k: Int, width: Int
+) -> CompiledFusedKernel:
     """The compile function for fused matmul+rmsnorm specializations.
 
     Passed to `JitCache.get_or_compile` as a thin function value - the

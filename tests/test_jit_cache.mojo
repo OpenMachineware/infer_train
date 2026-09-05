@@ -111,14 +111,15 @@ def main():
 
     # 3. run_fused_jit: the model FFN shape (1, 8960, 1536)
     var x1 = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](1, 1536))
-    var w1 = tensor_zeros[DType.float16, 2](
-        StaticTuple[Int, 2](8960, 1536)
-    )
+    var w1 = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](8960, 1536))
     _fill_f16(x1, 3, Float32(1.0))
     _fill_f16(w1, 4, Float32(0.02))
     var ref1 = fused_matmul_rms_norm[DType.float16](x1, w1)
     var off = cache.run_fused_jit(x1, w1, Float32(1e-5), False, 128)
-    check("specialize off == generic (default path)", _max_diff(ref1, off) == Float32(0))
+    check(
+        "specialize off == generic (default path)",
+        _max_diff(ref1, off) == Float32(0),
+    )
     var on = cache.run_fused_jit(x1, w1, Float32(1e-5), True, 128)
     check(
         "specialize on matches generic (model shape)",
@@ -150,13 +151,18 @@ def main():
 
     # 4. stats + the legacy FFN contract
     print(
-        "  stats: compiles", cache.compiles, "hits", cache.hits,
-        "misses", cache.misses, "hit rate", cache.hit_rate(),
+        "  stats: compiles",
+        cache.compiles,
+        "hits",
+        cache.hits,
+        "misses",
+        cache.misses,
+        "hit rate",
+        cache.hit_rate(),
     )
     check(
         "hit rate in [0,1]",
-        cache.hit_rate() >= Float64(0.0)
-        and cache.hit_rate() <= Float64(1.0),
+        cache.hit_rate() >= Float64(0.0) and cache.hit_rate() <= Float64(1.0),
     )
     check(
         "legacy FFN key stays pre-registered",

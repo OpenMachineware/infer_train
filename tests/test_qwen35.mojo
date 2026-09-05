@@ -41,12 +41,35 @@ def main() raises:
     var ctx = load_gguf(MODEL_PATH)
     var config = load_config(ctx)
     print("arch:", arch_name(config.arch), "arch_str:", config.arch_str)
-    print("layers:", config.n_layers, "hidden:", config.hidden, "ffn:", config.ffn)
-    print("heads:", config.n_heads, "kv:", config.n_kv_heads, "head_dim:", config.head_dim)
+    print(
+        "layers:", config.n_layers, "hidden:", config.hidden, "ffn:", config.ffn
+    )
+    print(
+        "heads:",
+        config.n_heads,
+        "kv:",
+        config.n_kv_heads,
+        "head_dim:",
+        config.head_dim,
+    )
     print("vocab:", config.vocab, "rope:", config.rope_theta)
-    print("ssm:", config.has_ssm, "interval:", config.full_attn_interval, "n_rot:", config.n_rot)
+    print(
+        "ssm:",
+        config.has_ssm,
+        "interval:",
+        config.full_attn_interval,
+        "n_rot:",
+        config.n_rot,
+    )
     print("moe:", config.is_moe)
-    print("qk_norm:", config.has_qk_norm, "gate:", config.has_gate, "post_attn_norm:", config.has_post_attn_norm)
+    print(
+        "qk_norm:",
+        config.has_qk_norm,
+        "gate:",
+        config.has_gate,
+        "post_attn_norm:",
+        config.has_post_attn_norm,
+    )
 
     # -- config checks (config-driven capability flags) ----------------------
     check(config.arch == ARCH_QWEN, "unified qwen arch")
@@ -76,7 +99,9 @@ def main() raises:
     model.weights = weights^
 
     var tokenizer = make_tokenizer(model.ctx, String(""))
-    print("tokenizer:", tokenizer.flavor_name(), "vocab:", tokenizer.vocab_size())
+    print(
+        "tokenizer:", tokenizer.flavor_name(), "vocab:", tokenizer.vocab_size()
+    )
 
     # -- forward smoke: prefill a few prompt tokens -------------------------
     var tokens = tokenizer.encode_with_bos("What is 1+1?")
@@ -84,7 +109,9 @@ def main() raises:
     var n_prefill = len(tokens)
     if n_prefill > 8:
         n_prefill = 8
-    var logits = tensor_zeros[DType.float32, 1](StaticTuple[Int, 1](config.vocab))
+    var logits = tensor_zeros[DType.float32, 1](
+        StaticTuple[Int, 1](config.vocab)
+    )
     for i in range(n_prefill):
         logits = model.forward(tokens[i], i)
     var mx = Float32(-3.0e38)

@@ -63,17 +63,15 @@ def _rope_kernel_f32(
         var ht = i // half
         var t = ht % n_tok_i
         var pos = Float32(Int(start_pos) + t)
-        var freq = exp(
-            Float32(-2 * d) / Float32(head_dim_i) * ln_theta
-        )
+        var freq = exp(Float32(-2 * d) / Float32(head_dim_i) * ln_theta)
         var angle = pos * freq
         var c = cos(angle)
         var s = sin(angle)
         var base = ht * head_dim_i
-        var x0 = x[base + d]
-        var x1 = x[base + d + half]
-        dst[base + d] = x0 * c - x1 * s
-        dst[base + d + half] = x0 * s + x1 * c
+        var x0 = x[unsafe_offset=base + d]
+        var x1 = x[unsafe_offset=base + d + half]
+        dst[unsafe_offset=base + d] = x0 * c - x1 * s
+        dst[unsafe_offset=base + d + half] = x0 * s + x1 * c
         i += stride
 
 
@@ -97,17 +95,17 @@ def _rope_kernel_f16(
         var ht = i // half
         var t = ht % n_tok_i
         var pos = Float32(Int(start_pos) + t)
-        var freq = exp(
-            Float32(-2 * d) / Float32(head_dim_i) * ln_theta
-        )
+        var freq = exp(Float32(-2 * d) / Float32(head_dim_i) * ln_theta)
         var angle = pos * freq
         var c = cos(angle)
         var s = sin(angle)
         var base = ht * head_dim_i
-        var x0 = Float32(x[base + d])
-        var x1 = Float32(x[base + d + half])
-        dst[base + d] = Scalar[DType.float16](x0 * c - x1 * s)
-        dst[base + d + half] = Scalar[DType.float16](x0 * s + x1 * c)
+        var x0 = Float32(x[unsafe_offset=base + d])
+        var x1 = Float32(x[unsafe_offset=base + d + half])
+        dst[unsafe_offset=base + d] = Scalar[DType.float16](x0 * c - x1 * s)
+        dst[unsafe_offset=base + d + half] = Scalar[DType.float16](
+            x0 * s + x1 * c
+        )
         i += stride
 
 
@@ -131,17 +129,15 @@ def _rope_bwd_kernel_f32(
         var ht = i // half
         var t = ht % n_tok_i
         var pos = Float32(Int(start_pos) + t)
-        var freq = exp(
-            Float32(-2 * d) / Float32(head_dim_i) * ln_theta
-        )
+        var freq = exp(Float32(-2 * d) / Float32(head_dim_i) * ln_theta)
         var angle = pos * freq
         var c = cos(angle)
         var s = sin(angle)
         var base = ht * head_dim_i
-        var g0 = grad_out[base + d]
-        var g1 = grad_out[base + d + half]
-        dst[base + d] = g0 * c + g1 * s
-        dst[base + d + half] = -g0 * s + g1 * c
+        var g0 = grad_out[unsafe_offset=base + d]
+        var g1 = grad_out[unsafe_offset=base + d + half]
+        dst[unsafe_offset=base + d] = g0 * c + g1 * s
+        dst[unsafe_offset=base + d + half] = -g0 * s + g1 * c
         i += stride
 
 
@@ -165,24 +161,26 @@ def _rope_bwd_kernel_f16(
         var ht = i // half
         var t = ht % n_tok_i
         var pos = Float32(Int(start_pos) + t)
-        var freq = exp(
-            Float32(-2 * d) / Float32(head_dim_i) * ln_theta
-        )
+        var freq = exp(Float32(-2 * d) / Float32(head_dim_i) * ln_theta)
         var angle = pos * freq
         var c = cos(angle)
         var s = sin(angle)
         var base = ht * head_dim_i
-        var g0 = Float32(grad_out[base + d])
-        var g1 = Float32(grad_out[base + d + half])
-        dst[base + d] = Scalar[DType.float16](g0 * c + g1 * s)
-        dst[base + d + half] = Scalar[DType.float16](-g0 * s + g1 * c)
+        var g0 = Float32(grad_out[unsafe_offset=base + d])
+        var g1 = Float32(grad_out[unsafe_offset=base + d + half])
+        dst[unsafe_offset=base + d] = Scalar[DType.float16](g0 * c + g1 * s)
+        dst[unsafe_offset=base + d + half] = Scalar[DType.float16](
+            -g0 * s + g1 * c
+        )
         i += stride
 
 
 # -- launch helpers -----------------------------------------------------------
 
 
-def _rope_gpu_launch[dtype: DType](
+def _rope_gpu_launch[
+    dtype: DType
+](
     ctx: DeviceContext,
     x: Tensor[dtype, 3],
     start_pos: Int,
@@ -197,24 +195,36 @@ def _rope_gpu_launch[dtype: DType](
     var ln_theta = log(theta)
     comptime if dtype == DType.float16:
         ctx.enqueue_function[_rope_kernel_f16](
-            x_buf, dst_buf,
-            Int32(n_tokens), Int32(head_dim),
-            Int32(start_pos), ln_theta, Int32(n_pairs),
-            grid_dim=grid1d(n_pairs, BLOCK), block_dim=BLOCK,
+            x_buf,
+            dst_buf,
+            Int32(n_tokens),
+            Int32(head_dim),
+            Int32(start_pos),
+            ln_theta,
+            Int32(n_pairs),
+            grid_dim=grid1d(n_pairs, BLOCK),
+            block_dim=BLOCK,
         )
     else:
         ctx.enqueue_function[_rope_kernel_f32](
-            x_buf, dst_buf,
-            Int32(n_tokens), Int32(head_dim),
-            Int32(start_pos), ln_theta, Int32(n_pairs),
-            grid_dim=grid1d(n_pairs, BLOCK), block_dim=BLOCK,
+            x_buf,
+            dst_buf,
+            Int32(n_tokens),
+            Int32(head_dim),
+            Int32(start_pos),
+            ln_theta,
+            Int32(n_pairs),
+            grid_dim=grid1d(n_pairs, BLOCK),
+            block_dim=BLOCK,
         )
     var out = download3[dtype](ctx, dst_buf, x.shape())
     ctx.synchronize()
     return out
 
 
-def _rope_bwd_gpu_launch[dtype: DType](
+def _rope_bwd_gpu_launch[
+    dtype: DType
+](
     ctx: DeviceContext,
     grad_out: Tensor[dtype, 3],
     start_pos: Int,
@@ -229,17 +239,27 @@ def _rope_bwd_gpu_launch[dtype: DType](
     var ln_theta = log(theta)
     comptime if dtype == DType.float16:
         ctx.enqueue_function[_rope_bwd_kernel_f16](
-            go_buf, dst_buf,
-            Int32(n_tokens), Int32(head_dim),
-            Int32(start_pos), ln_theta, Int32(n_pairs),
-            grid_dim=grid1d(n_pairs, BLOCK), block_dim=BLOCK,
+            go_buf,
+            dst_buf,
+            Int32(n_tokens),
+            Int32(head_dim),
+            Int32(start_pos),
+            ln_theta,
+            Int32(n_pairs),
+            grid_dim=grid1d(n_pairs, BLOCK),
+            block_dim=BLOCK,
         )
     else:
         ctx.enqueue_function[_rope_bwd_kernel_f32](
-            go_buf, dst_buf,
-            Int32(n_tokens), Int32(head_dim),
-            Int32(start_pos), ln_theta, Int32(n_pairs),
-            grid_dim=grid1d(n_pairs, BLOCK), block_dim=BLOCK,
+            go_buf,
+            dst_buf,
+            Int32(n_tokens),
+            Int32(head_dim),
+            Int32(start_pos),
+            ln_theta,
+            Int32(n_pairs),
+            grid_dim=grid1d(n_pairs, BLOCK),
+            block_dim=BLOCK,
         )
     var out = download3[dtype](ctx, dst_buf, grad_out.shape())
     ctx.synchronize()
@@ -249,7 +269,9 @@ def _rope_bwd_gpu_launch[dtype: DType](
 # -- public entry points ------------------------------------------------------
 
 
-def rope_gpu[dtype: DType, n_heads: Int, head_dim: Int](
+def rope_gpu[
+    dtype: DType, n_heads: Int, head_dim: Int
+](
     x: Tensor[dtype, 3], start_pos: Int, theta: Float32 = Float32(10000.0)
 ) -> Tensor[dtype, 3]:
     """Comptime-shaped GPU RoPE (CPU fallback on any GPU error)."""
@@ -264,7 +286,9 @@ def rope_gpu[dtype: DType, n_heads: Int, head_dim: Int](
         return rope_cpu[dtype, n_heads, head_dim](x, start_pos, theta)
 
 
-def rope_gpu_dynamic[dtype: DType](
+def rope_gpu_dynamic[
+    dtype: DType
+](
     x: Tensor[dtype, 3], start_pos: Int, theta: Float32 = Float32(10000.0)
 ) -> Tensor[dtype, 3]:
     """Runtime-shaped GPU RoPE (CPU fallback on any GPU error)."""
@@ -277,7 +301,9 @@ def rope_gpu_dynamic[dtype: DType](
         return rope_cpu_dynamic[dtype](x, start_pos, theta)
 
 
-def rope_gpu_backward_pos[dtype: DType](
+def rope_gpu_backward_pos[
+    dtype: DType
+](
     grad_out: Tensor[dtype, 3],
     start_pos: Int,
     theta: Float32 = Float32(10000.0),
@@ -300,7 +326,9 @@ def rope_gpu_backward_pos[dtype: DType](
         )
 
 
-def rope_gpu_forward_with_saved[dtype: DType, n_heads: Int, head_dim: Int](
+def rope_gpu_forward_with_saved[
+    dtype: DType, n_heads: Int, head_dim: Int
+](
     x: Tensor[dtype, 3], start_pos: Int, theta: Float32 = Float32(10000.0)
 ) -> Tuple[Tensor[dtype, 3], List[Tensor[dtype, 3]]]:
     var out = rope_gpu[dtype, n_heads, head_dim](x, start_pos, theta)
@@ -309,9 +337,11 @@ def rope_gpu_forward_with_saved[dtype: DType, n_heads: Int, head_dim: Int](
     return (out, saved^)
 
 
-def rope_gpu_backward[dtype: DType, n_heads: Int, head_dim: Int](
-    grad_out: Tensor[dtype, 3], saved: List[Tensor[dtype, 3]]
-) -> List[Tensor[dtype, 3]]:
+def rope_gpu_backward[
+    dtype: DType, n_heads: Int, head_dim: Int
+](grad_out: Tensor[dtype, 3], saved: List[Tensor[dtype, 3]]) -> List[
+    Tensor[dtype, 3]
+]:
     """Original typed backward signature; not on the registry path.
 
     The registry routes the RoPE backward through the erased dispatcher

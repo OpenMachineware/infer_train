@@ -105,9 +105,12 @@ def main():
     var ref_out = generic_interp.run(inputs)
     var got = jit_interp.run(inputs)
 
-    check("jit-marked node matches generic execution",
-          len(ref_out) == 1 and len(got) == 1
-          and _max_diff(ref_out[0], got[0]) < Float32(1e-3))
+    check(
+        "jit-marked node matches generic execution",
+        len(ref_out) == 1
+        and len(got) == 1
+        and _max_diff(ref_out[0], got[0]) < Float32(1e-3),
+    )
     check(
         "cache holds the compiled FFN shape key",
         jit_interp.jit_cache.has("ffn/1/8960/1536"),
@@ -116,15 +119,18 @@ def main():
     # timing: jit vs generic over a few iterations (recorded)
     var n = 3
     var t0 = time_ms()
-    for i in range(n):
+    for _ in range(n):
         _ = generic_interp.run(inputs)
     var t1 = time_ms()
-    for i in range(n):
+    for _ in range(n):
         _ = jit_interp.run(inputs)
     var t2 = time_ms()
     print(
-        "  timing: generic ", (t1 - t0) / Float64(n), " ms/iter vs jit ",
-        (t2 - t1) / Float64(n), " ms/iter",
+        "  timing: generic ",
+        (t1 - t0) / Float64(n),
+        " ms/iter vs jit ",
+        (t2 - t1) / Float64(n),
+        " ms/iter",
     )
 
     # cache miss path: a different shape registers + falls back generically
@@ -134,8 +140,9 @@ def main():
     var u2 = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](256, 128))
     var d2 = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](128, 256))
     var out2 = cache.run_ffn(x2, g2, u2, d2)
-    check("cache miss falls back and records the key",
-          out2.numel() == 256
-          and cache.has("ffn/2/256/128"))
+    check(
+        "cache miss falls back and records the key",
+        out2.numel() == 256 and cache.has("ffn/2/256/128"),
+    )
 
     print("== JIT tests passed ==")

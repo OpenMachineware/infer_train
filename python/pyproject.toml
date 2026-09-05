@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "infer_train"
-version = "0.2.1"
-description = "infer_train - high-performance LLM inference engine (Mojo) with a torch.compile backend"
+version = "0.2.3"
+description = "High-performance Mojo LLM inference engine (torch.compile)"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Jia Liu", email = "proljc@gmail.com" }]

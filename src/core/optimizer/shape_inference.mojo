@@ -30,20 +30,17 @@ from .dag_ir import (
 )
 
 
-def set_input_shape(
-    mut dag: Dag, input_id: Int, shape: List[Int], dtype: Int
-):
+def set_input_shape(mut dag: Dag, input_id: Int, shape: List[Int], dtype: Int):
     """Declare the shape/dtype of an OP_INPUT node."""
     dag.nodes[input_id].shape = shape.copy()
     dag.nodes[input_id].dtype = dtype
 
 
-def dag_shape_inference(mut dag: Dag) -> Int:
-    """Infer output shapes for every node; returns nodes inferred.
+def dag_shape_inference(mut dag: Dag):
+    """Infer output shapes for every node.
 
     Nodes must be topologically ordered (they are, by construction).
     """
-    var inferred = 0
     for i in range(len(dag.nodes)):
         var op = dag.nodes[i].op
         if op == OP_CONST or op == OP_INPUT:
@@ -84,8 +81,6 @@ def dag_shape_inference(mut dag: Dag) -> Int:
             shape.append(w_shape[1])
         dag.nodes[i].shape = shape^
         dag.nodes[i].dtype = a_dtype
-        inferred += 1
-    return inferred
 
 
 def shape_numel(shape: List[Int]) -> Int:

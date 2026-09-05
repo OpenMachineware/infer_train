@@ -70,20 +70,14 @@ def main() raises:
     var cfg = parse_json_flat_file("tests/data/config.json")
     assert_equal(flat_get_int(cfg, "hidden_size", 0), 1536, "hidden_size")
     assert_equal(flat_get_int(cfg, "num_hidden_layers", 0), 28, "layers")
-    assert_equal(
-        flat_get_int(cfg, "num_attention_heads", 0), 12, "n_heads"
-    )
-    assert_equal(
-        flat_get_int(cfg, "intermediate_size", 0), 8960, "ffn"
-    )
+    assert_equal(flat_get_int(cfg, "num_attention_heads", 0), 12, "n_heads")
+    assert_equal(flat_get_int(cfg, "intermediate_size", 0), 8960, "ffn")
     assert_equal(flat_get_int(cfg, "vocab_size", 0), 151936, "vocab")
     var eps = flat_get_float(cfg, "rms_norm_eps", 0)
     assert_true(eps > 0.9e-6 and eps < 1.1e-6, "rms_norm_eps")
     var theta = flat_get_float(cfg, "rope_theta", 0)
     assert_true(theta > 9999 and theta < 10001, "rope_theta")
-    assert_true(
-        flat_get_str(cfg, "model_type", "") == "qwen2", "model_type"
-    )
+    assert_true(flat_get_str(cfg, "model_type", "") == "qwen2", "model_type")
 
     print("step: streaming walk")
     # streaming walk over the real 7 MB tokenizer.json
