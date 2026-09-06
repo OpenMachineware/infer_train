@@ -26,6 +26,7 @@ from src.core.cli_common import (
     common_options_text,
     VERSION,
 )
+from src.core.ops.attention.kv_cache import kv_cache_type_from_str
 from src.core.gguf_loader import load_gguf
 from src.core.transformer import load_config
 from src.core.tensor import Tensor, tensor_zeros
@@ -70,13 +71,16 @@ weight requantization in `it-server quantize`.
 
 
 def run_local(args: CliArgs) raises:
-    var mp = load_model_heap(args.model, args.ctx_size)
+    var kv_type = kv_cache_type_from_str(args.kv_cache_type)
+    var mp = load_model_heap(args.model, args.ctx_size, kv_type)
     print_banner(
         args.model,
         mp[unsafe_offset=0].transformer.config,
         args.ctx_size,
         mp[unsafe_offset=0].tokenizer,
     )
+    if args.kv_cache_type != "fp16":
+        print("  kv cache type:", args.kv_cache_type)
     if args.mode != "off":
         print("  infer-train mode:", args.mode, "lr:", args.lr)
         print(

@@ -34,6 +34,7 @@ from src.core.tensor import tensor_zeros, Tensor
 from src.core.ops.quantized.dequantize import dequantize_into
 from src.core.ops.quantized.requantize import requantize, QuantizedWeights
 from src.core.mmdl_storage import ByteBuf, _write_gguf
+from src.core.ops.attention.kv_cache import KVCacheType, kv_cache_type_from_str
 from src.runtime.inference import Model, load_model
 from src.version import VERSION
 from std.utils.static_tuple import StaticTuple
@@ -83,6 +84,8 @@ struct CliArgs(Movable):
     var jit_stats: Bool  # --jit-stats: print JIT compiles + hit rate
     var jit_specialize: Bool  # --jit-specialize: enable JIT shape
     # specialization on the CPU path (off by default: the generic kernel)
+    # KV cache resident format (off by default: fp16, unchanged behavior)
+    var kv_cache_type: String  # --kv-cache-type: fp16 | q4_0 | q8_0
 
     def __init__(out self):
         self.model = String("")
@@ -115,6 +118,7 @@ struct CliArgs(Movable):
         self.simd_autotune = False
         self.jit_stats = False
         self.jit_specialize = False
+        self.kv_cache_type = String("fp16")
 
 
 def parse_args(
@@ -216,6 +220,9 @@ def parse_args(
             args.jit_stats = True  # M8: profile subcommand
         elif a == "--jit-specialize":
             args.jit_specialize = True  # M8: CPU JIT shape specialization
+        elif a == "--kv-cache-type":
+            args.kv_cache_type = _next(arg_list, i)
+            i += 1
         elif a == "--infer-train-mode":
             args.mode = _next(arg_list, i)
             i += 1
@@ -297,7 +304,9 @@ def _next_f32(arg_list: List[String], i: Int) raises -> Float32:
 
 
 def load_model_heap(
-    path: String, ctx_size: Int
+    path: String,
+    ctx_size: Int,
+    kv_cache_type: KVCacheType = KVCacheType.FP16,
 ) raises -> Pointer[Model, MutUntrackedOrigin]:
     """Load the model into one heap slot and return the owning pointer.
 
@@ -306,9 +315,11 @@ def load_model_heap(
     a single-shot CLI run and a long-lived server.  Like the C-API
     (infer_train_load_model) the slot is not freed explicitly - the engine
     buffers are MutUntrackedOrigin and the process reclaims them at exit.
+    `kv_cache_type` is the --kv-cache-type flag (fp16 default: the
+    existing behavior is unchanged).
     """
     var mp = unsafe_alloc[Model](1)
-    mp[unsafe_offset=0] = load_model(path, ctx_size)
+    mp[unsafe_offset=0] = load_model(path, ctx_size, kv_cache_type)
     return mp
 
 
@@ -797,6 +808,9 @@ llama.cpp-compatible options:
       --repeat-penalty F    repeat penalty (default 1.0 = off)
   -t, --threads N           worker threads (default: perf cores)
       --seed N              sampling seed (default: random)
+      --kv-cache-type T     KV cache format: fp16 | q4_0 | q8_0
+                            (default fp16; q4_0/q8_0 shrink the KV cache
+                            for long contexts at a small accuracy cost)
       --no-cnv              raw completion mode (no conversation)
   -np, --parallel N         parallel slots (accepted; single-slot engine)
   -sm, --split-mode M       layer | row   (row: not implemented yet)

@@ -218,19 +218,30 @@ def mha_forward_v2(
     if opts.k_norm and not opts.norm_before_rope:
         k_rot = rms_norm_heads[DType.float16](k_rot, k_norm_w, opts.norm_eps)
 
-    # store K/V into the cache (dense or paged; M7 1.4)
+    # store K/V into the cache (dense or paged; M7 1.4).  Quantized caches
+    # (kv_cache_type Q4_0/Q8_0) quantize each (head, position) row on write
+    # (set_kv_row -> quantize_row_q4_0/q8_0).
     var max_len = cache.max_len
     if start_pos < 0 or start_pos >= max_len:
         unimplemented("mha: position beyond KV cache capacity")
-    for h in range(n_kv_heads):
-        for d in range(head_dim):
-            cache.set_kv(
-                h,
-                start_pos,
-                d,
-                Float32(k_rot.get(h * head_dim + d)),
-                Float32(v3.get(h * head_dim + d)),
-            )
+    if cache.is_quantized():
+        var k_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+        var v_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+        for h in range(n_kv_heads):
+            for d in range(head_dim):
+                k_row.set(d, k_rot.get(h * head_dim + d))
+                v_row.set(d, v3.get(h * head_dim + d))
+            cache.set_kv_row(h, start_pos, k_row, v_row)
+    else:
+        for h in range(n_kv_heads):
+            for d in range(head_dim):
+                cache.set_kv(
+                    h,
+                    start_pos,
+                    d,
+                    Float32(k_rot.get(h * head_dim + d)),
+                    Float32(v3.get(h * head_dim + d)),
+                )
     if start_pos + 1 > cache.filled:
         cache.filled = start_pos + 1
     var seq = start_pos + 1
@@ -245,6 +256,12 @@ def mha_forward_v2(
 
     # M7 perf: dense caches are read through hoisted raw pointers; paged
     # caches go through the (slower but allocation-free) accessors.
+    # Quantized caches (kv_cache_type Q4_0/Q8_0) dequantize one row at a
+    # time into fp16 scratch (get_k_row/get_v_row -> dequantize_row_*),
+    # so the scores/output math below is the same fp16-precision path.
+    var quant = cache.is_quantized()
+    var k_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+    var v_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
     var k_ptr = cache.k.data()
     var v_ptr = cache.v.data()
     var dense = cache.page_size == 0
@@ -254,14 +271,21 @@ def mha_forward_v2(
         for t in range(first, seq):
             var acc = Float32(0)
             var k_base = (kv_head * max_len + t) * head_dim
-            for d in range(head_dim):
-                var qv = Float32(q_rot.get(h * head_dim + d))
-                var kv: Float32
-                if dense:
-                    kv = Float32(k_ptr.unsafe_load[width=1](offset=k_base + d))
-                else:
-                    kv = cache.get_k(kv_head, t, d)
-                acc += qv * kv
+            if quant:
+                cache.get_k_row(kv_head, t, k_row)
+                for d in range(head_dim):
+                    acc += Float32(q_rot.get(h * head_dim + d)) * Float32(
+                        k_row.get(d)
+                    )
+            else:
+                for d in range(head_dim):
+                    var qv = Float32(q_rot.get(h * head_dim + d))
+                    var kv: Float32
+                    if dense:
+                        kv = Float32(k_ptr.unsafe_load[width=1](offset=k_base + d))
+                    else:
+                        kv = cache.get_k(kv_head, t, d)
+                    acc += qv * kv
             scores.append(acc * scale)
         var n_scores = seq - first
         var mx = Float32(-3.0e38)
@@ -276,21 +300,34 @@ def mha_forward_v2(
         var inv = Float32(1.0) / total
         for i in range(n_scores):
             scores[i] = scores[i] * inv
-        for d in range(head_dim):
-            var acc = Float32(0)
+        if quant:
+            # dequantize each V row once, then fold it into every output dim
+            var accs = List[Float32]()
+            for _ in range(head_dim):
+                accs.append(Float32(0))
             for i in range(n_scores):
-                var vv: Float32
-                if dense:
-                    vv = Float32(
-                        v_ptr.unsafe_load[width=1](
-                            offset=(kv_head * max_len + first + i) * head_dim
-                            + d
+                cache.get_v_row(kv_head, first + i, v_row)
+                var s = scores[i]
+                for d in range(head_dim):
+                    accs[d] = accs[d] + s * Float32(v_row.get(d))
+            for d in range(head_dim):
+                out.set(h * head_dim + d, Scalar[DType.float16](accs[d]))
+        else:
+            for d in range(head_dim):
+                var acc = Float32(0)
+                for i in range(n_scores):
+                    var vv: Float32
+                    if dense:
+                        vv = Float32(
+                            v_ptr.unsafe_load[width=1](
+                                offset=(kv_head * max_len + first + i) * head_dim
+                                + d
+                            )
                         )
-                    )
-                else:
-                    vv = cache.get_v(kv_head, first + i, d)
-                acc += scores[i] * vv
-            out.set(h * head_dim + d, Scalar[DType.float16](acc))
+                    else:
+                        vv = cache.get_v(kv_head, first + i, d)
+                    acc += scores[i] * vv
+                out.set(h * head_dim + d, Scalar[DType.float16](acc))
 
     if opts.gate:
         # qwen35: fused Q+gate projection - the gate lives in the second

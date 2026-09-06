@@ -58,7 +58,7 @@ from .ops.attention.mha import (
     MHAOptions,
     rms_norm_heads,
 )
-from .ops.attention.kv_cache import KVCache, KVCacheLayer
+from .ops.attention.kv_cache import KVCache, KVCacheLayer, KVCacheType
 from std.utils.static_tuple import StaticTuple
 from std.math import sqrt, exp, log
 from std.memory.unsafe import bitcast
@@ -417,6 +417,7 @@ struct TransformerModel(Movable):
         shard_hi: Int = -1,
         load_heads: Bool = True,
         quant_resident: Bool = True,
+        kv_cache_type: KVCacheType = KVCacheType.FP16,
     ):
         self.config = config
         self.ctx = ctx^
@@ -443,14 +444,18 @@ struct TransformerModel(Movable):
             self.load_weights()
             self._build_fp16_views()
         self.cache = KVCache(
-            config.n_layers, config.n_kv_heads, kv_cache_len, config.head_dim
+            config.n_layers,
+            config.n_kv_heads,
+            kv_cache_len,
+            config.head_dim,
+            kv_cache_type,
         )
         # M8: only the shard's layers hold KV storage (the rest stay
         # zero-length placeholders so absolute layer indexing is unchanged).
         for l in range(config.n_layers):
             if l < self.shard_lo or l >= self.shard_hi:
                 self.cache.layers[l] = KVCacheLayer(
-                    config.n_kv_heads, 0, config.head_dim
+                    config.n_kv_heads, 0, config.head_dim, kv_cache_type
                 )
         # hybrid (SSM) models: recurrent layers keep no KV cache and carry
         # SSM state.
@@ -462,7 +467,7 @@ struct TransformerModel(Movable):
                     and l < self.shard_hi
                 ):
                     self.cache.layers[l] = KVCacheLayer(
-                        config.n_kv_heads, 0, config.head_dim
+                        config.n_kv_heads, 0, config.head_dim, kv_cache_type
                     )
                     var st = SSMLayerState()
                     st.setup(

@@ -23,6 +23,7 @@ from ..core.sampler import Sampler, sample_dynamic, seed_sampler
 from ..core.tensor import tensor_zeros
 from ..core.graph import Graph
 from ..core.ops.base.op_registry import OpRegistry
+from ..core.ops.attention.kv_cache import KVCacheType
 from std.utils.static_tuple import StaticTuple
 
 
@@ -46,14 +47,18 @@ struct Model(Movable):
 
 
 def load_model(
-    path: String, ctx_len: Int = DEFAULT_KV_CACHE_LEN
+    path: String,
+    ctx_len: Int = DEFAULT_KV_CACHE_LEN,
+    kv_cache_type: KVCacheType = KVCacheType.FP16,
 ) raises -> Model:
     """Load a GGUF, dequantize weights, build the transformer + tokenizer.
 
     Everything the engine needs (architecture dims, vocab, BPE merges,
     bos/eos ids) comes from the GGUF metadata; no sidecar config.json /
     tokenizer.json is read.  `ctx_len` sizes the KV cache (the CLI's
-    -c/--ctx-size; the C-API keeps the default).
+    -c/--ctx-size; the C-API keeps the default).  `kv_cache_type` selects
+    the KV cache resident format (the CLI's --kv-cache-type; fp16 default
+    keeps the existing behavior).
     """
     var ctx = load_gguf(path)
     # head_dim comes from load_config: the metadata `attention.key_length`
@@ -62,7 +67,9 @@ def load_model(
     var config = load_config(ctx)
 
     var weights = collect_weights(ctx)
-    var model = TransformerModel(config, ctx^, ctx_len)
+    var model = TransformerModel(
+        config, ctx^, ctx_len, kv_cache_type=kv_cache_type
+    )
     model.weights = weights^
 
     # M7: auto-select the tokenizer flavor from the GGUF metadata

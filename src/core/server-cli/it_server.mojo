@@ -28,6 +28,7 @@ from src.core.cli_common import (
     VERSION,
 )
 from src.core.http import ServerState
+from src.core.ops.attention.kv_cache import kv_cache_type_from_str
 from std.sys import argv
 from std.os import getenv
 
@@ -107,7 +108,9 @@ def main() raises:
     if name.byte_length() == 0:
         name = basename(args.model)
 
-    var model_p = load_model_heap(args.model, args.ctx_size)
+    var model_p = load_model_heap(
+        args.model, args.ctx_size, kv_cache_type_from_str(args.kv_cache_type)
+    )
     print("loaded:", args.model)
     print(
         "  arch layers:",
