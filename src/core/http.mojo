@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/http.mojo
 #
 # The it-server HTTP layer: a minimal HTTP/1.1 server over the `it_tcp_*`

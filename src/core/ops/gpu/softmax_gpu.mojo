@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/gpu/softmax_gpu.mojo
 #
 # GPU stable softmax along the last axis of a [batch, dim] tensor.

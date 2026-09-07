@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_kv_cache_m7.mojo
 #
 # M7 KV-cache features: paged attention round-trip, sliding-window

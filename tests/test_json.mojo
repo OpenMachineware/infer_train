@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_json.mojo
 #
 # Unit test for the hand-rolled JSON parser (src/core/json.mojo).

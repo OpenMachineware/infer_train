@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/gpu/gpu_runtime.mojo
 #
 # Shared host-side plumbing for the Metal GPU kernels in this package.

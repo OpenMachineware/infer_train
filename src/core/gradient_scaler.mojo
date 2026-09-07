@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/gradient_scaler.mojo
 #
 # M6 Phase 6: mixed-precision (AMP) gradient scaling - the engine's

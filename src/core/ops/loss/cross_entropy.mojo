@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/loss/cross_entropy.mojo
 #
 # Cross-entropy loss over logits (M6): forward and backward.

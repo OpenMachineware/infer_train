@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 """infer_train: a high-performance LLM inference engine for Apple Silicon.
 
 M4 (PyTorch ecosystem): this package exposes

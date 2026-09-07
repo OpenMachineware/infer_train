@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/cpu/matmul_cpu.mojo
 #
 # CPU matrix multiplication (P0, M3 fix).
@@ -15,7 +17,7 @@
 
 from ...tensor import Tensor, tensor_zeros
 from ...utils import unimplemented
-from ...thread_pool import parallel_run
+from ...thread_pool import parallel_run, parallel_run_tid, resolve_threads
 from ..quantized.dequantize import dequantize_blocks
 from ..quantized.quant_types import (
     QuantType,
@@ -517,6 +519,187 @@ def matmul_weight_2_threaded[
         o2 = matmul_weight_cpu[dtype](x, w2)
 
 
+# The pool worker BODIES (M5 fp16/f32 weight-major matmul).  They live
+# here - not in the Python bindings - so the standalone worker dylib
+# (ops/cpu/mwq_workers.mojo, built to libinfer_train_mwq.dylib and
+# dlopen'd RTLD_GLOBAL by the pool loader) can export the same C-ABI
+# symbols: Mojo 1.0 only honors @export in a build's entry module, and
+# executables strip unreferenced symbols, so a worker missing from the
+# process symbol table would silently degrade the matmul to
+# single-threaded.  The bindings re-export them for the Python engine.
+
+
+def _mw_worker_body(
+    ctx: Pointer[UInt8, MutUntrackedOrigin], idx: Int64
+):
+    """One output column of `matmul_weight_cpu_threaded` (pool worker).
+
+    The context is an Int64 array [x, w, out, M, K, N, dtype]; the
+    typed pointers are rebuilt with `unsafe_from_address` (plain loads -
+    safe on pool threads).  Mojo-side *struct* contexts are avoided:
+    field stores onto `unsafe_alloc` slots are miscompiled in Mojo 1.0
+    shared libraries.
+    """
+    var hdr = ctx.unsafe_bitcast[Int64]()
+    var x_addr = Int(hdr.unsafe_load(offset=0))
+    var w_addr = Int(hdr.unsafe_load(offset=1))
+    var out_addr = Int(hdr.unsafe_load(offset=2))
+    var M = Int(hdr.unsafe_load(offset=3))
+    var K = Int(hdr.unsafe_load(offset=4))
+    var N = Int(hdr.unsafe_load(offset=5))
+    var dtype_code = Int(hdr.unsafe_load(offset=6))
+    var j = Int(idx)
+    if dtype_code == 1:
+        var xp = Pointer[Scalar[DType.float16], MutUntrackedOrigin](
+            unsafe_from_address=x_addr
+        )
+        var wp = Pointer[Scalar[DType.float16], MutUntrackedOrigin](
+            unsafe_from_address=w_addr
+        )
+        var op = Pointer[Scalar[DType.float16], MutUntrackedOrigin](
+            unsafe_from_address=out_addr
+        )
+        var k_main = (K // 8) * 8
+        for i in range(M):
+            var acc = SIMD[DType.float32, 8](0)
+            var k = 0
+            while k < k_main:
+                var xv = xp.unsafe_load[width=8](offset=i * K + k).cast[
+                    DType.float32
+                ]()
+                var wv = wp.unsafe_load[width=8](offset=j * K + k).cast[
+                    DType.float32
+                ]()
+                acc = acc + xv * wv
+                k += 8
+            var total = Float32(acc.reduce_add())
+            while k < K:
+                total += Float32(xp.unsafe_load(offset=i * K + k)) * Float32(
+                    wp.unsafe_load(offset=j * K + k)
+                )
+                k += 1
+            op.unsafe_store(i * N + j, Scalar[DType.float16](total))
+    else:
+        var xp32 = Pointer[Scalar[DType.float32], MutUntrackedOrigin](
+            unsafe_from_address=x_addr
+        )
+        var wp32 = Pointer[Scalar[DType.float32], MutUntrackedOrigin](
+            unsafe_from_address=w_addr
+        )
+        var op32 = Pointer[Scalar[DType.float32], MutUntrackedOrigin](
+            unsafe_from_address=out_addr
+        )
+        var k_main32 = (K // 4) * 4
+        for i in range(M):
+            var acc = SIMD[DType.float32, 4](0)
+            var k = 0
+            while k < k_main32:
+                var xv = xp32.unsafe_load[width=4](offset=i * K + k)
+                var wv = wp32.unsafe_load[width=4](offset=j * K + k)
+                acc = acc + xv * wv
+                k += 4
+            var total = Float32(acc.reduce_add())
+            while k < K:
+                total += Float32(xp32.unsafe_load(offset=i * K + k)) * Float32(
+                    wp32.unsafe_load(offset=j * K + k)
+                )
+                k += 1
+            op32.unsafe_store(i * N + j, Scalar[DType.float32](total))
+
+
+def _mw_multi_worker_body(
+    ctx: Pointer[UInt8, MutUntrackedOrigin], idx: Int64
+):
+    """One output column of a batched weight-major matmul (pool worker).
+
+    ctx = [M, K, dtype, n_pairs, n1, n2, n3, (x, w, out) x n_pairs].
+    Tasks are distributed across the per-pair column ranges: pair p owns
+    columns [offset_p, offset_p + n_p).
+    """
+    var hdr = ctx.unsafe_bitcast[Int64]()
+    var M = Int(hdr.unsafe_load(offset=0))
+    var K = Int(hdr.unsafe_load(offset=1))
+    var dtype_code = Int(hdr.unsafe_load(offset=2))
+    var n_pairs = Int(hdr.unsafe_load(offset=3))
+    var n1 = Int(hdr.unsafe_load(offset=4))
+    var n2 = Int(hdr.unsafe_load(offset=5))
+    var n3 = Int(hdr.unsafe_load(offset=6))
+    var task = Int(idx)
+    var pair = 0
+    var j = task
+    var np = n1
+    if task >= n1:
+        pair = 1
+        j = task - n1
+        np = n2
+        if task >= n1 + n2:
+            pair = 2
+            j = task - n1 - n2
+            np = n3
+    if pair >= n_pairs:
+        return
+    var base = 7 + pair * 3
+    var x_addr = Int(hdr.unsafe_load(offset=base))
+    var w_addr = Int(hdr.unsafe_load(offset=base + 1))
+    var out_addr = Int(hdr.unsafe_load(offset=base + 2))
+    if dtype_code == 1:
+        var xp = Pointer[Scalar[DType.float16], MutUntrackedOrigin](
+            unsafe_from_address=x_addr
+        )
+        var wp = Pointer[Scalar[DType.float16], MutUntrackedOrigin](
+            unsafe_from_address=w_addr
+        )
+        var op = Pointer[Scalar[DType.float16], MutUntrackedOrigin](
+            unsafe_from_address=out_addr
+        )
+        var k_main = (K // 8) * 8
+        for i in range(M):
+            var acc = SIMD[DType.float32, 8](0)
+            var k = 0
+            while k < k_main:
+                var xv = xp.unsafe_load[width=8](offset=i * K + k).cast[
+                    DType.float32
+                ]()
+                var wv = wp.unsafe_load[width=8](offset=j * K + k).cast[
+                    DType.float32
+                ]()
+                acc = acc + xv * wv
+                k += 8
+            var total = Float32(acc.reduce_add())
+            while k < K:
+                total += Float32(xp.unsafe_load(offset=i * K + k)) * Float32(
+                    wp.unsafe_load(offset=j * K + k)
+                )
+                k += 1
+            op.unsafe_store(i * np + j, Scalar[DType.float16](total))
+    else:
+        var xp32 = Pointer[Scalar[DType.float32], MutUntrackedOrigin](
+            unsafe_from_address=x_addr
+        )
+        var wp32 = Pointer[Scalar[DType.float32], MutUntrackedOrigin](
+            unsafe_from_address=w_addr
+        )
+        var op32 = Pointer[Scalar[DType.float32], MutUntrackedOrigin](
+            unsafe_from_address=out_addr
+        )
+        var k_main32 = (K // 4) * 4
+        for i in range(M):
+            var acc = SIMD[DType.float32, 4](0)
+            var k = 0
+            while k < k_main32:
+                var xv = xp32.unsafe_load[width=4](offset=i * K + k)
+                var wv = wp32.unsafe_load[width=4](offset=j * K + k)
+                acc = acc + xv * wv
+                k += 4
+            var total = Float32(acc.reduce_add())
+            while k < K:
+                total += Float32(xp32.unsafe_load(offset=i * K + k)) * Float32(
+                    wp32.unsafe_load(offset=j * K + k)
+                )
+                k += 1
+            op32.unsafe_store(i * np + j, Scalar[DType.float32](total))
+
+
 def matmul_cpu_forward_with_saved[
     dtype: DType
 ](a: Tensor[dtype, 2], b: Tensor[dtype, 2]) -> Tuple[
@@ -834,6 +1017,204 @@ def matmul_quantized_cpu[
             out_ptr.unsafe_offset(i * N),
             N,
             nb,
+        )
+    return out
+
+
+# -- M12: multithreaded Q4-resident matmul (C thread pool) ------------------
+#
+# The Q4-resident hot path (`matmul_quantized_cpu`) is single-threaded: one
+# row kernel walks all N output columns on the calling thread.  The
+# threaded version below splits the N columns across the C thread pool
+# (tools/thread_pool.c, the same pool the fp16 weight-major path uses):
+# task j is output column j - the dot product of input row i with weight
+# row j, dequantized per block into the thread's PRIVATE scratch slot.
+#
+# Scratch model: the caller allocates `threads` slots of
+# `block_elems * elem_size` bytes each; the pool passes the worker its
+# thread index (`tp_run_tid`), so scratch = base + tid * slot.  Each
+# thread reuses its slot across the tasks of its chunk - the same
+# per-thread private-buffer pattern as llama.cpp's `ggml_vec_dot`
+# kernels, with none of the per-task allocation churn.
+#
+# Numerics: each output element is computed by the exact same
+# per-block-dequant + f32-SIMD-accumulate sequence as
+# `_matmul_quantized_row_kernel` (same block order, same SIMD width,
+# same reduce), so the result is bit-identical to the single-threaded
+# kernel regardless of the task-to-thread assignment.
+
+
+def _mwq_worker_symbol(quant_type: QuantType, dtype: DType) -> String:
+    """The C-ABI worker symbol for (quant_type, dtype).
+
+    One exported worker per (format, dtype) pair: `quant_type` is a
+    comptime parameter of the worker body, so the symbol name carries it
+    (the C pool resolves the name at runtime via dlsym).
+    """
+    var dt = "f16" if dtype == DType.float16 else "f32"
+    if quant_type == QuantType.Q4_K_M:
+        return "it_mwq_worker_q4k_" + dt
+    if quant_type == QuantType.Q4_0:
+        return "it_mwq_worker_q40_" + dt
+    if quant_type == QuantType.Q5_K:
+        return "it_mwq_worker_q5k_" + dt
+    if quant_type == QuantType.Q6_K:
+        return "it_mwq_worker_q6k_" + dt
+    if quant_type == QuantType.Q8_0:
+        return "it_mwq_worker_q80_" + dt
+    if quant_type == QuantType.IQ4_XS:
+        return "it_mwq_worker_iq4xs_" + dt
+    unimplemented("_mwq_worker_symbol: no worker for quant type")
+    return ""
+
+
+def _mwq_worker_body[
+    dtype: DType,
+    quant_type: QuantType,
+](
+    ctx: Pointer[UInt8, MutUntrackedOrigin],
+    idx: Int64,
+    tid: Int64,
+):
+    """One output column of the threaded Q4-resident matmul (pool worker).
+
+    `ctx` is the Int64 array [x, b, out, scratch, M, K, N, nb, slot];
+    task `idx` is the output column j.  The per-thread scratch slot
+    (`scratch + tid * slot`) holds one dequantized block at a time and is
+    private to this thread for the whole submission.
+    """
+    comptime be = block_elems(quant_type)
+    comptime bb = block_bytes(quant_type)
+    comptime W = 8 if dtype == DType.float16 else 4
+    comptime be_chunks = be // W
+    var hdr = ctx.unsafe_bitcast[Int64]()
+    var x_addr = Int(hdr.unsafe_load(offset=0))
+    var b_addr = Int(hdr.unsafe_load(offset=1))
+    var out_addr = Int(hdr.unsafe_load(offset=2))
+    var scratch_addr = Int(hdr.unsafe_load(offset=3))
+    var M = Int(hdr.unsafe_load(offset=4))
+    var K = Int(hdr.unsafe_load(offset=5))
+    var N = Int(hdr.unsafe_load(offset=6))
+    var nb = Int(hdr.unsafe_load(offset=7))
+    var slot = Int(hdr.unsafe_load(offset=8))
+    var j = Int(idx)
+    var xp = Pointer[Scalar[dtype], MutUntrackedOrigin](
+        unsafe_from_address=x_addr
+    )
+    var bp = Pointer[UInt8, MutUntrackedOrigin](unsafe_from_address=b_addr)
+    var op = Pointer[Scalar[dtype], MutUntrackedOrigin](
+        unsafe_from_address=out_addr
+    )
+    var scratch = Pointer[Scalar[dtype], MutUntrackedOrigin](
+        unsafe_from_address=scratch_addr + Int(tid) * slot
+    )
+    var row = bp.unsafe_offset(j * nb * bb)
+    for i in range(M):
+        var acc = SIMD[DType.float32, W](0)
+        var k = 0
+        for blk in range(nb):
+            dequantize_blocks[dtype, quant_type](row, blk * bb, scratch, 1)
+            var l = 0
+            while l < be_chunks:
+                var xv = xp.unsafe_load[width=W](offset=i * K + k + l * W).cast[
+                    DType.float32
+                ]()
+                var wv = scratch.unsafe_load[width=W](offset=l * W).cast[
+                    DType.float32
+                ]()
+                acc = acc + xv * wv
+                l += 1
+            k += be
+        op.unsafe_store(i * N + j, acc.reduce_add().cast[dtype]())
+
+
+# The C-ABI worker wrappers (`it_mwq_worker_*`) are NOT defined here:
+# Mojo 1.0 only honors `@export` in a build's ENTRY module, and
+# executables strip unreferenced symbols, so the workers live in the
+# standalone entry src/core/ops/cpu/mwq_workers.mojo (built to
+# libinfer_train_mwq.dylib and dlopen'd RTLD_GLOBAL by the pool loader).
+# A worker missing from the process symbol table would silently degrade
+# the matmul to single-threaded.
+
+
+def matmul_quantized_cpu_threaded[
+    dtype: DType,
+    quant_type: QuantType,
+    group_size: Int,
+](
+    a: Tensor[dtype, 2],
+    b_quant: Tensor[DType.uint8, 2],
+    scale: Tensor[dtype, 1],
+    zero_point: Optional[Tensor[dtype, 1]] = None,
+    nthreads: Int = 0,
+) -> Tensor[dtype, 2]:
+    """Multithreaded Q4-resident matmul (see the section header).
+
+    Splits the N output columns across the C thread pool; each pool
+    thread dequantizes into its own private scratch slot.  Falls back to
+    the single-threaded kernel below the parallelization threshold, when
+    the thread pool is unavailable, or when the caller forces
+    nthreads == 1.  Bit-identical to `matmul_quantized_cpu`.
+    """
+    var M = a.shape()[0]
+    var K = a.shape()[1]
+    var N = b_quant.shape()[0]
+    var be = block_elems(quant_type)
+    var bb = block_bytes(quant_type)
+    if be == 0 or K % be != 0:
+        unimplemented(
+            "matmul_quantized_threaded: K not a multiple of block size"
+        )
+    comptime W = 8 if dtype == DType.float16 else 4
+    if K % W != 0:
+        unimplemented(
+            "matmul_quantized_threaded: K not a multiple of SIMD width"
+        )
+    if b_quant.numel() != N * (K // be) * bb:
+        unimplemented("matmul_quantized_threaded: b_quant byte size mismatch")
+    if group_size != 0 and group_size != quant_group_size(quant_type):
+        unimplemented(
+            "matmul_quantized_threaded: group_size mismatch for format"
+        )
+    _ = scale
+    _ = zero_point
+
+    # threading pays off from N >= 256: below that the pool submission
+    # latency (dlsym + wake-up + completion) eats the speedup.  The Q4
+    # per-task work is heavier than the fp16 path's (per-block dequant),
+    # so the threshold is far lower than the fp16 path's 4096 - it must
+    # also cover the MoE expert projections (35B: gate/up N=512).
+    if N < 256 or nthreads == 1:
+        return matmul_quantized_cpu[dtype, quant_type, group_size](
+            a, b_quant, scale, zero_point
+        )
+
+    var threads = resolve_threads(nthreads)
+    var out = tensor_zeros[dtype, 2](StaticTuple[Int, 2](M, N))
+    comptime elem = 2 if dtype == DType.float16 else 4
+    var slot = be * elem
+    var scratch = unsafe_alloc[UInt8](threads * slot)
+    var nb = K // be
+    var hdr = unsafe_alloc[Int64](9)
+    hdr.unsafe_offset(0).unsafe_store(val=Int64(Int(a.data())))
+    hdr.unsafe_offset(1).unsafe_store(val=Int64(Int(b_quant.data())))
+    hdr.unsafe_offset(2).unsafe_store(val=Int64(Int(out.data())))
+    hdr.unsafe_offset(3).unsafe_store(val=Int64(Int(scratch)))
+    hdr.unsafe_offset(4).unsafe_store(val=Int64(M))
+    hdr.unsafe_offset(5).unsafe_store(val=Int64(K))
+    hdr.unsafe_offset(6).unsafe_store(val=Int64(N))
+    hdr.unsafe_offset(7).unsafe_store(val=Int64(nb))
+    hdr.unsafe_offset(8).unsafe_store(val=Int64(slot))
+
+    var symbol = _mwq_worker_symbol(quant_type, dtype)
+    var raw = hdr.unsafe_bitcast[UInt8]()
+    var rc = parallel_run_tid(symbol, raw, N, threads)
+    scratch.unsafe_free()
+    hdr.unsafe_free()
+    if rc != 0:
+        # pool unavailable: recompute single-threaded
+        return matmul_quantized_cpu[dtype, quant_type, group_size](
+            a, b_quant, scale, zero_point
         )
     return out
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/scheduler/thread_pool.mojo
 #
 # A Mojo-native work-stealing thread pool for the engine's CPU kernels.

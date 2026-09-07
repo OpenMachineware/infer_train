@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/gpu/swiglu_gpu.mojo
 #
 # GPU SwiGLU activation for the Qwen2 FFN: out = silu(gate) * up, where

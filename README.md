@@ -161,15 +161,24 @@ and requires the outputs to match exactly.
 | **API** | C ABI + Python bindings + `torch.compile` backend; OpenAI-compatible HTTP endpoints (`/v1/models`, `/v1/chat/completions`, `/v1/completions` SSE, `/v1/finetune`, `/v1/finetune/status`), `INFERTRAIN_API_KEY` authentication |
 | **CLI** | Three entry points over one shared core: `it-cli` (quick verification: `-m -p -c -n --temp --top-p --top-k --repeat-penalty -t --seed -sm --rpc`), `it-server` (OpenAI HTTP service + `quantize`), `it-rpc-server` (RPC worker); all take the `--infer-train-*` parameter group |
 
-## Performance Benchmarks (Apple M1 Max, 64 GB; InferTrain is CPU multi-threaded)
+## Performance Benchmarks (Apple M1 Max, 64 GB; CPU-only, no GPU)
 
-| Model | Size | Prefill | Decode | Peak Memory | llama.cpp (CPU) Decode | Ratio |
-|---|---|---|---|---|---|---|
-| DeepSeek-R1-Distill-Qwen-1.5B (Q5_K_M) | 1.28 GB | 4.4 t/s | 4.2 t/s | ~5 GB | 60.3 t/s | 7% |
-| Hy-MT2-7B (Q4_K_M, hunyuan-dense) | 4.6 GB | 0.82 t/s | 0.82 t/s | ~15 GB | 19.6 t/s | 4% |
-| Qwen3.8-27B (UD-Q5_K_M, qwen35 hybrid) | 19.7 GB | 0.23 t/s | 0.22 t/s | ~55 GB | 4.4 t/s | 5% |
+Prompt: `The quick brown fox jumps over the lazy dog.` (token count varies by tokenizer: 26 / 27 / 26 / 18 for the four models), 16-token generation (8 for the 35B), temp 0.6 / top-k 40 / top-p 0.95, seed 7. InferTrain uses the **default Q4-resident path** (weights stay packed in RAM; its matmul hot path is **multithreaded** - M12 splits the N output columns across a C thread pool, each thread dequantizing into its own private per-block scratch). llama.cpp is the **CPU-only** build (`llama.cpp-0.4.0/build-cpu`, `GGML_METAL=OFF`) at 8 threads, measured with `llama-bench` (warmup + repeats). The 35B uses a 128-token context; the rest use 512.
 
-> ⚠️ **Performance target not met**: M7's "reach 85% of llama.cpp" target currently sits at 4–7% (CPU baseline). Numerical correctness is unaffected (token-identical with llama.cpp); the gap is in kernel efficiency (scalar DeltaNet recurrence, no AMX weight reordering, element-wise attention). Full analysis, 32K context memory data, and future version optimization roadmap are in `docs/M7_PERFORMANCE_REPORT.md`; M5/M6 data in `docs/M5_PERFORMANCE_REPORT.md` and `docs/M6_TRAINING_REPORT.md`.
+| Model | Size | InferTrain Prefill | InferTrain Decode | InferTrain Memory | llama.cpp Prefill | llama.cpp Decode | Decode Ratio |
+|---|---|---|---|---|---|---|---|
+| Qwen3-0.6B（Q4_K_XL） | 0.38 GB | 24.78 t/s | 8.99 t/s | 0.60 GiB | 858.73 t/s | 195.39 t/s | 4.6% |
+| DeepSeek-R1-Distill-Qwen-1.5B（Q5_K_M） | 1.20 GB | 13.99 t/s | 5.48 t/s | 1.29 GiB | 316.08 t/s | 86.78 t/s | 6.3% |
+| Hy-MT2-7B（Q4_K_M, hunyuan-dense） | 4.31 GB | 4.92 t/s | 1.87 t/s | 4.41 GiB | 90.00 t/s | 23.76 t/s | 7.8% |
+| Qwen3.8-27B（Q5_K_M, qwen35） | 18.0 GB | 0.96 t/s | 0.37 t/s | 18.97 GiB | 17.87 t/s | 4.86 t/s | 7.6% |
+| Qwen3.6-35B-A3B（Q5_K_M, qwen35moe） | 23.6 GB | 2.64 t/s | 1.63 t/s | 7.25 GiB | 58.03 t/s | 22.24 t/s | 7.3% |
+
+> **Q4-resident vs fp16**: the default Q4-resident path (M11) keeps weights packed (low memory); its matmul is now multithreaded (M12). The fp16 path is still faster (e.g. 1.5B decode 8.04 t/s vs 3.28) at ~3.4× the memory (1.5B: 4.36 GiB vs 1.29 GiB).
+>
+> ⚠️ **Performance target not met**: decode is 4–30% of llama.cpp (CPU, 8 threads) — 4.2–5.8% on the dense models, 29.7% on the MoE (3B active, small hot working set, so its numbers are much cleaner). Numerical correctness is unaffected (token-identical with llama.cpp); the remaining gap after the M12 multithreaded Q4 matmul is kernel efficiency: per-block dequantization without AMX-style weight repacking, the scalar DeltaNet recurrence, element-wise attention, and serial MoE routing. Full analysis, 32K context memory data, and the optimization roadmap are in `docs/M7_PERFORMANCE_REPORT.md`; M5/M6 data in `docs/M5_PERFORMANCE_REPORT.md` and `docs/M6_TRAINING_REPORT.md`.
+>
+
+Reproduce: `make bench_cpu && ./bench_cpu MODEL.gguf` (InferTrain; optional args `[q4|fp16] [n_predict] [n_warmup] [ctx]`; the 35B uses `q4 8 8 128`), and `./llama.cpp-0.4.0/build-cpu/bin/llama-bench -m MODEL.gguf -t 8 -p <prompt_tokens> -n <gen_tokens>` (llama.cpp; 35B uses `-p 18 -n 8`).
 
 ## Verified Numerical Correctness
 
@@ -203,6 +212,8 @@ make test-rpc    # multi-process RPC (two localhost workers, -sm layer)
 make cli         # the it-cli binary
 make server      # the it-server binary
 make rpc-server  # the it-rpc-server worker binary
+make bench_cpu   # the CPU benchmark binary (README table; bench_cpu <model.gguf>)
+make bench_pool  # the C thread pool per-submission overhead micro-benchmark
 ```
 
 Test composition: Mojo executables (`tests/*.mojo`, compiled with `pixi run mojo build -I .`) + Python acceptance suites (`tests/python/`). Mojo 1.0 constraints: `def`-only, no runtime globals, `fn` deprecated; C-side helpers linked via `-Xlinker` (`tools/thread_pool.c`).

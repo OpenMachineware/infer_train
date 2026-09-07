@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/quantized/rms_norm_quantized.mojo
 #
 # Quantized RMSNorm (CPU + GPU): dequantize the input, then normalize.

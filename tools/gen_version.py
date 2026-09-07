@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 """Generate ``src/version.mojo`` from the ``version`` field of pixi.toml.
 
 The generated module exposes a single comptime constant::

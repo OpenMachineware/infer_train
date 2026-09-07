@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tools/check_mem.mojo
 #
 # Q4-resident (M11) memory verification for a single GGUF model.

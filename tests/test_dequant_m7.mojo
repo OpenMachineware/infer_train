@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_dequant_m7.mojo
 #
 # M7 dequantizer validation: F32 / Q4_K / Q5_K / Q6_K against a numpy

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_ops.mojo
 #
 # Numeric unit tests for the M3 operators: embedding, rope (NEOX), add,
@@ -9,7 +11,11 @@ from src.core.ops.cpu.embedding_cpu import embedding_cpu_dynamic
 from src.core.ops.cpu.rope_cpu import rope_cpu_dynamic
 from src.core.ops.cpu.add_cpu import add_cpu_dynamic, add_row_cpu
 from src.core.ops.cpu.swiglu_cpu import swiglu_cpu_dynamic
-from src.core.ops.cpu.matmul_cpu import matmul_quantized_cpu
+from src.core.ops.cpu.matmul_cpu import (
+    matmul_quantized_cpu,
+    matmul_quantized_cpu_threaded,
+)
+from src.core.thread_pool import has_worker
 from src.core.ops.attention.mha import multi_head_attention
 from src.core.ops.base.op_registry import OpRegistry
 from src.core.ops.base.op_interface import to_any, AnyTensor
@@ -426,6 +432,78 @@ def test_matmul_quantized_q8_0_f16():
     print("  q8_0 f16 ok")
 
 
+def test_matmul_quantized_threaded_bitidentical():
+    # M12: the threaded Q4-resident matmul (C thread pool, per-thread
+    # dequant scratch) must be BIT-IDENTICAL to the single-threaded
+    # kernel: same per-block dequant + f32 SIMD accumulation, split over
+    # the pool by output column.  N >= 1024 crosses the threading
+    # threshold, so the pool path (not the fallback) is exercised -
+    # asserted via has_worker so a missing worker dylib fails loudly.
+    if not has_worker("it_mwq_worker_q4k_f16"):
+        print("FAIL: it_mwq_worker_q4k_f16 not resolvable (worker dylib missing?)")
+        abort()
+    comptime M = 2
+    comptime N = 1024
+    comptime K = 512  # 2 Q4_K super-blocks per row
+    var a = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, K))
+    for i in range(M):
+        for k in range(K):
+            a.set(i * K + k, Scalar[DType.float16](Float32((k % 7) + i * 3)))
+    var b_quant = tensor_zeros[DType.uint8, 2](StaticTuple[Int, 2](N, 288))
+    for j in range(N):
+        var d = Float32(1.0) + Float32(j % 5) * Float32(0.25)
+        build_q4_k_row(b_quant, j * 288, d)
+        build_q4_k_row(b_quant, j * 288 + 144, d)
+    var scale = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](1))
+    var out_st = matmul_quantized_cpu[DType.float16, QuantType.Q4_K_M, 32](
+        a, b_quant, scale
+    )
+    var out_mt = matmul_quantized_cpu_threaded[DType.float16, QuantType.Q4_K_M, 32](
+        a, b_quant, scale
+    )
+    for i in range(M):
+        for j in range(N):
+            var st_b = bitcast[DType.uint16](out_st.get(i * N + j))
+            var mt_b = bitcast[DType.uint16](out_mt.get(i * N + j))
+            if st_b != mt_b:
+                print(
+                    "FAIL: threaded != single-threaded at ["
+                    + String(i)
+                    + ","
+                    + String(j)
+                    + "]"
+                )
+                abort()
+    # below the threshold: the threaded entry falls back to the
+    # single-threaded kernel (still bit-identical by construction)
+    comptime Ns = 256
+    var b_small = tensor_zeros[DType.uint8, 2](StaticTuple[Int, 2](Ns, 288))
+    for j in range(Ns):
+        var d = Float32(1.0) + Float32(j % 5) * Float32(0.25)
+        build_q4_k_row(b_small, j * 288, d)
+        build_q4_k_row(b_small, j * 288 + 144, d)
+    var out_small = matmul_quantized_cpu_threaded[DType.float16, QuantType.Q4_K_M, 32](
+        a, b_small, scale
+    )
+    var ref_small = matmul_quantized_cpu[DType.float16, QuantType.Q4_K_M, 32](
+        a, b_small, scale
+    )
+    for i in range(M):
+        for j in range(Ns):
+            var os_b = bitcast[DType.uint16](out_small.get(i * Ns + j))
+            var rs_b = bitcast[DType.uint16](ref_small.get(i * Ns + j))
+            if os_b != rs_b:
+                print(
+                    "FAIL: fallback != single-threaded at ["
+                    + String(i)
+                    + ","
+                    + String(j)
+                    + "]"
+                )
+                abort()
+    print("  q4_k threaded bit-identical ok")
+
+
 def test_matmul_quantized_registry():
     # Erased-interface round trip: the registered "matmul_quantized_cpu"
     # entry is comptime-specialized to Q4_K_M (group_size 32).
@@ -466,6 +544,7 @@ def test_matmul_quantized():
     test_matmul_quantized_q8_0_f32()
     test_matmul_quantized_q4_k_f32()
     test_matmul_quantized_q8_0_f16()
+    test_matmul_quantized_threaded_bitidentical()
     test_matmul_quantized_registry()
     print("test_matmul_quantized OK")
 

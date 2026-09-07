@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 """torch.compile backend: capture FX graphs and translate them onto the engine.
 
 Pipeline (M5):

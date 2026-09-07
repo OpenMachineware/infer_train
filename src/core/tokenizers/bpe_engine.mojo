@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/tokenizers/bpe_engine.mojo
 #
 # M7: the generic byte-level BPE engine (GPT-2 style) - one of the two

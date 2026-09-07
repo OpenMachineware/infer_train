@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors */
 /* tools/thread_pool.c
  *
  * M5: a persistent pthread task pool for the Mojo engine.
@@ -21,6 +23,14 @@
  *          pthread_create would dominate).  The engine loads its shared
  *          library with RTLD_GLOBAL (see python binding.py), so
  *          RTLD_DEFAULT finds the Mojo workers.
+ *
+ *   int  tp_run_tid(const char* symbol, void* ctx, int64_t n, int nthreads)
+ *        - like tp_run, but the worker has a THIRD argument: the pool
+ *          thread index in [0, nthreads) (0 when the work runs inline on
+ *          the caller).  Lets each worker thread address its own scratch
+ *          slot in a caller-allocated pool (the Q4-resident matmul gives
+ *          every thread a private per-block dequantization buffer, the
+ *          same per-thread-stack pattern as llama.cpp's ggml_vec_dot).
  *
  *   int  tp_num_cpus(void)
  *        - hardware logical CPU count (sysctl hw.logicalcpu).
@@ -81,6 +91,75 @@ void it_munmap(void *ptr, int64_t size) {
 }
 
 typedef void (*worker_fn)(void *, int64_t);
+
+/* ---- M12: worker-library loading + symbol cache ----
+ *
+ * The pool workers (it_mw_* / it_mwq_*) live in a Mojo shared library
+ * (libinfer_train_mwq.dylib for executables; the Python engine exports
+ * them from libinfer_train.dylib itself).  Two costs must NOT be paid
+ * per submission - the decode loop submits hundreds of matmuls per
+ * token:
+ *
+ *   * dlopen of the worker dylib: done ONCE here (static state), with
+ *     RTLD_NOW|RTLD_GLOBAL so dlsym(RTLD_DEFAULT, ...) finds the
+ *     workers.  Search order: next to THIS dylib (dladdr - the mwq
+ *     dylib sits beside libinfer_train_tp.dylib), then the cwd, then
+ *     the repo-root-relative path.
+ *   * dlsym: resolved once per symbol and cached in a small static
+ *     table (tp_run is only ever called from the main thread - the
+ *     pool is synchronous - so the table needs no locking).
+ *
+ * Measured without this cache: ~230-300 us per submission (9 dlopen
+ * calls from the Mojo side + dlsym); with it: a few microseconds. */
+
+#define TP_MAX_WORKERS 16
+static char g_worker_names[TP_MAX_WORKERS][128];
+static worker_fn g_worker_fns[TP_MAX_WORKERS];
+static int g_worker_count = 0;
+
+static void *g_mwq_handle = NULL;
+static int g_mwq_tried = 0;
+
+int tp_run(const char *symbol, void *ctx, int64_t n, int nthreads);
+
+static void load_mwq_library(void) {
+    if (g_mwq_tried) return;
+    g_mwq_tried = 1;
+    /* 1: next to this dylib (the mwq dylib is built beside it) */
+    Dl_info info;
+    if (dladdr((void *)tp_run, &info) != 0 && info.dli_fname != NULL) {
+        char path[4096];
+        strncpy(path, info.dli_fname, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
+        char *slash = strrchr(path, '/');
+        if (slash != NULL) {
+            strcpy(slash + 1, "libinfer_train_mwq.dylib");
+            g_mwq_handle = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+            if (g_mwq_handle != NULL) return;
+        }
+    }
+    /* 2: current working directory */
+    g_mwq_handle = dlopen("libinfer_train_mwq.dylib", RTLD_NOW | RTLD_GLOBAL);
+    if (g_mwq_handle != NULL) return;
+    /* 3: repo-root-relative (python/infer_train/_lib/...) */
+    g_mwq_handle = dlopen(
+        "python/infer_train/_lib/libinfer_train_mwq.dylib",
+        RTLD_NOW | RTLD_GLOBAL);
+}
+
+static worker_fn resolve_worker(const char *symbol) {
+    for (int i = 0; i < g_worker_count; i++) {
+        if (strcmp(g_worker_names[i], symbol) == 0) return g_worker_fns[i];
+    }
+    worker_fn fn = (worker_fn)dlsym(RTLD_DEFAULT, symbol);
+    if (fn != NULL && g_worker_count < TP_MAX_WORKERS) {
+        strncpy(g_worker_names[g_worker_count], symbol, 127);
+        g_worker_names[g_worker_count][127] = '\0';
+        g_worker_fns[g_worker_count] = fn;
+        g_worker_count++;
+    }
+    return fn;
+}
 
 static pthread_t *g_threads = NULL;
 static int g_nthreads = 0;
@@ -153,7 +232,8 @@ static int ensure_threads(int nthreads) {
 }
 
 int tp_run(const char *symbol, void *ctx, int64_t n, int nthreads) {
-    worker_fn fn = (worker_fn)dlsym(RTLD_DEFAULT, symbol);
+    load_mwq_library();
+    worker_fn fn = resolve_worker(symbol);
     if (!fn) return -1;
     if (nthreads <= 1 || n <= 1) {
         for (int64_t i = 0; i < n; i++) fn(ctx, i);
@@ -182,6 +262,128 @@ int tp_run(const char *symbol, void *ctx, int64_t n, int nthreads) {
     }
     pthread_mutex_unlock(&g_mutex);
     return 0;
+}
+
+/* ---- 3-arg worker pool (worker receives its thread index) ----
+ *
+ * Same persistent-pool design as tp_run, but the worker signature is
+ * `void fn(void* ctx, int64_t idx, int64_t tid)` and tid is the pool
+ * thread's own index (0 when the submission runs inline on the caller).
+ * The Q4-resident matmul worker uses it to pick its private scratch
+ * buffer: scratch = base + tid * slot_bytes. */
+
+typedef void (*worker_fn3)(void *, int64_t, int64_t);
+
+static pthread_t *g_threads3 = NULL;
+static int g_nthreads3 = 0;
+static pthread_mutex_t g_mutex3 = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_work_cv3 = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t g_done_cv3 = PTHREAD_COND_INITIALIZER;
+static worker_fn3 g_fn3 = NULL;
+static void *g_ctx3 = NULL;
+static int64_t g_seq3 = 0;
+static int64_t g_next3 = 0;
+static int64_t g_n3 = 0;
+static int64_t g_completed3 = 0;
+static int64_t g_chunk3 = 1;
+
+static void *worker_loop3(void *arg) {
+    int64_t tid = (int64_t)(intptr_t)arg;
+    int64_t last_seq = 0;
+    for (;;) {
+        pthread_mutex_lock(&g_mutex3);
+        while (g_seq3 == last_seq) {
+            pthread_cond_wait(&g_work_cv3, &g_mutex3);
+        }
+        last_seq = g_seq3;
+        for (;;) {
+            int64_t start = g_next3;
+            if (start >= g_n3) break;
+            int64_t end = start + g_chunk3;
+            if (end > g_n3) end = g_n3;
+            g_next3 = end;
+            worker_fn3 fn = g_fn3;
+            void *ctx = g_ctx3;
+            pthread_mutex_unlock(&g_mutex3);
+            for (int64_t i = start; i < end; i++) fn(ctx, i, tid);
+            pthread_mutex_lock(&g_mutex3);
+            g_completed3 += (end - start);
+            if (g_completed3 == g_n3) {
+                pthread_cond_broadcast(&g_done_cv3);
+            }
+        }
+        pthread_mutex_unlock(&g_mutex3);
+    }
+    return NULL;
+}
+
+static int ensure_threads3(int nthreads) {
+    if (g_threads3 != NULL && g_nthreads3 == nthreads) return 0;
+    if (nthreads < 2) return 0;
+    pthread_mutex_lock(&g_mutex3);
+    if (g_threads3 != NULL) {
+        /* never resize for simplicity: reuse what exists */
+        pthread_mutex_unlock(&g_mutex3);
+        return 0;
+    }
+    pthread_t *threads = (pthread_t *)calloc((size_t)nthreads,
+                                             sizeof(pthread_t));
+    if (!threads) {
+        pthread_mutex_unlock(&g_mutex3);
+        return -1;
+    }
+    for (int t = 0; t < nthreads; t++) {
+        if (pthread_create(&threads[t], NULL, worker_loop3,
+                           (void *)(intptr_t)t) != 0) {
+            pthread_mutex_unlock(&g_mutex3);
+            return -1;
+        }
+    }
+    g_threads3 = threads;
+    g_nthreads3 = nthreads;
+    pthread_mutex_unlock(&g_mutex3);
+    return 0;
+}
+
+int tp_run_tid(const char *symbol, void *ctx, int64_t n, int nthreads) {
+    load_mwq_library();
+    worker_fn3 fn = (worker_fn3)resolve_worker(symbol);
+    if (!fn) return -1;
+    if (nthreads <= 1 || n <= 1) {
+        for (int64_t i = 0; i < n; i++) fn(ctx, i, 0);
+        return 0;
+    }
+    if (ensure_threads3(nthreads) != 0) {
+        for (int64_t i = 0; i < n; i++) fn(ctx, i, 0);
+        return 0;
+    }
+    /* chunking: keep the mutex round-trips amortized over real work */
+    int64_t chunk = 1;
+    if (n > (int64_t)nthreads * 64) {
+        chunk = n / ((int64_t)nthreads * 64);
+    }
+    pthread_mutex_lock(&g_mutex3);
+    g_seq3++;
+    g_fn3 = fn;
+    g_ctx3 = ctx;
+    g_n3 = n;
+    g_next3 = 0;
+    g_completed3 = 0;
+    g_chunk3 = chunk;
+    pthread_cond_broadcast(&g_work_cv3);
+    while (g_completed3 < g_n3) {
+        pthread_cond_wait(&g_done_cv3, &g_mutex3);
+    }
+    pthread_mutex_unlock(&g_mutex3);
+    return 0;
+}
+
+/* M12: does a pool worker symbol resolve in this process?  Lets tests
+ * fail loudly when the worker dylib (libinfer_train_mwq.dylib) is absent
+ * instead of silently passing through the single-threaded fallback. */
+int tp_has_worker(const char *symbol) {
+    load_mwq_library();
+    return dlsym(RTLD_DEFAULT, symbol) != NULL ? 1 : 0;
 }
 
 int tp_num_cpus(void) {

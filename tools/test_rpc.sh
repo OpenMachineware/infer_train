@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # M8: multi-process RPC test (llama.cpp-style -sm layer --rpc).
 #
 # Starts two it-rpc-server workers on localhost, runs the same greedy

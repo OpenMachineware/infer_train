@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/fused/matmul_rms_norm.mojo
 #
 # M5 fused kernel: matmul + RMSNorm in one kernel.

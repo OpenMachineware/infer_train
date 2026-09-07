@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/optimizer/dag_optimizer.mojo
 #
 # M5: DAG optimization infrastructure - the compact optimization IR and the

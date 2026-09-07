@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 """Generate gguf-py-validated dequant reference bins for
 tests/test_dequant_m7.mojo.
 

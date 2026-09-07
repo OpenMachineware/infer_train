@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/json.mojo
 #
 # A small hand-rolled JSON parser for Mojo 1.0.

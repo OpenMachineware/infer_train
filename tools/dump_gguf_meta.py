@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 """Dump GGUF metadata (and optionally tensor names) for debugging arch mapping.
 
 Usage: python3 dump_gguf_meta.py <file.gguf> [--tensors] [--arch KEY]

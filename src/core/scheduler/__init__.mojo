@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/scheduler/__init__.mojo
 #
 # CPU scheduling: a Mojo-native work-stealing thread pool built on the

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/rpc/net.mojo
 #
 # M8: the RPC transport - Mojo bindings over the C TCP helpers in

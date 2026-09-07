@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # bindings/infer_train_bindings.mojo
 #
 # M4: C ABI exported from the engine, built with
@@ -83,6 +85,8 @@ from src.core.ops.cpu.matmul_cpu import (
     matmul_cpu_dynamic,
     matmul_weight_cpu,
     matmul_weight_cpu_threaded,
+    _mw_worker_body,
+    _mw_multi_worker_body,
 )
 from src.core.ops.fused.matmul_add import (
     fused_matmul_add_bias,
@@ -192,167 +196,29 @@ def _elem_size_of(dtype: DType) -> Int:
 
 @export
 def it_mw_worker(ctx: Pointer[UInt8, MutUntrackedOrigin], idx: Int64) abi("C"):
-    # The context is an Int64 array [x, w, out, M, K, N, dtype]; the
-    # typed pointers are rebuilt with `unsafe_from_address` (plain loads -
-    # safe on pool threads).  Mojo-side *struct* contexts are avoided:
-    # field stores onto `unsafe_alloc` slots are miscompiled in Mojo 1.0
-    # shared libraries.
-    var hdr = ctx.unsafe_bitcast[Int64]()
-    var x_addr = Int(hdr.unsafe_load(offset=0))
-    var w_addr = Int(hdr.unsafe_load(offset=1))
-    var out_addr = Int(hdr.unsafe_load(offset=2))
-    var M = Int(hdr.unsafe_load(offset=3))
-    var K = Int(hdr.unsafe_load(offset=4))
-    var N = Int(hdr.unsafe_load(offset=5))
-    var dtype_code = Int(hdr.unsafe_load(offset=6))
-    var j = Int(idx)
-    if dtype_code == 1:
-        var xp = Pointer[Scalar[DType.float16], MutUntrackedOrigin](
-            unsafe_from_address=x_addr
-        )
-        var wp = Pointer[Scalar[DType.float16], MutUntrackedOrigin](
-            unsafe_from_address=w_addr
-        )
-        var op = Pointer[Scalar[DType.float16], MutUntrackedOrigin](
-            unsafe_from_address=out_addr
-        )
-        var k_main = (K // 8) * 8
-        for i in range(M):
-            var acc = SIMD[DType.float32, 8](0)
-            var k = 0
-            while k < k_main:
-                var xv = xp.unsafe_load[width=8](offset=i * K + k).cast[
-                    DType.float32
-                ]()
-                var wv = wp.unsafe_load[width=8](offset=j * K + k).cast[
-                    DType.float32
-                ]()
-                acc = acc + xv * wv
-                k += 8
-            var total = Float32(acc.reduce_add())
-            while k < K:
-                total += Float32(xp.unsafe_load(offset=i * K + k)) * Float32(
-                    wp.unsafe_load(offset=j * K + k)
-                )
-                k += 1
-            op.unsafe_store(i * N + j, Scalar[DType.float16](total))
-    else:
-        var xp32 = Pointer[Scalar[DType.float32], MutUntrackedOrigin](
-            unsafe_from_address=x_addr
-        )
-        var wp32 = Pointer[Scalar[DType.float32], MutUntrackedOrigin](
-            unsafe_from_address=w_addr
-        )
-        var op32 = Pointer[Scalar[DType.float32], MutUntrackedOrigin](
-            unsafe_from_address=out_addr
-        )
-        var k_main32 = (K // 4) * 4
-        for i in range(M):
-            var acc = SIMD[DType.float32, 4](0)
-            var k = 0
-            while k < k_main32:
-                var xv = xp32.unsafe_load[width=4](offset=i * K + k)
-                var wv = wp32.unsafe_load[width=4](offset=j * K + k)
-                acc = acc + xv * wv
-                k += 4
-            var total = Float32(acc.reduce_add())
-            while k < K:
-                total += Float32(xp32.unsafe_load(offset=i * K + k)) * Float32(
-                    wp32.unsafe_load(offset=j * K + k)
-                )
-                k += 1
-            op32.unsafe_store(i * N + j, Scalar[DType.float32](total))
+    # M12: thin wrapper over the shared worker body in
+    # ops/cpu/matmul_cpu.mojo (the standalone worker dylib
+    # ops/cpu/mwq_workers.mojo exports the same symbol for the
+    # executables - see that file's header).
+    _mw_worker_body(ctx, idx)
 
 
 @export
 def it_mw_multi_worker(
     ctx: Pointer[UInt8, MutUntrackedOrigin], idx: Int64
 ) abi("C"):
-    # batched matmul worker: ctx = [M, K, dtype, n_pairs, n1, n2, n3,
-    # (x, w, out) x n_pairs].  Tasks are distributed across the per-pair
-    # column ranges: pair p owns columns [offset_p, offset_p + n_p).
-    var hdr = ctx.unsafe_bitcast[Int64]()
-    var M = Int(hdr.unsafe_load(offset=0))
-    var K = Int(hdr.unsafe_load(offset=1))
-    var dtype_code = Int(hdr.unsafe_load(offset=2))
-    var n_pairs = Int(hdr.unsafe_load(offset=3))
-    var n1 = Int(hdr.unsafe_load(offset=4))
-    var n2 = Int(hdr.unsafe_load(offset=5))
-    var n3 = Int(hdr.unsafe_load(offset=6))
-    var task = Int(idx)
-    var pair = 0
-    var j = task
-    var np = n1
-    if task >= n1:
-        pair = 1
-        j = task - n1
-        np = n2
-        if task >= n1 + n2:
-            pair = 2
-            j = task - n1 - n2
-            np = n3
-    if pair >= n_pairs:
-        return
-    var base = 7 + pair * 3
-    var x_addr = Int(hdr.unsafe_load(offset=base))
-    var w_addr = Int(hdr.unsafe_load(offset=base + 1))
-    var out_addr = Int(hdr.unsafe_load(offset=base + 2))
-    if dtype_code == 1:
-        var xp = Pointer[Scalar[DType.float16], MutUntrackedOrigin](
-            unsafe_from_address=x_addr
-        )
-        var wp = Pointer[Scalar[DType.float16], MutUntrackedOrigin](
-            unsafe_from_address=w_addr
-        )
-        var op = Pointer[Scalar[DType.float16], MutUntrackedOrigin](
-            unsafe_from_address=out_addr
-        )
-        var k_main = (K // 8) * 8
-        for i in range(M):
-            var acc = SIMD[DType.float32, 8](0)
-            var k = 0
-            while k < k_main:
-                var xv = xp.unsafe_load[width=8](offset=i * K + k).cast[
-                    DType.float32
-                ]()
-                var wv = wp.unsafe_load[width=8](offset=j * K + k).cast[
-                    DType.float32
-                ]()
-                acc = acc + xv * wv
-                k += 8
-            var total = Float32(acc.reduce_add())
-            while k < K:
-                total += Float32(xp.unsafe_load(offset=i * K + k)) * Float32(
-                    wp.unsafe_load(offset=j * K + k)
-                )
-                k += 1
-            op.unsafe_store(i * np + j, Scalar[DType.float16](total))
-    else:
-        var xp32 = Pointer[Scalar[DType.float32], MutUntrackedOrigin](
-            unsafe_from_address=x_addr
-        )
-        var wp32 = Pointer[Scalar[DType.float32], MutUntrackedOrigin](
-            unsafe_from_address=w_addr
-        )
-        var op32 = Pointer[Scalar[DType.float32], MutUntrackedOrigin](
-            unsafe_from_address=out_addr
-        )
-        var k_main32 = (K // 4) * 4
-        for i in range(M):
-            var acc = SIMD[DType.float32, 4](0)
-            var k = 0
-            while k < k_main32:
-                var xv = xp32.unsafe_load[width=4](offset=i * K + k)
-                var wv = wp32.unsafe_load[width=4](offset=j * K + k)
-                acc = acc + xv * wv
-                k += 4
-            var total = Float32(acc.reduce_add())
-            while k < K:
-                total += Float32(xp32.unsafe_load(offset=i * K + k)) * Float32(
-                    wp32.unsafe_load(offset=j * K + k)
-                )
-                k += 1
-            op32.unsafe_store(i * np + j, Scalar[DType.float32](total))
+    # M12: thin wrapper over the shared worker body in
+    # ops/cpu/matmul_cpu.mojo (see it_mw_worker above).
+    _mw_multi_worker_body(ctx, idx)
+
+
+# M12: the Q4-resident matmul workers (`it_mwq_worker_*`) are exported
+# from the standalone entry ops/cpu/mwq_workers.mojo (built to
+# libinfer_train_mwq.dylib and dlopen'd RTLD_GLOBAL by the C pool's
+# load_mwq_library).  @export only works in a build's ENTRY module and
+# executables strip unreferenced symbols, so defining them here (or in
+# matmul_cpu.mojo) would leave the it-cli / it-server / bench_cpu
+# executables without the symbols and silently single-threaded.
 
 
 @export

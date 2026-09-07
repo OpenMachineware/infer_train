@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_backward.mojo
 #
 # M6 Phase 8: gradient checks for every core operator's backward.

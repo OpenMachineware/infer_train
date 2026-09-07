@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_kv_cache_quantization.mojo
 #
 # KV cache quantization (Q4_0 / Q8_0, --kv-cache-type):

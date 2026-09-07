@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 from src.core.ops.base.op_registry import OpRegistry
 from src.core.ops.base.op_interface import to_any, AnyTensor
 from src.core.tensor import Tensor, tensor_zeros

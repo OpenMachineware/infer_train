@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/gpu/rms_norm_gpu.mojo
 #
 # GPU RMSNorm: out[i, j] = x[i, j] / sqrt(mean(x[i, :]^2) + eps).

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/optimizer/cfg_to_dag.mojo
 #
 # M5 key transform: lower a CFG to a single DAG with guards.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_qwen3.mojo
 #
 # Qwen3 (arch `qwen3`) load + config + single-token forward + generation

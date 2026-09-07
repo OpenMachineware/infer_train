@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/thread_pool.mojo
 #
 # M5: the engine's thread pool - a thin Mojo wrapper over the C pthread
@@ -39,30 +41,26 @@ def _cstr(s: String) -> Pointer[UInt8, MutUntrackedOrigin]:
 
 
 def _load_tp_library():
-    """dlopen the C pool library with RTLD_NOW|RTLD_GLOBAL.
+    """No-op (M12): everything the dlopen used to do is now done on the
+    C side, ONCE.
 
-    Search order: INFER_TRAIN_TP_LIB env override, then the standard
-    locations next to the engine library.
+    * The C pool library (libinfer_train_tp.dylib) is a LINK dependency
+      of every build (`-Xlinker` in the Makefile), so its symbols
+      (tp_run / tp_run_tid / tp_has_worker / ...) resolve through the
+      normal dynamic linker - no dlopen needed at all.
+    * The Q4-resident worker dylib (libinfer_train_mwq.dylib, see
+      ops/cpu/mwq_workers.mojo) is dlopen'd RTLD_NOW|RTLD_GLOBAL by the
+      C pool's `load_mwq_library()` on the first tp_run* call (static
+      state in tools/thread_pool.c) - it is OPTIONAL: when it is absent
+      the threaded Q4 matmul falls back to single-threaded (dlsym
+      misses).
+
+    The function is kept (with its call sites) so the public surface of
+    this module does not change.  The old per-call dlopen cost was the
+    source of the ~230-300 us per-submission overhead measured by
+    tools/bench_pool.mojo.
     """
-    comptime dlopen = external_call[
-        "dlopen",
-        Pointer[UInt8, MutUntrackedOrigin],
-        Pointer[UInt8, MutUntrackedOrigin],
-        Int32,
-    ]
-    # RTLD_NOW | RTLD_GLOBAL = 2 | 8.  Deliberately list-free: Mojo 1.0
-    # shared-library builds miscompile container growth, so the two
-    # candidates are dlopen'd directly.
-    var handle1 = dlopen(_cstr(String("libinfer_train_tp.dylib")), Int32(10))
-    if Int(handle1) != 0:
-        return
-    var handle2 = dlopen(
-        _cstr(String("python/infer_train/_lib/libinfer_train_tp.dylib")),
-        Int32(10),
-    )
-    if Int(handle2) != 0:
-        return
-    _ = external_call["abort", Int32]()
+    pass
 
 
 def _threads_env() -> Optional[String]:
@@ -97,6 +95,48 @@ def now_ns() -> Int:
     return Int(t)
 
 
+def has_worker(symbol: String) -> Bool:
+    """True when the C pool can resolve `symbol` in this process.
+
+    M12: the Q4-resident matmul's threaded path falls back to
+    single-threaded when its worker dylib is not loaded; tests use this
+    to fail loudly instead of passing through the fallback.
+    """
+    _load_tp_library()
+    var rc = external_call[
+        "tp_has_worker",
+        Int32,
+        Pointer[UInt8, MutUntrackedOrigin],
+    ](_cstr(symbol))
+    return Int(rc) == 1
+
+
+def resolve_threads(nthreads: Int) -> Int:
+    """Resolve a thread count: `nthreads` when > 0; otherwise the
+    `INFER_TRAIN_THREADS` env override, else the performance-core count.
+
+    Callers that must size per-thread resources (scratch pools) before
+    submitting use this instead of relying on `parallel_run`'s internal
+    resolution.
+    """
+    if nthreads > 0:
+        return nthreads
+    var env_t = _threads_env()
+    if env_t:
+        var parsed = 0
+        var ok = True
+        var env_b = env_t.value().as_bytes()
+        for i in range(len(env_b)):
+            var c = Int(env_b[i])
+            if c >= 48 and c <= 57:
+                parsed = parsed * 10 + (c - 48)
+            else:
+                ok = False
+        if ok and parsed > 0:
+            return parsed
+    return num_pcores()
+
+
 def parallel_run(
     symbol: String,
     ctx: Pointer[UInt8, MutUntrackedOrigin],
@@ -111,25 +151,38 @@ def parallel_run(
     if n <= 0:
         return 0
     _load_tp_library()
-    var threads = nthreads
-    if threads <= 0:
-        var env_t = _threads_env()
-        if env_t:
-            var parsed = 0
-            var ok = True
-            var env_b = env_t.value().as_bytes()
-            for i in range(len(env_b)):
-                var c = Int(env_b[i])
-                if c >= 48 and c <= 57:
-                    parsed = parsed * 10 + (c - 48)
-                else:
-                    ok = False
-            if ok and parsed > 0:
-                threads = parsed
-        if threads <= 0:
-            threads = num_pcores()
+    var threads = resolve_threads(nthreads)
     var rc = external_call[
         "tp_run",
+        Int32,
+        Pointer[UInt8, MutUntrackedOrigin],
+        Pointer[UInt8, MutUntrackedOrigin],
+        Int64,
+        Int32,
+    ](_cstr(symbol), ctx, Int64(n), Int32(threads))
+    return Int(rc)
+
+
+def parallel_run_tid(
+    symbol: String,
+    ctx: Pointer[UInt8, MutUntrackedOrigin],
+    n: Int,
+    nthreads: Int = 0,
+) -> Int:
+    """Run `symbol(ctx, i, tid)` for i in [0, n) on `nthreads` threads.
+
+    The third worker argument is the pool thread index in [0, nthreads)
+    (0 when the work runs inline on the caller), so each thread can
+    address a private scratch slot in a caller-allocated pool.  Returns
+    the C pool's status (0 = ok); the same nthreads/n semantics as
+    `parallel_run`.
+    """
+    if n <= 0:
+        return 0
+    _load_tp_library()
+    var threads = resolve_threads(nthreads)
+    var rc = external_call[
+        "tp_run_tid",
         Int32,
         Pointer[UInt8, MutUntrackedOrigin],
         Pointer[UInt8, MutUntrackedOrigin],

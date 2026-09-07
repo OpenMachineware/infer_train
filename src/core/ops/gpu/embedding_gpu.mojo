@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/gpu/embedding_gpu.mojo
 #
 # GPU token embedding lookup (gather).  The table is [vocab, hidden]

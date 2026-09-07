@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core.ops.gpu package - GPU kernels.
 #
 # One code path adapts to Metal / NVIDIA / AMD through the Mojo compiler and

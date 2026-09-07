@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_requantize.mojo
 #
 # M7 re-quantization: fp16 -> Q4_K / Q8_0 / NF4, round-trip error bounds,

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # bindings/__init__.mojo
 #
 # M4: C ABI exports for the Python/PyTorch side.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 from src.core.tensor import Tensor, tensor_zeros, tensor_copy
 from src.core.device import Device, get_default_device, has_metal_gpu
 from src.core.memory import MemoryPool

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/server-cli/__init__.mojo
 #
 # M10 server entry points: it-server (llama-server-compatible HTTP

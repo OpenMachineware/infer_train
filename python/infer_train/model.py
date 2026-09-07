@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 """High-level model wrapper over the engine's C API (M4 task 1-2).
 
 Usage::

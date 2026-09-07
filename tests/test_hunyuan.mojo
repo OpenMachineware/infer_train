@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_hunyuan.mojo
 #
 # M7: Hy-MT2 (hunyuan-dense) load + single-token forward + translation smoke.

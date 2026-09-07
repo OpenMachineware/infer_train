@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_gpu_ops.mojo
 #
 # Numeric tests for the Metal GPU kernels in src/core/ops/gpu.  Each test

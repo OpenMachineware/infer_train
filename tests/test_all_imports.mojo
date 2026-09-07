@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # Whole-tree import gate: builds every public module header.  Not part of
 # `make test` (M3-M6 suites cover the behavior); run manually after big
 # refactors.

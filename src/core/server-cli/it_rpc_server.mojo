@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/server-cli/it_rpc_server.mojo
 #
 # M8: the RPC worker (the llama.cpp-style `llama-rpc-server`), split out

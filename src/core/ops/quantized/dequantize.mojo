@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/quantized/dequantize.mojo
 #
 # GGUF block-quantization dequantizers, all written in pure Mojo.

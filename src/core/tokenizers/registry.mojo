@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/tokenizers/registry.mojo
 #
 # M7: tokenizer auto-selection and the custom-tokenizer registry.

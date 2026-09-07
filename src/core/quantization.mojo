@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/quantization.mojo
 #
 # Quantization data structures and the mixed-scheme quantize/dequantize

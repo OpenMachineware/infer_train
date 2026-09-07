@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_qwen35moe.mojo
 #
 # Qwen3.6-35B-A3B (arch `qwen35moe`) load + config + forward smoke test.

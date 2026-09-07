@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 """ctypes bindings for the infer_train engine shared library.
 
 This module is the only place that talks to ``libinfer_train`` directly.  It

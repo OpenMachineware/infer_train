@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/cli/it_cli.mojo
 #
 # M10: the `it-cli` binary - the llama.cpp `llama-cli`-compatible

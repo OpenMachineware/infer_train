@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/rpc/client.mojo
 #
 # M8: the master-side RPC client.  One `RpcClient` is one connection to one

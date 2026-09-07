@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/cli_common.mojo
 #
 # Shared CLI infrastructure for the three infer_train entry points:

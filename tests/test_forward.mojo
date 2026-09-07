@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_forward.mojo
 #
 # Forward validation: feed the prompt "1+1=" (BOS + tokens) through the real

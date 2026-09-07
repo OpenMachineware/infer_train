@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 from src.core.ops.cpu.matmul_cpu import matmul_cpu_dynamic
 from src.core.ops.cpu.rms_norm_cpu import rms_norm_cpu
 from src.core.ops.cpu.softmax_cpu import softmax_cpu

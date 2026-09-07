@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/base/op_interface.mojo
 #
 # The uniform operator interface plus the type-erased tensor (`AnyTensor`)

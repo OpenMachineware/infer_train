@@ -10,13 +10,25 @@ MOJO := pixi run mojo
 SRC := src
 TP := python/infer_train/_lib/libinfer_train_tp.dylib
 TP_XLINK := -Xlinker $(TP)
+MWQ := python/infer_train/_lib/libinfer_train_mwq.dylib
 
 .PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 test-m8 test-gpu \
-        test-gguf-split test-gguf test-rpc test-thread-pool clean tp server \
-        cli rpc-server infer_train version check-mem
+        test-gguf-split test-gguf test-rpc test-thread-pool clean tp mwq \
+        server cli rpc-server infer_train version check-mem bench_cpu bench_pool
 
-# The C runtime helper library (thread pool + mmap + clock).
-tp:
+# M12: the Q4-resident matmul pool workers as a standalone Mojo shared
+# library.  Mojo 1.0 only honors @export in a build's entry module and
+# executables strip unreferenced symbols, so the workers the C pool
+# resolves via dlsym must live in a globally-loaded dylib: the pool
+# loader (core/thread_pool.mojo) dlopens it RTLD_GLOBAL next to the C
+# pool library, in every process.
+mwq:
+	$(MOJO) build -I . src/core/ops/cpu/mwq_workers.mojo \
+		--emit shared-lib -o $(MWQ)
+
+# The C runtime helper library (thread pool + mmap + clock), plus the
+# M12 worker dylib (tp depends on mwq so `make tp` builds both).
+tp: mwq
 	cc -O2 -shared -o $(TP) tools/thread_pool.c
 
 # Generate src/version.mojo from the `version` field of pixi.toml.  Every
@@ -176,6 +188,16 @@ infer_train: tp version
 check-mem: tp
 	$(MOJO) build -I . tools/check_mem.mojo $(TP_XLINK) -o tools/check_mem
 
+# M12: the CPU benchmark for the README's llama.cpp comparison table
+# (bench_cpu <model.gguf> [q4|fp16] [n_predict] [n_warmup] [ctx]).
+bench_cpu: tp
+	$(MOJO) build -I . tools/bench_cpu.mojo $(TP_XLINK) -o bench_cpu
+
+# M12: the C thread pool's per-submission overhead micro-benchmark
+# (bench_pool [nthreads]; noop worker, no model needed).
+bench_pool: tp
+	$(MOJO) build -I . tools/bench_pool.mojo $(TP_XLINK) -o bench_pool
+
 # M8: multi-process RPC test - two localhost workers, -sm layer, output
 # must match the single-process run exactly (needs the 1.5B GGUF at the
 # repo root; SKIPs when absent).
@@ -196,9 +218,10 @@ test-thread-pool: tp
 # the .mojo source extension).
 clean:
 	rm -f it-server it-cli it-rpc-server infer_train
-	rm -f tools/check_mem
+	rm -f tools/check_mem bench_cpu bench_pool
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
-	      python/infer_train/_lib/libinfer_train_tp.dylib
+	      python/infer_train/_lib/libinfer_train_tp.dylib \
+	      python/infer_train/_lib/libinfer_train_mwq.dylib
 	rm -f src/version.mojo
 	rm -rf python/*.egg-info python/build
 	@for f in tests/test_*; do case "$$f" in *.mojo) ;; *) rm -f "$$f";; esac; done

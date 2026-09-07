@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/cpu/rope_cpu.mojo
 #
 # Rotary position embedding, GPT-NeoX pairing (the layout Qwen2 uses - see

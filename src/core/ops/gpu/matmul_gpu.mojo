@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/gpu/matmul_gpu.mojo
 #
 # GPU matrix multiplication: out = a @ b, a [M, K], b [K, N].

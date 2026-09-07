@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/simd_utils.mojo
 #
 # M5: shared SIMD helpers for the CPU kernels.

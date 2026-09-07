@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/gpu/fused_gpu.mojo
 #
 # GPU versions of the M5 fused kernels in core/ops/fused.  Each fuses a

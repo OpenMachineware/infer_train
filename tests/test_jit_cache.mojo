@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_jit_cache.mojo
 #
 # M8: JIT shape specialization for the fused matmul+rmsnorm CPU op.

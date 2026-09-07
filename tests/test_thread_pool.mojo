@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_thread_pool.mojo
 #
 # M9: correctness + load-balancing tests for the Mojo-native work-stealing

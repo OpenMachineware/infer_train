@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 """Shared fixtures for the M4 Python test suite.
 
 Run with pytest from the repo root; this file puts the `python/` package on

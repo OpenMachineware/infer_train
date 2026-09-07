@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/optimizer/shape_inference.mojo
 #
 # M5 pass: static shape inference over the optimization IR.

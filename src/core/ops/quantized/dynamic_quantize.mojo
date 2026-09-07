@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/quantized/dynamic_quantize.mojo
 #
 # M6 Phase 7: dynamic quantization operators (the quantize/dequantize pair

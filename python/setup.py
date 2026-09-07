@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 """Build/install script for the infer_train Python package (M4).
 
 ``pip install -e python/`` (or ``python setup.py build_mojo``) compiles the

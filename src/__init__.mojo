@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # infer_train package root.
 #
 # infer_train is a from-scratch training+inference LLM runtime.  This

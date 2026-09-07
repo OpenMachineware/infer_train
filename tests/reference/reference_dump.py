@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 """Generate reference data (tokenizer + logits) from llama-cpp-python.
 
 Serves as ground truth for validating the Mojo M3 implementation.

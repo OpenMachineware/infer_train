@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 """M7: the infer_train HTTP server (OpenAI/Claude-compatible surface).
 
 Run::

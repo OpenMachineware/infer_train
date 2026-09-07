@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/optimizer/cfg_dce.mojo
 #
 # M5 pass: dead-basic-block elimination for CFGs.

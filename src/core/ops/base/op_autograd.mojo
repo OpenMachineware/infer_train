@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/base/op_autograd.mojo
 #
 # M6: the type-erased forward_with_saved / backward dispatchers for every

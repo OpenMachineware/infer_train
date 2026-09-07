@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # tests/test_gpu_pipeline.mojo
 #
 # Correctness + performance test for the async GPU/CPU pipeline

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/rpc/__init__.mojo
 #
 # M8: multi-process / multi-machine RPC layer (llama.cpp-style).

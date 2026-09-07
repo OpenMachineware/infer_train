@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 """M7: inference-time fine-tuning API (Model.finetune) on the 1.5B model."""
 
 import sys

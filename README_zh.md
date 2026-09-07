@@ -153,15 +153,24 @@ m = load_model("model.gguf-00001-of-00003.gguf")
 | **API** | C ABI + Python 绑定 + `torch.compile` 后端；OpenAI 兼容 HTTP 端点（`/v1/models`、`/v1/chat/completions`、`/v1/completions` SSE、`/v1/finetune`、`/v1/finetune/status`），`INFERTRAIN_API_KEY` 鉴权 |
 | **CLI** | 三个入口共用同一套核心：`it-cli`（快速验证：`-m -p -c -n --temp --top-p --top-k --repeat-penalty -t --seed -sm --rpc`）、`it-server`（OpenAI HTTP 服务 + `quantize`）、`it-rpc-server`（RPC worker）；均支持 `--infer-train-*` 参数组 |
 
-## 性能基准（Apple M1 Max，64 GB；InferTrain 为 CPU 多线程）
+## 性能基准（Apple M1 Max，64 GB；仅 CPU，不使用 GPU）
 
-| 模型 | 大小 | 预填充 | 解码 | 峰值内存 | llama.cpp（CPU）解码 | 对比 |
-|---|---|---|---|---|---|---|
-| DeepSeek-R1-Distill-Qwen-1.5B（Q5_K_M） | 1.28 GB | 4.4 t/s | 4.2 t/s | ~5 GB | 60.3 t/s | 7% |
-| Hy-MT2-7B（Q4_K_M, hunyuan-dense） | 4.6 GB | 0.82 t/s | 0.82 t/s | ~15 GB | 19.6 t/s | 4% |
-| Qwen3.8-27B（UD-Q5_K_M, qwen35 hybrid） | 19.7 GB | 0.23 t/s | 0.22 t/s | ~55 GB | 4.4 t/s | 5% |
+提示词：`The quick brown fox jumps over the lazy dog.`（token 数随分词器不同：四个模型分别为 26 / 27 / 26 / 18），生成 16 个 token（35B 为 8 个），temp 0.6 / top-k 40 / top-p 0.95，seed 7。InferTrain 使用**默认的 Q4-resident 路径**（权重以打包形式常驻内存；其 matmul 热路径**已多线程化** —— M12 把 N 个输出列拆分到 C 线程池，每个线程用私有的逐块反量化 scratch）。llama.cpp 为**纯 CPU** 构建（`llama.cpp-0.4.0/build-cpu`，`GGML_METAL=OFF`），8 线程，用 `llama-bench`（预热 + 多次重复）测量。35B 使用 128 token 上下文，其余使用 512。
 
-> ⚠️ **性能目标未达成**：M7 的「推理速度达 llama.cpp 85%」目标当前为 4–7%（CPU 基线）。数值正确性不受影响（与 llama.cpp 逐 token 一致），差距在 内核效率（标量 DeltaNet 递推、无 AMX 权重重排、逐元素注意力），完整分析、 32K 上下文内存数据与后续版本优化路线见 `docs/M7_PERFORMANCE_REPORT.md`； M5/M6 数据见 `docs/M5_PERFORMANCE_REPORT.md` 与 `docs/M6_TRAINING_REPORT.md`。
+| 模型 | 大小 | InferTrain 预填充 | InferTrain 解码 | InferTrain 内存 | llama.cpp 预填充 | llama.cpp 解码 | 解码对比 |
+|---|---|---|---|---|---|---|---|
+| Qwen3-0.6B（Q4_K_XL） | 0.38 GB | 24.78 t/s | 8.99 t/s | 0.60 GiB | 858.73 t/s | 195.39 t/s | 4.6% |
+| DeepSeek-R1-Distill-Qwen-1.5B（Q5_K_M） | 1.20 GB | 13.99 t/s | 5.48 t/s | 1.29 GiB | 316.08 t/s | 86.78 t/s | 6.3% |
+| Hy-MT2-7B（Q4_K_M, hunyuan-dense） | 4.31 GB | 4.92 t/s | 1.87 t/s | 4.41 GiB | 90.00 t/s | 23.76 t/s | 7.8% |
+| Qwen3.8-27B（Q5_K_M, qwen35） | 18.0 GB | 0.96 t/s | 0.37 t/s | 18.97 GiB | 17.87 t/s | 4.86 t/s | 7.6% |
+| Qwen3.6-35B-A3B（Q5_K_M, qwen35moe） | 23.6 GB | 2.64 t/s | 1.63 t/s | 7.25 GiB | 58.03 t/s | 22.24 t/s | 7.3% |
+
+> **Q4-resident 与 fp16**：默认的 Q4-resident 路径（M11）保持权重打包（内存占用低），其 matmul 现已多线程化（M12）。fp16 路径仍然更快（如 1.5B 解码 8.35 t/s 对 5.48），但内存约为 3.4 倍（1.5B：4.36 GiB 对 1.29 GiB）。
+>
+> ⚠️ **性能目标未达成**：解码速度为 llama.cpp（CPU，8 线程）的 4–30%——稠密模型为 4.2–5.8%，MoE 为 29.7%（激活 3B，热工作集小，数字干净得多）。数值正确性不受影响（与 llama.cpp 逐 token 一致）；M12 多线程 Q4 matmul 之后剩余的差距在内核效率：无 AMX 式权重重排的逐块反量化、标量 DeltaNet 递推、逐元素注意力、MoE 路由串行开销。完整分析、32K 上下文内存数据与优化路线见 `docs/M7_PERFORMANCE_REPORT.md`；M5/M6 数据见 `docs/M5_PERFORMANCE_REPORT.md` 与 `docs/M6_TRAINING_REPORT.md`。
+>
+
+复现：`make bench_cpu && ./bench_cpu MODEL.gguf`（InferTrain；可选参数 `[q4|fp16] [n_predict] [n_warmup] [ctx]`；35B 用 `q4 8 8 128`），以及 `./llama.cpp-0.4.0/build-cpu/bin/llama-bench -m MODEL.gguf -t 8 -p <prompt_tokens> -n <gen_tokens>`（llama.cpp；35B 用 `-p 18 -n 8`）。
 
 ## 已验证的数值正确性
 
@@ -195,6 +204,8 @@ make test-rpc    # 多进程 RPC（两个 localhost worker，-sm layer）
 make cli         # it-cli 二进制
 make server      # it-server 二进制
 make rpc-server  # it-rpc-server worker 二进制
+make bench_cpu   # CPU benchmark 二进制（README 表格；bench_cpu <model.gguf>）
+make bench_pool  # C 线程池每次提交开销微基准
 ```
 
 测试组成：Mojo 可执行文件（`tests/*.mojo`，`pixi run mojo build -I .` 编译）+ Python 验收套件（`tests/python/`）。Mojo 1.0 约束：统一 `def`、无运行时全局变量、 `fn` 已弃用；C 侧辅助库经 `-Xlinker` 链接（`tools/thread_pool.c`）。

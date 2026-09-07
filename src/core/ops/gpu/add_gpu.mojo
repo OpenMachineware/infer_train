@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/gpu/add_gpu.mojo
 #
 # GPU element-wise add (residual connections) plus the rank-1 bias broadcast

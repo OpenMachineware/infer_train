@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/optimizer/fusion.mojo
 #
 # M5 pass: pattern-matching operator fusion on the optimization IR.

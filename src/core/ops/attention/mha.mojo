@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/attention/mha.mojo
 #
 # Multi-head attention with GQA and a preallocated KV cache (M3).

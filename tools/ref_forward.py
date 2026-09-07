@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 """Independent f32 reference forward for bisecting the Mojo implementation.
 
 Dequantizes all weights from the GGUF (vectorized numpy) and runs the same

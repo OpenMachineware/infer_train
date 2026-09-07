@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/quantized/qweight.mojo
 #
 # Q4-resident weight wrapper (M11).
@@ -14,10 +16,13 @@
 #
 # `proj` computes y = W @ x (x [M, n_in], y [M, n_out]): the quantized
 # case dispatches at RUNTIME on the GGUF type to the comptime-specialized
-# fused `matmul_quantized_cpu` - which dequantizes per block INSIDE the
-# matmul kernel, so the dequantized values never leave the kernel scope
-# and the weight's resident footprint stays its on-disk (Q4) size.  The
-# fp16 case runs the existing threaded weight-major kernel unchanged.
+# fused `matmul_quantized_cpu_threaded` - which dequantizes per block
+# INSIDE the matmul kernel, so the dequantized values never leave the
+# kernel scope and the weight's resident footprint stays its on-disk
+# (Q4) size.  M12: the N output columns are split across the C thread
+# pool (per-thread private dequant scratch; single-threaded fallback
+# below the parallelization threshold).  The fp16 case runs the existing
+# threaded weight-major kernel unchanged.
 #
 # Layering note: this module sits between `tensor` and the CPU kernels
 # (`matmul_cpu`), and is imported by the attention/transformer layers -
@@ -27,7 +32,7 @@ from ...tensor import Tensor, tensor_zeros
 from ...utils import unimplemented
 from ..cpu.matmul_cpu import (
     matmul_weight_cpu_threaded,
-    matmul_quantized_cpu,
+    matmul_quantized_cpu_threaded,
 )
 from .quant_types import QuantType
 from std.utils.static_tuple import StaticTuple
@@ -97,32 +102,37 @@ def quant_proj_dispatch(
     """Runtime dispatch on the GGUF type -> comptime-specialized fused
     quantized matmul (per-block dequantization inside the kernel).
 
+    M12: the threaded variant - the N output columns are split across
+    the C thread pool (per-thread private dequant scratch); below the
+    parallelization threshold it falls back to the single-threaded
+    kernel, so the result is bit-identical either way.
+
     The erased (registry) interface cannot carry the comptime
     `quant_type`, so each branch fixes it as a compile-time parameter -
     the same pattern as `_dequantize_dispatch` in `dequantize.mojo`.
     """
     if w.ggml_type == 12:  # Q4_K (Q4_K_M)
-        return matmul_quantized_cpu[DType.float16, QuantType.Q4_K_M, 32](
+        return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q4_K_M, 32](
             x, w.data, dummy_scale
         )
     if w.ggml_type == 2:  # Q4_0
-        return matmul_quantized_cpu[DType.float16, QuantType.Q4_0, 32](
+        return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q4_0, 32](
             x, w.data, dummy_scale
         )
     if w.ggml_type == 13:  # Q5_K
-        return matmul_quantized_cpu[DType.float16, QuantType.Q5_K, 32](
+        return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q5_K, 32](
             x, w.data, dummy_scale
         )
     if w.ggml_type == 14:  # Q6_K
-        return matmul_quantized_cpu[DType.float16, QuantType.Q6_K, 32](
+        return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q6_K, 32](
             x, w.data, dummy_scale
         )
     if w.ggml_type == 8:  # Q8_0
-        return matmul_quantized_cpu[DType.float16, QuantType.Q8_0, 32](
+        return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q8_0, 32](
             x, w.data, dummy_scale
         )
     if w.ggml_type == 23:  # IQ4_XS
-        return matmul_quantized_cpu[DType.float16, QuantType.IQ4_XS, 32](
+        return matmul_quantized_cpu_threaded[DType.float16, QuantType.IQ4_XS, 32](
             x, w.data, dummy_scale
         )
     unimplemented(

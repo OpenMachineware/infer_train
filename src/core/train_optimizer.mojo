@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/train_optimizer.mojo
 #
 # M6: training optimizers - AdamW and momentum SGD over type-erased
