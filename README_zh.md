@@ -167,7 +167,7 @@ m = load_model("model.gguf-00001-of-00003.gguf")
 
 > **Q4-resident 与 fp16**：默认的 Q4-resident 路径（M11）保持权重打包（内存占用低），其 matmul 现已多线程化（M12）。fp16 路径仍然更快（如 1.5B 解码 8.35 t/s 对 5.48），但内存约为 3.4 倍（1.5B：4.36 GiB 对 1.29 GiB）。
 >
-> ⚠️ **性能目标未达成**：解码速度为 llama.cpp（CPU，8 线程）的 4–30%——稠密模型为 4.2–5.8%，MoE 为 29.7%（激活 3B，热工作集小，数字干净得多）。数值正确性不受影响（与 llama.cpp 逐 token 一致）；M12 多线程 Q4 matmul 之后剩余的差距在内核效率：无 AMX 式权重重排的逐块反量化、标量 DeltaNet 递推、逐元素注意力、MoE 路由串行开销。完整分析、32K 上下文内存数据与优化路线见 `docs/M7_PERFORMANCE_REPORT.md`；M5/M6 数据见 `docs/M5_PERFORMANCE_REPORT.md` 与 `docs/M6_TRAINING_REPORT.md`。
+> ⚠️ **性能目标未达成**：解码速度为 llama.cpp（CPU，8 线程）的 4.6–7.8%。数值正确性不受影响（与 llama.cpp 逐 token 一致）；M12 多线程 Q4 matmul 之后剩余的差距在内核效率：无 AMX 式权重重排的逐块反量化、标量 DeltaNet 递推、逐元素注意力、MoE 路由串行开销。完整分析、32K 上下文内存数据与优化路线见 `docs/M7_PERFORMANCE_REPORT.md`；M5/M6 数据见 `docs/M5_PERFORMANCE_REPORT.md` 与 `docs/M6_TRAINING_REPORT.md`。
 >
 
 复现：`make bench_cpu && ./bench_cpu MODEL.gguf`（InferTrain；可选参数 `[q4|fp16] [n_predict] [n_warmup] [ctx]`；35B 用 `q4 8 8 128`），以及 `./llama.cpp-0.4.0/build-cpu/bin/llama-bench -m MODEL.gguf -t 8 -p <prompt_tokens> -n <gen_tokens>`（llama.cpp；35B 用 `-p 18 -n 8`）。
