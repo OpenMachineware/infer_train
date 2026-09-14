@@ -11,6 +11,7 @@
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
 from std.memory.alloc import unsafe_alloc
+from std.sys import llvm_intrinsic
 
 # NEON SIMD width for Float32
 comptime NEON_WIDTH = 8  # 8x Float32 = 256 bits
@@ -320,3 +321,117 @@ def vec_dot_q8_0_neon[
         blk += 1
 
     return (acc0 + acc1 + acc2 + acc3).reduce_add()
+
+# -- Q4_K × Q8_K int8 dot product (llama.cpp approach) ------------------------
+#
+# This is the key optimization: quantize activations to Q8_K (int8) and use
+# hardware int8 dot product (SDOT) instead of float32 SIMD.
+
+
+def neon_sdot(
+    acc: SIMD[DType.int32, 4],
+    a: SIMD[DType.int8, 16],
+    b: SIMD[DType.int8, 16],
+) -> SIMD[DType.int32, 4]:
+    """NEON SDOT: int8 × int8 -> int32 dot product.
+
+    Computes: result[i] = acc[i] + sum_j(a[i*4+j] * b[i*4+j]) for i in 0..3
+    Each lane processes 4 elements, so 16 elements total.
+    """
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.sdot.v4i32.v16i8",
+        SIMD[DType.int32, 4],
+        has_side_effect=False,
+    ](acc, a, b)
+
+
+def vec_dot_q4_k_q8_k(
+    # Q4_K weight block (144 bytes per 256 elements)
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    # Q8_K activation: scale at offset 0, int8 at offset 4, bsums at offset 260
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    """Q4_K × Q8_K dot product using NEON int8 SDOT.
+
+    Q4_K block layout (144 bytes):
+    - d: fp16 scale at offset 0
+    - dmin: fp16 min scale at offset 2
+    - scales: 12 bytes at offset 4
+    - qs: 128 bytes at offset 16 (4-bit values, 256 elements packed)
+
+    Q8_K layout (292 bytes):
+    - d: float32 scale at offset 0
+    - qs: 256 int8 at offset 4
+    - bsums: 16 int16 at offset 260
+
+    Returns: dot product as float32
+    """
+    # Read Q4_K scales
+    var w_half = w_block.unsafe_bitcast[Scalar[DType.float16]]()
+    var d = Float32(w_half.unsafe_load[width=1](offset=0).value())
+    var dmin = Float32(w_half.unsafe_load[width=1](offset=1).value())
+    var scales = w_block.unsafe_offset(4)
+    var qs = w_block.unsafe_offset(16)
+
+    # Read Q8_K scale
+    var q8_d = q8_data.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load().value()
+    var q8_qs = q8_data.unsafe_offset(4).unsafe_bitcast[Scalar[DType.int8]]()
+    var q8_bsums = q8_data.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
+
+    # Compute bias: -dmin * sum(q8_bsums * min_k4)
+    var bias = Float32(0)
+    for j in range(8):
+        var (_, m) = _get_scale_min_k4(j, scales)
+        var bs0 = Int32(q8_bsums.unsafe_offset(j * 2).unsafe_load().value())
+        var bs1 = Int32(q8_bsums.unsafe_offset(j * 2 + 1).unsafe_load().value())
+        bias -= dmin * Float32(m) * Float32(bs0 + bs1)
+
+    # Main dot product using SDOT
+    # Process 64 elements per iteration (8 scales, each covers 32 elements)
+    var sumi = Int32(0)
+
+    for j in range(8):
+        var (sc, _) = _get_scale_min_k4(j, scales)
+
+        # Determine which nibbles to use
+        # Scales 0,2,4,6 use low nibbles; 1,3,5,7 use high nibbles
+        # Each scale covers 32 elements = 16 bytes of packed 4-bit values
+        var q4_byte_offset = (j // 2) * 32 + (j % 2) * 16
+        var q4_bits = qs.unsafe_offset(q4_byte_offset).unsafe_load[width=16](offset=0)
+
+        # Unpack 4-bit values to int8
+        var m4b = SIMD[DType.uint8, 16](0x0F)
+        var q4_vals: SIMD[DType.int8, 16]
+
+        if j % 2 == 0:
+            # Low nibbles
+            q4_vals = (q4_bits & m4b).cast[DType.int8]()
+        else:
+            # High nibbles (shift right by 4)
+            q4_vals = (q4_bits >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+
+        # Load corresponding Q8_K int8 values (first 16 of 32)
+        var q8_offset_val = j * 32
+        var q8_vals = q8_qs.unsafe_offset(q8_offset_val).unsafe_load[width=16](offset=0)
+
+        # SDOT: int8 × int8 -> int32
+        var dot = neon_sdot(SIMD[DType.int32, 4](0), q4_vals, q8_vals)
+
+        # Load next 16 elements
+        var q4_next_bits: SIMD[DType.uint8, 16]
+        if j % 2 == 0:
+            q4_next_bits = qs.unsafe_offset(q4_byte_offset + 16).unsafe_load[width=16](offset=0)
+            q4_vals = (q4_next_bits & m4b).cast[DType.int8]()
+        else:
+            q4_next_bits = qs.unsafe_offset(q4_byte_offset + 16).unsafe_load[width=16](offset=0)
+            q4_vals = (q4_next_bits >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+
+        q8_vals = q8_qs.unsafe_offset(q8_offset_val + 16).unsafe_load[width=16](offset=0)
+        dot = neon_sdot(dot, q4_vals, q8_vals)
+
+        # Sum the 4 int32 lanes and apply scale
+        var dot_sum = dot[0] + dot[1] + dot[2] + dot[3]
+        sumi += dot_sum * Int32(sc)
+
+    # Apply super-block scales and add bias
+    return d * q8_d * Float32(sumi) + bias
