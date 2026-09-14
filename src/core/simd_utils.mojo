@@ -2,47 +2,18 @@
 # SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/simd_utils.mojo
 #
-# M5: shared SIMD helpers for the CPU kernels.
+# Shared SIMD helpers for the CPU kernels.
 #
-# Every elementwise kernel reduces to the same three shapes - a vectorized
-# main loop, a scalar tail, and (for f16) f32 accumulation - so they share
-# these helpers instead of re-deriving the W/alignment bookkeeping.  The
-# widths are comptime constants chosen per dtype (128-bit NEON/SSE):
-#
-#   f16: 8 lanes   f32: 4 lanes
-#
-# Mojo 1.0 note: SIMD lane inserts are miscompiled, so helpers that need
-# per-lane work (silu, exp) read lanes via `v[i]` and accumulate scalarly
-# while still using vector loads/stores where possible.
-#
-# M8: adaptive SIMD width.
-#
-# The legacy kernels above keep their fixed 128-bit widths (the default
-# behavior is unchanged).  On top of that, this module provides:
-#
-#   * `get_optimal_simd_width(dim, is_power_of_two)` - a comptime-evaluable
-#     heuristic that picks a SIMD bit width (64/128/256) for a row of
-#     `dim` elements;
-#   * `simd_lanes(bit_width, dtype)` - the bit-width -> lane-count map used
-#     to turn the choice into a `SIMD[dtype, W]` / `unsafe_load[width=W]`
-#     parameter;
-#   * `AutotuneCache` + `autotune_width_f16/f32` - a runtime micro-benchmark
-#     that times the three candidate widths on a scratch row and remembers
-#     the winner per row length.
-#
-# The chosen width is always handed to the kernels as a *comptime*
-# parameter: the autotuner produces a runtime Int (the bit width), and the
-# `*_autotuned` dispatchers in the op files branch over it, each branch
-# calling a compile-time instantiation with a literal lane width.  Mojo 1.0
-# has no runtime codegen, so all candidate instantiations are compiled into
-# the binary and the dispatch selects among them.
+# SIMD width: 256-bit (16 x f32 on M1) for maximum throughput.
+# This follows the llama2.mojo optimization pattern.
 
 from .tensor import Tensor, tensor_zeros
 from std.utils.static_tuple import StaticTuple
 from std.time import perf_counter_ns
 
-comptime W_F16 = 8
-comptime W_F32 = 4
+# 256-bit SIMD width (optimal from llama2.mojo)
+comptime W_F16 = 16  # 16 x f16 = 256 bits
+comptime W_F32 = 8   # 8 x f32 = 256 bits
 
 # M8: the SIMD bit widths the autotuner searches over.
 comptime SIMD_WIDTH_64 = 64
