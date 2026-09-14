@@ -15,7 +15,22 @@ from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
 from std.ffi import external_call
 from std.memory.alloc import unsafe_alloc, unsafe_free
-from ..quantized.quant_types import QuantType
+from ..quantized.quant_types import QuantType, block_elems, block_bytes, ggml_type
+from ..quantized.dequantize import dequantize_into_f32
+
+# Forward declaration for fallback
+def matmul_quantized_cpu_fallback[
+    dtype: DType,
+    quant_type: QuantType,
+](
+    x: Tensor[dtype, 2],
+    b_quant: Tensor[DType.uint8, 2],
+    scale: Tensor[dtype, 1],
+    zero_point: Optional[Tensor[dtype, 1]] = None,
+) -> Tensor[dtype, 2]:
+    """Fallback to SIMD-based matmul (defined in matmul_cpu.mojo)."""
+    from .matmul_cpu import matmul_quantized_cpu
+    return matmul_quantized_cpu[dtype, quant_type, 0](x, b_quant, scale, zero_point)
 
 # Apple Accelerate BLAS constants
 comptime CblasRowMajor: Int32 = 101
@@ -210,9 +225,6 @@ def matmul_quantized_blas[
         b_quant: Quantized weight [N, K//be * bb] bytes
         max_dequant_kb: Max FP32 size to dequantize (default 1 MB = 256K elements)
     """
-    from ..quantized.dequantize import dequantize_into_f32
-    from ..quantized.quant_types import block_elems, block_bytes, ggml_type
-
     var M = x.shape()[0]
     var K = x.shape()[1]
     var N = b_quant.shape()[0]
@@ -220,8 +232,7 @@ def matmul_quantized_blas[
     var be = block_elems(quant_type)
     var bb = block_bytes(quant_type)
     if be == 0 or K % be != 0:
-        from .matmul_cpu import matmul_quantized_cpu
-        return matmul_quantized_cpu[dtype, quant_type, 0](x, b_quant, scale, zero_point)
+        return matmul_quantized_cpu_fallback[dtype, quant_type](x, b_quant, scale, zero_point)
 
     # Check if the FP32 weight would fit in the threshold
     var fp32_size_kb = N * K  # number of FP32 elements
@@ -301,9 +312,6 @@ def matmul_quantized_blas_tiled[
     For Qwen2 7B: gate/up_proj is [18944, 3584], tile_rows=256 means
     ~73 tiles, each dequantizing ~2.3MB of FP32.
     """
-    from ..quantized.dequantize import dequantize_into_f32
-    from ..quantized.quant_types import block_elems, block_bytes, ggml_type
-
     var M = x.shape()[0]
     var K = x.shape()[1]
     var N = b_quant.shape()[0]
@@ -311,8 +319,7 @@ def matmul_quantized_blas_tiled[
     var be = block_elems(quant_type)
     var bb = block_bytes(quant_type)
     if be == 0 or K % be != 0:
-        from .matmul_cpu import matmul_quantized_cpu
-        return matmul_quantized_cpu[dtype, quant_type, 0](x, b_quant, scale, zero_point)
+        return matmul_quantized_cpu_fallback[dtype, quant_type](x, b_quant, scale, zero_point)
 
     var out = tensor_zeros[dtype, 2](StaticTuple[Int, 2](M, N))
 
@@ -345,23 +352,26 @@ def matmul_quantized_blas_tiled[
             j1 = N
         var tile_n = j1 - j0
 
-        # Dequantize this tile's rows into row_f32
+        # Dequantize this tile's rows directly into row_f32
+        # Each row is K elements, dequantized into row_f32 at offset jt * K
         for jt in range(tile_n):
             var j = j0 + jt
             var row_offset = j * nb_per_row * bb
-            # Create a temporary tensor for one row dequantization
-            var one_row = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](1, K))
+            # Create a view of row_f32 starting at row jt
+            # Note: dequantize_into_f32 writes K elements starting at dst[0]
+            # We create a tensor view for just this row
+            var row_view = Tensor[DType.float32, 2](
+                StaticTuple[Int, 2](1, K),
+                row_f32.data().unsafe_offset(jt * K).unsafe_bitcast[Scalar[DType.float32]](),
+                row_f32.device(),
+            )
             dequantize_into_f32(
                 gtype,
                 b_quant.data().unsafe_offset(row_offset),
                 0,
-                one_row,
+                row_view,
                 K,
             )
-            # Copy to tile buffer
-            for k in range(K):
-                var val = one_row.data().unsafe_offset(k).unsafe_load()
-                row_f32.data().unsafe_offset(jt * K + k).unsafe_store(val=val)
 
         # BLAS for this tile: out[:, j0:j1] = x @ row_f32[:tile_n, :].T
         var tile_weight = Tensor[DType.float32, 2](
