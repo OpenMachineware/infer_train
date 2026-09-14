@@ -186,11 +186,7 @@ def _dequantize_q4_k_block[
 ](block: Pointer[UInt8, MutUntrackedOrigin], dst: Tensor[dtype, 2], base: Int,):
     """Q4_K super-block: the Q4_K_M workhorse (GGML type 12).
 
-    Mirrors `dequantize_row_q4_K` in ggml-quants.c.  Sub-blocks come in
-    pairs: 32 bytes of `qs` hold both sub-blocks of the pair (low nibble =
-    even sub-block, high nibble = odd sub-block), and each value is
-    `d * sc * q - dmin * m`, computed in FP32 from the 6-bit scale/min
-    pairs.
+    SIMD-optimized version: processes 16 elements at a time instead of scalar.
     """
     var half = block.unsafe_bitcast[Scalar[DType.float16]]()
     var d = Float32(half.unsafe_load[width=1](offset=0))
@@ -206,27 +202,68 @@ def _dequantize_q4_k_block[
         var (sc1, m1) = _get_scale_min_k4(pair * 2 + 1, scales)
         var d1 = d * Float32(sc1)
         var m1v = dmin * Float32(m1)
-        for l in range(32):
-            var b = Int(q.unsafe_load[width=1](offset=l))
-            _store_dequant(
-                dst, base + pair * 64 + l, d0 * Float32(b & 0xF) - m0v
-            )
-            _store_dequant(
-                dst, base + pair * 64 + 32 + l, d1 * Float32(b >> 4) - m1v
-            )
+
+        # SIMD: process 16 elements at a time (2 iterations for 32 elements)
+        for chunk in range(2):
+            var b = q.unsafe_load[width=16](offset=chunk * 16)  # SIMD[UInt8, 16]
+            # Unpack low nibbles (even sub-block)
+            var lo = b & SIMD[DType.uint8, 16](0x0F)
+            var lo_f32 = lo.cast[DType.float32]()
+            # Compute d0 * q - m0v for all 16 elements
+            var out0 = d0 * lo_f32 - SIMD[DType.float32, 16](m0v)
+            # Unpack high nibbles (odd sub-block)
+            var hi = b >> SIMD[DType.uint8, 16](4)
+            var hi_f32 = hi.cast[DType.float32]()
+            # Compute d1 * q - m1v for all 16 elements
+            var out1 = d1 * hi_f32 - SIMD[DType.float32, 16](m1v)
+            # Store results - use bitcast to avoid comptime if type issues
+            comptime if dtype == DType.float32:
+                var ptr_f32 = dst.data().unsafe_bitcast[Scalar[DType.float32]]()
+                ptr_f32.unsafe_offset(base + pair * 64 + chunk * 16).unsafe_store[
+                    width=16
+                ](val=out0)
+                ptr_f32.unsafe_offset(base + pair * 64 + 32 + chunk * 16).unsafe_store[
+                    width=16
+                ](val=out1)
+            else:
+                var ptr_f16 = dst.data().unsafe_bitcast[Scalar[DType.float16]]()
+                var out0_f16 = out0.cast[DType.float16]()
+                var out1_f16 = out1.cast[DType.float16]()
+                ptr_f16.unsafe_offset(base + pair * 64 + chunk * 16).unsafe_store[
+                    width=16
+                ](val=out0_f16)
+                ptr_f16.unsafe_offset(base + pair * 64 + 32 + chunk * 16).unsafe_store[
+                    width=16
+                ](val=out1_f16)
         q = q.unsafe_offset(32)
 
 
 def _dequantize_q8_0_block[
     dtype: DType
 ](block: Pointer[UInt8, MutUntrackedOrigin], dst: Tensor[dtype, 2], base: Int,):
-    """Q8_0 block: 32-element blocks, fp16 delta + int8 quants."""
+    """Q8_0 block: 32-element blocks, fp16 delta + int8 quants.
+
+    SIMD-optimized version: processes 16 elements at a time.
+    """
     var half = block.unsafe_bitcast[Scalar[DType.float16]]()
     var d = Float32(half.unsafe_load[width=1](offset=0))
     var qs = block.unsafe_offset(2)
-    for i in range(32):
-        var q = Int(bitcast[DType.int8](qs.unsafe_load[width=1](offset=i)))
-        _store_dequant(dst, base + i, d * Float32(q))
+
+    comptime if dtype == DType.float32:
+        var ptr_f32 = dst.data().unsafe_bitcast[Scalar[DType.float32]]()
+        for chunk in range(2):
+            var q = qs.unsafe_load[width=16](offset=chunk * 16)  # SIMD[UInt8, 16]
+            var q_i8 = q.cast[DType.int8]().cast[DType.float32]()
+            var out = d * q_i8
+            ptr_f32.unsafe_offset(base + chunk * 16).unsafe_store[width=16](val=out)
+    else:
+        var ptr_f16 = dst.data().unsafe_bitcast[Scalar[DType.float16]]()
+        for chunk in range(2):
+            var q = qs.unsafe_load[width=16](offset=chunk * 16)
+            var q_i8 = q.cast[DType.int8]().cast[DType.float32]()
+            var out = d * q_i8
+            var out_f16 = out.cast[DType.float16]()
+            ptr_f16.unsafe_offset(base + chunk * 16).unsafe_store[width=16](val=out_f16)
 
 
 def _dequantize_q4_0_block[
@@ -234,17 +271,36 @@ def _dequantize_q4_0_block[
 ](block: Pointer[UInt8, MutUntrackedOrigin], dst: Tensor[dtype, 2], base: Int,):
     """Q4_0 block: 32-element blocks, fp16 delta + unsigned 4-bit quants.
 
-    Mirrors `dequantize_row_q4_0` in ggml-quants.c: the block is
-    `d(2 bytes fp16) + qs(16 bytes, 2 quants per byte)` and every value is
-    `d * (q - 8)`, computed in FP32.
+    SIMD-optimized version: processes 16 elements at a time.
+    Block layout: d(2 bytes) + qs(16 bytes, 32 elements packed 2 per byte).
     """
     var half = block.unsafe_bitcast[Scalar[DType.float16]]()
     var d = Float32(half.unsafe_load[width=1](offset=0))
     var qs = block.unsafe_offset(2)
-    for j in range(16):
-        var b = Int(qs.unsafe_load[width=1](offset=j))
-        _store_dequant(dst, base + j, d * (Float32(b & 0xF) - Float32(8)))
-        _store_dequant(dst, base + 16 + j, d * (Float32(b >> 4) - Float32(8)))
+
+    # Load all 16 bytes of qs at once (32 elements packed)
+    var b = qs.unsafe_load[width=16](offset=0)  # SIMD[UInt8, 16]
+
+    comptime if dtype == DType.float32:
+        var ptr_f32 = dst.data().unsafe_bitcast[Scalar[DType.float32]]()
+        # Low nibbles: first 16 elements
+        var lo = (b & SIMD[DType.uint8, 16](0x0F)).cast[DType.float32]()
+        var out_lo = d * (lo - SIMD[DType.float32, 16](8.0))
+        ptr_f32.unsafe_offset(base).unsafe_store[width=16](val=out_lo)
+        # High nibbles: next 16 elements
+        var hi = (b >> SIMD[DType.uint8, 16](4)).cast[DType.float32]()
+        var out_hi = d * (hi - SIMD[DType.float32, 16](8.0))
+        ptr_f32.unsafe_offset(base + 16).unsafe_store[width=16](val=out_hi)
+    else:
+        var ptr_f16 = dst.data().unsafe_bitcast[Scalar[DType.float16]]()
+        var lo = (b & SIMD[DType.uint8, 16](0x0F)).cast[DType.float32]()
+        var out_lo = d * (lo - SIMD[DType.float32, 16](8.0))
+        var out_lo_f16 = out_lo.cast[DType.float16]()
+        ptr_f16.unsafe_offset(base).unsafe_store[width=16](val=out_lo_f16)
+        var hi = (b >> SIMD[DType.uint8, 16](4)).cast[DType.float32]()
+        var out_hi = d * (hi - SIMD[DType.float32, 16](8.0))
+        var out_hi_f16 = out_hi.cast[DType.float16]()
+        ptr_f16.unsafe_offset(base + 16).unsafe_store[width=16](val=out_hi_f16)
 
 
 def _dequantize_q5_k_block[

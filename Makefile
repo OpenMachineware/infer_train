@@ -11,6 +11,8 @@ SRC := src
 TP := python/infer_train/_lib/libinfer_train_tp.dylib
 TP_XLINK := -Xlinker $(TP)
 MWQ := python/infer_train/_lib/libinfer_train_mwq.dylib
+# BLAS framework for Apple Silicon
+BLAS_XLINK := -Xlinker "-framework" -Xlinker "Accelerate"
 
 .PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 test-m8 test-gpu \
         test-gguf-split test-gguf test-rpc test-thread-pool clean tp mwq \
@@ -44,8 +46,8 @@ test: tp
 	$(MOJO) build -I . tests/test_core.mojo $(TP_XLINK) -o tests/test_core && ./tests/test_core
 	$(MOJO) build -I . tests/test_quant.mojo $(TP_XLINK) -o tests/test_quant && ./tests/test_quant
 	$(MOJO) build -I . tests/test_cpuops.mojo $(TP_XLINK) -o tests/test_cpuops && ./tests/test_cpuops
-	$(MOJO) build -I . tests/test_registry.mojo $(TP_XLINK) -o tests/test_registry && ./tests/test_registry
-	$(MOJO) build -I . tests/test_e2e.mojo $(TP_XLINK) -o tests/test_e2e && ./tests/test_e2e
+	$(MOJO) build -I . tests/test_registry.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_registry && ./tests/test_registry
+	$(MOJO) build -I . tests/test_e2e.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_e2e && ./tests/test_e2e
 
 # M3 tests (tests/ builds with -I . so `src.` imports resolve).
 test-m3: tp
@@ -130,9 +132,9 @@ test-m7-mojo: tp
 	./tests/test_tokenizer_m7
 	$(MOJO) build -I . tests/test_dequant_m7.mojo $(TP_XLINK) -o tests/test_dequant_m7
 	./tests/test_dequant_m7
-	$(MOJO) build -I . tests/test_mmdl.mojo $(TP_XLINK) -o tests/test_mmdl
+	$(MOJO) build -I . tests/test_mmdl.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_mmdl
 	./tests/test_mmdl
-	$(MOJO) build -I . tests/test_finetune.mojo $(TP_XLINK) -o tests/test_finetune
+	$(MOJO) build -I . tests/test_finetune.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_finetune
 	./tests/test_finetune
 	$(MOJO) build -I . tests/test_kv_cache_m7.mojo $(TP_XLINK) -o tests/test_kv_cache_m7
 	./tests/test_kv_cache_m7
@@ -205,9 +207,8 @@ bench_transformer_core:
 	$(MOJO) build -I . tools/bench_transformer_core.mojo -o bench_transformer_core
 
 # BLAS vs SIMD matmul benchmark (Accelerate framework).
-# Requires: -framework Accelerate
 bench_blas:
-	$(MOJO) build -I . tools/bench_blas.mojo -Xlinker "-framework" -Xlinker "Accelerate" -o bench_blas
+	$(MOJO) build -I . tools/bench_blas.mojo $(BLAS_XLINK) -o bench_blas
 
 # Dequantization and quantized matmul microbenchmark.
 bench_dequant: tp
