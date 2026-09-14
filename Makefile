@@ -14,7 +14,8 @@ MWQ := python/infer_train/_lib/libinfer_train_mwq.dylib
 
 .PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 test-m8 test-gpu \
         test-gguf-split test-gguf test-rpc test-thread-pool clean tp mwq \
-        server cli rpc-server infer_train version check-mem bench_cpu bench_pool
+        server cli rpc-server infer_train version check-mem bench_cpu bench_pool \
+        bench_transformer_core
 
 # M12: the Q4-resident matmul pool workers as a standalone Mojo shared
 # library.  Mojo 1.0 only honors @export in a build's entry module and
@@ -198,6 +199,11 @@ bench_cpu: tp
 bench_pool: tp
 	$(MOJO) build -I . tools/bench_pool.mojo $(TP_XLINK) -o bench_pool
 
+# Pure compute benchmark for stories15M model (FP32, no quantization).
+# Measures core transformer throughput (bench_transformer_core <stories15M.bin>).
+bench_transformer_core:
+	$(MOJO) build -I . tools/bench_transformer_core.mojo -o bench_transformer_core
+
 # M8: multi-process RPC test - two localhost workers, -sm layer, output
 # must match the single-process run exactly (needs the 1.5B GGUF at the
 # repo root; SKIPs when absent).
@@ -218,7 +224,7 @@ test-thread-pool: tp
 # the .mojo source extension).
 clean:
 	rm -f it-server it-cli it-rpc-server infer_train
-	rm -f tools/check_mem bench_cpu bench_pool
+	rm -f tools/check_mem bench_cpu bench_pool bench_transformer_core
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
 	      python/infer_train/_lib/libinfer_train_mwq.dylib
