@@ -15,6 +15,7 @@ from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
 from std.ffi import external_call
 from std.memory.alloc import unsafe_alloc, unsafe_free
+from ..quantized.quant_types import QuantType
 
 # Apple Accelerate BLAS constants
 comptime CblasRowMajor: Int32 = 101
@@ -179,3 +180,102 @@ def matmul_weight_blas[
         # FP16 not supported by Accelerate BLAS, fall back to SIMD
         unimplemented("matmul_weight_blas: only FP32 supported")
         return tensor_zeros[dtype, 2](StaticTuple[Int, 2](0, 0))
+
+
+# -- Full dequantize + BLAS for quantized weights ----------------------------
+#
+# For small models, dequantizing the entire weight to FP32 and calling BLAS
+# is faster than the block-by-block approach. This function provides that
+# path with an optional size threshold.
+
+
+def matmul_quantized_blas[
+    dtype: DType,
+    quant_type: QuantType,
+](
+    x: Tensor[dtype, 2],
+    b_quant: Tensor[DType.uint8, 2],
+    scale: Tensor[dtype, 1],
+    zero_point: Optional[Tensor[dtype, 1]] = None,
+    max_dequant_kb: Int = 1024 * 1024,  # 1 MB default threshold
+) -> Tensor[dtype, 2]:
+    """Dequantize + BLAS matmul for quantized weights.
+
+    Dequantizes the entire weight matrix to FP32, then calls Accelerate BLAS.
+    This is faster than block-by-block dequantize for small matrices, but
+    uses 4× memory. Falls back to the block kernel for large weights.
+
+    Args:
+        x: Input [M, K]
+        b_quant: Quantized weight [N, K//be * bb] bytes
+        max_dequant_kb: Max FP32 size to dequantize (default 1 MB = 256K elements)
+    """
+    from ..quantized.dequantize import dequantize_into_f32
+    from ..quantized.quant_types import block_elems, block_bytes, ggml_type
+
+    var M = x.shape()[0]
+    var K = x.shape()[1]
+    var N = b_quant.shape()[0]
+
+    var be = block_elems(quant_type)
+    var bb = block_bytes(quant_type)
+    if be == 0 or K % be != 0:
+        from .matmul_cpu import matmul_quantized_cpu
+        return matmul_quantized_cpu[dtype, quant_type, 0](x, b_quant, scale, zero_point)
+
+    # Check if the FP32 weight would fit in the threshold
+    var fp32_size_kb = N * K  # number of FP32 elements
+    if fp32_size_kb > max_dequant_kb:
+        # Too large, fall back to block kernel
+        from .matmul_cpu import matmul_quantized_cpu
+        return matmul_quantized_cpu[dtype, quant_type, 0](x, b_quant, scale, zero_point)
+
+    # Dequantize entire weight to FP32
+    var gtype = ggml_type(quant_type)
+    var w_f32 = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](N, K))
+    var nb_per_row = K // be
+
+    for j in range(N):
+        var row_offset = j * nb_per_row * bb
+        dequantize_into_f32(
+            gtype,
+            b_quant.data().unsafe_offset(row_offset),
+            0,
+            w_f32,
+            K,
+        )
+        # dequantize_into_f32 writes starting at dst[0], we need dst[j*K:]
+        # Copy the values to the correct row
+        if j > 0:
+            for i in range(K):
+                var v = w_f32.data().unsafe_offset(i).unsafe_load()
+                w_f32.data().unsafe_offset(j * K + i).unsafe_store(val=v)
+
+    # Convert x to FP32 if needed
+    var x_f32: Tensor[DType.float32, 2]
+    comptime if dtype == DType.float32:
+        x_f32 = Tensor[DType.float32, 2](
+            x.shape(),
+            x.data().unsafe_bitcast[Scalar[DType.float32]](),
+            x.device(),
+        )
+    else:
+        x_f32 = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](M, K))
+        for i in range(M * K):
+            x_f32.data().unsafe_offset(i).unsafe_store(
+                val=Float32(x.data().unsafe_offset(i).unsafe_load())
+            )
+
+    # BLAS: y = x @ w.T
+    var out_f32 = matmul_weight_blas_f32(x_f32, w_f32)
+
+    # Convert back to dtype if needed
+    comptime if dtype == DType.float32:
+        return out_f32
+    else:
+        var out = tensor_zeros[dtype, 2](StaticTuple[Int, 2](M, N))
+        for i in range(M * N):
+            out.data().unsafe_offset(i).unsafe_store(
+                val=Scalar[dtype](out_f32.data().unsafe_offset(i).unsafe_load())
+            )
+        return out
