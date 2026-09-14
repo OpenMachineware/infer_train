@@ -117,10 +117,9 @@ def quant_proj_dispatch(
     """
     from ..cpu.blas_cpu import matmul_quantized_blas_tiled
 
-    # Use threaded SIMD for Q4_K (faster than tiled BLAS for M=1)
+    # Q4_K: Use FP32 SIMD (SDOT kernel needs more work)
+    # TODO: Debug and optimize vec_dot_q4_k_q8_k
     if w.ggml_type == 12:  # Q4_K (Q4_K_M)
-        # For M=1 decode, SIMD is faster than tiled BLAS due to loop overhead
-        # Future: batched prefill (M > 1) can use BLAS
         return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q4_K_M, 32](
             x, w.data, dummy_scale
         )

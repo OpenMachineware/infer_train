@@ -368,13 +368,13 @@ def vec_dot_q4_k_q8_k(
     """
     # Read Q4_K scales
     var w_half = w_block.unsafe_bitcast[Scalar[DType.float16]]()
-    var d = Float32(w_half.unsafe_load[width=1](offset=0).value())
-    var dmin = Float32(w_half.unsafe_load[width=1](offset=1).value())
+    var d = Float32(w_half.unsafe_load[width=1](offset=0))
+    var dmin = Float32(w_half.unsafe_load[width=1](offset=1))
     var scales = w_block.unsafe_offset(4)
     var qs = w_block.unsafe_offset(16)
 
     # Read Q8_K scale
-    var q8_d = q8_data.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load().value()
+    var q8_d = Float32(q8_data.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load())
     var q8_qs = q8_data.unsafe_offset(4).unsafe_bitcast[Scalar[DType.int8]]()
     var q8_bsums = q8_data.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
 
@@ -382,8 +382,8 @@ def vec_dot_q4_k_q8_k(
     var bias = Float32(0)
     for j in range(8):
         var (_, m) = _get_scale_min_k4(j, scales)
-        var bs0 = Int32(q8_bsums.unsafe_offset(j * 2).unsafe_load().value())
-        var bs1 = Int32(q8_bsums.unsafe_offset(j * 2 + 1).unsafe_load().value())
+        var bs0 = Int32(q8_bsums.unsafe_offset(j * 2).unsafe_load())
+        var bs1 = Int32(q8_bsums.unsafe_offset(j * 2 + 1).unsafe_load())
         bias -= dmin * Float32(m) * Float32(bs0 + bs1)
 
     # Main dot product using SDOT
