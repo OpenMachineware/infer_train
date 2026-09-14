@@ -17,7 +17,7 @@ BLAS_XLINK := -Xlinker "-framework" -Xlinker "Accelerate"
 .PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 test-m8 test-gpu \
         test-gguf-split test-gguf test-rpc test-thread-pool clean tp mwq \
         server cli rpc-server infer_train version check-mem bench_cpu bench_pool \
-        bench_transformer_core bench_blas bench_dequant
+        bench_transformer_core bench_blas bench_dequant bench_simd
 
 # M12: the Q4-resident matmul pool workers as a standalone Mojo shared
 # library.  Mojo 1.0 only honors @export in a build's entry module and
@@ -214,6 +214,10 @@ bench_blas:
 bench_dequant: tp
 	$(MOJO) build -I . tools/bench_dequant.mojo $(TP_XLINK) -o bench_dequant
 
+# SIMD fused dot product benchmark.
+bench_simd: tp
+	$(MOJO) build -I . tools/bench_simd.mojo $(TP_XLINK) -o bench_simd
+
 # M8: multi-process RPC test - two localhost workers, -sm layer, output
 # must match the single-process run exactly (needs the 1.5B GGUF at the
 # repo root; SKIPs when absent).
@@ -234,7 +238,7 @@ test-thread-pool: tp
 # the .mojo source extension).
 clean:
 	rm -f it-server it-cli it-rpc-server infer_train
-	rm -f tools/check_mem bench_cpu bench_pool bench_transformer_core bench_blas bench_dequant
+	rm -f tools/check_mem bench_cpu bench_pool bench_transformer_core bench_blas bench_dequant bench_simd
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
 	      python/infer_train/_lib/libinfer_train_mwq.dylib

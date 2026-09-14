@@ -47,7 +47,7 @@ comptime CTX: Int = 512
 def load_model_qr(
     path: String, ctx_len: Int, quant_resident: Bool
 ) raises -> Model:
-    """load_model with an explicit quant_resident flag (default True)."""
+    """Load model with an explicit quant_resident flag (default True)."""
     var ctx = load_gguf(path)
     var config = load_config(ctx)
     var weights = collect_weights(ctx)
