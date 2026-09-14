@@ -159,28 +159,50 @@ def rms_norm_weight_cpu[
 ) -> Tensor[dtype, 2]:
     """Weighted RMSNorm: out = x / sqrt(mean(x^2) + eps) * weight.
 
-    (The norm the Qwen2 transformer layers actually use; `rms_norm_cpu` is
-    the unweighted M1 kernel.)
+    SIMD-optimized version for the Qwen2 transformer layers.
     """
     var rows = x.shape()[0]
     var cols = x.shape()[1]
     if weight.shape()[0] != cols:
         unimplemented("rms_norm_weight_cpu: weight length mismatch")
     var out = tensor_zeros[dtype, 2](x.shape())
+
+    comptime W = 8 if dtype == DType.float16 else 4
+    var d_main = (cols // W) * W
+
     for i in range(rows):
         var base = i * cols
-        var ss = Float32(0)
-        for j in range(cols):
-            var xv = Float32(x.get(base + j))
-            ss += xv * xv
+        # SIMD sum of squares
+        var acc = SIMD[dtype, W](0)
+        var j = 0
+        while j < d_main:
+            var v = x.data().unsafe_load[width=W](offset=base + j)
+            acc = acc + v * v
+            j += W
+        var ss = Float32(acc.reduce_add())
+        while j < cols:
+            var v = Float32(x.get(base + j))
+            ss += v * v
+            j += 1
+
         var r = sqrt(ss / Float32(cols) + eps)
-        for j in range(cols):
+        var inv = Float32(1) / r
+
+        # SIMD normalize + weight
+        j = 0
+        while j < d_main:
+            var v = x.data().unsafe_load[width=W](offset=base + j)
+            var w = weight.data().unsafe_load[width=W](offset=j)
+            out.data().unsafe_store(base + j, v * SIMD[dtype, W](inv) * w)
+            j += W
+        while j < cols:
             out.set(
                 base + j,
                 Scalar[dtype](
-                    Float32(x.get(base + j)) / r * Float32(weight.get(j))
+                    Float32(x.get(base + j)) * inv * Float32(weight.get(j))
                 ),
             )
+            j += 1
     return out
 
 
