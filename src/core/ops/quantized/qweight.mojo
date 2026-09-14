@@ -110,12 +110,29 @@ def quant_proj_dispatch(
     The erased (registry) interface cannot carry the comptime
     `quant_type`, so each branch fixes it as a compile-time parameter -
     the same pattern as `_dequantize_dispatch` in `dequantize.mojo`.
+
+    M13: for large weight matrices, use tiled BLAS (dequantize in tiles
+    and use Accelerate BLAS for the heavy matmul work). This is faster
+    than block-by-block SIMD for large matrices (7B+ models).
     """
+    from ..cpu.blas_cpu import matmul_quantized_blas_tiled
+
+    # Use tiled BLAS for Q4_K (most common quantization type)
     if w.ggml_type == 12:  # Q4_K (Q4_K_M)
+        # For prefill (M > 1), BLAS is significantly faster
+        # For decode (M = 1), SIMD may be faster due to BLAS overhead
+        if x.shape()[0] > 1:
+            return matmul_quantized_blas_tiled[DType.float16, QuantType.Q4_K_M](
+                x, w.data, dummy_scale
+            )
         return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q4_K_M, 32](
             x, w.data, dummy_scale
         )
     if w.ggml_type == 2:  # Q4_0
+        if x.shape()[0] > 1:
+            return matmul_quantized_blas_tiled[DType.float16, QuantType.Q4_0](
+                x, w.data, dummy_scale
+            )
         return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q4_0, 32](
             x, w.data, dummy_scale
         )
@@ -128,6 +145,10 @@ def quant_proj_dispatch(
             x, w.data, dummy_scale
         )
     if w.ggml_type == 8:  # Q8_0
+        if x.shape()[0] > 1:
+            return matmul_quantized_blas_tiled[DType.float16, QuantType.Q8_0](
+                x, w.data, dummy_scale
+            )
         return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q8_0, 32](
             x, w.data, dummy_scale
         )

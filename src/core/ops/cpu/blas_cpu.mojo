@@ -279,3 +279,106 @@ def matmul_quantized_blas[
                 val=Scalar[dtype](out_f32.data().unsafe_offset(i).unsafe_load())
             )
         return out
+
+
+def matmul_quantized_blas_tiled[
+    dtype: DType,
+    quant_type: QuantType,
+](
+    x: Tensor[dtype, 2],
+    b_quant: Tensor[DType.uint8, 2],
+    scale: Tensor[dtype, 1],
+    zero_point: Optional[Tensor[dtype, 1]] = None,
+    tile_rows: Int = BLAS_TILE_ROWS,
+) -> Tensor[dtype, 2]:
+    """Tiled dequantize + BLAS for large quantized weights.
+
+    Dequantizes weights in tiles of `tile_rows` rows at a time, uses BLAS
+    for each tile, and accumulates the results. This avoids the memory
+    overhead of dequantizing the entire weight matrix while still leveraging
+    BLAS for the heavy matmul work.
+
+    For Qwen2 7B: gate/up_proj is [18944, 3584], tile_rows=256 means
+    ~73 tiles, each dequantizing ~2.3MB of FP32.
+    """
+    from ..quantized.dequantize import dequantize_into_f32
+    from ..quantized.quant_types import block_elems, block_bytes, ggml_type
+
+    var M = x.shape()[0]
+    var K = x.shape()[1]
+    var N = b_quant.shape()[0]
+
+    var be = block_elems(quant_type)
+    var bb = block_bytes(quant_type)
+    if be == 0 or K % be != 0:
+        from .matmul_cpu import matmul_quantized_cpu
+        return matmul_quantized_cpu[dtype, quant_type, 0](x, b_quant, scale, zero_point)
+
+    var out = tensor_zeros[dtype, 2](StaticTuple[Int, 2](M, N))
+
+    # Convert x to FP32 once
+    var x_f32: Tensor[DType.float32, 2]
+    comptime if dtype == DType.float32:
+        x_f32 = Tensor[DType.float32, 2](
+            x.shape(),
+            x.data().unsafe_bitcast[Scalar[DType.float32]](),
+            x.device(),
+        )
+    else:
+        x_f32 = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](M, K))
+        for i in range(M * K):
+            x_f32.data().unsafe_offset(i).unsafe_store(
+                val=Float32(x.data().unsafe_offset(i).unsafe_load())
+            )
+
+    var gtype = ggml_type(quant_type)
+    var nb_per_row = K // be
+
+    # Allocate a single row buffer for dequantization
+    var row_f32 = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](tile_rows, K))
+
+    # Process weight rows in tiles
+    var j0 = 0
+    while j0 < N:
+        var j1 = j0 + tile_rows
+        if j1 > N:
+            j1 = N
+        var tile_n = j1 - j0
+
+        # Dequantize this tile's rows into row_f32
+        for jt in range(tile_n):
+            var j = j0 + jt
+            var row_offset = j * nb_per_row * bb
+            # Create a temporary tensor for one row dequantization
+            var one_row = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](1, K))
+            dequantize_into_f32(
+                gtype,
+                b_quant.data().unsafe_offset(row_offset),
+                0,
+                one_row,
+                K,
+            )
+            # Copy to tile buffer
+            for k in range(K):
+                var val = one_row.data().unsafe_offset(k).unsafe_load()
+                row_f32.data().unsafe_offset(jt * K + k).unsafe_store(val=val)
+
+        # BLAS for this tile: out[:, j0:j1] = x @ row_f32[:tile_n, :].T
+        var tile_weight = Tensor[DType.float32, 2](
+            StaticTuple[Int, 2](tile_n, K),
+            row_f32.data(),
+            row_f32.device(),
+        )
+        var tile_result = matmul_weight_blas_f32(x_f32, tile_weight)
+
+        # Copy result to output
+        for i in range(M):
+            for jt in range(tile_n):
+                var val = tile_result.data().unsafe_offset(i * tile_n + jt).unsafe_load()
+                out.data().unsafe_offset(i * N + j0 + jt).unsafe_store(
+                    val=Scalar[dtype](val)
+                )
+
+        j0 = j1
+
+    return out
