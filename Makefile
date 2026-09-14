@@ -17,7 +17,8 @@ BLAS_XLINK := -Xlinker "-framework" -Xlinker "Accelerate"
 .PHONY: test test-m3 test-m4 test-m5 test-m6 test-m7 test-m8 test-gpu \
         test-gguf-split test-gguf test-rpc test-thread-pool clean tp mwq \
         server cli rpc-server infer_train version check-mem bench_cpu bench_pool \
-        bench_transformer_core bench_blas bench_dequant bench_simd
+        bench_transformer_core bench_blas bench_dequant bench_simd \
+        bench_q8k_vs_fp32 bench_qmatmul_threading
 
 # M12: the Q4-resident matmul pool workers as a standalone Mojo shared
 # library.  Mojo 1.0 only honors @export in a build's entry module and
@@ -218,6 +219,14 @@ bench_dequant: tp
 bench_simd: tp
 	$(MOJO) build -I . tools/bench_simd.mojo $(TP_XLINK) -o bench_simd
 
+# Q8_K + SDOT vs FP32 SIMD comparison benchmark.
+bench_q8k_vs_fp32: tp
+	$(MOJO) build -I . tools/bench_q8k_vs_fp32.mojo $(TP_XLINK) $(TP_XLINK) -o bench_q8k_vs_fp32
+
+# Quantized matmul threading benchmark (pthread pool scaling).
+bench_qmatmul_threading: tp
+	$(MOJO) build -I . tools/bench_qmatmul_threading.mojo $(TP_XLINK) $(TP_XLINK) -o bench_qmatmul_threading
+
 # M8: multi-process RPC test - two localhost workers, -sm layer, output
 # must match the single-process run exactly (needs the 1.5B GGUF at the
 # repo root; SKIPs when absent).
@@ -239,6 +248,7 @@ test-thread-pool: tp
 clean:
 	rm -f it-server it-cli it-rpc-server infer_train
 	rm -f tools/check_mem bench_cpu bench_pool bench_transformer_core bench_blas bench_dequant bench_simd
+	rm -f bench_q8k_vs_fp32 bench_qmatmul_threading
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
 	      python/infer_train/_lib/libinfer_train_mwq.dylib
