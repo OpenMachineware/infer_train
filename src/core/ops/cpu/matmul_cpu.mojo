@@ -28,6 +28,7 @@ from ..quantized.quant_types import (
 from std.utils.static_tuple import StaticTuple
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
+from .blas_cpu import matmul_weight_blas_f32
 from std.memory.alloc import unsafe_alloc
 from std.math import sqrt
 from ..fused.matmul_rms_norm import fused_matmul_rms_norm
@@ -304,6 +305,7 @@ def matmul_weight_cpu_threaded[
     x: Tensor[dtype, 2],
     w: Tensor[dtype, 2],
     nthreads: Int = 0,
+    use_blas: Bool = True,  # BLAS is enabled for FP32
 ) -> Tensor[
     dtype, 2
 ]:
@@ -311,12 +313,39 @@ def matmul_weight_cpu_threaded[
 
     Falls back to the single-threaded kernel below the parallelization
     threshold or when the thread pool is unavailable.
+
+    When use_blas=True and dtype=FP32, uses Accelerate BLAS for
+    significant speedup on Apple Silicon. BLAS is not used for FP16
+    because the conversion overhead outweighs the BLAS benefit.
     """
     var M = x.shape()[0]
     var K = x.shape()[1]
     var N = w.shape()[0]
     if K != w.shape()[1]:
         unimplemented("matmul_weight_threaded: K mismatch")
+
+    # BLAS path for FP32 only (conversion overhead makes FP16+BLAS slower)
+    comptime if dtype == DType.float32:
+        if use_blas:
+            # Bitcast to concrete type
+            var x32 = Tensor[DType.float32, 2](
+                x.shape(),
+                x.data().unsafe_bitcast[Scalar[DType.float32]](),
+                x.device(),
+            )
+            var w32 = Tensor[DType.float32, 2](
+                w.shape(),
+                w.data().unsafe_bitcast[Scalar[DType.float32]](),
+                w.device(),
+            )
+            var out_f32 = matmul_weight_blas_f32(x32, w32)
+            # Bitcast back to dtype
+            return Tensor[dtype, 2](
+                out_f32.shape(),
+                out_f32.data().unsafe_bitcast[Scalar[dtype]](),
+                out_f32.device(),
+            )
+
     # threading pays off only for wide projections: the pool wake-up
     # latency otherwise eats the parallel speedup (M5 measurement)
     if N < 4096 or nthreads == 1:
