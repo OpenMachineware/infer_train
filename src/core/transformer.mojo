@@ -55,6 +55,7 @@ from .ops.cpu.matmul_cpu import (
 )
 from .ops.cpu.add_cpu import add_cpu_dynamic, add_row_cpu
 from .ops.cpu.swiglu_cpu import swiglu_cpu_dynamic
+from .ops.cpu.matmul_q8k_threaded import fused_gate_up_projection
 from .ops.attention.mha import (
     mha_forward_v2,
     mha_forward_batch,
@@ -1583,16 +1584,15 @@ def _ffn_swiglu(
     """Dense SwiGLU FFN through the unified `QWeight` projections (M11):
     Q4-resident weights go through the fused per-block-dequant matmul,
     materialized fp16 weights through the threaded weight-major kernel.
-    
+
     Optimization: fused gate+up projection with shared Q8_K quantization.
     """
     # Check if both gate and up are K-quant types (ggml_type 11-15)
     # If so, use fused projection to avoid redundant Q8_K quantization
     var gate_kquant = lw.gate_w.ggml_type >= 11 and lw.gate_w.ggml_type <= 15
     var up_kquant = lw.up_w.ggml_type >= 11 and lw.up_w.ggml_type <= 15
-    
+
     if gate_kquant and up_kquant and lw.gate_w.quantized and lw.up_w.quantized:
-        from .ops.cpu.matmul_q8k_threaded import fused_gate_up_projection
         var (g, u) = fused_gate_up_projection(
             normed, lw.gate_w.data, lw.up_w.data,
             lw.gate_w.ggml_type, lw.up_w.ggml_type
@@ -1600,7 +1600,7 @@ def _ffn_swiglu(
         var h = swiglu_cpu_dynamic[DType.float16](g, u)
         var d = lw.down_w.proj(h, dummy_scale)
         return add_cpu_dynamic[DType.float16](resid, d)
-    
+
     # Fallback: non-K-quant or mixed types
     var g = lw.gate_w.proj(normed, dummy_scale)
     var u = lw.up_w.proj(normed, dummy_scale)
@@ -1617,15 +1617,14 @@ def _ffn_swiglu_batch(
     n_tokens: Int,
 ) -> Tensor[DType.float16, 2]:
     """Batch SwiGLU FFN for prefill (processes [T, hidden] input).
-    
+
     Optimization: fused gate+up projection with shared Q8_K quantization.
     """
     # Check if both gate and up are K-quant types (ggml_type 11-15)
     var gate_kquant = lw.gate_w.ggml_type >= 11 and lw.gate_w.ggml_type <= 15
     var up_kquant = lw.up_w.ggml_type >= 11 and lw.up_w.ggml_type <= 15
-    
+
     if gate_kquant and up_kquant and lw.gate_w.quantized and lw.up_w.quantized:
-        from .ops.cpu.matmul_q8k_threaded import fused_gate_up_projection
         var (g, u) = fused_gate_up_projection(
             normed, lw.gate_w.data, lw.up_w.data,
             lw.gate_w.ggml_type, lw.up_w.ggml_type
@@ -1633,7 +1632,7 @@ def _ffn_swiglu_batch(
         var h = swiglu_cpu_dynamic[DType.float16](g, u)
         var d = lw.down_w.proj(h, dummy_scale)
         return add_cpu_dynamic[DType.float16](resid, d)
-    
+
     # Fallback: non-K-quant or mixed types
     var g = lw.gate_w.proj(normed, dummy_scale)  # [T, ffn]
     var u = lw.up_w.proj(normed, dummy_scale)
