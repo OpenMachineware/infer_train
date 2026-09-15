@@ -43,13 +43,11 @@ def quantize_row_to_q8_k(
         
         # Find max absolute value in this block
         var amax = Float32(0)
-        var max_val = Float32(0)
         for j in range(QK_K):
             var v = Float32(x.get(row_offset + block_start + j))
             var ax = abs(v)
             if ax > amax:
                 amax = ax
-                max_val = v
         
         if amax == 0:
             block_dst.unsafe_bitcast[Scalar[DType.float32]]().unsafe_store(
@@ -58,8 +56,8 @@ def quantize_row_to_q8_k(
             continue
         
         # Scale to [-127, 127] range
-        var iscale = -127.0 / max_val
-        var d = 1.0 / iscale
+        var iscale = 127.0 / amax
+        var d = amax / 127.0
         
         # Store scale
         block_dst.unsafe_bitcast[Scalar[DType.float32]]().unsafe_store(
@@ -149,7 +147,16 @@ def matmul_quantized_q8k_threaded[
         
         # 3. Run threaded column processing
         var raw = ctx.unsafe_bitcast[UInt8]()
-        parallel_run_tid("it_mwq_worker_q8k", raw, N, threads)
+        var rc = parallel_run_tid("it_mwq_worker_q8k", raw, N, threads)
+        if rc != 0:
+            # Threading failed, fall back to sequential
+            for jj in range(N):
+                var sumf = Float32(0)
+                for b in range(nb):
+                    var w_block = w_quant.data().unsafe_offset(jj * nb * bb + b * bb)
+                    var q8_block = q8k_buf.unsafe_offset(b * 292)
+                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
+                out.data().unsafe_offset(i * N + jj).unsafe_store(val=Scalar[DType.float16](sumf))
     
     q8k_buf.unsafe_free()
     ctx.unsafe_free()

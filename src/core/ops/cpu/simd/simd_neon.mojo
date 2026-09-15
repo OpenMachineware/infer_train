@@ -411,14 +411,18 @@ def vec_dot_q4_k_q8_k(
     var q8_bsums = q8_data.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
 
     # Compute bias for Q4_K's offset representation:
-    # value = d * scale[i] * q - dmin * min[i]
-    # So: sum(value * q8) = d * q8_d * sum(scale * q * q8_int) - dmin * q8_d * sum(min * sum_q8_int)
+    # value = d * scale[i] * (q - 8) - dmin * min[i]
+    # So: sum(value * q8) = d * q8_d * sum(scale * (q-8) * q8_int) - dmin * q8_d * sum(min * sum_q8_int)
+    #                     = d * q8_d * sum(scale * q * q8_int) - d * q8_d * 8 * sum(scale * sum_q8_int) - dmin * q8_d * sum(min * sum_q8_int)
     var bias = Float32(0)
     for j in range(8):
-        var (_, m) = _get_scale_min_k4(j, scales)
+        var (sc, m) = _get_scale_min_k4(j, scales)
         var bs0 = Int32(q8_bsums.unsafe_offset(j * 2).unsafe_load())
         var bs1 = Int32(q8_bsums.unsafe_offset(j * 2 + 1).unsafe_load())
+        # Bias from dmin * min term
         bias -= dmin * q8_d * Float32(m) * Float32(bs0 + bs1)
+        # Bias from -8 offset in (q - 8)
+        bias -= d * q8_d * Float32(sc) * 8.0 * Float32(bs0 + bs1)
 
     # Main dot product using SDOT
     # Q4_K layout: 256 elements in 128 bytes, 32 elements per scale

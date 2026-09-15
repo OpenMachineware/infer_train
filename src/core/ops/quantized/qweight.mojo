@@ -35,6 +35,7 @@ from ..cpu.matmul_cpu import (
     matmul_quantized_cpu_threaded,
 )
 from ..cpu.matmul_q8k import matmul_quantized_q8k
+from ..cpu.matmul_q8k_threaded import matmul_quantized_q8k_threaded
 from .quant_types import QuantType
 from std.utils.static_tuple import StaticTuple
 
@@ -118,14 +119,13 @@ def quant_proj_dispatch(
     """
     from ..cpu.blas_cpu import matmul_quantized_blas_tiled
 
-    # Q4_K: For single token, use fallback (Q8_K has quantization precision issues)
-    # For batch, Q8_K path can be used (quantization overhead is amortized)
+    # Q4_K: Use Q8_K + SDOT path (int8 dot product, faster than FP32 SIMD)
+    # For large weight matrices, use threaded version for parallelism
     if w.ggml_type == 12:  # Q4_K (Q4_K_M)
-        # Single token: fallback is more accurate and fast enough
-        # Batch: could use Q8_K path (but needs more debugging)
-        return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q4_K_M, 32](
-            x, w.data, dummy_scale
-        )
+        if w.n_out >= 256 and x.shape()[0] == 1:
+            # Large matrix, single token: use threaded Q8_K
+            return matmul_quantized_q8k_threaded[QuantType.Q4_K_M](x, w.data, dummy_scale)
+        return matmul_quantized_q8k[QuantType.Q4_K_M](x, w.data, dummy_scale)
     if w.ggml_type == 14:  # Q6_K
         return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q6_K, 32](
             x, w.data, dummy_scale

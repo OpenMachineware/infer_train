@@ -38,22 +38,20 @@ def quantize_to_q8_k(
     """
     # Find max absolute value
     var amax = Float32(0)
-    var max_val = Float32(0)
     for j in range(k):
         var v = Float32(x.get(row * k + j))
         var ax = abs(v)
         if ax > amax:
             amax = ax
-            max_val = v
     
     if amax == 0:
         # Store zero scale
         dst.unsafe_bitcast[Scalar[DType.float32]]().unsafe_store(val=Scalar[DType.float32](0))
         return
     
-    # Scale to [-127, 127] range (use -127 to avoid -128 issues)
-    var iscale = -127.0 / max_val
-    var d = 1.0 / iscale
+    # Scale to [-127, 127] range
+    var iscale = 127.0 / amax
+    var d = amax / 127.0
     
     # Store scale
     dst.unsafe_bitcast[Scalar[DType.float32]]().unsafe_store(val=Scalar[DType.float32](d))
@@ -120,21 +118,19 @@ def matmul_quantized_q8k[
             
             # Find max absolute value in this block
             var amax = Float32(0)
-            var max_val = Float32(0)
             for j in range(QK_K):
                 var v = Float32(x.get(row_offset + block_start + j))
                 var ax = abs(v)
                 if ax > amax:
                     amax = ax
-                    max_val = v
             
             if amax == 0:
                 block_dst.unsafe_bitcast[Scalar[DType.float32]]().unsafe_store(val=Scalar[DType.float32](0))
                 continue
             
             # Scale to [-127, 127] range
-            var iscale = -127.0 / max_val
-            var d = 1.0 / iscale
+            var iscale = 127.0 / amax
+            var d = amax / 127.0
             
             # Store scale
             block_dst.unsafe_bitcast[Scalar[DType.float32]]().unsafe_store(val=Scalar[DType.float32](d))

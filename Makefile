@@ -196,8 +196,8 @@ check-mem: tp
 
 # M12: the CPU benchmark for the README's llama.cpp comparison table
 # (bench_cpu <model.gguf> [q4|fp16] [n_predict] [n_warmup] [ctx]).
-bench_cpu: tp
-	$(MOJO) build -I . tools/bench_cpu.mojo $(TP_XLINK) -o bench_cpu
+bench_cpu: tp mwq
+	$(MOJO) build -I . tools/bench_cpu.mojo $(TP_XLINK) -Xlinker $(MWQ) $(BLAS_XLINK) -o bench_cpu
 
 # M12: the C thread pool's per-submission overhead micro-benchmark
 # (bench_pool [nthreads]; noop worker, no model needed).
