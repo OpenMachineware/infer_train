@@ -120,7 +120,7 @@ def quant_proj_dispatch(
     from ..cpu.blas_cpu import matmul_quantized_blas_tiled
 
     # K-quant formats: Use Q8_K + SDOT path (int8 dot product, faster than FP32 SIMD)
-    # Threading threshold: N >= 4096 (benchmark shows N=1024 is 40% slower with threads)
+    # Threading: Use default thread count for now (will be optimized by matmul function)
     
     # Q4_K (ggml_type 12)
     if w.ggml_type == 12:

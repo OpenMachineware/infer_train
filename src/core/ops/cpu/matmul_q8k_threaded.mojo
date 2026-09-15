@@ -335,3 +335,116 @@ def fused_qkv_projection[
 
     q8k_buf.unsafe_free()
     return (q_out, k_out, v_out)
+
+
+# ============================================================================
+# Fused QKV projection with mixed K-quant types
+# ============================================================================
+
+def _ggml_to_quant_type(ggml_t: Int) -> QuantType:
+    """Convert GGML type to QuantType."""
+    if ggml_t == 12:
+        return QuantType.Q4_K_M
+    elif ggml_t == 13:
+        return QuantType.Q5_K
+    elif ggml_t == 14:
+        return QuantType.Q6_K
+    elif ggml_t == 11:
+        return QuantType.Q2_K
+    elif ggml_t == 15:
+        return QuantType.Q3_K
+    else:
+        return QuantType.Q4_0  # fallback
+
+
+def _vec_dot_dispatch(
+    ggml_t: Int,
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_block: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    """Dispatch to the appropriate vec_dot kernel based on GGML type."""
+    if ggml_t == 12:
+        return vec_dot_q4_k_q8_k(w_block, q8_block)
+    elif ggml_t == 13:
+        return vec_dot_q5_k_q8_k(w_block, q8_block)
+    elif ggml_t == 14:
+        return vec_dot_q6_k_q8_k(w_block, q8_block)
+    elif ggml_t == 11:
+        return vec_dot_q2_k_q8_k(w_block, q8_block)
+    elif ggml_t == 15:
+        return vec_dot_q3_k_q8_k(w_block, q8_block)
+    return 0.0
+
+
+def fused_qkv_projection_mixed(
+    x: Tensor[DType.float16, 2],
+    wq: Tensor[DType.uint8, 2],
+    wk: Tensor[DType.uint8, 2],
+    wv: Tensor[DType.uint8, 2],
+    ggml_q: Int,
+    ggml_k: Int,
+    ggml_v: Int,
+) -> Tuple[Tensor[DType.float16, 2], Tensor[DType.float16, 2], Tensor[DType.float16, 2]]:
+    """Fused Q/K/V projection with mixed K-quant types.
+    
+    Quantizes x to Q8_K once, then computes projections with different
+    vec_dot kernels for Q, K, V based on their ggml_type.
+    
+    Returns: (q_out, k_out, v_out)
+    """
+    var M = x.shape()[0]
+    var K = x.shape()[1]
+    var Nq = wq.shape()[0]
+    var Nk = wk.shape()[0]
+    var Nv = wv.shape()[0]
+    
+    # Quantize x to Q8_K once
+    var nb = K // QK_K
+    var q8k_buf = unsafe_alloc[UInt8](M * nb * 292)
+    
+    for row in range(M):
+        quantize_row_to_q8_k(x, row, K, q8k_buf.unsafe_offset(row * nb * 292))
+
+    # Get block sizes for each weight type
+    var quant_q = _ggml_to_quant_type(ggml_q)
+    var quant_k = _ggml_to_quant_type(ggml_k)
+    var quant_v = _ggml_to_quant_type(ggml_v)
+    var bb_q = block_bytes(quant_q)
+    var bb_k = block_bytes(quant_k)
+    var bb_v = block_bytes(quant_v)
+    
+    # Q projection
+    var q_out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, Nq))
+    for row in range(M):
+        for j in range(Nq):
+            var sumf = Float32(0)
+            for b in range(nb):
+                var w_block = wq.data().unsafe_offset(j * nb * bb_q + b * bb_q)
+                var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
+                sumf += _vec_dot_dispatch(ggml_q, w_block, q8_block)
+            q_out.data().unsafe_offset(row * Nq + j).unsafe_store(val=Scalar[DType.float16](sumf))
+
+    # K projection
+    var k_out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, Nk))
+    for row in range(M):
+        for j in range(Nk):
+            var sumf = Float32(0)
+            for b in range(nb):
+                var w_block = wk.data().unsafe_offset(j * nb * bb_k + b * bb_k)
+                var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
+                sumf += _vec_dot_dispatch(ggml_k, w_block, q8_block)
+            k_out.data().unsafe_offset(row * Nk + j).unsafe_store(val=Scalar[DType.float16](sumf))
+
+    # V projection
+    var v_out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, Nv))
+    for row in range(M):
+        for j in range(Nv):
+            var sumf = Float32(0)
+            for b in range(nb):
+                var w_block = wv.data().unsafe_offset(j * nb * bb_v + b * bb_v)
+                var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
+                sumf += _vec_dot_dispatch(ggml_v, w_block, q8_block)
+            v_out.data().unsafe_offset(row * Nv + j).unsafe_store(val=Scalar[DType.float16](sumf))
+
+    q8k_buf.unsafe_free()
+    return (q_out, k_out, v_out)
