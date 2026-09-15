@@ -704,9 +704,9 @@ def vec_dot_q2_k_q8_k(
     var q2_ptr = qs
     var q8_ptr = q8_qs
 
-    for k in range(2):  # QK_K/128 = 2
+    for _ in range(2):  # QK_K/128 = 2
         var shift = 0
-        for j in range(4):
+        for _ in range(4):
             # First 16 elements
             var sc = Int(scales.unsafe_load[width=1](offset=scale_idx)) & 0xF
             scale_idx += 1

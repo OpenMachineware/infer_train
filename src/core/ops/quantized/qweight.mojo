@@ -120,7 +120,8 @@ def quant_proj_dispatch(
     from ..cpu.blas_cpu import matmul_quantized_blas_tiled
 
     # K-quant formats: Use Q8_K + SDOT path (int8 dot product, faster than FP32 SIMD)
-    # For large weight matrices, use threaded version for parallelism
+    # For large weight matrices and single-token decode, use threaded version for parallelism
+    # For batch prefill (T > 1), use non-threaded version to avoid threading overhead
     
     # Q4_K (ggml_type 12)
     if w.ggml_type == 12:
