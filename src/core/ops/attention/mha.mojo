@@ -894,9 +894,11 @@ def mha_forward_batch(
     are stored into the cache at positions [start_pos, start_pos + T).
     """
     var n_tokens = x.shape()[0]
-    var hidden = n_heads * head_dim
-    if x.shape()[1] != hidden:
-        unimplemented("mha_forward_batch: shape mismatch")
+    var hidden = x.shape()[1]  # Use actual hidden from input, not n_heads * head_dim
+    
+    # Validate: for standard models, hidden == n_heads * head_dim
+    # For Qwen3 and some models, hidden may differ (Q projection expands to n_heads * head_dim)
+    var q_out_dim = n_heads * head_dim  # Expected Q output dimension
 
     # Batch QKV projections (T tokens at once)
     var q_flat = wq.proj(x, dummy_scale)  # [T, n_heads * head_dim]
@@ -937,7 +939,7 @@ def mha_forward_batch(
         var pos = start_pos + t
         # Extract per-position Q/K/V (single token view)
         var q_t = tensor_zeros[DType.float16, 2](
-            StaticTuple[Int, 2](1, hidden)
+            StaticTuple[Int, 2](1, q_out_dim)  # Q output is n_heads * head_dim
         )
         var k_t = tensor_zeros[DType.float16, 2](
             StaticTuple[Int, 2](1, n_kv_heads * head_dim)
@@ -1094,5 +1096,5 @@ def mha_forward_batch(
                         ),
                     )
 
-    var out_flat = _flat_view[DType.float16](out3, hidden)
+    var out_flat = _flat_view[DType.float16](out3, q_out_dim)
     return wo.proj(out_flat, dummy_scale)
