@@ -233,6 +233,18 @@ bench_q8k_sdot_threaded: tp
 bench_qmatmul_threading: tp
 	$(MOJO) build -I . tools/bench_qmatmul_threading.mojo $(TP_XLINK) $(TP_XLINK) -o bench_qmatmul_threading
 
+# Forward breakdown benchmark (per-layer timing analysis).
+bench_forward_breakdown: tp
+	$(MOJO) build -I . tests/bench_forward_breakdown.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/bench_forward_breakdown
+
+# Matmul micro-benchmark (per-weight GFLOPS measurement).
+bench_matmul_micro: tp mwq
+	$(MOJO) build -I . tests/bench_matmul_micro.mojo $(TP_XLINK) -Xlinker $(MWQ) $(BLAS_XLINK) -o tests/bench_matmul_micro
+
+# Qwen3-0.6B end-to-end benchmark (prefill + decode t/s).
+bench_qwen3: tp mwq
+	$(MOJO) build -I . tests/bench_qwen3.mojo $(TP_XLINK) -Xlinker $(MWQ) $(BLAS_XLINK) -o tests/bench_qwen3
+
 # M8: multi-process RPC test - two localhost workers, -sm layer, output
 # must match the single-process run exactly (needs the 1.5B GGUF at the
 # repo root; SKIPs when absent).

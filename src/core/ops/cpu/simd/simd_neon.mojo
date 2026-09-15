@@ -481,82 +481,89 @@ def vec_dot_q5_k_q8_k(
     # Q8_K activation: scale at offset 0, int8 at offset 4, bsums at offset 260
     q8_data: Pointer[UInt8, MutUntrackedOrigin],
 ) -> Float32:
-    """Q5_K × Q8_K dot product following llama.cpp exactly.
+    """Q5_K × Q8_K dot product using NEON SIMD - follows llama.cpp ARM implementation.
 
     Q5_K block layout (176 bytes):
     - d: fp16 scale at offset 0
     - dmin: fp16 min scale at offset 2
     - scales: 12 bytes at offset 4
-    - qh: 32 bytes at offset 16 (high bits, 1 bit per element)
+    - qh: 32 bytes at offset 16 (high bits, 1 bit per element, packed)
     - qs: 128 bytes at offset 48 (low 4 bits, 256 elements packed)
 
     Q5_K value: 5-bit = low4 + (high_bit ? 16 : 0), range 0-31
-    Bias: only dmin * min term (NO offset bias like Q4_K)
     """
     # Read Q5_K scales
     var w_half = w_block.unsafe_bitcast[Scalar[DType.float16]]()
     var d = Float32(w_half.unsafe_load[width=1](offset=0))
     var dmin = Float32(w_half.unsafe_load[width=1](offset=1))
-    var scales = w_block.unsafe_offset(4)
+    var scales_ptr = w_block.unsafe_offset(4)
     var qh = w_block.unsafe_offset(16)
     var qs = w_block.unsafe_offset(48)
 
-    # Read Q8_K scale
+    # Read Q8_K scale and data
     var q8_d = Float32(q8_data.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load())
     var q8_qs = q8_data.unsafe_offset(4).unsafe_bitcast[Scalar[DType.int8]]()
     var q8_bsums = q8_data.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
 
-    # Compute bias: only dmin * min term (NO offset bias)
+    # Compute bias from dmin * min term
     var bias = Float32(0)
     for j in range(8):
-        var (sc, m) = _get_scale_min_k4(j, scales)
+        var (_, m) = _get_scale_min_k4(j, scales_ptr)
         var bs0 = Int32(q8_bsums.unsafe_offset(j * 2).unsafe_load())
         var bs1 = Int32(q8_bsums.unsafe_offset(j * 2 + 1).unsafe_load())
         bias -= dmin * q8_d * Float32(m) * Float32(bs0 + bs1)
 
-    # Main dot product - follow llama.cpp structure exactly
-    # Process 256 elements: 4 groups of 64 elements
-    # Each group: low nibbles (32) + high nibbles (32)
-    # qh provides high bit, with mask m shifting for each 32-element batch
+    # Load qh bits once (32 bytes = 256 bits, one bit per element)
+    var qhbits_0 = qh.unsafe_load[width=16](offset=0)
+    var qhbits_1 = qh.unsafe_load[width=16](offset=16)
+    
+    # Process using SIMD - 4 groups (j=0..3), each with 64 elements
     var sumi = Int32(0)
+    
+    # Masks for extracting bits
     var m4b = SIMD[DType.uint8, 16](0x0F)
-
-    # Following llama.cpp: j=0..3, each processes 64 elements
-    # m starts at 1 and shifts left after each 32-element batch
-    var q4_ptr = qs  # qs offset in the block
+    var mone = SIMD[DType.uint8, 16](1)
+    var mtwo = SIMD[DType.uint8, 16](2)
+    
+    var q5_ptr = qs
     var q8_ptr = q8_qs
-    var m = UInt8(1)
-
+    
     for j in range(4):
-        # Low nibbles: 32 elements
-        for l in range(32):
-            var low4 = Int(q4_ptr.unsafe_load[width=1](offset=l)) & 0xF
-            var hm_byte = Int(qh.unsafe_load[width=1](offset=l))
-            if (hm_byte & Int(m)) != 0:
-                low4 += 16
-            var q8_val = Int32(q8_ptr.unsafe_offset(l).unsafe_load())
-            # Scale is determined by element index
-            var elem_idx = j * 64 + l
-            var (sc, _) = _get_scale_min_k4(elem_idx // 32, scales)
-            sumi += Int32(low4) * q8_val * Int32(sc)
-
-        m = m << 1
-
-        # High nibbles: 32 elements
-        for l in range(32):
-            var high4 = Int(q4_ptr.unsafe_load[width=1](offset=l)) >> 4
-            var hm_byte = Int(qh.unsafe_load[width=1](offset=l))
-            if (hm_byte & Int(m)) != 0:
-                high4 += 16
-            var q8_val = Int32(q8_ptr.unsafe_offset(32 + l).unsafe_load())
-            var elem_idx = j * 64 + 32 + l
-            var (sc, _) = _get_scale_min_k4(elem_idx // 32, scales)
-            sumi += Int32(high4) * q8_val * Int32(sc)
-
-        m = m << 1
-        q4_ptr = q4_ptr.unsafe_offset(32)
+        var q5bits_0 = q5_ptr.unsafe_load[width=16](offset=0)
+        var q5bits_1 = q5_ptr.unsafe_load[width=16](offset=16)
+        
+        var q8bytes_0 = q8_ptr.unsafe_load[width=16](offset=0)
+        var q8bytes_1 = q8_ptr.unsafe_load[width=16](offset=16)
+        var q8bytes_2 = q8_ptr.unsafe_load[width=16](offset=32)
+        var q8bytes_3 = q8_ptr.unsafe_load[width=16](offset=48)
+        
+        var q5h_0 = (qhbits_0 & mone) << SIMD[DType.uint8, 16](4)
+        var q5h_1 = (qhbits_1 & mone) << SIMD[DType.uint8, 16](4)
+        var q5h_2 = (qhbits_0 & mtwo) << SIMD[DType.uint8, 16](3)
+        var q5h_3 = (qhbits_1 & mtwo) << SIMD[DType.uint8, 16](3)
+        
+        var q5bytes_0 = ((q5bits_0 & m4b) | q5h_0).cast[DType.int8]()
+        var q5bytes_1 = ((q5bits_1 & m4b) | q5h_1).cast[DType.int8]()
+        var q5bytes_2 = ((q5bits_0 >> SIMD[DType.uint8, 16](4)) | q5h_2).cast[DType.int8]()
+        var q5bytes_3 = ((q5bits_1 >> SIMD[DType.uint8, 16](4)) | q5h_3).cast[DType.int8]()
+        
+        var sc_0 = Int32(_get_scale_min_k4(j * 2, scales_ptr)[0])
+        var sc_1 = Int32(_get_scale_min_k4(j * 2 + 1, scales_ptr)[0])
+        
+        var dot_0 = neon_sdot(SIMD[DType.int32, 4](0), q5bytes_0, q8bytes_0)
+        var dot_1 = neon_sdot(SIMD[DType.int32, 4](0), q5bytes_1, q8bytes_1)
+        sumi += sc_0 * (dot_0.reduce_add() + dot_1.reduce_add())
+        
+        var dot_2 = neon_sdot(SIMD[DType.int32, 4](0), q5bytes_2, q8bytes_2)
+        var dot_3 = neon_sdot(SIMD[DType.int32, 4](0), q5bytes_3, q8bytes_3)
+        sumi += sc_1 * (dot_2.reduce_add() + dot_3.reduce_add())
+        
+        qhbits_0 = qhbits_0 >> SIMD[DType.uint8, 16](2)
+        qhbits_1 = qhbits_1 >> SIMD[DType.uint8, 16](2)
+        
+        q5_ptr = q5_ptr.unsafe_offset(32)
         q8_ptr = q8_ptr.unsafe_offset(64)
-
+    
     return d * q8_d * Float32(sumi) + bias
 
 
@@ -570,15 +577,15 @@ def vec_dot_q6_k_q8_k(
     # Q8_K activation: scale at offset 0, int8 at offset 4, bsums at offset 260
     q8_data: Pointer[UInt8, MutUntrackedOrigin],
 ) -> Float32:
-    """Q6_K × Q8_K dot product following llama.cpp exactly.
+    """Q6_K × Q8_K dot product using NEON SIMD - optimized version.
 
     Q6_K block layout (210 bytes):
     - ql: 128 bytes at offset 0 (lower 4 bits, 2 per byte)
     - qh: 64 bytes at offset 128 (upper 2 bits, 4 per byte)
-    - scales: 16 bytes at offset 192 (int8 scales)
+    - scales: 16 bytes at offset 192 (int8 scales, 16 total)
     - d: fp16 scale at offset 208
 
-    Q6_K value: 6-bit = (low4 | (high2 << 4)) - 32
+    Q6_K value: 6-bit = (low4 | (high2 << 4)) - 32, range -32 to 31
     NO dmin term (no bias from min)
     """
     var ql = w_block.unsafe_offset(0)
@@ -591,47 +598,63 @@ def vec_dot_q6_k_q8_k(
 
     var sumi = Int32(0)
 
-    # Follow llama.cpp structure: 2 groups of 128 elements
-    var ql_ptr = ql
-    var qh_ptr = qh
-    var q8_ptr = q8_qs
-
+    # Masks for extracting bits
+    var m4b = SIMD[DType.uint8, 16](0x0F)
+    var m2b = SIMD[DType.uint8, 16](3)
+    
+    # Process 2 groups of 128 elements each
     for outer in range(2):
-        # Process 128 elements
-        # Each l iteration produces 4 elements
-        for l in range(32):
-            var ql_val = Int(ql_ptr.unsafe_load[width=1](offset=l))
-            var ql_val_hi = Int(ql_ptr.unsafe_load[width=1](offset=l + 32))
-            var qh_val = Int(qh_ptr.unsafe_load[width=1](offset=l))
-
-            # 4 elements from this iteration
-            # a[l+0]: ql[l] low nibble | (qh[l] bits 0-1) << 4
-            var q6_0 = ((ql_val & 0xF) | ((qh_val & 3) << 4)) - 32
-            var sc_0 = Int32(scales_ptr.unsafe_load[width=1](offset=outer * 64 + l * 2 + 0))
-            var q8_0 = Int32(q8_ptr.unsafe_offset(l + 0).unsafe_load())
-            sumi += Int32(q6_0) * q8_0 * sc_0
-
-            # a[l+32]: ql[l+32] low nibble | (qh[l] bits 2-3) << 4
-            var q6_1 = ((ql_val_hi & 0xF) | (((qh_val >> 2) & 3) << 4)) - 32
-            var sc_1 = Int32(scales_ptr.unsafe_load[width=1](offset=outer * 64 + l * 2 + 32))
-            var q8_1 = Int32(q8_ptr.unsafe_offset(l + 32).unsafe_load())
-            sumi += Int32(q6_1) * q8_1 * sc_1
-
-            # a[l+64]: ql[l] high nibble | (qh[l] bits 4-5) << 4
-            var q6_2 = ((ql_val >> 4) | (((qh_val >> 4) & 3) << 4)) - 32
-            var sc_2 = Int32(scales_ptr.unsafe_load[width=1](offset=outer * 64 + l * 2 + 64))
-            var q8_2 = Int32(q8_ptr.unsafe_offset(l + 64).unsafe_load())
-            sumi += Int32(q6_2) * q8_2 * sc_2
-
-            # a[l+96]: ql[l+32] high nibble | (qh[l] bits 6-7) << 4
-            var q6_3 = ((ql_val_hi >> 4) | (((qh_val >> 6) & 3) << 4)) - 32
-            var sc_3 = Int32(scales_ptr.unsafe_load[width=1](offset=outer * 64 + l * 2 + 96))
-            var q8_3 = Int32(q8_ptr.unsafe_offset(l + 96).unsafe_load())
-            sumi += Int32(q6_3) * q8_3 * sc_3
-
-        ql_ptr = ql_ptr.unsafe_offset(64)
-        qh_ptr = qh_ptr.unsafe_offset(32)
-        q8_ptr = q8_ptr.unsafe_offset(128)
+        var ql_ptr = ql.unsafe_offset(outer * 64)
+        var qh_ptr = qh.unsafe_offset(outer * 32)
+        var q8_ptr = q8_qs.unsafe_offset(outer * 128)
+        
+        # Process 32 bytes of ql/qh at a time
+        for l in range(0, 32, 16):
+            # Load 16 bytes of ql (low nibbles) and ql+32 (another 16 values)
+            var ql_lo = ql_ptr.unsafe_load[width=16](offset=l)
+            var ql_hi = ql_ptr.unsafe_load[width=16](offset=l + 32)
+            
+            # Load 16 bytes of qh
+            var qh_val = qh_ptr.unsafe_load[width=16](offset=l)
+            
+            # Extract the 2-bit pairs from qh
+            # Bits 0-1: elements l+0 to l+15
+            # Bits 2-3: elements l+32 to l+47
+            # Bits 4-5: elements l+64 to l+79
+            # Bits 6-7: elements l+96 to l+111
+            var qh_0 = (qh_val & m2b) << SIMD[DType.uint8, 16](4)
+            var qh_1 = ((qh_val >> SIMD[DType.uint8, 16](2)) & m2b) << SIMD[DType.uint8, 16](4)
+            var qh_2 = ((qh_val >> SIMD[DType.uint8, 16](4)) & m2b) << SIMD[DType.uint8, 16](4)
+            var qh_3 = ((qh_val >> SIMD[DType.uint8, 16](6)) & m2b) << SIMD[DType.uint8, 16](4)
+            
+            # Combine to form 6-bit values and subtract 32 (center around 0)
+            var q6_0 = ((ql_lo & m4b) | qh_0).cast[DType.int8]() - SIMD[DType.int8, 16](32)
+            var q6_1 = ((ql_hi & m4b) | qh_1).cast[DType.int8]() - SIMD[DType.int8, 16](32)
+            var q6_2 = ((ql_lo >> SIMD[DType.uint8, 16](4)) | qh_2).cast[DType.int8]() - SIMD[DType.int8, 16](32)
+            var q6_3 = ((ql_hi >> SIMD[DType.uint8, 16](4)) | qh_3).cast[DType.int8]() - SIMD[DType.int8, 16](32)
+            
+            # Load Q8 values
+            var q8_0 = q8_ptr.unsafe_load[width=16](offset=l + 0)
+            var q8_1 = q8_ptr.unsafe_load[width=16](offset=l + 32)
+            var q8_2 = q8_ptr.unsafe_load[width=16](offset=l + 64)
+            var q8_3 = q8_ptr.unsafe_load[width=16](offset=l + 96)
+            
+            # Compute dot products
+            # Each scale applies to 16 elements
+            var sc_0 = Int32(scales_ptr.unsafe_load[width=1](offset=outer * 8 + l // 2))
+            var sc_1 = Int32(scales_ptr.unsafe_load[width=1](offset=outer * 8 + l // 2 + 1))
+            var sc_2 = Int32(scales_ptr.unsafe_load[width=1](offset=outer * 8 + l // 2 + 2))
+            var sc_3 = Int32(scales_ptr.unsafe_load[width=1](offset=outer * 8 + l // 2 + 3))
+            
+            var dot_0 = neon_sdot(SIMD[DType.int32, 4](0), q6_0, q8_0)
+            var dot_1 = neon_sdot(SIMD[DType.int32, 4](0), q6_1, q8_1)
+            var dot_2 = neon_sdot(SIMD[DType.int32, 4](0), q6_2, q8_2)
+            var dot_3 = neon_sdot(SIMD[DType.int32, 4](0), q6_3, q8_3)
+            
+            sumi += sc_0 * dot_0.reduce_add()
+            sumi += sc_1 * dot_1.reduce_add()
+            sumi += sc_2 * dot_2.reduce_add()
+            sumi += sc_3 * dot_3.reduce_add()
 
     return d * q8_d * Float32(sumi)
 
