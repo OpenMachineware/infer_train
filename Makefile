@@ -245,6 +245,18 @@ bench_matmul_micro: tp mwq
 bench_qwen3: tp mwq
 	$(MOJO) build -I . tests/bench_qwen3.mojo $(TP_XLINK) -Xlinker $(MWQ) $(BLAS_XLINK) -o tests/bench_qwen3
 
+# Q4_K matmul micro-benchmark (single kernel GFLOPS).
+bench_q4k_matmul: tp
+	$(MOJO) build -I . tests/bench_q4k_matmul.mojo $(TP_XLINK) -o tests/bench_q4k_matmul
+
+# Hunyuan model end-to-end benchmark.
+bench_hunyuan: tp mwq
+	$(MOJO) build -I . tests/bench_hunyuan.mojo $(TP_XLINK) -Xlinker $(MWQ) $(BLAS_XLINK) -o tests/bench_hunyuan
+
+# Decode performance breakdown benchmark.
+bench_decode_breakdown: tp mwq
+	$(MOJO) build -I . tests/bench_decode_breakdown.mojo $(TP_XLINK) -Xlinker $(MWQ) $(BLAS_XLINK) -o tests/bench_decode_breakdown
+
 # M8: multi-process RPC test - two localhost workers, -sm layer, output
 # must match the single-process run exactly (needs the 1.5B GGUF at the
 # repo root; SKIPs when absent).
@@ -265,8 +277,10 @@ test-thread-pool: tp
 # the .mojo source extension).
 clean:
 	rm -f it-server it-cli it-rpc-server infer_train
-	rm -f tools/check_mem bench_cpu bench_pool bench_transformer_core bench_blas bench_dequant bench_simd
+	rm -f tools/check_mem tools/bench_pool bench_cpu bench_transformer_core bench_blas bench_dequant bench_simd
 	rm -f bench_q8k_vs_fp32 bench_q8k_sdot_threaded bench_qmatmul_threading
+	rm -f tests/bench_qwen3
+	rm -f tests/bench_q4k_matmul tests/bench_hunyuan tests/bench_decode_breakdown
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
 	      python/infer_train/_lib/libinfer_train_mwq.dylib
