@@ -974,7 +974,8 @@ def _matmul_quantized_row_kernel[
     For Q4_K_M and Q8_0, uses the SIMD-optimized fused dot product kernels
     from simd_base.mojo (8-9x faster than dequantize-then-dot).
     """
-    comptime if quant_type == QuantType.Q4_K_M:
+    # TODO: Q4_K SIMD kernel has a subtle bug - use fallback for now
+    comptime if False:  # quant_type == QuantType.Q4_K_M:
         from .simd import vec_dot_q4_k
         for j in range(N):
             var result = vec_dot_q4_k[dtype](x, b.unsafe_offset(j * nb * 144), nb)
@@ -1155,8 +1156,8 @@ def _mwq_worker_body[
     )
     var row = bp.unsafe_offset(j * nb * bb)
 
-    # SIMD fused dot product for supported formats
-    comptime if quant_type == QuantType.Q4_K_M:
+    # TODO: Q4_K SIMD kernel has a subtle bug - use fallback for now
+    comptime if False:  # quant_type == QuantType.Q4_K_M:
         from .simd import vec_dot_q4_k
         for i in range(M):
             var result = vec_dot_q4_k[dtype](xp.unsafe_offset(i * K), row, nb)

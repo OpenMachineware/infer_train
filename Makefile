@@ -56,11 +56,11 @@ test-m3: tp
 	./tests/test_json
 	$(MOJO) build -I . tests/test_tokenizer.mojo $(TP_XLINK) -o tests/test_tokenizer
 	./tests/test_tokenizer
-	$(MOJO) build -I . tests/test_ops.mojo $(TP_XLINK) -o tests/test_ops
+	$(MOJO) build -I . tests/test_ops.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_ops
 	./tests/test_ops
 	$(MOJO) build -I . tests/test_sampler.mojo $(TP_XLINK) -o tests/test_sampler
 	./tests/test_sampler
-	$(MOJO) build -I . tests/test_forward.mojo $(TP_XLINK) -o tests/test_forward
+	$(MOJO) build -I . tests/test_forward.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_forward
 	./tests/test_forward
 	$(MAKE) test-gguf-split
 	$(MAKE) test-gguf
@@ -84,7 +84,7 @@ test-gguf-split: tp
 # full page touch) and the quantized-vs-dequantized forward match.  Needs
 # the model files next to the repo root; reports SKIP if absent.
 test-gguf: tp
-	$(MOJO) build -I . tests/test_gguf.mojo $(TP_XLINK) -o tests/test_gguf
+	$(MOJO) build -I . tests/test_gguf.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_gguf
 	./tests/test_gguf
 
 # M5: the optimizer/CFG/JIT suites (Mojo executables).
