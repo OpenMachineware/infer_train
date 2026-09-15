@@ -18,7 +18,7 @@ from std.origin import MutUntrackedOrigin
 from std.memory.alloc import unsafe_alloc
 from std.math import abs
 from ..quantized.quant_types import QuantType, block_elems, block_bytes
-from .simd.simd_neon import vec_dot_q4_k_q8_k
+from .simd.simd_neon import vec_dot_q4_k_q8_k, vec_dot_q5_k_q8_k, vec_dot_q6_k_q8_k, vec_dot_q2_k_q8_k, vec_dot_q3_k_q8_k
 
 comptime QK_K = 256
 
@@ -160,7 +160,19 @@ def matmul_quantized_q8k[
             for b in range(nb):
                 var w_block = w_quant.data().unsafe_offset(j * nb * bb + b * bb)
                 var q8_block = q8k_buf.unsafe_offset(b * 292)
-                sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
+                # Dispatch based on quant_type
+                if quant_type == QuantType.Q4_K_M:
+                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
+                elif quant_type == QuantType.Q5_K:
+                    sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
+                elif quant_type == QuantType.Q6_K:
+                    sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
+                elif quant_type == QuantType.Q2_K:
+                    sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
+                elif quant_type == QuantType.Q3_K:
+                    sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
+                else:
+                    unimplemented("Unsupported quant type for Q8_K matmul")
             out.data().unsafe_offset(i * N + j).unsafe_store(val=Scalar[DType.float16](sumf))
     
     q8k_buf.unsafe_free()

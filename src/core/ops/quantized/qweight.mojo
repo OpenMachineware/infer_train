@@ -119,31 +119,46 @@ def quant_proj_dispatch(
     """
     from ..cpu.blas_cpu import matmul_quantized_blas_tiled
 
-    # Q4_K: Use Q8_K + SDOT path (int8 dot product, faster than FP32 SIMD)
+    # K-quant formats: Use Q8_K + SDOT path (int8 dot product, faster than FP32 SIMD)
     # For large weight matrices, use threaded version for parallelism
-    if w.ggml_type == 12:  # Q4_K (Q4_K_M)
+    
+    # Q4_K (ggml_type 12)
+    if w.ggml_type == 12:
         if w.n_out >= 256 and x.shape()[0] == 1:
-            # Large matrix, single token: use threaded Q8_K
             return matmul_quantized_q8k_threaded[QuantType.Q4_K_M](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q4_K_M](x, w.data, dummy_scale)
-    if w.ggml_type == 14:  # Q6_K
-        return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q6_K, 32](
-            x, w.data, dummy_scale
-        )
+
+    # Q5_K (ggml_type 13)
+    if w.ggml_type == 13:
+        if w.n_out >= 256 and x.shape()[0] == 1:
+            return matmul_quantized_q8k_threaded[QuantType.Q5_K](x, w.data, dummy_scale)
+        return matmul_quantized_q8k[QuantType.Q5_K](x, w.data, dummy_scale)
+    
+    # Q6_K (ggml_type 14)
+    if w.ggml_type == 14:
+        if w.n_out >= 256 and x.shape()[0] == 1:
+            return matmul_quantized_q8k_threaded[QuantType.Q6_K](x, w.data, dummy_scale)
+        return matmul_quantized_q8k[QuantType.Q6_K](x, w.data, dummy_scale)
+    
+    # Q2_K (ggml_type 11)
+    if w.ggml_type == 11:
+        if w.n_out >= 256 and x.shape()[0] == 1:
+            return matmul_quantized_q8k_threaded[QuantType.Q2_K](x, w.data, dummy_scale)
+        return matmul_quantized_q8k[QuantType.Q2_K](x, w.data, dummy_scale)
+    
+    # Q3_K (ggml_type 15)
+    if w.ggml_type == 15:
+        if w.n_out >= 256 and x.shape()[0] == 1:
+            return matmul_quantized_q8k_threaded[QuantType.Q3_K](x, w.data, dummy_scale)
+        return matmul_quantized_q8k[QuantType.Q3_K](x, w.data, dummy_scale)
+    
+    # Non-K-quant formats: Use standard dequantize + matmul path
     if w.ggml_type == 2:  # Q4_0
         if x.shape()[0] > 1:
             return matmul_quantized_blas_tiled[DType.float16, QuantType.Q4_0](
                 x, w.data, dummy_scale
             )
         return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q4_0, 32](
-            x, w.data, dummy_scale
-        )
-    if w.ggml_type == 13:  # Q5_K
-        return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q5_K, 32](
-            x, w.data, dummy_scale
-        )
-    if w.ggml_type == 14:  # Q6_K
-        return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q6_K, 32](
             x, w.data, dummy_scale
         )
     if w.ggml_type == 8:  # Q8_0

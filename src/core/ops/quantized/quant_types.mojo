@@ -34,9 +34,10 @@ struct QuantType(Copyable, Equatable, ImplicitlyCopyable, Movable):
     comptime Q8_0 = QuantType(Int8(1))  # 32-element blocks, ggml 8
     comptime Q6_K = QuantType(Int8(2))  # Q6_K super-block, ggml 14
     comptime Q5_K = QuantType(Int8(3))  # Q5_K super-block, ggml 13
-    comptime Q2_K = QuantType(Int8(4))  # Q2_K super-block, ggml 11 (reserved)
+    comptime Q2_K = QuantType(Int8(4))  # Q2_K super-block, ggml 11
     comptime IQ4_XS = QuantType(Int8(5))  # IQ4_XS super-block, ggml 23
     comptime Q4_0 = QuantType(Int8(6))  # 32-element blocks, ggml 2
+    comptime Q3_K = QuantType(Int8(7))  # Q3_K super-block, ggml 15
 
     def __eq__(self, other: Self) -> Bool:
         return self._tag == other._tag
@@ -61,6 +62,8 @@ def ggml_type(quant_type: QuantType) -> Int:
         return 23
     if quant_type == QuantType.Q4_0:
         return 2
+    if quant_type == QuantType.Q3_K:
+        return 15
     return -1
 
 
@@ -85,6 +88,8 @@ def num_bits(quant_type: QuantType) -> Int:
         return 4
     if quant_type == QuantType.Q4_0:
         return 4
+    if quant_type == QuantType.Q3_K:
+        return 3
     return 0
 
 
@@ -102,6 +107,7 @@ def group_size(quant_type: QuantType) -> Int:
         or quant_type == QuantType.Q2_K
         or quant_type == QuantType.IQ4_XS
         or quant_type == QuantType.Q4_0
+        or quant_type == QuantType.Q3_K
     ):
         return 32
     return 0
@@ -111,7 +117,7 @@ def block_bytes(quant_type: QuantType) -> Int:
     """Bytes per quantized block (super-block) for `quant_type` (comptime).
 
     Block sizes from llama.cpp's `ggml-quants.c`: Q4_K 144, Q5_K 176,
-    Q6_K 210, Q8_0 34, Q2_K 56, IQ4_XS 136.
+    Q6_K 210, Q8_0 34, Q2_K 84, Q3_K 110, IQ4_XS 136.
     """
     if quant_type == QuantType.Q4_K_M:
         return 144
@@ -122,11 +128,13 @@ def block_bytes(quant_type: QuantType) -> Int:
     if quant_type == QuantType.Q5_K:
         return 176
     if quant_type == QuantType.Q2_K:
-        return 56
+        return 84
     if quant_type == QuantType.IQ4_XS:
         return 136
     if quant_type == QuantType.Q4_0:
         return 18
+    if quant_type == QuantType.Q3_K:
+        return 110
     return 0
 
 

@@ -18,7 +18,7 @@ from std.origin import MutUntrackedOrigin
 from std.memory.alloc import unsafe_alloc
 from std.math import abs
 from ..quantized.quant_types import QuantType, block_elems, block_bytes
-from .simd.simd_neon import vec_dot_q4_k_q8_k
+from .simd.simd_neon import vec_dot_q4_k_q8_k, vec_dot_q5_k_q8_k, vec_dot_q6_k_q8_k, vec_dot_q2_k_q8_k, vec_dot_q3_k_q8_k
 from .matmul_q8k import matmul_quantized_q8k
 
 comptime QK_K = 256
@@ -123,9 +123,9 @@ def matmul_quantized_q8k_threaded[
     var nb = K // QK_K
     var out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, N))
     
-    # Context block for the worker: [q8k_buf, w_quant, out, row_idx, K, N, nb, bb]
+    # Context block for the worker: [q8k_buf, w_quant, out, row_idx, K, N, nb, bb, quant_tag]
     # We process one activation row at a time to minimize Q8_K buffer size
-    var ctx = unsafe_alloc[Int64](8)
+    var ctx = unsafe_alloc[Int64](9)
     
     # Allocate Q8_K buffer for one row
     var q8k_buf = unsafe_alloc[UInt8](nb * 292)
@@ -144,6 +144,7 @@ def matmul_quantized_q8k_threaded[
         ctx.unsafe_offset(5).unsafe_store(val=Int64(N))
         ctx.unsafe_offset(6).unsafe_store(val=Int64(nb))
         ctx.unsafe_offset(7).unsafe_store(val=Int64(bb))
+        ctx.unsafe_offset(8).unsafe_store(val=Int64(Int(quant_type._tag)))  # quant_type tag
         
         # 3. Run threaded column processing
         var raw = ctx.unsafe_bitcast[UInt8]()
@@ -155,7 +156,19 @@ def matmul_quantized_q8k_threaded[
                 for b in range(nb):
                     var w_block = w_quant.data().unsafe_offset(jj * nb * bb + b * bb)
                     var q8_block = q8k_buf.unsafe_offset(b * 292)
-                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
+                    # Dispatch based on quant_type
+                    if quant_type == QuantType.Q4_K_M:
+                        sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
+                    elif quant_type == QuantType.Q5_K:
+                        sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
+                    elif quant_type == QuantType.Q6_K:
+                        sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
+                    elif quant_type == QuantType.Q2_K:
+                        sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
+                    elif quant_type == QuantType.Q3_K:
+                        sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
+                    else:
+                        unimplemented("Unsupported quant type for threaded Q8_K matmul")
                 out.data().unsafe_offset(i * N + jj).unsafe_store(val=Scalar[DType.float16](sumf))
     
     q8k_buf.unsafe_free()
@@ -171,7 +184,7 @@ def _q8k_worker_body(
 ):
     """Worker: computes output columns for Q8_K matmul.
     
-    Context: [q8k_buf, w_quant, out, row_idx, K, N, nb, bb]
+    Context: [q8k_buf, w_quant, out, row_idx, K, N, nb, bb, quant_tag]
     Task idx is the output column j.
     """
     var hdr = ctx.unsafe_bitcast[Int64]()
@@ -185,6 +198,7 @@ def _q8k_worker_body(
     var N = Int(hdr.unsafe_load(offset=5))
     var nb = Int(hdr.unsafe_load(offset=6))
     var bb = Int(hdr.unsafe_load(offset=7))
+    var quant_tag = Int(hdr.unsafe_load(offset=8))  # quant_type tag for dispatch
     
     var j = Int(idx)
     var w_quant = Pointer[UInt8, MutUntrackedOrigin](unsafe_from_address=w_quant_addr)
@@ -193,11 +207,22 @@ def _q8k_worker_body(
     )
     
     # Compute dot product for column j
+    # Dispatch based on quant_type tag
     var sumf = Float32(0)
     for b in range(nb):
         var w_block = w_quant.unsafe_offset(j * nb * bb + b * bb)
         var q8_block = q8k_buf.unsafe_offset(b * 292)
-        sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
+        # Q4_K_M = 0, Q5_K = 3, Q6_K = 2, Q2_K = 4, Q3_K = 7
+        if quant_tag == 0:  # Q4_K_M
+            sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
+        elif quant_tag == 3:  # Q5_K
+            sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
+        elif quant_tag == 2:  # Q6_K
+            sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
+        elif quant_tag == 4:  # Q2_K
+            sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
+        elif quant_tag == 7:  # Q3_K
+            sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
     
     out.unsafe_offset(row_idx * N + j).unsafe_store(
         val=Scalar[DType.float16](sumf)
