@@ -252,7 +252,7 @@ test-thread-pool: tp
 clean:
 	rm -f it-server it-cli it-rpc-server infer_train
 	rm -f tools/check_mem bench_cpu bench_pool bench_transformer_core bench_blas bench_dequant bench_simd
-	rm -f bench_q8k_vs_fp32 bench_qmatmul_threading
+	rm -f bench_q8k_vs_fp32 bench_q8k_sdot_threaded bench_qmatmul_threading
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
 	      python/infer_train/_lib/libinfer_train_mwq.dylib
