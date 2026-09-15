@@ -118,10 +118,14 @@ def quant_proj_dispatch(
     """
     from ..cpu.blas_cpu import matmul_quantized_blas_tiled
 
-    # Q4_K: Use fallback dequantize-then-dot for now
-    # TODO: Debug and enable Q8_K + SDOT path
+    # Q4_K: Use fallback for now (Q8_K path has numerical issues in deep layers)
+    # TODO: Debug and fix Q8_K + SDOT path
     if w.ggml_type == 12:  # Q4_K (Q4_K_M)
         return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q4_K_M, 32](
+            x, w.data, dummy_scale
+        )
+    if w.ggml_type == 14:  # Q6_K
+        return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q6_K, 32](
             x, w.data, dummy_scale
         )
     if w.ggml_type == 2:  # Q4_0
