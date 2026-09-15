@@ -78,29 +78,47 @@ def vec_dot_q4_k_neon[
                 var d1 = blk_d * Float32(sc1)
                 var m1v = blk_dmin * Float32(m1)
 
-                # Load 16 bytes, split into two 8-element chunks
+                # Load 32 bytes (4 SIMD vectors), split into 64 elements
                 var b0 = q.unsafe_load[width=NEON_WIDTH](offset=0)
                 var b1 = q.unsafe_load[width=NEON_WIDTH](offset=NEON_WIDTH)
+                var b2 = q.unsafe_load[width=NEON_WIDTH](offset=16)
+                var b3 = q.unsafe_load[width=NEON_WIDTH](offset=24)
 
-                # Low nibbles - use FMA
+                # Low nibbles - use FMA (elements 0-15, 16-31)
                 var lo0 = (b0 & SIMD[DType.uint8, NEON_WIDTH](0x0F)).cast[DType.float32]()
                 var lo1 = (b1 & SIMD[DType.uint8, NEON_WIDTH](0x0F)).cast[DType.float32]()
+                var lo2 = (b2 & SIMD[DType.uint8, NEON_WIDTH](0x0F)).cast[DType.float32]()
+                var lo3 = (b3 & SIMD[DType.uint8, NEON_WIDTH](0x0F)).cast[DType.float32]()
                 var wv_lo0 = d0 * lo0 - m0v
                 var wv_lo1 = d0 * lo1 - m0v
+                var wv_lo2 = d0 * lo2 - m0v
+                var wv_lo3 = d0 * lo3 - m0v
                 var x0 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64).cast[DType.float32]()
-                var x1 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + NEON_WIDTH).cast[DType.float32]()
+                var x1 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 8).cast[DType.float32]()
+                var x4 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 16).cast[DType.float32]()
+                var x5 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 24).cast[DType.float32]()
                 acc_local = x0.fma(wv_lo0, acc_local)
                 acc_local = x1.fma(wv_lo1, acc_local)
+                acc_local = x4.fma(wv_lo2, acc_local)
+                acc_local = x5.fma(wv_lo3, acc_local)
 
-                # High nibbles - use FMA
+                # High nibbles - use FMA (elements 32-47, 48-63)
                 var hi0 = (b0 >> SIMD[DType.uint8, NEON_WIDTH](4)).cast[DType.float32]()
                 var hi1 = (b1 >> SIMD[DType.uint8, NEON_WIDTH](4)).cast[DType.float32]()
+                var hi2 = (b2 >> SIMD[DType.uint8, NEON_WIDTH](4)).cast[DType.float32]()
+                var hi3 = (b3 >> SIMD[DType.uint8, NEON_WIDTH](4)).cast[DType.float32]()
                 var wv_hi0 = d1 * hi0 - m1v
                 var wv_hi1 = d1 * hi1 - m1v
+                var wv_hi2 = d1 * hi2 - m1v
+                var wv_hi3 = d1 * hi3 - m1v
                 var x2 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 32).cast[DType.float32]()
-                var x3 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 32 + NEON_WIDTH).cast[DType.float32]()
+                var x3 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 40).cast[DType.float32]()
+                var x6 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 48).cast[DType.float32]()
+                var x7 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 56).cast[DType.float32]()
                 acc_local = x2.fma(wv_hi0, acc_local)
                 acc_local = x3.fma(wv_hi1, acc_local)
+                acc_local = x6.fma(wv_hi2, acc_local)
+                acc_local = x7.fma(wv_hi3, acc_local)
 
                 pair += 1
                 q = q.unsafe_offset(32)
@@ -137,20 +155,34 @@ def vec_dot_q4_k_neon[
 
             var b0 = q.unsafe_load[width=NEON_WIDTH](offset=0)
             var b1 = q.unsafe_load[width=NEON_WIDTH](offset=NEON_WIDTH)
+            var b2 = q.unsafe_load[width=NEON_WIDTH](offset=16)
+            var b3 = q.unsafe_load[width=NEON_WIDTH](offset=24)
 
             var lo0 = (b0 & SIMD[DType.uint8, NEON_WIDTH](0x0F)).cast[DType.float32]()
             var lo1 = (b1 & SIMD[DType.uint8, NEON_WIDTH](0x0F)).cast[DType.float32]()
+            var lo2 = (b2 & SIMD[DType.uint8, NEON_WIDTH](0x0F)).cast[DType.float32]()
+            var lo3 = (b3 & SIMD[DType.uint8, NEON_WIDTH](0x0F)).cast[DType.float32]()
             var x0 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64).cast[DType.float32]()
-            var x1 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + NEON_WIDTH).cast[DType.float32]()
+            var x1 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 8).cast[DType.float32]()
+            var x4 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 16).cast[DType.float32]()
+            var x5 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 24).cast[DType.float32]()
             acc0 = x0.fma(d0 * lo0 - m0v, acc0)
             acc0 = x1.fma(d0 * lo1 - m0v, acc0)
+            acc0 = x4.fma(d0 * lo2 - m0v, acc0)
+            acc0 = x5.fma(d0 * lo3 - m0v, acc0)
 
             var hi0 = (b0 >> SIMD[DType.uint8, NEON_WIDTH](4)).cast[DType.float32]()
             var hi1 = (b1 >> SIMD[DType.uint8, NEON_WIDTH](4)).cast[DType.float32]()
+            var hi2 = (b2 >> SIMD[DType.uint8, NEON_WIDTH](4)).cast[DType.float32]()
+            var hi3 = (b3 >> SIMD[DType.uint8, NEON_WIDTH](4)).cast[DType.float32]()
             var x2 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 32).cast[DType.float32]()
-            var x3 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 32 + NEON_WIDTH).cast[DType.float32]()
+            var x3 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 40).cast[DType.float32]()
+            var x6 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 48).cast[DType.float32]()
+            var x7 = x.unsafe_load[width=NEON_WIDTH](offset=k + pair * 64 + 56).cast[DType.float32]()
             acc0 = x2.fma(d1 * hi0 - m1v, acc0)
             acc0 = x3.fma(d1 * hi1 - m1v, acc0)
+            acc0 = x6.fma(d1 * hi2 - m1v, acc0)
+            acc0 = x7.fma(d1 * hi3 - m1v, acc0)
 
             q = q.unsafe_offset(32)
 
