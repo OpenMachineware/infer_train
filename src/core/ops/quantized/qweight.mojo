@@ -34,6 +34,7 @@ from ..cpu.matmul_cpu import (
     matmul_weight_cpu_threaded,
     matmul_quantized_cpu_threaded,
 )
+from ..cpu.matmul_q8k import matmul_quantized_q8k
 from .quant_types import QuantType
 from std.utils.static_tuple import StaticTuple
 
@@ -117,8 +118,8 @@ def quant_proj_dispatch(
     """
     from ..cpu.blas_cpu import matmul_quantized_blas_tiled
 
-    # Q4_K: Use FP32 SIMD (SDOT kernel needs more work)
-    # TODO: Debug and optimize vec_dot_q4_k_q8_k
+    # Q4_K: Use fallback dequantize-then-dot for now
+    # TODO: Debug and enable Q8_K + SDOT path
     if w.ggml_type == 12:  # Q4_K (Q4_K_M)
         return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q4_K_M, 32](
             x, w.data, dummy_scale
