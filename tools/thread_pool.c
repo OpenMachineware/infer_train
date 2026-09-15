@@ -570,3 +570,18 @@ int32_t it_tcp_close(int64_t fd) {
     if (fd >= 0) close((int)fd);
     return 0;
 }
+
+/* ---- MMLA: check for ARM i8mm extension (M2+, M3, M4) ----
+ *
+ * The NEON Matrix Multiply-Accumulate instruction (SMMLA) requires the
+ * ARMv8.6-A i8mm extension. M1 lacks this feature; M2+ has it.
+ * Returns 1 if the CPU supports i8mm, 0 otherwise.
+ */
+int it_has_i8mm(void) {
+    int64_t val = 0;
+    size_t len = sizeof(val);
+    if (sysctlbyname("hw.optional.arm.FEAT_I8MM", &val, &len, NULL, 0) == 0) {
+        return (int)val;
+    }
+    return 0;  /* sysctl failed - assume not available */
+}

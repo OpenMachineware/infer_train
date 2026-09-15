@@ -18,14 +18,27 @@ comptime NEON_WIDTH = 8  # 8x Float32 = 256 bits
 
 
 # ============================================================================
-# NEON Matrix Multiply-Accumulate (MMLA) intrinsics
+# Runtime CPU feature detection
 # ============================================================================
 
+from std.ffi import external_call
 
-# NOTE: MMLA requires ARMv8.6-A i8mm extension.
-# The Mojo compiler may need explicit target flags to enable this.
-# For now, we use SDOT which is widely available on ARMv8.2-A+.
-# MMLA can be enabled later with proper target configuration.
+
+def has_i8mm() -> Bool:
+    """Check if the CPU supports ARM I8MM (Matrix Multiply) extension.
+    
+    Returns True for M2+, M3, M4 (ARMv8.6-A+).
+    Returns False for M1 (ARMv8.5-A without I8MM).
+    
+    Uses the C helper it_has_i8mm() which checks sysctl
+    hw.optional.arm.FEAT_I8MM on macOS.
+    """
+    return external_call["it_has_i8mm", Int]() != 0
+
+
+# ============================================================================
+# NEON Matrix Multiply-Accumulate (MMLA) intrinsics
+# ============================================================================
 
 
 def neon_mmla(
@@ -46,14 +59,14 @@ def neon_mmla(
     For single-row vec_dot, we can still use MMLA by processing two positions
     simultaneously and summing the diagonal results.
     
-    NOTE: This implementation falls back to SDOT until target configuration
-    for i8mm is resolved.
+    NOTE: Requires ARMv8.6-A i8mm extension. Use --target-features "+i8mm"
+    to enable. Falls back to SDOT if not available.
     """
-    # Fallback to SDOT: compute dot products separately
-    # This is equivalent but slower than MMLA
-    # TODO: Enable MMLA when target supports i8mm
-    var result = neon_sdot(c, a, b)
-    return result
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.smmla.v4i32.v16i8",
+        SIMD[DType.int32, 4],
+        has_side_effect=False,
+    ](c, a, b)
 
 
 def _get_scale_min_k4(
