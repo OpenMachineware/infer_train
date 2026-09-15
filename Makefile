@@ -223,6 +223,10 @@ bench_simd: tp
 bench_q8k_vs_fp32: tp
 	$(MOJO) build -I . tools/bench_q8k_vs_fp32.mojo $(TP_XLINK) $(TP_XLINK) -o bench_q8k_vs_fp32
 
+# Q8_K + SDOT threaded benchmark.
+bench_q8k_sdot_threaded: tp
+	$(MOJO) build -I . tools/bench_q8k_sdot_threaded.mojo $(TP_XLINK) $(TP_XLINK) -o bench_q8k_sdot_threaded
+
 # Quantized matmul threading benchmark (pthread pool scaling).
 bench_qmatmul_threading: tp
 	$(MOJO) build -I . tools/bench_qmatmul_threading.mojo $(TP_XLINK) $(TP_XLINK) -o bench_qmatmul_threading

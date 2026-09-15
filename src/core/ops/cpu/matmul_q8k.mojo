@@ -15,7 +15,7 @@ from ...utils import unimplemented
 from std.utils.static_tuple import StaticTuple
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
-from std.memory.alloc import unsafe_alloc, unsafe_free
+from std.memory.alloc import unsafe_alloc
 from std.math import abs
 from ..quantized.quant_types import QuantType, block_elems, block_bytes
 from .simd.simd_neon import vec_dot_q4_k_q8_k

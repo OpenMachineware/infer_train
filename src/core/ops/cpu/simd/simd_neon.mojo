@@ -387,47 +387,46 @@ def vec_dot_q4_k_q8_k(
         bias -= dmin * Float32(m) * Float32(bs0 + bs1)
 
     # Main dot product using SDOT
-    # Process 64 elements per iteration (8 scales, each covers 32 elements)
+    # Q4_K layout: 256 elements in 128 bytes, 32 elements per scale
+    # Scale 0: elements 0-31, low nibbles of bytes 0-31
+    # Scale 1: elements 32-63, high nibbles of bytes 0-31
+    # Scale 2: elements 64-95, low nibbles of bytes 32-63
+    # ...
+    # Scale j: bytes (j//2)*32 to (j//2)*32+31, nibble = j%2
     var sumi = Int32(0)
 
     for j in range(8):
         var (sc, _) = _get_scale_min_k4(j, scales)
 
-        # Determine which nibbles to use
-        # Scales 0,2,4,6 use low nibbles; 1,3,5,7 use high nibbles
-        # Each scale covers 32 elements = 16 bytes of packed 4-bit values
-        var q4_byte_offset = (j // 2) * 32 + (j % 2) * 16
-        var q4_bits = qs.unsafe_offset(q4_byte_offset).unsafe_load[width=16](offset=0)
-
-        # Unpack 4-bit values to int8
+        # Byte offset for this scale
+        var q4_byte_offset = (j // 2) * 32
+        
+        # Load 32 bytes of packed 4-bit values (will produce 32 elements)
+        # We process in two 16-byte chunks
         var m4b = SIMD[DType.uint8, 16](0x0F)
-        var q4_vals: SIMD[DType.int8, 16]
-
+        
+        # First 16 elements
+        var q4_bits0 = qs.unsafe_offset(q4_byte_offset).unsafe_load[width=16](offset=0)
+        var q4_vals0: SIMD[DType.int8, 16]
         if j % 2 == 0:
-            # Low nibbles
-            q4_vals = (q4_bits & m4b).cast[DType.int8]()
+            q4_vals0 = (q4_bits0 & m4b).cast[DType.int8]()
         else:
-            # High nibbles (shift right by 4)
-            q4_vals = (q4_bits >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-
-        # Load corresponding Q8_K int8 values (first 16 of 32)
+            q4_vals0 = (q4_bits0 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+        
         var q8_offset_val = j * 32
-        var q8_vals = q8_qs.unsafe_offset(q8_offset_val).unsafe_load[width=16](offset=0)
-
-        # SDOT: int8 × int8 -> int32
-        var dot = neon_sdot(SIMD[DType.int32, 4](0), q4_vals, q8_vals)
-
-        # Load next 16 elements
-        var q4_next_bits: SIMD[DType.uint8, 16]
+        var q8_vals0 = q8_qs.unsafe_offset(q8_offset_val).unsafe_load[width=16](offset=0)
+        var dot = neon_sdot(SIMD[DType.int32, 4](0), q4_vals0, q8_vals0)
+        
+        # Second 16 elements
+        var q4_bits1 = qs.unsafe_offset(q4_byte_offset + 16).unsafe_load[width=16](offset=0)
+        var q4_vals1: SIMD[DType.int8, 16]
         if j % 2 == 0:
-            q4_next_bits = qs.unsafe_offset(q4_byte_offset + 16).unsafe_load[width=16](offset=0)
-            q4_vals = (q4_next_bits & m4b).cast[DType.int8]()
+            q4_vals1 = (q4_bits1 & m4b).cast[DType.int8]()
         else:
-            q4_next_bits = qs.unsafe_offset(q4_byte_offset + 16).unsafe_load[width=16](offset=0)
-            q4_vals = (q4_next_bits >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-
-        q8_vals = q8_qs.unsafe_offset(q8_offset_val + 16).unsafe_load[width=16](offset=0)
-        dot = neon_sdot(dot, q4_vals, q8_vals)
+            q4_vals1 = (q4_bits1 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+        
+        var q8_vals1 = q8_qs.unsafe_offset(q8_offset_val + 16).unsafe_load[width=16](offset=0)
+        dot = neon_sdot(dot, q4_vals1, q8_vals1)
 
         # Sum the 4 int32 lanes and apply scale
         var dot_sum = dot[0] + dot[1] + dot[2] + dot[3]

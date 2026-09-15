@@ -11,14 +11,15 @@
 
 from ...tensor import Tensor, tensor_zeros
 from ...utils import unimplemented
-from ...thread_pool import parallel_run_tid, resolve_threads, now_ns
+from ...thread_pool import parallel_run_tid, resolve_threads, now_ns, has_worker
 from std.utils.static_tuple import StaticTuple
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
-from std.memory.alloc import unsafe_alloc, unsafe_free
+from std.memory.alloc import unsafe_alloc
 from std.math import abs
 from ..quantized.quant_types import QuantType, block_elems, block_bytes
 from .simd.simd_neon import vec_dot_q4_k_q8_k
+from .matmul_q8k import matmul_quantized_q8k
 
 comptime QK_K = 256
 
@@ -116,14 +117,17 @@ def matmul_quantized_q8k_threaded[
     if N < 256 or nthreads == 1:
         return matmul_quantized_q8k[quant_type](x, w_quant, scale)
     
+    # Check if the worker is available (falls back to sequential if not)
+    if not has_worker("it_mwq_worker_q8k"):
+        return matmul_quantized_q8k[quant_type](x, w_quant, scale)
+    
     var threads = resolve_threads(nthreads)
     var nb = K // QK_K
     var out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, N))
     
-    # Context block for the worker: [q8k_buf, w_quant, out, M, K, N, nb, bb, current_row]
+    # Context block for the worker: [q8k_buf, w_quant, out, row_idx, K, N, nb, bb]
     # We process one activation row at a time to minimize Q8_K buffer size
-    var ctx_size = 9 * 8  # 9 Int64 slots
-    var ctx = unsafe_alloc[Int64](9)
+    var ctx = unsafe_alloc[Int64](8)
     
     # Allocate Q8_K buffer for one row
     var q8k_buf = unsafe_alloc[UInt8](nb * 292)
@@ -145,17 +149,7 @@ def matmul_quantized_q8k_threaded[
         
         # 3. Run threaded column processing
         var raw = ctx.unsafe_bitcast[UInt8]()
-        # Note: We need to implement the worker function
-        # For now, fall back to sequential processing
-        for j in range(N):
-            var sumf = Float32(0)
-            for b in range(nb):
-                var w_block = w_quant.data().unsafe_offset(j * nb * bb + b * bb)
-                var q8_block = q8k_buf.unsafe_offset(b * 292)
-                sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
-            out.data().unsafe_offset(i * N + j).unsafe_store(
-                val=Scalar[DType.float16](sumf)
-            )
+        parallel_run_tid("it_mwq_worker_q8k", raw, N, threads)
     
     q8k_buf.unsafe_free()
     ctx.unsafe_free()

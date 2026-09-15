@@ -32,6 +32,7 @@ from src.core.ops.cpu.matmul_cpu import (
     _mw_multi_worker_body,
     _mwq_worker_body,
 )
+from src.core.ops.cpu.matmul_q8k_threaded import _q8k_worker_body
 from src.core.ops.quantized.quant_types import QuantType
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
@@ -153,3 +154,13 @@ def it_mwq_worker_iq4xs_f32(
     ctx: Pointer[UInt8, MutUntrackedOrigin], idx: Int64, tid: Int64
 ) abi("C"):
     _mwq_worker_body[DType.float32, QuantType.IQ4_XS](ctx, idx, tid)
+
+
+# M13: Q8_K + SDOT worker (int8 dot product path)
+# Uses hardware int8 dot product (NEON SDOT) instead of FP32 SIMD.
+# Each thread computes one output column for the current activation row.
+@export
+def it_mwq_worker_q8k(
+    ctx: Pointer[UInt8, MutUntrackedOrigin], idx: Int64, tid: Int64
+) abi("C"):
+    _q8k_worker_body(ctx, idx, tid)
