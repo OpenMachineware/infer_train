@@ -44,10 +44,8 @@ from std.math import exp, sqrt
 def _qkv_reshape[
     dtype: DType
 ](x: Tensor[dtype, 2], n_heads: Int, head_dim: Int) -> Tensor[dtype, 3]:
-    """View [T, n_heads*head_dim] as [n_heads, T, head_dim] (T must be 1)."""
+    """View [T, n_heads*head_dim] as [n_heads, T, head_dim]."""
     var n_tokens = x.shape()[0]
-    if n_tokens != 1:
-        unimplemented("mha: single-token decode only (T==1)")
     return Tensor[dtype, 3](
         StaticTuple[Int, 3](n_heads, n_tokens, head_dim),
         x.data(),
@@ -58,11 +56,14 @@ def _qkv_reshape[
 def _flat_view[
     dtype: DType
 ](x: Tensor[dtype, 3], hidden: Int) -> Tensor[dtype, 2]:
-    """View [n_heads, 1, head_dim] as [1, hidden]."""
-    if x.shape()[1] != 1 or x.numel() != hidden:
+    """View [n_heads, T, head_dim] as [T, hidden]."""
+    var n_heads = x.shape()[0]
+    var n_tokens = x.shape()[1]
+    var head_dim = x.shape()[2]
+    if n_heads * head_dim != hidden:
         unimplemented("mha: bad reshape to flat")
     return Tensor[dtype, 2](
-        StaticTuple[Int, 2](1, hidden), x.data(), x.device()
+        StaticTuple[Int, 2](n_tokens, hidden), x.data(), x.device()
     )
 
 
@@ -864,3 +865,234 @@ def _add_t2[
     for i in range(a.numel()):
         out.set(i, Scalar[dtype](Float32(a.get(i)) + Float32(b.get(i))))
     return out
+
+
+def mha_forward_batch(
+    x: Tensor[DType.float16, 2],
+    wq: QWeight,
+    wk: QWeight,
+    wv: QWeight,
+    wo: QWeight,
+    bq: Tensor[DType.float16, 1],
+    bk: Tensor[DType.float16, 1],
+    bv: Tensor[DType.float16, 1],
+    q_norm_w: Tensor[DType.float16, 1],
+    k_norm_w: Tensor[DType.float16, 1],
+    mut cache: KVCacheLayer,
+    start_pos: Int,
+    n_heads: Int,
+    n_kv_heads: Int,
+    head_dim: Int,
+    rope_theta: Float32,
+    opts: MHAOptions,
+    dummy_scale: Tensor[DType.float16, 1],
+) -> Tensor[DType.float16, 2]:
+    """Batch prefill MHA (processes T tokens at once).
+
+    Input x is [T, hidden], output is [T, hidden]. Each token at position t
+    attends to all positions [0, start_pos + t] (causal). K/V for all T tokens
+    are stored into the cache at positions [start_pos, start_pos + T).
+    """
+    var n_tokens = x.shape()[0]
+    var hidden = n_heads * head_dim
+    if x.shape()[1] != hidden:
+        unimplemented("mha_forward_batch: shape mismatch")
+
+    # Batch QKV projections (T tokens at once)
+    var q_flat = wq.proj(x, dummy_scale)  # [T, n_heads * head_dim]
+    var k_flat = wk.proj(x, dummy_scale)
+    var v_flat = wv.proj(x, dummy_scale)
+
+    if bq.numel() > 0:
+        q_flat = add_row_cpu[DType.float16](q_flat, bq)
+    if bk.numel() > 0:
+        k_flat = add_row_cpu[DType.float16](k_flat, bk)
+    if bv.numel() > 0:
+        v_flat = add_row_cpu[DType.float16](v_flat, bv)
+
+    # Handle fused Q+gate (qwen35)
+    var q3 = tensor_zeros[DType.float16, 3](
+        StaticTuple[Int, 3](n_heads, n_tokens, head_dim)
+    )
+    if opts.gate:
+        for h in range(n_heads):
+            for t in range(n_tokens):
+                for d in range(head_dim):
+                    q3.set(
+                        (h * n_tokens + t) * head_dim + d,
+                        q_flat.get(t * 2 * head_dim + h * 2 * head_dim + d),
+                    )
+    else:
+        q3 = _qkv_reshape[DType.float16](q_flat, n_heads, head_dim)
+    var k3 = _qkv_reshape[DType.float16](k_flat, n_kv_heads, head_dim)
+    var v3 = _qkv_reshape[DType.float16](v_flat, n_kv_heads, head_dim)
+
+    # Process each token position
+    var max_len = cache.max_len
+    var out3 = tensor_zeros[DType.float16, 3](
+        StaticTuple[Int, 3](n_heads, n_tokens, head_dim)
+    )
+
+    for t in range(n_tokens):
+        var pos = start_pos + t
+        # Extract per-position Q/K/V (single token view)
+        var q_t = tensor_zeros[DType.float16, 2](
+            StaticTuple[Int, 2](1, hidden)
+        )
+        var k_t = tensor_zeros[DType.float16, 2](
+            StaticTuple[Int, 2](1, n_kv_heads * head_dim)
+        )
+        var v_t = tensor_zeros[DType.float16, 2](
+            StaticTuple[Int, 2](1, n_kv_heads * head_dim)
+        )
+        for h in range(n_heads):
+            for d in range(head_dim):
+                q_t.set(h * head_dim + d, q3.get((h * n_tokens + t) * head_dim + d))
+        for h in range(n_kv_heads):
+            for d in range(head_dim):
+                k_t.set(h * head_dim + d, k3.get((h * n_tokens + t) * head_dim + d))
+                v_t.set(h * head_dim + d, v3.get((h * n_tokens + t) * head_dim + d))
+
+        # Reshape for RoPE
+        var q3_t = _qkv_reshape[DType.float16](q_t, n_heads, head_dim)
+        var k3_t = _qkv_reshape[DType.float16](k_t, n_kv_heads, head_dim)
+
+        # Q/K norm before RoPE
+        if opts.q_norm and opts.norm_before_rope:
+            q3_t = rms_norm_heads[DType.float16](q3_t, q_norm_w, opts.norm_eps)
+        if opts.k_norm and opts.norm_before_rope:
+            k3_t = rms_norm_heads[DType.float16](k3_t, k_norm_w, opts.norm_eps)
+
+        # RoPE
+        var q_rot: Tensor[DType.float16, 3]
+        var k_rot: Tensor[DType.float16, 3]
+        if opts.n_rot > 0 and opts.n_rot < head_dim:
+            q_rot = rope_cpu_rot[DType.float16](q3_t, pos, rope_theta, opts.n_rot)
+            k_rot = rope_cpu_rot[DType.float16](k3_t, pos, rope_theta, opts.n_rot)
+        else:
+            q_rot = rope_cpu_dynamic[DType.float16](q3_t, pos, rope_theta)
+            k_rot = rope_cpu_dynamic[DType.float16](k3_t, pos, rope_theta)
+
+        # Q/K norm after RoPE
+        if opts.q_norm and not opts.norm_before_rope:
+            q_rot = rms_norm_heads[DType.float16](q_rot, q_norm_w, opts.norm_eps)
+        if opts.k_norm and not opts.norm_before_rope:
+            k_rot = rms_norm_heads[DType.float16](k_rot, k_norm_w, opts.norm_eps)
+
+        # Store K/V into cache
+        if cache.is_quantized():
+            var k_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+            var v_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+            for h in range(n_kv_heads):
+                for d in range(head_dim):
+                    k_row.set(d, k_rot.get(h * head_dim + d))
+                    v_row.set(d, v3.get((h * n_tokens + t) * head_dim + d))
+                cache.set_kv_row(h, pos, k_row, v_row)
+        else:
+            for h in range(n_kv_heads):
+                for d in range(head_dim):
+                    cache.set_kv(
+                        h,
+                        pos,
+                        d,
+                        Float32(k_rot.get(h * head_dim + d)),
+                        Float32(v3.get((h * n_tokens + t) * head_dim + d)),
+                    )
+        if pos + 1 > cache.filled:
+            cache.filled = pos + 1
+
+        # Attention scores: query at pos attends to positions [first, pos]
+        var seq = pos + 1
+        var first = cache.first_position()
+        if first < 0:
+            first = 0
+        var scale = Float32(1.0) / sqrt(Float32(head_dim))
+        var quant = cache.is_quantized()
+        var k_ptr = cache.k.data()
+        var v_ptr = cache.v.data()
+        var dense = cache.page_size == 0
+        var k_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+        var v_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+
+        for h in range(n_heads):
+            var kv_head = h * n_kv_heads // n_heads
+            var scores = List[Float32]()
+            var q_ptr = q_rot.data().unsafe_offset(h * head_dim)
+
+            # Compute attention scores for this query position
+            for t2 in range(first, seq):
+                var acc = Float32(0)
+                var k_base = (kv_head * max_len + t2) * head_dim
+                if quant:
+                    cache.get_k_row(kv_head, t2, k_row)
+                    for d in range(head_dim):
+                        acc += Float32(q_ptr.unsafe_load[width=1](offset=d)) * Float32(k_row.get(d))
+                else:
+                    if dense:
+                        for d in range(head_dim):
+                            acc += Float32(q_ptr.unsafe_load[width=1](offset=d)) * Float32(
+                                k_ptr.unsafe_load[width=1](offset=k_base + d)
+                            )
+                    else:
+                        for d in range(head_dim):
+                            acc += Float32(q_ptr.unsafe_load[width=1](offset=d)) * cache.get_k(kv_head, t2, d)
+                scores.append(acc * scale)
+
+            var n_scores = seq - first
+            # Softmax
+            var mx = Float32(-3.0e38)
+            for i in range(n_scores):
+                if scores[i] > mx:
+                    mx = scores[i]
+            var total = Float32(0)
+            for i in range(n_scores):
+                var e = exp(scores[i] - mx)
+                scores[i] = e
+                total += e
+            var inv = Float32(1.0) / total
+            for i in range(n_scores):
+                scores[i] = scores[i] * inv
+
+            # Output accumulation
+            if quant:
+                for d in range(head_dim):
+                    cache.get_v_row(kv_head, first, v_row)
+                    var acc_f = Float32(0)
+                    for i in range(n_scores):
+                        cache.get_v_row(kv_head, first + i, v_row)
+                        acc_f += scores[i] * Float32(v_row.get(d))
+                    out3.set((h * n_tokens + t) * head_dim + d, Scalar[DType.float16](acc_f))
+            else:
+                if dense:
+                    for d in range(head_dim):
+                        var acc_f = Float32(0)
+                        for i in range(n_scores):
+                            acc_f += scores[i] * Float32(
+                                v_ptr.unsafe_load[width=1](
+                                    offset=(kv_head * max_len + first + i) * head_dim + d
+                                )
+                            )
+                        out3.set((h * n_tokens + t) * head_dim + d, Scalar[DType.float16](acc_f))
+                else:
+                    for d in range(head_dim):
+                        var acc_f = Float32(0)
+                        for i in range(n_scores):
+                            acc_f += scores[i] * cache.get_v(kv_head, first + i, d)
+                        out3.set((h * n_tokens + t) * head_dim + d, Scalar[DType.float16](acc_f))
+
+    # Handle gate (qwen35)
+    if opts.gate:
+        for h in range(n_heads):
+            for t in range(n_tokens):
+                for d in range(head_dim):
+                    var g = Float32(q_flat.get(t * 2 * head_dim + h * 2 * head_dim + head_dim + d))
+                    var s = Float32(1.0) / (Float32(1.0) + exp(-g))
+                    out3.set(
+                        (h * n_tokens + t) * head_dim + d,
+                        Scalar[DType.float16](
+                            Float32(out3.get((h * n_tokens + t) * head_dim + d)) * s
+                        ),
+                    )
+
+    var out_flat = _flat_view[DType.float16](out3, hidden)
+    return wo.proj(out_flat, dummy_scale)

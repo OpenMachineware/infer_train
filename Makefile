@@ -133,6 +133,8 @@ test-m7-mojo: tp
 	./tests/test_tokenizer_m7
 	$(MOJO) build -I . tests/test_dequant_m7.mojo $(TP_XLINK) -o tests/test_dequant_m7
 	./tests/test_dequant_m7
+	$(MOJO) build -I . tests/test_batch_prefill.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_batch_prefill
+	./tests/test_batch_prefill
 	$(MOJO) build -I . tests/test_mmdl.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_mmdl
 	./tests/test_mmdl
 	$(MOJO) build -I . tests/test_finetune.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_finetune
@@ -175,7 +177,7 @@ server: tp version
 
 # M10: the it-cli binary (llama-cli-compatible quick-verification CLI).
 cli: tp version
-	$(MOJO) build -I . src/core/cli/it_cli.mojo $(TP_XLINK) -o it-cli
+	$(MOJO) build -I . src/core/cli/it_cli.mojo $(TP_XLINK) $(BLAS_XLINK) -o it-cli
 
 # M8: the it-rpc-server worker binary (llama.cpp-style `llama-rpc-server`),
 # split out of the main CLI in M10.

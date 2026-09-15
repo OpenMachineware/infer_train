@@ -57,6 +57,7 @@ from .ops.cpu.add_cpu import add_cpu_dynamic, add_row_cpu
 from .ops.cpu.swiglu_cpu import swiglu_cpu_dynamic
 from .ops.attention.mha import (
     mha_forward_v2,
+    mha_forward_batch,
     MHAOptions,
     rms_norm_heads,
 )
@@ -952,6 +953,79 @@ struct TransformerModel(Movable):
             logits.set(i, Scalar[DType.float32](Float32(logits16.get(i))))
         return logits
 
+    def forward_batch(
+        mut self, tokens: List[Int], start_pos: Int, batch_size: Int = 32
+    ) raises -> Tensor[DType.float32, 1]:
+        """Batch prefill: processes multiple tokens at once for faster prompt handling.
+
+        Returns the f32 logits [vocab] for sampling the next token (the logits
+        of the last token in the batch). Tokens are processed in mini-batches
+        of `batch_size` to balance parallelism with memory usage.
+
+        Args:
+            tokens: List of token IDs to process
+            start_pos: Starting position in the KV cache
+            batch_size: Number of tokens to process in parallel (default: 32)
+        """
+        var cfg = self.config
+        var n_tokens = len(tokens)
+        var pos = start_pos
+
+        # Process in mini-batches, keep track of last hidden state
+        var last_x = tensor_zeros[DType.float16, 2](
+            StaticTuple[Int, 2](1, cfg.hidden)
+        )
+
+        # Process in mini-batches
+        var i = 0
+        while i < n_tokens:
+            var cur_batch = min(batch_size, n_tokens - i)
+            var toks_tensor = tensor_zeros[DType.int32, 1](
+                StaticTuple[Int, 1](cur_batch)
+            )
+            for j in range(cur_batch):
+                toks_tensor.set(j, Scalar[DType.int32](tokens[i + j]))
+
+            # Batch embedding lookup
+            var x = self._embed_tokens(toks_tensor)  # [T, hidden]
+
+            # Process through all layers
+            for layer in range(self.shard_lo, self.shard_hi):
+                if cfg.is_recurrent(layer):
+                    # SSM layers still process one token at a time
+                    for t in range(cur_batch):
+                        var x_t = tensor_zeros[DType.float16, 2](
+                            StaticTuple[Int, 2](1, cfg.hidden)
+                        )
+                        for d in range(cfg.hidden):
+                            x_t.set(d, x.get(t * cfg.hidden + d))
+                        x_t = self._layer_forward_ssm(layer, x_t)
+                        for d in range(cfg.hidden):
+                            x.set(t * cfg.hidden + d, x_t.get(d))
+                else:
+                    x = self._layer_forward_attn_batch(layer, x, pos, cur_batch)
+
+            # Save the last hidden state from this batch
+            if i + cur_batch == n_tokens:
+                for d in range(cfg.hidden):
+                    last_x.set(d, x.get((cur_batch - 1) * cfg.hidden + d))
+
+            pos += cur_batch
+            i += cur_batch
+
+        # Get logits for the last token
+        last_x = rms_norm_weight[DType.float16](
+            last_x, self._output_norm_w(), cfg.norm_eps
+        )
+        var logits16 = self._output_proj(last_x)
+
+        var logits = tensor_zeros[DType.float32, 1](
+            StaticTuple[Int, 1](cfg.vocab)
+        )
+        for j in range(cfg.vocab):
+            logits.set(j, Scalar[DType.float32](Float32(logits16.get(j))))
+        return logits
+
     def forward_hidden(
         mut self, token: Int, position: Int
     ) raises -> Tensor[DType.float16, 2]:
@@ -1068,6 +1142,64 @@ struct TransformerModel(Movable):
         if cfg.is_moe:
             return self._ffn_moe(layer, normed2, resid)
         return _ffn_swiglu(normed2, lw, resid, self._dummy_scale)
+
+    def _layer_forward_attn_batch(
+        mut self, layer: Int, x: Tensor[DType.float16, 2], start_pos: Int, n_tokens: Int
+    ) -> Tensor[DType.float16, 2]:
+        """Batch attention layer forward for prefill.
+
+        Processes [T, hidden] input through the attention layer with batch
+        QKV projections and per-position attention scoring.
+        """
+        var cfg = self.config
+        var lw = self.layer_view(layer)
+        var normed = rms_norm_weight[DType.float16](
+            x, lw.attn_norm_w, cfg.norm_eps
+        )
+        var opts = MHAOptions()
+        opts.q_norm = cfg.has_qk_norm
+        opts.k_norm = cfg.has_qk_norm
+        opts.norm_before_rope = cfg.norm_before_rope
+        opts.gate = cfg.has_gate
+        opts.n_rot = cfg.n_rot
+        opts.norm_eps = cfg.norm_eps
+        var attn = mha_forward_batch(
+            normed,
+            lw.q_w,
+            lw.k_w,
+            lw.v_w,
+            lw.o_w,
+            lw.q_b,
+            lw.k_b,
+            lw.v_b,
+            lw.attn_q_norm,
+            lw.attn_k_norm,
+            self.cache.layers[layer],
+            start_pos,
+            cfg.n_heads,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            cfg.rope_theta,
+            opts,
+            self._dummy_scale,
+        )
+        # Residual add
+        var out = tensor_zeros[DType.float16, 2](x.shape())
+        for i in range(x.numel()):
+            out.set(i, Scalar[DType.float16](Float32(x.get(i)) + Float32(attn.get(i))))
+
+        # FFN norm
+        var norm_w: Tensor[DType.float16, 1]
+        if cfg.has_post_attn_norm:
+            norm_w = lw.post_attn_norm_w
+        else:
+            norm_w = lw.ffn_norm_w
+        var normed2 = rms_norm_weight[DType.float16](
+            out, norm_w, cfg.norm_eps
+        )
+        if cfg.is_moe:
+            return self._ffn_moe(layer, normed2, out)
+        return _ffn_swiglu_batch(normed2, lw, out, self._dummy_scale, n_tokens)
 
     def _layer_forward_ssm(
         mut self, layer: Int, x: Tensor[DType.float16, 2]
@@ -1452,6 +1584,21 @@ def _ffn_swiglu(
     Q4-resident weights go through the fused per-block-dequant matmul,
     materialized fp16 weights through the threaded weight-major kernel."""
     var g = lw.gate_w.proj(normed, dummy_scale)
+    var u = lw.up_w.proj(normed, dummy_scale)
+    var h = swiglu_cpu_dynamic[DType.float16](g, u)
+    var d = lw.down_w.proj(h, dummy_scale)
+    return add_cpu_dynamic[DType.float16](resid, d)
+
+
+def _ffn_swiglu_batch(
+    normed: Tensor[DType.float16, 2],
+    lw: LayerQView,
+    resid: Tensor[DType.float16, 2],
+    dummy_scale: Tensor[DType.float16, 1],
+    n_tokens: Int,
+) -> Tensor[DType.float16, 2]:
+    """Batch SwiGLU FFN for prefill (processes [T, hidden] input)."""
+    var g = lw.gate_w.proj(normed, dummy_scale)  # [T, ffn]
     var u = lw.up_w.proj(normed, dummy_scale)
     var h = swiglu_cpu_dynamic[DType.float16](g, u)
     var d = lw.down_w.proj(h, dummy_scale)

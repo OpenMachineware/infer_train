@@ -433,9 +433,18 @@ struct GenState(Movable):
                 + " tokens"
             )
         self.tokens = tokens^
-        for i in range(len(self.tokens)):
-            self.logits = self.model_p[unsafe_offset=0].transformer.forward(
-                self.tokens[i], i
+        # Batch prefill for attention layers, fallback to single-token for SSM
+        var cfg = self.model_p[unsafe_offset=0].transformer.config
+        if cfg.has_ssm:
+            # SSM layers don't support batch, use single-token loop
+            for i in range(len(self.tokens)):
+                self.logits = self.model_p[unsafe_offset=0].transformer.forward(
+                    self.tokens[i], i
+                )
+        else:
+            # Batch prefill: process all tokens at once
+            self.logits = self.model_p[unsafe_offset=0].transformer.forward_batch(
+                self.tokens, 0
             )
 
     def next_token(mut self) raises -> Int:
