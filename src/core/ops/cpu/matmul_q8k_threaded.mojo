@@ -111,8 +111,12 @@ def matmul_quantized_q8k_threaded[
     if be == 0 or K % be != 0:
         unimplemented("matmul_quantized_q8k_threaded: K not a multiple of block size")
     
-    # Threading threshold: below N=256, overhead dominates
-    if N < 256 or nthreads == 1:
+    # Threading threshold: below N=4096, overhead dominates
+    # Benchmark data:
+    #   N=1024: 0.6x (threading harmful)
+    #   N=4096: 4.7x (threading helps)
+    #   N=8192: 5.5x (threading helps)
+    if N < 4096 or nthreads == 1:
         return matmul_quantized_q8k[quant_type](x, w_quant, scale)
     
     # Check if the worker is available (falls back to sequential if not)
@@ -264,37 +268,70 @@ def fused_qkv_projection[
     
     for row in range(M):
         quantize_row_to_q8_k(x, row, K, q8k_buf.unsafe_offset(row * nb * 292))
-    
-    # Helper function for single projection
-    def _project[
-        quant: QuantType
-    ](w: Tensor[DType.uint8, 2], N: Int) -> Tensor[DType.float16, 2]:
-        var be = block_elems(quant)
-        var bb = block_bytes(quant)
-        var out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, N))
-        
-        for row in range(M):
-            for j in range(N):
-                var sumf = Float32(0)
-                for b in range(nb):
-                    var w_block = w.data().unsafe_offset(j * nb * bb + b * bb)
-                    var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
-                    if quant == QuantType.Q4_K_M:
-                        sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
-                    elif quant == QuantType.Q5_K:
-                        sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
-                    elif quant == QuantType.Q6_K:
-                        sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
-                    elif quant == QuantType.Q2_K:
-                        sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
-                    elif quant == QuantType.Q3_K:
-                        sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
-                out.data().unsafe_offset(row * N + j).unsafe_store(val=Scalar[DType.float16](sumf))
-        return out
-    
-    var q_out = _project[quant_q](wq, Nq)
-    var k_out = _project[quant_k](wk, Nk)
-    var v_out = _project[quant_v](wv, Nv)
-    
+
+    # Inline projection for Q with comptime dispatch
+    var bb_q = block_bytes(quant_q)
+    var q_out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, Nq))
+    for row in range(M):
+        for j in range(Nq):
+            var sumf = Float32(0)
+            for b in range(nb):
+                var w_block = wq.data().unsafe_offset(j * nb * bb_q + b * bb_q)
+                var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
+                # Comptime dispatch
+                comptime if quant_q == QuantType.Q4_K_M:
+                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
+                elif quant_q == QuantType.Q5_K:
+                    sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
+                elif quant_q == QuantType.Q6_K:
+                    sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
+                elif quant_q == QuantType.Q2_K:
+                    sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
+                elif quant_q == QuantType.Q3_K:
+                    sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
+            q_out.data().unsafe_offset(row * Nq + j).unsafe_store(val=Scalar[DType.float16](sumf))
+
+    # Inline projection for K with comptime dispatch
+    var bb_k = block_bytes(quant_k)
+    var k_out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, Nk))
+    for row in range(M):
+        for j in range(Nk):
+            var sumf = Float32(0)
+            for b in range(nb):
+                var w_block = wk.data().unsafe_offset(j * nb * bb_k + b * bb_k)
+                var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
+                comptime if quant_k == QuantType.Q4_K_M:
+                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
+                elif quant_k == QuantType.Q5_K:
+                    sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
+                elif quant_k == QuantType.Q6_K:
+                    sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
+                elif quant_k == QuantType.Q2_K:
+                    sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
+                elif quant_k == QuantType.Q3_K:
+                    sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
+            k_out.data().unsafe_offset(row * Nk + j).unsafe_store(val=Scalar[DType.float16](sumf))
+
+    # Inline projection for V with comptime dispatch
+    var bb_v = block_bytes(quant_v)
+    var v_out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, Nv))
+    for row in range(M):
+        for j in range(Nv):
+            var sumf = Float32(0)
+            for b in range(nb):
+                var w_block = wv.data().unsafe_offset(j * nb * bb_v + b * bb_v)
+                var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
+                comptime if quant_v == QuantType.Q4_K_M:
+                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
+                elif quant_v == QuantType.Q5_K:
+                    sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
+                elif quant_v == QuantType.Q6_K:
+                    sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
+                elif quant_v == QuantType.Q2_K:
+                    sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
+                elif quant_v == QuantType.Q3_K:
+                    sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
+            v_out.data().unsafe_offset(row * Nv + j).unsafe_store(val=Scalar[DType.float16](sumf))
+
     q8k_buf.unsafe_free()
     return (q_out, k_out, v_out)

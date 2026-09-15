@@ -29,7 +29,9 @@ from ..cpu.matmul_cpu import (
     matmul_weight_cpu_threaded,
     matmul_weight_3_threaded,
 )
+from ..cpu.matmul_q8k_threaded import fused_qkv_projection
 from ..quantized.qweight import QWeight, qweight_from_fp16
+from ..quantized.quant_types import QuantType
 from ..cpu.add_cpu import add_row_cpu
 from ..cpu.rope_cpu import (
     rope_cpu_dynamic,
@@ -175,9 +177,67 @@ def mha_forward_v2(
     weight-major kernel.  Everything else (bias, RoPE, per-head Q/K norm,
     gate, KV cache, softmax) is unchanged from the M7 fp16 path.
     """
-    var q_flat = wq.proj(x, dummy_scale)
-    var k_flat = wk.proj(x, dummy_scale)
-    var v_flat = wv.proj(x, dummy_scale)
+    # Check if we can use fused QKV projection (same K-quant type)
+    var use_fused = (
+        wq.quantized and wk.quantized and wv.quantized and
+        wq.ggml_type == wk.ggml_type and wk.ggml_type == wv.ggml_type and
+        (wq.ggml_type == 12 or wq.ggml_type == 13 or wq.ggml_type == 14 or
+         wq.ggml_type == 11 or wq.ggml_type == 15)  # K-quant types
+    )
+
+    var q_flat: Tensor[DType.float16, 2]
+    var k_flat: Tensor[DType.float16, 2]
+    var v_flat: Tensor[DType.float16, 2]
+
+    if use_fused:
+        # Fused path: quantize x to Q8_K once, then compute all three projections
+        var ggml_t = wq.ggml_type
+        if ggml_t == 12:  # Q4_K
+            var (q_out, k_out, v_out) = fused_qkv_projection[
+                QuantType.Q4_K_M, QuantType.Q4_K_M, QuantType.Q4_K_M
+            ](x, wq.data, wk.data, wv.data, dummy_scale)
+            q_flat = q_out
+            k_flat = k_out
+            v_flat = v_out
+        elif ggml_t == 13:  # Q5_K
+            var (q_out, k_out, v_out) = fused_qkv_projection[
+                QuantType.Q5_K, QuantType.Q5_K, QuantType.Q5_K
+            ](x, wq.data, wk.data, wv.data, dummy_scale)
+            q_flat = q_out
+            k_flat = k_out
+            v_flat = v_out
+        elif ggml_t == 14:  # Q6_K
+            var (q_out, k_out, v_out) = fused_qkv_projection[
+                QuantType.Q6_K, QuantType.Q6_K, QuantType.Q6_K
+            ](x, wq.data, wk.data, wv.data, dummy_scale)
+            q_flat = q_out
+            k_flat = k_out
+            v_flat = v_out
+        elif ggml_t == 11:  # Q2_K
+            var (q_out, k_out, v_out) = fused_qkv_projection[
+                QuantType.Q2_K, QuantType.Q2_K, QuantType.Q2_K
+            ](x, wq.data, wk.data, wv.data, dummy_scale)
+            q_flat = q_out
+            k_flat = k_out
+            v_flat = v_out
+        elif ggml_t == 15:  # Q3_K
+            var (q_out, k_out, v_out) = fused_qkv_projection[
+                QuantType.Q3_K, QuantType.Q3_K, QuantType.Q3_K
+            ](x, wq.data, wk.data, wv.data, dummy_scale)
+            q_flat = q_out
+            k_flat = k_out
+            v_flat = v_out
+        else:
+            # Fallback (shouldn't happen due to check above)
+            q_flat = wq.proj(x, dummy_scale)
+            k_flat = wk.proj(x, dummy_scale)
+            v_flat = wv.proj(x, dummy_scale)
+    else:
+        # Non-fused path: each projection quantizes x separately
+        q_flat = wq.proj(x, dummy_scale)
+        k_flat = wk.proj(x, dummy_scale)
+        v_flat = wv.proj(x, dummy_scale)
+
     if bq.numel() > 0:
         q_flat = add_row_cpu[DType.float16](q_flat, bq)
     if bk.numel() > 0:

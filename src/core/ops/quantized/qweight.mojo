@@ -120,36 +120,35 @@ def quant_proj_dispatch(
     from ..cpu.blas_cpu import matmul_quantized_blas_tiled
 
     # K-quant formats: Use Q8_K + SDOT path (int8 dot product, faster than FP32 SIMD)
-    # For large weight matrices and single-token decode, use threaded version for parallelism
-    # For batch prefill (T > 1), use non-threaded version to avoid threading overhead
+    # Threading threshold: N >= 4096 (benchmark shows N=1024 is 40% slower with threads)
     
     # Q4_K (ggml_type 12)
     if w.ggml_type == 12:
-        if w.n_out >= 256 and x.shape()[0] == 1:
+        if w.n_out >= 4096 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q4_K_M](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q4_K_M](x, w.data, dummy_scale)
 
     # Q5_K (ggml_type 13)
     if w.ggml_type == 13:
-        if w.n_out >= 256 and x.shape()[0] == 1:
+        if w.n_out >= 4096 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q5_K](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q5_K](x, w.data, dummy_scale)
     
     # Q6_K (ggml_type 14)
     if w.ggml_type == 14:
-        if w.n_out >= 256 and x.shape()[0] == 1:
+        if w.n_out >= 4096 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q6_K](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q6_K](x, w.data, dummy_scale)
     
     # Q2_K (ggml_type 11)
     if w.ggml_type == 11:
-        if w.n_out >= 256 and x.shape()[0] == 1:
+        if w.n_out >= 4096 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q2_K](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q2_K](x, w.data, dummy_scale)
     
     # Q3_K (ggml_type 15)
     if w.ggml_type == 15:
-        if w.n_out >= 256 and x.shape()[0] == 1:
+        if w.n_out >= 4096 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q3_K](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q3_K](x, w.data, dummy_scale)
     
