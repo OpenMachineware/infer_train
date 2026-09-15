@@ -9,23 +9,23 @@ from std.utils.static_tuple import StaticTuple
 def check_layer_weights() raises:
     """Compare first layer weights between paths."""
     var model_path = "Hy-MT2-7B-Q4_K_M.gguf"
-    
+
     # Load quantized model
     print("Loading quantized model...")
     var ctx1 = load_gguf(model_path)
     var config1 = load_config(ctx1)
     var m1 = TransformerModel(config1, ctx1^, 512, quant_resident=True)
-    
+
     # Load dequantized model
     print("Loading dequantized model...")
     var ctx2 = load_gguf(model_path)
     var config2 = load_config(ctx2)
     var m2 = TransformerModel(config2, ctx2^, 512, quant_resident=False)
-    
+
     # Get layer 0 views
     var lv1 = m1.layer_view(0)
     var lv2 = m2.layer_view(0)
-    
+
     # Check attention norm weights
     print("\nLayer 0 attn_norm_w comparison:")
     var max_diff = Float32(0.0)
@@ -38,7 +38,7 @@ def check_layer_weights() raises:
         if diff > 0.001:
             print("  norm[", i, "]: quant=", v1, " dequant=", v2, " diff=", diff)
     print("Max diff:", max_diff)
-    
+
     # Check Q weight
     print("\nLayer 0 Q weight comparison:")
     # For quantized: check if it's quantized

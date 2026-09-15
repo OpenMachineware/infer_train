@@ -97,7 +97,7 @@ def matmul_quantized_threaded[
     var threads = min(resolve_threads(nthreads), 4)  # Cap at 4
     var M = x.shape()[0]
     var N = w_quant.shape()[0]
-    
+
     # Parallel across N output columns
     var symbol = _matmul_worker_symbol(quant_type)
     var rc = parallel_run(symbol, ctx, N, threads)
@@ -122,10 +122,10 @@ from max.gpu.host import DeviceContext
 
 struct QuantizedMatmul:
     var ctx: DeviceContext  # Reuse across calls
-    
+
     def __init__(out self):
         self.ctx = DeviceContext(api="cpu")
-    
+
     def matmul(
         self,
         x: Tensor[DType.float16, 2],
@@ -134,12 +134,12 @@ struct QuantizedMatmul:
         var N = w_quant.shape()[0]
         var threads = min(num_pcores(), 4)  # Cap at 4
         var out = tensor_zeros[DType.float16, 2](...)
-        
+
         @always_inline
         @parameter
         def worker(n: Int):
             out[:, n] = compute_column(x, w_quant, n)
-        
+
         parallelize[worker](N, threads, self.ctx)
         return out
 ```

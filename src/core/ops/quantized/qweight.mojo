@@ -121,7 +121,7 @@ def quant_proj_dispatch(
 
     # K-quant formats: Use Q8_K + SDOT path (int8 dot product, faster than FP32 SIMD)
     # Threading: Use default thread count for now (will be optimized by matmul function)
-    
+
     # Q4_K (ggml_type 12)
     if w.ggml_type == 12:
         if w.n_out >= 4096 and x.shape()[0] == 1:
@@ -133,25 +133,25 @@ def quant_proj_dispatch(
         if w.n_out >= 4096 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q5_K](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q5_K](x, w.data, dummy_scale)
-    
+
     # Q6_K (ggml_type 14)
     if w.ggml_type == 14:
         if w.n_out >= 4096 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q6_K](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q6_K](x, w.data, dummy_scale)
-    
+
     # Q2_K (ggml_type 11)
     if w.ggml_type == 11:
         if w.n_out >= 4096 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q2_K](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q2_K](x, w.data, dummy_scale)
-    
+
     # Q3_K (ggml_type 15)
     if w.ggml_type == 15:
         if w.n_out >= 4096 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q3_K](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q3_K](x, w.data, dummy_scale)
-    
+
     # Non-K-quant formats: Use standard dequantize + matmul path
     if w.ggml_type == 2:  # Q4_0
         if x.shape()[0] > 1:

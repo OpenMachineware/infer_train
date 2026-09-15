@@ -10,11 +10,11 @@ from std.utils.static_tuple import StaticTuple
 def check_embedding() raises:
     """Check embedding tensor quantization type."""
     var model_path = "Hy-MT2-7B-Q4_K_M.gguf"
-    
+
     # Load model metadata
     var ctx = load_gguf(model_path)
     var config = load_config(ctx)
-    
+
     # Find the embedding tensor
     var t_opt = find_tensor(ctx, "token_embd.weight")
     if t_opt is None:
@@ -23,7 +23,7 @@ def check_embedding() raises:
     var t = t_opt.value()
     print("Embedding tensor dims:", t.dims[0], t.dims[1])
     print("Embedding ggml_type:", t.ggml_type)
-    
+
     # Check if there's a special kernel for this type
     print("\nChecking supported quant types:")
     print("  Q4_K (type 12): supported")

@@ -24,25 +24,25 @@ def main() raises:
     print("Layers:", config.n_layers, "Hidden:", config.hidden)
     print("FFN:", config.ffn, "Heads:", config.n_heads)
     print("KV heads:", config.n_kv_heads, "Head dim:", config.head_dim)
-    
+
     var weights = collect_weights(ctx)
     var model = TransformerModel(config, ctx^, 512)
     model.weights = weights^
-    
+
     var tokenizer = make_tokenizer(model.ctx, String(""))
-    
+
     # Warmup run
     var warmup_tokens = tokenizer.encode_with_bos("Hello")
     var logits = tensor_zeros[DType.float32, 1](StaticTuple[Int, 1](config.vocab))
     for i in range(len(warmup_tokens)):
         logits = model.forward(warmup_tokens[i], i)
     print("Warmup done")
-    
+
     # Prefill benchmark
     var prompt = "Translate to English: 今天天气很好，我想出去散步。这是一个很好的机会去享受阳光和新鲜空气。"
     var tokens = tokenizer.encode_with_bos(prompt)
     print("Prompt tokens:", len(tokens))
-    
+
     var prefill_start = now_ns()
     for i in range(len(tokens)):
         logits = model.forward(tokens[i], i)
@@ -50,14 +50,14 @@ def main() raises:
     var prefill_ms = (prefill_end - prefill_start) // 1_000_000
     var prefill_tps = Float64(len(tokens)) * 1000.0 / Float64(prefill_ms)
     print("Prefill:", len(tokens), "tokens in", prefill_ms, "ms =", prefill_tps, "t/s")
-    
+
     # Decode benchmark
     seed_sampler(Optional(42))
     var sampler = Sampler(temperature=Float32(0.6), top_k=40, top_p=Float32(0.95))
-    
+
     var decode_tokens = 128
     var generated = List[Int]()
-    
+
     var decode_start = now_ns()
     for _ in range(decode_tokens):
         var next_token = sample_dynamic[DType.float32](logits, sampler, tokens)
@@ -67,16 +67,16 @@ def main() raises:
         tokens.append(next_token)
         logits = model.forward(next_token, len(tokens) - 1)
     var decode_end = now_ns()
-    
+
     var decode_ms = (decode_end - decode_start) // 1_000_000
     var decode_tps = Float64(len(generated)) * 1000.0 / Float64(decode_ms)
     print("Decode:", len(generated), "tokens in", decode_ms, "ms =", decode_tps, "t/s")
-    
+
     # Summary
     print("\n=== Performance Summary ===")
     print("Prefill speed:", prefill_tps, "tokens/s")
     print("Decode speed:", decode_tps, "tokens/s")
-    
+
     # Comparison with llama.cpp (from benchmark)
     print("\n=== Comparison with llama.cpp (4 threads) ===")
     print("llama.cpp prefill (pp512): 48.04 t/s")

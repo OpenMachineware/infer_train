@@ -23,7 +23,7 @@ def create_q4_k_weights(N: Int, K: Int) -> Tensor[DType.uint8, 2]:
     var nb = K // 256
     var total_bytes = N * nb * Q4_K_BLOCK_BYTES
     var data = unsafe_alloc[UInt8](total_bytes)
-    
+
     # Initialize with a pattern that exercises the quantization properly
     # Scale bytes: non-zero values
     # Quantized values: alternating pattern
@@ -34,7 +34,7 @@ def create_q4_k_weights(N: Int, K: Int) -> Tensor[DType.uint8, 2]:
         else:
             # Quantized values
             data.unsafe_offset(i).unsafe_store(val=UInt8((i % 256)))
-    
+
     var shape = StaticTuple[Int, 2](N, nb * Q4_K_BLOCK_BYTES)
     return Tensor[DType.uint8, 2](shape, data)
 
@@ -52,18 +52,18 @@ def create_fp16_activations(M: Int, K: Int) -> Tensor[DType.float16, 2]:
 def benchmark_matmul(M: Int, N: Int, K: Int):
     """Compare FP32 SIMD vs Q8_K + SDOT performance."""
     print("\n=== Benchmark [M=", M, ", N=", N, ", K=", K, "] ===")
-    
+
     # Create weights
     var w = create_q4_k_weights(N, K)
     var dummy_scale = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](1))
-    
+
     # Create activations
     var x = create_fp16_activations(M, K)
-    
+
     # Warmup
     for _ in range(WARMUP):
         _ = matmul_quantized_cpu[DType.float16, QuantType.Q4_K_M, 32](x, w, dummy_scale)
-    
+
     # Benchmark FP32 SIMD (single-threaded)
     var times_fp32 = List[Int]()
     for _ in range(REPEATS):
@@ -72,7 +72,7 @@ def benchmark_matmul(M: Int, N: Int, K: Int):
         var t1 = now_ns()
         times_fp32.append(t1 - t0)
         _ = out_fp32
-    
+
     # Benchmark FP32 SIMD (threaded, 4 threads)
     var times_fp32_t = List[Int]()
     for _ in range(REPEATS):
@@ -83,7 +83,7 @@ def benchmark_matmul(M: Int, N: Int, K: Int):
         var t1 = now_ns()
         times_fp32_t.append(t1 - t0)
         _ = out_fp32_t
-    
+
     # Benchmark Q8_K + SDOT
     var times_q8k = List[Int]()
     for _ in range(REPEATS):
@@ -92,29 +92,29 @@ def benchmark_matmul(M: Int, N: Int, K: Int):
         var t1 = now_ns()
         times_q8k.append(t1 - t0)
         _ = out_q8k
-    
+
     # Compute averages
     var avg_fp32 = 0
     for t in times_fp32:
         avg_fp32 += t
     avg_fp32 = avg_fp32 // REPEATS
-    
+
     var avg_fp32_t = 0
     for t in times_fp32_t:
         avg_fp32_t += t
     avg_fp32_t = avg_fp32_t // REPEATS
-    
+
     var avg_q8k = 0
     for t in times_q8k:
         avg_q8k += t
     avg_q8k = avg_q8k // REPEATS
-    
+
     # Report
     print("  FP32 SIMD (1 thread): ", avg_fp32 / 1000, " µs")
     print("  FP32 SIMD (4 threads): ", avg_fp32_t / 1000, " µs")
     print("  Q8_K + SDOT (1 thread): ", avg_q8k / 1000, " µs")
     print("  Ratio (FP32_t/Q8K): ", Float64(avg_fp32_t) / Float64(avg_q8k))
-    
+
     # Compute GFLOPS
     var flops = Float64(2 * M * N * K)
     var gflops_fp32 = flops / Float64(avg_fp32) * 1000.0
@@ -129,9 +129,9 @@ def main():
     # Test shapes typical for 7B model
     # Small test
     benchmark_matmul(1, 256, 256)
-    
+
     # Medium test
     benchmark_matmul(1, 1024, 1024)
-    
+
     # Large test (like attention projection)
     benchmark_matmul(1, 4096, 4096)

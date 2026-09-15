@@ -9,25 +9,25 @@ from std.utils.static_tuple import StaticTuple
 def check_output_norm() raises:
     """Compare output norm weights between paths."""
     var model_path = "Hy-MT2-7B-Q4_K_M.gguf"
-    
+
     # Load quantized model
     print("Loading quantized model...")
     var ctx1 = load_gguf(model_path)
     var config1 = load_config(ctx1)
     var m1 = TransformerModel(config1, ctx1^, 512, quant_resident=True)
-    
+
     # Load dequantized model
     print("Loading dequantized model...")
     var ctx2 = load_gguf(model_path)
     var config2 = load_config(ctx2)
     var m2 = TransformerModel(config2, ctx2^, 512, quant_resident=False)
-    
+
     # Get output norm weights
     var w1 = m1._output_norm_w()
     var w2 = m2._output_norm_w()
-    
+
     print("Output norm shape:", w1.shape()[0])
-    
+
     # Compare weights
     var max_diff = Float32(0.0)
     var max_idx = 0

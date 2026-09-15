@@ -47,7 +47,7 @@ def _qkv_reshape[
     dtype: DType
 ](x: Tensor[dtype, 2], n_heads: Int, head_dim: Int) -> Tensor[dtype, 3]:
     """View [T, hidden] as [n_heads, T, head_dim].
-    
+
     Note: For Qwen3 and some models, hidden may differ from n_heads * head_dim.
     We use the actual hidden dimension from x.shape()[1].
     """
@@ -926,7 +926,7 @@ def mha_forward_batch(
     """
     var n_tokens = x.shape()[0]
     var hidden = x.shape()[1]  # Use actual hidden from input, not n_heads * head_dim
-    
+
     # Validate: for standard models, hidden == n_heads * head_dim
     # For Qwen3 and some models, hidden may differ (Q projection expands to n_heads * head_dim)
     var q_out_dim = n_heads * head_dim  # Expected Q output dimension

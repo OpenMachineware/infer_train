@@ -30,7 +30,7 @@ def quantize_to_q8_k(
     dst: Pointer[UInt8, MutUntrackedOrigin],
 ):
     """Quantize one row to Q8_K format (292 bytes).
-    
+
     Layout:
     - [0:4]: float32 scale
     - [4:260]: 256 int8 values
@@ -43,19 +43,19 @@ def quantize_to_q8_k(
         var ax = abs(v)
         if ax > amax:
             amax = ax
-    
+
     if amax == 0:
         # Store zero scale
         dst.unsafe_bitcast[Scalar[DType.float32]]().unsafe_store(val=Scalar[DType.float32](0))
         return
-    
+
     # Scale to [-127, 127] range
     var iscale = 127.0 / amax
     var d = amax / 127.0
-    
+
     # Store scale
     dst.unsafe_bitcast[Scalar[DType.float32]]().unsafe_store(val=Scalar[DType.float32](d))
-    
+
     # Quantize and store int8 values
     var qs_ptr = dst.unsafe_offset(4).unsafe_bitcast[Scalar[DType.int8]]()
     for j in range(k):
@@ -65,7 +65,7 @@ def quantize_to_q8_k(
         if v < -127:
             v = -127
         qs_ptr.unsafe_offset(j).unsafe_store(val=Scalar[DType.int8](v))
-    
+
     # Compute partial sums (16 groups of 16 elements each)
     var bsums_ptr = dst.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
     for j in range(k // 16):
@@ -84,30 +84,30 @@ def matmul_quantized_q8k[
     scale: Tensor[DType.float16, 1],
 ) -> Tensor[DType.float16, 2]:
     """Quantized matmul using Q8_K activation + int8 SDOT.
-    
+
     For each row of x:
     1. Quantize to Q8_K (int8)
     2. For each column of weights, compute dot product with SDOT
     3. Apply scales
-    
+
     This follows llama.cpp's approach for maximum performance.
     """
     var M = x.shape()[0]
     var K = x.shape()[1]
     var N = w_quant.shape()[0]
-    
+
     var be = block_elems(quant_type)
     var bb = block_bytes(quant_type)
     if be == 0 or K % be != 0:
         unimplemented("matmul_quantized_q8k: K not a multiple of block size")
-    
+
     var nb = K // QK_K  # Number of Q8_K blocks per row
-    
+
     var out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, N))
-    
+
     # Allocate Q8_K buffer for one row (292 bytes per block)
     var q8k_buf = unsafe_alloc[UInt8](nb * 292)
-    
+
     for i in range(M):
         # Quantize row i to Q8_K ONCE (all blocks)
         # Create a view of the row
@@ -115,7 +115,7 @@ def matmul_quantized_q8k[
         for b in range(nb):
             var block_start = b * QK_K
             var block_dst = q8k_buf.unsafe_offset(b * 292)
-            
+
             # Find max absolute value in this block
             var amax = Float32(0)
             for j in range(QK_K):
@@ -123,18 +123,18 @@ def matmul_quantized_q8k[
                 var ax = abs(v)
                 if ax > amax:
                     amax = ax
-            
+
             if amax == 0:
                 block_dst.unsafe_bitcast[Scalar[DType.float32]]().unsafe_store(val=Scalar[DType.float32](0))
                 continue
-            
+
             # Scale to [-127, 127] range
             var iscale = 127.0 / amax
             var d = amax / 127.0
-            
+
             # Store scale
             block_dst.unsafe_bitcast[Scalar[DType.float32]]().unsafe_store(val=Scalar[DType.float32](d))
-            
+
             # Quantize and store int8 values
             var qs_ptr = block_dst.unsafe_offset(4).unsafe_bitcast[Scalar[DType.int8]]()
             for j in range(QK_K):
@@ -144,7 +144,7 @@ def matmul_quantized_q8k[
                 if v < -127:
                     v = -127
                 qs_ptr.unsafe_offset(j).unsafe_store(val=Scalar[DType.int8](v))
-            
+
             # Compute partial sums
             var bsums_ptr = block_dst.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
             for j in range(16):
@@ -153,7 +153,7 @@ def matmul_quantized_q8k[
                     var qv = qs_ptr.unsafe_offset(j * 16 + ii).unsafe_load()
                     sum += Int16(qv)
                 bsums_ptr.unsafe_offset(j).unsafe_store(val=Scalar[DType.int16](sum))
-        
+
         # Compute dot products with all weight columns
         for j in range(N):
             var sumf = Float32(0)
@@ -174,6 +174,6 @@ def matmul_quantized_q8k[
                 else:
                     unimplemented("Unsupported quant type for Q8_K matmul")
             out.data().unsafe_offset(i * N + j).unsafe_store(val=Scalar[DType.float16](sumf))
-    
+
     q8k_buf.unsafe_free()
     return out
