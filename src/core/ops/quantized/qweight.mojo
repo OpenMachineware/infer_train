@@ -37,9 +37,12 @@ from ..cpu.matmul_cpu import (
 from ..cpu.matmul_q8k import matmul_quantized_q8k
 from ..cpu.matmul_q8k_threaded import matmul_quantized_q8k_threaded, matmul_quantized_q8k_worksteal
 from ..gpu.matmul_gpu import matmul_weight_gpu
-from ..gpu.matmul_k_quant_gpu import matmul_k_quant_gpu
+from ..gpu.matmul_k_quant_gpu import matmul_k_quant_gpu, matmul_k_quant_gpu_cached
+from ..gpu.gpu_runtime import get_gpu_context, upload, gpu_available
 from .quant_types import QuantType
+from max.gpu.host import DeviceBuffer
 from std.utils.static_tuple import StaticTuple
+from std.collections.optional import Optional
 
 
 struct QWeight(Copyable, ImplicitlyCopyable, Movable):
@@ -48,6 +51,10 @@ struct QWeight(Copyable, ImplicitlyCopyable, Movable):
     See the module docstring for the two payload variants.  `n_out` /
     `n_in` are the ELEMENT dimensions of the [out, in] matrix (the
     quantized payload's second dim is in BYTES, not elements).
+
+    GPU buffer caching: quantized weights can be uploaded to GPU once
+    and reused across multiple matmul calls, avoiding per-call upload
+    overhead (~32MB for 7B models).
     """
 
     var data: Tensor[DType.uint8, 2]  # quantized bytes (empty if fp16)
@@ -56,6 +63,7 @@ struct QWeight(Copyable, ImplicitlyCopyable, Movable):
     var quantized: Bool
     var n_out: Int
     var n_in: Int
+    var gpu_buf: Optional[DeviceBuffer[DType.uint8]]  # cached GPU buffer
 
     def __init__(out self):
         self.data = Tensor[DType.uint8, 2](StaticTuple[Int, 2](0, 0))
@@ -64,16 +72,39 @@ struct QWeight(Copyable, ImplicitlyCopyable, Movable):
         self.quantized = False
         self.n_out = 0
         self.n_in = 0
+        self.gpu_buf = None
+
+    def __copyinit__(out self, existing: QWeight):
+        self.data = existing.data
+        self.fp16 = existing.fp16
+        self.ggml_type = existing.ggml_type
+        self.quantized = existing.quantized
+        self.n_out = existing.n_out
+        self.n_in = existing.n_in
+        # GPU buffer is NOT copied - each instance has its own buffer
+        # This is correct because the original owner should manage the buffer
+        self.gpu_buf = None
 
     def shape2(self) -> StaticTuple[Int, 2]:
         """The element shape [n_out, n_in] (independent of the payload)."""
         return StaticTuple[Int, 2](self.n_out, self.n_in)
 
+    def upload_to_gpu(mut self) raises:
+        """Upload quantized weights to GPU for persistent caching.
+
+        Call this once during model initialization to avoid per-call
+        upload overhead. Only applies to quantized weights.
+        """
+        if not self.quantized or not gpu_available[DType.float16]():
+            return
+        var ctx = get_gpu_context()
+        self.gpu_buf = upload[DType.uint8, 2](ctx, self.data)
+
     def proj(
         self,
         x: Tensor[DType.float16, 2],
         dummy_scale: Tensor[DType.float16, 1],
-        use_gpu: Bool = True,
+        use_gpu: Bool = False,  # GPU path disabled pending context caching optimization
     ) -> Tensor[DType.float16, 2]:
         """y = W @ x with on-demand dequantization.
 
@@ -106,7 +137,7 @@ def quant_proj_dispatch(
     x: Tensor[DType.float16, 2],
     w: QWeight,
     dummy_scale: Tensor[DType.float16, 1],
-    use_gpu: Bool = False,  # GPU quantized matmul is experimental
+    use_gpu: Bool = True,
 ) -> Tensor[DType.float16, 2]:
     """Runtime dispatch on the GGUF type -> comptime-specialized fused
     quantized matmul (per-block dequantization inside the kernel).
@@ -125,7 +156,7 @@ def quant_proj_dispatch(
     than block-by-block SIMD for large matrices (7B+ models).
 
     M14 (experimental): GPU quantized matmul with on-device dequantization.
-    Currently only Q4_K is supported. Falls back to CPU if GPU unavailable.
+    Uses cached GPU buffer if available for persistent weight storage.
     """
     from ..cpu.blas_cpu import matmul_quantized_blas_tiled
 
@@ -135,23 +166,23 @@ def quant_proj_dispatch(
 
         # Q4_K (ggml_type 12)
         if w.ggml_type == 12:
-            return matmul_k_quant_gpu[QuantType.Q4_K_M](x, w.data, n_blocks)
+            return matmul_k_quant_gpu_cached[QuantType.Q4_K_M](x, w.data, n_blocks, w.gpu_buf)
 
         # Q5_K (ggml_type 13)
         if w.ggml_type == 13:
-            return matmul_k_quant_gpu[QuantType.Q5_K](x, w.data, n_blocks)
+            return matmul_k_quant_gpu_cached[QuantType.Q5_K](x, w.data, n_blocks, w.gpu_buf)
 
         # Q6_K (ggml_type 14)
         if w.ggml_type == 14:
-            return matmul_k_quant_gpu[QuantType.Q6_K](x, w.data, n_blocks)
+            return matmul_k_quant_gpu_cached[QuantType.Q6_K](x, w.data, n_blocks, w.gpu_buf)
 
         # Q2_K (ggml_type 11)
         if w.ggml_type == 11:
-            return matmul_k_quant_gpu[QuantType.Q2_K](x, w.data, n_blocks)
+            return matmul_k_quant_gpu_cached[QuantType.Q2_K](x, w.data, n_blocks, w.gpu_buf)
 
         # Q3_K (ggml_type 15)
         if w.ggml_type == 15:
-            return matmul_k_quant_gpu[QuantType.Q3_K](x, w.data, n_blocks)
+            return matmul_k_quant_gpu_cached[QuantType.Q3_K](x, w.data, n_blocks, w.gpu_buf)
 
     # K-quant formats: CPU path with Q8_K + SDOT
     # Threading: Use pthread pool for large matrices (N >= 2048) in decode mode

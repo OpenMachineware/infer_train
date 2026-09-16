@@ -13,13 +13,14 @@ from src.core.ops.gpu.gpu_runtime import (
     gpu_available,
     upload,
 )
-from max.gpu.host import DeviceContext
+from max.gpu.host import DeviceContext, DeviceBuffer
 from max.gpu.sync import barrier
 from std.gpu import block_idx, thread_idx
 from std.memory import Pointer, unsafe_stack_allocation
 from std.origin import MutAnyOrigin
 from std.utils.static_tuple import StaticTuple
 from std.math import min as math_min
+from std.collections.optional import Optional
 
 comptime QK_K = 256  # Elements per K-quant super-block
 
@@ -590,7 +591,6 @@ def matmul_k_quant_gpu[
     Supports Q2_K, Q3_K, Q4_K_M, Q5_K, Q6_K.
     """
     if not gpu_available[DType.float16]():
-        # Fallback to CPU
         var dummy_scale = Tensor[DType.float16, 1](StaticTuple[Int, 1](1))
         return matmul_quantized_q8k[quant_type](x, w_quant, dummy_scale)
 
@@ -602,6 +602,69 @@ def matmul_k_quant_gpu[
         var ctx = get_gpu_context()
         var x_buf = upload[DType.float16, 2](ctx, x)
         var w_buf = upload[DType.uint8, 2](ctx, w_quant)
+        var dst_buf = ctx.enqueue_create_buffer[DType.float16](M * N)
+
+        var grid_x = (N + NR1 - 1) // NR1
+        var grid_y = (M + NR0 - 1) // NR0
+
+        ctx.enqueue_function[_matmul_k_quant_kernel[quant_type]](
+            x_buf,
+            w_buf,
+            dst_buf,
+            Int32(M),
+            Int32(K),
+            Int32(N),
+            Int32(n_blocks),
+            grid_dim=(grid_x, grid_y),
+            block_dim=BLOCK_THREADS,
+        )
+
+        var out = download2[DType.float16](ctx, dst_buf, StaticTuple[Int, 2](M, N))
+        ctx.synchronize()
+        return out
+    except:
+        var dummy_scale = Tensor[DType.float16, 1](StaticTuple[Int, 1](1))
+        return matmul_quantized_q8k[quant_type](x, w_quant, dummy_scale)
+
+
+def matmul_k_quant_gpu_cached[
+    quant_type: QuantType
+](
+    x: Tensor[DType.float16, 2],
+    w_quant: Tensor[DType.uint8, 2],
+    n_blocks: Int,
+    w_buf_cached: Optional[DeviceBuffer[DType.uint8]] = None,
+) -> Tensor[DType.float16, 2]:
+    """K-quant GPU matmul with optional cached weight buffer.
+
+    If `w_buf_cached` is provided, uses it instead of uploading weights.
+    This avoids per-call upload overhead (~32MB for 7B models).
+
+    Args:
+        x: Input tensor [M, K]
+        w_quant: Quantized weight tensor [N, bytes_per_row]
+        n_blocks: Number of K-quant super-blocks (K / 256)
+        w_buf_cached: Optional pre-uploaded GPU buffer for weights
+    """
+    if not gpu_available[DType.float16]():
+        var dummy_scale = Tensor[DType.float16, 1](StaticTuple[Int, 1](1))
+        return matmul_quantized_q8k[quant_type](x, w_quant, dummy_scale)
+
+    var M = x.shape()[0]
+    var K = x.shape()[1]
+    var N = w_quant.shape()[0]
+
+    try:
+        var ctx = get_gpu_context()
+        var x_buf = upload[DType.float16, 2](ctx, x)
+
+        # Use cached buffer if available, otherwise upload
+        var w_buf: DeviceBuffer[DType.uint8]
+        if w_buf_cached:
+            w_buf = w_buf_cached.value()
+        else:
+            w_buf = upload[DType.uint8, 2](ctx, w_quant)
+
         var dst_buf = ctx.enqueue_create_buffer[DType.float16](M * N)
 
         var grid_x = (N + NR1 - 1) // NR1

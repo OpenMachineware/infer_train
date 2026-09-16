@@ -63,9 +63,12 @@ from .ops.attention.mha import (
     rms_norm_heads,
 )
 from .ops.attention.kv_cache import KVCache, KVCacheLayer, KVCacheType
+from .device import has_metal_gpu
+from max.gpu.host import DeviceContext
 from std.utils.static_tuple import StaticTuple
 from std.math import sqrt, exp, log
 from std.memory.unsafe import bitcast
+from std.collections.optional import Optional
 
 comptime DEFAULT_KV_CACHE_LEN = 1024
 
@@ -411,6 +414,8 @@ struct TransformerModel(Movable):
     var shard_lo: Int
     var shard_hi: Int
     var load_heads: Bool
+    # GPU context cache - reused across all operations
+    var _gpu_ctx: Optional[DeviceContext]
 
     def __init__(
         out self,
@@ -439,6 +444,7 @@ struct TransformerModel(Movable):
         self.shard_lo = shard_lo
         self.shard_hi = config.n_layers if shard_hi < 0 else shard_hi
         self.load_heads = load_heads
+        self._gpu_ctx = None
         # M11: Q4-resident is the DEFAULT - weights stay in their on-disk
         # (Q4) format and are dequantized per block inside the matmul
         # kernel.  No command-line flag is needed to get it.
@@ -826,6 +832,45 @@ struct TransformerModel(Movable):
                     lw.attn_k_norm = dequantize_vector(self.ctx, k_norm.value())
             qparams.layers.append(lw^)
         self.qparams = qparams^
+
+    def upload_weights_to_gpu(mut self) raises:
+        """Upload all quantized weights to GPU for persistent caching.
+
+        Call this once after load_weights_quant() to avoid per-call upload
+        overhead (~32MB for 7B models). Only uploads K-quant weights
+        (Q2_K, Q3_K, Q4_K, Q5_K, Q6_K) as these have GPU kernels.
+        """
+        from .device import has_metal_gpu
+        if not has_metal_gpu():
+            return
+
+        # Upload embedding table and output projection if loaded
+        if self.qparams.token_embd.quantized:
+            self.qparams.token_embd.upload_to_gpu()
+        if self.qparams.output_w.quantized and self.qparams.output_w.n_in > 0:
+            self.qparams.output_w.upload_to_gpu()
+
+        # Upload all layer weights - use direct indexing to mutate in place
+        for i in range(len(self.qparams.layers)):
+            # Attention weights
+            self.qparams.layers[i].q_w.upload_to_gpu()
+            self.qparams.layers[i].k_w.upload_to_gpu()
+            self.qparams.layers[i].v_w.upload_to_gpu()
+            self.qparams.layers[i].o_w.upload_to_gpu()
+            # FFN weights
+            self.qparams.layers[i].gate_w.upload_to_gpu()
+            self.qparams.layers[i].up_w.upload_to_gpu()
+            self.qparams.layers[i].down_w.upload_to_gpu()
+            # Recurrent layer weights
+            self.qparams.layers[i].attn_gate.upload_to_gpu()
+            self.qparams.layers[i].ssm_beta.upload_to_gpu()
+            self.qparams.layers[i].ssm_alpha.upload_to_gpu()
+            self.qparams.layers[i].ssm_out.upload_to_gpu()
+            # MoE weights
+            self.qparams.layers[i].moe_router.upload_to_gpu()
+            self.qparams.layers[i].moe_sh_gate.upload_to_gpu()
+            self.qparams.layers[i].moe_sh_up.upload_to_gpu()
+            self.qparams.layers[i].moe_sh_down.upload_to_gpu()
 
     def _build_fp16_views(mut self):
         """Legacy (dequantized) mode: wrap the fp16 storage once in
