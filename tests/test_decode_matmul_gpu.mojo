@@ -5,9 +5,9 @@
 # Test decode-optimized GPU matmul kernel
 
 from src.core.tensor import Tensor
-from src.core.ops.gpu.matmul_decode_gpu import matmul_q4k_decode_gpu
+from src.core.ops.gpu.matmul_decode_gpu import matmul_decode_gpu
 from src.core.ops.cpu.matmul_q8k import matmul_quantized_q8k
-from src.core.ops.quantized.dequantize import _dequantize_q4_k_block
+from src.core.ops.quantized.dequantize import _dequantize_q4_k_block, _dequantize_q5_k_block, _dequantize_q6_k_block
 from src.core.ops.cpu.matmul_cpu import matmul_weight_cpu
 from src.core.ops.quantized.quant_types import QuantType
 from std.utils.static_tuple import StaticTuple
@@ -17,6 +17,10 @@ from std.math import abs
 
 comptime QK_K = 256
 comptime Q4_K_BLOCK = 144
+comptime Q5_K_BLOCK = 176
+comptime Q6_K_BLOCK = 210
+comptime Q2_K_BLOCK = 84
+comptime Q3_K_BLOCK = 110
 
 
 def create_test_q4k_block(ptr: Pointer[UInt8, MutUntrackedOrigin]):
@@ -51,7 +55,8 @@ def test_decode_m1():
             w_q4k.set(row * Q4_K_BLOCK + i, block_mem[unsafe_offset=i])
 
     try:
-        var gpu_result = matmul_q4k_decode_gpu[1](x, w_q4k, 1)
+        # Use generic decode interface with Q4_K (quant_type=12)
+        var gpu_result = matmul_decode_gpu(x, w_q4k, 12, 1)
 
         # CPU reference: dequantize weights and compute
         var w_fp16 = Tensor[DType.float16, 2](StaticTuple[Int, 2](N, K))
@@ -95,7 +100,8 @@ def test_decode_m4():
             w_q4k.set(row * Q4_K_BLOCK + i, block_mem[unsafe_offset=i])
 
     try:
-        var gpu_result = matmul_q4k_decode_gpu[4](x, w_q4k, 1)
+        # Use generic decode interface with Q4_K (quant_type=12)
+        var gpu_result = matmul_decode_gpu(x, w_q4k, 12, 1)
 
         # CPU reference: dequantize weights and compute
         var w_fp16 = Tensor[DType.float16, 2](StaticTuple[Int, 2](N, K))

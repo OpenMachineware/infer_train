@@ -7,7 +7,7 @@
 # Unlike the general-purpose matmul, this kernel is optimized for:
 # - Small batch sizes (M <= 4)
 # - Weight-stationary access pattern
-# - SIMD-group based reduction (shuffle_down)
+# - SIMD-group based reduction (warp_sum)
 #
 # This follows llama.cpp's kernel_mul_mv_ext approach.
 
@@ -36,38 +36,48 @@ from src.core.ops.quantized.quant_types import QuantType
 
 comptime BLOCK_THREADS = 256
 comptime ROWS_PER_TG = 4  # Each threadgroup processes 4 output rows
-comptime BB_Q4_K = 144   # Q4_K block bytes
 comptime CHUNKS_PER_BLOCK = 16  # 16 x 16-element chunks per 256-element block
 
+# Block sizes for each format (bytes)
+comptime BB_Q4_K = 144
+comptime BB_Q5_K = 176
+comptime BB_Q6_K = 210
+comptime BB_Q2_K = 84
+comptime BB_Q3_K = 110
+
 
 # ============================================================================
-# Q4_K decode kernel (M=1-4 optimized) - following llama.cpp's kernel_mul_mv_ext
+# Generic K-quant decode kernel - supports all K-quant types
 # ============================================================================
 
 
-def kernel_mul_mv_q4k_decode[
+def kernel_mul_mv_k_decode[
     M: Int,  # Batch size (1-4)
+    quant_type: QuantType,  # Q4_K, Q5_K, Q6_K, Q2_K, Q3_K
 ](
-    src0: Pointer[Scalar[DType.uint8], MutAnyOrigin],  # Q4_K weights [N, nb * 144]
+    src0: Pointer[Scalar[DType.uint8], MutAnyOrigin],  # Quantized weights [N, nb * BB]
     src1: Pointer[Scalar[DType.float16], MutAnyOrigin],  # FP16 input [M, K]
     dst: Pointer[Scalar[DType.float16], MutAnyOrigin],   # FP16 output [M, N]
     ne00: Int32,   # K
     ne01: Int32,   # N (output dimension)
     n_blocks: Int32,  # number of 256-element blocks in K
 ):
-    """Decode-optimized Q4_K x FP16 matmul.
+    """Decode-optimized K-quant x FP16 matmul.
 
     Following llama.cpp's kernel_mul_mv_ext pattern:
     - 32 threads per SIMD group (one warp)
     - Each thread processes chunks with stride = 32
     - Warp shuffle reduction across threads
 
-    Grid: (N,)
-    Each threadgroup (256 threads = 8 warps) computes 4 output rows.
+    Grid: (N / ROWS_PER_TG,)
+    Each threadgroup (256 threads = 8 warps) computes ROWS_PER_TG output rows.
     """
     var N = Int(ne01)
     var K = Int(ne00)
     var nb = Int(n_blocks)
+
+    # Get block bytes based on quant_type
+    comptime bb = _get_block_bytes(quant_type)
 
     var row_start = Int(block_idx.x) * ROWS_PER_TG
     var tid = Int(thread_idx.x)
@@ -85,7 +95,7 @@ def kernel_mul_mv_q4k_decode[
     if weight_row >= N:
         return
 
-    var weight_base = weight_row * nb * BB_Q4_K  # 144 bytes per Q4_K block
+    var weight_base = weight_row * nb * bb
 
     # Process each input row (M rows)
     for m in range(M):
@@ -94,7 +104,7 @@ def kernel_mul_mv_q4k_decode[
         # Each thread processes chunks with stride = 32 (warp size)
         # This parallelizes K dimension across threads in the warp
         for block_idx in range(nb):
-            var block_ptr = src0.unsafe_offset(weight_base + block_idx * BB_Q4_K)
+            var block_ptr = src0.unsafe_offset(weight_base + block_idx * bb)
             var input_block_offset = m * K + block_idx * 256
 
             # Each thread processes chunks: il = lane + 32*i
@@ -107,7 +117,17 @@ def kernel_mul_mv_q4k_decode[
                 # Dequantize 16 elements
                 var deq_buf = unsafe_stack_allocation[16, DType.float16]()
 
-                dequantize_q4_k_16(block_ptr, il, deq_buf)
+                # Dispatch to appropriate dequantize function
+                comptime if quant_type == QuantType.Q4_K_M:
+                    dequantize_q4_k_16(block_ptr, il, deq_buf)
+                elif quant_type == QuantType.Q5_K:
+                    dequantize_q5_k_16(block_ptr, il, deq_buf)
+                elif quant_type == QuantType.Q6_K:
+                    dequantize_q6_k_16(block_ptr, il, deq_buf)
+                elif quant_type == QuantType.Q2_K:
+                    dequantize_q2_k_16(block_ptr, il, deq_buf)
+                elif quant_type == QuantType.Q3_K:
+                    dequantize_q3_k_16(block_ptr, il, deq_buf)
 
                 # Load input values and compute dot product
                 var input_offset = input_block_offset + il * 16
@@ -117,7 +137,6 @@ def kernel_mul_mv_q4k_decode[
                     sumf += w_val * x_val
 
         # Warp shuffle reduction - sum across all lanes
-        # Use warp.sum for efficient warp-wide reduction
         var sum_vec = SIMD[DType.float32, 1](sumf)
         sumf = warp_sum(sum_vec)
 
@@ -127,19 +146,37 @@ def kernel_mul_mv_q4k_decode[
             dst.unsafe_offset(out_offset).unsafe_store(val=Scalar[DType.float16](sumf))
 
 
+@always_inline
+def _get_block_bytes(quant_type: QuantType) -> Int:
+    """Get block bytes for a K-quant type."""
+    if quant_type == QuantType.Q4_K_M:
+        return BB_Q4_K
+    elif quant_type == QuantType.Q5_K:
+        return BB_Q5_K
+    elif quant_type == QuantType.Q6_K:
+        return BB_Q6_K
+    elif quant_type == QuantType.Q2_K:
+        return BB_Q2_K
+    elif quant_type == QuantType.Q3_K:
+        return BB_Q3_K
+    else:
+        return BB_Q4_K  # Default
+
+
 # ============================================================================
-# Dispatch function
+# Dispatch function for each quant type
 # ============================================================================
 
 
-def matmul_q4k_decode_gpu[
+def matmul_k_decode_gpu[
     M: Int,
+    quant_type: QuantType,
 ](
     x: Tensor[DType.float16, 2],  # [M, K], M <= 4
-    w: Tensor[DType.uint8, 2],    # [N, nb * 144] quantized weights
+    w: Tensor[DType.uint8, 2],    # [N, nb * BB] quantized weights
     n_blocks: Int,                # K // 256
 ) -> Tensor[DType.float16, 2]:
-    """Decode-optimized GPU matmul for Q4_K weights.
+    """Decode-optimized GPU matmul for K-quant weights.
 
     Uses specialized kernel for M <= 4 with warp shuffle reduction.
     """
@@ -149,7 +186,7 @@ def matmul_q4k_decode_gpu[
     if not gpu_available[DType.float16]():
         # Fallback to CPU
         var dummy_scale = Tensor[DType.float16, 1](StaticTuple[Int, 1](1))
-        return matmul_quantized_q8k[QuantType.Q4_K_M](x, w, dummy_scale)
+        return matmul_quantized_q8k[quant_type](x, w, dummy_scale)
 
     try:
         var ctx = get_gpu_context()
@@ -159,7 +196,7 @@ def matmul_q4k_decode_gpu[
 
         var grid_x = (N + ROWS_PER_TG - 1) // ROWS_PER_TG
 
-        ctx.enqueue_function[kernel_mul_mv_q4k_decode[M]](
+        ctx.enqueue_function[kernel_mul_mv_k_decode[M, quant_type]](
             w_buf,
             x_buf,
             dst_buf,
@@ -176,7 +213,7 @@ def matmul_q4k_decode_gpu[
 
     except:
         var dummy_scale = Tensor[DType.float16, 1](StaticTuple[Int, 1](1))
-        return matmul_quantized_q8k[QuantType.Q4_K_M](x, w, dummy_scale)
+        return matmul_quantized_q8k[quant_type](x, w, dummy_scale)
 
 
 # ============================================================================
@@ -200,39 +237,72 @@ def matmul_decode_gpu(
     """
     var M = x.shape()[0]
 
+    # Handle M > 4 with general GPU matmul
     if M > 4:
-        # Use general GPU matmul for larger batches
-        var quant = QuantType.Q4_K_M
-        if quant_type == 13:
-            quant = QuantType.Q5_K
+        if quant_type == 12:
+            return matmul_k_quant_gpu[QuantType.Q4_K_M](x, w, n_blocks)
+        elif quant_type == 13:
+            return matmul_k_quant_gpu[QuantType.Q5_K](x, w, n_blocks)
         elif quant_type == 14:
-            quant = QuantType.Q6_K
+            return matmul_k_quant_gpu[QuantType.Q6_K](x, w, n_blocks)
         elif quant_type == 11:
-            quant = QuantType.Q2_K
+            return matmul_k_quant_gpu[QuantType.Q2_K](x, w, n_blocks)
         elif quant_type == 15:
-            quant = QuantType.Q3_K
-        return matmul_k_quant_gpu[quant](x, w, n_blocks)
-
-    # Use decode-optimized kernel
-    # Currently only Q4_K is implemented with shuffle reduction
-    if quant_type == 12:  # Q4_K
-        if M == 1:
-            return matmul_q4k_decode_gpu[1](x, w, n_blocks)
-        elif M == 2:
-            return matmul_q4k_decode_gpu[2](x, w, n_blocks)
-        elif M == 3:
-            return matmul_q4k_decode_gpu[3](x, w, n_blocks)
+            return matmul_k_quant_gpu[QuantType.Q3_K](x, w, n_blocks)
         else:
-            return matmul_q4k_decode_gpu[4](x, w, n_blocks)
+            return matmul_k_quant_gpu[QuantType.Q4_K_M](x, w, n_blocks)
 
-    # Fallback to general GPU matmul for other types
-    var quant = QuantType.Q4_K_M
-    if quant_type == 13:
-        quant = QuantType.Q5_K
-    elif quant_type == 14:
-        quant = QuantType.Q6_K
-    elif quant_type == 11:
-        quant = QuantType.Q2_K
-    elif quant_type == 15:
-        quant = QuantType.Q3_K
-    return matmul_k_quant_gpu[quant](x, w, n_blocks)
+    # M <= 4: Use decode-optimized kernel
+    # Expand all M x quant_type combinations
+    if M == 1:
+        if quant_type == 12:
+            return matmul_k_decode_gpu[1, QuantType.Q4_K_M](x, w, n_blocks)
+        elif quant_type == 13:
+            return matmul_k_decode_gpu[1, QuantType.Q5_K](x, w, n_blocks)
+        elif quant_type == 14:
+            return matmul_k_decode_gpu[1, QuantType.Q6_K](x, w, n_blocks)
+        elif quant_type == 11:
+            return matmul_k_decode_gpu[1, QuantType.Q2_K](x, w, n_blocks)
+        elif quant_type == 15:
+            return matmul_k_decode_gpu[1, QuantType.Q3_K](x, w, n_blocks)
+        else:
+            return matmul_k_decode_gpu[1, QuantType.Q4_K_M](x, w, n_blocks)
+    elif M == 2:
+        if quant_type == 12:
+            return matmul_k_decode_gpu[2, QuantType.Q4_K_M](x, w, n_blocks)
+        elif quant_type == 13:
+            return matmul_k_decode_gpu[2, QuantType.Q5_K](x, w, n_blocks)
+        elif quant_type == 14:
+            return matmul_k_decode_gpu[2, QuantType.Q6_K](x, w, n_blocks)
+        elif quant_type == 11:
+            return matmul_k_decode_gpu[2, QuantType.Q2_K](x, w, n_blocks)
+        elif quant_type == 15:
+            return matmul_k_decode_gpu[2, QuantType.Q3_K](x, w, n_blocks)
+        else:
+            return matmul_k_decode_gpu[2, QuantType.Q4_K_M](x, w, n_blocks)
+    elif M == 3:
+        if quant_type == 12:
+            return matmul_k_decode_gpu[3, QuantType.Q4_K_M](x, w, n_blocks)
+        elif quant_type == 13:
+            return matmul_k_decode_gpu[3, QuantType.Q5_K](x, w, n_blocks)
+        elif quant_type == 14:
+            return matmul_k_decode_gpu[3, QuantType.Q6_K](x, w, n_blocks)
+        elif quant_type == 11:
+            return matmul_k_decode_gpu[3, QuantType.Q2_K](x, w, n_blocks)
+        elif quant_type == 15:
+            return matmul_k_decode_gpu[3, QuantType.Q3_K](x, w, n_blocks)
+        else:
+            return matmul_k_decode_gpu[3, QuantType.Q4_K_M](x, w, n_blocks)
+    else:  # M == 4
+        if quant_type == 12:
+            return matmul_k_decode_gpu[4, QuantType.Q4_K_M](x, w, n_blocks)
+        elif quant_type == 13:
+            return matmul_k_decode_gpu[4, QuantType.Q5_K](x, w, n_blocks)
+        elif quant_type == 14:
+            return matmul_k_decode_gpu[4, QuantType.Q6_K](x, w, n_blocks)
+        elif quant_type == 11:
+            return matmul_k_decode_gpu[4, QuantType.Q2_K](x, w, n_blocks)
+        elif quant_type == 15:
+            return matmul_k_decode_gpu[4, QuantType.Q3_K](x, w, n_blocks)
+        else:
+            return matmul_k_decode_gpu[4, QuantType.Q4_K_M](x, w, n_blocks)
