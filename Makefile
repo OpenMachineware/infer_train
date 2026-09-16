@@ -75,6 +75,10 @@ test-gpu: tp
 	./tests/test_gpu_pipeline
 	$(MOJO) build -I . tests/test_gpu_weight_proj.mojo $(TP_XLINK) -o tests/test_gpu_weight_proj
 	./tests/test_gpu_weight_proj
+	$(MOJO) build -I . tests/test_tiled_matmul.mojo $(TP_XLINK) -o tests/test_tiled_matmul
+	./tests/test_tiled_matmul
+	$(MOJO) build -I . tests/bench_dynamic_dispatch.mojo $(TP_XLINK) -o tests/bench_dynamic_dispatch
+	./tests/bench_dynamic_dispatch
 
 # GGUF split-file (multi-part) loading.  Needs the split part files next to
 # the repo root (see tests/test_gguf_split.mojo); reports SKIP if absent.
@@ -304,7 +308,7 @@ clean:
 	rm -f bench_q8k_vs_fp32 bench_q8k_sdot_threaded bench_qmatmul_threading
 	rm -f tests/bench_qwen3
 	rm -f tests/bench_q4k_matmul tests/bench_hunyuan tests/bench_decode_breakdown
-	rm -f tests/test_gpu_weight_proj
+	rm -f tests/test_gpu_weight_proj tests/test_tiled_matmul tests/bench_tiled_matmul tests/bench_dynamic_dispatch
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
 	      python/infer_train/_lib/libinfer_train_mwq.dylib

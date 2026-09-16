@@ -24,6 +24,7 @@ from .gpu_runtime import (
     gpu_available,
     upload,
 )
+from .matmul_tiled_gpu import matmul_weight_tiled_gpu
 from max.gpu.host import DeviceBuffer, DeviceContext
 from std.gpu import global_idx, grid_dim, block_dim
 from std.memory import Pointer
@@ -482,13 +483,29 @@ def matmul_weight_gpu[
     """Weight-major GPU matmul: y = x @ w^T where w is [N, K] (GGUF layout).
 
     This is the entry point for FP16 weight projections.
+    Dynamically selects between naive and tiled kernels based on batch size.
+
+    Kernel selection (following llama.cpp ggml_metal_op_mul_mat_use_mm):
+    - M > 8 and K >= 64: tiled kernel (better shared memory utilization)
+    - Otherwise: naive kernel (one thread per output element)
+
     Falls back to CPU on any GPU error.
     """
     from ..cpu.matmul_cpu import matmul_weight_cpu
     if not gpu_available[dtype]():
         return matmul_weight_cpu[dtype](x, w)
+
+    var M = x.shape()[0]
+    var K = x.shape()[1]
+
+    # Dynamic kernel selection threshold (llama.cpp: ne11 > 8, ne00 >= 64)
+    var use_tiled = M > 8 and K >= 64
+
     try:
         var ctx = get_gpu_context()
-        return _matmul_weight_gpu_launch[dtype](ctx, x, w)
+        if use_tiled:
+            return matmul_weight_tiled_gpu[dtype](x, w)
+        else:
+            return _matmul_weight_gpu_launch[dtype](ctx, x, w)
     except:
         return matmul_weight_cpu[dtype](x, w)
