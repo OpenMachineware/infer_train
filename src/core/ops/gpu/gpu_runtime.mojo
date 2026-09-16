@@ -4,7 +4,7 @@
 #
 # Shared host-side plumbing for the Metal GPU kernels in this package.
 #
-# Design (M7):
+# Design (M7/M14):
 #   * Every `*_gpu` op is a *host-side entry point*: it uploads the input
 #     tensors to device buffers, launches the per-dtype kernel, downloads the
 #     result into a fresh host `Tensor`, and synchronizes.  The returned
@@ -16,17 +16,15 @@
 #   * `DType.float64` is never run on the GPU: Metal has no f64, so the ops
 #     fall back to the CPU kernels (see `gpu_available`).
 #
-# Mojo 1.0 note on context lifetime: the language has no supported mechanism
-# for a process-wide cached object (no `static var`, module-level globals are
-# rejected), so each op call constructs its own `DeviceContext`.  Steady-state
-# construction costs a few hundred microseconds; the per-op HtoD/DtoH traffic
-# dominates for all but the smallest tensors.  Threading a shared context
-# through the registry is the planned optimization path.
+# Context caching (M14): GPU ops accept an Optional cached DeviceContext to
+# avoid per-call creation overhead (~100-200μs). When None is passed, a new
+# context is created. Callers should cache the context at model level.
 
 from ...device import has_metal_gpu
 from ...tensor import Tensor
 from max.gpu.host import DeviceBuffer, DeviceContext
 from std.utils.static_tuple import StaticTuple
+from std.collections.optional import Optional
 
 
 def gpu_available[dtype: DType]() -> Bool:
@@ -40,7 +38,10 @@ def gpu_available[dtype: DType]() -> Bool:
 
 
 def get_gpu_context() raises -> DeviceContext:
-    """Create a fresh `DeviceContext` for the default accelerator."""
+    """Create a fresh `DeviceContext` for the default accelerator.
+
+    Note: For performance, prefer passing a cached context to GPU ops.
+    """
     return DeviceContext()
 
 

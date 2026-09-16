@@ -634,17 +634,20 @@ def matmul_k_quant_gpu_cached[
     w_quant: Tensor[DType.uint8, 2],
     n_blocks: Int,
     w_buf_cached: Optional[DeviceBuffer[DType.uint8]] = None,
+    ctx_cached: Optional[DeviceContext] = None,
 ) -> Tensor[DType.float16, 2]:
-    """K-quant GPU matmul with optional cached weight buffer.
+    """K-quant GPU matmul with optional cached weight buffer and context.
 
     If `w_buf_cached` is provided, uses it instead of uploading weights.
-    This avoids per-call upload overhead (~32MB for 7B models).
+    If `ctx_cached` is provided, uses it instead of creating a new context.
+    This avoids per-call overhead (~32MB upload + 100-200μs context creation).
 
     Args:
         x: Input tensor [M, K]
         w_quant: Quantized weight tensor [N, bytes_per_row]
         n_blocks: Number of K-quant super-blocks (K / 256)
         w_buf_cached: Optional pre-uploaded GPU buffer for weights
+        ctx_cached: Optional cached DeviceContext
     """
     if not gpu_available[DType.float16]():
         var dummy_scale = Tensor[DType.float16, 1](StaticTuple[Int, 1](1))
@@ -655,7 +658,15 @@ def matmul_k_quant_gpu_cached[
     var N = w_quant.shape()[0]
 
     try:
-        var ctx = get_gpu_context()
+        # Use cached context if available, otherwise create new one
+        var ctx: DeviceContext
+        var owns_ctx = False
+        if ctx_cached:
+            ctx = ctx_cached.value()
+        else:
+            ctx = get_gpu_context()
+            owns_ctx = True
+
         var x_buf = upload[DType.float16, 2](ctx, x)
 
         # Use cached buffer if available, otherwise upload
@@ -683,7 +694,9 @@ def matmul_k_quant_gpu_cached[
         )
 
         var out = download2[DType.float16](ctx, dst_buf, StaticTuple[Int, 2](M, N))
-        ctx.synchronize()
+        # Only synchronize if we own the context (caller will sync if they own it)
+        if owns_ctx:
+            ctx.synchronize()
         return out
     except:
         var dummy_scale = Tensor[DType.float16, 1](StaticTuple[Int, 1](1))

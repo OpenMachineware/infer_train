@@ -39,6 +39,11 @@ def main() raises:
     var weights = collect_weights(ctx)
     var model = TransformerModel(config, ctx^, 512)
     model.weights = weights^
+    model.load_weights_quant()
+
+    # Upload all weights to GPU for persistent caching
+    model.upload_weights_to_gpu()
+    print("Weights uploaded to GPU")
 
     var tokenizer = make_tokenizer(model.ctx, String(""))
 

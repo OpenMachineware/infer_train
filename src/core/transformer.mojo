@@ -64,6 +64,7 @@ from .ops.attention.mha import (
 )
 from .ops.attention.kv_cache import KVCache, KVCacheLayer, KVCacheType
 from .device import has_metal_gpu
+from .ops.gpu.gpu_runtime import get_gpu_context
 from max.gpu.host import DeviceContext
 from std.utils.static_tuple import StaticTuple
 from std.math import sqrt, exp, log
@@ -840,37 +841,90 @@ struct TransformerModel(Movable):
         overhead (~32MB for 7B models). Only uploads K-quant weights
         (Q2_K, Q3_K, Q4_K, Q5_K, Q6_K) as these have GPU kernels.
         """
-        from .device import has_metal_gpu
         if not has_metal_gpu():
             return
 
+        # Create and cache GPU context for the model's lifetime
+        if not self._gpu_ctx:
+            self._gpu_ctx = get_gpu_context()
+        var ctx = self._gpu_ctx.value()
+
         # Upload embedding table and output projection if loaded
         if self.qparams.token_embd.quantized:
-            self.qparams.token_embd.upload_to_gpu()
+            self.qparams.token_embd.upload_to_gpu(ctx)
         if self.qparams.output_w.quantized and self.qparams.output_w.n_in > 0:
-            self.qparams.output_w.upload_to_gpu()
+            self.qparams.output_w.upload_to_gpu(ctx)
 
-        # Upload all layer weights - use direct indexing to mutate in place
+        # Upload all layer weights
+        # Note: Mojo's List returns copies, so we need to mutate and set back
         for i in range(len(self.qparams.layers)):
+            var lw = self.qparams.layers[i]
             # Attention weights
-            self.qparams.layers[i].q_w.upload_to_gpu()
-            self.qparams.layers[i].k_w.upload_to_gpu()
-            self.qparams.layers[i].v_w.upload_to_gpu()
-            self.qparams.layers[i].o_w.upload_to_gpu()
+            lw.q_w.upload_to_gpu(ctx)
+            lw.k_w.upload_to_gpu(ctx)
+            lw.v_w.upload_to_gpu(ctx)
+            lw.o_w.upload_to_gpu(ctx)
             # FFN weights
-            self.qparams.layers[i].gate_w.upload_to_gpu()
-            self.qparams.layers[i].up_w.upload_to_gpu()
-            self.qparams.layers[i].down_w.upload_to_gpu()
+            lw.gate_w.upload_to_gpu(ctx)
+            lw.up_w.upload_to_gpu(ctx)
+            lw.down_w.upload_to_gpu(ctx)
             # Recurrent layer weights
-            self.qparams.layers[i].attn_gate.upload_to_gpu()
-            self.qparams.layers[i].ssm_beta.upload_to_gpu()
-            self.qparams.layers[i].ssm_alpha.upload_to_gpu()
-            self.qparams.layers[i].ssm_out.upload_to_gpu()
+            lw.attn_gate.upload_to_gpu(ctx)
+            lw.ssm_beta.upload_to_gpu(ctx)
+            lw.ssm_alpha.upload_to_gpu(ctx)
+            lw.ssm_out.upload_to_gpu(ctx)
             # MoE weights
-            self.qparams.layers[i].moe_router.upload_to_gpu()
-            self.qparams.layers[i].moe_sh_gate.upload_to_gpu()
-            self.qparams.layers[i].moe_sh_up.upload_to_gpu()
-            self.qparams.layers[i].moe_sh_down.upload_to_gpu()
+            lw.moe_router.upload_to_gpu(ctx)
+            lw.moe_sh_gate.upload_to_gpu(ctx)
+            lw.moe_sh_up.upload_to_gpu(ctx)
+            lw.moe_sh_down.upload_to_gpu(ctx)
+            # Update list element
+            self.qparams.layers[i] = lw^
+
+        # Synchronize to ensure all uploads complete
+        ctx.synchronize()
+
+    def get_gpu_context(mut self) raises -> DeviceContext:
+        """Get or create cached GPU context.
+
+        Creates the context on first call and caches it for reuse.
+        This avoids per-operation context creation overhead.
+        """
+        if not self._gpu_ctx:
+            from .ops.gpu.gpu_runtime import get_gpu_context
+            self._gpu_ctx = get_gpu_context()
+        return self._gpu_ctx.value()
+
+    def _proj(
+        self, w: QWeight, x: Tensor[DType.float16, 2], use_gpu: Bool = True
+    ) -> Tensor[DType.float16, 2]:
+        """Project through a QWeight with optional GPU acceleration.
+
+        Uses the cached GPU context if available and use_gpu is True.
+        This avoids per-call DeviceContext creation overhead.
+        """
+        if use_gpu and has_metal_gpu():
+            if self._gpu_ctx:
+                # Use cached context
+                var ctx = self._gpu_ctx.value()
+                return w.proj(x, self._dummy_scale, True, ctx)
+            else:
+                # Create new context on first use
+                try:
+                    var ctx = get_gpu_context()
+                    return w.proj(x, self._dummy_scale, True, ctx)
+                except:
+                    return w.proj(x, self._dummy_scale, False)
+        return w.proj(x, self._dummy_scale, False)
+
+    def _sync_gpu(self):
+        """Synchronize GPU operations if using GPU context."""
+        if self._gpu_ctx:
+            try:
+                var ctx = self._gpu_ctx.value()
+                ctx.synchronize()
+            except:
+                pass
 
     def _build_fp16_views(mut self):
         """Legacy (dequantized) mode: wrap the fp16 storage once in
@@ -963,7 +1017,7 @@ struct TransformerModel(Movable):
         """The LM head projection (Q4-resident: fused per-block-dequant
         matmul; legacy: threaded weight-major matmul)."""
         if self.quant_resident:
-            return self.qparams.output_w.proj(x, self._dummy_scale)
+            return self._proj(self.qparams.output_w, x)
         return matmul_weight_cpu_threaded[DType.float16](
             x, self.params.output_w
         )
@@ -1187,7 +1241,8 @@ struct TransformerModel(Movable):
         )
         if cfg.is_moe:
             return self._ffn_moe(layer, normed2, resid)
-        return _ffn_swiglu(normed2, lw, resid, self._dummy_scale)
+        var gpu_ctx = self._gpu_ctx
+        return _ffn_swiglu(normed2, lw, resid, self._dummy_scale, gpu_ctx)
 
     def _layer_forward_attn_batch(
         mut self, layer: Int, x: Tensor[DType.float16, 2], start_pos: Int, n_tokens: Int
@@ -1245,7 +1300,8 @@ struct TransformerModel(Movable):
         )
         if cfg.is_moe:
             return self._ffn_moe(layer, normed2, out)
-        return _ffn_swiglu_batch(normed2, lw, out, self._dummy_scale, n_tokens)
+        var gpu_ctx = self._gpu_ctx
+        return _ffn_swiglu_batch(normed2, lw, out, self._dummy_scale, n_tokens, gpu_ctx)
 
     def _layer_forward_ssm(
         mut self, layer: Int, x: Tensor[DType.float16, 2]
@@ -1270,10 +1326,10 @@ struct TransformerModel(Movable):
         )
         # z gate (attn_gate) + wqkv (Q4-resident: fused per-block-dequant
         # projections; legacy fp16: threaded weight-major matmuls)
-        var qkv = lw.q_w.proj(normed, self._dummy_scale)
-        var z = lw.attn_gate.proj(normed, self._dummy_scale)
-        var alpha = lw.ssm_alpha.proj(normed, self._dummy_scale)
-        var beta = lw.ssm_beta.proj(normed, self._dummy_scale)
+        var qkv = self._proj(lw.q_w, normed)
+        var z = self._proj(lw.attn_gate, normed)
+        var alpha = self._proj(lw.ssm_alpha, normed)
+        var beta = self._proj(lw.ssm_beta, normed)
         alpha = add_row_cpu[DType.float16](alpha, lw.ssm_dt)
 
         # causal depthwise conv (kernel taps over [state..., current])
@@ -1404,14 +1460,15 @@ struct TransformerModel(Movable):
                     Scalar[DType.float16](o[i] * o_inv * wv * z_act),
                 )
 
-        var attn_out = lw.ssm_out.proj(gated, self._dummy_scale)
+        var attn_out = self._proj(lw.ssm_out, gated)
         var resid = add_cpu_dynamic[DType.float16](x, attn_out)
         var normed2 = rms_norm_weight[DType.float16](
             resid, lw.post_attn_norm_w, cfg.norm_eps
         )
         if cfg.is_moe:
             return self._ffn_moe(layer, normed2, resid)
-        return _ffn_swiglu(normed2, lw, resid, self._dummy_scale)
+        var gpu_ctx = self._gpu_ctx
+        return _ffn_swiglu(normed2, lw, resid, self._dummy_scale, gpu_ctx)
 
     # -- MoE FFN (qwen35moe) -------------------------------------------------
 
@@ -1439,7 +1496,7 @@ struct TransformerModel(Movable):
             top_k = 1
 
         # 1. Router logits [1, n_experts].
-        var logits = lw.moe_router.proj(normed, self._dummy_scale)
+        var logits = self._proj(lw.moe_router, normed)
         # 2. Softmax over all experts (numerically stable).
         var mx = Float32(-3.0e38)
         for i in range(n_experts):
@@ -1488,18 +1545,18 @@ struct TransformerModel(Movable):
             var gate_up = self._expert_gate_up(layer, e)
             var gate = qrow_view(gate_up, 0, expert_ffn)
             var up = qrow_view(gate_up, expert_ffn, expert_ffn)
-            var g = gate.proj(normed, self._dummy_scale)
-            var u = up.proj(normed, self._dummy_scale)
+            var g = self._proj(gate, normed)
+            var u = self._proj(up, normed)
             var h = swiglu_cpu_dynamic[DType.float16](g, u)
             var down = self._expert_down(layer, e)
-            var eo = down.proj(h, self._dummy_scale)
+            var eo = self._proj(down, h)
             _axpy_scale(out, eo, wts[t])
 
         # 5. Shared expert (resident) + sigmoid gate.
-        var sg = lw.moe_sh_gate.proj(normed, self._dummy_scale)
-        var su = lw.moe_sh_up.proj(normed, self._dummy_scale)
+        var sg = self._proj(lw.moe_sh_gate, normed)
+        var su = self._proj(lw.moe_sh_up, normed)
         var sh = swiglu_cpu_dynamic[DType.float16](sg, su)
-        var so = lw.moe_sh_down.proj(sh, self._dummy_scale)
+        var so = self._proj(lw.moe_sh_down, sh)
         var gate_scalar = _sigmoid_f32(_dot1(lw.moe_sh_gate_in, normed))
         _axpy_scale(out, so, gate_scalar)
 
@@ -1625,12 +1682,16 @@ def _ffn_swiglu(
     lw: LayerQView,
     resid: Tensor[DType.float16, 2],
     dummy_scale: Tensor[DType.float16, 1],
+    gpu_ctx: Optional[DeviceContext] = None,
 ) -> Tensor[DType.float16, 2]:
     """Dense SwiGLU FFN through the unified `QWeight` projections (M11):
     Q4-resident weights go through the fused per-block-dequant matmul,
     materialized fp16 weights through the threaded weight-major kernel.
 
     Optimization: fused gate+up projection with shared Q8_K quantization.
+
+    Args:
+        gpu_ctx: Optional cached GPU context for GPU acceleration.
     """
     # Check if both gate and up are K-quant types (ggml_type 11-15)
     # If so, use fused projection to avoid redundant Q8_K quantization
@@ -1643,14 +1704,14 @@ def _ffn_swiglu(
             lw.gate_w.ggml_type, lw.up_w.ggml_type
         )
         var h = swiglu_cpu_dynamic[DType.float16](g, u)
-        var d = lw.down_w.proj(h, dummy_scale)
+        var d = lw.down_w.proj(h, dummy_scale, False, gpu_ctx)
         return add_cpu_dynamic[DType.float16](resid, d)
 
     # Fallback: non-K-quant or mixed types
-    var g = lw.gate_w.proj(normed, dummy_scale)
-    var u = lw.up_w.proj(normed, dummy_scale)
+    var g = lw.gate_w.proj(normed, dummy_scale, False, gpu_ctx)
+    var u = lw.up_w.proj(normed, dummy_scale, False, gpu_ctx)
     var h = swiglu_cpu_dynamic[DType.float16](g, u)
-    var d = lw.down_w.proj(h, dummy_scale)
+    var d = lw.down_w.proj(h, dummy_scale, False, gpu_ctx)
     return add_cpu_dynamic[DType.float16](resid, d)
 
 
@@ -1660,10 +1721,14 @@ def _ffn_swiglu_batch(
     resid: Tensor[DType.float16, 2],
     dummy_scale: Tensor[DType.float16, 1],
     n_tokens: Int,
+    gpu_ctx: Optional[DeviceContext] = None,
 ) -> Tensor[DType.float16, 2]:
     """Batch SwiGLU FFN for prefill (processes [T, hidden] input).
 
     Optimization: fused gate+up projection with shared Q8_K quantization.
+
+    Args:
+        gpu_ctx: Optional cached GPU context for GPU acceleration.
     """
     # Check if both gate and up are K-quant types (ggml_type 11-15)
     var gate_kquant = lw.gate_w.ggml_type >= 11 and lw.gate_w.ggml_type <= 15
@@ -1675,14 +1740,14 @@ def _ffn_swiglu_batch(
             lw.gate_w.ggml_type, lw.up_w.ggml_type
         )
         var h = swiglu_cpu_dynamic[DType.float16](g, u)
-        var d = lw.down_w.proj(h, dummy_scale)
+        var d = lw.down_w.proj(h, dummy_scale, False, gpu_ctx)
         return add_cpu_dynamic[DType.float16](resid, d)
 
     # Fallback: non-K-quant or mixed types
-    var g = lw.gate_w.proj(normed, dummy_scale)  # [T, ffn]
-    var u = lw.up_w.proj(normed, dummy_scale)
+    var g = lw.gate_w.proj(normed, dummy_scale, False, gpu_ctx)  # [T, ffn]
+    var u = lw.up_w.proj(normed, dummy_scale, False, gpu_ctx)
     var h = swiglu_cpu_dynamic[DType.float16](g, u)
-    var d = lw.down_w.proj(h, dummy_scale)
+    var d = lw.down_w.proj(h, dummy_scale, False, gpu_ctx)
     return add_cpu_dynamic[DType.float16](resid, d)
 
 
