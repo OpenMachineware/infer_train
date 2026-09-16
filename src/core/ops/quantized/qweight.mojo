@@ -40,8 +40,10 @@ from ..cpu.matmul_q8k_threaded import matmul_quantized_q8k_threaded, matmul_quan
 from ..gpu.matmul_gpu import matmul_weight_gpu
 from ..gpu.matmul_k_quant_gpu import matmul_k_quant_gpu, matmul_k_quant_gpu_cached
 from ..gpu.matmul_decode_gpu import matmul_decode_gpu, matmul_decode_gpu_cached
+from ..gpu.matmul_fp16_gpu import matmul_fp16_gpu
 from ..gpu.gpu_runtime import get_gpu_context, upload, gpu_available
 from .quant_types import QuantType
+from .dequantize_fp16 import dequantize_weights_to_fp16
 from max.gpu.host import DeviceBuffer, DeviceContext
 from std.utils.static_tuple import StaticTuple
 from std.collections.optional import Optional
@@ -65,7 +67,9 @@ struct QWeight(Copyable, ImplicitlyCopyable, Movable):
     var quantized: Bool
     var n_out: Int
     var n_in: Int
-    var gpu_buf: Optional[DeviceBuffer[DType.uint8]]  # cached GPU buffer
+    var gpu_buf: Optional[DeviceBuffer[DType.uint8]]  # cached GPU buffer for quantized weights
+    var fp16_dequant: Tensor[DType.float16, 2]  # dequantized FP16 weights (for GPU decode)
+    var gpu_buf_fp16: Optional[DeviceBuffer[DType.float16]]  # cached GPU buffer for FP16 weights
 
     def __init__(out self):
         self.data = Tensor[DType.uint8, 2](StaticTuple[Int, 2](0, 0))
@@ -75,6 +79,8 @@ struct QWeight(Copyable, ImplicitlyCopyable, Movable):
         self.n_out = 0
         self.n_in = 0
         self.gpu_buf = None
+        self.fp16_dequant = Tensor[DType.float16, 2](StaticTuple[Int, 2](0, 0))
+        self.gpu_buf_fp16 = None
 
     def __copyinit__(out self, existing: QWeight):
         self.data = existing.data
@@ -83,9 +89,11 @@ struct QWeight(Copyable, ImplicitlyCopyable, Movable):
         self.quantized = existing.quantized
         self.n_out = existing.n_out
         self.n_in = existing.n_in
-        # GPU buffer is NOT copied - each instance has its own buffer
-        # This is correct because the original owner should manage the buffer
+        # GPU buffers are NOT copied - each instance has its own buffers
+        # This is correct because the original owner should manage the buffers
         self.gpu_buf = None
+        self.fp16_dequant = existing.fp16_dequant
+        self.gpu_buf_fp16 = None
 
     def shape2(self) -> StaticTuple[Int, 2]:
         """The element shape [n_out, n_in] (independent of the payload)."""
@@ -103,6 +111,36 @@ struct QWeight(Copyable, ImplicitlyCopyable, Movable):
         if not self.quantized or not gpu_available[DType.float16]():
             return
         self.gpu_buf = upload[DType.uint8, 2](ctx, self.data)
+
+    def prepare_fp16_for_gpu(mut self, ctx: DeviceContext) raises:
+        """Dequantize weights to FP16 and upload to GPU for fast decode.
+
+        This is a one-time cost during model initialization. After this,
+        decode mode can use FP16 GPU matmul which is much faster than
+        the quantized decode kernel.
+
+        Args:
+            ctx: DeviceContext to use for upload (should be cached at model level)
+        """
+        if not self.quantized or not gpu_available[DType.float16]():
+            return
+
+        # Dequantize to FP16 if not already done
+        if self.fp16_dequant.shape()[0] == 0:
+            var quant_type = QuantType.Q4_K_M
+            if self.ggml_type == 13:
+                quant_type = QuantType.Q5_K
+            elif self.ggml_type == 14:
+                quant_type = QuantType.Q6_K
+            elif self.ggml_type == 11:
+                quant_type = QuantType.Q2_K
+            elif self.ggml_type == 15:
+                quant_type = QuantType.Q3_K
+
+            self.fp16_dequant = dequantize_weights_to_fp16(self.data, quant_type)
+
+        # Upload FP16 weights to GPU
+        self.gpu_buf_fp16 = upload[DType.float16, 2](ctx, self.fp16_dequant)
 
     def proj(
         self,
@@ -203,11 +241,22 @@ def quant_proj_dispatch(
     var M = x.shape()[0]
     var n_blocks = w.n_in // 256  # QK_K = 256
 
-    # CPU path for decode mode (M <= 4) - GPU is slower due to kernel launch overhead
-    # For small batches, CPU SIMD + cache is more efficient
+    # GPU path for decode mode (M <= 4)
     if use_gpu and M <= 4:
-        # Fall through to CPU path below
-        pass
+        # Use FP16 GPU path if weights are prepared
+        if w.gpu_buf_fp16:
+            return matmul_fp16_gpu(x, w.fp16_dequant, w.gpu_buf_fp16, gpu_ctx)
+        # Fall back to quantized GPU decode kernel
+        if w.ggml_type == 12:
+            return matmul_decode_gpu_cached(x, w.data, 12, n_blocks, w.gpu_buf, gpu_ctx)
+        elif w.ggml_type == 13:
+            return matmul_decode_gpu_cached(x, w.data, 13, n_blocks, w.gpu_buf, gpu_ctx)
+        elif w.ggml_type == 14:
+            return matmul_decode_gpu_cached(x, w.data, 14, n_blocks, w.gpu_buf, gpu_ctx)
+        elif w.ggml_type == 11:
+            return matmul_decode_gpu_cached(x, w.data, 11, n_blocks, w.gpu_buf, gpu_ctx)
+        elif w.ggml_type == 15:
+            return matmul_decode_gpu_cached(x, w.data, 15, n_blocks, w.gpu_buf, gpu_ctx)
     elif use_gpu:  # Batch mode (M > 4): GPU path with on-device dequantization
         # Q4_K (ggml_type 12)
         if w.ggml_type == 12:

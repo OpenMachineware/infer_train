@@ -15,7 +15,7 @@ from max.gpu.host import DeviceContext, DeviceBuffer
 from max.gpu.sync import barrier
 from std.gpu import WARP_SIZE, block_idx, thread_idx, lane_id
 from std.gpu.primitives.warp import sum as warp_sum
-from std.memory import Pointer, unsafe_stack_allocation
+from std.memory import Pointer, unsafe_stack_allocation, AddressSpace
 from std.origin import MutAnyOrigin
 from std.math import min as math_min
 from src.core.tensor import Tensor
@@ -65,13 +65,9 @@ def kernel_mul_mv_k_decode[
 ):
     """Decode-optimized K-quant x FP16 matmul.
 
-    Following llama.cpp's kernel_mul_mv_ext pattern:
-    - 32 threads per SIMD group (one warp)
-    - Each thread processes chunks with stride = 32
-    - Warp shuffle reduction across threads
-
-    Grid: (N / ROWS_PER_TG,)
-    Each threadgroup (256 threads = 8 warps) computes ROWS_PER_TG output rows.
+    Optimizations:
+    - All 32 threads per warp work (no idle threads)
+    - Warp shuffle reduction
     """
     var N = Int(ne01)
     var K = Int(ne00)
@@ -102,36 +98,34 @@ def kernel_mul_mv_k_decode[
     for m in range(M):
         var sumf = Float32(0.0)
 
-        # Each thread processes chunks with stride = 32 (warp size)
-        # This parallelizes K dimension across threads in the warp
-        for block_idx in range(nb):
-            var block_ptr = src0.unsafe_offset(weight_base + block_idx * bb)
-            var input_block_offset = m * K + block_idx * 256
+        # Process 2 blocks per iteration to utilize all 32 threads
+        # Each warp handles 2 blocks: lane 0-15 for first block, lane 16-31 for second
+        for block_pair in range(0, nb, 2):
+            var chunk_block = lane // 16  # 0 or 1
+            var chunk_idx = lane % 16     # 0-15
 
-            # Each thread processes chunks: il = lane + 32*i
-            # lane 0-31 each take different chunks within each block
-            for chunk_offset in range(0, CHUNKS_PER_BLOCK, 32):
-                var il = lane + chunk_offset
-                if il >= CHUNKS_PER_BLOCK:
-                    break
+            var actual_block = block_pair + chunk_block
+            if actual_block < nb:
+                var actual_block_ptr = src0.unsafe_offset(weight_base + actual_block * bb)
+                var actual_input_offset = m * K + actual_block * 256
 
                 # Dequantize 16 elements
                 var deq_buf = unsafe_stack_allocation[16, DType.float16]()
 
                 # Dispatch to appropriate dequantize function
                 comptime if quant_type == QuantType.Q4_K_M:
-                    dequantize_q4_k_16(block_ptr, il, deq_buf)
+                    dequantize_q4_k_16(actual_block_ptr, chunk_idx, deq_buf)
                 elif quant_type == QuantType.Q5_K:
-                    dequantize_q5_k_16(block_ptr, il, deq_buf)
+                    dequantize_q5_k_16(actual_block_ptr, chunk_idx, deq_buf)
                 elif quant_type == QuantType.Q6_K:
-                    dequantize_q6_k_16(block_ptr, il, deq_buf)
+                    dequantize_q6_k_16(actual_block_ptr, chunk_idx, deq_buf)
                 elif quant_type == QuantType.Q2_K:
-                    dequantize_q2_k_16(block_ptr, il, deq_buf)
+                    dequantize_q2_k_16(actual_block_ptr, chunk_idx, deq_buf)
                 elif quant_type == QuantType.Q3_K:
-                    dequantize_q3_k_16(block_ptr, il, deq_buf)
+                    dequantize_q3_k_16(actual_block_ptr, chunk_idx, deq_buf)
 
                 # Load input values and compute dot product
-                var input_offset = input_block_offset + il * 16
+                var input_offset = actual_input_offset + chunk_idx * 16
                 for i in range(16):
                     var w_val = Float32(deq_buf[unsafe_offset=i])
                     var x_val = Float32(src1.unsafe_load[width=1](offset=input_offset + i))

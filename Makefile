@@ -247,6 +247,10 @@ bench_qmatmul_threading: tp
 bench_forward_breakdown: tp
 	$(MOJO) build -I . tests/bench_forward_breakdown.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/bench_forward_breakdown
 
+# GPU decode overhead breakdown benchmark.
+bench_gpu_overhead: tp
+	$(MOJO) build -I . tests/bench_gpu_overhead.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/bench_gpu_overhead
+
 # Matmul micro-benchmark (per-weight GFLOPS measurement).
 bench_matmul_micro: tp mwq
 	$(MOJO) build -I . tests/bench_matmul_micro.mojo $(TP_XLINK) -Xlinker $(MWQ) $(BLAS_XLINK) -o tests/bench_matmul_micro

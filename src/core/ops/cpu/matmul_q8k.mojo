@@ -114,6 +114,7 @@ def matmul_quantized_q8k[
         # Quantize row i to Q8_K ONCE (all blocks)
         # Create a view of the row
         var row_offset = i * K
+
         for b in range(nb):
             var block_start = b * QK_K
             var block_dst = q8k_buf.unsafe_offset(b * 292)
@@ -147,13 +148,12 @@ def matmul_quantized_q8k[
                     v = -127
                 qs_ptr.unsafe_offset(j).unsafe_store(val=Scalar[DType.int8](v))
 
-            # Compute partial sums
+            # Compute partial sums using SIMD (16 int8 values at once)
             var bsums_ptr = block_dst.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
             for j in range(16):
-                var sum = Int16(0)
-                for ii in range(16):
-                    var qv = qs_ptr.unsafe_offset(j * 16 + ii).unsafe_load()
-                    sum += Int16(qv)
+                # Load 16 int8 values and sum them
+                var vec = qs_ptr.unsafe_load[width=16](offset=j * 16)
+                var sum = vec.reduce_add()
                 bsums_ptr.unsafe_offset(j).unsafe_store(val=Scalar[DType.int16](sum))
 
         # Compute dot products with all weight columns
