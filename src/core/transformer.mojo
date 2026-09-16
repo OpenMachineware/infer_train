@@ -1887,15 +1887,26 @@ def embedding_row_quantized(
     Q4-resident: the embedding table stays in its quantized on-disk
     layout; one forward step dequantizes a single row (one block row of
     `hidden` elements) instead of the whole [vocab, hidden] table.
+
+    Supports batch input: returns [T, hidden] for T tokens.
     """
-    var t = Int(toks.get(0))
-    if not w.quantized:
-        var ptr = w.fp16.data().unsafe_offset(t * w.n_in)
-        return Tensor[DType.float16, 2](StaticTuple[Int, 2](1, w.n_in), ptr)
-    var out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](1, w.n_in))
-    var row_bytes = w.data.shape()[1]
-    var row_ptr = w.data.data().unsafe_offset(t * row_bytes)
-    dequantize_into(w.ggml_type, row_ptr, 0, out, w.n_in)
+    var n_tokens = toks.numel()
+    var out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](n_tokens, w.n_in))
+
+    for t_idx in range(n_tokens):
+        var t = Int(toks.get(t_idx))
+        if not w.quantized:
+            var ptr = w.fp16.data().unsafe_offset(t * w.n_in)
+            for d in range(w.n_in):
+                out.set(t_idx * w.n_in + d, ptr.unsafe_offset(d).unsafe_load())
+        else:
+            var row_bytes = w.data.shape()[1]
+            var row_ptr = w.data.data().unsafe_offset(t * row_bytes)
+            var single_out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](1, w.n_in))
+            dequantize_into(w.ggml_type, row_ptr, 0, single_out, w.n_in)
+            for d in range(w.n_in):
+                out.set(t_idx * w.n_in + d, single_out.get(d))
+
     return out
 
 

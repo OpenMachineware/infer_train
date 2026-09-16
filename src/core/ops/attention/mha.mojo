@@ -46,31 +46,60 @@ from std.math import exp, sqrt
 def _qkv_reshape[
     dtype: DType
 ](x: Tensor[dtype, 2], n_heads: Int, head_dim: Int) -> Tensor[dtype, 3]:
-    """View [T, hidden] as [n_heads, T, head_dim].
+    """Reshape [T, hidden] to [n_heads, T, head_dim] with correct data permutation.
 
-    Note: For Qwen3 and some models, hidden may differ from n_heads * head_dim.
-    We use the actual hidden dimension from x.shape()[1].
+    Input layout: [T, n_heads * head_dim] - each row has all heads concatenated
+    Output layout: [n_heads, T, head_dim] - each head has all tokens concatenated
+
+    This requires data permutation, not just a view.
     """
     var n_tokens = x.shape()[0]
-    return Tensor[dtype, 3](
-        StaticTuple[Int, 3](n_heads, n_tokens, head_dim),
-        x.data(),
-        x.device(),
+    var out = Tensor[dtype, 3](
+        StaticTuple[Int, 3](n_heads, n_tokens, head_dim)
     )
+
+    # Permute data: [T, n_heads, head_dim] -> [n_heads, T, head_dim]
+    for t in range(n_tokens):
+        for h in range(n_heads):
+            for d in range(head_dim):
+                out.set(
+                    (h * n_tokens + t) * head_dim + d,
+                    x.get(t * n_heads * head_dim + h * head_dim + d)
+                )
+
+    return out
 
 
 def _flat_view[
     dtype: DType
 ](x: Tensor[dtype, 3], hidden: Int) -> Tensor[dtype, 2]:
-    """View [n_heads, T, head_dim] as [T, hidden]."""
+    """Reshape [n_heads, T, head_dim] to [T, hidden] with correct data permutation.
+
+    Input layout: [n_heads, T, head_dim] - each head has all tokens concatenated
+    Output layout: [T, n_heads * head_dim] - each row has all heads concatenated
+
+    This requires data permutation, not just a view.
+    """
     var n_heads = x.shape()[0]
     var n_tokens = x.shape()[1]
     var head_dim = x.shape()[2]
     if n_heads * head_dim != hidden:
         unimplemented("mha: bad reshape to flat")
-    return Tensor[dtype, 2](
-        StaticTuple[Int, 2](n_tokens, hidden), x.data(), x.device()
+
+    var out = Tensor[dtype, 2](
+        StaticTuple[Int, 2](n_tokens, hidden)
     )
+
+    # Permute data: [n_heads, T, head_dim] -> [T, n_heads, head_dim]
+    for t in range(n_tokens):
+        for h in range(n_heads):
+            for d in range(head_dim):
+                out.set(
+                    t * hidden + h * head_dim + d,
+                    x.get((h * n_tokens + t) * head_dim + d)
+                )
+
+    return out
 
 
 struct MHAOptions(Copyable, ImplicitlyCopyable, Movable):
