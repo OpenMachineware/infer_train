@@ -34,7 +34,8 @@ from ..cpu.matmul_cpu import (
     matmul_weight_cpu_threaded,
     matmul_quantized_cpu_threaded,
 )
-from ..cpu.matmul_q8k import matmul_quantized_q8k, matmul_quantized_q8k_add
+from ..cpu.add_cpu import add_cpu_dynamic
+from ..cpu.matmul_q8k import matmul_quantized_q8k, matmul_quantized_q8k_add, matmul_quantized_q8k_nrc2
 from ..cpu.matmul_q8k_threaded import matmul_quantized_q8k_threaded, matmul_quantized_q8k_worksteal
 from ..gpu.matmul_gpu import matmul_weight_gpu
 from ..gpu.matmul_k_quant_gpu import matmul_k_quant_gpu, matmul_k_quant_gpu_cached
@@ -240,11 +241,15 @@ def quant_proj_dispatch(
 
     # K-quant formats: CPU path with Q8_K + SDOT
     # Threading: Use pthread pool for large matrices (N >= 2048) in decode mode
+    # nrc==2 optimization for Q4_K uses MMLA to process 2 rows at once
 
     # Q4_K (ggml_type 12)
     if w.ggml_type == 12:
         if w.n_out >= 2048 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q4_K_M](x, w.data, dummy_scale)
+        # Use nrc2 optimization for Q4_K decode
+        if x.shape()[0] == 1:
+            return matmul_quantized_q8k_nrc2[QuantType.Q4_K_M](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q4_K_M](x, w.data, dummy_scale)
 
     # Q5_K (ggml_type 13)

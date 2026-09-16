@@ -586,6 +586,263 @@ def vec_dot_q4_k_q8_k(
 
 
 # ============================================================================
+# nrc == 2: Process 2 weight rows at once using MMLA
+# ============================================================================
+
+
+def _vzip1_s64(a: SIMD[DType.int8, 16], b: SIMD[DType.int8, 16]) -> SIMD[DType.int8, 16]:
+    """Interleave lower 8 bytes: [a0, b0, a1, b1, ... a7, b7]."""
+    return SIMD[DType.int8, 16](
+        a[0], b[0], a[1], b[1], a[2], b[2], a[3], b[3],
+        a[4], b[4], a[5], b[5], a[6], b[6], a[7], b[7],
+    )
+
+
+def _vzip2_s64(a: SIMD[DType.int8, 16], b: SIMD[DType.int8, 16]) -> SIMD[DType.int8, 16]:
+    """Interleave upper 8 bytes: [a8, b8, a9, b9, ... a15, b15]."""
+    return SIMD[DType.int8, 16](
+        a[8], b[8], a[9], b[9], a[10], b[10], a[11], b[11],
+        a[12], b[12], a[13], b[13], a[14], b[14], a[15], b[15],
+    )
+
+
+def vec_dot_q4_k_q8_k_nrc2(
+    # Two Q4_K weight blocks (2 output rows)
+    w0_block: Pointer[UInt8, MutUntrackedOrigin],
+    w1_block: Pointer[UInt8, MutUntrackedOrigin],
+    # Two Q8_K activations (can be same for M=1)
+    q8_0: Pointer[UInt8, MutUntrackedOrigin],
+    q8_1: Pointer[UInt8, MutUntrackedOrigin],
+) -> Tuple[Float32, Float32]:
+    """Q4_K × Q8_K dot product for 2 weight rows using SDOT (nrc == 2).
+
+    This is llama.cpp's key optimization for processing 2 output rows at once.
+    Processes 2 weight rows at once to improve cache utilization.
+
+    Returns: (output_for_row0, output_for_row1)
+
+    Memory bandwidth benefit: Weight data for both rows is read together,
+    improving cache hit rate.
+    """
+    # Read Q4_K scales for both weight blocks
+    var w0_half = w0_block.unsafe_bitcast[Scalar[DType.float16]]()
+    var d0 = Float32(w0_half.unsafe_load[width=1](offset=0))
+    var dmin0 = Float32(w0_half.unsafe_load[width=1](offset=1))
+    var scales0 = w0_block.unsafe_offset(4)
+    var qs0 = w0_block.unsafe_offset(16)
+
+    var w1_half = w1_block.unsafe_bitcast[Scalar[DType.float16]]()
+    var d1 = Float32(w1_half.unsafe_load[width=1](offset=0))
+    var dmin1 = Float32(w1_half.unsafe_load[width=1](offset=1))
+    var scales1 = w1_block.unsafe_offset(4)
+    var qs1 = w1_block.unsafe_offset(16)
+
+    # Read Q8_K scales and data for both inputs
+    var q8_0_d = Float32(q8_0.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load())
+    var q8_0_qs = q8_0.unsafe_offset(4).unsafe_bitcast[Scalar[DType.int8]]()
+    var q8_0_bsums = q8_0.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
+
+    var q8_1_d = Float32(q8_1.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load())
+    var q8_1_qs = q8_1.unsafe_offset(4).unsafe_bitcast[Scalar[DType.int8]]()
+    var q8_1_bsums = q8_1.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
+
+    var m4b = SIMD[DType.uint8, 16](0x0F)
+
+    # Load all Q4_K and Q8_K data upfront for cache efficiency
+    var q4_0_b0_15 = qs0.unsafe_load[width=16](offset=0)
+    var q4_0_b16_31 = qs0.unsafe_load[width=16](offset=16)
+    var q4_0_b32_47 = qs0.unsafe_load[width=16](offset=32)
+    var q4_0_b48_63 = qs0.unsafe_load[width=16](offset=48)
+    var q4_0_b64_79 = qs0.unsafe_load[width=16](offset=64)
+    var q4_0_b80_95 = qs0.unsafe_load[width=16](offset=80)
+    var q4_0_b96_111 = qs0.unsafe_load[width=16](offset=96)
+    var q4_0_b112_127 = qs0.unsafe_load[width=16](offset=112)
+
+    var q4_1_b0_15 = qs1.unsafe_load[width=16](offset=0)
+    var q4_1_b16_31 = qs1.unsafe_load[width=16](offset=16)
+    var q4_1_b32_47 = qs1.unsafe_load[width=16](offset=32)
+    var q4_1_b48_63 = qs1.unsafe_load[width=16](offset=48)
+    var q4_1_b64_79 = qs1.unsafe_load[width=16](offset=64)
+    var q4_1_b80_95 = qs1.unsafe_load[width=16](offset=80)
+    var q4_1_b96_111 = qs1.unsafe_load[width=16](offset=96)
+    var q4_1_b112_127 = qs1.unsafe_load[width=16](offset=112)
+
+    var q8_0_0 = q8_0_qs.unsafe_load[width=16](offset=0)
+    var q8_0_16 = q8_0_qs.unsafe_load[width=16](offset=16)
+    var q8_0_32 = q8_0_qs.unsafe_load[width=16](offset=32)
+    var q8_0_48 = q8_0_qs.unsafe_load[width=16](offset=48)
+    var q8_0_64 = q8_0_qs.unsafe_load[width=16](offset=64)
+    var q8_0_80 = q8_0_qs.unsafe_load[width=16](offset=80)
+    var q8_0_96 = q8_0_qs.unsafe_load[width=16](offset=96)
+    var q8_0_112 = q8_0_qs.unsafe_load[width=16](offset=112)
+    var q8_0_128 = q8_0_qs.unsafe_load[width=16](offset=128)
+    var q8_0_144 = q8_0_qs.unsafe_load[width=16](offset=144)
+    var q8_0_160 = q8_0_qs.unsafe_load[width=16](offset=160)
+    var q8_0_176 = q8_0_qs.unsafe_load[width=16](offset=176)
+    var q8_0_192 = q8_0_qs.unsafe_load[width=16](offset=192)
+    var q8_0_208 = q8_0_qs.unsafe_load[width=16](offset=208)
+    var q8_0_224 = q8_0_qs.unsafe_load[width=16](offset=224)
+    var q8_0_240 = q8_0_qs.unsafe_load[width=16](offset=240)
+
+    var q8_1_0 = q8_1_qs.unsafe_load[width=16](offset=0)
+    var q8_1_16 = q8_1_qs.unsafe_load[width=16](offset=16)
+    var q8_1_32 = q8_1_qs.unsafe_load[width=16](offset=32)
+    var q8_1_48 = q8_1_qs.unsafe_load[width=16](offset=48)
+    var q8_1_64 = q8_1_qs.unsafe_load[width=16](offset=64)
+    var q8_1_80 = q8_1_qs.unsafe_load[width=16](offset=80)
+    var q8_1_96 = q8_1_qs.unsafe_load[width=16](offset=96)
+    var q8_1_112 = q8_1_qs.unsafe_load[width=16](offset=112)
+    var q8_1_128 = q8_1_qs.unsafe_load[width=16](offset=128)
+    var q8_1_144 = q8_1_qs.unsafe_load[width=16](offset=144)
+    var q8_1_160 = q8_1_qs.unsafe_load[width=16](offset=160)
+    var q8_1_176 = q8_1_qs.unsafe_load[width=16](offset=176)
+    var q8_1_192 = q8_1_qs.unsafe_load[width=16](offset=192)
+    var q8_1_208 = q8_1_qs.unsafe_load[width=16](offset=208)
+    var q8_1_224 = q8_1_qs.unsafe_load[width=16](offset=224)
+    var q8_1_240 = q8_1_qs.unsafe_load[width=16](offset=240)
+
+    # Compute dot products for both rows using SDOT
+    # Row 0: j=0 (low nibbles, elements 0-31)
+    var (sc0_0, _) = _get_scale_min_k4(0, scales0)
+    var q4_0_0_lo = (q4_0_b0_15 & m4b).cast[DType.int8]()
+    var q4_0_0_hi = (q4_0_b16_31 & m4b).cast[DType.int8]()
+    var dot_0_0 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_0_0_lo, q8_0_0), q4_0_0_hi, q8_0_16)
+
+    # Row 0: j=1 (high nibbles, elements 32-63)
+    var (sc1_0, _) = _get_scale_min_k4(1, scales0)
+    var q4_0_1_lo = (q4_0_b0_15 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_0_1_hi = (q4_0_b16_31 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var dot_0_1 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_0_1_lo, q8_0_32), q4_0_1_hi, q8_0_48)
+
+    # Row 0: j=2 (low nibbles, elements 64-95)
+    var (sc2_0, _) = _get_scale_min_k4(2, scales0)
+    var q4_0_2_lo = (q4_0_b32_47 & m4b).cast[DType.int8]()
+    var q4_0_2_hi = (q4_0_b48_63 & m4b).cast[DType.int8]()
+    var dot_0_2 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_0_2_lo, q8_0_64), q4_0_2_hi, q8_0_80)
+
+    # Row 0: j=3 (high nibbles, elements 96-127)
+    var (sc3_0, _) = _get_scale_min_k4(3, scales0)
+    var q4_0_3_lo = (q4_0_b32_47 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_0_3_hi = (q4_0_b48_63 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var dot_0_3 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_0_3_lo, q8_0_96), q4_0_3_hi, q8_0_112)
+
+    # Row 0: j=4 (low nibbles, elements 128-159)
+    var (sc4_0, _) = _get_scale_min_k4(4, scales0)
+    var q4_0_4_lo = (q4_0_b64_79 & m4b).cast[DType.int8]()
+    var q4_0_4_hi = (q4_0_b80_95 & m4b).cast[DType.int8]()
+    var dot_0_4 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_0_4_lo, q8_0_128), q4_0_4_hi, q8_0_144)
+
+    # Row 0: j=5 (high nibbles, elements 160-191)
+    var (sc5_0, _) = _get_scale_min_k4(5, scales0)
+    var q4_0_5_lo = (q4_0_b64_79 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_0_5_hi = (q4_0_b80_95 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var dot_0_5 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_0_5_lo, q8_0_160), q4_0_5_hi, q8_0_176)
+
+    # Row 0: j=6 (low nibbles, elements 192-223)
+    var (sc6_0, _) = _get_scale_min_k4(6, scales0)
+    var q4_0_6_lo = (q4_0_b96_111 & m4b).cast[DType.int8]()
+    var q4_0_6_hi = (q4_0_b112_127 & m4b).cast[DType.int8]()
+    var dot_0_6 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_0_6_lo, q8_0_192), q4_0_6_hi, q8_0_208)
+
+    # Row 0: j=7 (high nibbles, elements 224-255)
+    var (sc7_0, _) = _get_scale_min_k4(7, scales0)
+    var q4_0_7_lo = (q4_0_b96_111 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_0_7_hi = (q4_0_b112_127 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var dot_0_7 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_0_7_lo, q8_0_224), q4_0_7_hi, q8_0_240)
+
+    # Sum up row 0
+    var sumi0 = (
+        (dot_0_0[0] + dot_0_0[1] + dot_0_0[2] + dot_0_0[3]) * Int32(sc0_0) +
+        (dot_0_1[0] + dot_0_1[1] + dot_0_1[2] + dot_0_1[3]) * Int32(sc1_0) +
+        (dot_0_2[0] + dot_0_2[1] + dot_0_2[2] + dot_0_2[3]) * Int32(sc2_0) +
+        (dot_0_3[0] + dot_0_3[1] + dot_0_3[2] + dot_0_3[3]) * Int32(sc3_0) +
+        (dot_0_4[0] + dot_0_4[1] + dot_0_4[2] + dot_0_4[3]) * Int32(sc4_0) +
+        (dot_0_5[0] + dot_0_5[1] + dot_0_5[2] + dot_0_5[3]) * Int32(sc5_0) +
+        (dot_0_6[0] + dot_0_6[1] + dot_0_6[2] + dot_0_6[3]) * Int32(sc6_0) +
+        (dot_0_7[0] + dot_0_7[1] + dot_0_7[2] + dot_0_7[3]) * Int32(sc7_0)
+    )
+
+    # Row 1: j=0 (low nibbles, elements 0-31)
+    var (sc0_1, _) = _get_scale_min_k4(0, scales1)
+    var q4_1_0_lo = (q4_1_b0_15 & m4b).cast[DType.int8]()
+    var q4_1_0_hi = (q4_1_b16_31 & m4b).cast[DType.int8]()
+    var dot_1_0 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_1_0_lo, q8_1_0), q4_1_0_hi, q8_1_16)
+
+    # Row 1: j=1 (high nibbles, elements 32-63)
+    var (sc1_1, _) = _get_scale_min_k4(1, scales1)
+    var q4_1_1_lo = (q4_1_b0_15 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_1_1_hi = (q4_1_b16_31 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var dot_1_1 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_1_1_lo, q8_1_32), q4_1_1_hi, q8_1_48)
+
+    # Row 1: j=2 (low nibbles, elements 64-95)
+    var (sc2_1, _) = _get_scale_min_k4(2, scales1)
+    var q4_1_2_lo = (q4_1_b32_47 & m4b).cast[DType.int8]()
+    var q4_1_2_hi = (q4_1_b48_63 & m4b).cast[DType.int8]()
+    var dot_1_2 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_1_2_lo, q8_1_64), q4_1_2_hi, q8_1_80)
+
+    # Row 1: j=3 (high nibbles, elements 96-127)
+    var (sc3_1, _) = _get_scale_min_k4(3, scales1)
+    var q4_1_3_lo = (q4_1_b32_47 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_1_3_hi = (q4_1_b48_63 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var dot_1_3 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_1_3_lo, q8_1_96), q4_1_3_hi, q8_1_112)
+
+    # Row 1: j=4 (low nibbles, elements 128-159)
+    var (sc4_1, _) = _get_scale_min_k4(4, scales1)
+    var q4_1_4_lo = (q4_1_b64_79 & m4b).cast[DType.int8]()
+    var q4_1_4_hi = (q4_1_b80_95 & m4b).cast[DType.int8]()
+    var dot_1_4 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_1_4_lo, q8_1_128), q4_1_4_hi, q8_1_144)
+
+    # Row 1: j=5 (high nibbles, elements 160-191)
+    var (sc5_1, _) = _get_scale_min_k4(5, scales1)
+    var q4_1_5_lo = (q4_1_b64_79 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_1_5_hi = (q4_1_b80_95 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var dot_1_5 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_1_5_lo, q8_1_160), q4_1_5_hi, q8_1_176)
+
+    # Row 1: j=6 (low nibbles, elements 192-223)
+    var (sc6_1, _) = _get_scale_min_k4(6, scales1)
+    var q4_1_6_lo = (q4_1_b96_111 & m4b).cast[DType.int8]()
+    var q4_1_6_hi = (q4_1_b112_127 & m4b).cast[DType.int8]()
+    var dot_1_6 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_1_6_lo, q8_1_192), q4_1_6_hi, q8_1_208)
+
+    # Row 1: j=7 (high nibbles, elements 224-255)
+    var (sc7_1, _) = _get_scale_min_k4(7, scales1)
+    var q4_1_7_lo = (q4_1_b96_111 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_1_7_hi = (q4_1_b112_127 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var dot_1_7 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_1_7_lo, q8_1_224), q4_1_7_hi, q8_1_240)
+
+    # Sum up row 1
+    var sumi1 = (
+        (dot_1_0[0] + dot_1_0[1] + dot_1_0[2] + dot_1_0[3]) * Int32(sc0_1) +
+        (dot_1_1[0] + dot_1_1[1] + dot_1_1[2] + dot_1_1[3]) * Int32(sc1_1) +
+        (dot_1_2[0] + dot_1_2[1] + dot_1_2[2] + dot_1_2[3]) * Int32(sc2_1) +
+        (dot_1_3[0] + dot_1_3[1] + dot_1_3[2] + dot_1_3[3]) * Int32(sc3_1) +
+        (dot_1_4[0] + dot_1_4[1] + dot_1_4[2] + dot_1_4[3]) * Int32(sc4_1) +
+        (dot_1_5[0] + dot_1_5[1] + dot_1_5[2] + dot_1_5[3]) * Int32(sc5_1) +
+        (dot_1_6[0] + dot_1_6[1] + dot_1_6[2] + dot_1_6[3]) * Int32(sc6_1) +
+        (dot_1_7[0] + dot_1_7[1] + dot_1_7[2] + dot_1_7[3]) * Int32(sc7_1)
+    )
+
+    # Compute bias from dmin * min term for both weight rows
+    var bias0 = Float32(0)
+    var bias1 = Float32(0)
+    for j in range(8):
+        var (_, m0_j) = _get_scale_min_k4(j, scales0)
+        var (_, m1_j) = _get_scale_min_k4(j, scales1)
+        var bs0_0 = Int32(q8_0_bsums.unsafe_load[width=1](offset=j * 2))
+        var bs1_0 = Int32(q8_0_bsums.unsafe_load[width=1](offset=j * 2 + 1))
+        var bs0_1 = Int32(q8_1_bsums.unsafe_load[width=1](offset=j * 2))
+        var bs1_1 = Int32(q8_1_bsums.unsafe_load[width=1](offset=j * 2 + 1))
+        bias0 -= dmin0 * q8_0_d * Float32(m0_j) * Float32(bs0_0 + bs1_0)
+        bias1 -= dmin1 * q8_1_d * Float32(m1_j) * Float32(bs0_1 + bs1_1)
+
+    # Apply super-block scales
+    var result0 = d0 * q8_0_d * Float32(sumi0) + bias0
+    var result1 = d1 * q8_1_d * Float32(sumi1) + bias1
+
+    return (result0, result1)
+
+
+# ============================================================================
 # Q5_K × Q8_K dot product kernel
 # ============================================================================
 
