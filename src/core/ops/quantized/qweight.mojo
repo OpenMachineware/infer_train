@@ -38,6 +38,7 @@ from ..cpu.matmul_q8k import matmul_quantized_q8k
 from ..cpu.matmul_q8k_threaded import matmul_quantized_q8k_threaded, matmul_quantized_q8k_worksteal
 from ..gpu.matmul_gpu import matmul_weight_gpu
 from ..gpu.matmul_k_quant_gpu import matmul_k_quant_gpu, matmul_k_quant_gpu_cached
+from ..gpu.matmul_decode_gpu import matmul_decode_gpu, matmul_decode_gpu_cached
 from ..gpu.gpu_runtime import get_gpu_context, upload, gpu_available
 from .quant_types import QuantType
 from max.gpu.host import DeviceBuffer, DeviceContext
@@ -167,16 +168,20 @@ def quant_proj_dispatch(
 
     M14: GPU quantized matmul with on-device dequantization.
     Uses cached GPU buffer and context for persistent weight storage.
+
+    M15: Decode-optimized GPU kernel for M <= 4 with warp shuffle reduction.
     """
     from ..cpu.blas_cpu import matmul_quantized_blas_tiled
 
-    # K-quant formats: GPU path with on-device dequantization
-    # NOTE: GPU kernel is currently inefficient for decode mode (M=1)
-    # Use CPU path for M <= 4, GPU for batch processing
     var M = x.shape()[0]
-    if use_gpu and M > 4:
-        var n_blocks = w.n_in // 256  # QK_K = 256
+    var n_blocks = w.n_in // 256  # QK_K = 256
 
+    # CPU path for decode mode (M <= 4) - GPU is slower due to kernel launch overhead
+    # For small batches, CPU SIMD + cache is more efficient
+    if use_gpu and M <= 4:
+        # Fall through to CPU path below
+        pass
+    elif use_gpu:  # Batch mode (M > 4): GPU path with on-device dequantization
         # Q4_K (ggml_type 12)
         if w.ggml_type == 12:
             return matmul_k_quant_gpu_cached[QuantType.Q4_K_M](

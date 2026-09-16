@@ -30,6 +30,7 @@ from src.core.ops.gpu.matmul_k_quant_gpu import (
     dequantize_q3_k_16,
     _get_scale_min_k4_just2,
     matmul_k_quant_gpu,
+    matmul_k_quant_gpu_cached,
 )
 from src.core.ops.cpu.matmul_q8k import matmul_quantized_q8k
 from src.core.ops.quantized.quant_types import QuantType
@@ -175,10 +176,19 @@ def matmul_k_decode_gpu[
     x: Tensor[DType.float16, 2],  # [M, K], M <= 4
     w: Tensor[DType.uint8, 2],    # [N, nb * BB] quantized weights
     n_blocks: Int,                # K // 256
+    w_buf_cached: Optional[DeviceBuffer[DType.uint8]] = None,
+    ctx_cached: Optional[DeviceContext] = None,
 ) -> Tensor[DType.float16, 2]:
     """Decode-optimized GPU matmul for K-quant weights.
 
     Uses specialized kernel for M <= 4 with warp shuffle reduction.
+
+    Args:
+        x: Input tensor [M, K]
+        w: Quantized weight tensor [N, bytes_per_row]
+        n_blocks: Number of K-quant super-blocks (K / 256)
+        w_buf_cached: Optional pre-uploaded GPU buffer for weights
+        ctx_cached: Optional cached DeviceContext
     """
     var K = x.shape()[1]
     var N = w.shape()[0]
@@ -189,9 +199,24 @@ def matmul_k_decode_gpu[
         return matmul_quantized_q8k[quant_type](x, w, dummy_scale)
 
     try:
-        var ctx = get_gpu_context()
+        # Use cached context if available
+        var ctx: DeviceContext
+        var owns_ctx = False
+        if ctx_cached:
+            ctx = ctx_cached.value()
+        else:
+            ctx = get_gpu_context()
+            owns_ctx = True
+
         var x_buf = upload[DType.float16, 2](ctx, x)
-        var w_buf = upload[DType.uint8, 2](ctx, w)
+
+        # Use cached buffer if available, otherwise upload
+        var w_buf: DeviceBuffer[DType.uint8]
+        if w_buf_cached:
+            w_buf = w_buf_cached.value()
+        else:
+            w_buf = upload[DType.uint8, 2](ctx, w)
+
         var dst_buf = ctx.enqueue_create_buffer[DType.float16](M * N)
 
         var grid_x = (N + ROWS_PER_TG - 1) // ROWS_PER_TG
@@ -208,7 +233,8 @@ def matmul_k_decode_gpu[
         )
 
         var out = download2[DType.float16](ctx, dst_buf, StaticTuple[Int, 2](M, N))
-        ctx.synchronize()
+        if owns_ctx:
+            ctx.synchronize()
         return out
 
     except:
@@ -219,6 +245,103 @@ def matmul_k_decode_gpu[
 # ============================================================================
 # Generic dispatch for all K-quant types
 # ============================================================================
+
+
+def matmul_decode_gpu_cached(
+    x: Tensor[DType.float16, 2],
+    w: Tensor[DType.uint8, 2],
+    quant_type: Int,  # ggml_type (12=Q4_K, 13=Q5_K, etc.)
+    n_blocks: Int,
+    w_buf_cached: Optional[DeviceBuffer[DType.uint8]] = None,
+    ctx_cached: Optional[DeviceContext] = None,
+) -> Tensor[DType.float16, 2]:
+    """GPU matmul optimized for decode (M <= 4) with cached buffers.
+
+    Dispatches to specialized kernels based on:
+    - Batch size M
+    - Quantization type
+
+    For M > 4, falls back to general GPU matmul.
+
+    Args:
+        x: Input tensor [M, K]
+        w: Quantized weight tensor [N, bytes_per_row]
+        quant_type: GGML type (12=Q4_K, 13=Q5_K, etc.)
+        n_blocks: Number of K-quant super-blocks (K / 256)
+        w_buf_cached: Optional pre-uploaded GPU buffer for weights
+        ctx_cached: Optional cached DeviceContext
+    """
+    var M = x.shape()[0]
+
+    # Handle M > 4 with general GPU matmul
+    if M > 4:
+        if quant_type == 12:
+            return matmul_k_quant_gpu_cached[QuantType.Q4_K_M](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 13:
+            return matmul_k_quant_gpu_cached[QuantType.Q5_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 14:
+            return matmul_k_quant_gpu_cached[QuantType.Q6_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 11:
+            return matmul_k_quant_gpu_cached[QuantType.Q2_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 15:
+            return matmul_k_quant_gpu_cached[QuantType.Q3_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        else:
+            return matmul_k_quant_gpu_cached[QuantType.Q4_K_M](x, w, n_blocks, w_buf_cached, ctx_cached)
+
+    # M <= 4: Use decode-optimized kernel
+    # Expand all M x quant_type combinations
+    if M == 1:
+        if quant_type == 12:
+            return matmul_k_decode_gpu[1, QuantType.Q4_K_M](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 13:
+            return matmul_k_decode_gpu[1, QuantType.Q5_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 14:
+            return matmul_k_decode_gpu[1, QuantType.Q6_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 11:
+            return matmul_k_decode_gpu[1, QuantType.Q2_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 15:
+            return matmul_k_decode_gpu[1, QuantType.Q3_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        else:
+            return matmul_k_decode_gpu[1, QuantType.Q4_K_M](x, w, n_blocks, w_buf_cached, ctx_cached)
+    elif M == 2:
+        if quant_type == 12:
+            return matmul_k_decode_gpu[2, QuantType.Q4_K_M](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 13:
+            return matmul_k_decode_gpu[2, QuantType.Q5_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 14:
+            return matmul_k_decode_gpu[2, QuantType.Q6_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 11:
+            return matmul_k_decode_gpu[2, QuantType.Q2_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 15:
+            return matmul_k_decode_gpu[2, QuantType.Q3_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        else:
+            return matmul_k_decode_gpu[2, QuantType.Q4_K_M](x, w, n_blocks, w_buf_cached, ctx_cached)
+    elif M == 3:
+        if quant_type == 12:
+            return matmul_k_decode_gpu[3, QuantType.Q4_K_M](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 13:
+            return matmul_k_decode_gpu[3, QuantType.Q5_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 14:
+            return matmul_k_decode_gpu[3, QuantType.Q6_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 11:
+            return matmul_k_decode_gpu[3, QuantType.Q2_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 15:
+            return matmul_k_decode_gpu[3, QuantType.Q3_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        else:
+            return matmul_k_decode_gpu[3, QuantType.Q4_K_M](x, w, n_blocks, w_buf_cached, ctx_cached)
+    else:  # M == 4
+        if quant_type == 12:
+            return matmul_k_decode_gpu[4, QuantType.Q4_K_M](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 13:
+            return matmul_k_decode_gpu[4, QuantType.Q5_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 14:
+            return matmul_k_decode_gpu[4, QuantType.Q6_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 11:
+            return matmul_k_decode_gpu[4, QuantType.Q2_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        elif quant_type == 15:
+            return matmul_k_decode_gpu[4, QuantType.Q3_K](x, w, n_blocks, w_buf_cached, ctx_cached)
+        else:
+            return matmul_k_decode_gpu[4, QuantType.Q4_K_M](x, w, n_blocks, w_buf_cached, ctx_cached)
 
 
 def matmul_decode_gpu(
