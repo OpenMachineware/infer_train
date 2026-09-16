@@ -1704,15 +1704,15 @@ def _ffn_swiglu(
             lw.gate_w.ggml_type, lw.up_w.ggml_type
         )
         var h = swiglu_cpu_dynamic[DType.float16](g, u)
-        var d = lw.down_w.proj(h, dummy_scale, False, gpu_ctx)
-        return add_cpu_dynamic[DType.float16](resid, d)
+        # Fused down_proj + residual add
+        return lw.down_w.proj_add(h, dummy_scale, resid, False, gpu_ctx)
 
     # Fallback: non-K-quant or mixed types
     var g = lw.gate_w.proj(normed, dummy_scale, False, gpu_ctx)
     var u = lw.up_w.proj(normed, dummy_scale, False, gpu_ctx)
     var h = swiglu_cpu_dynamic[DType.float16](g, u)
-    var d = lw.down_w.proj(h, dummy_scale, False, gpu_ctx)
-    return add_cpu_dynamic[DType.float16](resid, d)
+    # Fused down_proj + residual add
+    return lw.down_w.proj_add(h, dummy_scale, resid, False, gpu_ctx)
 
 
 def _ffn_swiglu_batch(
@@ -1740,15 +1740,15 @@ def _ffn_swiglu_batch(
             lw.gate_w.ggml_type, lw.up_w.ggml_type
         )
         var h = swiglu_cpu_dynamic[DType.float16](g, u)
-        var d = lw.down_w.proj(h, dummy_scale, False, gpu_ctx)
-        return add_cpu_dynamic[DType.float16](resid, d)
+        # Fused down_proj + residual add
+        return lw.down_w.proj_add(h, dummy_scale, resid, False, gpu_ctx)
 
     # Fallback: non-K-quant or mixed types
     var g = lw.gate_w.proj(normed, dummy_scale, False, gpu_ctx)  # [T, ffn]
     var u = lw.up_w.proj(normed, dummy_scale, False, gpu_ctx)
     var h = swiglu_cpu_dynamic[DType.float16](g, u)
-    var d = lw.down_w.proj(h, dummy_scale, False, gpu_ctx)
-    return add_cpu_dynamic[DType.float16](resid, d)
+    # Fused down_proj + residual add
+    return lw.down_w.proj_add(h, dummy_scale, resid, False, gpu_ctx)
 
 
 # -- MoE helpers -------------------------------------------------------------

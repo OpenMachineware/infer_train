@@ -177,3 +177,99 @@ def matmul_quantized_q8k[
 
     q8k_buf.unsafe_free()
     return out
+
+
+def matmul_quantized_q8k_add[
+    quant_type: QuantType,
+](
+    x: Tensor[DType.float16, 2],
+    w_quant: Tensor[DType.uint8, 2],
+    scale: Tensor[DType.float16, 1],
+    residual: Tensor[DType.float16, 2],
+) -> Tensor[DType.float16, 2]:
+    """Fused quantized matmul + residual add.
+
+    Same as matmul_quantized_q8k but adds residual to output in-place.
+    This saves one memory read/write pass over the output tensor.
+
+    output[i,j] = (x @ W)[i,j] + residual[i,j]
+    """
+    var M = x.shape()[0]
+    var K = x.shape()[1]
+    var N = w_quant.shape()[0]
+
+    var be = block_elems(quant_type)
+    var bb = block_bytes(quant_type)
+    if be == 0 or K % be != 0:
+        unimplemented("matmul_quantized_q8k_add: K not a multiple of block size")
+
+    var nb = K // QK_K
+
+    var out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, N))
+
+    var q8k_buf = unsafe_alloc[UInt8](nb * 292)
+
+    for i in range(M):
+        # Quantize row i to Q8_K
+        var row_offset = i * K
+        for b in range(nb):
+            var block_start = b * QK_K
+            var block_dst = q8k_buf.unsafe_offset(b * 292)
+
+            var amax = Float32(0)
+            for j in range(QK_K):
+                var v = Float32(x.get(row_offset + block_start + j))
+                var ax = abs(v)
+                if ax > amax:
+                    amax = ax
+
+            if amax == 0:
+                block_dst.unsafe_bitcast[Scalar[DType.float32]]().unsafe_store(val=Scalar[DType.float32](0))
+                continue
+
+            var iscale = 127.0 / amax
+            var d = amax / 127.0
+
+            block_dst.unsafe_bitcast[Scalar[DType.float32]]().unsafe_store(val=Scalar[DType.float32](d))
+
+            var qs_ptr = block_dst.unsafe_offset(4).unsafe_bitcast[Scalar[DType.int8]]()
+            for j in range(QK_K):
+                var v = Int(round(iscale * Float32(x.get(row_offset + block_start + j))))
+                if v > 127:
+                    v = 127
+                if v < -127:
+                    v = -127
+                qs_ptr.unsafe_offset(j).unsafe_store(val=Scalar[DType.int8](v))
+
+            var bsums_ptr = block_dst.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
+            for j in range(16):
+                var sum = Int16(0)
+                for ii in range(16):
+                    var qv = qs_ptr.unsafe_offset(j * 16 + ii).unsafe_load()
+                    sum += Int16(qv)
+                bsums_ptr.unsafe_offset(j).unsafe_store(val=Scalar[DType.int16](sum))
+
+        # Compute dot products with all weight columns, add residual
+        for j in range(N):
+            var sumf = Float32(0)
+            for b in range(nb):
+                var w_block = w_quant.data().unsafe_offset(j * nb * bb + b * bb)
+                var q8_block = q8k_buf.unsafe_offset(b * 292)
+                if quant_type == QuantType.Q4_K_M:
+                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
+                elif quant_type == QuantType.Q5_K:
+                    sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
+                elif quant_type == QuantType.Q6_K:
+                    sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
+                elif quant_type == QuantType.Q2_K:
+                    sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
+                elif quant_type == QuantType.Q3_K:
+                    sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
+                else:
+                    unimplemented("Unsupported quant type for Q8_K matmul")
+            # Fused: add residual
+            var res_val = Float32(residual.data()[unsafe_offset=i * N + j])
+            out.data().unsafe_offset(i * N + j).unsafe_store(val=Scalar[DType.float16](sumf + res_val))
+
+    q8k_buf.unsafe_free()
+    return out

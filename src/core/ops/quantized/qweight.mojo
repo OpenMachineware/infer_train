@@ -34,7 +34,7 @@ from ..cpu.matmul_cpu import (
     matmul_weight_cpu_threaded,
     matmul_quantized_cpu_threaded,
 )
-from ..cpu.matmul_q8k import matmul_quantized_q8k
+from ..cpu.matmul_q8k import matmul_quantized_q8k, matmul_quantized_q8k_add
 from ..cpu.matmul_q8k_threaded import matmul_quantized_q8k_threaded, matmul_quantized_q8k_worksteal
 from ..gpu.matmul_gpu import matmul_weight_gpu
 from ..gpu.matmul_k_quant_gpu import matmul_k_quant_gpu, matmul_k_quant_gpu_cached
@@ -130,6 +130,32 @@ struct QWeight(Copyable, ImplicitlyCopyable, Movable):
                 return matmul_weight_gpu[DType.float16](x, self.fp16)
             return matmul_weight_cpu_threaded[DType.float16](x, self.fp16)
         return quant_proj_dispatch(x, self, dummy_scale, use_gpu, gpu_ctx)
+
+    def proj_add(
+        self,
+        x: Tensor[DType.float16, 2],
+        dummy_scale: Tensor[DType.float16, 1],
+        residual: Tensor[DType.float16, 2],
+        use_gpu: Bool = False,  # CPU path for now
+        gpu_ctx: Optional[DeviceContext] = None,
+    ) -> Tensor[DType.float16, 2]:
+        """y = W @ x + residual (fused operation).
+
+        Fused matmul + residual add saves one memory read/write pass.
+        For K-quant weights, uses the fused Q8_K kernel.
+
+        Args:
+            x: Input tensor [M, n_in]
+            dummy_scale: Placeholder for generic signature
+            residual: Residual tensor [M, n_out]
+            use_gpu: Whether to use GPU path
+            gpu_ctx: Optional cached DeviceContext for GPU operations
+        """
+        if not self.quantized:
+            # Non-quantized: fall back to separate matmul + add
+            var result = matmul_weight_cpu_threaded[DType.float16](x, self.fp16)
+            return add_cpu_dynamic[DType.float16](residual, result)
+        return quant_proj_add_dispatch(x, self, dummy_scale, residual, use_gpu, gpu_ctx)
 
 
 def qweight_from_fp16(w: Tensor[DType.float16, 2]) -> QWeight:
@@ -270,3 +296,78 @@ def quant_proj_dispatch(
         "qweight: unsupported quantized ggml type " + String(w.ggml_type)
     )
     return tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](0, 0))
+
+
+def quant_proj_add_dispatch(
+    x: Tensor[DType.float16, 2],
+    w: QWeight,
+    dummy_scale: Tensor[DType.float16, 1],
+    residual: Tensor[DType.float16, 2],
+    use_gpu: Bool = False,
+    gpu_ctx: Optional[DeviceContext] = None,
+) -> Tensor[DType.float16, 2]:
+    """Fused matmul + residual add for K-quant weights.
+
+    Uses the fused Q8_K kernel which computes (x @ W) + residual in one pass,
+    saving one memory read/write over the output tensor.
+    """
+    from ..cpu.blas_cpu import matmul_quantized_blas_tiled
+
+    var M = x.shape()[0]
+    var n_blocks = w.n_in // 256
+
+    # CPU path for decode mode (M <= 4)
+    if use_gpu and M <= 4:
+        pass
+    elif use_gpu:
+        # GPU path for batch mode - use separate matmul + add for now
+        if w.ggml_type == 12:
+            var result = matmul_k_quant_gpu_cached[QuantType.Q4_K_M](
+                x, w.data, n_blocks, w.gpu_buf, gpu_ctx
+            )
+            return add_cpu_dynamic[DType.float16](residual, result)
+        elif w.ggml_type == 13:
+            var result = matmul_k_quant_gpu_cached[QuantType.Q5_K](
+                x, w.data, n_blocks, w.gpu_buf, gpu_ctx
+            )
+            return add_cpu_dynamic[DType.float16](residual, result)
+        elif w.ggml_type == 14:
+            var result = matmul_k_quant_gpu_cached[QuantType.Q6_K](
+                x, w.data, n_blocks, w.gpu_buf, gpu_ctx
+            )
+            return add_cpu_dynamic[DType.float16](residual, result)
+        elif w.ggml_type == 11:
+            var result = matmul_k_quant_gpu_cached[QuantType.Q2_K](
+                x, w.data, n_blocks, w.gpu_buf, gpu_ctx
+            )
+            return add_cpu_dynamic[DType.float16](residual, result)
+        elif w.ggml_type == 15:
+            var result = matmul_k_quant_gpu_cached[QuantType.Q3_K](
+                x, w.data, n_blocks, w.gpu_buf, gpu_ctx
+            )
+            return add_cpu_dynamic[DType.float16](residual, result)
+
+    # K-quant formats: CPU path with fused Q8_K + residual
+    # Q4_K (ggml_type 12)
+    if w.ggml_type == 12:
+        return matmul_quantized_q8k_add[QuantType.Q4_K_M](x, w.data, dummy_scale, residual)
+
+    # Q5_K (ggml_type 13)
+    if w.ggml_type == 13:
+        return matmul_quantized_q8k_add[QuantType.Q5_K](x, w.data, dummy_scale, residual)
+
+    # Q6_K (ggml_type 14)
+    if w.ggml_type == 14:
+        return matmul_quantized_q8k_add[QuantType.Q6_K](x, w.data, dummy_scale, residual)
+
+    # Q2_K (ggml_type 11)
+    if w.ggml_type == 11:
+        return matmul_quantized_q8k_add[QuantType.Q2_K](x, w.data, dummy_scale, residual)
+
+    # Q3_K (ggml_type 15)
+    if w.ggml_type == 15:
+        return matmul_quantized_q8k_add[QuantType.Q3_K](x, w.data, dummy_scale, residual)
+
+    # Non-K-quant formats: fallback to separate matmul + add
+    var result = quant_proj_dispatch(x, w, dummy_scale, use_gpu, gpu_ctx)
+    return add_cpu_dynamic[DType.float16](residual, result)
