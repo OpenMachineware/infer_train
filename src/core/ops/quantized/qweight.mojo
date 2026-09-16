@@ -241,22 +241,14 @@ def quant_proj_dispatch(
     var M = x.shape()[0]
     var n_blocks = w.n_in // 256  # QK_K = 256
 
-    # GPU path for decode mode (M <= 4)
-    if use_gpu and M <= 4:
-        # Use FP16 GPU path if weights are prepared
-        if w.gpu_buf_fp16:
-            return matmul_fp16_gpu(x, w.fp16_dequant, w.gpu_buf_fp16, gpu_ctx)
-        # Fall back to quantized GPU decode kernel
-        if w.ggml_type == 12:
-            return matmul_decode_gpu_cached(x, w.data, 12, n_blocks, w.gpu_buf, gpu_ctx)
-        elif w.ggml_type == 13:
-            return matmul_decode_gpu_cached(x, w.data, 13, n_blocks, w.gpu_buf, gpu_ctx)
-        elif w.ggml_type == 14:
-            return matmul_decode_gpu_cached(x, w.data, 14, n_blocks, w.gpu_buf, gpu_ctx)
-        elif w.ggml_type == 11:
-            return matmul_decode_gpu_cached(x, w.data, 11, n_blocks, w.gpu_buf, gpu_ctx)
-        elif w.ggml_type == 15:
-            return matmul_decode_gpu_cached(x, w.data, 15, n_blocks, w.gpu_buf, gpu_ctx)
+    # Dynamic dispatch for decode mode (M <= 4)
+    # Use FP16 GPU path if weights are prepared, otherwise fall back to CPU
+    if use_gpu and M <= 4 and w.gpu_buf_fp16:
+        # FP16 GPU path is fast (prepared weights)
+        return matmul_fp16_gpu(x, w.fp16_dequant, w.gpu_buf_fp16, gpu_ctx)
+    elif use_gpu and M <= 4:
+        # FP16 not prepared, fall back to CPU (faster than quantized GPU kernel)
+        pass
     elif use_gpu:  # Batch mode (M > 4): GPU path with on-device dequantization
         # Q4_K (ggml_type 12)
         if w.ggml_type == 12:
