@@ -58,14 +58,79 @@ def _qkv_reshape[
         StaticTuple[Int, 3](n_heads, n_tokens, head_dim)
     )
 
-    # Permute data: [T, n_heads, head_dim] -> [n_heads, T, head_dim]
-    for t in range(n_tokens):
+    # SIMD-optimized transpose when head_dim is aligned to 16 (256-bit vector width for fp16)
+    if head_dim % 16 == 0:
+        var x_data = x.data()
+        var out_data = out.data()
+
+        for t in range(n_tokens):
+            for h in range(n_heads):
+                # Copy head_dim elements using SIMD (16 elements at a time)
+                var src_offset = t * n_heads * head_dim + h * head_dim
+                var dst_offset = (h * n_tokens + t) * head_dim
+
+                var d = 0
+                while d + 16 <= head_dim:
+                    # Vector load and store
+                    var vec = x_data.unsafe_load[width=16](offset=src_offset + d)
+                    out_data.unsafe_offset(dst_offset + d).unsafe_store(vec)
+                    d += 16
+
+                # Handle remaining elements
+                while d < head_dim:
+                    out_data.unsafe_offset(dst_offset + d).unsafe_store(
+                        x_data.unsafe_offset(src_offset + d).unsafe_load()
+                    )
+                    d += 1
+    else:
+        # Fallback: element-by-element copy
+        for t in range(n_tokens):
+            for h in range(n_heads):
+                for d in range(head_dim):
+                    out.set(
+                        (h * n_tokens + t) * head_dim + d,
+                        x.get(t * n_heads * head_dim + h * head_dim + d)
+                    )
+
+    return out
+
+
+def _extract_token[
+    dtype: DType
+](x: Tensor[dtype, 3], token_idx: Int) -> Tensor[dtype, 2]:
+    """Extract single token from [n_heads, n_tokens, head_dim] to [1, n_heads * head_dim].
+
+    SIMD-optimized for head_dim aligned to 16.
+    """
+    var n_heads = x.shape()[0]
+    var n_tokens = x.shape()[1]
+    var head_dim = x.shape()[2]
+    var hidden = n_heads * head_dim
+
+    var out = Tensor[dtype, 2](StaticTuple[Int, 2](1, hidden))
+    var x_data = x.data()
+    var out_data = out.data()
+
+    if head_dim % 16 == 0:
+        for h in range(n_heads):
+            var src_offset = (h * n_tokens + token_idx) * head_dim
+            var dst_offset = h * head_dim
+
+            var d = 0
+            while d + 16 <= head_dim:
+                var vec = x_data.unsafe_load[width=16](offset=src_offset + d)
+                out_data.unsafe_offset(dst_offset + d).unsafe_store(vec)
+                d += 16
+
+            while d < head_dim:
+                out_data.unsafe_offset(dst_offset + d).unsafe_store(
+                    x_data.unsafe_offset(src_offset + d).unsafe_load()
+                )
+                d += 1
+    else:
         for h in range(n_heads):
             for d in range(head_dim):
-                out.set(
-                    (h * n_tokens + t) * head_dim + d,
-                    x.get(t * n_heads * head_dim + h * head_dim + d)
-                )
+                out.set(h * head_dim + d, x.get((h * n_tokens + token_idx) * head_dim + d))
 
     return out
 
@@ -91,13 +156,35 @@ def _flat_view[
     )
 
     # Permute data: [n_heads, T, head_dim] -> [T, n_heads, head_dim]
-    for t in range(n_tokens):
-        for h in range(n_heads):
-            for d in range(head_dim):
-                out.set(
-                    t * hidden + h * head_dim + d,
-                    x.get((h * n_tokens + t) * head_dim + d)
-                )
+    # SIMD-optimized when head_dim is aligned to 16
+    if head_dim % 16 == 0:
+        var x_data = x.data()
+        var out_data = out.data()
+
+        for t in range(n_tokens):
+            for h in range(n_heads):
+                var src_offset = (h * n_tokens + t) * head_dim
+                var dst_offset = t * hidden + h * head_dim
+
+                var d = 0
+                while d + 16 <= head_dim:
+                    var vec = x_data.unsafe_load[width=16](offset=src_offset + d)
+                    out_data.unsafe_offset(dst_offset + d).unsafe_store(vec)
+                    d += 16
+
+                while d < head_dim:
+                    out_data.unsafe_offset(dst_offset + d).unsafe_store(
+                        x_data.unsafe_offset(src_offset + d).unsafe_load()
+                    )
+                    d += 1
+    else:
+        for t in range(n_tokens):
+            for h in range(n_heads):
+                for d in range(head_dim):
+                    out.set(
+                        t * hidden + h * head_dim + d,
+                        x.get((h * n_tokens + t) * head_dim + d)
+                    )
 
     return out
 
@@ -977,13 +1064,32 @@ def mha_forward_batch(
         StaticTuple[Int, 3](n_heads, n_tokens, head_dim)
     )
     if opts.gate:
-        for h in range(n_heads):
-            for t in range(n_tokens):
-                for d in range(head_dim):
-                    q3.set(
-                        (h * n_tokens + t) * head_dim + d,
-                        q_flat.get(t * 2 * head_dim + h * 2 * head_dim + d),
-                    )
+        # qwen35: fused Q+gate projection - extract Q part with SIMD
+        var q_data = q_flat.data()
+        var q3_data = q3.data()
+        if head_dim % 16 == 0:
+            for h in range(n_heads):
+                for t in range(n_tokens):
+                    var src_offset = t * 2 * head_dim + h * 2 * head_dim
+                    var dst_offset = (h * n_tokens + t) * head_dim
+                    var d = 0
+                    while d + 16 <= head_dim:
+                        var vec = q_data.unsafe_load[width=16](offset=src_offset + d)
+                        q3_data.unsafe_offset(dst_offset + d).unsafe_store(vec)
+                        d += 16
+                    while d < head_dim:
+                        q3_data.unsafe_offset(dst_offset + d).unsafe_store(
+                            q_data.unsafe_offset(src_offset + d).unsafe_load()
+                        )
+                        d += 1
+        else:
+            for h in range(n_heads):
+                for t in range(n_tokens):
+                    for d in range(head_dim):
+                        q3.set(
+                            (h * n_tokens + t) * head_dim + d,
+                            q_flat.get(t * 2 * head_dim + h * 2 * head_dim + d),
+                        )
     else:
         q3 = _qkv_reshape[DType.float16](q_flat, n_heads, head_dim)
     var k3 = _qkv_reshape[DType.float16](k_flat, n_kv_heads, head_dim)
@@ -997,23 +1103,10 @@ def mha_forward_batch(
 
     for t in range(n_tokens):
         var pos = start_pos + t
-        # Extract per-position Q/K/V (single token view)
-        var q_t = tensor_zeros[DType.float16, 2](
-            StaticTuple[Int, 2](1, q_out_dim)  # Q output is n_heads * head_dim
-        )
-        var k_t = tensor_zeros[DType.float16, 2](
-            StaticTuple[Int, 2](1, n_kv_heads * head_dim)
-        )
-        var v_t = tensor_zeros[DType.float16, 2](
-            StaticTuple[Int, 2](1, n_kv_heads * head_dim)
-        )
-        for h in range(n_heads):
-            for d in range(head_dim):
-                q_t.set(h * head_dim + d, q3.get((h * n_tokens + t) * head_dim + d))
-        for h in range(n_kv_heads):
-            for d in range(head_dim):
-                k_t.set(h * head_dim + d, k3.get((h * n_tokens + t) * head_dim + d))
-                v_t.set(h * head_dim + d, v3.get((h * n_tokens + t) * head_dim + d))
+        # Extract per-position Q/K/V using SIMD-optimized helper
+        var q_t = _extract_token[DType.float16](q3, t)
+        var k_t = _extract_token[DType.float16](k3, t)
+        var v_t = _extract_token[DType.float16](v3, t)
 
         # Reshape for RoPE
         var q3_t = _qkv_reshape[DType.float16](q_t, n_heads, head_dim)
