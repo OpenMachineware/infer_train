@@ -58,7 +58,6 @@ from .ops.cpu.swiglu_cpu import swiglu_cpu_dynamic
 from .ops.cpu.matmul_q8k_threaded import fused_gate_up_projection
 from .ops.attention.mha import (
     mha_forward_v2,
-    mha_forward_v2_with_norm,
     mha_forward_batch,
     MHAOptions,
     rms_norm_heads,
@@ -1100,6 +1099,9 @@ struct TransformerModel(Movable):
         """
         var cfg = self.config
         var lw = self.layer_view(layer)
+        var normed = rms_norm_weight[DType.float16](
+            x, lw.attn_norm_w, cfg.norm_eps
+        )
         var opts = MHAOptions()
         opts.q_norm = cfg.has_qk_norm
         opts.k_norm = cfg.has_qk_norm
@@ -1107,11 +1109,8 @@ struct TransformerModel(Movable):
         opts.gate = cfg.has_gate
         opts.n_rot = cfg.n_rot
         opts.norm_eps = cfg.norm_eps
-        # Use fused RMSNorm + QKV projection path
-        var attn = mha_forward_v2_with_norm(
-            x,
-            lw.attn_norm_w,
-            cfg.norm_eps,
+        var attn = mha_forward_v2(
+            normed,
             lw.q_w,
             lw.k_w,
             lw.v_w,

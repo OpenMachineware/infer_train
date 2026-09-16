@@ -18,7 +18,7 @@ BLAS_XLINK := -Xlinker "-framework" -Xlinker "Accelerate"
         test-gguf-split test-gguf test-rpc test-thread-pool clean tp mwq \
         server cli rpc-server infer_train version check-mem bench_cpu bench_pool \
         bench_transformer_core bench_blas bench_dequant bench_simd \
-        bench_q8k_vs_fp32 bench_qmatmul_threading test-kernel
+        bench_q8k_vs_fp32 bench_qmatmul_threading test-kernel dump-gguf ref-forward
 
 # M12: the Q4-resident matmul pool workers as a standalone Mojo shared
 # library.  Mojo 1.0 only honors @export in a build's entry module and
@@ -283,6 +283,13 @@ test-kernel: tp
 test-mmla: tp
 	$(MOJO) build --target-features "+i8mm" -I . tests/test_q4k_kernel.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_q4k_kernel_mmla
 	./tests/test_q4k_kernel_mmla
+
+# Utility scripts for debugging
+dump-gguf:
+	pixi run python tools/dump_gguf_meta.py
+
+ref-forward:
+	pixi run python tools/ref_forward.py
 
 # Remove every build artifact: the CLI binaries, the tools binaries, the
 # compiled shared libraries (C-API + the C runtime helper dylib), the
