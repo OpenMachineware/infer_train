@@ -35,7 +35,7 @@ from ..cpu.matmul_cpu import (
     matmul_quantized_cpu_threaded,
 )
 from ..cpu.matmul_q8k import matmul_quantized_q8k
-from ..cpu.matmul_q8k_threaded import matmul_quantized_q8k_threaded
+from ..cpu.matmul_q8k_threaded import matmul_quantized_q8k_threaded, matmul_quantized_q8k_worksteal
 from .quant_types import QuantType
 from std.utils.static_tuple import StaticTuple
 
@@ -120,35 +120,35 @@ def quant_proj_dispatch(
     from ..cpu.blas_cpu import matmul_quantized_blas_tiled
 
     # K-quant formats: Use Q8_K + SDOT path (int8 dot product, faster than FP32 SIMD)
-    # Threading: Use default thread count for now (will be optimized by matmul function)
+    # Threading: Use pthread pool for large matrices (N >= 2048) in decode mode
 
     # Q4_K (ggml_type 12)
     if w.ggml_type == 12:
-        if w.n_out >= 4096 and x.shape()[0] == 1:
+        if w.n_out >= 2048 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q4_K_M](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q4_K_M](x, w.data, dummy_scale)
 
     # Q5_K (ggml_type 13)
     if w.ggml_type == 13:
-        if w.n_out >= 4096 and x.shape()[0] == 1:
+        if w.n_out >= 2048 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q5_K](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q5_K](x, w.data, dummy_scale)
 
     # Q6_K (ggml_type 14)
     if w.ggml_type == 14:
-        if w.n_out >= 4096 and x.shape()[0] == 1:
+        if w.n_out >= 2048 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q6_K](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q6_K](x, w.data, dummy_scale)
 
     # Q2_K (ggml_type 11)
     if w.ggml_type == 11:
-        if w.n_out >= 4096 and x.shape()[0] == 1:
+        if w.n_out >= 2048 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q2_K](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q2_K](x, w.data, dummy_scale)
 
     # Q3_K (ggml_type 15)
     if w.ggml_type == 15:
-        if w.n_out >= 4096 and x.shape()[0] == 1:
+        if w.n_out >= 2048 and x.shape()[0] == 1:
             return matmul_quantized_q8k_threaded[QuantType.Q3_K](x, w.data, dummy_scale)
         return matmul_quantized_q8k[QuantType.Q3_K](x, w.data, dummy_scale)
 

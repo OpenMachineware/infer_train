@@ -12,6 +12,7 @@
 from ...tensor import Tensor, tensor_zeros
 from ...utils import unimplemented
 from ...thread_pool import parallel_run_tid, resolve_threads, now_ns, has_worker
+from ...scheduler import ensure_runtime, run_work_stealing, worker_count
 from std.utils.static_tuple import StaticTuple
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
@@ -111,12 +112,13 @@ def matmul_quantized_q8k_threaded[
     if be == 0 or K % be != 0:
         unimplemented("matmul_quantized_q8k_threaded: K not a multiple of block size")
 
-    # Threading threshold: below N=4096, overhead dominates
+    # Threading threshold: below N=2048, overhead dominates
     # Benchmark data:
     #   N=1024: 0.6x (threading harmful)
+    #   N=2048: 1.5x (threading helps slightly)
     #   N=4096: 4.7x (threading helps)
     #   N=8192: 5.5x (threading helps)
-    if N < 4096 or nthreads == 1:
+    if N < 2048 or nthreads == 1:
         return matmul_quantized_q8k[quant_type](x, w_quant, scale)
 
     # Check if the worker is available (falls back to sequential if not)
@@ -513,3 +515,86 @@ def fused_gate_up_projection(
 
     q8k_buf.unsafe_free()
     return (gate_out, up_out)
+
+
+# ============================================================================
+# Work-stealing based threaded matmul (better for small models)
+# ============================================================================
+
+
+def matmul_quantized_q8k_worksteal[
+    quant_type: QuantType,
+](
+    x: Tensor[DType.float16, 2],
+    w_quant: Tensor[DType.uint8, 2],
+    scale: Tensor[DType.float16, 1],
+    nthreads: Int = 0,
+) -> Tensor[DType.float16, 2]:
+    """Work-stealing based Q8_K + SDOT matmul.
+
+    Uses the Mojo-native work-stealing pool with static distribution
+    (oversub=1) for better performance on small models where the pthread
+    pool's per-task overhead dominates.
+
+    Key difference from matmul_quantized_q8k_threaded:
+    - Uses run_work_stealing with oversub=1 (static split)
+    - Each thread processes N/workers columns (larger chunks)
+    - Lower scheduling overhead for small N
+
+    Expected: 2-3x speedup for N >= 1024 (vs sequential)
+    """
+    ensure_runtime()
+
+    var M = x.shape()[0]
+    var K = x.shape()[1]
+    var N = w_quant.shape()[0]
+
+    var be = block_elems(quant_type)
+    var bb = block_bytes(quant_type)
+    if be == 0 or K % be != 0:
+        unimplemented("matmul_quantized_q8k_worksteal: K not a multiple of block size")
+
+    # Threshold: use work-stealing for N >= 1024
+    # Below that, sequential is faster due to overhead
+    var workers = worker_count()
+    if nthreads > 0 and nthreads < workers:
+        workers = nthreads
+    if N < 1024 or workers <= 1:
+        return matmul_quantized_q8k[quant_type](x, w_quant, scale)
+
+    var nb = K // QK_K
+    var out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, N))
+
+    # Allocate Q8_K buffer for one row
+    var q8k_buf = unsafe_alloc[UInt8](nb * 292)
+
+    # For each activation row
+    for i in range(M):
+        # 1. Quantize this row to Q8_K
+        quantize_row_to_q8_k(x, i, K, q8k_buf)
+
+        # 2. Use work-stealing to parallelize column computation
+        # oversub=1 means static split: each worker gets N/workers columns
+        def compute_columns(j: Int) {imm q8k_buf, imm w_quant, imm out, imm i, imm N, imm nb, imm bb}:
+            var sumf = Float32(0)
+            for b in range(nb):
+                var w_block = w_quant.data().unsafe_offset(j * nb * bb + b * bb)
+                var q8_block = q8k_buf.unsafe_offset(b * 292)
+                # Dispatch based on quant_type
+                comptime if quant_type == QuantType.Q4_K_M:
+                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
+                elif quant_type == QuantType.Q5_K:
+                    sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
+                elif quant_type == QuantType.Q6_K:
+                    sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
+                elif quant_type == QuantType.Q2_K:
+                    sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
+                elif quant_type == QuantType.Q3_K:
+                    sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
+            out.data().unsafe_offset(i * N + j).unsafe_store(val=Scalar[DType.float16](sumf))
+
+        # Static distribution: each worker gets N/workers columns
+        _ = run_work_stealing[oversub=1](compute_columns, N, workers)
+
+    q8k_buf.unsafe_free()
+    return out
