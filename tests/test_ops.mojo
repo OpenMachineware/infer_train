@@ -301,7 +301,7 @@ def test_quant_type_helpers():
     if block_bytes(QuantType.Q5_K) != 176:
         print("FAIL: block_bytes Q5_K")
         abort()
-    if block_bytes(QuantType.Q2_K) != 56:
+    if block_bytes(QuantType.Q2_K) != 84:
         print("FAIL: block_bytes Q2_K")
         abort()
     if block_bytes(QuantType.IQ4_XS) != 136:

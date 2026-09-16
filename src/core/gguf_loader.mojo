@@ -78,6 +78,7 @@ struct GGUFTensor(Copyable, ImplicitlyCopyable, Movable):
     var name: String
     var n_dims: Int
     var dims: StaticTuple[Int, GGUF_MAX_DIMS]
+    var strides: StaticTuple[Int, GGUF_MAX_DIMS]  # nb in llama.cpp: byte stride per dimension
     var ggml_type: Int
     var offset: Int  # byte offset into the owning file's tensor-data section
     var file_idx: Int  # index into GGUFContext.parts (0 for a single file)
@@ -86,6 +87,7 @@ struct GGUFTensor(Copyable, ImplicitlyCopyable, Movable):
         self.name = String("")
         self.n_dims = 0
         self.dims = StaticTuple[Int, GGUF_MAX_DIMS](fill=0)
+        self.strides = StaticTuple[Int, GGUF_MAX_DIMS](fill=0)
         self.ggml_type = 0
         self.offset = 0
         self.file_idx = 0
@@ -130,6 +132,8 @@ def ggml_quant_info(ggml_type: Int) -> Tuple[Int, Int, Int, Int8]:
     """
     if ggml_type == 2:  # Q4_0
         return (32, 18, 32, QuantType.Q4_0._tag)
+    if ggml_type == 11:  # Q2_K
+        return (256, 56, 32, QuantType.Q2_K._tag)
     if ggml_type == 12:  # Q4_K (Q4_K_M)
         return (256, 144, 32, QuantType.Q4_K_M._tag)
     if ggml_type == 13:  # Q5_K
@@ -237,7 +241,9 @@ struct GGUFContext(Movable):
     var metadata: Dict[String, GGUFMetaValue]
     var tensors: List[GGUFTensor]
     var data_offset: Int  # byte offset where tensor payloads begin (part 0)
+    var alignment: Int  # tensor data alignment (from general.alignment or default 32)
     var parts: List[GGUFFilePart]  # one per split file (>= 1)
+    var metadata_only: Bool  # true if loaded with load_gguf_metadata_only
 
     def __init__(out self, data: Pointer[UInt8, MutUntrackedOrigin], size: Int):
         self.data = data
@@ -248,7 +254,9 @@ struct GGUFContext(Movable):
         self.metadata = Dict[String, GGUFMetaValue]()
         self.tensors = List[GGUFTensor]()
         self.data_offset = 0
+        self.alignment = 32
         self.parts = List[GGUFFilePart]()
+        self.metadata_only = False
 
     def n_parts(self) -> Int:
         return len(self.parts)
@@ -425,10 +433,10 @@ def _parse_part(
     mut metadata: Dict[String, GGUFMetaValue],
     mut tensors: List[GGUFTensor],
     file_idx: Int,
-) raises -> Tuple[Int, Int]:
+) raises -> Tuple[Int, Int, Int]:
     """Parse one GGUF file's header, metadata, and tensor table.
 
-    Fills `metadata` and `tensors` in place and returns (data_offset, version).
+    Fills `metadata` and `tensors` in place and returns (data_offset, version, alignment).
     `file_idx` is stamped onto every tensor so the context can later locate
     each tensor's bytes in the correct split part.
     """
@@ -495,9 +503,24 @@ def _parse_part(
             unimplemented("gguf: unknown metadata type")
         metadata[key] = value
 
+    # Read alignment from metadata (following llama.cpp GGUF_KEY_GENERAL_ALIGNMENT)
+    var alignment = 32  # GGUF_DEFAULT_ALIGNMENT
+    if "general.alignment" in metadata:
+        var align_val = metadata["general.alignment"]
+        if align_val.kind == 0:  # uint
+            alignment = Int(align_val.uint_val)
+            if alignment == 0 or (alignment & (alignment - 1)) != 0:
+                raise Error("gguf: alignment must be a power of 2, got " + String(alignment))
+
     for _ in range(tensor_count):
         var tensor = GGUFTensor()
         tensor.name = reader.read_string()
+
+        # Check for duplicate tensor names (llama.cpp validation)
+        for existing in tensors:
+            if existing.name == tensor.name:
+                raise Error("gguf: duplicate tensor name '" + tensor.name + "'")
+
         tensor.n_dims = Int(reader.read_u32())
         if tensor.n_dims > GGUF_MAX_DIMS:
             unimplemented("gguf: tensor rank too large")
@@ -506,10 +529,30 @@ def _parse_part(
         tensor.ggml_type = Int(reader.read_u32())
         tensor.offset = Int(reader.read_u64())
         tensor.file_idx = file_idx
+
+        # Calculate strides (llama.cpp gguf.cpp:742-746)
+        # nb[0] = type_size (bytes per block for quantized, per element for fp)
+        # nb[1] = nb[0] * (ne[0] / blck_size)
+        # nb[j] = nb[j-1] * ne[j-1] for j >= 2
+        var (block_elems, block_bytes, _, _) = ggml_quant_info(tensor.ggml_type)
+        if block_elems == 0:
+            block_elems = 1
+        if block_bytes == 0:
+            block_bytes = 4  # F32 default
+        tensor.strides[0] = block_bytes
+        if tensor.n_dims >= 1:
+            # Calculate blocks per row, handling quantization
+            var n_blocks = tensor.dims[0] // block_elems
+            if tensor.dims[0] % block_elems != 0:
+                n_blocks += 1  # Partial block
+            tensor.strides[1] = tensor.strides[0] * n_blocks
+        for d in range(2, tensor.n_dims):
+            tensor.strides[d] = tensor.strides[d - 1] * tensor.dims[d - 1]
+
         tensors.append(tensor)
 
-    var data_offset = align_up(reader.offset, 32)
-    return (data_offset, version)
+    var data_offset = align_up(reader.offset, alignment)
+    return (data_offset, version, alignment)
 
 
 def load_gguf_single(file_path: String) raises -> GGUFContext:
@@ -517,12 +560,13 @@ def load_gguf_single(file_path: String) raises -> GGUFContext:
     var (data, size) = mmap_file(file_path)
     var metadata = Dict[String, GGUFMetaValue]()
     var tensors = List[GGUFTensor]()
-    var (data_offset, version) = _parse_part(data, metadata, tensors, 0)
+    var (data_offset, version, alignment) = _parse_part(data, metadata, tensors, 0)
     var context = GGUFContext(data, size)
     context.version = version
     context.tensor_count = len(tensors)
     context.meta_count = len(metadata)
     context.data_offset = data_offset
+    context.alignment = alignment
     context.parts.append(GGUFFilePart(file_path, data, size, data_offset))
     for t in tensors:
         context.tensors.append(t)  # file_idx 0 (stamped in _parse_part)
@@ -540,13 +584,14 @@ def load_gguf_split(base: String, total: Int) raises -> GGUFContext:
     var (first_data, first_size) = mmap_file(first_path)
     var metadata = Dict[String, GGUFMetaValue]()
     var first_tensors = List[GGUFTensor]()
-    var (first_data_offset, version) = _parse_part(
+    var (first_data_offset, version, alignment) = _parse_part(
         first_data, metadata, first_tensors, 0
     )
     var context = GGUFContext(first_data, first_size)
     context.version = version
     context.meta_count = len(metadata)
     context.data_offset = first_data_offset
+    context.alignment = alignment
     context.parts.append(
         GGUFFilePart(first_path, first_data, first_size, first_data_offset)
     )
@@ -558,7 +603,7 @@ def load_gguf_split(base: String, total: Int) raises -> GGUFContext:
         var (data, size) = mmap_file(path)
         var part_meta = Dict[String, GGUFMetaValue]()  # discarded (part 1 only)
         var part_tensors = List[GGUFTensor]()
-        var (data_offset, _) = _parse_part(data, part_meta, part_tensors, i - 1)
+        var (data_offset, _, _) = _parse_part(data, part_meta, part_tensors, i - 1)
         context.parts.append(GGUFFilePart(path, data, size, data_offset))
         for t in part_tensors:
             context.tensors.append(t)
