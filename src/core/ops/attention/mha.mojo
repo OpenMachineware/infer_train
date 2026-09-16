@@ -29,10 +29,11 @@ from ..cpu.matmul_cpu import (
     matmul_weight_cpu_threaded,
     matmul_weight_3_threaded,
 )
-from ..cpu.matmul_q8k_threaded import fused_qkv_projection, fused_qkv_projection_mixed
+from ..cpu.matmul_q8k_threaded import fused_qkv_projection, fused_qkv_projection_mixed, fused_rms_norm_qkv_projection_mixed
 from ..quantized.qweight import QWeight, qweight_from_fp16
 from ..quantized.quant_types import QuantType
 from ..cpu.add_cpu import add_row_cpu
+from ..cpu.rms_norm_cpu import rms_norm_weight_cpu
 from ..cpu.rope_cpu import (
     rope_cpu_dynamic,
     rope_cpu_backward,
@@ -436,6 +437,256 @@ def mha_forward_v2(
     if opts.gate:
         # qwen35: fused Q+gate projection - the gate lives in the second
         # half of `q_flat`, interleaved per head: [q0, g0, q1, g1, ...]
+        for h in range(n_heads):
+            for d in range(head_dim):
+                var g = Float32(q_flat.get(h * 2 * head_dim + head_dim + d))
+                var s = Float32(1.0) / (Float32(1.0) + exp(-g))
+                out.set(
+                    h * head_dim + d,
+                    Scalar[DType.float16](
+                        Float32(out.get(h * head_dim + d)) * s
+                    ),
+                )
+    var out_flat = _flat_view[DType.float16](out, n_heads * head_dim)
+    return wo.proj(out_flat, dummy_scale)
+
+
+def mha_forward_v2_with_norm(
+    x: Tensor[DType.float16, 2],
+    norm_w: Tensor[DType.float16, 1],
+    norm_eps: Float32,
+    wq: QWeight,
+    wk: QWeight,
+    wv: QWeight,
+    wo: QWeight,
+    bq: Tensor[DType.float16, 1],
+    bk: Tensor[DType.float16, 1],
+    bv: Tensor[DType.float16, 1],
+    q_norm_w: Tensor[DType.float16, 1],
+    k_norm_w: Tensor[DType.float16, 1],
+    mut cache: KVCacheLayer,
+    start_pos: Int,
+    n_heads: Int,
+    n_kv_heads: Int,
+    head_dim: Int,
+    rope_theta: Float32,
+    opts: MHAOptions,
+    dummy_scale: Tensor[DType.float16, 1],
+) -> Tensor[DType.float16, 2]:
+    """Fused RMSNorm + MHA (M7), Q4-resident (M11).
+
+    This variant accepts the pre-norm input x and the RMSNorm weight,
+    and fuses RMSNorm with the Q8_K quantization for the QKV projection.
+
+    Returns: attention output tensor
+    """
+    # Check if we can use fused RMSNorm + QKV projection (all K-quant types)
+    def is_kquant(t: Int) -> Bool:
+        return t == 12 or t == 13 or t == 14 or t == 11 or t == 15  # Q4_K, Q5_K, Q6_K, Q2_K, Q3_K
+
+    var use_fused = (
+        wq.quantized and wk.quantized and wv.quantized and
+        is_kquant(wq.ggml_type) and is_kquant(wk.ggml_type) and is_kquant(wv.ggml_type)
+    )
+
+    var q_flat: Tensor[DType.float16, 2]
+    var k_flat: Tensor[DType.float16, 2]
+    var v_flat: Tensor[DType.float16, 2]
+
+    if use_fused:
+        # Fused path: RMSNorm + Q8_K quantization + QKV projection in one pass
+        var (q_out, k_out, v_out) = fused_rms_norm_qkv_projection_mixed(
+            x, norm_w, norm_eps, wq.data, wk.data, wv.data, wq.ggml_type, wk.ggml_type, wv.ggml_type
+        )
+        q_flat = q_out
+        k_flat = k_out
+        v_flat = v_out
+    else:
+        # Non-fused path: RMSNorm first, then project
+        var normed = rms_norm_weight_cpu[DType.float16](x, norm_w, norm_eps)
+        q_flat = wq.proj(normed, dummy_scale)
+        k_flat = wk.proj(normed, dummy_scale)
+        v_flat = wv.proj(normed, dummy_scale)
+
+    if bq.numel() > 0:
+        q_flat = add_row_cpu[DType.float16](q_flat, bq)
+    if bk.numel() > 0:
+        k_flat = add_row_cpu[DType.float16](k_flat, bk)
+    if bv.numel() > 0:
+        v_flat = add_row_cpu[DType.float16](v_flat, bv)
+
+    # Rest is identical to mha_forward_v2
+    var q3 = tensor_zeros[DType.float16, 3](
+        StaticTuple[Int, 3](n_heads, 1, head_dim)
+    )
+    if opts.gate:
+        for h in range(n_heads):
+            for d in range(head_dim):
+                q3.set(h * head_dim + d, q_flat.get(h * 2 * head_dim + d))
+    else:
+        q3 = _qkv_reshape[DType.float16](q_flat, n_heads, head_dim)
+    var k3 = _qkv_reshape[DType.float16](k_flat, n_kv_heads, head_dim)
+    var v3 = _qkv_reshape[DType.float16](v_flat, n_kv_heads, head_dim)
+
+    if opts.q_norm and opts.norm_before_rope:
+        q3 = rms_norm_heads[DType.float16](q3, q_norm_w, opts.norm_eps)
+    if opts.k_norm and opts.norm_before_rope:
+        k3 = rms_norm_heads[DType.float16](k3, k_norm_w, opts.norm_eps)
+
+    var q_rot: Tensor[DType.float16, 3]
+    var k_rot: Tensor[DType.float16, 3]
+    if opts.n_rot > 0 and opts.n_rot < head_dim:
+        q_rot = rope_cpu_rot[DType.float16](
+            q3, start_pos, rope_theta, opts.n_rot
+        )
+        k_rot = rope_cpu_rot[DType.float16](
+            k3, start_pos, rope_theta, opts.n_rot
+        )
+    else:
+        q_rot = rope_cpu_dynamic[DType.float16](q3, start_pos, rope_theta)
+        k_rot = rope_cpu_dynamic[DType.float16](k3, start_pos, rope_theta)
+
+    if opts.q_norm and not opts.norm_before_rope:
+        q_rot = rms_norm_heads[DType.float16](q_rot, q_norm_w, opts.norm_eps)
+    if opts.k_norm and not opts.norm_before_rope:
+        k_rot = rms_norm_heads[DType.float16](k_rot, k_norm_w, opts.norm_eps)
+
+    # store K/V into the cache
+    var max_len = cache.max_len
+    if start_pos < 0 or start_pos >= max_len:
+        unimplemented("mha: position beyond KV cache capacity")
+    if cache.is_quantized():
+        var k_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+        var v_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+        for h in range(n_kv_heads):
+            for d in range(head_dim):
+                k_row.set(d, k_rot.get(h * head_dim + d))
+                v_row.set(d, v3.get(h * head_dim + d))
+            cache.set_kv_row(h, start_pos, k_row, v_row)
+    else:
+        for h in range(n_kv_heads):
+            for d in range(head_dim):
+                cache.set_kv(
+                    h,
+                    start_pos,
+                    d,
+                    Float32(k_rot.get(h * head_dim + d)),
+                    Float32(v3.get(h * head_dim + d)),
+                )
+    if start_pos + 1 > cache.filled:
+        cache.filled = start_pos + 1
+    var seq = start_pos + 1
+    var first = cache.first_position()
+    if first < 0:
+        first = 0
+    var scale = Float32(1.0) / sqrt(Float32(head_dim))
+    var out = tensor_zeros[DType.float16, 3](
+        StaticTuple[Int, 3](n_heads, 1, head_dim)
+    )
+
+    var quant = cache.is_quantized()
+    var k_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+    var v_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+    var k_ptr = cache.k.data()
+    var v_ptr = cache.v.data()
+    var dense = cache.page_size == 0
+    comptime SIMD_W = 8
+    var head_main = (head_dim // SIMD_W) * SIMD_W
+
+    for h in range(n_heads):
+        var kv_head = h * n_kv_heads // n_heads
+        var scores = List[Float32]()
+        var q_ptr = q_rot.data().unsafe_offset(h * head_dim)
+
+        for t in range(first, seq):
+            var acc = Float32(0)
+            var k_base = (kv_head * max_len + t) * head_dim
+            if quant:
+                cache.get_k_row(kv_head, t, k_row)
+                var acc_vec = SIMD[DType.float32, SIMD_W](0)
+                var d = 0
+                while d < head_main:
+                    var qv = q_ptr.unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
+                    var kv = k_row.data().unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
+                    acc_vec = acc_vec + qv * kv
+                    d += SIMD_W
+                acc = acc_vec.reduce_add()
+                while d < head_dim:
+                    acc += Float32(q_ptr.unsafe_load[width=1](offset=d)) * Float32(k_row.get(d))
+                    d += 1
+            elif dense:
+                var acc_vec = SIMD[DType.float32, SIMD_W](0)
+                var d = 0
+                while d < head_main:
+                    var qv = q_ptr.unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
+                    var kv = k_ptr.unsafe_load[width=SIMD_W](offset=k_base + d).cast[DType.float32]()
+                    acc_vec = acc_vec + qv * kv
+                    d += SIMD_W
+                acc = acc_vec.reduce_add()
+                while d < head_dim:
+                    acc += Float32(q_ptr.unsafe_load[width=1](offset=d)) * Float32(
+                        k_ptr.unsafe_load[width=1](offset=k_base + d)
+                    )
+                    d += 1
+            else:
+                for d in range(head_dim):
+                    acc += Float32(q_ptr.unsafe_load[width=1](offset=d)) * cache.get_k(kv_head, t, d)
+            scores.append(acc * scale)
+
+        var n_scores = len(scores)
+        if n_scores == 0:
+            continue
+        var mx = Float32(-3.0e38)
+        for i in range(n_scores):
+            if scores[i] > mx:
+                mx = scores[i]
+        var total = Float32(0)
+        for i in range(n_scores):
+            var e = exp(scores[i] - mx)
+            scores[i] = e
+            total += e
+        for i in range(n_scores):
+            scores[i] = scores[i] / total
+
+        if quant:
+            for d in range(head_dim):
+                var acc_f = Float32(0)
+                for i in range(n_scores):
+                    cache.get_v_row(kv_head, first + i, v_row)
+                    acc_f += scores[i] * Float32(v_row.get(d))
+                out.set(h * head_dim + d, Scalar[DType.float16](acc_f))
+        else:
+            if dense:
+                var d = 0
+                while d + SIMD_W <= head_dim:
+                    var acc_vec = SIMD[DType.float32, SIMD_W](0)
+                    for i in range(n_scores):
+                        var s = SIMD[DType.float32, SIMD_W](scores[i])
+                        var vv = v_ptr.unsafe_load[width=SIMD_W](
+                            offset=(kv_head * max_len + first + i) * head_dim + d
+                        ).cast[DType.float32]()
+                        acc_vec = acc_vec + s * vv
+                    for j in range(SIMD_W):
+                        out.set(h * head_dim + d + j, Scalar[DType.float16](acc_vec[j]))
+                    d += SIMD_W
+                while d < head_dim:
+                    var acc_f = Float32(0)
+                    for i in range(n_scores):
+                        acc_f += scores[i] * Float32(
+                            v_ptr.unsafe_load[width=1](
+                                offset=(kv_head * max_len + first + i) * head_dim + d
+                            )
+                        )
+                    out.set(h * head_dim + d, Scalar[DType.float16](acc_f))
+                    d += 1
+            else:
+                for d in range(head_dim):
+                    var acc_f = Float32(0)
+                    for i in range(n_scores):
+                        acc_f += scores[i] * cache.get_v(kv_head, first + i, d)
+                    out.set(h * head_dim + d, Scalar[DType.float16](acc_f))
+
+    if opts.gate:
         for h in range(n_heads):
             for d in range(head_dim):
                 var g = Float32(q_flat.get(h * 2 * head_dim + head_dim + d))
