@@ -79,6 +79,10 @@ test-gpu: tp
 	./tests/test_tiled_matmul
 	$(MOJO) build -I . tests/bench_dynamic_dispatch.mojo $(TP_XLINK) -o tests/bench_dynamic_dispatch
 	./tests/bench_dynamic_dispatch
+	$(MOJO) build -I . tests/test_q4k_gpu.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_q4k_gpu
+	./tests/test_q4k_gpu
+	$(MOJO) build -I . tests/test_k_quant_gpu.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_k_quant_gpu
+	./tests/test_k_quant_gpu
 
 # GGUF split-file (multi-part) loading.  Needs the split part files next to
 # the repo root (see tests/test_gguf_split.mojo); reports SKIP if absent.

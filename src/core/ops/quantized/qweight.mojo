@@ -37,6 +37,7 @@ from ..cpu.matmul_cpu import (
 from ..cpu.matmul_q8k import matmul_quantized_q8k
 from ..cpu.matmul_q8k_threaded import matmul_quantized_q8k_threaded, matmul_quantized_q8k_worksteal
 from ..gpu.matmul_gpu import matmul_weight_gpu
+from ..gpu.matmul_k_quant_gpu import matmul_k_quant_gpu
 from .quant_types import QuantType
 from std.utils.static_tuple import StaticTuple
 
@@ -87,7 +88,7 @@ struct QWeight(Copyable, ImplicitlyCopyable, Movable):
             if use_gpu:
                 return matmul_weight_gpu[DType.float16](x, self.fp16)
             return matmul_weight_cpu_threaded[DType.float16](x, self.fp16)
-        return quant_proj_dispatch(x, self, dummy_scale)
+        return quant_proj_dispatch(x, self, dummy_scale, use_gpu)
 
 
 def qweight_from_fp16(w: Tensor[DType.float16, 2]) -> QWeight:
@@ -105,6 +106,7 @@ def quant_proj_dispatch(
     x: Tensor[DType.float16, 2],
     w: QWeight,
     dummy_scale: Tensor[DType.float16, 1],
+    use_gpu: Bool = False,  # GPU quantized matmul is experimental
 ) -> Tensor[DType.float16, 2]:
     """Runtime dispatch on the GGUF type -> comptime-specialized fused
     quantized matmul (per-block dequantization inside the kernel).
@@ -121,10 +123,37 @@ def quant_proj_dispatch(
     M13: for large weight matrices, use tiled BLAS (dequantize in tiles
     and use Accelerate BLAS for the heavy matmul work). This is faster
     than block-by-block SIMD for large matrices (7B+ models).
+
+    M14 (experimental): GPU quantized matmul with on-device dequantization.
+    Currently only Q4_K is supported. Falls back to CPU if GPU unavailable.
     """
     from ..cpu.blas_cpu import matmul_quantized_blas_tiled
 
-    # K-quant formats: Use Q8_K + SDOT path (int8 dot product, faster than FP32 SIMD)
+    # K-quant formats: GPU path with on-device dequantization
+    if use_gpu:
+        var n_blocks = w.n_in // 256  # QK_K = 256
+
+        # Q4_K (ggml_type 12)
+        if w.ggml_type == 12:
+            return matmul_k_quant_gpu[QuantType.Q4_K_M](x, w.data, n_blocks)
+
+        # Q5_K (ggml_type 13)
+        if w.ggml_type == 13:
+            return matmul_k_quant_gpu[QuantType.Q5_K](x, w.data, n_blocks)
+
+        # Q6_K (ggml_type 14)
+        if w.ggml_type == 14:
+            return matmul_k_quant_gpu[QuantType.Q6_K](x, w.data, n_blocks)
+
+        # Q2_K (ggml_type 11)
+        if w.ggml_type == 11:
+            return matmul_k_quant_gpu[QuantType.Q2_K](x, w.data, n_blocks)
+
+        # Q3_K (ggml_type 15)
+        if w.ggml_type == 15:
+            return matmul_k_quant_gpu[QuantType.Q3_K](x, w.data, n_blocks)
+
+    # K-quant formats: CPU path with Q8_K + SDOT
     # Threading: Use pthread pool for large matrices (N >= 2048) in decode mode
 
     # Q4_K (ggml_type 12)
