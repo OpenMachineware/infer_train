@@ -371,3 +371,124 @@ def matmul_gpu_backward[
         return result^
     except:
         return matmul_cpu_backward[dtype](grad_out, saved)
+
+
+# -- weight-major GPU matmul (w [out, in], the GGUF layout) -------------------
+#
+# y = x @ w^T where w is stored as [N, K] (out rows, in cols).
+# This is the layout used by GGUF and the transformer layers.
+
+
+def _matmul_weight_kernel_f32(
+    x: Pointer[Float32, MutAnyOrigin],
+    w: Pointer[Float32, MutAnyOrigin],
+    dst: Pointer[Float32, MutAnyOrigin],
+    M: Int32,
+    K: Int32,
+    N: Int32,
+):
+    """y = x @ w^T where w is [N, K] (weight-major)."""
+    var K_i = Int(K)
+    var N_i = Int(N)
+    var n = Int(M) * N_i
+    var i = global_idx.x
+    var stride = grid_dim.x * block_dim.x
+    while i < n:
+        var row = i // N_i
+        var col = i % N_i
+        var acc = Float32(0.0)
+        var k = 0
+        while k < K_i:
+            # y[row, col] = sum_k x[row, k] * w[col, k]
+            acc += x[unsafe_offset=row * K_i + k] * w[unsafe_offset=col * K_i + k]
+            k += 1
+        dst[unsafe_offset=i] = acc
+        i += stride
+
+
+def _matmul_weight_kernel_f16(
+    x: Pointer[Scalar[DType.float16], MutAnyOrigin],
+    w: Pointer[Scalar[DType.float16], MutAnyOrigin],
+    dst: Pointer[Scalar[DType.float16], MutAnyOrigin],
+    M: Int32,
+    K: Int32,
+    N: Int32,
+):
+    """y = x @ w^T where w is [N, K] (weight-major)."""
+    var K_i = Int(K)
+    var N_i = Int(N)
+    var n = Int(M) * N_i
+    var i = global_idx.x
+    var stride = grid_dim.x * block_dim.x
+    while i < n:
+        var row = i // N_i
+        var col = i % N_i
+        var acc = Float32(0.0)
+        var k = 0
+        while k < K_i:
+            acc += Float32(x[unsafe_offset=row * K_i + k]) * Float32(
+                w[unsafe_offset=col * K_i + k]
+            )
+            k += 1
+        dst[unsafe_offset=i] = Scalar[DType.float16](acc)
+        i += stride
+
+
+def _matmul_weight_gpu_launch[
+    dtype: DType
+](
+    ctx: DeviceContext, x: Tensor[dtype, 2], w: Tensor[dtype, 2]
+) raises -> Tensor[dtype, 2]:
+    """Launch weight-major matmul kernel: y = x @ w^T."""
+    var M = x.shape()[0]
+    var K = x.shape()[1]
+    var N = w.shape()[0]  # w is [N, K]
+    if K != w.shape()[1]:
+        unimplemented("matmul_weight_gpu: K mismatch between x and w")
+    var x_buf = upload[dtype, 2](ctx, x)
+    var w_buf = upload[dtype, 2](ctx, w)
+    var n = M * N
+    var dst_buf = ctx.enqueue_create_buffer[dtype](n)
+    comptime if dtype == DType.float16:
+        ctx.enqueue_function[_matmul_weight_kernel_f16](
+            x_buf,
+            w_buf,
+            dst_buf,
+            Int32(M),
+            Int32(K),
+            Int32(N),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
+        )
+    else:
+        ctx.enqueue_function[_matmul_weight_kernel_f32](
+            x_buf,
+            w_buf,
+            dst_buf,
+            Int32(M),
+            Int32(K),
+            Int32(N),
+            grid_dim=grid1d(n, BLOCK),
+            block_dim=BLOCK,
+        )
+    var out = download2[dtype](ctx, dst_buf, StaticTuple[Int, 2](M, N))
+    ctx.synchronize()
+    return out
+
+
+def matmul_weight_gpu[
+    dtype: DType
+](x: Tensor[dtype, 2], w: Tensor[dtype, 2]) -> Tensor[dtype, 2]:
+    """Weight-major GPU matmul: y = x @ w^T where w is [N, K] (GGUF layout).
+
+    This is the entry point for FP16 weight projections.
+    Falls back to CPU on any GPU error.
+    """
+    from ..cpu.matmul_cpu import matmul_weight_cpu
+    if not gpu_available[dtype]():
+        return matmul_weight_cpu[dtype](x, w)
+    try:
+        var ctx = get_gpu_context()
+        return _matmul_weight_gpu_launch[dtype](ctx, x, w)
+    except:
+        return matmul_weight_cpu[dtype](x, w)

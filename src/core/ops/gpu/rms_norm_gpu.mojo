@@ -309,3 +309,124 @@ def rms_norm_gpu_backward[
         return result^
     except:
         return rms_norm_cpu_backward[dtype, dim](grad_out, saved)
+
+
+# -- RMS norm with weight (the common case in transformers) ------------------
+#
+# out[i, j] = (x[i, j] / sqrt(mean(x[i, :]^2) + eps)) * w[j]
+
+
+def _rms_norm_weight_kernel_f32(
+    x: Pointer[Float32, MutAnyOrigin],
+    w: Pointer[Float32, MutAnyOrigin],
+    dst: Pointer[Float32, MutAnyOrigin],
+    dim: Int32,
+    eps: Float32,
+):
+    var n = Int(dim)
+    var row = block_idx.x
+    var base = row * n
+    var tid = thread_idx.x
+
+    var ss = Float32(0.0)
+    var i = tid
+    while i < n:
+        var v = x[unsafe_offset=base + i]
+        ss += v * v
+        i += BLOCK
+    var ss_all = block_sum[block_size=BLOCK](ss)
+    var rms = sqrt(ss_all / Float32(n) + eps)
+    var inv = Float32(1.0) / rms
+
+    i = tid
+    while i < n:
+        dst[unsafe_offset=base + i] = x[unsafe_offset=base + i] * inv * w[
+            unsafe_offset=i
+        ]
+        i += BLOCK
+
+
+def _rms_norm_weight_kernel_f16(
+    x: Pointer[Scalar[DType.float16], MutAnyOrigin],
+    w: Pointer[Scalar[DType.float16], MutAnyOrigin],
+    dst: Pointer[Scalar[DType.float16], MutAnyOrigin],
+    dim: Int32,
+    eps: Float32,
+):
+    var n = Int(dim)
+    var row = block_idx.x
+    var base = row * n
+    var tid = thread_idx.x
+
+    var ss = Float32(0.0)
+    var i = tid
+    while i < n:
+        var v = Float32(x[unsafe_offset=base + i])
+        ss += v * v
+        i += BLOCK
+    var ss_all = block_sum[block_size=BLOCK](ss)
+    var rms = sqrt(ss_all / Float32(n) + eps)
+    var inv = Float32(1.0) / rms
+
+    i = tid
+    while i < n:
+        dst[unsafe_offset=base + i] = Scalar[DType.float16](
+            Float32(x[unsafe_offset=base + i]) * inv * Float32(w[unsafe_offset=i])
+        )
+        i += BLOCK
+
+
+def _rms_norm_weight_gpu_launch[
+    dtype: DType
+](
+    ctx: DeviceContext, x: Tensor[dtype, 2], w: Tensor[dtype, 1], eps: Float32
+) raises -> Tensor[dtype, 2]:
+    var dim = x.shape()[1]
+    if w.shape()[0] != dim:
+        unimplemented("rms_norm_weight_gpu: dim mismatch between x and w")
+    var rows = x.shape()[0]
+    var x_buf = upload[dtype, 2](ctx, x)
+    var w_buf = upload[dtype, 1](ctx, w)
+    var dst_buf = ctx.enqueue_create_buffer[dtype](x.numel())
+    comptime if dtype == DType.float16:
+        ctx.enqueue_function[_rms_norm_weight_kernel_f16](
+            x_buf,
+            w_buf,
+            dst_buf,
+            Int32(dim),
+            eps,
+            grid_dim=rows,
+            block_dim=BLOCK,
+        )
+    else:
+        ctx.enqueue_function[_rms_norm_weight_kernel_f32](
+            x_buf,
+            w_buf,
+            dst_buf,
+            Int32(dim),
+            eps,
+            grid_dim=rows,
+            block_dim=BLOCK,
+        )
+    var out = download2[dtype](ctx, dst_buf, x.shape())
+    ctx.synchronize()
+    return out
+
+
+def rms_norm_weight_gpu[
+    dtype: DType
+](x: Tensor[dtype, 2], w: Tensor[dtype, 1], eps: Float32 = Float32(1e-5)) -> Tensor[
+    dtype, 2
+]:
+    """GPU RMSNorm with weight: out = (x / sqrt(mean(x^2) + eps)) * w.
+
+    Falls back to CPU on any GPU error.
+    """
+    from ..cpu.rms_norm_cpu import rms_norm_weight_cpu
+    if not gpu_available[dtype]():
+        return rms_norm_weight_cpu[dtype](x, w, eps)
+    try:
+        var ctx = get_gpu_context()
+        return _rms_norm_weight_gpu_launch[dtype](ctx, x, w, eps)
+    except:
+        return rms_norm_weight_cpu[dtype](x, w, eps)

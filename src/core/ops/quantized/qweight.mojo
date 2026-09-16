@@ -36,6 +36,7 @@ from ..cpu.matmul_cpu import (
 )
 from ..cpu.matmul_q8k import matmul_quantized_q8k
 from ..cpu.matmul_q8k_threaded import matmul_quantized_q8k_threaded, matmul_quantized_q8k_worksteal
+from ..gpu.matmul_gpu import matmul_weight_gpu
 from .quant_types import QuantType
 from std.utils.static_tuple import StaticTuple
 
@@ -71,6 +72,7 @@ struct QWeight(Copyable, ImplicitlyCopyable, Movable):
         self,
         x: Tensor[DType.float16, 2],
         dummy_scale: Tensor[DType.float16, 1],
+        use_gpu: Bool = True,
     ) -> Tensor[DType.float16, 2]:
         """y = W @ x with on-demand dequantization.
 
@@ -78,9 +80,12 @@ struct QWeight(Copyable, ImplicitlyCopyable, Movable):
         (`matmul_quantized_cpu`; `dummy_scale` satisfies its generic
         signature - GGUF block formats keep their scales inside the
         blocks, so the argument is ignored).  Materialized fp16 weights
-        go through the threaded weight-major kernel.
+        go through the GPU weight-major kernel when `use_gpu` is True,
+        otherwise the threaded CPU kernel.
         """
         if not self.quantized:
+            if use_gpu:
+                return matmul_weight_gpu[DType.float16](x, self.fp16)
             return matmul_weight_cpu_threaded[DType.float16](x, self.fp16)
         return quant_proj_dispatch(x, self, dummy_scale)
 
