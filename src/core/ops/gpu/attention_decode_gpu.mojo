@@ -361,3 +361,66 @@ def gpu_attention_decode_cached(
         result._data[unsafe_offset=i] = out_host[i]
 
     return result
+
+
+# ============================================================================
+# GPU Pipeline Version: Zero-copy for chained operations
+# ============================================================================
+
+
+def attention_decode_gpu_pipeline(
+    ctx: DeviceContext,
+    q_buf: DeviceBuffer[DType.float16],  # [n_heads, head_dim]
+    k_buf: DeviceBuffer[DType.float16],  # [n_heads, kv_len, head_dim]
+    v_buf: DeviceBuffer[DType.float16],  # [n_heads, kv_len, head_dim]
+    n_heads: Int,
+    head_dim: Int,
+    kv_len: Int,
+) raises -> DeviceBuffer[DType.float16]:
+    """GPU decode attention pipeline: all inputs and output stay on GPU.
+
+    This is the zero-copy version for the full GPU forward pass.
+
+    Args:
+        ctx: GPU device context
+        q_buf: Query buffer [n_heads * head_dim]
+        k_buf: Key buffer [n_heads * kv_len * head_dim]
+        v_buf: Value buffer [n_heads * kv_len * head_dim]
+        n_heads: Number of attention heads
+        head_dim: Head dimension
+        kv_len: KV cache length
+
+    Returns:
+        Output buffer [n_heads * head_dim] on GPU
+    """
+    var scale = 1.0 / sqrt(Float32(head_dim))
+
+    # Allocate intermediate and output buffers
+    var scores_buf = ctx.enqueue_create_buffer[DType.float32](n_heads * kv_len)
+    var output_buf = ctx.enqueue_create_buffer[DType.float16](n_heads * head_dim)
+
+    # Step 1: Q @ K^T
+    ctx.enqueue_function[decode_attention_qk_kernel](
+        q_buf, k_buf, scores_buf,
+        Int32(n_heads), Int32(head_dim), Int32(kv_len), scale,
+        grid_dim=(n_heads,),
+        block_dim=BLOCK_THREADS
+    )
+
+    # Step 2: Softmax
+    ctx.enqueue_function[decode_softmax_kernel](
+        scores_buf,
+        Int32(n_heads), Int32(kv_len),
+        grid_dim=(n_heads,),
+        block_dim=BLOCK_THREADS
+    )
+
+    # Step 3: Scores @ V
+    ctx.enqueue_function[decode_attention_sv_kernel](
+        scores_buf, v_buf, output_buf,
+        Int32(n_heads), Int32(head_dim), Int32(kv_len),
+        grid_dim=(n_heads,),
+        block_dim=BLOCK_THREADS
+    )
+
+    return output_buf

@@ -299,3 +299,38 @@ def add_gpu_backward[
         return result^
     except:
         return add_cpu_backward[dtype, rows, cols](grad_out, saved)
+
+
+# -- pipeline versions (zero-copy for GPU forward) ----------------------------
+
+
+def add_gpu_pipeline(
+    ctx: DeviceContext,
+    a_buf: DeviceBuffer[DType.float16],
+    b_buf: DeviceBuffer[DType.float16],
+    n: Int,
+) raises -> DeviceBuffer[DType.float16]:
+    """GPU element-wise add for pipeline architecture.
+
+    Accepts GPU buffers and returns GPU buffer, avoiding CPU transfer.
+    Used for residual connections in GPU forward pass.
+
+    Args:
+        ctx: GPU device context
+        a_buf: First input buffer on GPU
+        b_buf: Second input buffer on GPU
+        n: Number of elements (must match both inputs)
+
+    Returns:
+        Output buffer on GPU (a + b)
+    """
+    var dst_buf = ctx.enqueue_create_buffer[DType.float16](n)
+    ctx.enqueue_function[_add_kernel_f16](
+        a_buf,
+        b_buf,
+        dst_buf,
+        Int32(n),
+        grid_dim=grid1d(n, BLOCK),
+        block_dim=BLOCK,
+    )
+    return dst_buf

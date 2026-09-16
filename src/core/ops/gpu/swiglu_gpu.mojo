@@ -299,3 +299,39 @@ def swiglu_gpu_backward[
         return result^
     except:
         return swiglu_cpu_backward[dtype, rows, cols](grad_out, saved)
+
+
+# -- pipeline versions (zero-copy for GPU forward) ----------------------------
+
+
+def swiglu_gpu_pipeline(
+    ctx: DeviceContext,
+    gate_buf: DeviceBuffer[DType.float16],
+    up_buf: DeviceBuffer[DType.float16],
+    n: Int,
+) raises -> DeviceBuffer[DType.float16]:
+    """GPU SwiGLU activation for pipeline architecture.
+
+    Computes out = silu(gate) * up, where silu(x) = x * sigmoid(x).
+    Accepts GPU buffers and returns GPU buffer, avoiding CPU transfer.
+    Used for FFN in GPU forward pass.
+
+    Args:
+        ctx: GPU device context
+        gate_buf: Gate projection output on GPU
+        up_buf: Up projection output on GPU
+        n: Number of elements (must match both inputs)
+
+    Returns:
+        Output buffer on GPU (silu(gate) * up)
+    """
+    var dst_buf = ctx.enqueue_create_buffer[DType.float16](n)
+    ctx.enqueue_function[_swiglu_kernel_f16](
+        gate_buf,
+        up_buf,
+        dst_buf,
+        Int32(n),
+        grid_dim=grid1d(n, BLOCK),
+        block_dim=BLOCK,
+    )
+    return dst_buf

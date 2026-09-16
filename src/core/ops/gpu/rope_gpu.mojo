@@ -356,3 +356,89 @@ def rope_gpu_backward[
     _ = head_dim
     unimplemented("rope_gpu_backward: use the erased dispatcher")
     return List[Tensor[dtype, 3]]()
+
+
+# ============================================================================
+# GPU Pipeline Version: Zero-copy for chained operations
+# ============================================================================
+
+
+def rope_gpu_pipeline(
+    ctx: DeviceContext,
+    x_buf: DeviceBuffer[DType.float16],  # [n_heads, n_tokens, head_dim] on GPU
+    n_heads: Int,
+    n_tokens: Int,
+    head_dim: Int,
+    start_pos: Int,
+    theta: Float32 = Float32(10000.0),
+) raises -> DeviceBuffer[DType.float16]:
+    """GPU RoPE for pipeline: input and output stay on GPU.
+
+    Args:
+        ctx: GPU device context
+        x_buf: Input buffer [n_heads, n_tokens, head_dim]
+        n_heads: Number of attention heads
+        n_tokens: Sequence length (1 for decode)
+        head_dim: Head dimension
+        start_pos: Starting position
+        theta: RoPE base frequency
+
+    Returns:
+        Output buffer [n_heads, n_tokens, head_dim] on GPU
+    """
+    var half = head_dim // 2
+    var n_pairs = n_heads * n_tokens * half
+    var total_elements = n_heads * n_tokens * head_dim
+
+    # Allocate output buffer
+    var dst_buf = ctx.enqueue_create_buffer[DType.float16](total_elements)
+
+    # Compute ln(theta) for kernel
+    var ln_theta = log(theta)
+
+    # Launch kernel
+    ctx.enqueue_function[_rope_kernel_f16](
+        x_buf,
+        dst_buf,
+        Int32(n_tokens),
+        Int32(head_dim),
+        Int32(start_pos),
+        ln_theta,
+        Int32(n_pairs),
+        grid_dim=grid1d(n_pairs, BLOCK),
+        block_dim=BLOCK,
+    )
+
+    return dst_buf
+
+
+def rope_gpu_pipeline_inplace(
+    ctx: DeviceContext,
+    x_buf: DeviceBuffer[DType.float16],
+    n_heads: Int,
+    n_tokens: Int,
+    head_dim: Int,
+    start_pos: Int,
+    theta: Float32 = Float32(10000.0),
+):
+    """In-place RoPE on GPU (modifies x_buf directly).
+
+    Useful when you don't need to preserve the original Q/K.
+    """
+    var half = head_dim // 2
+    var n_pairs = n_heads * n_tokens * half
+
+    var ln_theta = log(theta)
+
+    # Use x_buf as both input and output
+    ctx.enqueue_function[_rope_kernel_f16](
+        x_buf,
+        x_buf,  # Same buffer for in-place
+        Int32(n_tokens),
+        Int32(head_dim),
+        Int32(start_pos),
+        ln_theta,
+        Int32(n_pairs),
+        grid_dim=grid1d(n_pairs, BLOCK),
+        block_dim=BLOCK,
+    )

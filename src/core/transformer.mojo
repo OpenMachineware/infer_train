@@ -840,6 +840,8 @@ struct TransformerModel(Movable):
         Call this once after load_weights_quant() to avoid per-call upload
         overhead (~32MB for 7B models). Only uploads K-quant weights
         (Q2_K, Q3_K, Q4_K, Q5_K, Q6_K) as these have GPU kernels.
+
+        Also prepares FP16 weights for decode mode (M=1) GPU acceleration.
         """
         if not has_metal_gpu():
             return
@@ -864,10 +866,13 @@ struct TransformerModel(Movable):
             lw.k_w.upload_to_gpu(ctx)
             lw.v_w.upload_to_gpu(ctx)
             lw.o_w.upload_to_gpu(ctx)
-            # FFN weights
+            # FFN weights - also prepare FP16 for decode GPU path
             lw.gate_w.upload_to_gpu(ctx)
+            lw.gate_w.prepare_fp16_for_gpu(ctx)
             lw.up_w.upload_to_gpu(ctx)
+            lw.up_w.prepare_fp16_for_gpu(ctx)
             lw.down_w.upload_to_gpu(ctx)
+            lw.down_w.prepare_fp16_for_gpu(ctx)
             # Recurrent layer weights
             lw.attn_gate.upload_to_gpu(ctx)
             lw.ssm_beta.upload_to_gpu(ctx)
@@ -1705,14 +1710,18 @@ def _ffn_swiglu(
         )
         var h = swiglu_cpu_dynamic[DType.float16](g, u)
         # Fused down_proj + residual add
-        return lw.down_w.proj_add(h, dummy_scale, resid, False, gpu_ctx)
+        # Use GPU if context is available
+        var use_gpu = gpu_ctx != None
+        return lw.down_w.proj_add(h, dummy_scale, resid, use_gpu, gpu_ctx)
 
     # Fallback: non-K-quant or mixed types
-    var g = lw.gate_w.proj(normed, dummy_scale, False, gpu_ctx)
-    var u = lw.up_w.proj(normed, dummy_scale, False, gpu_ctx)
+    # Use GPU if context is available
+    var use_gpu = gpu_ctx != None
+    var g = lw.gate_w.proj(normed, dummy_scale, use_gpu, gpu_ctx)
+    var u = lw.up_w.proj(normed, dummy_scale, use_gpu, gpu_ctx)
     var h = swiglu_cpu_dynamic[DType.float16](g, u)
     # Fused down_proj + residual add
-    return lw.down_w.proj_add(h, dummy_scale, resid, False, gpu_ctx)
+    return lw.down_w.proj_add(h, dummy_scale, resid, use_gpu, gpu_ctx)
 
 
 def _ffn_swiglu_batch(
@@ -1741,14 +1750,18 @@ def _ffn_swiglu_batch(
         )
         var h = swiglu_cpu_dynamic[DType.float16](g, u)
         # Fused down_proj + residual add
-        return lw.down_w.proj_add(h, dummy_scale, resid, False, gpu_ctx)
+        # Use GPU if context is available (batch prefill)
+        var use_gpu = gpu_ctx != None
+        return lw.down_w.proj_add(h, dummy_scale, resid, use_gpu, gpu_ctx)
 
     # Fallback: non-K-quant or mixed types
-    var g = lw.gate_w.proj(normed, dummy_scale, False, gpu_ctx)  # [T, ffn]
-    var u = lw.up_w.proj(normed, dummy_scale, False, gpu_ctx)
+    # Use GPU if context is available (batch prefill)
+    var use_gpu = gpu_ctx != None
+    var g = lw.gate_w.proj(normed, dummy_scale, use_gpu, gpu_ctx)  # [T, ffn]
+    var u = lw.up_w.proj(normed, dummy_scale, use_gpu, gpu_ctx)
     var h = swiglu_cpu_dynamic[DType.float16](g, u)
     # Fused down_proj + residual add
-    return lw.down_w.proj_add(h, dummy_scale, resid, False, gpu_ctx)
+    return lw.down_w.proj_add(h, dummy_scale, resid, use_gpu, gpu_ctx)
 
 
 # -- MoE helpers -------------------------------------------------------------

@@ -78,8 +78,12 @@ def main() raises:
     try:
         var ctx = get_gpu_context()
         gpu_ctx = Optional[DeviceContext](ctx)
-        w.upload_to_gpu(ctx)
-        print("Weights uploaded and cached")
+
+        # Prepare FP16 weights for fast GPU decode
+        # This is the key optimization: dequantize Q4_K to FP16 once
+        print("\nPreparing FP16 weights for GPU decode...")
+        w.prepare_fp16_for_gpu(ctx)
+        print("FP16 weights prepared and uploaded to GPU")
     except:
         print("GPU not available, falling back to CPU-only benchmark")
 
@@ -99,39 +103,41 @@ def main() raises:
     # Benchmark CPU path
     print("\n=== CPU Path (baseline) ===")
     var runs = 10
-    var total_ms_cpu = Int64(0)
+    var total_us_cpu = Int64(0)
     for _ in range(runs):
         var start = now_ns()
         _ = w.proj(x, dummy_scale, use_gpu=False)
         var end = now_ns()
-        total_ms_cpu += Int64((end - start) // 1_000_000)
-    var avg_ms_cpu = total_ms_cpu / Int64(runs)
-    var gflops_cpu = Float64(2 * M * K * N) / 1e9 * 1000.0 / Float64(avg_ms_cpu)
-    print("Average time:", avg_ms_cpu, "ms")
+        total_us_cpu += Int64((end - start) // 1_000)
+    var avg_us_cpu = total_us_cpu / Int64(runs)
+    var avg_ms_cpu = Float64(avg_us_cpu) / 1000.0
+    var gflops_cpu = Float64(2 * M * K * N) / 1e9 * 1_000_000.0 / Float64(avg_us_cpu)
+    print("Average time:", avg_us_cpu, "us (", avg_ms_cpu, "ms )")
     print("Throughput:", gflops_cpu, "GFLOPS")
 
     # Benchmark GPU path
     print("\n=== GPU Path (decode-optimized with caching) ===")
-    var total_ms_gpu = Int64(0)
+    var total_us_gpu = Int64(0)
     var gpu_ok = True
     for _ in range(runs):
         var start = now_ns()
         try:
             _ = w.proj(x, dummy_scale, use_gpu=True, gpu_ctx=gpu_ctx)
             var end = now_ns()
-            total_ms_gpu += Int64((end - start) // 1_000_000)
+            total_us_gpu += Int64((end - start) // 1_000)
         except:
             gpu_ok = False
             break
 
-    if gpu_ok and total_ms_gpu > 0:
-        var avg_ms_gpu = total_ms_gpu / Int64(runs)
-        var gflops_gpu = Float64(2 * M * K * N) / 1e9 * 1000.0 / Float64(avg_ms_gpu)
-        print("Average time:", avg_ms_gpu, "ms")
+    if gpu_ok and total_us_gpu > 0:
+        var avg_us_gpu = total_us_gpu / Int64(runs)
+        var avg_ms_gpu = Float64(avg_us_gpu) / 1000.0
+        var gflops_gpu = Float64(2 * M * K * N) / 1e9 * 1_000_000.0 / Float64(avg_us_gpu)
+        print("Average time:", avg_us_gpu, "us (", avg_ms_gpu, "ms )")
         print("Throughput:", gflops_gpu, "GFLOPS")
 
         # Speedup
-        var speedup = Float64(avg_ms_cpu) / Float64(avg_ms_gpu)
+        var speedup = Float64(avg_us_cpu) / Float64(avg_us_gpu)
         print("\n=== Comparison ===")
         print("Speedup:", speedup, "x")
         if speedup > 1.0:

@@ -99,6 +99,36 @@ struct QWeight(Copyable, ImplicitlyCopyable, Movable):
         """The element shape [n_out, n_in] (independent of the payload)."""
         return StaticTuple[Int, 2](self.n_out, self.n_in)
 
+    def ensure_gpu_buf_fp16(mut self, ctx: DeviceContext) raises -> DeviceBuffer[DType.float16]:
+        """Get or create GPU buffer for FP16 weights.
+
+        If weights are quantized, dequantizes to fp16_dequant first.
+        Then uploads to GPU if not already cached.
+
+        Args:
+            ctx: GPU device context
+
+        Returns:
+            GPU buffer containing FP16 weights [n_out, n_in]
+        """
+        # If not quantized, use fp16 directly
+        if not self.quantized:
+            if not self.gpu_buf_fp16:
+                self.gpu_buf_fp16 = upload[DType.float16, 2](ctx, self.fp16)
+            return self.gpu_buf_fp16.value()
+
+        # If quantized, need to dequantize first
+        if self.fp16_dequant.shape() != StaticTuple[Int, 2](self.n_out, self.n_in):
+            # Dequantize quantized weights to FP16
+            from .dequantize_fp16 import dequantize_weights_to_fp16
+            self.fp16_dequant = dequantize_weights_to_fp16(self.data, self.ggml_type, self.n_out, self.n_in)
+
+        # Upload to GPU if not already cached
+        if not self.gpu_buf_fp16:
+            self.gpu_buf_fp16 = upload[DType.float16, 2](ctx, self.fp16_dequant)
+
+        return self.gpu_buf_fp16.value()
+
     def upload_to_gpu(mut self, ctx: DeviceContext) raises:
         """Upload quantized weights to GPU for persistent caching.
 

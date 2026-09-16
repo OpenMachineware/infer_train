@@ -271,6 +271,22 @@ bench_hunyuan: tp mwq
 bench_decode_breakdown: tp mwq
 	$(MOJO) build -I . tests/bench_decode_breakdown.mojo $(TP_XLINK) -Xlinker $(MWQ) $(BLAS_XLINK) -o tests/bench_decode_breakdown
 
+# GPU decode benchmark with FP16 pre-dequantization.
+bench_decode_gpu: tp
+	$(MOJO) build -I . tests/bench_decode_gpu.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/bench_decode_gpu
+
+# Test GPU FFN
+test_gpu_ffn: tp
+	$(MOJO) build -I . tests/test_gpu_ffn.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_gpu_ffn
+
+# Benchmark GPU FFN end-to-end
+bench_gpu_ffn_e2e: tp
+	$(MOJO) build -I . tests/bench_gpu_ffn_endtoend.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/bench_gpu_ffn_e2e
+
+# Benchmark GPU vs CPU
+bench_gpu_vs_cpu: tp
+	$(MOJO) build -I . tests/bench_gpu_vs_cpu.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/bench_gpu_vs_cpu
+
 # M8: multi-process RPC test - two localhost workers, -sm layer, output
 # must match the single-process run exactly (needs the 1.5B GGUF at the
 # repo root; SKIPs when absent).
@@ -315,7 +331,7 @@ clean:
 	rm -f tools/check_mem tools/bench_pool bench_cpu bench_transformer_core bench_blas bench_dequant bench_simd
 	rm -f bench_q8k_vs_fp32 bench_q8k_sdot_threaded bench_qmatmul_threading
 	rm -f tests/bench_qwen3
-	rm -f tests/bench_q4k_matmul tests/bench_hunyuan tests/bench_decode_breakdown
+	rm -f tests/bench_q4k_matmul tests/bench_hunyuan tests/bench_decode_breakdown tests/bench_decode_gpu tests/test_gpu_ffn
 	rm -f tests/test_gpu_weight_proj tests/test_tiled_matmul tests/bench_tiled_matmul tests/bench_dynamic_dispatch
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
@@ -323,3 +339,6 @@ clean:
 	rm -f src/version.mojo
 	rm -rf python/*.egg-info python/build
 	@for f in tests/test_*; do case "$$f" in *.mojo) ;; *) rm -f "$$f";; esac; done
+
+# GPU decode benchmark
+# GPU decode benchmark

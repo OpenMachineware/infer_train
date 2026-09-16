@@ -430,3 +430,46 @@ def rms_norm_weight_gpu[
         return _rms_norm_weight_gpu_launch[dtype](ctx, x, w, eps)
     except:
         return rms_norm_weight_cpu[dtype](x, w, eps)
+
+
+# ============================================================================
+# GPU Pipeline Version: Zero-copy for chained operations
+# ============================================================================
+
+
+def rms_norm_weight_gpu_pipeline(
+    ctx: DeviceContext,
+    x_buf: DeviceBuffer[DType.float16],  # [rows, dim] on GPU
+    w_buf: DeviceBuffer[DType.float16],  # [dim] on GPU
+    rows: Int,
+    dim: Int,
+    eps: Float32 = Float32(1e-5),
+) raises -> DeviceBuffer[DType.float16]:
+    """GPU RMSNorm with weight for pipeline: input and output stay on GPU.
+
+    Args:
+        ctx: GPU device context
+        x_buf: Input buffer [rows, dim]
+        w_buf: Weight buffer [dim]
+        rows: Number of rows (batch size)
+        dim: Dimension (hidden size)
+        eps: Epsilon for numerical stability
+
+    Returns:
+        Output buffer [rows, dim] on GPU
+    """
+    # Allocate output buffer
+    var dst_buf = ctx.enqueue_create_buffer[DType.float16](rows * dim)
+
+    # Launch kernel
+    ctx.enqueue_function[_rms_norm_weight_kernel_f16](
+        x_buf,
+        w_buf,
+        dst_buf,
+        Int32(dim),
+        eps,
+        grid_dim=rows,
+        block_dim=BLOCK,
+    )
+
+    return dst_buf

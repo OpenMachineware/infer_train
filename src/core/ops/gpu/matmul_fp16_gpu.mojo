@@ -5,7 +5,7 @@
 # GPU matrix multiplication for FP16 weights using tensor core.
 # This is used for decode mode after pre-dequantization from Q4_K.
 
-from src.core.tensor import Tensor
+from src.core.tensor import Tensor, tensor_zeros
 from src.core.ops.gpu.gpu_runtime import (
     download2,
     get_gpu_context,
@@ -201,6 +201,8 @@ def matmul_fp16_gpu(
     w: Tensor[DType.float16, 2],  # [N, K] (transposed)
     w_buf_cached: Optional[DeviceBuffer[DType.float16]] = None,
     ctx_cached: Optional[DeviceContext] = None,
+    x_buf_cached: Optional[DeviceBuffer[DType.float16]] = None,  # NEW: GPU buffer for input
+    keep_output_on_gpu: Bool = False,  # NEW: Keep result on GPU
 ) -> Tensor[DType.float16, 2]:
     """FP16 matrix multiplication on GPU.
 
@@ -209,6 +211,12 @@ def matmul_fp16_gpu(
         w: Weight tensor [N, K] (transposed, so we compute x @ w^T)
         w_buf_cached: Optional pre-uploaded GPU buffer for weights
         ctx_cached: Optional cached DeviceContext
+        x_buf_cached: Optional pre-uploaded GPU buffer for input (avoids upload)
+        keep_output_on_gpu: Keep result in GPU memory, returns dummy tensor
+
+    Returns:
+        Output tensor [M, N]. If keep_output_on_gpu=True, returns empty tensor
+        (caller must use the GPU buffer directly).
     """
     var M = x.shape()[0]
     var K = x.shape()[1]
@@ -227,8 +235,12 @@ def matmul_fp16_gpu(
             ctx = get_gpu_context()
             owns_ctx = True
 
-        # Upload input
-        var x_buf = upload[DType.float16, 2](ctx, x)
+        # Use cached input buffer if available, otherwise upload
+        var x_buf: DeviceBuffer[DType.float16]
+        if x_buf_cached:
+            x_buf = x_buf_cached.value()
+        else:
+            x_buf = upload[DType.float16, 2](ctx, x)
 
         # Use cached buffer if available
         var w_buf: DeviceBuffer[DType.float16]
@@ -273,7 +285,13 @@ def matmul_fp16_gpu(
                 block_dim=BLOCK_THREADS,
             )
 
-        # Download result
+        # Download result or keep on GPU
+        if keep_output_on_gpu:
+            # Return empty tensor, caller uses GPU buffer directly
+            if owns_ctx:
+                ctx.synchronize()
+            return tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](0, 0))
+
         var out = download2[DType.float16](ctx, out_buf, StaticTuple[Int, 2](M, N))
 
         if owns_ctx:
@@ -284,3 +302,67 @@ def matmul_fp16_gpu(
     except:
         # Fallback to CPU on error
         return matmul_weight_cpu_threaded[DType.float16](x, w)
+
+
+# ============================================================================
+# GPU Pipeline Version: Returns GPU buffer for chained operations
+# ============================================================================
+
+
+def matmul_fp16_gpu_pipeline(
+    x_buf: DeviceBuffer[DType.float16],  # [M, K] on GPU
+    w_buf: DeviceBuffer[DType.float16],  # [N, K] on GPU
+    ctx: DeviceContext,
+    M: Int,
+    K: Int,
+    N: Int,
+) raises -> DeviceBuffer[DType.float16]:
+    """FP16 matrix multiplication for GPU pipeline.
+
+    Input and output stay on GPU, enabling zero-copy chaining.
+
+    Args:
+        x_buf: Input buffer on GPU [M, K]
+        w_buf: Weight buffer on GPU [N, K]
+        ctx: Device context
+        M, K, N: Matrix dimensions
+
+    Returns:
+        Output buffer [M, N] on GPU (caller owns)
+    """
+    # Allocate output buffer
+    var out_buf = ctx.enqueue_create_buffer[DType.float16](M * N)
+
+    # Choose kernel based on M
+    if M == 1:
+        # Use optimized decode kernel for M=1
+        var elems_per_thread = 4
+        var threads_needed = (N + elems_per_thread - 1) // elems_per_thread
+        var grid_x = (threads_needed + BLOCK_THREADS - 1) // BLOCK_THREADS
+
+        ctx.enqueue_function[kernel_matmul_fp16_decode](
+            x_buf,
+            w_buf,
+            out_buf,
+            Int32(K),
+            Int32(N),
+            grid_dim=(grid_x,),
+            block_dim=BLOCK_THREADS,
+        )
+    else:
+        # Use general tiled kernel for M > 1
+        var grid_x = (N + TILE_N - 1) // TILE_N
+        var grid_y = (M + TILE_M - 1) // TILE_M
+
+        ctx.enqueue_function[kernel_matmul_fp16_tiled](
+            x_buf,
+            w_buf,
+            out_buf,
+            Int32(M),
+            Int32(N),
+            Int32(K),
+            grid_dim=(grid_x, grid_y),
+            block_dim=BLOCK_THREADS,
+        )
+
+    return out_buf
