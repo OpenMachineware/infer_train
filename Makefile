@@ -83,6 +83,13 @@ test-gpu: tp
 	./tests/test_q4k_gpu
 	$(MOJO) build -I . tests/test_k_quant_gpu.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_k_quant_gpu
 	./tests/test_k_quant_gpu
+	# GPU pipeline tests (Phase 1-5)
+	$(MOJO) build -I . tests/test_gpu_forward_pipeline.mojo $(TP_XLINK) -o tests/test_gpu_forward_pipeline
+	./tests/test_gpu_forward_pipeline
+	$(MOJO) build -I . tests/bench_gpu_decode_pipeline.mojo $(TP_XLINK) -o tests/bench_gpu_decode_pipeline
+	./tests/bench_gpu_decode_pipeline
+	$(MOJO) build -I . tests/profile_gpu_kernels.mojo $(TP_XLINK) -o tests/profile_gpu_kernels
+	./tests/profile_gpu_kernels
 
 # GGUF split-file (multi-part) loading.  Needs the split part files next to
 # the repo root (see tests/test_gguf_split.mojo); reports SKIP if absent.

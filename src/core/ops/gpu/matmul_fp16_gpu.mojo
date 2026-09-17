@@ -31,6 +31,9 @@ comptime BLOCK_THREADS = 256
 comptime DECODE_TILE_N = 256
 comptime DECODE_TILE_K = 64
 
+# Shared memory size for decode kernel (supports up to 4096 elements)
+comptime DECODE_SMEM_SIZE = 4096
+
 
 def kernel_matmul_fp16_decode(
     A: Pointer[Scalar[DType.float16], MutAnyOrigin],  # [1, K]
@@ -43,20 +46,22 @@ def kernel_matmul_fp16_decode(
 
     Uses shared memory to cache input vector A, reducing global memory accesses.
     Each thread block processes a tile of output elements.
+
+    FIXED: Shared memory now supports up to 4096 elements (was 1024).
     """
     var tx = Int(thread_idx.x)
     var bx = Int(block_idx.x)
+    var K_i = Int(K)
 
-    # Shared memory for input vector A (cached once per block)
-    var A_shared = unsafe_stack_allocation[1024, DType.float16]()
+    # Shared memory for input vector A (supports up to DECODE_SMEM_SIZE elements)
+    var A_shared = unsafe_stack_allocation[DECODE_SMEM_SIZE, DType.float16]()
 
     # Load A into shared memory (all threads participate)
+    # Handle K > 1024 by loading in chunks
     var k = tx
-    while k < 1024:
-        if k < Int(K):
+    while k < K_i:
+        if k < DECODE_SMEM_SIZE:
             A_shared[unsafe_offset=k] = A.unsafe_load[width=1](offset=k)
-        else:
-            A_shared[unsafe_offset=k] = Scalar[DType.float16](0)
         k += BLOCK_THREADS
 
     barrier()
@@ -70,7 +75,7 @@ def kernel_matmul_fp16_decode(
 
     # Vectorized loop over K dimension using shared memory
     k = 0
-    while k + 8 <= Int(K):
+    while k + 8 <= K_i:
         # Load from shared memory (much faster than global memory)
         var a_vec = A_shared.unsafe_load[width=8](offset=k)
 
@@ -78,7 +83,7 @@ def kernel_matmul_fp16_decode(
         for e in range(elems_per_thread):
             var out_col = base_col + e
             if out_col < Int(N):
-                var b_vec = B.unsafe_load[width=8](offset=out_col * Int(K) + k)
+                var b_vec = B.unsafe_load[width=8](offset=out_col * K_i + k)
 
                 # Accumulate
                 for i in range(8):
@@ -87,13 +92,13 @@ def kernel_matmul_fp16_decode(
         k += 8
 
     # Handle remaining elements
-    while k < Int(K):
+    while k < K_i:
         var a_val = Float32(A_shared.unsafe_load[width=1](offset=k))
 
         for e in range(elems_per_thread):
             var out_col = base_col + e
             if out_col < Int(N):
-                var b_val = Float32(B.unsafe_load[width=1](offset=out_col * Int(K) + k))
+                var b_val = Float32(B.unsafe_load[width=1](offset=out_col * K_i + k))
                 sums[e] += a_val * b_val
 
         k += 1
@@ -336,7 +341,7 @@ def matmul_fp16_gpu_pipeline(
     # Choose kernel based on M
     if M == 1:
         # Use optimized decode kernel for M=1
-        var elems_per_thread = 4
+        var elems_per_thread = 8
         var threads_needed = (N + elems_per_thread - 1) // elems_per_thread
         var grid_x = (threads_needed + BLOCK_THREADS - 1) // BLOCK_THREADS
 
