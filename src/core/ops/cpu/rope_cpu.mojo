@@ -11,42 +11,54 @@
 #
 # `x` is [n_heads, T, head_dim]; positions are start_pos + row index.  All
 # math is f32; f16 tensors are widened element-wise and cast back on store.
+#
+# Optimization: Pre-compute sin/cos cache for each position to avoid repeated
+# trigonometric function calls (matching llama.cpp's approach).
 
 from ...tensor import Tensor, tensor_zeros
 from ...utils import unimplemented
-from std.math import cos, sin, exp, log
+from std.math import cos, sin, exp, log, pow
 
 
 def _rope_cpu_kernel[
     dtype: DType
 ](x: Tensor[dtype, 3], start_pos: Int, theta: Float32) -> Tensor[dtype, 3]:
+    """Optimized RoPE with sin/cos cache (matching llama.cpp)."""
     var n_heads = x.shape()[0]
     var n_tokens = x.shape()[1]
     var head_dim = x.shape()[2]
     var half = head_dim // 2
     var out = tensor_zeros[dtype, 3](x.shape())
 
-    var ln_theta = log(theta)
-    for h in range(n_heads):
-        for t in range(n_tokens):
-            var pos = Float32(start_pos + t)
+    # Pre-compute theta_scale = theta^(-2/head_dim)
+    var theta_scale = pow(theta, -2.0 / Float32(head_dim))
+
+    # For each token position, pre-compute sin/cos cache
+    for t in range(n_tokens):
+        var pos = Float32(start_pos + t)
+
+        # Pre-compute sin/cos for this position
+        # cache[d*2] = cos(theta), cache[d*2+1] = sin(theta)
+        var cache = List[Float32]()
+        var theta_val = pos  # theta_base = pos * freq_scale (freq_scale=1.0)
+        for d in range(half):
+            var c = cos(theta_val)
+            var s = sin(theta_val)
+            cache.append(c)
+            cache.append(s)
+            theta_val *= theta_scale
+
+        # Apply rotation using cached sin/cos
+        for h in range(n_heads):
+            var base = (h * n_tokens + t) * head_dim
             for d in range(half):
-                var freq = exp(Float32(-2 * d) / Float32(head_dim) * ln_theta)
-                var angle = pos * freq
-                var c = cos(angle)
-                var s = sin(angle)
-                var x0 = Float32(x.get((h * n_tokens + t) * head_dim + d))
-                var x1 = Float32(
-                    x.get((h * n_tokens + t) * head_dim + d + half)
-                )
-                out.set(
-                    (h * n_tokens + t) * head_dim + d,
-                    Scalar[dtype](x0 * c - x1 * s),
-                )
-                out.set(
-                    (h * n_tokens + t) * head_dim + d + half,
-                    Scalar[dtype](x0 * s + x1 * c),
-                )
+                var c = cache[d * 2]
+                var s = cache[d * 2 + 1]
+                var x0 = Float32(x.get(base + d))
+                var x1 = Float32(x.get(base + d + half))
+                out.set(base + d, Scalar[dtype](x0 * c - x1 * s))
+                out.set(base + d + half, Scalar[dtype](x0 * s + x1 * c))
+
     return out
 
 
