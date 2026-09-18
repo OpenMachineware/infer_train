@@ -341,7 +341,7 @@ def vec_dot_q4_k_neon[
         k += 256
         blk_idx += 1
 
-    return (acc0 + acc1 + acc2 + acc3).reduce_add()
+    return neon_addv(acc0 + acc1 + acc2 + acc3)
 
 
 def vec_dot_q4_0_neon[
@@ -442,7 +442,7 @@ def vec_dot_q4_0_neon[
         k += 32
         blk += 1
 
-    return (acc0 + acc1 + acc2 + acc3).reduce_add()
+    return neon_addv(acc0 + acc1 + acc2 + acc3)
 
 
 def vec_dot_q8_0_neon[
@@ -504,7 +504,7 @@ def vec_dot_q8_0_neon[
         k += 32
         blk += 1
 
-    return (acc0 + acc1 + acc2 + acc3).reduce_add()
+    return neon_addv(acc0 + acc1 + acc2 + acc3)
 
 # -- Q4_K × Q8_K int8 dot product (llama.cpp approach) ------------------------
 #
@@ -1910,7 +1910,7 @@ def vec_dot_q5_k_q8_k(
     var q5_3 = ((q5_b16_31 >> SIMD[DType.uint8, 16](4)) | q5h_3).cast[DType.int8]()
     var dot_0 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_0, q8_0_15), q5_1, q8_16_31)
     var dot_1 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_2, q8_32_47), q5_3, q8_48_63)
-    sumi += Int32(sc0) * dot_0.reduce_add() + Int32(sc1) * dot_1.reduce_add()
+    sumi += Int32(sc0) * neon_addv(dot_0) + Int32(sc1) * neon_addv(dot_1)
 
     # j=1: bytes 32-63 of qs, qh bits shifted by 2
     var (sc2, _) = _get_scale_min_k4(2, scales_ptr)
@@ -1927,7 +1927,7 @@ def vec_dot_q5_k_q8_k(
     q5_3 = ((q5_b48_63 >> SIMD[DType.uint8, 16](4)) | q5h_3).cast[DType.int8]()
     dot_0 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_0, q8_64_79), q5_1, q8_80_95)
     dot_1 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_2, q8_96_111), q5_3, q8_112_127)
-    sumi += Int32(sc2) * dot_0.reduce_add() + Int32(sc3) * dot_1.reduce_add()
+    sumi += Int32(sc2) * neon_addv(dot_0) + Int32(sc3) * neon_addv(dot_1)
 
     # j=2: bytes 64-95 of qs, qh bits shifted by 4
     var (sc4, _) = _get_scale_min_k4(4, scales_ptr)
@@ -1944,7 +1944,7 @@ def vec_dot_q5_k_q8_k(
     q5_3 = ((q5_b80_95 >> SIMD[DType.uint8, 16](4)) | q5h_3).cast[DType.int8]()
     dot_0 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_0, q8_128_143), q5_1, q8_144_159)
     dot_1 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_2, q8_160_175), q5_3, q8_176_191)
-    sumi += Int32(sc4) * dot_0.reduce_add() + Int32(sc5) * dot_1.reduce_add()
+    sumi += Int32(sc4) * neon_addv(dot_0) + Int32(sc5) * neon_addv(dot_1)
 
     # j=3: bytes 96-127 of qs, qh bits shifted by 6
     var (sc6, _) = _get_scale_min_k4(6, scales_ptr)
@@ -1961,7 +1961,7 @@ def vec_dot_q5_k_q8_k(
     q5_3 = ((q5_b112_127 >> SIMD[DType.uint8, 16](4)) | q5h_3).cast[DType.int8]()
     dot_0 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_0, q8_192_207), q5_1, q8_208_223)
     dot_1 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_2, q8_224_239), q5_3, q8_240_255)
-    sumi += Int32(sc6) * dot_0.reduce_add() + Int32(sc7) * dot_1.reduce_add()
+    sumi += Int32(sc6) * neon_addv(dot_0) + Int32(sc7) * neon_addv(dot_1)
 
     return d * q8_d * Float32(sumi) + bias
 
@@ -2073,14 +2073,14 @@ def vec_dot_q6_k_q8_k(
     var dot_6 = neon_sdot(SIMD[DType.int32, 4](0), q6_6, q8_96_111)
     var dot_7 = neon_sdot(SIMD[DType.int32, 4](0), q6_7, q8_112_127)
 
-    sumi += Int32(scales_0[0]) * dot_0.reduce_add()
-    sumi += Int32(scales_0[1]) * dot_1.reduce_add()
-    sumi += Int32(scales_0[2]) * dot_2.reduce_add()
-    sumi += Int32(scales_0[3]) * dot_3.reduce_add()
-    sumi += Int32(scales_0[4]) * dot_4.reduce_add()
-    sumi += Int32(scales_0[5]) * dot_5.reduce_add()
-    sumi += Int32(scales_0[6]) * dot_6.reduce_add()
-    sumi += Int32(scales_0[7]) * dot_7.reduce_add()
+    sumi += Int32(scales_0[0]) * neon_addv(dot_0)
+    sumi += Int32(scales_0[1]) * neon_addv(dot_1)
+    sumi += Int32(scales_0[2]) * neon_addv(dot_2)
+    sumi += Int32(scales_0[3]) * neon_addv(dot_3)
+    sumi += Int32(scales_0[4]) * neon_addv(dot_4)
+    sumi += Int32(scales_0[5]) * neon_addv(dot_5)
+    sumi += Int32(scales_0[6]) * neon_addv(dot_6)
+    sumi += Int32(scales_0[7]) * neon_addv(dot_7)
 
     # j=1: ql bytes 64-79, 80-95, 96-111, 112-127, qh bytes 32-47 and 48-63, scales 8-15
     qh_0_bits = qh_32_47
@@ -2104,14 +2104,14 @@ def vec_dot_q6_k_q8_k(
     dot_6 = neon_sdot(SIMD[DType.int32, 4](0), q6_6, q8_224_239)
     dot_7 = neon_sdot(SIMD[DType.int32, 4](0), q6_7, q8_240_255)
 
-    sumi += Int32(scales_0[8]) * dot_0.reduce_add()
-    sumi += Int32(scales_0[9]) * dot_1.reduce_add()
-    sumi += Int32(scales_0[10]) * dot_2.reduce_add()
-    sumi += Int32(scales_0[11]) * dot_3.reduce_add()
-    sumi += Int32(scales_0[12]) * dot_4.reduce_add()
-    sumi += Int32(scales_0[13]) * dot_5.reduce_add()
-    sumi += Int32(scales_0[14]) * dot_6.reduce_add()
-    sumi += Int32(scales_0[15]) * dot_7.reduce_add()
+    sumi += Int32(scales_0[8]) * neon_addv(dot_0)
+    sumi += Int32(scales_0[9]) * neon_addv(dot_1)
+    sumi += Int32(scales_0[10]) * neon_addv(dot_2)
+    sumi += Int32(scales_0[11]) * neon_addv(dot_3)
+    sumi += Int32(scales_0[12]) * neon_addv(dot_4)
+    sumi += Int32(scales_0[13]) * neon_addv(dot_5)
+    sumi += Int32(scales_0[14]) * neon_addv(dot_6)
+    sumi += Int32(scales_0[15]) * neon_addv(dot_7)
 
     # Q6_K has a -32 bias for all values
     # bias = -32 * d * q8_d * sum(scale[j] * bsum[j])
@@ -2203,7 +2203,7 @@ def vec_dot_q2_k_q8_k(
     var sc_1 = Int32(scales.unsafe_load[width=1](offset=1)) & 0xF
     var dot_s0_0 = neon_sdot(SIMD[DType.int32, 4](0), q2_s0, q8_0_15)
     var dot_s0_1 = neon_sdot(SIMD[DType.int32, 4](0), q2_s0, q8_16_31)
-    isum += sc_0 * dot_s0_0.reduce_add() + sc_1 * dot_s0_1.reduce_add()
+    isum += sc_0 * neon_addv(dot_s0_0) + sc_1 * neon_addv(dot_s0_1)
 
     # Shift 2 (bits 2-3): scales 2, 3
     var q2_s2 = ((q2_b0_15 >> SIMD[DType.uint8, 16](2)) & m3).cast[DType.int8]()
@@ -2211,7 +2211,7 @@ def vec_dot_q2_k_q8_k(
     var sc_3 = Int32(scales.unsafe_load[width=1](offset=3)) & 0xF
     var dot_s2_0 = neon_sdot(SIMD[DType.int32, 4](0), q2_s2, q8_32_47)
     var dot_s2_1 = neon_sdot(SIMD[DType.int32, 4](0), q2_s2, q8_48_63)
-    isum += sc_2 * dot_s2_0.reduce_add() + sc_3 * dot_s2_1.reduce_add()
+    isum += sc_2 * neon_addv(dot_s2_0) + sc_3 * neon_addv(dot_s2_1)
 
     # Shift 4 (bits 4-5): scales 4, 5
     var q2_s4 = ((q2_b0_15 >> SIMD[DType.uint8, 16](4)) & m3).cast[DType.int8]()
@@ -2219,7 +2219,7 @@ def vec_dot_q2_k_q8_k(
     var sc_5 = Int32(scales.unsafe_load[width=1](offset=5)) & 0xF
     var dot_s4_0 = neon_sdot(SIMD[DType.int32, 4](0), q2_s4, q8_64_79)
     var dot_s4_1 = neon_sdot(SIMD[DType.int32, 4](0), q2_s4, q8_80_95)
-    isum += sc_4 * dot_s4_0.reduce_add() + sc_5 * dot_s4_1.reduce_add()
+    isum += sc_4 * neon_addv(dot_s4_0) + sc_5 * neon_addv(dot_s4_1)
 
     # Shift 6 (bits 6-7): scales 6, 7
     var q2_s6 = ((q2_b0_15 >> SIMD[DType.uint8, 16](6)) & m3).cast[DType.int8]()
@@ -2227,7 +2227,7 @@ def vec_dot_q2_k_q8_k(
     var sc_7 = Int32(scales.unsafe_load[width=1](offset=7)) & 0xF
     var dot_s6_0 = neon_sdot(SIMD[DType.int32, 4](0), q2_s6, q8_96_111)
     var dot_s6_1 = neon_sdot(SIMD[DType.int32, 4](0), q2_s6, q8_112_127)
-    isum += sc_6 * dot_s6_0.reduce_add() + sc_7 * dot_s6_1.reduce_add()
+    isum += sc_6 * neon_addv(dot_s6_0) + sc_7 * neon_addv(dot_s6_1)
 
     # k=1: q2 bytes 32-47, all 4 shifts
     # Shift 0: scales 8, 9
@@ -2236,7 +2236,7 @@ def vec_dot_q2_k_q8_k(
     var sc_9 = Int32(scales.unsafe_load[width=1](offset=9)) & 0xF
     dot_s0_0 = neon_sdot(SIMD[DType.int32, 4](0), q2_s0, q8_128_143)
     dot_s0_1 = neon_sdot(SIMD[DType.int32, 4](0), q2_s0, q8_144_159)
-    isum += sc_8 * dot_s0_0.reduce_add() + sc_9 * dot_s0_1.reduce_add()
+    isum += sc_8 * neon_addv(dot_s0_0) + sc_9 * neon_addv(dot_s0_1)
 
     # Shift 2: scales 10, 11
     q2_s2 = ((q2_b32_47 >> SIMD[DType.uint8, 16](2)) & m3).cast[DType.int8]()
@@ -2244,7 +2244,7 @@ def vec_dot_q2_k_q8_k(
     var sc_11 = Int32(scales.unsafe_load[width=1](offset=11)) & 0xF
     dot_s2_0 = neon_sdot(SIMD[DType.int32, 4](0), q2_s2, q8_160_175)
     dot_s2_1 = neon_sdot(SIMD[DType.int32, 4](0), q2_s2, q8_176_191)
-    isum += sc_10 * dot_s2_0.reduce_add() + sc_11 * dot_s2_1.reduce_add()
+    isum += sc_10 * neon_addv(dot_s2_0) + sc_11 * neon_addv(dot_s2_1)
 
     # Shift 4: scales 12, 13
     q2_s4 = ((q2_b32_47 >> SIMD[DType.uint8, 16](4)) & m3).cast[DType.int8]()
@@ -2252,7 +2252,7 @@ def vec_dot_q2_k_q8_k(
     var sc_13 = Int32(scales.unsafe_load[width=1](offset=13)) & 0xF
     dot_s4_0 = neon_sdot(SIMD[DType.int32, 4](0), q2_s4, q8_192_207)
     dot_s4_1 = neon_sdot(SIMD[DType.int32, 4](0), q2_s4, q8_208_223)
-    isum += sc_12 * dot_s4_0.reduce_add() + sc_13 * dot_s4_1.reduce_add()
+    isum += sc_12 * neon_addv(dot_s4_0) + sc_13 * neon_addv(dot_s4_1)
 
     # Shift 6: scales 14, 15
     q2_s6 = ((q2_b32_47 >> SIMD[DType.uint8, 16](6)) & m3).cast[DType.int8]()
@@ -2260,7 +2260,7 @@ def vec_dot_q2_k_q8_k(
     var sc_15 = Int32(scales.unsafe_load[width=1](offset=15)) & 0xF
     dot_s6_0 = neon_sdot(SIMD[DType.int32, 4](0), q2_s6, q8_224_239)
     dot_s6_1 = neon_sdot(SIMD[DType.int32, 4](0), q2_s6, q8_240_255)
-    isum += sc_14 * dot_s6_0.reduce_add() + sc_15 * dot_s6_1.reduce_add()
+    isum += sc_14 * neon_addv(dot_s6_0) + sc_15 * neon_addv(dot_s6_1)
 
     return d * q8_d * Float32(isum) - dmin * q8_d * Float32(summs)
 
@@ -2378,7 +2378,7 @@ def vec_dot_q3_k_q8_k(
     var q3_0 = low2_0 - q3h_0
     var sc_0 = scales_arr[0]
     var dot_0 = neon_sdot(SIMD[DType.int32, 4](0), q3_0, q8_0_15)
-    sumi += sc_0 * dot_0.reduce_add()
+    sumi += sc_0 * neon_addv(dot_0)
 
     # Elements 16-31: q3_b16_31 bits 0-1, hmask bit 0
     var low2_1 = (q3_b16_31 & m3).cast[DType.int8]()
@@ -2386,7 +2386,7 @@ def vec_dot_q3_k_q8_k(
     var q3_1 = low2_1 - q3h_1
     var sc_1 = scales_arr[1]
     var dot_1 = neon_sdot(SIMD[DType.int32, 4](0), q3_1, q8_16_31)
-    sumi += sc_1 * dot_1.reduce_add()
+    sumi += sc_1 * neon_addv(dot_1)
 
     # Shift 2: q3_b0_15 bits 2-3, hmask bit 1
     var low2_2 = ((q3_b0_15 >> shift2) & m3).cast[DType.int8]()
@@ -2394,7 +2394,7 @@ def vec_dot_q3_k_q8_k(
     var q3_2 = low2_2 - q3h_2
     var sc_2 = scales_arr[2]
     var dot_2 = neon_sdot(SIMD[DType.int32, 4](0), q3_2, q8_32_47)
-    sumi += sc_2 * dot_2.reduce_add()
+    sumi += sc_2 * neon_addv(dot_2)
 
     # Elements 48-63: q3_b16_31 bits 2-3
     var low2_3 = ((q3_b16_31 >> shift2) & m3).cast[DType.int8]()
@@ -2402,7 +2402,7 @@ def vec_dot_q3_k_q8_k(
     var q3_3 = low2_3 - q3h_3
     var sc_3 = scales_arr[3]
     var dot_3 = neon_sdot(SIMD[DType.int32, 4](0), q3_3, q8_48_63)
-    sumi += sc_3 * dot_3.reduce_add()
+    sumi += sc_3 * neon_addv(dot_3)
 
     # Shift 4: q3_b0_15 bits 4-5, hmask bit 2
     var low2_4 = ((q3_b0_15 >> SIMD[DType.uint8, 16](4)) & m3).cast[DType.int8]()
@@ -2410,7 +2410,7 @@ def vec_dot_q3_k_q8_k(
     var q3_4 = low2_4 - q3h_4
     var sc_4 = scales_arr[4]
     var dot_4 = neon_sdot(SIMD[DType.int32, 4](0), q3_4, q8_64_79)
-    sumi += sc_4 * dot_4.reduce_add()
+    sumi += sc_4 * neon_addv(dot_4)
 
     # Elements 80-95: q3_b16_31 bits 4-5
     var low2_5 = ((q3_b16_31 >> SIMD[DType.uint8, 16](4)) & m3).cast[DType.int8]()
@@ -2418,7 +2418,7 @@ def vec_dot_q3_k_q8_k(
     var q3_5 = low2_5 - q3h_5
     var sc_5 = scales_arr[5]
     var dot_5 = neon_sdot(SIMD[DType.int32, 4](0), q3_5, q8_80_95)
-    sumi += sc_5 * dot_5.reduce_add()
+    sumi += sc_5 * neon_addv(dot_5)
 
     # Shift 6: q3_b0_15 bits 6-7, hmask bit 3
     var low2_6 = ((q3_b0_15 >> SIMD[DType.uint8, 16](6)) & m3).cast[DType.int8]()
@@ -2426,7 +2426,7 @@ def vec_dot_q3_k_q8_k(
     var q3_6 = low2_6 - q3h_6
     var sc_6 = scales_arr[6]
     var dot_6 = neon_sdot(SIMD[DType.int32, 4](0), q3_6, q8_96_111)
-    sumi += sc_6 * dot_6.reduce_add()
+    sumi += sc_6 * neon_addv(dot_6)
 
     # Elements 112-127: q3_b16_31 bits 6-7
     var low2_7 = ((q3_b16_31 >> SIMD[DType.uint8, 16](6)) & m3).cast[DType.int8]()
@@ -2434,7 +2434,7 @@ def vec_dot_q3_k_q8_k(
     var q3_7 = low2_7 - q3h_7
     var sc_7 = scales_arr[7]
     var dot_7 = neon_sdot(SIMD[DType.int32, 4](0), q3_7, q8_112_127)
-    sumi += sc_7 * dot_7.reduce_add()
+    sumi += sc_7 * neon_addv(dot_7)
 
     # j=1: use qs bytes 32-63, hmask bits 0-3 (REUSED from j=0)
     # This matches llama.cpp SVE code which loads hmask once and reuses it
@@ -2444,7 +2444,7 @@ def vec_dot_q3_k_q8_k(
     var q3_8 = low2_8 - q3h_8
     var sc_8 = scales_arr[8]
     var dot_8 = neon_sdot(SIMD[DType.int32, 4](0), q3_8, q8_128_143)
-    sumi += sc_8 * dot_8.reduce_add()
+    sumi += sc_8 * neon_addv(dot_8)
 
     # Elements 144-159: q3_b48_63 bits 0-1, hmask bit 0
     var low2_9 = (q3_b48_63 & m3).cast[DType.int8]()
@@ -2452,7 +2452,7 @@ def vec_dot_q3_k_q8_k(
     var q3_9 = low2_9 - q3h_9
     var sc_9 = scales_arr[9]
     var dot_9 = neon_sdot(SIMD[DType.int32, 4](0), q3_9, q8_144_159)
-    sumi += sc_9 * dot_9.reduce_add()
+    sumi += sc_9 * neon_addv(dot_9)
 
     # Shift 2: q3_b32_47 bits 2-3, hmask bit 1
     var low2_10 = ((q3_b32_47 >> shift2) & m3).cast[DType.int8]()
@@ -2460,7 +2460,7 @@ def vec_dot_q3_k_q8_k(
     var q3_10 = low2_10 - q3h_10
     var sc_10 = scales_arr[10]
     var dot_10 = neon_sdot(SIMD[DType.int32, 4](0), q3_10, q8_160_175)
-    sumi += sc_10 * dot_10.reduce_add()
+    sumi += sc_10 * neon_addv(dot_10)
 
     # Elements 176-191: q3_b48_63 bits 2-3
     var low2_11 = ((q3_b48_63 >> shift2) & m3).cast[DType.int8]()
@@ -2468,7 +2468,7 @@ def vec_dot_q3_k_q8_k(
     var q3_11 = low2_11 - q3h_11
     var sc_11 = scales_arr[11]
     var dot_11 = neon_sdot(SIMD[DType.int32, 4](0), q3_11, q8_176_191)
-    sumi += sc_11 * dot_11.reduce_add()
+    sumi += sc_11 * neon_addv(dot_11)
 
     # Shift 4: q3_b32_47 bits 4-5, hmask bit 2
     var low2_12 = ((q3_b32_47 >> SIMD[DType.uint8, 16](4)) & m3).cast[DType.int8]()
@@ -2476,7 +2476,7 @@ def vec_dot_q3_k_q8_k(
     var q3_12 = low2_12 - q3h_12
     var sc_12 = scales_arr[12]
     var dot_12 = neon_sdot(SIMD[DType.int32, 4](0), q3_12, q8_192_207)
-    sumi += sc_12 * dot_12.reduce_add()
+    sumi += sc_12 * neon_addv(dot_12)
 
     # Elements 208-223: q3_b48_63 bits 4-5
     var low2_13 = ((q3_b48_63 >> SIMD[DType.uint8, 16](4)) & m3).cast[DType.int8]()
@@ -2484,7 +2484,7 @@ def vec_dot_q3_k_q8_k(
     var q3_13 = low2_13 - q3h_13
     var sc_13 = scales_arr[13]
     var dot_13 = neon_sdot(SIMD[DType.int32, 4](0), q3_13, q8_208_223)
-    sumi += sc_13 * dot_13.reduce_add()
+    sumi += sc_13 * neon_addv(dot_13)
 
     # Shift 6: q3_b32_47 bits 6-7, hmask bit 3
     var low2_14 = ((q3_b32_47 >> SIMD[DType.uint8, 16](6)) & m3).cast[DType.int8]()
@@ -2492,7 +2492,7 @@ def vec_dot_q3_k_q8_k(
     var q3_14 = low2_14 - q3h_14
     var sc_14 = scales_arr[14]
     var dot_14 = neon_sdot(SIMD[DType.int32, 4](0), q3_14, q8_224_239)
-    sumi += sc_14 * dot_14.reduce_add()
+    sumi += sc_14 * neon_addv(dot_14)
 
     # Elements 240-255: q3_b48_63 bits 6-7
     var low2_15 = ((q3_b48_63 >> SIMD[DType.uint8, 16](6)) & m3).cast[DType.int8]()
@@ -2500,7 +2500,7 @@ def vec_dot_q3_k_q8_k(
     var q3_15 = low2_15 - q3h_15
     var sc_15 = scales_arr[15]
     var dot_15 = neon_sdot(SIMD[DType.int32, 4](0), q3_15, q8_240_255)
-    sumi += sc_15 * dot_15.reduce_add()
+    sumi += sc_15 * neon_addv(dot_15)
 
     return d * q8_d * Float32(sumi)
 

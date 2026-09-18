@@ -17,6 +17,15 @@ def neon_sdot(
         has_side_effect=False,
     ](acc, a, b)
 
+# NEON ADDV intrinsic for horizontal sum
+@always_inline
+def neon_addv(v: SIMD[DType.int32, 4]) -> Int32:
+    return llvm_intrinsic[
+        "llvm.vector.reduce.add.v4i32",
+        Int32,
+        has_side_effect=False,
+    ](v)
+
 # Helper to get scale and min for sub-block j (0-7)
 def _get_scale_min_k4(j: Int, scales: Pointer[UInt8, MutUntrackedOrigin]) -> Tuple[Int, Int]:
     if j < 4:
@@ -123,11 +132,11 @@ def vec_dot_q5_k_q8_k_simd(
 
         var dot_0 = neon_sdot(SIMD[DType.int32, 4](0), q5bytes_0, q8bytes_0)
         var dot_1 = neon_sdot(SIMD[DType.int32, 4](0), q5bytes_1, q8bytes_1)
-        sumi += sc_0 * (dot_0.reduce_add() + dot_1.reduce_add())
+        sumi += sc_0 * (neon_addv(dot_0) + neon_addv(dot_1))
 
         var dot_2 = neon_sdot(SIMD[DType.int32, 4](0), q5bytes_2, q8bytes_2)
         var dot_3 = neon_sdot(SIMD[DType.int32, 4](0), q5bytes_3, q8bytes_3)
-        sumi += sc_1 * (dot_2.reduce_add() + dot_3.reduce_add())
+        sumi += sc_1 * (neon_addv(dot_2) + neon_addv(dot_3))
 
         # Shift qhbits right by 2 for next iteration
         qhbits_0 = qhbits_0 >> SIMD[DType.uint8, 16](2)

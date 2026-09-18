@@ -61,10 +61,13 @@ def neon_sdot(
 
 
 @always_inline
-def neon_addv(v: SIMD[DType.int32, 4]) -> Int:
-    """Horizontal sum using addv.4s."""
-    var result = v.reduce_add()
-    return Int(result[0])
+def neon_addv(v: SIMD[DType.int32, 4]) -> Int32:
+    """Horizontal sum using addv.4s - LLVM intrinsic."""
+    return llvm_intrinsic[
+        "llvm.vector.reduce.add.v4i32",
+        Int32,
+        has_side_effect=False,
+    ](v)
 
 
 @always_inline
