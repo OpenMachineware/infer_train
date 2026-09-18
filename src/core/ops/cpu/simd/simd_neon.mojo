@@ -555,6 +555,13 @@ struct NeonS8x2(TrivialRegisterPassable):
     var lo: SIMD[DType.int8, 16]
     var hi: SIMD[DType.int8, 16]
 
+struct NeonS8x4(TrivialRegisterPassable):
+    """4 x int8x16 vectors for efficient Q8 loading."""
+    var v0: SIMD[DType.int8, 16]
+    var v1: SIMD[DType.int8, 16]
+    var v2: SIMD[DType.int8, 16]
+    var v3: SIMD[DType.int8, 16]
+
 
 @always_inline
 def neon_ld1_u8_x2(ptr: Pointer[UInt8, MutUntrackedOrigin]) -> NeonU8x2:
@@ -570,6 +577,36 @@ def neon_ld1_s8_x2(ptr: Pointer[UInt8, MutUntrackedOrigin]) -> NeonS8x2:
     return llvm_intrinsic[
         "llvm.aarch64.neon.ld1x2.v16i8.p0i8", NeonS8x2, has_side_effect=True
     ](ptr)
+
+
+@always_inline
+def neon_ld1_s8_x4(ptr: Pointer[UInt8, MutUntrackedOrigin]) -> NeonS8x4:
+    """Load 64 bytes (4 vectors) using ld1.4b instruction.
+
+    This is more efficient than 4 separate loads or 2 x ld1.2b.
+    Used by llama.cpp's ggml_vld1q_s8_x4.
+    """
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.ld1x4.v16i8.p0i8", NeonS8x4, has_side_effect=True
+    ](ptr)
+
+
+@always_inline
+def neon_vbic(a: SIMD[DType.uint8, 16], b: SIMD[DType.uint8, 16]) -> SIMD[DType.uint8, 16]:
+    """Bit clear: a & ~b (equivalent to vbic instruction)."""
+    return a & ~b
+
+
+@always_inline
+def neon_shrq_n_u8(n: Int, v: SIMD[DType.uint8, 16]) -> SIMD[DType.uint8, 16]:
+    """Immediate right shift: v >> n (n must be compile-time constant 0-7)."""
+    return v >> SIMD[DType.uint8, 16](n)
+
+
+@always_inline
+def neon_shlq_n_u8(n: Int, v: SIMD[DType.uint8, 16]) -> SIMD[DType.uint8, 16]:
+    """Immediate left shift: v << n (n must be compile-time constant 0-7)."""
+    return v << SIMD[DType.uint8, 16](n)
 
 
 @always_inline
@@ -851,8 +888,8 @@ def vec_dot_q4_k_q8_k_compact(
             sumi1 += Int32(neon_vaddvq_s32(p1) * scales[j * 2])
 
             # High nibbles
-            var q4_hi0 = (q4_b0 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-            var q4_hi1 = (q4_b1 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+            var q4_hi0 = (q4_b0 >> 4).cast[DType.int8]()
+            var q4_hi1 = (q4_b1 >> 4).cast[DType.int8]()
             var q8_2 = q8_qs_ptr.unsafe_load[width=16](offset=j * 64 + 32)
             var q8_3 = q8_qs_ptr.unsafe_load[width=16](offset=j * 64 + 48)
 
@@ -957,8 +994,8 @@ def vec_dot_q4_k_q8_k_ptr_advance(
     var q8_3 = q8_ptr.unsafe_load[width=16]()
     q8_ptr = q8_ptr.unsafe_offset(16)
 
-    var q4_hi0 = (q4_b0 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    var q4_hi1 = (q4_b1 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_hi0 = (q4_b0 >> 4).cast[DType.int8]()
+    var q4_hi1 = (q4_b1 >> 4).cast[DType.int8]()
     var p2 = neon_sdot(neon_sdot(mzero, q4_hi0, q8_2), q4_hi1, q8_3)
     sumi2 += Int32(neon_vaddvq_s32(p2) * sc1)
 
@@ -983,8 +1020,8 @@ def vec_dot_q4_k_q8_k_ptr_advance(
     q8_3 = q8_ptr.unsafe_load[width=16]()
     q8_ptr = q8_ptr.unsafe_offset(16)
 
-    q4_hi0 = (q4_b0 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    q4_hi1 = (q4_b1 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    q4_hi0 = (q4_b0 >> 4).cast[DType.int8]()
+    q4_hi1 = (q4_b1 >> 4).cast[DType.int8]()
     p2 = neon_sdot(neon_sdot(mzero, q4_hi0, q8_2), q4_hi1, q8_3)
     sumi2 += Int32(neon_vaddvq_s32(p2) * sc3)
 
@@ -1009,8 +1046,8 @@ def vec_dot_q4_k_q8_k_ptr_advance(
     q8_3 = q8_ptr.unsafe_load[width=16]()
     q8_ptr = q8_ptr.unsafe_offset(16)
 
-    q4_hi0 = (q4_b0 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    q4_hi1 = (q4_b1 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    q4_hi0 = (q4_b0 >> 4).cast[DType.int8]()
+    q4_hi1 = (q4_b1 >> 4).cast[DType.int8]()
     p2 = neon_sdot(neon_sdot(mzero, q4_hi0, q8_2), q4_hi1, q8_3)
     sumi2 += Int32(neon_vaddvq_s32(p2) * sc5)
 
@@ -1033,8 +1070,8 @@ def vec_dot_q4_k_q8_k_ptr_advance(
     q8_ptr = q8_ptr.unsafe_offset(16)
     q8_3 = q8_ptr.unsafe_load[width=16]()
 
-    q4_hi0 = (q4_b0 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    q4_hi1 = (q4_b1 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    q4_hi0 = (q4_b0 >> 4).cast[DType.int8]()
+    q4_hi1 = (q4_b1 >> 4).cast[DType.int8]()
     p2 = neon_sdot(neon_sdot(mzero, q4_hi0, q8_2), q4_hi1, q8_3)
     sumi2 += Int32(neon_vaddvq_s32(p2) * sc7)
 
@@ -1156,8 +1193,8 @@ def vec_dot_q4_k_q8_k_v2(
         var q8_2 = q8_qs_ptr.unsafe_load[width=16](offset=j * 64 + 32)
         var q8_3 = q8_qs_ptr.unsafe_load[width=16](offset=j * 64 + 48)
 
-        var q4_hi0 = (q4_b0 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-        var q4_hi1 = (q4_b1 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+        var q4_hi0 = (q4_b0 >> 4).cast[DType.int8]()
+        var q4_hi1 = (q4_b1 >> 4).cast[DType.int8]()
 
         var p2 = neon_sdot(neon_sdot(mzero, q4_hi0, q8_2), q4_hi1, q8_3)
         sumi2 += Int32(neon_vaddvq_s32(p2) * Int(scales[j * 2 + 1]))
@@ -1262,8 +1299,8 @@ def vec_dot_q4_k_q8_k(
     sumi1 += neon_addv(p1) * sc0
 
     q8bytes = neon_ld1_s8_x2(q8_qs_ptr.unsafe_offset(32))
-    var p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.lo),
-                       (q4bits.hi >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.hi)
+    var p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> 4).cast[DType.int8](), q8bytes.lo),
+                       (q4bits.hi >> 4).cast[DType.int8](), q8bytes.hi)
     sumi2 += neon_addv(p2) * sc4
 
     # j=1
@@ -1274,8 +1311,8 @@ def vec_dot_q4_k_q8_k(
     sumi1 += neon_addv(p1) * sc1
 
     q8bytes = neon_ld1_s8_x2(q8_qs_ptr.unsafe_offset(96))
-    p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.lo),
-                   (q4bits.hi >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.hi)
+    p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> 4).cast[DType.int8](), q8bytes.lo),
+                   (q4bits.hi >> 4).cast[DType.int8](), q8bytes.hi)
     sumi2 += neon_addv(p2) * sc5
 
     # j=2
@@ -1286,8 +1323,8 @@ def vec_dot_q4_k_q8_k(
     sumi1 += neon_addv(p1) * sc2
 
     q8bytes = neon_ld1_s8_x2(q8_qs_ptr.unsafe_offset(160))
-    p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.lo),
-                   (q4bits.hi >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.hi)
+    p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> 4).cast[DType.int8](), q8bytes.lo),
+                   (q4bits.hi >> 4).cast[DType.int8](), q8bytes.hi)
     sumi2 += neon_addv(p2) * sc6
 
     # j=3
@@ -1298,8 +1335,8 @@ def vec_dot_q4_k_q8_k(
     sumi1 += neon_addv(p1) * sc3
 
     q8bytes = neon_ld1_s8_x2(q8_qs_ptr.unsafe_offset(224))
-    p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.lo),
-                   (q4bits.hi >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.hi)
+    p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> 4).cast[DType.int8](), q8bytes.lo),
+                   (q4bits.hi >> 4).cast[DType.int8](), q8bytes.hi)
     sumi2 += neon_addv(p2) * sc7
 
     return d * q8_d * Float32(sumi1 + sumi2) + sumf_bias
@@ -1700,8 +1737,8 @@ def vec_dot_q4_k_q8_k_nrc2(
 
     # Row 0: j=1 (high nibbles, elements 32-63)
     var (sc1_0, _) = _get_scale_min_k4(1, scales0)
-    var q4_0_1_lo = (q4_0_b0_15 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    var q4_0_1_hi = (q4_0_b16_31 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_0_1_lo = (q4_0_b0_15 >> 4).cast[DType.int8]()
+    var q4_0_1_hi = (q4_0_b16_31 >> 4).cast[DType.int8]()
     var dot_0_1 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_0_1_lo, q8_0_32), q4_0_1_hi, q8_0_48)
 
     # Row 0: j=2 (low nibbles, elements 64-95)
@@ -1712,8 +1749,8 @@ def vec_dot_q4_k_q8_k_nrc2(
 
     # Row 0: j=3 (high nibbles, elements 96-127)
     var (sc3_0, _) = _get_scale_min_k4(3, scales0)
-    var q4_0_3_lo = (q4_0_b32_47 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    var q4_0_3_hi = (q4_0_b48_63 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_0_3_lo = (q4_0_b32_47 >> 4).cast[DType.int8]()
+    var q4_0_3_hi = (q4_0_b48_63 >> 4).cast[DType.int8]()
     var dot_0_3 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_0_3_lo, q8_0_96), q4_0_3_hi, q8_0_112)
 
     # Row 0: j=4 (low nibbles, elements 128-159)
@@ -1724,8 +1761,8 @@ def vec_dot_q4_k_q8_k_nrc2(
 
     # Row 0: j=5 (high nibbles, elements 160-191)
     var (sc5_0, _) = _get_scale_min_k4(5, scales0)
-    var q4_0_5_lo = (q4_0_b64_79 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    var q4_0_5_hi = (q4_0_b80_95 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_0_5_lo = (q4_0_b64_79 >> 4).cast[DType.int8]()
+    var q4_0_5_hi = (q4_0_b80_95 >> 4).cast[DType.int8]()
     var dot_0_5 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_0_5_lo, q8_0_160), q4_0_5_hi, q8_0_176)
 
     # Row 0: j=6 (low nibbles, elements 192-223)
@@ -1736,8 +1773,8 @@ def vec_dot_q4_k_q8_k_nrc2(
 
     # Row 0: j=7 (high nibbles, elements 224-255)
     var (sc7_0, _) = _get_scale_min_k4(7, scales0)
-    var q4_0_7_lo = (q4_0_b96_111 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    var q4_0_7_hi = (q4_0_b112_127 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_0_7_lo = (q4_0_b96_111 >> 4).cast[DType.int8]()
+    var q4_0_7_hi = (q4_0_b112_127 >> 4).cast[DType.int8]()
     var dot_0_7 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_0_7_lo, q8_0_224), q4_0_7_hi, q8_0_240)
 
     # Sum up row 0
@@ -1760,8 +1797,8 @@ def vec_dot_q4_k_q8_k_nrc2(
 
     # Row 1: j=1 (high nibbles, elements 32-63)
     var (sc1_1, _) = _get_scale_min_k4(1, scales1)
-    var q4_1_1_lo = (q4_1_b0_15 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    var q4_1_1_hi = (q4_1_b16_31 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_1_1_lo = (q4_1_b0_15 >> 4).cast[DType.int8]()
+    var q4_1_1_hi = (q4_1_b16_31 >> 4).cast[DType.int8]()
     var dot_1_1 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_1_1_lo, q8_1_32), q4_1_1_hi, q8_1_48)
 
     # Row 1: j=2 (low nibbles, elements 64-95)
@@ -1772,8 +1809,8 @@ def vec_dot_q4_k_q8_k_nrc2(
 
     # Row 1: j=3 (high nibbles, elements 96-127)
     var (sc3_1, _) = _get_scale_min_k4(3, scales1)
-    var q4_1_3_lo = (q4_1_b32_47 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    var q4_1_3_hi = (q4_1_b48_63 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_1_3_lo = (q4_1_b32_47 >> 4).cast[DType.int8]()
+    var q4_1_3_hi = (q4_1_b48_63 >> 4).cast[DType.int8]()
     var dot_1_3 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_1_3_lo, q8_1_96), q4_1_3_hi, q8_1_112)
 
     # Row 1: j=4 (low nibbles, elements 128-159)
@@ -1784,8 +1821,8 @@ def vec_dot_q4_k_q8_k_nrc2(
 
     # Row 1: j=5 (high nibbles, elements 160-191)
     var (sc5_1, _) = _get_scale_min_k4(5, scales1)
-    var q4_1_5_lo = (q4_1_b64_79 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    var q4_1_5_hi = (q4_1_b80_95 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_1_5_lo = (q4_1_b64_79 >> 4).cast[DType.int8]()
+    var q4_1_5_hi = (q4_1_b80_95 >> 4).cast[DType.int8]()
     var dot_1_5 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_1_5_lo, q8_1_160), q4_1_5_hi, q8_1_176)
 
     # Row 1: j=6 (low nibbles, elements 192-223)
@@ -1796,8 +1833,8 @@ def vec_dot_q4_k_q8_k_nrc2(
 
     # Row 1: j=7 (high nibbles, elements 224-255)
     var (sc7_1, _) = _get_scale_min_k4(7, scales1)
-    var q4_1_7_lo = (q4_1_b96_111 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    var q4_1_7_hi = (q4_1_b112_127 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_1_7_lo = (q4_1_b96_111 >> 4).cast[DType.int8]()
+    var q4_1_7_hi = (q4_1_b112_127 >> 4).cast[DType.int8]()
     var dot_1_7 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q4_1_7_lo, q8_1_224), q4_1_7_hi, q8_1_240)
 
     # Sum up row 1
@@ -1866,13 +1903,25 @@ def vec_dot_q5_k_q8_k(
     var q8_qs = q8_data.unsafe_offset(4).unsafe_bitcast[Scalar[DType.int8]]()
     var q8_bsums = q8_data.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
 
-    # Compute bias from dmin * min term
-    var bias = Float32(0)
-    for j in range(8):
-        var (_, m) = _get_scale_min_k4(j, scales_ptr)
-        var bs0 = Int32(q8_bsums.unsafe_offset(j * 2).unsafe_load())
-        var bs1 = Int32(q8_bsums.unsafe_offset(j * 2 + 1).unsafe_load())
-        bias -= dmin * q8_d * Float32(m) * Float32(bs0 + bs1)
+    # Pre-compute all 8 scales and bias upfront (avoid repeated _get_scale_min_k4 calls)
+    var (sc0, m0) = _get_scale_min_k4(0, scales_ptr)
+    var (sc1, m1) = _get_scale_min_k4(1, scales_ptr)
+    var (sc2, m2) = _get_scale_min_k4(2, scales_ptr)
+    var (sc3, m3) = _get_scale_min_k4(3, scales_ptr)
+    var (sc4, m4) = _get_scale_min_k4(4, scales_ptr)
+    var (sc5, m5) = _get_scale_min_k4(5, scales_ptr)
+    var (sc6, m6) = _get_scale_min_k4(6, scales_ptr)
+    var (sc7, m7) = _get_scale_min_k4(7, scales_ptr)
+
+    # Compute bias from dmin * min term (batched)
+    var bs0 = Int32(q8_bsums.unsafe_load[width=8](offset=0))
+    var bs1 = Int32(q8_bsums.unsafe_load[width=8](offset=8))
+    var bias = -dmin * q8_d * Float32(
+        Int32(m0) * (bs0[0] + bs0[1]) + Int32(m1) * (bs0[2] + bs0[3]) +
+        Int32(m2) * (bs0[4] + bs0[5]) + Int32(m3) * (bs0[6] + bs0[7]) +
+        Int32(m4) * (bs1[0] + bs1[1]) + Int32(m5) * (bs1[2] + bs1[3]) +
+        Int32(m6) * (bs1[4] + bs1[5]) + Int32(m7) * (bs1[6] + bs1[7])
+    )
 
     # Load all Q5_K data upfront for cache efficiency
     # qs: 128 bytes, qh: 32 bytes (high bits)
@@ -1911,70 +1960,66 @@ def vec_dot_q5_k_q8_k(
     var mone = SIMD[DType.uint8, 16](1)
     var mtwo = SIMD[DType.uint8, 16](2)
 
+    # Pre-compute all qhbits shifts upfront (avoid repeated shifts)
+    var qhbits_0_s0 = qhbits_0
+    var qhbits_1_s0 = qhbits_1
+    var qhbits_0_s2 = qhbits_0 >> 2
+    var qhbits_1_s2 = qhbits_1 >> 2
+    var qhbits_0_s4 = qhbits_0 >> 4
+    var qhbits_1_s4 = qhbits_1 >> 4
+    var qhbits_0_s6 = qhbits_0 >> 6
+    var qhbits_1_s6 = qhbits_1 >> 6
+
     var sumi = Int32(0)
 
     # j=0: bytes 0-31 of qs, qh bits 0
-    var (sc0, _) = _get_scale_min_k4(0, scales_ptr)
-    var (sc1, _) = _get_scale_min_k4(1, scales_ptr)
-    var q5h_0 = (qhbits_0 & mone) << SIMD[DType.uint8, 16](4)
-    var q5h_1 = (qhbits_1 & mone) << SIMD[DType.uint8, 16](4)
-    var q5h_2 = (qhbits_0 & mtwo) << SIMD[DType.uint8, 16](3)
-    var q5h_3 = (qhbits_1 & mtwo) << SIMD[DType.uint8, 16](3)
+    var q5h_0 = (qhbits_0_s0 & mone) << 4
+    var q5h_1 = (qhbits_1_s0 & mone) << 4
+    var q5h_2 = (qhbits_0_s0 & mtwo) << 3
+    var q5h_3 = (qhbits_1_s0 & mtwo) << 3
     var q5_0 = ((q5_b0_15 & m4b) | q5h_0).cast[DType.int8]()
     var q5_1 = ((q5_b16_31 & m4b) | q5h_1).cast[DType.int8]()
-    var q5_2 = ((q5_b0_15 >> SIMD[DType.uint8, 16](4)) | q5h_2).cast[DType.int8]()
-    var q5_3 = ((q5_b16_31 >> SIMD[DType.uint8, 16](4)) | q5h_3).cast[DType.int8]()
+    var q5_2 = ((q5_b0_15 >> 4) | q5h_2).cast[DType.int8]()
+    var q5_3 = ((q5_b16_31 >> 4) | q5h_3).cast[DType.int8]()
     var dot_0 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_0, q8_0_15), q5_1, q8_16_31)
     var dot_1 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_2, q8_32_47), q5_3, q8_48_63)
     sumi += Int32(sc0) * neon_addv(dot_0) + Int32(sc1) * neon_addv(dot_1)
 
     # j=1: bytes 32-63 of qs, qh bits shifted by 2
-    var (sc2, _) = _get_scale_min_k4(2, scales_ptr)
-    var (sc3, _) = _get_scale_min_k4(3, scales_ptr)
-    var qhbits_0_s2 = qhbits_0 >> SIMD[DType.uint8, 16](2)
-    var qhbits_1_s2 = qhbits_1 >> SIMD[DType.uint8, 16](2)
-    q5h_0 = (qhbits_0_s2 & mone) << SIMD[DType.uint8, 16](4)
-    q5h_1 = (qhbits_1_s2 & mone) << SIMD[DType.uint8, 16](4)
-    q5h_2 = (qhbits_0_s2 & mtwo) << SIMD[DType.uint8, 16](3)
-    q5h_3 = (qhbits_1_s2 & mtwo) << SIMD[DType.uint8, 16](3)
+    q5h_0 = (qhbits_0_s2 & mone) << 4
+    q5h_1 = (qhbits_1_s2 & mone) << 4
+    q5h_2 = (qhbits_0_s2 & mtwo) << 3
+    q5h_3 = (qhbits_1_s2 & mtwo) << 3
     q5_0 = ((q5_b32_47 & m4b) | q5h_0).cast[DType.int8]()
     q5_1 = ((q5_b48_63 & m4b) | q5h_1).cast[DType.int8]()
-    q5_2 = ((q5_b32_47 >> SIMD[DType.uint8, 16](4)) | q5h_2).cast[DType.int8]()
-    q5_3 = ((q5_b48_63 >> SIMD[DType.uint8, 16](4)) | q5h_3).cast[DType.int8]()
+    q5_2 = ((q5_b32_47 >> 4) | q5h_2).cast[DType.int8]()
+    q5_3 = ((q5_b48_63 >> 4) | q5h_3).cast[DType.int8]()
     dot_0 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_0, q8_64_79), q5_1, q8_80_95)
     dot_1 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_2, q8_96_111), q5_3, q8_112_127)
     sumi += Int32(sc2) * neon_addv(dot_0) + Int32(sc3) * neon_addv(dot_1)
 
     # j=2: bytes 64-95 of qs, qh bits shifted by 4
-    var (sc4, _) = _get_scale_min_k4(4, scales_ptr)
-    var (sc5, _) = _get_scale_min_k4(5, scales_ptr)
-    var qhbits_0_s4 = qhbits_0 >> SIMD[DType.uint8, 16](4)
-    var qhbits_1_s4 = qhbits_1 >> SIMD[DType.uint8, 16](4)
-    q5h_0 = (qhbits_0_s4 & mone) << SIMD[DType.uint8, 16](4)
-    q5h_1 = (qhbits_1_s4 & mone) << SIMD[DType.uint8, 16](4)
-    q5h_2 = (qhbits_0_s4 & mtwo) << SIMD[DType.uint8, 16](3)
-    q5h_3 = (qhbits_1_s4 & mtwo) << SIMD[DType.uint8, 16](3)
+    q5h_0 = (qhbits_0_s4 & mone) << 4
+    q5h_1 = (qhbits_1_s4 & mone) << 4
+    q5h_2 = (qhbits_0_s4 & mtwo) << 3
+    q5h_3 = (qhbits_1_s4 & mtwo) << 3
     q5_0 = ((q5_b64_79 & m4b) | q5h_0).cast[DType.int8]()
     q5_1 = ((q5_b80_95 & m4b) | q5h_1).cast[DType.int8]()
-    q5_2 = ((q5_b64_79 >> SIMD[DType.uint8, 16](4)) | q5h_2).cast[DType.int8]()
-    q5_3 = ((q5_b80_95 >> SIMD[DType.uint8, 16](4)) | q5h_3).cast[DType.int8]()
+    q5_2 = ((q5_b64_79 >> 4) | q5h_2).cast[DType.int8]()
+    q5_3 = ((q5_b80_95 >> 4) | q5h_3).cast[DType.int8]()
     dot_0 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_0, q8_128_143), q5_1, q8_144_159)
     dot_1 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_2, q8_160_175), q5_3, q8_176_191)
     sumi += Int32(sc4) * neon_addv(dot_0) + Int32(sc5) * neon_addv(dot_1)
 
     # j=3: bytes 96-127 of qs, qh bits shifted by 6
-    var (sc6, _) = _get_scale_min_k4(6, scales_ptr)
-    var (sc7, _) = _get_scale_min_k4(7, scales_ptr)
-    var qhbits_0_s6 = qhbits_0 >> SIMD[DType.uint8, 16](6)
-    var qhbits_1_s6 = qhbits_1 >> SIMD[DType.uint8, 16](6)
-    q5h_0 = (qhbits_0_s6 & mone) << SIMD[DType.uint8, 16](4)
-    q5h_1 = (qhbits_1_s6 & mone) << SIMD[DType.uint8, 16](4)
-    q5h_2 = (qhbits_0_s6 & mtwo) << SIMD[DType.uint8, 16](3)
-    q5h_3 = (qhbits_1_s6 & mtwo) << SIMD[DType.uint8, 16](3)
+    q5h_0 = (qhbits_0_s6 & mone) << 4
+    q5h_1 = (qhbits_1_s6 & mone) << 4
+    q5h_2 = (qhbits_0_s6 & mtwo) << 3
+    q5h_3 = (qhbits_1_s6 & mtwo) << 3
     q5_0 = ((q5_b96_111 & m4b) | q5h_0).cast[DType.int8]()
     q5_1 = ((q5_b112_127 & m4b) | q5h_1).cast[DType.int8]()
-    q5_2 = ((q5_b96_111 >> SIMD[DType.uint8, 16](4)) | q5h_2).cast[DType.int8]()
-    q5_3 = ((q5_b112_127 >> SIMD[DType.uint8, 16](4)) | q5h_3).cast[DType.int8]()
+    q5_2 = ((q5_b96_111 >> 4) | q5h_2).cast[DType.int8]()
+    q5_3 = ((q5_b112_127 >> 4) | q5h_3).cast[DType.int8]()
     dot_0 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_0, q8_192_207), q5_1, q8_208_223)
     dot_1 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0), q5_2, q8_224_239), q5_3, q8_240_255)
     sumi += Int32(sc6) * neon_addv(dot_0) + Int32(sc7) * neon_addv(dot_1)
@@ -2071,14 +2116,14 @@ def vec_dot_q6_k_q8_k(
     var qh_1_bits = qh_16_31
 
     # Q6 values: range 0-63, NO -32 offset applied here (bias computed separately)
-    var q6_0 = ((ql_0_15 & m4b) | ((qh_0_bits & m2b) << SIMD[DType.uint8, 16](4))).cast[DType.int8]()
-    var q6_1 = ((ql_16_31 & m4b) | ((qh_1_bits & m2b) << SIMD[DType.uint8, 16](4))).cast[DType.int8]()
-    var q6_2 = ((ql_32_47 & m4b) | ((qh_0_bits & SIMD[DType.uint8, 16](12)) << SIMD[DType.uint8, 16](2))).cast[DType.int8]()
-    var q6_3 = ((ql_48_63 & m4b) | ((qh_1_bits & SIMD[DType.uint8, 16](12)) << SIMD[DType.uint8, 16](2))).cast[DType.int8]()
-    var q6_4 = ((ql_0_15 >> SIMD[DType.uint8, 16](4)) | (qh_0_bits & SIMD[DType.uint8, 16](48))).cast[DType.int8]()
-    var q6_5 = ((ql_16_31 >> SIMD[DType.uint8, 16](4)) | (qh_1_bits & SIMD[DType.uint8, 16](48))).cast[DType.int8]()
-    var q6_6 = ((ql_32_47 >> SIMD[DType.uint8, 16](4)) | ((qh_0_bits & SIMD[DType.uint8, 16](192)) >> SIMD[DType.uint8, 16](2))).cast[DType.int8]()
-    var q6_7 = ((ql_48_63 >> SIMD[DType.uint8, 16](4)) | ((qh_1_bits & SIMD[DType.uint8, 16](192)) >> SIMD[DType.uint8, 16](2))).cast[DType.int8]()
+    var q6_0 = ((ql_0_15 & m4b) | ((qh_0_bits & m2b) << 4)).cast[DType.int8]()
+    var q6_1 = ((ql_16_31 & m4b) | ((qh_1_bits & m2b) << 4)).cast[DType.int8]()
+    var q6_2 = ((ql_32_47 & m4b) | ((qh_0_bits & SIMD[DType.uint8, 16](12)) << 2)).cast[DType.int8]()
+    var q6_3 = ((ql_48_63 & m4b) | ((qh_1_bits & SIMD[DType.uint8, 16](12)) << 2)).cast[DType.int8]()
+    var q6_4 = ((ql_0_15 >> 4) | (qh_0_bits & SIMD[DType.uint8, 16](48))).cast[DType.int8]()
+    var q6_5 = ((ql_16_31 >> 4) | (qh_1_bits & SIMD[DType.uint8, 16](48))).cast[DType.int8]()
+    var q6_6 = ((ql_32_47 >> 4) | ((qh_0_bits & SIMD[DType.uint8, 16](192)) >> 2)).cast[DType.int8]()
+    var q6_7 = ((ql_48_63 >> 4) | ((qh_1_bits & SIMD[DType.uint8, 16](192)) >> 2)).cast[DType.int8]()
 
     var dot_0 = neon_sdot(SIMD[DType.int32, 4](0), q6_0, q8_0_15)
     var dot_1 = neon_sdot(SIMD[DType.int32, 4](0), q6_1, q8_16_31)
@@ -2102,14 +2147,14 @@ def vec_dot_q6_k_q8_k(
     qh_0_bits = qh_32_47
     qh_1_bits = qh_48_63
 
-    q6_0 = ((ql_64_79 & m4b) | ((qh_0_bits & m2b) << SIMD[DType.uint8, 16](4))).cast[DType.int8]()
-    q6_1 = ((ql_80_95 & m4b) | ((qh_1_bits & m2b) << SIMD[DType.uint8, 16](4))).cast[DType.int8]()
-    q6_2 = ((ql_96_111 & m4b) | ((qh_0_bits & SIMD[DType.uint8, 16](12)) << SIMD[DType.uint8, 16](2))).cast[DType.int8]()
-    q6_3 = ((ql_112_127 & m4b) | ((qh_1_bits & SIMD[DType.uint8, 16](12)) << SIMD[DType.uint8, 16](2))).cast[DType.int8]()
-    q6_4 = ((ql_64_79 >> SIMD[DType.uint8, 16](4)) | (qh_0_bits & SIMD[DType.uint8, 16](48))).cast[DType.int8]()
-    q6_5 = ((ql_80_95 >> SIMD[DType.uint8, 16](4)) | (qh_1_bits & SIMD[DType.uint8, 16](48))).cast[DType.int8]()
-    q6_6 = ((ql_96_111 >> SIMD[DType.uint8, 16](4)) | ((qh_0_bits & SIMD[DType.uint8, 16](192)) >> SIMD[DType.uint8, 16](2))).cast[DType.int8]()
-    q6_7 = ((ql_112_127 >> SIMD[DType.uint8, 16](4)) | ((qh_1_bits & SIMD[DType.uint8, 16](192)) >> SIMD[DType.uint8, 16](2))).cast[DType.int8]()
+    q6_0 = ((ql_64_79 & m4b) | ((qh_0_bits & m2b) << 4)).cast[DType.int8]()
+    q6_1 = ((ql_80_95 & m4b) | ((qh_1_bits & m2b) << 4)).cast[DType.int8]()
+    q6_2 = ((ql_96_111 & m4b) | ((qh_0_bits & SIMD[DType.uint8, 16](12)) << 2)).cast[DType.int8]()
+    q6_3 = ((ql_112_127 & m4b) | ((qh_1_bits & SIMD[DType.uint8, 16](12)) << 2)).cast[DType.int8]()
+    q6_4 = ((ql_64_79 >> 4) | (qh_0_bits & SIMD[DType.uint8, 16](48))).cast[DType.int8]()
+    q6_5 = ((ql_80_95 >> 4) | (qh_1_bits & SIMD[DType.uint8, 16](48))).cast[DType.int8]()
+    q6_6 = ((ql_96_111 >> 4) | ((qh_0_bits & SIMD[DType.uint8, 16](192)) >> 2)).cast[DType.int8]()
+    q6_7 = ((ql_112_127 >> 4) | ((qh_1_bits & SIMD[DType.uint8, 16](192)) >> 2)).cast[DType.int8]()
 
     dot_0 = neon_sdot(SIMD[DType.int32, 4](0), q6_0, q8_128_143)
     dot_1 = neon_sdot(SIMD[DType.int32, 4](0), q6_1, q8_144_159)
@@ -2173,7 +2218,7 @@ def vec_dot_q2_k_q8_k(
     # Load 16 scales (each byte has scale in low 4 bits, min in high 4 bits)
     var scales_vec = scales.unsafe_load[width=16](offset=0)
     # Extract mins (high 4 bits), widen to int16
-    var mins_uint8 = scales_vec >> SIMD[DType.uint8, 16](4)
+    var mins_uint8 = scales_vec >> 4
     # Widen to uint16x8 (two halves), then reinterpret as int16
     var mins_lo_16 = neon_vreinterpretq_s16_u16(neon_vmovl_u8(neon_vget_low_u8(mins_uint8)))
     var mins_hi_16 = neon_vreinterpretq_s16_u16(neon_vmovl_u8(neon_vget_high_u8(mins_uint8)))
@@ -2227,7 +2272,7 @@ def vec_dot_q2_k_q8_k(
     isum += sc_0 * neon_addv(dot_s0_0) + sc_1 * neon_addv(dot_s0_1)
 
     # Shift 2 (bits 2-3): scales 2, 3
-    var q2_s2 = ((q2_b0_15 >> SIMD[DType.uint8, 16](2)) & m3).cast[DType.int8]()
+    var q2_s2 = ((q2_b0_15 >> 2) & m3).cast[DType.int8]()
     var sc_2 = Int32(scales.unsafe_load[width=1](offset=2)) & 0xF
     var sc_3 = Int32(scales.unsafe_load[width=1](offset=3)) & 0xF
     var dot_s2_0 = neon_sdot(SIMD[DType.int32, 4](0), q2_s2, q8_32_47)
@@ -2235,7 +2280,7 @@ def vec_dot_q2_k_q8_k(
     isum += sc_2 * neon_addv(dot_s2_0) + sc_3 * neon_addv(dot_s2_1)
 
     # Shift 4 (bits 4-5): scales 4, 5
-    var q2_s4 = ((q2_b0_15 >> SIMD[DType.uint8, 16](4)) & m3).cast[DType.int8]()
+    var q2_s4 = ((q2_b0_15 >> 4) & m3).cast[DType.int8]()
     var sc_4 = Int32(scales.unsafe_load[width=1](offset=4)) & 0xF
     var sc_5 = Int32(scales.unsafe_load[width=1](offset=5)) & 0xF
     var dot_s4_0 = neon_sdot(SIMD[DType.int32, 4](0), q2_s4, q8_64_79)
@@ -2243,7 +2288,7 @@ def vec_dot_q2_k_q8_k(
     isum += sc_4 * neon_addv(dot_s4_0) + sc_5 * neon_addv(dot_s4_1)
 
     # Shift 6 (bits 6-7): scales 6, 7
-    var q2_s6 = ((q2_b0_15 >> SIMD[DType.uint8, 16](6)) & m3).cast[DType.int8]()
+    var q2_s6 = ((q2_b0_15 >> 6) & m3).cast[DType.int8]()
     var sc_6 = Int32(scales.unsafe_load[width=1](offset=6)) & 0xF
     var sc_7 = Int32(scales.unsafe_load[width=1](offset=7)) & 0xF
     var dot_s6_0 = neon_sdot(SIMD[DType.int32, 4](0), q2_s6, q8_96_111)
@@ -2260,7 +2305,7 @@ def vec_dot_q2_k_q8_k(
     isum += sc_8 * neon_addv(dot_s0_0) + sc_9 * neon_addv(dot_s0_1)
 
     # Shift 2: scales 10, 11
-    q2_s2 = ((q2_b32_47 >> SIMD[DType.uint8, 16](2)) & m3).cast[DType.int8]()
+    q2_s2 = ((q2_b32_47 >> 2) & m3).cast[DType.int8]()
     var sc_10 = Int32(scales.unsafe_load[width=1](offset=10)) & 0xF
     var sc_11 = Int32(scales.unsafe_load[width=1](offset=11)) & 0xF
     dot_s2_0 = neon_sdot(SIMD[DType.int32, 4](0), q2_s2, q8_160_175)
@@ -2268,7 +2313,7 @@ def vec_dot_q2_k_q8_k(
     isum += sc_10 * neon_addv(dot_s2_0) + sc_11 * neon_addv(dot_s2_1)
 
     # Shift 4: scales 12, 13
-    q2_s4 = ((q2_b32_47 >> SIMD[DType.uint8, 16](4)) & m3).cast[DType.int8]()
+    q2_s4 = ((q2_b32_47 >> 4) & m3).cast[DType.int8]()
     var sc_12 = Int32(scales.unsafe_load[width=1](offset=12)) & 0xF
     var sc_13 = Int32(scales.unsafe_load[width=1](offset=13)) & 0xF
     dot_s4_0 = neon_sdot(SIMD[DType.int32, 4](0), q2_s4, q8_192_207)
@@ -2276,7 +2321,7 @@ def vec_dot_q2_k_q8_k(
     isum += sc_12 * neon_addv(dot_s4_0) + sc_13 * neon_addv(dot_s4_1)
 
     # Shift 6: scales 14, 15
-    q2_s6 = ((q2_b32_47 >> SIMD[DType.uint8, 16](6)) & m3).cast[DType.int8]()
+    q2_s6 = ((q2_b32_47 >> 6) & m3).cast[DType.int8]()
     var sc_14 = Int32(scales.unsafe_load[width=1](offset=14)) & 0xF
     var sc_15 = Int32(scales.unsafe_load[width=1](offset=15)) & 0xF
     dot_s6_0 = neon_sdot(SIMD[DType.int32, 4](0), q2_s6, q8_224_239)
@@ -2296,17 +2341,7 @@ def vec_dot_q3_k_q8_k(
     # Q8_K activation: scale at offset 0, int8 at offset 4, bsums at offset 260
     q8_data: Pointer[UInt8, MutUntrackedOrigin],
 ) -> Float32:
-    """Q3_K × Q8_K dot product using NEON SIMD - optimized version.
-
-    Q3_K block layout (110 bytes):
-    - hmask[32]: at offset 0 (high bit for sign, 1 bit per element)
-    - qs[64]: at offset 32 (2-bit low values, 4 per byte)
-    - scales[12]: at offset 96 (6-bit scales)
-    - d: fp16 at offset 108
-
-    Q3_K value: 3-bit = low2 - (has_sign ? 0 : 4), range -4 to 3
-    NO dmin term
-    """
+    """Q3_K × Q8_K dot product - EXACTLY matching llama.cpp structure."""
     var hmask = w_block.unsafe_offset(0)
     var qs = w_block.unsafe_offset(32)
     var scales_raw = w_block.unsafe_offset(96)
@@ -2315,215 +2350,156 @@ def vec_dot_q3_k_q8_k(
     var q8_d = Float32(q8_data.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load())
     var q8_qs = q8_data.unsafe_offset(4).unsafe_bitcast[Scalar[DType.int8]]()
 
-    # Dequantize the 6-bit scales (following llama.cpp's complex unpacking)
-    # This is scalar but only 16 values so it's fast
-    var auxs_0 = Int(0)
-    var auxs_1 = Int(0)
-    var auxs_2 = Int(0)
+    # Load 12 bytes of scales efficiently (like llama.cpp's memcpy)
+    # Load as 3 x uint32 instead of 12 separate byte loads
+    var scales_u32 = scales_raw.unsafe_bitcast[Scalar[DType.uint32]]()
+    var auxs_0 = Int(scales_u32.unsafe_load[width=1](offset=0).value())
+    var auxs_1 = Int(scales_u32.unsafe_load[width=1](offset=1).value())
+    var auxs_2 = Int(scales_u32.unsafe_load[width=1](offset=2).value())
 
-    for b in range(4):
-        auxs_0 |= Int(scales_raw.unsafe_load[width=1](offset=b)) << (b * 8)
-    for b in range(4):
-        auxs_1 |= Int(scales_raw.unsafe_load[width=1](offset=4 + b)) << (b * 8)
-    for b in range(4):
-        auxs_2 |= Int(scales_raw.unsafe_load[width=1](offset=8 + b)) << (b * 8)
-
-    # Unpack scales
+    # Unpack scales - matching llama.cpp variable names
     var kmask1 = Int(0x03030303)
     var kmask2 = Int(0x0f0f0f0f)
     var tmp = auxs_2
-    var auxs_2_unpacked = ((auxs_0 >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4)
-    var auxs_3_unpacked = ((auxs_1 >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4)
-    var auxs_0_unpacked = (auxs_0 & kmask2) | (((tmp >> 0) & kmask1) << 4)
-    var auxs_1_unpacked = (auxs_1 & kmask2) | (((tmp >> 2) & kmask1) << 4)
+    var utmp_0 = (auxs_0 & kmask2) | (((tmp >> 0) & kmask1) << 4)
+    var utmp_1 = (auxs_1 & kmask2) | (((tmp >> 2) & kmask1) << 4)
+    var utmp_2 = ((auxs_0 >> 4) & kmask2) | (((tmp >> 4) & kmask1) << 4)
+    var utmp_3 = ((auxs_1 >> 4) & kmask2) | (((tmp >> 6) & kmask1) << 4)
 
-    # Extract scales as int8 and subtract 32
-    var scales_arr = SIMD[DType.int32, 16](0)
-    for i in range(4):
-        scales_arr[i] = Int32((auxs_0_unpacked >> (i * 8)) & 0xFF) - 32
-    for i in range(4):
-        scales_arr[4 + i] = Int32((auxs_1_unpacked >> (i * 8)) & 0xFF) - 32
-    for i in range(4):
-        scales_arr[8 + i] = Int32((auxs_2_unpacked >> (i * 8)) & 0xFF) - 32
-    for i in range(4):
-        scales_arr[12 + i] = Int32((auxs_3_unpacked >> (i * 8)) & 0xFF) - 32
+    # Extract 16 scales as int8 - individual scalars for direct access
+    var sc_0 = Int32((utmp_0 >> 0) & 0xFF) - 32
+    var sc_1 = Int32((utmp_0 >> 8) & 0xFF) - 32
+    var sc_2 = Int32((utmp_0 >> 16) & 0xFF) - 32
+    var sc_3 = Int32((utmp_0 >> 24) & 0xFF) - 32
+    var sc_4 = Int32((utmp_1 >> 0) & 0xFF) - 32
+    var sc_5 = Int32((utmp_1 >> 8) & 0xFF) - 32
+    var sc_6 = Int32((utmp_1 >> 16) & 0xFF) - 32
+    var sc_7 = Int32((utmp_1 >> 24) & 0xFF) - 32
+    var sc_8 = Int32((utmp_2 >> 0) & 0xFF) - 32
+    var sc_9 = Int32((utmp_2 >> 8) & 0xFF) - 32
+    var sc_10 = Int32((utmp_2 >> 16) & 0xFF) - 32
+    var sc_11 = Int32((utmp_2 >> 24) & 0xFF) - 32
+    var sc_12 = Int32((utmp_3 >> 0) & 0xFF) - 32
+    var sc_13 = Int32((utmp_3 >> 8) & 0xFF) - 32
+    var sc_14 = Int32((utmp_3 >> 16) & 0xFF) - 32
+    var sc_15 = Int32((utmp_3 >> 24) & 0xFF) - 32
 
-    # Load all 32 bytes of hmask
-    var hm_0_15 = hmask.unsafe_load[width=16](offset=0)
-    var hm_16_31 = hmask.unsafe_load[width=16](offset=16)
+    # Load hmask (32 bytes) - matches ggml_vld1q_u8_x2
+    var qhbits = neon_ld1_u8_x2(hmask)
 
-    # Load all 64 bytes of qs
-    var q3_b0_15 = qs.unsafe_load[width=16](offset=0)
-    var q3_b16_31 = qs.unsafe_load[width=16](offset=16)
-    var q3_b32_47 = qs.unsafe_load[width=16](offset=32)
-    var q3_b48_63 = qs.unsafe_load[width=16](offset=48)
-
-    # Load all 256 bytes of Q8_K qs
-    var q8_0_15 = q8_qs.unsafe_load[width=16](offset=0)
-    var q8_16_31 = q8_qs.unsafe_load[width=16](offset=16)
-    var q8_32_47 = q8_qs.unsafe_load[width=16](offset=32)
-    var q8_48_63 = q8_qs.unsafe_load[width=16](offset=48)
-    var q8_64_79 = q8_qs.unsafe_load[width=16](offset=64)
-    var q8_80_95 = q8_qs.unsafe_load[width=16](offset=80)
-    var q8_96_111 = q8_qs.unsafe_load[width=16](offset=96)
-    var q8_112_127 = q8_qs.unsafe_load[width=16](offset=112)
-    var q8_128_143 = q8_qs.unsafe_load[width=16](offset=128)
-    var q8_144_159 = q8_qs.unsafe_load[width=16](offset=144)
-    var q8_160_175 = q8_qs.unsafe_load[width=16](offset=160)
-    var q8_176_191 = q8_qs.unsafe_load[width=16](offset=176)
-    var q8_192_207 = q8_qs.unsafe_load[width=16](offset=192)
-    var q8_208_223 = q8_qs.unsafe_load[width=16](offset=208)
-    var q8_224_239 = q8_qs.unsafe_load[width=16](offset=224)
-    var q8_240_255 = q8_qs.unsafe_load[width=16](offset=240)
-
-    var m3 = SIMD[DType.uint8, 16](0x03)
+    # Constants - defined once like llama.cpp
     var m0 = SIMD[DType.uint8, 16](0x01)
     var m1 = SIMD[DType.uint8, 16](0x02)
     var m2 = SIMD[DType.uint8, 16](0x04)
-    var m3b = SIMD[DType.uint8, 16](0x08)
-    var shift1 = SIMD[DType.uint8, 16](1)
-    var shift2 = SIMD[DType.uint8, 16](2)
+    var m3 = SIMD[DType.uint8, 16](0x08)
+    var m3b = SIMD[DType.uint8, 16](0x03)
 
-    var sumi = Int32(0)
+    # Pre-compute all hmask bit patterns using bic (a & ~b)
+    # bic(m0, qhbits) = m0 & ~qhbits, which is what we need
+    var q3h_0_s0 = (m0 & ~qhbits.lo) << 2  # bic then shl
+    var q3h_1_s0 = (m0 & ~qhbits.hi) << 2
+    var q3h_2_s0 = (m1 & ~qhbits.lo) << 1
+    var q3h_3_s0 = (m1 & ~qhbits.hi) << 1
+    var q3h_0_s4 = m2 & ~qhbits.lo          # bic only
+    var q3h_1_s4 = m2 & ~qhbits.hi
+    var q3h_2_s4 = (m3 & ~qhbits.lo) >> 1   # bic then shr
+    var q3h_3_s4 = (m3 & ~qhbits.hi) >> 1
 
-    # Process using llama.cpp's algorithm:
-    # Shift 0: q3h = (m0 & ~hmask) << 2 = (1 & ~hm) << 2 → 4 if bit 0 is 0
-    # Shift 2: q3h = (m1 & ~hmask) << 1 = (2 & ~hm) << 1 → 4 if bit 1 is 0
-    # Shift 4: q3h = (m2 & ~hmask) = (4 & ~hm) → 4 if bit 2 is 0
-    # Shift 6: q3h = (m3 & ~hmask) >> 1 = (8 & ~hm) >> 1 → 4 if bit 3 is 0
+    # Pre-compute shifted hmask for j=1
+    var qhbits_s4_lo = qhbits.lo >> 4
+    var qhbits_s4_hi = qhbits.hi >> 4
+    var q3h_0_s8 = (m0 & ~qhbits_s4_lo) << 2
+    var q3h_1_s8 = (m0 & ~qhbits_s4_hi) << 2
+    var q3h_2_s8 = (m1 & ~qhbits_s4_lo) << 1
+    var q3h_3_s8 = (m1 & ~qhbits_s4_hi) << 1
+    var q3h_0_s12 = m2 & ~qhbits_s4_lo
+    var q3h_1_s12 = m2 & ~qhbits_s4_hi
+    var q3h_2_s12 = (m3 & ~qhbits_s4_lo) >> 1
+    var q3h_3_s12 = (m3 & ~qhbits_s4_hi) >> 1
 
-    # j=0: use qs bytes 0-31, hmask bits 0-3
-    # Shift 0: q3_b0_15 bits 0-1, hmask bit 0
-    var low2_0 = (q3_b0_15 & m3).cast[DType.int8]()
-    var q3h_0 = ((m0 & ~hm_0_15) << shift2).cast[DType.int8]()
-    var q3_0 = low2_0 - q3h_0
-    var sc_0 = scales_arr[0]
-    var dot_0 = neon_sdot(SIMD[DType.int32, 4](0), q3_0, q8_0_15)
-    sumi += sc_0 * neon_addv(dot_0)
+    var isum = Int32(0)
 
-    # Elements 16-31: q3_b16_31 bits 0-1, hmask bit 0
-    var low2_1 = (q3_b16_31 & m3).cast[DType.int8]()
-    var q3h_1 = ((m0 & ~hm_16_31) << shift2).cast[DType.int8]()
-    var q3_1 = low2_1 - q3h_1
-    var sc_1 = scales_arr[1]
-    var dot_1 = neon_sdot(SIMD[DType.int32, 4](0), q3_1, q8_16_31)
-    sumi += sc_1 * neon_addv(dot_1)
+    # j=0: process first 128 elements (qs bytes 0-31, q8 bytes 0-127)
+    # Load q3bits (32 bytes) - matches ggml_vld1q_u8_x2
+    var q3bits_0 = neon_ld1_u8_x2(qs)
 
-    # Shift 2: q3_b0_15 bits 2-3, hmask bit 1
-    var low2_2 = ((q3_b0_15 >> shift2) & m3).cast[DType.int8]()
-    var q3h_2 = ((m1 & ~hm_0_15) << shift1).cast[DType.int8]()
-    var q3_2 = low2_2 - q3h_2
-    var sc_2 = scales_arr[2]
-    var dot_2 = neon_sdot(SIMD[DType.int32, 4](0), q3_2, q8_32_47)
-    sumi += sc_2 * neon_addv(dot_2)
+    # Load q8 bytes 0-127 using neon_ld1_s8_x4 (like llama.cpp)
+    var q8bytes_ptr = q8_qs.unsafe_bitcast[UInt8]()
+    var q8_j0_0 = neon_ld1_s8_x4(q8bytes_ptr)
+    var q8_j0_1 = neon_ld1_s8_x4(q8bytes_ptr.unsafe_offset(64))
 
-    # Elements 48-63: q3_b16_31 bits 2-3
-    var low2_3 = ((q3_b16_31 >> shift2) & m3).cast[DType.int8]()
-    var q3h_3 = ((m1 & ~hm_16_31) << shift1).cast[DType.int8]()
-    var q3_3 = low2_3 - q3h_3
-    var sc_3 = scales_arr[3]
-    var dot_3 = neon_sdot(SIMD[DType.int32, 4](0), q3_3, q8_48_63)
-    sumi += sc_3 * neon_addv(dot_3)
+    # Compute q3bytes for shift 0 and 2 - use pre-computed q3h values
+    var q3bytes_0 = (q3bits_0.lo & m3b).cast[DType.int8]() - q3h_0_s0.cast[DType.int8]()
+    var q3bytes_1 = (q3bits_0.hi & m3b).cast[DType.int8]() - q3h_1_s0.cast[DType.int8]()
+    var q3bytes_2 = ((q3bits_0.lo >> 2) & m3b).cast[DType.int8]() - q3h_2_s0.cast[DType.int8]()
+    var q3bytes_3 = ((q3bits_0.hi >> 2) & m3b).cast[DType.int8]() - q3h_3_s0.cast[DType.int8]()
 
-    # Shift 4: q3_b0_15 bits 4-5, hmask bit 2
-    var low2_4 = ((q3_b0_15 >> SIMD[DType.uint8, 16](4)) & m3).cast[DType.int8]()
-    var q3h_4 = (m2 & ~hm_0_15).cast[DType.int8]()
-    var q3_4 = low2_4 - q3h_4
-    var sc_4 = scales_arr[4]
-    var dot_4 = neon_sdot(SIMD[DType.int32, 4](0), q3_4, q8_64_79)
-    sumi += sc_4 * neon_addv(dot_4)
+    # Use 16 separate accumulators to force batched execution (like Q2_K)
+    var dot_0 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_0, q8_j0_0.v0)
+    var dot_1 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_1, q8_j0_0.v1)
+    var dot_2 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_2, q8_j0_0.v2)
+    var dot_3 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_3, q8_j0_0.v3)
 
-    # Elements 80-95: q3_b16_31 bits 4-5
-    var low2_5 = ((q3_b16_31 >> SIMD[DType.uint8, 16](4)) & m3).cast[DType.int8]()
-    var q3h_5 = (m2 & ~hm_16_31).cast[DType.int8]()
-    var q3_5 = low2_5 - q3h_5
-    var sc_5 = scales_arr[5]
-    var dot_5 = neon_sdot(SIMD[DType.int32, 4](0), q3_5, q8_80_95)
-    sumi += sc_5 * neon_addv(dot_5)
+    # Compute q3bytes for shift 4 and 6 - use pre-computed q3h values
+    q3bytes_0 = ((q3bits_0.lo >> 4) & m3b).cast[DType.int8]() - q3h_0_s4.cast[DType.int8]()
+    q3bytes_1 = ((q3bits_0.hi >> 4) & m3b).cast[DType.int8]() - q3h_1_s4.cast[DType.int8]()
+    q3bytes_2 = ((q3bits_0.lo >> 6) & m3b).cast[DType.int8]() - q3h_2_s4.cast[DType.int8]()
+    q3bytes_3 = ((q3bits_0.hi >> 6) & m3b).cast[DType.int8]() - q3h_3_s4.cast[DType.int8]()
 
-    # Shift 6: q3_b0_15 bits 6-7, hmask bit 3
-    var low2_6 = ((q3_b0_15 >> SIMD[DType.uint8, 16](6)) & m3).cast[DType.int8]()
-    var q3h_6 = ((m3b & ~hm_0_15) >> shift1).cast[DType.int8]()
-    var q3_6 = low2_6 - q3h_6
-    var sc_6 = scales_arr[6]
-    var dot_6 = neon_sdot(SIMD[DType.int32, 4](0), q3_6, q8_96_111)
-    sumi += sc_6 * neon_addv(dot_6)
+    # Continue with more sdot operations
+    var dot_4 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_0, q8_j0_1.v0)
+    var dot_5 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_1, q8_j0_1.v1)
+    var dot_6 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_2, q8_j0_1.v2)
+    var dot_7 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_3, q8_j0_1.v3)
 
-    # Elements 112-127: q3_b16_31 bits 6-7
-    var low2_7 = ((q3_b16_31 >> SIMD[DType.uint8, 16](6)) & m3).cast[DType.int8]()
-    var q3h_7 = ((m3b & ~hm_16_31) >> shift1).cast[DType.int8]()
-    var q3_7 = low2_7 - q3h_7
-    var sc_7 = scales_arr[7]
-    var dot_7 = neon_sdot(SIMD[DType.int32, 4](0), q3_7, q8_112_127)
-    sumi += sc_7 * neon_addv(dot_7)
+    # Batch all addv operations for j=0
+    isum += sc_0 * neon_addv(dot_0) + sc_1 * neon_addv(dot_1) + \
+            sc_2 * neon_addv(dot_2) + sc_3 * neon_addv(dot_3) + \
+            sc_4 * neon_addv(dot_4) + sc_5 * neon_addv(dot_5) + \
+            sc_6 * neon_addv(dot_6) + sc_7 * neon_addv(dot_7)
 
-    # j=1: use qs bytes 32-63, hmask bits 0-3 (REUSED from j=0)
-    # This matches llama.cpp SVE code which loads hmask once and reuses it
-    # Shift 0: q3_b32_47 bits 0-1, hmask bit 0
-    var low2_8 = (q3_b32_47 & m3).cast[DType.int8]()
-    var q3h_8 = ((m0 & ~hm_0_15) << shift2).cast[DType.int8]()
-    var q3_8 = low2_8 - q3h_8
-    var sc_8 = scales_arr[8]
-    var dot_8 = neon_sdot(SIMD[DType.int32, 4](0), q3_8, q8_128_143)
-    sumi += sc_8 * neon_addv(dot_8)
+    # Shift hmask for j=1 - matches llama.cpp lines 2291-2293
+    # (Already pre-computed above as qhbits_s4_lo/hi and q3h_*_s8/s12)
 
-    # Elements 144-159: q3_b48_63 bits 0-1, hmask bit 0
-    var low2_9 = (q3_b48_63 & m3).cast[DType.int8]()
-    var q3h_9 = ((m0 & ~hm_16_31) << shift2).cast[DType.int8]()
-    var q3_9 = low2_9 - q3h_9
-    var sc_9 = scales_arr[9]
-    var dot_9 = neon_sdot(SIMD[DType.int32, 4](0), q3_9, q8_144_159)
-    sumi += sc_9 * neon_addv(dot_9)
+    # j=1: process second 128 elements (qs bytes 32-63, q8 bytes 128-255)
+    # Load q3bits (next 32 bytes)
+    var q3bits_1 = neon_ld1_u8_x2(qs.unsafe_offset(32))
 
-    # Shift 2: q3_b32_47 bits 2-3, hmask bit 1
-    var low2_10 = ((q3_b32_47 >> shift2) & m3).cast[DType.int8]()
-    var q3h_10 = ((m1 & ~hm_0_15) << shift1).cast[DType.int8]()
-    var q3_10 = low2_10 - q3h_10
-    var sc_10 = scales_arr[10]
-    var dot_10 = neon_sdot(SIMD[DType.int32, 4](0), q3_10, q8_160_175)
-    sumi += sc_10 * neon_addv(dot_10)
+    # Load q8 bytes 128-255 using neon_ld1_s8_x4 (like llama.cpp)
+    var q8_j1_0 = neon_ld1_s8_x4(q8bytes_ptr.unsafe_offset(128))
+    var q8_j1_1 = neon_ld1_s8_x4(q8bytes_ptr.unsafe_offset(192))
 
-    # Elements 176-191: q3_b48_63 bits 2-3
-    var low2_11 = ((q3_b48_63 >> shift2) & m3).cast[DType.int8]()
-    var q3h_11 = ((m1 & ~hm_16_31) << shift1).cast[DType.int8]()
-    var q3_11 = low2_11 - q3h_11
-    var sc_11 = scales_arr[11]
-    var dot_11 = neon_sdot(SIMD[DType.int32, 4](0), q3_11, q8_176_191)
-    sumi += sc_11 * neon_addv(dot_11)
+    # Compute q3bytes for shift 0 and 2 - use pre-computed q3h values
+    q3bytes_0 = (q3bits_1.lo & m3b).cast[DType.int8]() - q3h_0_s8.cast[DType.int8]()
+    q3bytes_1 = (q3bits_1.hi & m3b).cast[DType.int8]() - q3h_1_s8.cast[DType.int8]()
+    q3bytes_2 = ((q3bits_1.lo >> 2) & m3b).cast[DType.int8]() - q3h_2_s8.cast[DType.int8]()
+    q3bytes_3 = ((q3bits_1.hi >> 2) & m3b).cast[DType.int8]() - q3h_3_s8.cast[DType.int8]()
 
-    # Shift 4: q3_b32_47 bits 4-5, hmask bit 2
-    var low2_12 = ((q3_b32_47 >> SIMD[DType.uint8, 16](4)) & m3).cast[DType.int8]()
-    var q3h_12 = (m2 & ~hm_0_15).cast[DType.int8]()
-    var q3_12 = low2_12 - q3h_12
-    var sc_12 = scales_arr[12]
-    var dot_12 = neon_sdot(SIMD[DType.int32, 4](0), q3_12, q8_192_207)
-    sumi += sc_12 * neon_addv(dot_12)
+    # Continue with more sdot operations for j=1
+    var dot_8 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_0, q8_j1_0.v0)
+    var dot_9 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_1, q8_j1_0.v1)
+    var dot_10 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_2, q8_j1_0.v2)
+    var dot_11 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_3, q8_j1_0.v3)
 
-    # Elements 208-223: q3_b48_63 bits 4-5
-    var low2_13 = ((q3_b48_63 >> SIMD[DType.uint8, 16](4)) & m3).cast[DType.int8]()
-    var q3h_13 = (m2 & ~hm_16_31).cast[DType.int8]()
-    var q3_13 = low2_13 - q3h_13
-    var sc_13 = scales_arr[13]
-    var dot_13 = neon_sdot(SIMD[DType.int32, 4](0), q3_13, q8_208_223)
-    sumi += sc_13 * neon_addv(dot_13)
+    # Compute q3bytes for shift 4 and 6 - use pre-computed q3h values
+    q3bytes_0 = ((q3bits_1.lo >> 4) & m3b).cast[DType.int8]() - q3h_0_s12.cast[DType.int8]()
+    q3bytes_1 = ((q3bits_1.hi >> 4) & m3b).cast[DType.int8]() - q3h_1_s12.cast[DType.int8]()
+    q3bytes_2 = ((q3bits_1.lo >> 6) & m3b).cast[DType.int8]() - q3h_2_s12.cast[DType.int8]()
+    q3bytes_3 = ((q3bits_1.hi >> 6) & m3b).cast[DType.int8]() - q3h_3_s12.cast[DType.int8]()
 
-    # Shift 6: q3_b32_47 bits 6-7, hmask bit 3
-    var low2_14 = ((q3_b32_47 >> SIMD[DType.uint8, 16](6)) & m3).cast[DType.int8]()
-    var q3h_14 = ((m3b & ~hm_0_15) >> shift1).cast[DType.int8]()
-    var q3_14 = low2_14 - q3h_14
-    var sc_14 = scales_arr[14]
-    var dot_14 = neon_sdot(SIMD[DType.int32, 4](0), q3_14, q8_224_239)
-    sumi += sc_14 * neon_addv(dot_14)
+    # Final sdot operations
+    var dot_12 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_0, q8_j1_1.v0)
+    var dot_13 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_1, q8_j1_1.v1)
+    var dot_14 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_2, q8_j1_1.v2)
+    var dot_15 = neon_sdot(SIMD[DType.int32, 4](0), q3bytes_3, q8_j1_1.v3)
 
-    # Elements 240-255: q3_b48_63 bits 6-7
-    var low2_15 = ((q3_b48_63 >> SIMD[DType.uint8, 16](6)) & m3).cast[DType.int8]()
-    var q3h_15 = ((m3b & ~hm_16_31) >> shift1).cast[DType.int8]()
-    var q3_15 = low2_15 - q3h_15
-    var sc_15 = scales_arr[15]
-    var dot_15 = neon_sdot(SIMD[DType.int32, 4](0), q3_15, q8_240_255)
-    sumi += sc_15 * neon_addv(dot_15)
+    # Batch all addv operations for j=1
+    isum += sc_8 * neon_addv(dot_8) + sc_9 * neon_addv(dot_9) + \
+            sc_10 * neon_addv(dot_10) + sc_11 * neon_addv(dot_11) + \
+            sc_12 * neon_addv(dot_12) + sc_13 * neon_addv(dot_13) + \
+            sc_14 * neon_addv(dot_14) + sc_15 * neon_addv(dot_15)
 
-    return d * q8_d * Float32(sumi)
+    return d * q8_d * Float32(isum)
 
 
 # ============================================================================
@@ -2578,8 +2554,8 @@ def vec_dot_q4_k_q8_k_mmla(
     var q4_0_lo = (q4_b0_15 & m4b).cast[DType.int8]()
     var q4_0_hi = (q4_b16_31 & m4b).cast[DType.int8]()
     # j=1: high nibbles
-    var q4_1_lo = (q4_b0_15 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    var q4_1_hi = (q4_b16_31 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_1_lo = (q4_b0_15 >> 4).cast[DType.int8]()
+    var q4_1_hi = (q4_b16_31 >> 4).cast[DType.int8]()
 
     # Interleave: vzip1 creates [a0, b0, a1, b1, ...], vzip2 creates [a8, b8, a9, b9, ...]
     # For MMLA, we need A as 2x8 and B as 8x2 (transposed)
@@ -2634,8 +2610,8 @@ def vec_dot_q4_k_q8_k_mmla(
 
     var q4_2_lo = (q4_b32_47 & m4b).cast[DType.int8]()
     var q4_2_hi = (q4_b48_63 & m4b).cast[DType.int8]()
-    var q4_3_lo = (q4_b32_47 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    var q4_3_hi = (q4_b48_63 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_3_lo = (q4_b32_47 >> 4).cast[DType.int8]()
+    var q4_3_hi = (q4_b48_63 >> 4).cast[DType.int8]()
 
     var q4_a_2_3_lo = SIMD[DType.int8, 16](
         q4_2_lo[0], q4_3_lo[0], q4_2_lo[1], q4_3_lo[1],
@@ -2683,8 +2659,8 @@ def vec_dot_q4_k_q8_k_mmla(
 
     var q4_4_lo = (q4_b64_79 & m4b).cast[DType.int8]()
     var q4_4_hi = (q4_b80_95 & m4b).cast[DType.int8]()
-    var q4_5_lo = (q4_b64_79 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    var q4_5_hi = (q4_b80_95 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_5_lo = (q4_b64_79 >> 4).cast[DType.int8]()
+    var q4_5_hi = (q4_b80_95 >> 4).cast[DType.int8]()
 
     var q4_a_4_5_lo = SIMD[DType.int8, 16](
         q4_4_lo[0], q4_5_lo[0], q4_4_lo[1], q4_5_lo[1],
@@ -2732,8 +2708,8 @@ def vec_dot_q4_k_q8_k_mmla(
 
     var q4_6_lo = (q4_b96_111 & m4b).cast[DType.int8]()
     var q4_6_hi = (q4_b112_127 & m4b).cast[DType.int8]()
-    var q4_7_lo = (q4_b96_111 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
-    var q4_7_hi = (q4_b112_127 >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    var q4_7_lo = (q4_b96_111 >> 4).cast[DType.int8]()
+    var q4_7_hi = (q4_b112_127 >> 4).cast[DType.int8]()
 
     var q4_a_6_7_lo = SIMD[DType.int8, 16](
         q4_6_lo[0], q4_7_lo[0], q4_6_lo[1], q4_7_lo[1],
