@@ -131,6 +131,22 @@ def neon_vget_high_s16(a: SIMD[DType.int16, 8]) -> SIMD[DType.int16, 4]:
     return SIMD[DType.int16, 4](a[4], a[5], a[6], a[7])
 
 
+def neon_vget_low_u8(a: SIMD[DType.uint8, 16]) -> SIMD[DType.uint8, 8]:
+    """Extract low half of uint8x16 -> uint8x8.
+
+    Equivalent to vget_low_u8 in ARM NEON.
+    """
+    return SIMD[DType.uint8, 8](a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7])
+
+
+def neon_vget_high_u8(a: SIMD[DType.uint8, 16]) -> SIMD[DType.uint8, 8]:
+    """Extract high half of uint8x16 -> uint8x8.
+
+    Equivalent to vget_high_u8 in ARM NEON.
+    """
+    return SIMD[DType.uint8, 8](a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15])
+
+
 def neon_vreinterpret_u8_u32(a: SIMD[DType.uint32, 2]) -> SIMD[DType.uint8, 8]:
     """Reinterpret uint32x2 as uint8x8 (no-op, just type cast)."""
     return bitcast[DType.uint8, 8](a)
@@ -2153,20 +2169,25 @@ def vec_dot_q2_k_q8_k(
     var q8_qs = q8_data.unsafe_offset(4).unsafe_bitcast[Scalar[DType.int8]]()
     var q8_bsums = q8_data.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
 
-    # Compute summs = sum of y[i].bsums[j] * (sc[j] >> 4) using SIMD
+    # Compute summs using widen multiply (vmull_s16) like llama.cpp
     # Load 16 scales (each byte has scale in low 4 bits, min in high 4 bits)
     var scales_vec = scales.unsafe_load[width=16](offset=0)
-    # Load 16 bsums as int16
-    var bsums_0_7 = q8_bsums.unsafe_load[width=8](offset=0).cast[DType.int32]()
-    var bsums_8_15 = q8_bsums.unsafe_load[width=8](offset=8).cast[DType.int32]()
+    # Extract mins (high 4 bits), widen to int16
+    var mins_uint8 = scales_vec >> SIMD[DType.uint8, 16](4)
+    # Widen to uint16x8 (two halves), then reinterpret as int16
+    var mins_lo_16 = neon_vreinterpretq_s16_u16(neon_vmovl_u8(neon_vget_low_u8(mins_uint8)))
+    var mins_hi_16 = neon_vreinterpretq_s16_u16(neon_vmovl_u8(neon_vget_high_u8(mins_uint8)))
 
-    # Extract mins (high 4 bits) and multiply with bsums
-    var mins_vec = (scales_vec >> SIMD[DType.uint8, 16](4)).cast[DType.int32]()
-    var summs = Int32(0)
-    for i in range(8):
-        summs += Int32(mins_vec[i]) * Int32(bsums_0_7[i])
-    for i in range(8):
-        summs += Int32(mins_vec[8 + i]) * Int32(bsums_8_15[i])
+    # Load bsums as int16x8
+    var bsums_lo = q8_bsums.unsafe_load[width=8](offset=0)
+    var bsums_hi = q8_bsums.unsafe_load[width=8](offset=8)
+
+    # Widen multiply: int16x4 * int16x4 -> int32x4
+    var s0 = neon_vmull_s16(neon_vget_low_s16(mins_lo_16), neon_vget_low_s16(bsums_lo)) + \
+             neon_vmull_s16(neon_vget_high_s16(mins_lo_16), neon_vget_high_s16(bsums_lo))
+    var s1 = neon_vmull_s16(neon_vget_low_s16(mins_hi_16), neon_vget_low_s16(bsums_hi)) + \
+             neon_vmull_s16(neon_vget_high_s16(mins_hi_16), neon_vget_high_s16(bsums_hi))
+    var summs = neon_addv(s0 + s1)
 
     # Load all 64 bytes of Q2_K qs upfront
     var q2_b0_15 = qs.unsafe_load[width=16](offset=0)

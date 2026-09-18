@@ -157,48 +157,48 @@ def vec_dot_q4_k_q8_k(
     var q8bytes = neon_ld1_s8_x2(q8_ptr)
     var p1 = neon_sdot(neon_sdot(mzero, (q4bits.lo & m4b).cast[DType.int8](), q8bytes.lo),
                        (q4bits.hi & m4b).cast[DType.int8](), q8bytes.hi)
-    sumi1 += Int32(neon_addv(p1) * sc0)
+    sumi1 += neon_addv(p1) * Int32(sc0)
 
     q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(32))
     var p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.lo),
                        (q4bits.hi >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.hi)
-    sumi2 += Int32(neon_addv(p2) * sc4)
+    sumi2 += neon_addv(p2) * Int32(sc4)
 
     # j=1
     q4bits = neon_ld1_u8_x2(q4_ptr.unsafe_offset(32))
     q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(64))
     p1 = neon_sdot(neon_sdot(mzero, (q4bits.lo & m4b).cast[DType.int8](), q8bytes.lo),
                    (q4bits.hi & m4b).cast[DType.int8](), q8bytes.hi)
-    sumi1 += Int32(neon_addv(p1) * sc1)
+    sumi1 += neon_addv(p1) * Int32(sc1)
 
     q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(96))
     p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.lo),
                    (q4bits.hi >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.hi)
-    sumi2 += Int32(neon_addv(p2) * sc5)
+    sumi2 += neon_addv(p2) * Int32(sc5)
 
     # j=2
     q4bits = neon_ld1_u8_x2(q4_ptr.unsafe_offset(64))
     q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(128))
     p1 = neon_sdot(neon_sdot(mzero, (q4bits.lo & m4b).cast[DType.int8](), q8bytes.lo),
                    (q4bits.hi & m4b).cast[DType.int8](), q8bytes.hi)
-    sumi1 += Int32(neon_addv(p1) * sc2)
+    sumi1 += neon_addv(p1) * Int32(sc2)
 
     q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(160))
     p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.lo),
                    (q4bits.hi >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.hi)
-    sumi2 += Int32(neon_addv(p2) * sc6)
+    sumi2 += neon_addv(p2) * Int32(sc6)
 
     # j=3
     q4bits = neon_ld1_u8_x2(q4_ptr.unsafe_offset(96))
     q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(192))
     p1 = neon_sdot(neon_sdot(mzero, (q4bits.lo & m4b).cast[DType.int8](), q8bytes.lo),
                    (q4bits.hi & m4b).cast[DType.int8](), q8bytes.hi)
-    sumi1 += Int32(neon_addv(p1) * sc3)
+    sumi1 += neon_addv(p1) * Int32(sc3)
 
     q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(224))
     p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.lo),
                    (q4bits.hi >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.hi)
-    sumi2 += Int32(neon_addv(p2) * sc7)
+    sumi2 += neon_addv(p2) * Int32(sc7)
 
     # Apply super-block scale
     return d * q8_d * Float32(sumi1 + sumi2) - bias

@@ -201,10 +201,10 @@ def _vec_dot_q3_k_q8_k_avx(
 
 
 from .simd_neon import (
-    vec_dot_q4_k_q8_k as vec_dot_q4_k_q8_k_neon,
-    vec_dot_q5_k_q8_k as vec_dot_q5_k_q8_k_neon,
-    vec_dot_q6_k_q8_k as vec_dot_q6_k_q8_k_neon,
-    vec_dot_q2_k_q8_k as vec_dot_q2_k_q8_k_neon,
     vec_dot_q3_k_q8_k as vec_dot_q3_k_q8_k_neon,
     vec_dot_q4_k_q8_k_nrc2,
 )
+from .q2k_q8k_dot import vec_dot_q2_k_q8_k as vec_dot_q2_k_q8_k_neon
+from .q4k_q8k_dot import vec_dot_q4_k_q8_k as vec_dot_q4_k_q8_k_neon
+from .q5k_q8k_dot import vec_dot_q5_k_q8_k as vec_dot_q5_k_q8_k_neon
+from .q6k_q8k_dot import vec_dot_q6_k_q8_k as vec_dot_q6_k_q8_k_neon
