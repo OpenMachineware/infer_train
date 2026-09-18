@@ -4,13 +4,12 @@
 #
 # Q4_K × Q8_K int8 dot product using NEON SDOT instruction.
 #
-# This is the key optimization from llama.cpp:
-# - Weights stay in Q4_K (compact storage)
-# - Activations are quantized to Q8_K (int8) on-the-fly
-# - Hardware int8 dot product (SDOT) is used for the heavy computation
-#
-# On Mac M4, we have DotProd extension (FEAT_DotProd) but not i8mm (FEAT_I8MM).
-# SDOT computes: sum of (int8 × int8) pairs across 128-bit vectors.
+# Key optimization pattern from llama.cpp:
+# 1. ld1.16b for efficient loading
+# 2. sdot.4s for vector dot product
+# 3. addv.4s for horizontal sum
+# 4. Integer multiplication for scales AFTER horizontal sum
+# 5. Float multiplication for super-block scale at the end
 
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
@@ -20,17 +19,40 @@ from ....tensor import Tensor, tensor_zeros
 
 comptime QK_K = 256
 
+# NEON intrinsics
 
+struct NeonU8x2(TrivialRegisterPassable):
+    var lo: SIMD[DType.uint8, 16]
+    var hi: SIMD[DType.uint8, 16]
+
+struct NeonS8x2(TrivialRegisterPassable):
+    var lo: SIMD[DType.int8, 16]
+    var hi: SIMD[DType.int8, 16]
+
+
+@always_inline
+def neon_ld1_u8_x2(ptr: Pointer[UInt8, MutUntrackedOrigin]) -> NeonU8x2:
+    """Load 32 bytes using ld1.16b instruction."""
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.ld1x2.v16i8.p0i8", NeonU8x2, has_side_effect=True
+    ](ptr)
+
+
+@always_inline
+def neon_ld1_s8_x2(ptr: Pointer[UInt8, MutUntrackedOrigin]) -> NeonS8x2:
+    """Load 32 bytes using ld1.16b instruction."""
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.ld1x2.v16i8.p0i8", NeonS8x2, has_side_effect=True
+    ](ptr)
+
+
+@always_inline
 def neon_sdot(
     acc: SIMD[DType.int32, 4],
     a: SIMD[DType.int8, 16],
     b: SIMD[DType.int8, 16],
 ) -> SIMD[DType.int32, 4]:
-    """NEON SDOT: int8 × int8 -> int32 dot product.
-
-    Computes: result[i] = acc[i] + sum_j(a[i*4+j] * b[i*4+j]) for i in 0..3
-    Each lane processes 4 elements, so 16 elements total.
-    """
+    """NEON SDOT: int8 × int8 -> int32 dot product."""
     return llvm_intrinsic[
         "llvm.aarch64.neon.sdot.v4i32.v16i8",
         SIMD[DType.int32, 4],
@@ -38,31 +60,19 @@ def neon_sdot(
     ](acc, a, b)
 
 
-def _get_scale_min_k4(
-    j: Int, scales: Pointer[UInt8, MutUntrackedOrigin]
-) -> Tuple[Int, Int]:
-    """Unpack the 6-bit scale and min for Q4_K/Q5_K sub-block j."""
-    if j < 4:
-        return (
-            Int(scales.unsafe_load[width=1](offset=j).value()) & 63,
-            Int(scales.unsafe_load[width=1](offset=j + 4).value()) & 63,
-        )
-    var d = (Int(scales.unsafe_load[width=1](offset=j + 4).value()) & 0xF) | (
-        (Int(scales.unsafe_load[width=1](offset=j - 4).value()) >> 6) << 4
-    )
-    var m = (Int(scales.unsafe_load[width=1](offset=j + 4).value()) >> 4) | (
-        (Int(scales.unsafe_load[width=1](offset=j).value()) >> 6) << 4
-    )
-    return (d, m)
+@always_inline
+def neon_addv(v: SIMD[DType.int32, 4]) -> Int:
+    """Horizontal sum using addv.4s."""
+    var result = v.reduce_add()
+    return Int(result[0])
 
 
+@always_inline
 def vec_dot_q4_k_q8_k(
-    # Q4_K weight block (144 bytes per 256 elements)
     w_block: Pointer[UInt8, MutUntrackedOrigin],
-    # Q8_K activation: scale at offset 0, int8 at offset 4, bsums at offset 260
     q8_data: Pointer[UInt8, MutUntrackedOrigin],
 ) -> Float32:
-    """Q4_K × Q8_K dot product using NEON int8 SDOT.
+    """Q4_K × Q8_K dot product optimized with llama.cpp pattern.
 
     Q4_K block layout (144 bytes):
     - d: fp16 scale at offset 0
@@ -74,102 +84,130 @@ def vec_dot_q4_k_q8_k(
     - d: float32 scale at offset 0
     - qs: 256 int8 at offset 4
     - bsums: 16 int16 at offset 260
-
-    Returns: dot product as float32
     """
-    # Read Q4_K scales
-    var w_half = w_block.unsafe_bitcast[Scalar[DType.float16]]()
-    var d = Float32(w_half.unsafe_load[width=1](offset=0).value())
-    var dmin = Float32(w_half.unsafe_load[width=1](offset=1).value())
-    var scales = w_block.unsafe_offset(4)
-    var qs = w_block.unsafe_offset(16)
+    var mzero = SIMD[DType.int32, 4](0)
+    var m4b = SIMD[DType.uint8, 16](0x0F)
 
-    # Read Q8_K scale
-    var q8_d = q8_data.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load().value()
-    var q8_qs = q8_data.unsafe_offset(4).unsafe_bitcast[Scalar[DType.int8]]()
+    # Load super-block scales
+    var d = Float32(w_block.unsafe_bitcast[Scalar[DType.float16]]().unsafe_load())
+    var dmin = Float32(w_block.unsafe_offset(2).unsafe_bitcast[Scalar[DType.float16]]().unsafe_load())
+    var q8_d = Float32(q8_data.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load())
+
+    # Pre-compute scales (like llama.cpp)
+    var scales_raw = w_block.unsafe_offset(4)
+    var sc0 = Int(scales_raw.unsafe_load[width=1](offset=0).value()) & 0x3F
+    var sc1 = Int(scales_raw.unsafe_load[width=1](offset=1).value()) & 0x3F
+    var sc2 = Int(scales_raw.unsafe_load[width=1](offset=2).value()) & 0x3F
+    var sc3 = Int(scales_raw.unsafe_load[width=1](offset=3).value()) & 0x3F
+    var sc4 = (Int(scales_raw.unsafe_load[width=1](offset=8).value()) & 0x0F) | \
+              ((Int(scales_raw.unsafe_load[width=1](offset=0).value()) >> 6) << 4)
+    var sc5 = (Int(scales_raw.unsafe_load[width=1](offset=9).value()) & 0x0F) | \
+              ((Int(scales_raw.unsafe_load[width=1](offset=1).value()) >> 6) << 4)
+    var sc6 = (Int(scales_raw.unsafe_load[width=1](offset=10).value()) & 0x0F) | \
+              ((Int(scales_raw.unsafe_load[width=1](offset=2).value()) >> 6) << 4)
+    var sc7 = (Int(scales_raw.unsafe_load[width=1](offset=11).value()) & 0x0F) | \
+              ((Int(scales_raw.unsafe_load[width=1](offset=3).value()) >> 6) << 4)
+
+    # Pre-compute min values for bias
+    var m0 = Int(scales_raw.unsafe_load[width=1](offset=4).value()) & 0x3F
+    var m1 = Int(scales_raw.unsafe_load[width=1](offset=5).value()) & 0x3F
+    var m2 = Int(scales_raw.unsafe_load[width=1](offset=6).value()) & 0x3F
+    var m3 = Int(scales_raw.unsafe_load[width=1](offset=7).value()) & 0x3F
+    var m4 = (Int(scales_raw.unsafe_load[width=1](offset=12).value()) & 0x0F) | \
+             ((Int(scales_raw.unsafe_load[width=1](offset=4).value()) >> 6) << 4)
+    var m5 = (Int(scales_raw.unsafe_load[width=1](offset=13).value()) & 0x0F) | \
+             ((Int(scales_raw.unsafe_load[width=1](offset=5).value()) >> 6) << 4)
+    var m6 = (Int(scales_raw.unsafe_load[width=1](offset=14).value()) & 0x0F) | \
+             ((Int(scales_raw.unsafe_load[width=1](offset=6).value()) >> 6) << 4)
+    var m7 = (Int(scales_raw.unsafe_load[width=1](offset=15).value()) & 0x0F) | \
+             ((Int(scales_raw.unsafe_load[width=1](offset=7).value()) >> 6) << 4)
+
+    # Compute bias from Q8_K bsums
     var q8_bsums = q8_data.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
-
-    # Compute bias: -dmin * sum(q8_bsums * min_k4)
-    # This compensates for Q4_K's offset representation
     var bias = Float32(0)
-    for j in range(8):
-        var (_, m) = _get_scale_min_k4(j, scales)
-        # Each bsum covers 16 elements, and each scale covers 32 elements
-        # So for scale j, we need bsums[j*2] and bsums[j*2+1]
-        var bs0 = Int32(q8_bsums.unsafe_offset(j * 2).unsafe_load().value())
-        var bs1 = Int32(q8_bsums.unsafe_offset(j * 2 + 1).unsafe_load().value())
-        bias -= dmin * Float32(m) * Float32(bs0 + bs1)
 
-    # Main dot product using SDOT
-    # Process 64 elements per iteration (4 scales, each covering 32 elements)
-    var sumi = Int32(0)
+    # bsums covers 16 elements each, scales cover 32 elements each
+    # For each scale j, we need bsums[j*2] and bsums[j*2+1]
+    var bsum0 = Int32(q8_bsums.unsafe_offset(0).unsafe_load()) + Int32(q8_bsums.unsafe_offset(1).unsafe_load())
+    var bsum1 = Int32(q8_bsums.unsafe_offset(2).unsafe_load()) + Int32(q8_bsums.unsafe_offset(3).unsafe_load())
+    var bsum2 = Int32(q8_bsums.unsafe_offset(4).unsafe_load()) + Int32(q8_bsums.unsafe_offset(5).unsafe_load())
+    var bsum3 = Int32(q8_bsums.unsafe_offset(6).unsafe_load()) + Int32(q8_bsums.unsafe_offset(7).unsafe_load())
+    var bsum4 = Int32(q8_bsums.unsafe_offset(8).unsafe_load()) + Int32(q8_bsums.unsafe_offset(9).unsafe_load())
+    var bsum5 = Int32(q8_bsums.unsafe_offset(10).unsafe_load()) + Int32(q8_bsums.unsafe_offset(11).unsafe_load())
+    var bsum6 = Int32(q8_bsums.unsafe_offset(12).unsafe_load()) + Int32(q8_bsums.unsafe_offset(13).unsafe_load())
+    var bsum7 = Int32(q8_bsums.unsafe_offset(14).unsafe_load()) + Int32(q8_bsums.unsafe_offset(15).unsafe_load())
 
-    for j in range(8):  # 8 scales, each covers 32 elements
-        var (sc, _) = _get_scale_min_k4(j, scales)
+    bias = dmin * q8_d * Float32(
+        Int32(m0) * bsum0 + Int32(m1) * bsum1 + Int32(m2) * bsum2 + Int32(m3) * bsum3 +
+        Int32(m4) * bsum4 + Int32(m5) * bsum5 + Int32(m6) * bsum6 + Int32(m7) * bsum7
+    )
 
-        # Load Q4_K quantized values for this scale (32 bytes = 64 elements, 4-bit each)
-        # But we only need 32 elements per scale
-        var q4_offset = (j // 2) * 32 + (j % 2) * 16  # Alternating low/high nibbles
-        var q4_bits = qs.unsafe_offset(q4_offset)
+    # Base pointers
+    var q4_ptr = w_block.unsafe_offset(16)
+    var q8_ptr = q8_data.unsafe_offset(4)
 
-        # Unpack 4-bit values to int8
-        # For even j: low nibbles; for odd j: high nibbles
-        var m4b = SIMD[DType.uint8, 16](0x0F)
+    var sumi1 = Int32(0)
+    var sumi2 = Int32(0)
 
-        # Load 16 bytes = 32 elements (4-bit each)
-        var q4_bytes = q4_bits.unsafe_load[width=16](offset=0)
+    # Unrolled inner loop: j=0
+    var q4bits = neon_ld1_u8_x2(q4_ptr)
+    var q8bytes = neon_ld1_s8_x2(q8_ptr)
+    var p1 = neon_sdot(neon_sdot(mzero, (q4bits.lo & m4b).cast[DType.int8](), q8bytes.lo),
+                       (q4bits.hi & m4b).cast[DType.int8](), q8bytes.hi)
+    sumi1 += Int32(neon_addv(p1) * sc0)
 
-        var q4_lo: SIMD[DType.int8, 16]
-        var q4_hi: SIMD[DType.int8, 16]
+    q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(32))
+    var p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.lo),
+                       (q4bits.hi >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.hi)
+    sumi2 += Int32(neon_addv(p2) * sc4)
 
-        if j % 2 == 0:
-            # Low nibbles
-            q4_lo = (q4_bytes & m4b).cast[DType.int8]()
-        else:
-            # High nibbles
-            q4_lo = (q4_bytes >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    # j=1
+    q4bits = neon_ld1_u8_x2(q4_ptr.unsafe_offset(32))
+    q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(64))
+    p1 = neon_sdot(neon_sdot(mzero, (q4bits.lo & m4b).cast[DType.int8](), q8bytes.lo),
+                   (q4bits.hi & m4b).cast[DType.int8](), q8bytes.hi)
+    sumi1 += Int32(neon_addv(p1) * sc1)
 
-        # Load corresponding Q8_K int8 values
-        var q8_offset_val = j * 32
-        var q8_vals = q8_qs.unsafe_offset(q8_offset_val).unsafe_load[width=16](offset=0)
+    q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(96))
+    p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.lo),
+                   (q4bits.hi >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.hi)
+    sumi2 += Int32(neon_addv(p2) * sc5)
 
-        # SDOT: int8 × int8 -> int32
-        var dot = neon_sdot(SIMD[DType.int32, 4](0), q4_lo, q8_vals)
+    # j=2
+    q4bits = neon_ld1_u8_x2(q4_ptr.unsafe_offset(64))
+    q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(128))
+    p1 = neon_sdot(neon_sdot(mzero, (q4bits.lo & m4b).cast[DType.int8](), q8bytes.lo),
+                   (q4bits.hi & m4b).cast[DType.int8](), q8bytes.hi)
+    sumi1 += Int32(neon_addv(p1) * sc2)
 
-        # Load next 16 elements
-        q8_vals = q8_qs.unsafe_offset(q8_offset_val + 16).unsafe_load[width=16](offset=0)
+    q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(160))
+    p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.lo),
+                   (q4bits.hi >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.hi)
+    sumi2 += Int32(neon_addv(p2) * sc6)
 
-        # Need another 16 Q4 elements - load next 16 bytes
-        if j % 2 == 0:
-            var q4_next = qs.unsafe_offset(q4_offset + 16).unsafe_load[width=16](offset=0)
-            q4_hi = (q4_next & m4b).cast[DType.int8]()
-        else:
-            var q4_next = qs.unsafe_offset(q4_offset + 16).unsafe_load[width=16](offset=0)
-            q4_hi = (q4_next >> SIMD[DType.uint8, 16](4)).cast[DType.int8]()
+    # j=3
+    q4bits = neon_ld1_u8_x2(q4_ptr.unsafe_offset(96))
+    q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(192))
+    p1 = neon_sdot(neon_sdot(mzero, (q4bits.lo & m4b).cast[DType.int8](), q8bytes.lo),
+                   (q4bits.hi & m4b).cast[DType.int8](), q8bytes.hi)
+    sumi1 += Int32(neon_addv(p1) * sc3)
 
-        dot = neon_sdot(dot, q4_hi, q8_vals)
+    q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(224))
+    p2 = neon_sdot(neon_sdot(mzero, (q4bits.lo >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.lo),
+                   (q4bits.hi >> SIMD[DType.uint8, 16](4)).cast[DType.int8](), q8bytes.hi)
+    sumi2 += Int32(neon_addv(p2) * sc7)
 
-        # Sum the 4 int32 lanes and apply scale
-        var dot_sum = dot[0] + dot[1] + dot[2] + dot[3]
-        sumi += dot_sum * Int32(sc)
-
-    # Apply super-block scales and add bias
-    return d * q8_d * Float32(sumi) + bias
+    # Apply super-block scale
+    return d * q8_d * Float32(sumi1 + sumi2) - bias
 
 
 def matmul_q4_k_q8_k_row(
-    # Q4_K weight matrix: N rows, each row has nb blocks of 144 bytes
     w_quant: Pointer[UInt8, MutUntrackedOrigin],
-    nb: Int,  # blocks per row = K / 256
-    N: Int,   # number of output columns
-    # Q8_K activation: 292 bytes (d + qs + bsums)
+    nb: Int,
+    N: Int,
     q8_data: Pointer[UInt8, MutUntrackedOrigin],
 ) -> Tensor[DType.float16, 1]:
-    """Compute one row of Q4_K × Q8_K matmul.
-
-    For each weight row, compute dot product with Q8_K activation.
-    Returns a tensor of N float16 values.
-    """
+    """Compute one row of Q4_K × Q8_K matmul."""
     var out = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](N))
 
     for n in range(N):
