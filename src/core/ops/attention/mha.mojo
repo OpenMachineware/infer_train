@@ -30,6 +30,7 @@ from ..cpu.matmul_cpu import (
     matmul_weight_3_threaded,
 )
 from ..cpu.matmul_q8k_threaded import fused_qkv_projection, fused_qkv_projection_mixed
+from ...cpu_features import detect_cpu_flags
 from ..quantized.qweight import QWeight, qweight_from_fp16
 from ..quantized.quant_types import QuantType
 from ..cpu.add_cpu import add_row_cpu
@@ -313,8 +314,9 @@ def mha_forward_v2(
     if use_fused:
         # Fused path: quantize x to Q8_K once, then compute all three projections
         # with potentially different K-quant types
+        var flags = detect_cpu_flags()
         var (q_out, k_out, v_out) = fused_qkv_projection_mixed(
-            x, wq.data, wk.data, wv.data, wq.ggml_type, wk.ggml_type, wv.ggml_type
+            x, wq.data, wk.data, wv.data, wq.ggml_type, wk.ggml_type, wv.ggml_type, flags
         )
         q_flat = q_out
         k_flat = k_out

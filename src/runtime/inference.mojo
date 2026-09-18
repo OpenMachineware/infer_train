@@ -26,6 +26,7 @@ from ..core.tensor import tensor_zeros
 from ..core.graph import Graph
 from ..core.ops.base.op_registry import OpRegistry
 from ..core.ops.attention.kv_cache import KVCacheType
+from ..core.cpu_features import CpuFlags, detect_cpu_flags
 from std.utils.static_tuple import StaticTuple
 
 
@@ -34,6 +35,7 @@ struct Model(Movable):
     var tokenizer: BpeTokenizer
     var registry: OpRegistry
     var graph: Graph
+    var cpu_flags: CpuFlags  # CPU features for kernel dispatch
 
     def __init__(
         out self,
@@ -46,6 +48,7 @@ struct Model(Movable):
         self.tokenizer = tokenizer^
         self.registry = registry^
         self.graph = graph^
+        self.cpu_flags = detect_cpu_flags()  # Detect at model load
 
 
 def load_model(

@@ -13,6 +13,7 @@
 
 from ...tensor import Tensor, tensor_zeros
 from ...utils import unimplemented
+from ...cpu_features import CpuFlags
 from std.utils.static_tuple import StaticTuple
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
@@ -20,7 +21,7 @@ from std.memory.alloc import unsafe_alloc
 from std.math import abs
 from std.sys.intrinsics import prefetch, PrefetchOptions
 from ..quantized.quant_types import QuantType, block_elems, block_bytes
-from .simd.simd_neon import vec_dot_q4_k_q8_k, vec_dot_q5_k_q8_k, vec_dot_q6_k_q8_k, vec_dot_q2_k_q8_k, vec_dot_q3_k_q8_k, vec_dot_q4_k_q8_k_nrc2
+from .simd.simd_base import vec_dot_qk_q8k, vec_dot_q4_k_q8_k_nrc2
 
 comptime QK_K = 256
 
@@ -84,6 +85,7 @@ def matmul_quantized_q8k[
     x: Tensor[DType.float16, 2],
     w_quant: Tensor[DType.uint8, 2],
     scale: Tensor[DType.float16, 1],
+    flags: CpuFlags,
 ) -> Tensor[DType.float16, 2]:
     """Quantized matmul using Q8_K activation + int8 SDOT.
 
@@ -174,18 +176,7 @@ def matmul_quantized_q8k[
                     prefetch(next_col_block.unsafe_bitcast[Scalar[DType.uint8]]())
 
                 # Dispatch based on quant_type
-                if quant_type == QuantType.Q4_K_M:
-                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q5_K:
-                    sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q6_K:
-                    sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q2_K:
-                    sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q3_K:
-                    sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
-                else:
-                    unimplemented("Unsupported quant type for Q8_K matmul")
+                sumf += vec_dot_qk_q8k(quant_type, w_block, q8_block, flags)
             out.data().unsafe_offset(i * N + j).unsafe_store(val=Scalar[DType.float16](sumf))
 
     q8k_buf.unsafe_free()
@@ -199,6 +190,7 @@ def matmul_quantized_q8k_add[
     w_quant: Tensor[DType.uint8, 2],
     scale: Tensor[DType.float16, 1],
     residual: Tensor[DType.float16, 2],
+    flags: CpuFlags,
 ) -> Tensor[DType.float16, 2]:
     """Fused quantized matmul + residual add.
 
@@ -279,18 +271,7 @@ def matmul_quantized_q8k_add[
                     var next_col_block = w_quant.data().unsafe_offset((j + 1) * nb * bb)
                     prefetch(next_col_block.unsafe_bitcast[Scalar[DType.uint8]]())
 
-                if quant_type == QuantType.Q4_K_M:
-                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q5_K:
-                    sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q6_K:
-                    sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q2_K:
-                    sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q3_K:
-                    sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
-                else:
-                    unimplemented("Unsupported quant type for Q8_K matmul")
+                sumf += vec_dot_qk_q8k(quant_type, w_block, q8_block, flags)
             # Fused: add residual
             var res_val = Float32(residual.data()[unsafe_offset=i * N + j])
             out.data().unsafe_offset(i * N + j).unsafe_store(val=Scalar[DType.float16](sumf + res_val))
@@ -305,6 +286,7 @@ def matmul_quantized_q8k_unrolled[
     x: Tensor[DType.float16, 2],
     w_quant: Tensor[DType.uint8, 2],
     scale: Tensor[DType.float16, 1],
+    flags: CpuFlags,
 ) -> Tensor[DType.float16, 2]:
     """Quantized matmul with column unrolling for better Q8_K reuse.
 
@@ -388,33 +370,10 @@ def matmul_quantized_q8k_unrolled[
                 if b + 1 < nb:
                     prefetch(w_quant.data().unsafe_offset(j * nb * bb + (b + 1) * bb).unsafe_bitcast[Scalar[DType.uint8]]())
 
-                if quant_type == QuantType.Q4_K_M:
-                    sum0 += vec_dot_q4_k_q8_k(w0, q8_block)
-                    sum1 += vec_dot_q4_k_q8_k(w1, q8_block)
-                    sum2 += vec_dot_q4_k_q8_k(w2, q8_block)
-                    sum3 += vec_dot_q4_k_q8_k(w3, q8_block)
-                elif quant_type == QuantType.Q5_K:
-                    sum0 += vec_dot_q5_k_q8_k(w0, q8_block)
-                    sum1 += vec_dot_q5_k_q8_k(w1, q8_block)
-                    sum2 += vec_dot_q5_k_q8_k(w2, q8_block)
-                    sum3 += vec_dot_q5_k_q8_k(w3, q8_block)
-                elif quant_type == QuantType.Q6_K:
-                    sum0 += vec_dot_q6_k_q8_k(w0, q8_block)
-                    sum1 += vec_dot_q6_k_q8_k(w1, q8_block)
-                    sum2 += vec_dot_q6_k_q8_k(w2, q8_block)
-                    sum3 += vec_dot_q6_k_q8_k(w3, q8_block)
-                elif quant_type == QuantType.Q2_K:
-                    sum0 += vec_dot_q2_k_q8_k(w0, q8_block)
-                    sum1 += vec_dot_q2_k_q8_k(w1, q8_block)
-                    sum2 += vec_dot_q2_k_q8_k(w2, q8_block)
-                    sum3 += vec_dot_q2_k_q8_k(w3, q8_block)
-                elif quant_type == QuantType.Q3_K:
-                    sum0 += vec_dot_q3_k_q8_k(w0, q8_block)
-                    sum1 += vec_dot_q3_k_q8_k(w1, q8_block)
-                    sum2 += vec_dot_q3_k_q8_k(w2, q8_block)
-                    sum3 += vec_dot_q3_k_q8_k(w3, q8_block)
-                else:
-                    unimplemented("Unsupported quant type")
+                sum0 += vec_dot_qk_q8k(quant_type, w0, q8_block, flags)
+                sum1 += vec_dot_qk_q8k(quant_type, w1, q8_block, flags)
+                sum2 += vec_dot_qk_q8k(quant_type, w2, q8_block, flags)
+                sum3 += vec_dot_qk_q8k(quant_type, w3, q8_block, flags)
 
             out.data().unsafe_offset(i * N + j + 0).unsafe_store(val=Scalar[DType.float16](sum0))
             out.data().unsafe_offset(i * N + j + 1).unsafe_store(val=Scalar[DType.float16](sum1))
@@ -428,16 +387,7 @@ def matmul_quantized_q8k_unrolled[
             for b in range(nb):
                 var w_block = w_quant.data().unsafe_offset(j * nb * bb + b * bb)
                 var q8_block = q8k_buf.unsafe_offset(b * 292)
-                if quant_type == QuantType.Q4_K_M:
-                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q5_K:
-                    sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q6_K:
-                    sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q2_K:
-                    sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q3_K:
-                    sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
+                sumf += vec_dot_qk_q8k(quant_type, w_block, q8_block, flags)
             out.data().unsafe_offset(i * N + j).unsafe_store(val=Scalar[DType.float16](sumf))
             j += 1
 
@@ -451,6 +401,7 @@ def matmul_quantized_q8k_nrc2[
     x: Tensor[DType.float16, 2],
     w_quant: Tensor[DType.uint8, 2],
     scale: Tensor[DType.float16, 1],
+    flags: CpuFlags,
 ) -> Tensor[DType.float16, 2]:
     """Quantized matmul using nrc==2 optimization (2 weight rows at once).
 
@@ -472,7 +423,7 @@ def matmul_quantized_q8k_nrc2[
 
     # Only Q4_K_M has nrc2 support for now
     if quant_type != QuantType.Q4_K_M:
-        return matmul_quantized_q8k[quant_type](x, w_quant, scale)
+        return matmul_quantized_q8k[quant_type](x, w_quant, scale, flags)
 
     var nb = K // QK_K
 
@@ -552,7 +503,7 @@ def matmul_quantized_q8k_nrc2[
             for b in range(nb):
                 var w_block = w_quant.data().unsafe_offset(j * nb * bb + b * bb)
                 var q8_block = q8k_buf.unsafe_offset(b * 292)
-                sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
+                sumf += vec_dot_qk_q8k(quant_type, w_block, q8_block, flags)
             out.data().unsafe_offset(i * N + j).unsafe_store(val=Scalar[DType.float16](sumf))
 
     q8k_buf.unsafe_free()

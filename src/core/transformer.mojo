@@ -55,6 +55,7 @@ from .ops.cpu.matmul_cpu import (
 )
 from .ops.cpu.add_cpu import add_cpu_dynamic, add_row_cpu
 from .ops.cpu.swiglu_cpu import swiglu_cpu_dynamic
+from .cpu_features import detect_cpu_flags
 from .ops.cpu.matmul_q8k_threaded import fused_gate_up_projection
 from .ops.attention.mha import (
     mha_forward_v2,
@@ -1704,9 +1705,10 @@ def _ffn_swiglu(
     var up_kquant = lw.up_w.ggml_type >= 11 and lw.up_w.ggml_type <= 15
 
     if gate_kquant and up_kquant and lw.gate_w.quantized and lw.up_w.quantized:
+        var flags = detect_cpu_flags()
         var (g, u) = fused_gate_up_projection(
             normed, lw.gate_w.data, lw.up_w.data,
-            lw.gate_w.ggml_type, lw.up_w.ggml_type
+            lw.gate_w.ggml_type, lw.up_w.ggml_type, flags
         )
         var h = swiglu_cpu_dynamic[DType.float16](g, u)
         # Fused down_proj + residual add
@@ -1744,9 +1746,10 @@ def _ffn_swiglu_batch(
     var up_kquant = lw.up_w.ggml_type >= 11 and lw.up_w.ggml_type <= 15
 
     if gate_kquant and up_kquant and lw.gate_w.quantized and lw.up_w.quantized:
+        var flags = detect_cpu_flags()
         var (g, u) = fused_gate_up_projection(
             normed, lw.gate_w.data, lw.up_w.data,
-            lw.gate_w.ggml_type, lw.up_w.ggml_type
+            lw.gate_w.ggml_type, lw.up_w.ggml_type, flags
         )
         var h = swiglu_cpu_dynamic[DType.float16](g, u)
         # Fused down_proj + residual add

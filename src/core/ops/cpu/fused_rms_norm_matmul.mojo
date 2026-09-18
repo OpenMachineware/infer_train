@@ -7,10 +7,11 @@
 
 from ...tensor import Tensor, tensor_zeros
 from ...utils import unimplemented
+from ...cpu_features import CpuFlags
 from std.math import sqrt
 from std.memory.alloc import unsafe_alloc
 from std.origin import MutUntrackedOrigin
-from .simd.simd_neon import vec_dot_q4_k_q8_k, vec_dot_q5_k_q8_k, vec_dot_q6_k_q8_k, vec_dot_q2_k_q8_k, vec_dot_q3_k_q8_k
+from .simd.simd_base import vec_dot_qk_q8k
 from ..quantized.quant_types import QuantType, block_bytes
 from .matmul_q8k_threaded import quantize_row_to_q8_k
 
@@ -23,6 +24,7 @@ def fused_rms_norm_matmul_q8k[
     x: Tensor[DType.float16, 2],
     norm_weight: Tensor[DType.float16, 1],
     w_quant: Tensor[DType.uint8, 2],
+    flags: CpuFlags,
     eps: Float32 = Float32(1e-5),
 ) -> Tensor[DType.float16, 2]:
     """Fused RMSNorm + Quantized MatMul using Q8_K activation.
@@ -124,18 +126,7 @@ def fused_rms_norm_matmul_q8k[
             for b in range(nb):
                 var w_block = w_quant.data().unsafe_offset(j * nb * bb + b * bb)
                 var q8_block = q8k_buf.unsafe_offset(b * 292)
-
-                # Dispatch based on quant_type
-                comptime if quant_type == QuantType.Q4_K_M:
-                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q5_K:
-                    sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q6_K:
-                    sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q2_K:
-                    sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q3_K:
-                    sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
+                sumf += vec_dot_qk_q8k(quant_type, w_block, q8_block, flags)
 
             out.data().unsafe_offset(i * N + j).unsafe_store(val=Scalar[DType.float16](sumf))
 
@@ -148,19 +139,20 @@ def fused_rms_norm_matmul_q8k_dynamic(
     norm_weight: Tensor[DType.float16, 1],
     w_quant: Tensor[DType.uint8, 2],
     ggml_type: Int,
+    flags: CpuFlags,
     eps: Float32 = Float32(1e-5),
 ) -> Tensor[DType.float16, 2]:
     """Runtime dispatch for fused RMSNorm + MatMul."""
     if ggml_type == 12:
-        return fused_rms_norm_matmul_q8k[QuantType.Q4_K_M](x, norm_weight, w_quant, eps)
+        return fused_rms_norm_matmul_q8k[QuantType.Q4_K_M](x, norm_weight, w_quant, flags, eps)
     elif ggml_type == 13:
-        return fused_rms_norm_matmul_q8k[QuantType.Q5_K](x, norm_weight, w_quant, eps)
+        return fused_rms_norm_matmul_q8k[QuantType.Q5_K](x, norm_weight, w_quant, flags, eps)
     elif ggml_type == 14:
-        return fused_rms_norm_matmul_q8k[QuantType.Q6_K](x, norm_weight, w_quant, eps)
+        return fused_rms_norm_matmul_q8k[QuantType.Q6_K](x, norm_weight, w_quant, flags, eps)
     elif ggml_type == 11:
-        return fused_rms_norm_matmul_q8k[QuantType.Q2_K](x, norm_weight, w_quant, eps)
+        return fused_rms_norm_matmul_q8k[QuantType.Q2_K](x, norm_weight, w_quant, flags, eps)
     elif ggml_type == 15:
-        return fused_rms_norm_matmul_q8k[QuantType.Q3_K](x, norm_weight, w_quant, eps)
+        return fused_rms_norm_matmul_q8k[QuantType.Q3_K](x, norm_weight, w_quant, flags, eps)
     else:
         unimplemented("fused_rms_norm_matmul: unsupported quantization type")
         return tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](0, 0))

@@ -30,6 +30,7 @@
 
 from ...tensor import Tensor, tensor_zeros
 from ...utils import unimplemented
+from ...cpu_features import CpuFlags, detect_cpu_flags
 from ..cpu.matmul_cpu import (
     matmul_weight_cpu_threaded,
     matmul_quantized_cpu_threaded,
@@ -268,6 +269,7 @@ def quant_proj_dispatch(
     """
     from ..cpu.blas_cpu import matmul_quantized_blas_tiled
 
+    var flags = detect_cpu_flags()
     var M = x.shape()[0]
     var n_blocks = w.n_in // 256  # QK_K = 256
 
@@ -317,35 +319,35 @@ def quant_proj_dispatch(
     # Q4_K (ggml_type 12)
     if w.ggml_type == 12:
         if w.n_out >= 2048 and x.shape()[0] == 1:
-            return matmul_quantized_q8k_threaded[QuantType.Q4_K_M](x, w.data, dummy_scale)
+            return matmul_quantized_q8k_threaded[QuantType.Q4_K_M](x, w.data, dummy_scale, flags)
         # Use nrc2 optimization for Q4_K decode
         if x.shape()[0] == 1:
-            return matmul_quantized_q8k_nrc2[QuantType.Q4_K_M](x, w.data, dummy_scale)
-        return matmul_quantized_q8k[QuantType.Q4_K_M](x, w.data, dummy_scale)
+            return matmul_quantized_q8k_nrc2[QuantType.Q4_K_M](x, w.data, dummy_scale, flags)
+        return matmul_quantized_q8k[QuantType.Q4_K_M](x, w.data, dummy_scale, flags)
 
     # Q5_K (ggml_type 13)
     if w.ggml_type == 13:
         if w.n_out >= 2048 and x.shape()[0] == 1:
-            return matmul_quantized_q8k_threaded[QuantType.Q5_K](x, w.data, dummy_scale)
-        return matmul_quantized_q8k[QuantType.Q5_K](x, w.data, dummy_scale)
+            return matmul_quantized_q8k_threaded[QuantType.Q5_K](x, w.data, dummy_scale, flags)
+        return matmul_quantized_q8k[QuantType.Q5_K](x, w.data, dummy_scale, flags)
 
     # Q6_K (ggml_type 14)
     if w.ggml_type == 14:
         if w.n_out >= 2048 and x.shape()[0] == 1:
-            return matmul_quantized_q8k_threaded[QuantType.Q6_K](x, w.data, dummy_scale)
-        return matmul_quantized_q8k[QuantType.Q6_K](x, w.data, dummy_scale)
+            return matmul_quantized_q8k_threaded[QuantType.Q6_K](x, w.data, dummy_scale, flags)
+        return matmul_quantized_q8k[QuantType.Q6_K](x, w.data, dummy_scale, flags)
 
     # Q2_K (ggml_type 11)
     if w.ggml_type == 11:
         if w.n_out >= 2048 and x.shape()[0] == 1:
-            return matmul_quantized_q8k_threaded[QuantType.Q2_K](x, w.data, dummy_scale)
-        return matmul_quantized_q8k[QuantType.Q2_K](x, w.data, dummy_scale)
+            return matmul_quantized_q8k_threaded[QuantType.Q2_K](x, w.data, dummy_scale, flags)
+        return matmul_quantized_q8k[QuantType.Q2_K](x, w.data, dummy_scale, flags)
 
     # Q3_K (ggml_type 15)
     if w.ggml_type == 15:
         if w.n_out >= 2048 and x.shape()[0] == 1:
-            return matmul_quantized_q8k_threaded[QuantType.Q3_K](x, w.data, dummy_scale)
-        return matmul_quantized_q8k[QuantType.Q3_K](x, w.data, dummy_scale)
+            return matmul_quantized_q8k_threaded[QuantType.Q3_K](x, w.data, dummy_scale, flags)
+        return matmul_quantized_q8k[QuantType.Q3_K](x, w.data, dummy_scale, flags)
 
     # Non-K-quant formats: Use standard dequantize + matmul path
     if w.ggml_type == 2:  # Q4_0
@@ -389,6 +391,7 @@ def quant_proj_add_dispatch(
     """
     from ..cpu.blas_cpu import matmul_quantized_blas_tiled
 
+    var flags = detect_cpu_flags()
     var M = x.shape()[0]
     var n_blocks = w.n_in // 256
 
@@ -426,23 +429,23 @@ def quant_proj_add_dispatch(
     # K-quant formats: CPU path with fused Q8_K + residual
     # Q4_K (ggml_type 12)
     if w.ggml_type == 12:
-        return matmul_quantized_q8k_add[QuantType.Q4_K_M](x, w.data, dummy_scale, residual)
+        return matmul_quantized_q8k_add[QuantType.Q4_K_M](x, w.data, dummy_scale, residual, flags)
 
     # Q5_K (ggml_type 13)
     if w.ggml_type == 13:
-        return matmul_quantized_q8k_add[QuantType.Q5_K](x, w.data, dummy_scale, residual)
+        return matmul_quantized_q8k_add[QuantType.Q5_K](x, w.data, dummy_scale, residual, flags)
 
     # Q6_K (ggml_type 14)
     if w.ggml_type == 14:
-        return matmul_quantized_q8k_add[QuantType.Q6_K](x, w.data, dummy_scale, residual)
+        return matmul_quantized_q8k_add[QuantType.Q6_K](x, w.data, dummy_scale, residual, flags)
 
     # Q2_K (ggml_type 11)
     if w.ggml_type == 11:
-        return matmul_quantized_q8k_add[QuantType.Q2_K](x, w.data, dummy_scale, residual)
+        return matmul_quantized_q8k_add[QuantType.Q2_K](x, w.data, dummy_scale, residual, flags)
 
     # Q3_K (ggml_type 15)
     if w.ggml_type == 15:
-        return matmul_quantized_q8k_add[QuantType.Q3_K](x, w.data, dummy_scale, residual)
+        return matmul_quantized_q8k_add[QuantType.Q3_K](x, w.data, dummy_scale, residual, flags)
 
     # Non-K-quant formats: fallback to separate matmul + add
     var result = quant_proj_dispatch(x, w, dummy_scale, use_gpu, gpu_ctx)

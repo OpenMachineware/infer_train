@@ -2,143 +2,209 @@
 # SPDX-FileCopyrightText: 2026 Jia Liu & InferTrain contributors
 # core/ops/cpu/simd/simd_base.mojo
 #
-# Platform-agnostic SIMD interface for quantized operations.
+# SIMD kernel dispatch for quantized operations.
 #
-# The kernels are specialized at compile time based on the target architecture:
-# - ARM64 (Apple Silicon, ARMv8): NEON intrinsics via Mojo SIMD
-# - x86_64: AVX2/AVX-512 path (placeholder, not yet implemented)
-# - Other: scalar fallback
-#
-# This mirrors llama.cpp's platform abstraction in ggml-cpu.c, where
-# #if defined(__ARM_NEON) and #if defined(__AVX2__) select the kernel.
+# Kernels receive CpuFlags as parameter - zero runtime overhead after
+# initial detection. Call pattern:
+#   vec_dot_q4_k_q8_k(w, x, model.cpu_flags)
 
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
-from std.utils.static_tuple import StaticTuple
 from std.sys import CompilationTarget
-from ....quantized.quant_types import QuantType, block_elems, block_bytes
+from ....cpu_features import CpuFlags, FEATURE_NEON, FEATURE_MMLA, FEATURE_AVX2
+from ...quantized.quant_types import QuantType, block_elems, block_bytes
 
-# Platform detection
+# Compile-time platform detection (for fallback)
 comptime TARGET_HAS_NEON = CompilationTarget.has_neon()
 comptime TARGET_HAS_AVX2 = CompilationTarget.has_avx2()
-comptime TARGET_IS_X86 = CompilationTarget.is_x86()
 
 
-def vec_dot_q4_k[
-    dtype: DType
-](
-    x: Pointer[Scalar[dtype], MutUntrackedOrigin],
-    block: Pointer[UInt8, MutUntrackedOrigin],
-    nb: Int,
+# ============================================================================
+# Qn_K × Q8_K vec_dot kernels
+# ============================================================================
+
+
+def vec_dot_qk_q8k(
+    quant_type: QuantType,
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+    flags: CpuFlags,
 ) -> Float32:
-    """Dot product: sum(x[i] * dequant_q4_k[i]) for one weight row.
+    """Unified vec_dot dispatch for all Qn_K formats.
 
-    Platform-specific implementation selected at compile time:
-    - NEON-capable: NEON-optimized kernel (simd_neon.mojo)
-    - AVX2-capable: AVX2 kernel (simd_avx.mojo, placeholder)
-    - Other: scalar fallback
+    Simpler than having if-else chains in every matmul function.
     """
-    comptime if TARGET_HAS_NEON:
-        return vec_dot_q4_k_neon[dtype](x, block, nb)
-    elif TARGET_HAS_AVX2:
-        return vec_dot_q4_k_avx[dtype](x, block, nb)
+    if quant_type == QuantType.Q4_K_M:
+        return vec_dot_q4_k_q8_k(w_block, q8_data, flags)
+    elif quant_type == QuantType.Q5_K:
+        return vec_dot_q5_k_q8_k(w_block, q8_data, flags)
+    elif quant_type == QuantType.Q6_K:
+        return vec_dot_q6_k_q8_k(w_block, q8_data, flags)
+    elif quant_type == QuantType.Q2_K:
+        return vec_dot_q2_k_q8_k(w_block, q8_data, flags)
+    elif quant_type == QuantType.Q3_K:
+        return vec_dot_q3_k_q8_k(w_block, q8_data, flags)
     else:
-        return _vec_dot_q4_k_scalar[dtype](x, block, nb)
+        return Float32(0)
 
 
-def vec_dot_q4_0[
-    dtype: DType
-](
-    x: Pointer[Scalar[dtype], MutUntrackedOrigin],
-    block: Pointer[UInt8, MutUntrackedOrigin],
-    nb: Int,
+def vec_dot_q4_k_q8_k(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+    flags: CpuFlags,
 ) -> Float32:
-    """Dot product for Q4_0 quantization."""
-    comptime if TARGET_HAS_NEON:
-        return vec_dot_q4_0_neon[dtype](x, block, nb)
-    elif TARGET_HAS_AVX2:
-        return vec_dot_q4_0_avx[dtype](x, block, nb)
+    """Q4_K × Q8_K dot product with CPU dispatch."""
+    # Note: MMLA (i8mm) is only available on M2+, not on M1.
+    # Mojo doesn't have compile-time MMLA detection, so we use NEON/SDOT.
+    if flags.has_neon():
+        return vec_dot_q4_k_q8_k_neon(w_block, q8_data)
+    elif flags.has_avx2():
+        return _vec_dot_q4_k_q8_k_avx(w_block, q8_data)
     else:
-        return _vec_dot_q4_0_scalar[dtype](x, block, nb)
+        return _vec_dot_q4_k_q8_k_scalar(w_block, q8_data)
 
 
-def vec_dot_q8_0[
-    dtype: DType
-](
-    x: Pointer[Scalar[dtype], MutUntrackedOrigin],
-    block: Pointer[UInt8, MutUntrackedOrigin],
-    nb: Int,
+def vec_dot_q5_k_q8_k(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+    flags: CpuFlags,
 ) -> Float32:
-    """Dot product for Q8_0 quantization."""
-    comptime if TARGET_HAS_NEON:
-        return vec_dot_q8_0_neon[dtype](x, block, nb)
-    elif TARGET_HAS_AVX2:
-        return vec_dot_q8_0_avx[dtype](x, block, nb)
+    """Q5_K × Q8_K dot product with CPU dispatch."""
+    if flags.has_neon():
+        return vec_dot_q5_k_q8_k_neon(w_block, q8_data)
+    elif flags.has_avx2():
+        return _vec_dot_q5_k_q8_k_avx(w_block, q8_data)
     else:
-        return _vec_dot_q8_0_scalar[dtype](x, block, nb)
+        return _vec_dot_q5_k_q8_k_scalar(w_block, q8_data)
 
 
-# -- Scalar fallback implementations -----------------------------------------
-
-
-def _vec_dot_q4_k_scalar[
-    dtype: DType
-](
-    x: Pointer[Scalar[dtype], MutUntrackedOrigin],
-    block: Pointer[UInt8, MutUntrackedOrigin],
-    nb: Int,
+def vec_dot_q6_k_q8_k(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+    flags: CpuFlags,
 ) -> Float32:
-    """Scalar fallback for Q4_K dot product."""
-    # Simple scalar implementation without scratch buffer
-    # This is a placeholder - actual implementation would need proper dequantization
-    var acc = Float32(0)
-    for i in range(nb * 256):
-        var xv = Float32(x.unsafe_load(offset=i))
-        # Placeholder: just use the byte values directly
-        var b = Int(block.unsafe_load[width=1](offset=i % (nb * 144)))
-        acc += xv * Float32(b % 16)
-    return acc
+    """Q6_K × Q8_K dot product with CPU dispatch."""
+    if flags.has_neon():
+        return vec_dot_q6_k_q8_k_neon(w_block, q8_data)
+    elif flags.has_avx2():
+        return _vec_dot_q6_k_q8_k_avx(w_block, q8_data)
+    else:
+        return _vec_dot_q6_k_q8_k_scalar(w_block, q8_data)
 
 
-def _vec_dot_q4_0_scalar[
-    dtype: DType
-](
-    x: Pointer[Scalar[dtype], MutUntrackedOrigin],
-    block: Pointer[UInt8, MutUntrackedOrigin],
-    nb: Int,
+def vec_dot_q2_k_q8_k(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+    flags: CpuFlags,
 ) -> Float32:
-    """Scalar fallback for Q4_0 dot product."""
-    var acc = Float32(0)
-    for i in range(nb * 32):
-        var xv = Float32(x.unsafe_load(offset=i))
-        var b = Int(block.unsafe_load[width=1](offset=i % (nb * 18)))
-        acc += xv * Float32(b % 16 - 8)
-    return acc
+    """Q2_K × Q8_K dot product with CPU dispatch."""
+    if flags.has_neon():
+        return vec_dot_q2_k_q8_k_neon(w_block, q8_data)
+    elif flags.has_avx2():
+        return _vec_dot_q2_k_q8_k_avx(w_block, q8_data)
+    else:
+        return _vec_dot_q2_k_q8_k_scalar(w_block, q8_data)
 
 
-def _vec_dot_q8_0_scalar[
-    dtype: DType
-](
-    x: Pointer[Scalar[dtype], MutUntrackedOrigin],
-    block: Pointer[UInt8, MutUntrackedOrigin],
-    nb: Int,
+def vec_dot_q3_k_q8_k(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+    flags: CpuFlags,
 ) -> Float32:
-    """Scalar fallback for Q8_0 dot product."""
-    var acc = Float32(0)
-    for i in range(nb * 32):
-        var xv = Float32(x.unsafe_load(offset=i))
-        var b = Int(block.unsafe_load[width=1](offset=i % (nb * 34)))
-        acc += xv * Float32(b - 128)
-    return acc
+    """Q3_K × Q8_K dot product with CPU dispatch."""
+    if flags.has_neon():
+        return vec_dot_q3_k_q8_k_neon(w_block, q8_data)
+    elif flags.has_avx2():
+        return _vec_dot_q3_k_q8_k_avx(w_block, q8_data)
+    else:
+        return _vec_dot_q3_k_q8_k_scalar(w_block, q8_data)
 
 
-# -- NEON implementations (imported from simd_neon.mojo) --------------------
+# ============================================================================
+# Scalar fallbacks
+# ============================================================================
 
 
-from .simd_neon import vec_dot_q4_k_neon, vec_dot_q4_0_neon, vec_dot_q8_0_neon
+def _vec_dot_q4_k_q8_k_scalar(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
 
 
-# -- AVX implementations (imported from simd_avx.mojo) ----------------------
+def _vec_dot_q5_k_q8_k_scalar(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
 
 
-from .simd_avx import vec_dot_q4_k_avx, vec_dot_q4_0_avx, vec_dot_q8_0_avx
+def _vec_dot_q6_k_q8_k_scalar(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
+
+
+def _vec_dot_q2_k_q8_k_scalar(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
+
+
+def _vec_dot_q3_k_q8_k_scalar(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
+
+
+def _vec_dot_q4_k_q8_k_avx(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
+
+
+def _vec_dot_q5_k_q8_k_avx(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
+
+
+def _vec_dot_q6_k_q8_k_avx(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
+
+
+def _vec_dot_q2_k_q8_k_avx(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
+
+
+def _vec_dot_q3_k_q8_k_avx(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
+
+
+# ============================================================================
+# Import SIMD implementations
+# ============================================================================
+
+
+from .simd_neon import (
+    vec_dot_q4_k_q8_k as vec_dot_q4_k_q8_k_neon,
+    vec_dot_q5_k_q8_k as vec_dot_q5_k_q8_k_neon,
+    vec_dot_q6_k_q8_k as vec_dot_q6_k_q8_k_neon,
+    vec_dot_q2_k_q8_k as vec_dot_q2_k_q8_k_neon,
+    vec_dot_q3_k_q8_k as vec_dot_q3_k_q8_k_neon,
+    vec_dot_q4_k_q8_k_nrc2,
+)

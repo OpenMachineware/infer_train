@@ -341,7 +341,7 @@ def vec_dot_q4_k_neon[
         k += 256
         blk_idx += 1
 
-    return neon_addv(acc0 + acc1 + acc2 + acc3)
+    return (acc0 + acc1 + acc2 + acc3).reduce_add()
 
 
 def vec_dot_q4_0_neon[
@@ -504,7 +504,7 @@ def vec_dot_q8_0_neon[
         k += 32
         blk += 1
 
-    return neon_addv(acc0 + acc1 + acc2 + acc3)
+    return (acc0 + acc1 + acc2 + acc3).reduce_add()
 
 # -- Q4_K × Q8_K int8 dot product (llama.cpp approach) ------------------------
 #

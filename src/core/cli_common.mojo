@@ -20,6 +20,7 @@
 # `def`-only, no runtime globals, `String("...")` for runtime strings,
 # explicit moves (`^`) for Movable values.
 
+from src.core.cpu_features import CpuFlags, detect_cpu_flags
 from src.core.gguf_loader import load_gguf
 from src.core.transformer import (
     TransformerModel,
@@ -320,8 +321,14 @@ def load_model_heap(
     `kv_cache_type` is the --kv-cache-type flag (fp16 default: the
     existing behavior is unchanged).
     """
+    # CPU detection happens in Model.__init__
     var mp = unsafe_alloc[Model](1)
     mp[unsafe_offset=0] = load_model(path, ctx_size, kv_cache_type)
+
+    # Print CPU info
+    var cpu = mp[unsafe_offset=0].cpu_flags
+    print("CPU: NEON", cpu.has_neon(), "MMLA", cpu.has_mmla(), "DOTPROD", cpu.has_dotprod())
+
     return mp
 
 

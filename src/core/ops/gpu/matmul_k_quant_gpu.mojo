@@ -7,6 +7,7 @@
 
 from src.core.tensor import Tensor
 from src.core.ops.quantized.quant_types import QuantType
+from src.core.cpu_features import detect_cpu_flags
 from src.core.ops.gpu.gpu_runtime import (
     download2,
     get_gpu_context,
@@ -592,7 +593,8 @@ def matmul_k_quant_gpu[
     """
     if not gpu_available[DType.float16]():
         var dummy_scale = Tensor[DType.float16, 1](StaticTuple[Int, 1](1))
-        return matmul_quantized_q8k[quant_type](x, w_quant, dummy_scale)
+        var flags = detect_cpu_flags()
+        return matmul_quantized_q8k[quant_type](x, w_quant, dummy_scale, flags)
 
     var M = x.shape()[0]
     var K = x.shape()[1]
@@ -624,7 +626,8 @@ def matmul_k_quant_gpu[
         return out
     except:
         var dummy_scale = Tensor[DType.float16, 1](StaticTuple[Int, 1](1))
-        return matmul_quantized_q8k[quant_type](x, w_quant, dummy_scale)
+        var flags = detect_cpu_flags()
+        return matmul_quantized_q8k[quant_type](x, w_quant, dummy_scale, flags)
 
 
 def matmul_k_quant_gpu_cached[
@@ -651,7 +654,8 @@ def matmul_k_quant_gpu_cached[
     """
     if not gpu_available[DType.float16]():
         var dummy_scale = Tensor[DType.float16, 1](StaticTuple[Int, 1](1))
-        return matmul_quantized_q8k[quant_type](x, w_quant, dummy_scale)
+        var flags = detect_cpu_flags()
+        return matmul_quantized_q8k[quant_type](x, w_quant, dummy_scale, flags)
 
     var M = x.shape()[0]
     var K = x.shape()[1]
@@ -700,4 +704,5 @@ def matmul_k_quant_gpu_cached[
         return out
     except:
         var dummy_scale = Tensor[DType.float16, 1](StaticTuple[Int, 1](1))
-        return matmul_quantized_q8k[quant_type](x, w_quant, dummy_scale)
+        var flags = detect_cpu_flags()
+        return matmul_quantized_q8k[quant_type](x, w_quant, dummy_scale, flags)

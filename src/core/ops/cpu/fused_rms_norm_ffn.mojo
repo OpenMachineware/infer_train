@@ -7,11 +7,12 @@
 
 from ...tensor import Tensor, tensor_zeros
 from ...utils import unimplemented
+from ...cpu_features import CpuFlags
 from std.math import sqrt
 from std.memory.alloc import unsafe_alloc
 from std.origin import MutUntrackedOrigin
 from std.utils.static_tuple import StaticTuple
-from .simd.simd_neon import vec_dot_q4_k_q8_k, vec_dot_q5_k_q8_k, vec_dot_q6_k_q8_k, vec_dot_q2_k_q8_k, vec_dot_q3_k_q8_k
+from .simd.simd_base import vec_dot_qk_q8k
 from ..quantized.quant_types import QuantType, block_bytes
 
 comptime QK_K = 256
@@ -24,6 +25,7 @@ def fused_rms_norm_gate_up_q8k(
     up_w: Tensor[DType.uint8, 2],
     ggml_gate: Int,
     ggml_up: Int,
+    flags: CpuFlags,
     eps: Float32 = Float32(1e-5),
 ) -> Tuple[Tensor[DType.float16, 2], Tensor[DType.float16, 2]]:
     """Fused RMSNorm + Gate/Up projection with shared Q8_K quantization.
@@ -172,7 +174,7 @@ def fused_rms_norm_gate_up_q8k(
             for b in range(nb):
                 var w_block = gate_w.data().unsafe_offset(j * nb * bb_gate + b * bb_gate)
                 var q8_block = q8k_buf.unsafe_offset(b * 292)
-                sumf += _vec_dot_dispatch(ggml_gate, w_block, q8_block)
+                sumf += _vec_dot_dispatch(ggml_gate, w_block, q8_block, flags)
             gate_out.data().unsafe_offset(i * Ng + j).unsafe_store(val=Scalar[DType.float16](sumf))
 
         # Step 4: Compute up projection (reusing Q8_K buffer)
@@ -181,7 +183,7 @@ def fused_rms_norm_gate_up_q8k(
             for b in range(nb):
                 var w_block = up_w.data().unsafe_offset(j * nb * bb_up + b * bb_up)
                 var q8_block = q8k_buf.unsafe_offset(b * 292)
-                sumf += _vec_dot_dispatch(ggml_up, w_block, q8_block)
+                sumf += _vec_dot_dispatch(ggml_up, w_block, q8_block, flags)
             up_out.data().unsafe_offset(i * Nu + j).unsafe_store(val=Scalar[DType.float16](sumf))
 
     q8k_buf.unsafe_free()
@@ -210,17 +212,18 @@ def _vec_dot_dispatch(
     ggml_type: Int,
     w_block: Pointer[UInt8, MutUntrackedOrigin],
     q8_block: Pointer[UInt8, MutUntrackedOrigin],
+    flags: CpuFlags,
 ) -> Float32:
     """Dispatch to the appropriate vec_dot kernel."""
     if ggml_type == 12:
-        return vec_dot_q4_k_q8_k(w_block, q8_block)
+        return vec_dot_qk_q8k(QuantType.Q4_K_M, w_block, q8_block, flags)
     elif ggml_type == 13:
-        return vec_dot_q5_k_q8_k(w_block, q8_block)
+        return vec_dot_qk_q8k(QuantType.Q5_K, w_block, q8_block, flags)
     elif ggml_type == 14:
-        return vec_dot_q6_k_q8_k(w_block, q8_block)
+        return vec_dot_qk_q8k(QuantType.Q6_K, w_block, q8_block, flags)
     elif ggml_type == 11:
-        return vec_dot_q2_k_q8_k(w_block, q8_block)
+        return vec_dot_qk_q8k(QuantType.Q2_K, w_block, q8_block, flags)
     elif ggml_type == 15:
-        return vec_dot_q3_k_q8_k(w_block, q8_block)
+        return vec_dot_qk_q8k(QuantType.Q3_K, w_block, q8_block, flags)
     else:
-        return vec_dot_q4_k_q8_k(w_block, q8_block)
+        return vec_dot_qk_q8k(QuantType.Q4_K_M, w_block, q8_block, flags)

@@ -11,6 +11,7 @@
 
 from ...tensor import Tensor, tensor_zeros
 from ...utils import unimplemented
+from ...cpu_features import CpuFlags
 from ...thread_pool import parallel_run_tid, resolve_threads, now_ns, has_worker
 from ...scheduler import ensure_runtime, run_work_stealing, worker_count
 from std.utils.static_tuple import StaticTuple
@@ -19,7 +20,7 @@ from std.origin import MutUntrackedOrigin
 from std.memory.alloc import unsafe_alloc
 from std.math import abs
 from ..quantized.quant_types import QuantType, block_elems, block_bytes
-from .simd.simd_neon import vec_dot_q4_k_q8_k, vec_dot_q5_k_q8_k, vec_dot_q6_k_q8_k, vec_dot_q2_k_q8_k, vec_dot_q3_k_q8_k
+from .simd.simd_base import vec_dot_qk_q8k
 from .matmul_q8k import matmul_quantized_q8k
 
 comptime QK_K = 256
@@ -90,6 +91,7 @@ def matmul_quantized_q8k_threaded[
     x: Tensor[DType.float16, 2],
     w_quant: Tensor[DType.uint8, 2],
     scale: Tensor[DType.float16, 1],
+    flags: CpuFlags,
     nthreads: Int = 0,
 ) -> Tensor[DType.float16, 2]:
     """Threaded Q8_K + SDOT matmul.
@@ -119,19 +121,19 @@ def matmul_quantized_q8k_threaded[
     #   N=4096: 4.7x (threading helps)
     #   N=8192: 5.5x (threading helps)
     if N < 2048 or nthreads == 1:
-        return matmul_quantized_q8k[quant_type](x, w_quant, scale)
+        return matmul_quantized_q8k[quant_type](x, w_quant, scale, flags)
 
     # Check if the worker is available (falls back to sequential if not)
     if not has_worker("it_mwq_worker_q8k"):
-        return matmul_quantized_q8k[quant_type](x, w_quant, scale)
+        return matmul_quantized_q8k[quant_type](x, w_quant, scale, flags)
 
     var threads = resolve_threads(nthreads)
     var nb = K // QK_K
     var out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, N))
 
-    # Context block for the worker: [q8k_buf, w_quant, out, row_idx, K, N, nb, bb, quant_tag]
+    # Context block for the worker: [q8k_buf, w_quant, out, row_idx, K, N, nb, bb, quant_tag, flags]
     # We process one activation row at a time to minimize Q8_K buffer size
-    var ctx = unsafe_alloc[Int64](9)
+    var ctx = unsafe_alloc[Int64](10)
 
     # Allocate Q8_K buffer for one row
     var q8k_buf = unsafe_alloc[UInt8](nb * 292)
@@ -151,6 +153,7 @@ def matmul_quantized_q8k_threaded[
         ctx.unsafe_offset(6).unsafe_store(val=Int64(nb))
         ctx.unsafe_offset(7).unsafe_store(val=Int64(bb))
         ctx.unsafe_offset(8).unsafe_store(val=Int64(Int(quant_type._tag)))  # quant_type tag
+        ctx.unsafe_offset(9).unsafe_store(val=Int64(Int(flags.features)))  # CPU features
 
         # 3. Run threaded column processing
         var raw = ctx.unsafe_bitcast[UInt8]()
@@ -162,19 +165,7 @@ def matmul_quantized_q8k_threaded[
                 for b in range(nb):
                     var w_block = w_quant.data().unsafe_offset(jj * nb * bb + b * bb)
                     var q8_block = q8k_buf.unsafe_offset(b * 292)
-                    # Dispatch based on quant_type
-                    if quant_type == QuantType.Q4_K_M:
-                        sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
-                    elif quant_type == QuantType.Q5_K:
-                        sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
-                    elif quant_type == QuantType.Q6_K:
-                        sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
-                    elif quant_type == QuantType.Q2_K:
-                        sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
-                    elif quant_type == QuantType.Q3_K:
-                        sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
-                    else:
-                        unimplemented("Unsupported quant type for threaded Q8_K matmul")
+                    sumf += vec_dot_qk_q8k(quant_type, w_block, q8_block, flags)
                 out.data().unsafe_offset(i * N + jj).unsafe_store(val=Scalar[DType.float16](sumf))
 
     q8k_buf.unsafe_free()
@@ -205,6 +196,11 @@ def _q8k_worker_body(
     var nb = Int(hdr.unsafe_load(offset=6))
     var bb = Int(hdr.unsafe_load(offset=7))
     var quant_tag = Int(hdr.unsafe_load(offset=8))  # quant_type tag for dispatch
+    var features = UInt32(hdr.unsafe_load(offset=9))  # CPU features
+
+    # Reconstruct CpuFlags from features
+    var flags = CpuFlags()
+    flags.features = features
 
     var j = Int(idx)
     var w_quant = Pointer[UInt8, MutUntrackedOrigin](unsafe_from_address=w_quant_addr)
@@ -220,15 +216,15 @@ def _q8k_worker_body(
         var q8_block = q8k_buf.unsafe_offset(b * 292)
         # Q4_K_M = 0, Q5_K = 3, Q6_K = 2, Q2_K = 4, Q3_K = 7
         if quant_tag == 0:  # Q4_K_M
-            sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
+            sumf += vec_dot_qk_q8k(QuantType.Q4_K_M, w_block, q8_block, flags)
         elif quant_tag == 3:  # Q5_K
-            sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
+            sumf += vec_dot_qk_q8k(QuantType.Q5_K, w_block, q8_block, flags)
         elif quant_tag == 2:  # Q6_K
-            sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
+            sumf += vec_dot_qk_q8k(QuantType.Q6_K, w_block, q8_block, flags)
         elif quant_tag == 4:  # Q2_K
-            sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
+            sumf += vec_dot_qk_q8k(QuantType.Q2_K, w_block, q8_block, flags)
         elif quant_tag == 7:  # Q3_K
-            sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
+            sumf += vec_dot_qk_q8k(QuantType.Q3_K, w_block, q8_block, flags)
 
     out.unsafe_offset(row_idx * N + j).unsafe_store(
         val=Scalar[DType.float16](sumf)
@@ -249,6 +245,7 @@ def fused_qkv_projection[
     wk: Tensor[DType.uint8, 2],
     wv: Tensor[DType.uint8, 2],
     scale: Tensor[DType.float16, 1],
+    flags: CpuFlags,
     nthreads: Int = 0,
 ) -> Tuple[Tensor[DType.float16, 2], Tensor[DType.float16, 2], Tensor[DType.float16, 2]]:
     """Fused Q/K/V projection with a single Q8_K quantization of x.
@@ -280,17 +277,7 @@ def fused_qkv_projection[
             for b in range(nb):
                 var w_block = wq.data().unsafe_offset(j * nb * bb_q + b * bb_q)
                 var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
-                # Comptime dispatch
-                comptime if quant_q == QuantType.Q4_K_M:
-                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
-                elif quant_q == QuantType.Q5_K:
-                    sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
-                elif quant_q == QuantType.Q6_K:
-                    sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
-                elif quant_q == QuantType.Q2_K:
-                    sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
-                elif quant_q == QuantType.Q3_K:
-                    sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
+                sumf += vec_dot_qk_q8k(quant_q, w_block, q8_block, flags)
             q_out.data().unsafe_offset(row * Nq + j).unsafe_store(val=Scalar[DType.float16](sumf))
 
     # Inline projection for K with comptime dispatch
@@ -302,16 +289,7 @@ def fused_qkv_projection[
             for b in range(nb):
                 var w_block = wk.data().unsafe_offset(j * nb * bb_k + b * bb_k)
                 var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
-                comptime if quant_k == QuantType.Q4_K_M:
-                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
-                elif quant_k == QuantType.Q5_K:
-                    sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
-                elif quant_k == QuantType.Q6_K:
-                    sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
-                elif quant_k == QuantType.Q2_K:
-                    sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
-                elif quant_k == QuantType.Q3_K:
-                    sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
+                sumf += vec_dot_qk_q8k(quant_k, w_block, q8_block, flags)
             k_out.data().unsafe_offset(row * Nk + j).unsafe_store(val=Scalar[DType.float16](sumf))
 
     # Inline projection for V with comptime dispatch
@@ -323,16 +301,7 @@ def fused_qkv_projection[
             for b in range(nb):
                 var w_block = wv.data().unsafe_offset(j * nb * bb_v + b * bb_v)
                 var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
-                comptime if quant_v == QuantType.Q4_K_M:
-                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
-                elif quant_v == QuantType.Q5_K:
-                    sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
-                elif quant_v == QuantType.Q6_K:
-                    sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
-                elif quant_v == QuantType.Q2_K:
-                    sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
-                elif quant_v == QuantType.Q3_K:
-                    sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
+                sumf += vec_dot_qk_q8k(quant_v, w_block, q8_block, flags)
             v_out.data().unsafe_offset(row * Nv + j).unsafe_store(val=Scalar[DType.float16](sumf))
 
     q8k_buf.unsafe_free()
@@ -363,18 +332,19 @@ def _vec_dot_dispatch(
     ggml_t: Int,
     w_block: Pointer[UInt8, MutUntrackedOrigin],
     q8_block: Pointer[UInt8, MutUntrackedOrigin],
+    flags: CpuFlags,
 ) -> Float32:
     """Dispatch to the appropriate vec_dot kernel based on GGML type."""
     if ggml_t == 12:
-        return vec_dot_q4_k_q8_k(w_block, q8_block)
+        return vec_dot_qk_q8k(QuantType.Q4_K_M, w_block, q8_block, flags)
     elif ggml_t == 13:
-        return vec_dot_q5_k_q8_k(w_block, q8_block)
+        return vec_dot_qk_q8k(QuantType.Q5_K, w_block, q8_block, flags)
     elif ggml_t == 14:
-        return vec_dot_q6_k_q8_k(w_block, q8_block)
+        return vec_dot_qk_q8k(QuantType.Q6_K, w_block, q8_block, flags)
     elif ggml_t == 11:
-        return vec_dot_q2_k_q8_k(w_block, q8_block)
+        return vec_dot_qk_q8k(QuantType.Q2_K, w_block, q8_block, flags)
     elif ggml_t == 15:
-        return vec_dot_q3_k_q8_k(w_block, q8_block)
+        return vec_dot_qk_q8k(QuantType.Q3_K, w_block, q8_block, flags)
     return 0.0
 
 
@@ -386,6 +356,7 @@ def fused_qkv_projection_mixed(
     ggml_q: Int,
     ggml_k: Int,
     ggml_v: Int,
+    flags: CpuFlags,
 ) -> Tuple[Tensor[DType.float16, 2], Tensor[DType.float16, 2], Tensor[DType.float16, 2]]:
     """Fused Q/K/V projection with mixed K-quant types.
 
@@ -423,7 +394,7 @@ def fused_qkv_projection_mixed(
             for b in range(nb):
                 var w_block = wq.data().unsafe_offset(j * nb * bb_q + b * bb_q)
                 var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
-                sumf += _vec_dot_dispatch(ggml_q, w_block, q8_block)
+                sumf += _vec_dot_dispatch(ggml_q, w_block, q8_block, flags)
             q_out.data().unsafe_offset(row * Nq + j).unsafe_store(val=Scalar[DType.float16](sumf))
 
     # K projection
@@ -434,7 +405,7 @@ def fused_qkv_projection_mixed(
             for b in range(nb):
                 var w_block = wk.data().unsafe_offset(j * nb * bb_k + b * bb_k)
                 var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
-                sumf += _vec_dot_dispatch(ggml_k, w_block, q8_block)
+                sumf += _vec_dot_dispatch(ggml_k, w_block, q8_block, flags)
             k_out.data().unsafe_offset(row * Nk + j).unsafe_store(val=Scalar[DType.float16](sumf))
 
     # V projection
@@ -445,7 +416,7 @@ def fused_qkv_projection_mixed(
             for b in range(nb):
                 var w_block = wv.data().unsafe_offset(j * nb * bb_v + b * bb_v)
                 var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
-                sumf += _vec_dot_dispatch(ggml_v, w_block, q8_block)
+                sumf += _vec_dot_dispatch(ggml_v, w_block, q8_block, flags)
             v_out.data().unsafe_offset(row * Nv + j).unsafe_store(val=Scalar[DType.float16](sumf))
 
     q8k_buf.unsafe_free()
@@ -463,6 +434,7 @@ def fused_gate_up_projection(
     up_w: Tensor[DType.uint8, 2],
     ggml_gate: Int,
     ggml_up: Int,
+    flags: CpuFlags,
 ) -> Tuple[Tensor[DType.float16, 2], Tensor[DType.float16, 2]]:
     """Fused gate + up projection with shared Q8_K quantization.
 
@@ -499,7 +471,7 @@ def fused_gate_up_projection(
             for b in range(nb):
                 var w_block = gate_w.data().unsafe_offset(j * nb * bb_gate + b * bb_gate)
                 var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
-                sumf += _vec_dot_dispatch(ggml_gate, w_block, q8_block)
+                sumf += _vec_dot_dispatch(ggml_gate, w_block, q8_block, flags)
             gate_out.data().unsafe_offset(row * Ng + j).unsafe_store(val=Scalar[DType.float16](sumf))
 
     # Up projection
@@ -510,7 +482,7 @@ def fused_gate_up_projection(
             for b in range(nb):
                 var w_block = up_w.data().unsafe_offset(j * nb * bb_up + b * bb_up)
                 var q8_block = q8k_buf.unsafe_offset(row * nb * 292 + b * 292)
-                sumf += _vec_dot_dispatch(ggml_up, w_block, q8_block)
+                sumf += _vec_dot_dispatch(ggml_up, w_block, q8_block, flags)
             up_out.data().unsafe_offset(row * Nu + j).unsafe_store(val=Scalar[DType.float16](sumf))
 
     q8k_buf.unsafe_free()
@@ -528,6 +500,7 @@ def matmul_quantized_q8k_worksteal[
     x: Tensor[DType.float16, 2],
     w_quant: Tensor[DType.uint8, 2],
     scale: Tensor[DType.float16, 1],
+    flags: CpuFlags,
     nthreads: Int = 0,
 ) -> Tensor[DType.float16, 2]:
     """Work-stealing based Q8_K + SDOT matmul.
@@ -560,7 +533,7 @@ def matmul_quantized_q8k_worksteal[
     if nthreads > 0 and nthreads < workers:
         workers = nthreads
     if N < 1024 or workers <= 1:
-        return matmul_quantized_q8k[quant_type](x, w_quant, scale)
+        return matmul_quantized_q8k[quant_type](x, w_quant, scale, flags)
 
     var nb = K // QK_K
     var out = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](M, N))
@@ -575,22 +548,12 @@ def matmul_quantized_q8k_worksteal[
 
         # 2. Use work-stealing to parallelize column computation
         # oversub=1 means static split: each worker gets N/workers columns
-        def compute_columns(j: Int) {imm q8k_buf, imm w_quant, imm out, imm i, imm N, imm nb, imm bb}:
+        def compute_columns(j: Int) {imm q8k_buf, imm w_quant, imm out, imm i, imm N, imm nb, imm bb, imm flags}:
             var sumf = Float32(0)
             for b in range(nb):
                 var w_block = w_quant.data().unsafe_offset(j * nb * bb + b * bb)
                 var q8_block = q8k_buf.unsafe_offset(b * 292)
-                # Dispatch based on quant_type
-                comptime if quant_type == QuantType.Q4_K_M:
-                    sumf += vec_dot_q4_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q5_K:
-                    sumf += vec_dot_q5_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q6_K:
-                    sumf += vec_dot_q6_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q2_K:
-                    sumf += vec_dot_q2_k_q8_k(w_block, q8_block)
-                elif quant_type == QuantType.Q3_K:
-                    sumf += vec_dot_q3_k_q8_k(w_block, q8_block)
+                sumf += vec_dot_qk_q8k(quant_type, w_block, q8_block, flags)
             out.data().unsafe_offset(i * N + j).unsafe_store(val=Scalar[DType.float16](sumf))
 
         # Static distribution: each worker gets N/workers columns
