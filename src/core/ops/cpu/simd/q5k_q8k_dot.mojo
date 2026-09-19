@@ -58,6 +58,19 @@ def neon_addv(v: SIMD[DType.int32, 4]) -> Int32:
 
 
 @always_inline
+def neon_smull(
+    a: SIMD[DType.int16, 4],
+    b: SIMD[DType.int16, 4],
+) -> SIMD[DType.int32, 4]:
+    """NEON SMULL: int16 × int16 -> int32 widening multiply."""
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.smull.v4i32",
+        SIMD[DType.int32, 4],
+        has_side_effect=False,
+    ](a, b)
+
+
+@always_inline
 def vec_dot_q5_k_q8_k(
     w_block: Pointer[UInt8, MutUntrackedOrigin],
     q8_data: Pointer[UInt8, MutUntrackedOrigin],
@@ -86,57 +99,125 @@ def vec_dot_q5_k_q8_k(
     var dmin = Float32(w_block.unsafe_offset(2).unsafe_bitcast[Scalar[DType.float16]]().unsafe_load())
     var q8_d = Float32(q8_data.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load())
 
-    # Pre-compute ALL scales at once (same pattern as Q4_K)
-    # Q5_K scales are stored in the same layout as Q4_K: 12 bytes packed
-    var scales_raw = w_block.unsafe_offset(4)
+    # Pre-compute scales using llama.cpp unpacking method
+    # Q5_K scales: 12 bytes packed into utmp[4] (uint32 array)
+    # Layout after unpack:
+    #   utmp[0]: scales 0-3 (as uint8)
+    #   utmp[1]: scales 4-7 (as uint8)
+    #   utmp[2]: mins 0-3 (as uint8)
+    #   utmp[3]: mins 4-7 (as uint8)
 
-    # Scales 0-3: lower 6 bits of first 4 bytes
-    var sc0 = Int(scales_raw.unsafe_load[width=1](offset=0).value()) & 0x3F
-    var sc1 = Int(scales_raw.unsafe_load[width=1](offset=1).value()) & 0x3F
-    var sc2 = Int(scales_raw.unsafe_load[width=1](offset=2).value()) & 0x3F
-    var sc3 = Int(scales_raw.unsafe_load[width=1](offset=3).value()) & 0x3F
+    # Load 12 bytes as 3 uint32
+    var scales_ptr = w_block.unsafe_offset(4).unsafe_bitcast[UInt32]()
+    var utmp0 = scales_ptr.unsafe_load(offset=0)
+    var utmp1 = scales_ptr.unsafe_load(offset=1)
+    var utmp2 = scales_ptr.unsafe_load(offset=2)
 
-    # Scales 4-7: packed with upper bits
-    var sc4 = (Int(scales_raw.unsafe_load[width=1](offset=8).value()) & 0x0F) | \
-              ((Int(scales_raw.unsafe_load[width=1](offset=0).value()) >> 6) << 4)
-    var sc5 = (Int(scales_raw.unsafe_load[width=1](offset=9).value()) & 0x0F) | \
-              ((Int(scales_raw.unsafe_load[width=1](offset=1).value()) >> 6) << 4)
-    var sc6 = (Int(scales_raw.unsafe_load[width=1](offset=10).value()) & 0x0F) | \
-              ((Int(scales_raw.unsafe_load[width=1](offset=2).value()) >> 6) << 4)
-    var sc7 = (Int(scales_raw.unsafe_load[width=1](offset=11).value()) & 0x0F) | \
-              ((Int(scales_raw.unsafe_load[width=1](offset=3).value()) >> 6) << 4)
+    # Unpack per llama.cpp algorithm
+    # utmp[3] = ((utmp[2] >> 4) & 0x0f0f0f0f) | (((utmp[1] >> 6) & 0x03030303) << 4)
+    var utmp3 = ((utmp2 >> 4) & 0x0F0F0F0F) | (((utmp1 >> 6) & 0x03030303) << 4)
 
-    # Pre-compute ALL min values at once
-    # Mins 0-3: lower 6 bits of bytes 4-7
-    var m0 = Int(scales_raw.unsafe_load[width=1](offset=4).value()) & 0x3F
-    var m1 = Int(scales_raw.unsafe_load[width=1](offset=5).value()) & 0x3F
-    var m2 = Int(scales_raw.unsafe_load[width=1](offset=6).value()) & 0x3F
-    var m3 = Int(scales_raw.unsafe_load[width=1](offset=7).value()) & 0x3F
+    # const uint32_t uaux = utmp[1] & 0x3f3f3f3f
+    var uaux = utmp1 & 0x3F3F3F3F
 
-    # Mins 4-7: packed with upper bits
-    var m4 = (Int(scales_raw.unsafe_load[width=1](offset=12).value()) & 0x0F) | \
-             ((Int(scales_raw.unsafe_load[width=1](offset=4).value()) >> 6) << 4)
-    var m5 = (Int(scales_raw.unsafe_load[width=1](offset=13).value()) & 0x0F) | \
-             ((Int(scales_raw.unsafe_load[width=1](offset=5).value()) >> 6) << 4)
-    var m6 = (Int(scales_raw.unsafe_load[width=1](offset=14).value()) & 0x0F) | \
-             ((Int(scales_raw.unsafe_load[width=1](offset=6).value()) >> 6) << 4)
-    var m7 = (Int(scales_raw.unsafe_load[width=1](offset=15).value()) & 0x0F) | \
-             ((Int(scales_raw.unsafe_load[width=1](offset=7).value()) >> 6) << 4)
+    # utmp[1] = (utmp[2] & 0x0f0f0f0f) | (((utmp[0] >> 6) & 0x03030303) << 4)
+    utmp1 = (utmp2 & 0x0F0F0F0F) | (((utmp0 >> 6) & 0x03030303) << 4)
 
-    # Pre-compute bias from Q8_K bsums in ONE operation
-    var q8_bsums = q8_data.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
-    var bsum0 = Int32(q8_bsums.unsafe_offset(0).unsafe_load()) + Int32(q8_bsums.unsafe_offset(1).unsafe_load())
-    var bsum1 = Int32(q8_bsums.unsafe_offset(2).unsafe_load()) + Int32(q8_bsums.unsafe_offset(3).unsafe_load())
-    var bsum2 = Int32(q8_bsums.unsafe_offset(4).unsafe_load()) + Int32(q8_bsums.unsafe_offset(5).unsafe_load())
-    var bsum3 = Int32(q8_bsums.unsafe_offset(6).unsafe_load()) + Int32(q8_bsums.unsafe_offset(7).unsafe_load())
-    var bsum4 = Int32(q8_bsums.unsafe_offset(8).unsafe_load()) + Int32(q8_bsums.unsafe_offset(9).unsafe_load())
-    var bsum5 = Int32(q8_bsums.unsafe_offset(10).unsafe_load()) + Int32(q8_bsums.unsafe_offset(11).unsafe_load())
-    var bsum6 = Int32(q8_bsums.unsafe_offset(12).unsafe_load()) + Int32(q8_bsums.unsafe_offset(13).unsafe_load())
-    var bsum7 = Int32(q8_bsums.unsafe_offset(14).unsafe_load()) + Int32(q8_bsums.unsafe_offset(15).unsafe_load())
+    # utmp[2] = uaux
+    utmp2 = uaux
 
-    var bias = dmin * q8_d * Float32(
-        Int32(m0) * bsum0 + Int32(m1) * bsum1 + Int32(m2) * bsum2 + Int32(m3) * bsum3 +
-        Int32(m4) * bsum4 + Int32(m5) * bsum5 + Int32(m6) * bsum6 + Int32(m7) * bsum7
+    # utmp[0] &= 0x3f3f3f3f
+    utmp0 = utmp0 & 0x3F3F3F3F
+
+    # Now extract scales as uint8 (16 bytes total)
+
+    # Pre-compute bias from Q8_K bsums using SIMD widening multiply
+    # Load bsums as 16 int16 values
+    var bsums_ptr = q8_data.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
+    var bsums = SIMD[DType.int16, 16](
+        bsums_ptr.unsafe_load(offset=0),
+        bsums_ptr.unsafe_load(offset=1),
+        bsums_ptr.unsafe_load(offset=2),
+        bsums_ptr.unsafe_load(offset=3),
+        bsums_ptr.unsafe_load(offset=4),
+        bsums_ptr.unsafe_load(offset=5),
+        bsums_ptr.unsafe_load(offset=6),
+        bsums_ptr.unsafe_load(offset=7),
+        bsums_ptr.unsafe_load(offset=8),
+        bsums_ptr.unsafe_load(offset=9),
+        bsums_ptr.unsafe_load(offset=10),
+        bsums_ptr.unsafe_load(offset=11),
+        bsums_ptr.unsafe_load(offset=12),
+        bsums_ptr.unsafe_load(offset=13),
+        bsums_ptr.unsafe_load(offset=14),
+        bsums_ptr.unsafe_load(offset=15),
+    )
+    # Pairwise add: 16 int16 -> 8 int16
+    # Use neon_addp for pairwise add
+    var q8sums = SIMD[DType.int16, 8](
+        bsums[0] + bsums[1],
+        bsums[2] + bsums[3],
+        bsums[4] + bsums[5],
+        bsums[6] + bsums[7],
+        bsums[8] + bsums[9],
+        bsums[10] + bsums[11],
+        bsums[12] + bsums[13],
+        bsums[14] + bsums[15],
+    )
+
+    # Extract mins from utmp2 and utmp3 (as uint8)
+    # utmp2 and utmp3 are uint32, each contains 4 uint8 mins
+    var mins_bytes = SIMD[DType.uint8, 8](
+        UInt8(utmp2 & 0xFF),
+        UInt8((utmp2 >> 8) & 0xFF),
+        UInt8((utmp2 >> 16) & 0xFF),
+        UInt8((utmp2 >> 24) & 0xFF),
+        UInt8(utmp3 & 0xFF),
+        UInt8((utmp3 >> 8) & 0xFF),
+        UInt8((utmp3 >> 16) & 0xFF),
+        UInt8((utmp3 >> 24) & 0xFF),
+    )
+
+    # Widening multiply: int16 * uint8 -> int32
+    # First widen uint8 to int16
+    var mins_wide = mins_bytes.cast[DType.int16]()
+
+    # Split q8sums into low and high halves
+    var q8sums_lo = SIMD[DType.int16, 4](
+        q8sums[0], q8sums[1], q8sums[2], q8sums[3]
+    )
+    var q8sums_hi = SIMD[DType.int16, 4](
+        q8sums[4], q8sums[5], q8sums[6], q8sums[7]
+    )
+    var mins_lo = SIMD[DType.int16, 4](
+        mins_wide[0], mins_wide[1], mins_wide[2], mins_wide[3]
+    )
+    var mins_hi = SIMD[DType.int16, 4](
+        mins_wide[4], mins_wide[5], mins_wide[6], mins_wide[7]
+    )
+
+    # Use neon_smull for widening multiply
+    var prod_lo = neon_smull(q8sums_lo, mins_lo)
+    var prod_hi = neon_smull(q8sums_hi, mins_hi)
+
+    # Add and reduce
+    var prod_sum = prod_lo + prod_hi
+    var sumi_mins = neon_addv(prod_sum)
+
+    var bias = dmin * q8_d * Float32(sumi_mins)
+
+    # Extract scales as uint8 array from unpacked utmp0-1
+    # utmp0: scales 0-3 (each uint32 contains 4 uint8)
+    # utmp1: scales 4-7
+    var scales = SIMD[DType.uint8, 8](
+        UInt8(utmp0 & 0xFF),
+        UInt8((utmp0 >> 8) & 0xFF),
+        UInt8((utmp0 >> 16) & 0xFF),
+        UInt8((utmp0 >> 24) & 0xFF),
+        UInt8(utmp1 & 0xFF),
+        UInt8((utmp1 >> 8) & 0xFF),
+        UInt8((utmp1 >> 16) & 0xFF),
+        UInt8((utmp1 >> 24) & 0xFF),
     )
 
     # Base pointers
@@ -182,7 +263,7 @@ def vec_dot_q5_k_q8_k(
     var dot_1 = neon_sdot(neon_sdot(mzero, q5_2, q8bytes_hi.lo.cast[DType.int8]()),
                            q5_3, q8bytes_hi.hi.cast[DType.int8]())
 
-    sumi += neon_addv(dot_0) * Int32(sc0) + neon_addv(dot_1) * Int32(sc4)
+    sumi += neon_addv(dot_0) * Int32(scales[0]) + neon_addv(dot_1) * Int32(scales[1])
 
     # j=1: shift qh by 2 bits
     qhbits_0 = qhbits_0 >> SIMD[DType.uint8, 16](2)
@@ -208,7 +289,7 @@ def vec_dot_q5_k_q8_k(
     dot_1 = neon_sdot(neon_sdot(mzero, q5_2, q8bytes_hi.lo.cast[DType.int8]()),
                       q5_3, q8bytes_hi.hi.cast[DType.int8]())
 
-    sumi += neon_addv(dot_0) * Int32(sc1) + neon_addv(dot_1) * Int32(sc5)
+    sumi += neon_addv(dot_0) * Int32(scales[2]) + neon_addv(dot_1) * Int32(scales[3])
 
     # j=2: shift qh by 4 bits (total)
     qhbits_0 = qhbits_0 >> SIMD[DType.uint8, 16](2)
@@ -234,7 +315,7 @@ def vec_dot_q5_k_q8_k(
     dot_1 = neon_sdot(neon_sdot(mzero, q5_2, q8bytes_hi.lo.cast[DType.int8]()),
                       q5_3, q8bytes_hi.hi.cast[DType.int8]())
 
-    sumi += neon_addv(dot_0) * Int32(sc2) + neon_addv(dot_1) * Int32(sc6)
+    sumi += neon_addv(dot_0) * Int32(scales[4]) + neon_addv(dot_1) * Int32(scales[5])
 
     # j=3: shift qh by 6 bits (total)
     qhbits_0 = qhbits_0 >> SIMD[DType.uint8, 16](2)
@@ -260,7 +341,7 @@ def vec_dot_q5_k_q8_k(
     dot_1 = neon_sdot(neon_sdot(mzero, q5_2, q8bytes_hi.lo.cast[DType.int8]()),
                       q5_3, q8bytes_hi.hi.cast[DType.int8]())
 
-    sumi += neon_addv(dot_0) * Int32(sc3) + neon_addv(dot_1) * Int32(sc7)
+    sumi += neon_addv(dot_0) * Int32(scales[6]) + neon_addv(dot_1) * Int32(scales[7])
 
     # Apply super-block scale
     return d * q8_d * Float32(sumi) - bias
