@@ -11,7 +11,7 @@
 # 4. Integer multiplication for scales AFTER horizontal sum
 # 5. Float multiplication for super-block scale at the end
 
-from std.memory import Pointer
+from std.memory import Pointer, unsafe_stack_allocation
 from std.origin import MutUntrackedOrigin
 from std.sys import llvm_intrinsic
 from std.utils.static_tuple import StaticTuple
@@ -71,13 +71,35 @@ def neon_addv(v: SIMD[DType.int32, 4]) -> Int32:
 
 
 @always_inline
-def neon_vpaddq_s16(a: SIMD[DType.int16, 8], b: SIMD[DType.int16, 8]) -> SIMD[DType.int16, 8]:
-    """Pairwise add: vpaddq_s16 - adds adjacent pairs from concatenation of a and b."""
+def neon_addp(a: SIMD[DType.int16, 8], b: SIMD[DType.int16, 8]) -> SIMD[DType.int16, 8]:
+    """Pairwise add using addp.8h."""
     return llvm_intrinsic[
         "llvm.aarch64.neon.addp.v8i16",
         SIMD[DType.int16, 8],
         has_side_effect=False,
     ](a, b)
+
+
+@always_inline
+def neon_smull(a: SIMD[DType.int16, 4], b: SIMD[DType.int16, 4]) -> SIMD[DType.int32, 4]:
+    """Widening multiply using NEON smull instruction."""
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.smull.v4i32",
+        SIMD[DType.int32, 4],
+        has_side_effect=False,
+    ](a, b)
+
+
+@always_inline
+def neon_get_low(v: SIMD[DType.int16, 8]) -> SIMD[DType.int16, 4]:
+    """Extract low half of int16x8 (like vget_low_s16)."""
+    return SIMD[DType.int16, 4](v[0], v[1], v[2], v[3])
+
+
+@always_inline
+def neon_get_high(v: SIMD[DType.int16, 8]) -> SIMD[DType.int16, 4]:
+    """Extract high half of int16x8 (like vget_high_s16)."""
+    return SIMD[DType.int16, 4](v[4], v[5], v[6], v[7])
 
 
 @always_inline
@@ -141,15 +163,21 @@ def vec_dot_q4_k_q8_k(
     var sc6 = Int32((new_utmp1 >> 16) & 0xFF)
     var sc7 = Int32((new_utmp1 >> 24) & 0xFF)
 
-    # Extract min values from mins8
-    var m0 = Int16(mins8_0 & 0xFF)
-    var m1 = Int16((mins8_0 >> 8) & 0xFF)
-    var m2 = Int16((mins8_0 >> 16) & 0xFF)
-    var m3 = Int16((mins8_0 >> 24) & 0xFF)
-    var m4 = Int16(mins8_1 & 0xFF)
-    var m5 = Int16((mins8_1 >> 8) & 0xFF)
-    var m6 = Int16((mins8_1 >> 16) & 0xFF)
-    var m7 = Int16((mins8_1 >> 24) & 0xFF)
+    # Extract mins8 as 2 uint32 values (like llama.cpp: uint32x2_t mins8)
+    # mins8[0] = utmp[1] & kmask1
+    # mins8[1] = ((utmp[2] >> 4) & kmask2) | (((utmp[1] >> 6) & kmask3) << 4)
+    var mins8_lo = mins8_0
+    var mins8_hi = mins8_1
+
+    # Store to stack and load as uint8x8 (like vreinterpret_u8_u32)
+    var mins8_stack = unsafe_stack_allocation[8, DType.uint8]()
+    mins8_stack.unsafe_bitcast[Scalar[DType.uint32]]().unsafe_store(offset=0, val=mins8_lo)
+    mins8_stack.unsafe_bitcast[Scalar[DType.uint32]]().unsafe_store(offset=1, val=mins8_hi)
+    var mins8_bytes = mins8_stack.unsafe_load[width=8]()
+
+    # Widen to int16x8 using vector widening (like vmovl_u8 + vreinterpret)
+    # Direct cast maps to LLVM zext which becomes uxtl.8h
+    var mins = mins8_bytes.cast[DType.int16]()
 
     # Compute bias using NEON intrinsics (like llama.cpp)
     # Load bsums as int16 vectors using SIMD unsafe_load (generates ld1.8h)
@@ -157,33 +185,20 @@ def vec_dot_q4_k_q8_k(
     var bsums_lo = q8_bsums_ptr.unsafe_load[width=8]()
     var bsums_hi = q8_bsums_ptr.unsafe_load[width=8](offset=8)
 
-    # Pairwise add (vpaddq_s16) - inline to avoid intrinsic overhead
-    var q8sums = SIMD[DType.int16, 8](
-        bsums_lo[0] + bsums_lo[1],
-        bsums_lo[2] + bsums_lo[3],
-        bsums_lo[4] + bsums_lo[5],
-        bsums_lo[6] + bsums_lo[7],
-        bsums_hi[0] + bsums_hi[1],
-        bsums_hi[2] + bsums_hi[3],
-        bsums_hi[4] + bsums_hi[5],
-        bsums_hi[6] + bsums_hi[7]
-    )
+    # Pairwise add (vpaddq_s16) - use NEON intrinsic
+    var q8sums = neon_addp(bsums_lo, bsums_hi)
 
-    # Vector multiply (vmull_s16) - multiply low and high parts
-    # vmull_s16 takes int16x4 and produces int32x4
-    var q8sums_lo = SIMD[DType.int16, 4](q8sums[0], q8sums[1], q8sums[2], q8sums[3])
-    var q8sums_hi = SIMD[DType.int16, 4](q8sums[4], q8sums[5], q8sums[6], q8sums[7])
-    var mins_lo = SIMD[DType.int16, 4](m0, m1, m2, m3)
-    var mins_hi = SIMD[DType.int16, 4](m4, m5, m6, m7)
+    # Widening multiply: int16 * int16 -> int32 (like vmull_s16)
+    # llama.cpp: vmull_s16(vget_low_s16(q8sums), vget_low_s16(mins))
+    # Both low and high halves need to be extracted as int16x4
+    var prod_lo = neon_smull(neon_get_low(q8sums), neon_get_low(mins))
+    var prod_hi = neon_smull(neon_get_high(q8sums), neon_get_high(mins))
+    var prod = prod_lo + prod_hi
 
-    # Multiply with widening (int16 -> int32)
-    var prod_lo = q8sums_lo.cast[DType.int32]() * mins_lo.cast[DType.int32]()
-    var prod_hi = q8sums_hi.cast[DType.int32]() * mins_hi.cast[DType.int32]()
+    # Horizontal sum (like vaddvq_s32)
+    var summs = neon_addv(prod)
 
-    # Sum products using reduce_add
-    var prod_sum = neon_addv(prod_lo) + neon_addv(prod_hi)
-
-    var bias = dmin * q8_d * Float32(prod_sum)
+    var bias = dmin * q8_d * Float32(summs)
 
     # Base pointers
     var q4_ptr = w_block.unsafe_offset(16)

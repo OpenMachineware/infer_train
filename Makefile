@@ -19,7 +19,7 @@ BLAS_XLINK := -Xlinker "-framework" -Xlinker "Accelerate"
         server cli rpc-server infer_train version check-mem bench_cpu bench_pool \
         bench_transformer_core bench_blas bench_dequant bench_simd \
         bench_q8k_vs_fp32 bench_qmatmul_threading test-kernel dump-gguf ref-forward \
-        test-q2k-perf test-q3k-perf
+        test-q2k-perf test-q3k-perf test-q4k-perf test-q4k-multisize
 
 # M12: the Q4-resident matmul pool workers as a standalone Mojo shared
 # library.  Mojo 1.0 only honors @export in a build's entry module and
@@ -326,6 +326,20 @@ test-q3k-perf: tp
 	$(MOJO) build -I . -O3 tests/test_q3k_mojo_real.mojo $(TP_XLINK) -o tests/test_q3k_mojo_real
 	./tests/test_q3k_mojo_real
 
+# Q4_K performance comparison - both llama.cpp and Mojo
+test-q4k-perf: tp
+	gcc -O3 -o test_q4k_llama_real test_q4k_llama_real.c
+	./test_q4k_llama_real
+	$(MOJO) build -I . -O3 tests/test_q4k_mojo_real.mojo $(TP_XLINK) -o tests/test_q4k_mojo_real
+	./tests/test_q4k_mojo_real
+
+# Q4_K multi-size performance test - verify stability across different batch sizes
+test-q4k-multisize: tp
+	gcc -O3 -o test_q4k_multisize test_q4k_multisize.c
+	./test_q4k_multisize
+	$(MOJO) build -I . -O3 tests/test_q4k_multisize.mojo $(TP_XLINK) -o tests/test_q4k_multisize
+	./tests/test_q4k_multisize
+
 # Test MMLA support (requires i8mm extension - ARMv8.6-A+)
 # M1: no i8mm, will fail
 # M2/M3/M4: has i8mm, should work
@@ -354,6 +368,8 @@ clean:
 	rm -f tests/test_gpu_weight_proj tests/test_tiled_matmul tests/bench_tiled_matmul tests/bench_dynamic_dispatch
 	rm -f tests/bench_q3k_llama bench_q3k_mojo bench_q3k_compare tests/test_q3k_llama_real tests/test_q3k_mojo_real test_q3k_simple test_q3k_kernel
 	rm -f tests/test_q2k_mojo_real
+	rm -f tests/test_q4k_mojo_real tests/test_q4k_multisize
+	rm -f test_q4k_llama_real test_q4k_multisize
 	rm -rf tests/test_q3k_llama_real_debug.dSYM
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
