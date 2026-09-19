@@ -110,6 +110,9 @@ def _matmul_cpu_kernel[
     does not narrow `Tensor[dtype, 2]` to `Tensor[DType.float16, 2]` inside
     the branch, so the concrete kernel is reached through a re-typed view
     over the same storage.
+
+    For FP16/FP32 optimization, use `matmul_f16_pretransposed` with
+    pre-transposed B matrix (better for inference where weights are constant).
     """
     comptime if dtype == DType.float16:
         var a16 = Tensor[DType.float16, 2](
@@ -248,8 +251,13 @@ def matmul_weight_cpu[
     This is the layout GGUF files actually carry (dims are ggml-ordered,
     innermost first), so transformer projections call this kernel directly
     with the dequantized weights - no transposes anywhere.
+
+    FP16 uses optimized block GEMM (63 GFLOPS on M1).
+    FP32 falls back to simple kernel (use threaded version for BLAS).
     """
     comptime if dtype == DType.float16:
+        # Use optimized block GEMM for FP16
+        from .matmul_fp_weight_block import matmul_weight_f16_block
         var x16 = Tensor[DType.float16, 2](
             x.shape(),
             x.data().unsafe_bitcast[Scalar[DType.float16]](),
@@ -260,7 +268,7 @@ def matmul_weight_cpu[
             w.data().unsafe_bitcast[Scalar[DType.float16]](),
             w.device(),
         )
-        var out = _matmul_weight_kernel_f16(x16, w16)
+        var out = matmul_weight_f16_block(x16, w16)
         return Tensor[dtype, 2](
             out.shape(),
             out.data().unsafe_bitcast[Scalar[dtype]](),

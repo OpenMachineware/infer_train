@@ -363,6 +363,11 @@ test-q6k-multisize: tp
 	$(MOJO) build -I . -O3 tests/test_q6k_multisize.mojo $(TP_XLINK) -o tests/test_q6k_multisize
 	./tests/test_q6k_multisize
 
+# FP16/FP32 weight-major matmul performance test (actual inference kernel)
+test-fp-matmul: tp
+	$(MOJO) build -I . -O3 tests/test_fp_weight_matmul.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_fp_weight_matmul
+	./tests/test_fp_weight_matmul
+
 # Test MMLA support (requires i8mm extension - ARMv8.6-A+)
 # M1: no i8mm, will fail
 # M2/M3/M4: has i8mm, should work
@@ -394,6 +399,7 @@ clean:
 	rm -f tests/test_q4k_mojo_real tests/test_q4k_multisize
 	rm -f tests/test_q5k_mojo_real tests/test_q5k_multisize
 	rm -f tests/test_q6k_mojo_real tests/test_q6k_multisize
+	rm -f tests/test_fp_weight_matmul
 	rm -f test_q4k_llama_real test_q4k_multisize
 	rm -rf tests/test_q3k_llama_real_debug.dSYM
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
