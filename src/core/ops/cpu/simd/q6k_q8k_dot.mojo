@@ -56,6 +56,42 @@ def neon_addv(v: SIMD[DType.int32, 4]) -> Int32:
 
 
 @always_inline
+def neon_smull(
+    a: SIMD[DType.int16, 4], b: SIMD[DType.int16, 4]
+) -> SIMD[DType.int32, 4]:
+    """NEON SMULL: int16 × int16 -> int32 widening multiply."""
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.smull.v4i32",
+        SIMD[DType.int32, 4],
+        has_side_effect=False,
+    ](a, b)
+
+
+@always_inline
+def neon_addp(
+    a: SIMD[DType.int16, 8], b: SIMD[DType.int16, 8]
+) -> SIMD[DType.int16, 8]:
+    """NEON ADDP: pairwise add for int16 vectors."""
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.addp.v8i16",
+        SIMD[DType.int16, 8],
+        has_side_effect=False,
+    ](a, b)
+
+
+@always_inline
+def neon_get_low(v: SIMD[DType.int16, 8]) -> SIMD[DType.int16, 4]:
+    """Extract low half of int16x8 (like vget_low_s16)."""
+    return SIMD[DType.int16, 4](v[0], v[1], v[2], v[3])
+
+
+@always_inline
+def neon_get_high(v: SIMD[DType.int16, 8]) -> SIMD[DType.int16, 4]:
+    """Extract high half of int16x8 (like vget_high_s16)."""
+    return SIMD[DType.int16, 4](v[4], v[5], v[6], v[7])
+
+
+@always_inline
 def vec_dot_q6_k_q8_k(
     w_block: Pointer[UInt8, MutUntrackedOrigin],
     q8_data: Pointer[UInt8, MutUntrackedOrigin],
@@ -82,35 +118,28 @@ def vec_dot_q6_k_q8_k(
 
     # Pre-compute bias from -32 offset and bsums
     # bias = -32 * sum(scale[j] * bsum[j])
-    # Use vectorized computation like Q4_K
+    # Use SIMD widening multiply like llama.cpp
+    var bsums_ptr = q8_bsums.unsafe_bitcast[Scalar[DType.int16]]()
+    var bsums_lo = bsums_ptr.unsafe_load[width=8](offset=0)
+    var bsums_hi = bsums_ptr.unsafe_load[width=8](offset=8)
+
+    # Load scales as int16 directly (re-interpret cast)
+    var scales_wide_ptr = scales_ptr.unsafe_bitcast[Scalar[DType.int16]]()
+    var scales_wide_lo = scales_wide_ptr.unsafe_load[width=8](offset=0)
+    var scales_wide_hi = scales_wide_ptr.unsafe_load[width=8](offset=8)
+
+    # Also load scales as int8 for the main loop
     var scales_int8 = scales_ptr.unsafe_bitcast[Scalar[DType.int8]]()
     var scales_vec = scales_int8.unsafe_load[width=16](offset=0)
 
-    var bsum0 = Int32(q8_bsums.unsafe_offset(0).unsafe_load())
-    var bsum1 = Int32(q8_bsums.unsafe_offset(1).unsafe_load())
-    var bsum2 = Int32(q8_bsums.unsafe_offset(2).unsafe_load())
-    var bsum3 = Int32(q8_bsums.unsafe_offset(3).unsafe_load())
-    var bsum4 = Int32(q8_bsums.unsafe_offset(4).unsafe_load())
-    var bsum5 = Int32(q8_bsums.unsafe_offset(5).unsafe_load())
-    var bsum6 = Int32(q8_bsums.unsafe_offset(6).unsafe_load())
-    var bsum7 = Int32(q8_bsums.unsafe_offset(7).unsafe_load())
-    var bsum8 = Int32(q8_bsums.unsafe_offset(8).unsafe_load())
-    var bsum9 = Int32(q8_bsums.unsafe_offset(9).unsafe_load())
-    var bsum10 = Int32(q8_bsums.unsafe_offset(10).unsafe_load())
-    var bsum11 = Int32(q8_bsums.unsafe_offset(11).unsafe_load())
-    var bsum12 = Int32(q8_bsums.unsafe_offset(12).unsafe_load())
-    var bsum13 = Int32(q8_bsums.unsafe_offset(13).unsafe_load())
-    var bsum14 = Int32(q8_bsums.unsafe_offset(14).unsafe_load())
-    var bsum15 = Int32(q8_bsums.unsafe_offset(15).unsafe_load())
+    # SIMD widening multiply (int16 * int16 -> int32)
+    # Like llama.cpp: vmull_s16(vget_low_s16, vget_low_s16)
+    var prod_lo = neon_smull(neon_get_low(bsums_lo), neon_get_low(scales_wide_lo))
+    var prod_hi = neon_smull(neon_get_high(bsums_lo), neon_get_high(scales_wide_lo))
+    var prod = prod_lo + prod_hi
 
-    var bias = Int32(scales_vec[0]) * bsum0 + Int32(scales_vec[1]) * bsum1 + \
-               Int32(scales_vec[2]) * bsum2 + Int32(scales_vec[3]) * bsum3 + \
-               Int32(scales_vec[4]) * bsum4 + Int32(scales_vec[5]) * bsum5 + \
-               Int32(scales_vec[6]) * bsum6 + Int32(scales_vec[7]) * bsum7 + \
-               Int32(scales_vec[8]) * bsum8 + Int32(scales_vec[9]) * bsum9 + \
-               Int32(scales_vec[10]) * bsum10 + Int32(scales_vec[11]) * bsum11 + \
-               Int32(scales_vec[12]) * bsum12 + Int32(scales_vec[13]) * bsum13 + \
-               Int32(scales_vec[14]) * bsum14 + Int32(scales_vec[15]) * bsum15
+    # Horizontal sum of the products
+    var bias = neon_addv(prod)
 
     var m4b = SIMD[DType.uint8, 16](0x0F)
     var m2b = SIMD[DType.uint8, 16](3)
