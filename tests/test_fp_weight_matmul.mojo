@@ -8,6 +8,7 @@ from src.core.ops.cpu.matmul_cpu import (
 from src.core.ops.cpu.matmul_fp_weight_optimized import matmul_weight_f16_optimized
 from src.core.ops.cpu.matmul_fp_weight_block import matmul_weight_f16_block
 from src.core.thread_pool import now_ns
+from src.core.cpu_features import detect_cpu_flags
 from std.utils import StaticTuple
 
 def test_weight_matmul(dtype: DType, M: Int, K: Int, N: Int, label: String):
@@ -57,13 +58,14 @@ def test_weight_matmul(dtype: DType, M: Int, K: Int, N: Int, label: String):
         print("  matmul_weight_f16_optimized (NEON FMA):", gflops_opt, "GFLOPS")
         print("  Speedup:", gflops_opt / gflops, "x")
 
-        # Test block GEMM version
+        # Test block GEMM version with CPU flags
+        var flags = detect_cpu_flags()
         for _ in range(10):
-            var _ = matmul_weight_f16_block(x, w)
+            var _ = matmul_weight_f16_block(x, w, flags)
 
         start = now_ns()
         for _ in range(iterations):
-            var _ = matmul_weight_f16_block(x, w)
+            var _ = matmul_weight_f16_block(x, w, flags)
         var elapsed_block = Float64(now_ns() - start) / 1e9
         var gflops_block = flops / elapsed_block / 1e9
         print("  matmul_weight_f16_block (RN=8):", gflops_block, "GFLOPS")

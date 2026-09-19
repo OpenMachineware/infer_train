@@ -252,9 +252,17 @@ def matmul_weight_cpu[
     innermost first), so transformer projections call this kernel directly
     with the dequantized weights - no transposes anywhere.
 
-    FP16 uses optimized block GEMM (63 GFLOPS on M1).
+    FP16 uses optimized block GEMM (46-62 GFLOPS on M1).
     FP32 falls back to simple kernel (use threaded version for BLAS).
+
+    Dispatch:
+    - FP16 with NEON: Block GEMM (faster, reduces x memory access by 8×)
+    - FP16 without NEON: Scalar fallback
+    - FP32: Simple SIMD kernel (use threaded version for BLAS)
     """
+    from ...cpu_features import detect_cpu_flags
+    var flags = detect_cpu_flags()
+
     comptime if dtype == DType.float16:
         # Use optimized block GEMM for FP16
         from .matmul_fp_weight_block import matmul_weight_f16_block
@@ -268,7 +276,7 @@ def matmul_weight_cpu[
             w.data().unsafe_bitcast[Scalar[DType.float16]](),
             w.device(),
         )
-        var out = matmul_weight_f16_block(x16, w16)
+        var out = matmul_weight_f16_block(x16, w16, flags)
         return Tensor[dtype, 2](
             out.shape(),
             out.data().unsafe_bitcast[Scalar[dtype]](),
