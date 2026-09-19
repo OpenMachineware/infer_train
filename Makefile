@@ -18,7 +18,8 @@ BLAS_XLINK := -Xlinker "-framework" -Xlinker "Accelerate"
         test-gguf-split test-gguf test-rpc test-thread-pool clean tp mwq \
         server cli rpc-server infer_train version check-mem bench_cpu bench_pool \
         bench_transformer_core bench_blas bench_dequant bench_simd \
-        bench_q8k_vs_fp32 bench_qmatmul_threading test-kernel dump-gguf ref-forward
+        bench_q8k_vs_fp32 bench_qmatmul_threading test-kernel dump-gguf ref-forward \
+        test-q2k-perf test-q3k-perf
 
 # M12: the Q4-resident matmul pool workers as a standalone Mojo shared
 # library.  Mojo 1.0 only honors @export in a build's entry module and
@@ -314,6 +315,17 @@ test-kernel: tp
 	$(MOJO) build -I . tests/test_q5k_kernel.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_q5k_kernel
 	./tests/test_q5k_kernel
 
+# Q2_K performance comparison test
+test-q2k-perf: tp
+	$(MOJO) build -I . -O3 tests/test_q2k_mojo_real.mojo $(TP_XLINK) -o tests/test_q2k_mojo_real
+	./tests/test_q2k_mojo_real
+
+# Q3_K performance comparison test - Mojo implementation only
+# For llama.cpp C test, see llama_cpp测试模板.md
+test-q3k-perf: tp
+	$(MOJO) build -I . -O3 tests/test_q3k_mojo_real.mojo $(TP_XLINK) -o tests/test_q3k_mojo_real
+	./tests/test_q3k_mojo_real
+
 # Test MMLA support (requires i8mm extension - ARMv8.6-A+)
 # M1: no i8mm, will fail
 # M2/M3/M4: has i8mm, should work
@@ -340,13 +352,15 @@ clean:
 	rm -f tests/bench_qwen3
 	rm -f tests/bench_q4k_matmul tests/bench_hunyuan tests/bench_decode_breakdown tests/bench_decode_gpu tests/test_gpu_ffn
 	rm -f tests/test_gpu_weight_proj tests/test_tiled_matmul tests/bench_tiled_matmul tests/bench_dynamic_dispatch
-	rm -f tests/bench_q3k_llama bench_q3k_mojo bench_q3k_compare
+	rm -f tests/bench_q3k_llama bench_q3k_mojo bench_q3k_compare tests/test_q3k_llama_real tests/test_q3k_mojo_real test_q3k_simple test_q3k_kernel
+	rm -f tests/test_q2k_mojo_real
+	rm -rf tests/test_q3k_llama_real_debug.dSYM
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
 	      python/infer_train/_lib/libinfer_train_mwq.dylib
 	rm -f src/version.mojo
 	rm -rf python/*.egg-info python/build
-	@for f in tests/test_*; do case "$$f" in *.mojo) ;; *) rm -f "$$f";; esac; done
+	@for f in tests/test_*; do case "$$f" in *.mojo|*.c) ;; *) rm -f "$$f";; esac; done
 
 # GPU decode benchmark
 # GPU decode benchmark
