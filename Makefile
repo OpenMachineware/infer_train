@@ -340,6 +340,7 @@ clean:
 	rm -f tests/bench_qwen3
 	rm -f tests/bench_q4k_matmul tests/bench_hunyuan tests/bench_decode_breakdown tests/bench_decode_gpu tests/test_gpu_ffn
 	rm -f tests/test_gpu_weight_proj tests/test_tiled_matmul tests/bench_tiled_matmul tests/bench_dynamic_dispatch
+	rm -f tests/bench_q3k_llama bench_q3k_mojo bench_q3k_compare
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
 	      python/infer_train/_lib/libinfer_train_mwq.dylib

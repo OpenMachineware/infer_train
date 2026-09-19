@@ -1,9 +1,9 @@
 # Q2_K × Q8_K optimized dot product
-# On-demand Q8 loading (matches llama.cpp pattern exactly)
+# Hybrid approach: vector widening for scales, pointer-based extraction
 
 from std.memory import Pointer, unsafe_stack_allocation
 from std.origin import MutUntrackedOrigin
-from std.sys import llvm_intrinsic
+from std.sys import llvm_intrinsic, inlined_assembly
 
 struct NeonU8x2(TrivialRegisterPassable):
     var lo: SIMD[DType.uint8, 16]
@@ -67,7 +67,7 @@ def vec_dot_q2_k_q8_k(
     w_block: Pointer[UInt8, MutUntrackedOrigin],
     q8_data: Pointer[UInt8, MutUntrackedOrigin],
 ) -> Float32:
-    """Q2_K × Q8_K - on-demand Q8 loading."""
+    """Q2_K × Q8_K dot product - optimized hybrid approach."""
     var d = Float32(w_block.unsafe_offset(80).unsafe_bitcast[Scalar[DType.float16]]().unsafe_load())
     var dmin = Float32(w_block.unsafe_offset(82).unsafe_bitcast[Scalar[DType.float16]]().unsafe_load())
     var q8_d = Float32(q8_data.unsafe_bitcast[Scalar[DType.float32]]().unsafe_load())
@@ -78,92 +78,99 @@ def vec_dot_q2_k_q8_k(
     var q8_bsums = q8_data.unsafe_offset(260).unsafe_bitcast[Scalar[DType.int16]]()
 
     var m3b = SIMD[DType.uint8, 16](0x03)
-    var m4b = SIMD[DType.uint8, 16](0x0F)
     var mzero = SIMD[DType.int32, 4](0)
 
-    # Load scales+mins
+    # Load scales+mins as SIMD vector
     var scales_raw = sc_ptr.unsafe_load[width=16](offset=0)
+    var m4b = SIMD[DType.uint8, 16](0x0F)
     var scales_vec = scales_raw & m4b
     var mins_vec = scales_raw >> SIMD[DType.uint8, 16](4)
 
-    # Store scales to stack
+    # Store scales to stack for scalar access
     var scales_aux = unsafe_stack_allocation[16, DType.uint8]()
     scales_aux.unsafe_store[width=16](offset=0, val=scales_vec)
 
-    # Bias
+    # Extract scales via pointer loads (avoids umov)
+    var scales_ptr = scales_aux.unsafe_bitcast[Scalar[DType.uint8]]()
+
+    # Bias: use widen multiply (vmull_s16)
     var mins_aux = unsafe_stack_allocation[16, DType.uint8]()
     mins_aux.unsafe_store[width=16](offset=0, val=mins_vec)
-    var mins_ptr = mins_aux.unsafe_bitcast[Scalar[DType.int16]]()
 
-    var mins_lo = mins_ptr.unsafe_load[width=4](offset=0)
-    var mins_hi = mins_ptr.unsafe_load[width=4](offset=4)
-    var mins_lo2 = mins_ptr.unsafe_load[width=4](offset=8)
-    var mins_hi2 = mins_ptr.unsafe_load[width=4](offset=12)
+    var mins_ptr = mins_aux.unsafe_bitcast[Scalar[DType.int16]]()
+    var mins_lo_0_3 = mins_ptr.unsafe_load[width=4](offset=0)
+    var mins_lo_4_7 = mins_ptr.unsafe_load[width=4](offset=4)
+    var mins_hi_0_3 = mins_ptr.unsafe_load[width=4](offset=8)
+    var mins_hi_4_7 = mins_ptr.unsafe_load[width=4](offset=12)
 
     var bsums_ptr = q8_bsums
-    var bsums_lo = bsums_ptr.unsafe_load[width=4](offset=0)
-    var bsums_hi = bsums_ptr.unsafe_load[width=4](offset=4)
-    var bsums_lo2 = bsums_ptr.unsafe_load[width=4](offset=8)
-    var bsums_hi2 = bsums_ptr.unsafe_load[width=4](offset=12)
+    var bsums_lo_0_3 = bsums_ptr.unsafe_load[width=4](offset=0)
+    var bsums_lo_4_7 = bsums_ptr.unsafe_load[width=4](offset=4)
+    var bsums_hi_0_3 = bsums_ptr.unsafe_load[width=4](offset=8)
+    var bsums_hi_4_7 = bsums_ptr.unsafe_load[width=4](offset=12)
 
-    var s0 = neon_smull(mins_lo, bsums_lo) + neon_smull(mins_hi, bsums_hi)
-    var s1 = neon_smull(mins_lo2, bsums_lo2) + neon_smull(mins_hi2, bsums_hi2)
+    var s0 = neon_smull(mins_lo_0_3, bsums_lo_0_3) + neon_smull(mins_lo_4_7, bsums_lo_4_7)
+    var s1 = neon_smull(mins_hi_0_3, bsums_hi_0_3) + neon_smull(mins_hi_4_7, bsums_hi_4_7)
+
     var summs = neon_addv(s0 + s1)
 
+    # Preload all q8 data
+    var q8_0 = neon_ld1_s8_x2(q8_ptr.unsafe_offset(0))
+    var q8_1 = neon_ld1_s8_x2(q8_ptr.unsafe_offset(32))
+    var q8_2 = neon_ld1_s8_x2(q8_ptr.unsafe_offset(64))
+    var q8_3 = neon_ld1_s8_x2(q8_ptr.unsafe_offset(96))
+    var q8_4 = neon_ld1_s8_x2(q8_ptr.unsafe_offset(128))
+    var q8_5 = neon_ld1_s8_x2(q8_ptr.unsafe_offset(160))
+    var q8_6 = neon_ld1_s8_x2(q8_ptr.unsafe_offset(192))
+    var q8_7 = neon_ld1_s8_x2(q8_ptr.unsafe_offset(224))
+
+    # Compute dot products with immediate scale multiply
     var isum = Int32(0)
 
-    # j=0: Load Q8 on-demand (reduces register pressure)
+    # j=0: q2 bytes 0-31
     var q2bits = neon_ld1_u8_x2(q2_ptr)
 
     var q2bytes_lo = (q2bits.lo & m3b).cast[DType.int8]()
     var q2bytes_hi = (q2bits.hi & m3b).cast[DType.int8]()
-    var q8bytes = neon_ld1_s8_x2(q8_ptr)
-    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8bytes.lo)) * Int32(scales_aux.unsafe_offset(0).unsafe_load())
-    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8bytes.hi)) * Int32(scales_aux.unsafe_offset(1).unsafe_load())
+    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8_0.lo)) * Int32(scales_ptr.unsafe_load[width=1](offset=0)[0])
+    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8_0.hi)) * Int32(scales_ptr.unsafe_load[width=1](offset=1)[0])
 
     q2bytes_lo = ((q2bits.lo >> SIMD[DType.uint8, 16](2)) & m3b).cast[DType.int8]()
     q2bytes_hi = ((q2bits.hi >> SIMD[DType.uint8, 16](2)) & m3b).cast[DType.int8]()
-    q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(32))
-    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8bytes.lo)) * Int32(scales_aux.unsafe_offset(2).unsafe_load())
-    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8bytes.hi)) * Int32(scales_aux.unsafe_offset(3).unsafe_load())
+    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8_1.lo)) * Int32(scales_ptr.unsafe_load[width=1](offset=2)[0])
+    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8_1.hi)) * Int32(scales_ptr.unsafe_load[width=1](offset=3)[0])
 
     q2bytes_lo = ((q2bits.lo >> SIMD[DType.uint8, 16](4)) & m3b).cast[DType.int8]()
     q2bytes_hi = ((q2bits.hi >> SIMD[DType.uint8, 16](4)) & m3b).cast[DType.int8]()
-    q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(64))
-    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8bytes.lo)) * Int32(scales_aux.unsafe_offset(4).unsafe_load())
-    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8bytes.hi)) * Int32(scales_aux.unsafe_offset(5).unsafe_load())
+    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8_2.lo)) * Int32(scales_ptr.unsafe_load[width=1](offset=4)[0])
+    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8_2.hi)) * Int32(scales_ptr.unsafe_load[width=1](offset=5)[0])
 
     q2bytes_lo = ((q2bits.lo >> SIMD[DType.uint8, 16](6)) & m3b).cast[DType.int8]()
     q2bytes_hi = ((q2bits.hi >> SIMD[DType.uint8, 16](6)) & m3b).cast[DType.int8]()
-    q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(96))
-    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8bytes.lo)) * Int32(scales_aux.unsafe_offset(6).unsafe_load())
-    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8bytes.hi)) * Int32(scales_aux.unsafe_offset(7).unsafe_load())
+    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8_3.lo)) * Int32(scales_ptr.unsafe_load[width=1](offset=6)[0])
+    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8_3.hi)) * Int32(scales_ptr.unsafe_load[width=1](offset=7)[0])
 
-    # j=1
+    # j=1: q2 bytes 32-63
     q2bits = neon_ld1_u8_x2(q2_ptr.unsafe_offset(32))
 
     q2bytes_lo = (q2bits.lo & m3b).cast[DType.int8]()
     q2bytes_hi = (q2bits.hi & m3b).cast[DType.int8]()
-    q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(128))
-    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8bytes.lo)) * Int32(scales_aux.unsafe_offset(8).unsafe_load())
-    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8bytes.hi)) * Int32(scales_aux.unsafe_offset(9).unsafe_load())
+    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8_4.lo)) * Int32(scales_ptr.unsafe_load[width=1](offset=8)[0])
+    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8_4.hi)) * Int32(scales_ptr.unsafe_load[width=1](offset=9)[0])
 
     q2bytes_lo = ((q2bits.lo >> SIMD[DType.uint8, 16](2)) & m3b).cast[DType.int8]()
     q2bytes_hi = ((q2bits.hi >> SIMD[DType.uint8, 16](2)) & m3b).cast[DType.int8]()
-    q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(160))
-    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8bytes.lo)) * Int32(scales_aux.unsafe_offset(10).unsafe_load())
-    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8bytes.hi)) * Int32(scales_aux.unsafe_offset(11).unsafe_load())
+    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8_5.lo)) * Int32(scales_ptr.unsafe_load[width=1](offset=10)[0])
+    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8_5.hi)) * Int32(scales_ptr.unsafe_load[width=1](offset=11)[0])
 
     q2bytes_lo = ((q2bits.lo >> SIMD[DType.uint8, 16](4)) & m3b).cast[DType.int8]()
     q2bytes_hi = ((q2bits.hi >> SIMD[DType.uint8, 16](4)) & m3b).cast[DType.int8]()
-    q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(192))
-    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8bytes.lo)) * Int32(scales_aux.unsafe_offset(12).unsafe_load())
-    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8bytes.hi)) * Int32(scales_aux.unsafe_offset(13).unsafe_load())
+    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8_6.lo)) * Int32(scales_ptr.unsafe_load[width=1](offset=12)[0])
+    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8_6.hi)) * Int32(scales_ptr.unsafe_load[width=1](offset=13)[0])
 
     q2bytes_lo = ((q2bits.lo >> SIMD[DType.uint8, 16](6)) & m3b).cast[DType.int8]()
     q2bytes_hi = ((q2bits.hi >> SIMD[DType.uint8, 16](6)) & m3b).cast[DType.int8]()
-    q8bytes = neon_ld1_s8_x2(q8_ptr.unsafe_offset(224))
-    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8bytes.lo)) * Int32(scales_aux.unsafe_offset(14).unsafe_load())
-    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8bytes.hi)) * Int32(scales_aux.unsafe_offset(15).unsafe_load())
+    isum += neon_addv(neon_sdot(mzero, q2bytes_lo, q8_7.lo)) * Int32(scales_ptr.unsafe_load[width=1](offset=14)[0])
+    isum += neon_addv(neon_sdot(mzero, q2bytes_hi, q8_7.hi)) * Int32(scales_ptr.unsafe_load[width=1](offset=15)[0])
 
     return d * q8_d * Float32(isum) - dmin * q8_d * Float32(summs)
