@@ -50,3 +50,4 @@ __pycache__/
 *.gguf
 llama.cpp-0.4.1/
 modular-mojo-v1.0.0/
+llvm-project-llvmorg-23.1.0/
