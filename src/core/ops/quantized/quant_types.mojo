@@ -38,6 +38,7 @@ struct QuantType(Copyable, Equatable, ImplicitlyCopyable, Movable):
     comptime IQ4_XS = QuantType(Int8(5))  # IQ4_XS super-block, ggml 23
     comptime Q4_0 = QuantType(Int8(6))  # 32-element blocks, ggml 2
     comptime Q3_K = QuantType(Int8(7))  # Q3_K super-block, ggml 15
+    comptime IQ3_S = QuantType(Int8(8))  # IQ3_S super-block, ggml 24
 
     def __eq__(self, other: Self) -> Bool:
         return self._tag == other._tag
@@ -64,6 +65,8 @@ def ggml_type(quant_type: QuantType) -> Int:
         return 2
     if quant_type == QuantType.Q3_K:
         return 15
+    if quant_type == QuantType.IQ3_S:
+        return 24
     return -1
 
 
@@ -90,6 +93,8 @@ def num_bits(quant_type: QuantType) -> Int:
         return 4
     if quant_type == QuantType.Q3_K:
         return 3
+    if quant_type == QuantType.IQ3_S:
+        return 3
     return 0
 
 
@@ -108,6 +113,7 @@ def group_size(quant_type: QuantType) -> Int:
         or quant_type == QuantType.IQ4_XS
         or quant_type == QuantType.Q4_0
         or quant_type == QuantType.Q3_K
+        or quant_type == QuantType.IQ3_S
     ):
         return 32
     return 0
@@ -134,6 +140,8 @@ def block_bytes(quant_type: QuantType) -> Int:
     if quant_type == QuantType.Q4_0:
         return 18
     if quant_type == QuantType.Q3_K:
+        return 110
+    if quant_type == QuantType.IQ3_S:
         return 110
     return 0
 
