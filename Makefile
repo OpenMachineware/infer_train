@@ -371,6 +371,10 @@ test-iq3xxs-perf: tp
 	$(MOJO) build -I . -O3 tests/bench_iq3xxs_neon.mojo $(TP_XLINK) -o tests/bench_iq3xxs_neon
 	./tests/bench_iq3xxs_neon
 
+test-iq2s-perf: tp
+	$(MOJO) build -I . -O3 tests/bench_iq2s_neon.mojo $(TP_XLINK) -o tests/bench_iq2s_neon
+	./tests/bench_iq2s_neon
+
 # FP16/FP32 weight-major matmul performance test (actual inference kernel)
 test-fp-matmul: tp
 	$(MOJO) build -I . -O3 tests/test_fp_weight_matmul.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_fp_weight_matmul
