@@ -642,6 +642,86 @@ def neon_vdupq_n_u16(value: UInt16) -> SIMD[DType.uint16, 8]:
 
 
 @always_inline
+def neon_vmovl_high_u8(a: SIMD[DType.uint8, 16]) -> SIMD[DType.uint16, 8]:
+    """Widen high 8 bytes of uint8x16 to uint16x8.
+
+    Equivalent to vmovl_high_u8 in ARM NEON.
+    Uses ushll.8h instruction on the high half.
+    """
+    return inlined_assembly[
+        "ushll2 $0.8h, $1.16b, #0",
+        SIMD[DType.uint16, 8],
+        SIMD[DType.uint8, 16],
+        constraints="=w,w",
+        has_side_effect=False,
+    ](a)
+
+
+@always_inline
+def neon_vceqq_u8(a: SIMD[DType.uint8, 16], b: SIMD[DType.uint8, 16]) -> SIMD[DType.uint8, 16]:
+    """Compare equal: returns 0xFF where a==b, 0x00 otherwise.
+
+    Equivalent to vceqq_u8 in ARM NEON.
+    Uses inline assembly to generate cmeq.16b instruction.
+    """
+    return inlined_assembly[
+        "cmeq $0.16b, $1.16b, $2.16b",
+        SIMD[DType.uint8, 16],
+        SIMD[DType.uint8, 16],
+        SIMD[DType.uint8, 16],
+        constraints="=w,w,w",
+        has_side_effect=False,
+    ](a, b)
+
+
+@always_inline
+def neon_vorrq_u8(a: SIMD[DType.uint8, 16], b: SIMD[DType.uint8, 16]) -> SIMD[DType.uint8, 16]:
+    """Bitwise OR of two uint8x16 vectors."""
+    return a | b
+
+
+@always_inline
+def neon_vreinterpretq_u8_u32(a: SIMD[DType.uint32, 4]) -> SIMD[DType.uint8, 16]:
+    """Reinterpret uint32x4 as uint8x16 (no-op, just bitcast)."""
+    return bitcast[DType.uint8, 16](a)
+
+
+@always_inline
+def neon_vreinterpretq_s8_u32(a: SIMD[DType.uint32, 4]) -> SIMD[DType.int8, 16]:
+    """Reinterpret uint32x4 as int8x16 (no-op, just bitcast)."""
+    return bitcast[DType.int8, 16](a)
+
+
+@always_inline
+def neon_vreinterpretq_s8_u8(a: SIMD[DType.uint8, 16]) -> SIMD[DType.int8, 16]:
+    """Reinterpret uint8x16 as int8x16 (no-op, just bitcast)."""
+    return bitcast[DType.int8, 16](a)
+
+
+@always_inline
+def neon_vmulq_s8(a: SIMD[DType.int8, 16], b: SIMD[DType.int8, 16]) -> SIMD[DType.int8, 16]:
+    """Multiply two int8x16 vectors element-wise.
+
+    Equivalent to vmulq_s8 in ARM NEON.
+    Uses inline assembly to generate mul.16b instruction.
+    """
+    return inlined_assembly[
+        "mul $0.16b, $1.16b, $2.16b",
+        SIMD[DType.int8, 16],
+        SIMD[DType.int8, 16],
+        SIMD[DType.int8, 16],
+        constraints="=w,w,w",
+        has_side_effect=False,
+    ](a, b)
+
+
+@always_inline
+def neon_vld1q_u32(ptr: Pointer[UInt32, MutUntrackedOrigin]) -> SIMD[DType.uint32, 4]:
+    """Load 4 uint32 values (16 bytes) into uint32x4 vector."""
+    return ptr.unsafe_load[width=4](offset=0)
+
+
+@always_inline
 def neon_addv(v: SIMD[DType.int32, 4]) -> Int32:
     """Horizontal sum using addv.4s - NEON intrinsic."""
     # Use LLVM intrinsic for vector reduce add
