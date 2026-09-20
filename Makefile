@@ -359,6 +359,10 @@ test-iq4xs-perf: tp
 	$(MOJO) build -I . -O3 tests/bench_iq4xs_neon.mojo $(TP_XLINK) -o tests/bench_iq4xs_neon
 	./tests/bench_iq4xs_neon
 
+test-iq3s-perf: tp
+	$(MOJO) build -I . -O3 tests/bench_iq3s_neon.mojo $(TP_XLINK) -o tests/bench_iq3s_neon
+	./tests/bench_iq3s_neon
+
 # FP16/FP32 weight-major matmul performance test (actual inference kernel)
 test-fp-matmul: tp
 	$(MOJO) build -I . -O3 tests/test_fp_weight_matmul.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_fp_weight_matmul

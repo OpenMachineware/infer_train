@@ -610,6 +610,38 @@ def neon_shlq_n_u8(n: Int, v: SIMD[DType.uint8, 16]) -> SIMD[DType.uint8, 16]:
 
 
 @always_inline
+def neon_vshlq_u16(shift: SIMD[DType.int16, 8], v: SIMD[DType.uint16, 8]) -> SIMD[DType.uint16, 8]:
+    """Vector shift left: each element of v is shifted by corresponding element in shift.
+
+    Equivalent to vshlq_u16 in ARM NEON: v[i] = v[i] << shift[i]
+    Positive shift values shift left, negative values shift right.
+    """
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.ushl.v8i16",
+        SIMD[DType.uint16, 8],
+        has_side_effect=False,
+    ](v, shift)
+
+
+@always_inline
+def neon_vorrq_u16(a: SIMD[DType.uint16, 8], b: SIMD[DType.uint16, 8]) -> SIMD[DType.uint16, 8]:
+    """Bitwise OR of two uint16x8 vectors."""
+    return a | b
+
+
+@always_inline
+def neon_vandq_u16(a: SIMD[DType.uint16, 8], b: SIMD[DType.uint16, 8]) -> SIMD[DType.uint16, 8]:
+    """Bitwise AND of two uint16x8 vectors."""
+    return a & b
+
+
+@always_inline
+def neon_vdupq_n_u16(value: UInt16) -> SIMD[DType.uint16, 8]:
+    """Duplicate scalar to all lanes of uint16x8."""
+    return SIMD[DType.uint16, 8](value)
+
+
+@always_inline
 def neon_addv(v: SIMD[DType.int32, 4]) -> Int32:
     """Horizontal sum using addv.4s - NEON intrinsic."""
     # Use LLVM intrinsic for vector reduce add
