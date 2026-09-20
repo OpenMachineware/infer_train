@@ -573,11 +573,14 @@ def vec_dot_iq1s_q8k_neon(
 
         # Process 4 iterations (ib = 0, 2, 4, 6)
         for ib in range(0, 8, 2):
-            # Load qh values (uint16)
-            var qh0 = UInt16(x.unsafe_load[width=2](offset=qh_offset + ib * 2)[0]) |
-                      (UInt16(x.unsafe_load[width=2](offset=qh_offset + ib * 2 + 1)[0]) << 8)
-            var qh1 = UInt16(x.unsafe_load[width=2](offset=qh_offset + (ib + 1) * 2)[0]) |
-                      (UInt16(x.unsafe_load[width=2](offset=qh_offset + (ib + 1) * 2 + 1)[0]) << 8)
+            # Load qh values (uint16) - read as little-endian
+            var qh0_lo = UInt16(x.unsafe_load[width=1](offset=qh_offset + (ib + 0) * 2)[0])
+            var qh0_hi = UInt16(x.unsafe_load[width=1](offset=qh_offset + (ib + 0) * 2 + 1)[0])
+            var qh0 = qh0_lo | (qh0_hi << 8)
+
+            var qh1_lo = UInt16(x.unsafe_load[width=1](offset=qh_offset + (ib + 1) * 2)[0])
+            var qh1_hi = UInt16(x.unsafe_load[width=1](offset=qh_offset + (ib + 1) * 2 + 1)[0])
+            var qh1 = qh1_lo | (qh1_hi << 8)
 
             # Load 8 qs values (uint8)
             var qs_base = qs_offset + (ib // 2) * 8
@@ -631,20 +634,22 @@ def vec_dot_iq1s_q8k_neon(
             # sign = (qh & 0x8000) ? -1 : 1
             var sign0 = Int32(1 if (qh0 & UInt16(0x8000)) == 0 else -1)
             var sign1 = Int32(1 if (qh1 & UInt16(0x8000)) == 0 else -1)
-            var bsum_idx = (ib // 2) * 4
-            var bsum0 = Int32(y.unsafe_load[width=2](offset=bsums_offset + bsum_idx * 2)[0]) |
-                        (Int32(y.unsafe_load[width=2](offset=bsums_offset + bsum_idx * 2 + 1)[0]) << 8)
-            var bsum1 = Int32(y.unsafe_load[width=2](offset=bsums_offset + (bsum_idx + 1) * 2)[0]) |
-                        (Int32(y.unsafe_load[width=2](offset=bsums_offset + (bsum_idx + 1) * 2 + 1)[0]) << 8)
-            var bsum2 = Int32(y.unsafe_load[width=2](offset=bsums_offset + (bsum_idx + 2) * 2)[0]) |
-                        (Int32(y.unsafe_load[width=2](offset=bsums_offset + (bsum_idx + 2) * 2 + 1)[0]) << 8)
-            var bsum3 = Int32(y.unsafe_load[width=2](offset=bsums_offset + (bsum_idx + 3) * 2)[0]) |
-                        (Int32(y.unsafe_load[width=2](offset=bsums_offset + (bsum_idx + 3) * 2 + 1)[0]) << 8)
+
+            # bsums is int16 array, access as bsums[2*ib+0], bsums[2*ib+1], etc.
+            # bsums starts at offset 260, each int16 is 2 bytes
+            var bsum0 = Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 0) * 2)[0]) |
+                        (Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 0) * 2 + 1)[0]) << 8)
+            var bsum1 = Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 1) * 2)[0]) |
+                        (Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 1) * 2 + 1)[0]) << 8)
+            var bsum2 = Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 2) * 2)[0]) |
+                        (Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 2) * 2 + 1)[0]) << 8)
+            var bsum3 = Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 3) * 2)[0]) |
+                        (Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 3) * 2 + 1)[0]) << 8)
 
             sumi3 += (bsum0 + bsum1) * ls1 * sign0
             sumi3 += (bsum2 + bsum3) * ls2 * sign1
 
-        # Final result
-        sumf += d * (Float32(sumi1 + sumi2) + IQ1S_DELTA * Float32(sumi3))
+        # Final result: d * (sumi1 + sumi2 + IQ1S_DELTA * sumi3)
+        sumf += d * (Float32(sumi1) + Float32(sumi2) + IQ1S_DELTA * Float32(sumi3))
 
     return sumf
