@@ -19,7 +19,8 @@ BLAS_XLINK := -Xlinker "-framework" -Xlinker "Accelerate"
         server cli rpc-server infer_train version check-mem bench_cpu bench_pool \
         bench_transformer_core bench_blas bench_dequant bench_simd \
         bench_q8k_vs_fp32 bench_qmatmul_threading test-kernel dump-gguf ref-forward \
-        test-q2k-perf test-q3k-perf test-q4k-perf test-q4k-multisize test-q5k-perf test-q5k-multisize test-q6k-perf test-q6k-multisize
+        test-q2k-perf test-q3k-perf test-q4k-perf test-q4k-multisize test-q5k-perf test-q5k-multisize test-q6k-perf test-q6k-multisize \
+        test-iq4xs-perf
 
 # M12: the Q4-resident matmul pool workers as a standalone Mojo shared
 # library.  Mojo 1.0 only honors @export in a build's entry module and
@@ -187,18 +188,16 @@ test-m6: test-m6-mojo test-m6-python
 # M7: everything (regression suites + the M7 feature suites).
 test-m7: test test-m3 test-m5-mojo test-m6-mojo test-m7-mojo test-m7-python
 
-# M10: the it-server binary (llama-server-compatible HTTP service; the
-# renamed M7 CLI - its generation role moved to it-cli, its RPC worker to
-# it-rpc-server).  Shared code: src/core/cli_common + src/core/http.
+# M10: the it-server binary (HTTP service.
+# Shared code: src/core/cli_common + src/core/http.
 server: tp version
 	$(MOJO) build -I . src/core/server-cli/it_server.mojo $(TP_XLINK) -o it-server
 
-# M10: the it-cli binary (llama-cli-compatible quick-verification CLI).
+# M10: the it-cli binary (quick-verification CLI).
 cli: tp version
 	$(MOJO) build -I . src/core/cli/it_cli.mojo $(TP_XLINK) $(BLAS_XLINK) -o it-cli
 
-# M8: the it-rpc-server worker binary (llama.cpp-style `llama-rpc-server`),
-# split out of the main CLI in M10.
+# M8: the it-rpc-server worker binary, split out of the main CLI in M10.
 rpc-server: tp version
 	$(MOJO) build -I . src/core/server-cli/it_rpc_server.mojo $(TP_XLINK) \
 		-o it-rpc-server
@@ -320,40 +319,32 @@ test-q2k-perf: tp
 	$(MOJO) build -I . -O3 tests/test_q2k_mojo_real.mojo $(TP_XLINK) -o tests/test_q2k_mojo_real
 	./tests/test_q2k_mojo_real
 
-# Q3_K performance comparison test - Mojo implementation only
-# For llama.cpp C test, see llama_cpp测试模板.md
+# Q3_K performance test
 test-q3k-perf: tp
 	$(MOJO) build -I . -O3 tests/test_q3k_mojo_real.mojo $(TP_XLINK) -o tests/test_q3k_mojo_real
 	./tests/test_q3k_mojo_real
 
-# Q4_K performance comparison - both llama.cpp and Mojo
+# Q4_K performance test
 test-q4k-perf: tp
-	gcc -O3 -o test_q4k_llama_real test_q4k_llama_real.c
-	./test_q4k_llama_real
 	$(MOJO) build -I . -O3 tests/test_q4k_mojo_real.mojo $(TP_XLINK) -o tests/test_q4k_mojo_real
 	./tests/test_q4k_mojo_real
 
 # Q4_K multi-size performance test - verify stability across different batch sizes
 test-q4k-multisize: tp
-	gcc -O3 -o test_q4k_multisize test_q4k_multisize.c
-	./test_q4k_multisize
 	$(MOJO) build -I . -O3 tests/test_q4k_multisize.mojo $(TP_XLINK) -o tests/test_q4k_multisize
 	./tests/test_q4k_multisize
 
-# Q5_K performance test - Mojo implementation only
-# For llama.cpp C test, see test_q5k_llama_real.c (comparison tool, not in Makefile)
+# Q5_K performance test
 test-q5k-perf: tp
 	$(MOJO) build -I . -O3 tests/test_q5k_mojo_real.mojo $(TP_XLINK) -o tests/test_q5k_mojo_real
 	./tests/test_q5k_mojo_real
 
-# Q5_K multi-size performance test - Mojo implementation only
-# For llama.cpp C test, see test_q5k_multisize.c (comparison tool, not in Makefile)
+# Q5_K multi-size performance test
 test-q5k-multisize: tp
 	$(MOJO) build -I . -O3 tests/test_q5k_multisize.mojo $(TP_XLINK) -o tests/test_q5k_multisize
 	./tests/test_q5k_multisize
 
-# Q6_K performance test - Mojo implementation only
-# For llama.cpp C test, see test_q6k_llama_real.c (comparison tool, not in Makefile)
+# Q6_K performance test
 test-q6k-perf: tp
 	$(MOJO) build -I . -O3 tests/test_q6k_mojo_real.mojo $(TP_XLINK) -o tests/test_q6k_mojo_real
 	./tests/test_q6k_mojo_real
@@ -362,6 +353,11 @@ test-q6k-perf: tp
 test-q6k-multisize: tp
 	$(MOJO) build -I . -O3 tests/test_q6k_multisize.mojo $(TP_XLINK) -o tests/test_q6k_multisize
 	./tests/test_q6k_multisize
+
+# IQ4_XS × Q8_K performance test (importance quantization)
+test-iq4xs-perf: tp
+	$(MOJO) build -I . -O3 tests/bench_iq4xs_neon.mojo $(TP_XLINK) -o tests/bench_iq4xs_neon
+	./tests/bench_iq4xs_neon
 
 # FP16/FP32 weight-major matmul performance test (actual inference kernel)
 test-fp-matmul: tp
@@ -394,14 +390,12 @@ clean:
 	rm -f tests/bench_qwen3
 	rm -f tests/bench_q4k_matmul tests/bench_hunyuan tests/bench_decode_breakdown tests/bench_decode_gpu tests/test_gpu_ffn
 	rm -f tests/test_gpu_weight_proj tests/test_tiled_matmul tests/bench_tiled_matmul tests/bench_dynamic_dispatch
-	rm -f tests/bench_q3k_llama bench_q3k_mojo bench_q3k_compare tests/test_q3k_llama_real tests/test_q3k_mojo_real test_q3k_simple test_q3k_kernel
 	rm -f tests/test_q2k_mojo_real
 	rm -f tests/test_q4k_mojo_real tests/test_q4k_multisize
 	rm -f tests/test_q5k_mojo_real tests/test_q5k_multisize
 	rm -f tests/test_q6k_mojo_real tests/test_q6k_multisize
 	rm -f tests/test_fp_weight_matmul
-	rm -f test_q4k_llama_real test_q4k_multisize
-	rm -rf tests/test_q3k_llama_real_debug.dSYM
+	rm -f tests/bench_iq4xs tests/test_iq4xs tests/bench_iq4xs_neon tests/bench_iq4xs_single tests/bench_iq4xs_multisize tests/test_neon_tbl
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
 	      python/infer_train/_lib/libinfer_train_mwq.dylib
