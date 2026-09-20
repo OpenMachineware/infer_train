@@ -642,6 +642,23 @@ def neon_vdupq_n_u16(value: UInt16) -> SIMD[DType.uint16, 8]:
 
 
 @always_inline
+def neon_vdupq_n_u32(value: UInt32) -> SIMD[DType.uint32, 4]:
+    """Duplicate scalar to all lanes of uint32x4.
+
+    Equivalent to vdupq_n_u32 in ARM NEON.
+    Uses dup.4s instruction.
+    """
+    # Use ${1:w} modifier to get W register name (32-bit) instead of X (64-bit)
+    return inlined_assembly[
+        "dup $0.4s, ${1:w}",
+        SIMD[DType.uint32, 4],
+        UInt32,
+        constraints="=w,r",
+        has_side_effect=False,
+    ](value)
+
+
+@always_inline
 def neon_vmovl_high_u8(a: SIMD[DType.uint8, 16]) -> SIMD[DType.uint16, 8]:
     """Widen high 8 bytes of uint8x16 to uint16x8.
 
