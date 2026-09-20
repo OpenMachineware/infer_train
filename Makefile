@@ -367,6 +367,10 @@ test-iq3s-correctness: tp
 	$(MOJO) build -I . -O3 tests/test_iq3s_correctness.mojo $(TP_XLINK) -o tests/test_iq3s_correctness
 	./tests/test_iq3s_correctness
 
+test-iq3xxs-perf: tp
+	$(MOJO) build -I . -O3 tests/bench_iq3xxs_neon.mojo $(TP_XLINK) -o tests/bench_iq3xxs_neon
+	./tests/bench_iq3xxs_neon
+
 # FP16/FP32 weight-major matmul performance test (actual inference kernel)
 test-fp-matmul: tp
 	$(MOJO) build -I . -O3 tests/test_fp_weight_matmul.mojo $(TP_XLINK) $(BLAS_XLINK) -o tests/test_fp_weight_matmul
@@ -404,7 +408,7 @@ clean:
 	rm -f tests/test_q6k_mojo_real tests/test_q6k_multisize
 	rm -f tests/test_fp_weight_matmul
 	rm -f tests/bench_iq4xs tests/test_iq4xs tests/bench_iq4xs_neon tests/bench_iq4xs_single tests/bench_iq4xs_multisize tests/test_neon_tbl
-	rm -f tests/bench_iq3s_neon tests/test_iq3s_correctness
+	rm -f tests/bench_iq3s_neon tests/bench_iq3xxs_neon tests/test_iq3s_correctness
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
 	      python/infer_train/_lib/libinfer_train_mwq.dylib
