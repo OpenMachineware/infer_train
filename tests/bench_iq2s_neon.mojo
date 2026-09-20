@@ -51,9 +51,13 @@ def main():
         # d = 1.0
         y.unsafe_offset(y_base).unsafe_bitcast[Scalar[DType.float32]]().unsafe_store(Scalar[DType.float32](1.0))
 
-        # qs[256]
+        # qs[256] - signed int8 values (match llama.cpp: (i+j+1)%256 - 128)
         for j in range(256):
-            y.unsafe_store(offset=y_base + 4 + j, val=UInt8((i + j + 1) % 256))
+            var val = ((i + j + 1) % 256) - 128
+            # Convert to unsigned byte (bitcast from int8 to uint8)
+            if val < 0:
+                val = val + 256
+            y.unsafe_store(offset=y_base + 4 + j, val=UInt8(val))
 
     var x_ptr = Pointer[UInt8, MutUntrackedOrigin](x)
     var y_ptr = Pointer[UInt8, MutUntrackedOrigin](y)

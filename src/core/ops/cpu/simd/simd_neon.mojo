@@ -698,6 +698,12 @@ def neon_vorrq_u8(a: SIMD[DType.uint8, 16], b: SIMD[DType.uint8, 16]) -> SIMD[DT
 
 
 @always_inline
+def neon_vandq_u8(a: SIMD[DType.uint8, 16], b: SIMD[DType.uint8, 16]) -> SIMD[DType.uint8, 16]:
+    """Bitwise AND of two uint8x16 vectors."""
+    return a & b
+
+
+@always_inline
 def neon_vreinterpretq_u8_u32(a: SIMD[DType.uint32, 4]) -> SIMD[DType.uint8, 16]:
     """Reinterpret uint32x4 as uint8x16 (no-op, just bitcast)."""
     return bitcast[DType.uint8, 16](a)
@@ -748,6 +754,27 @@ def neon_addv(v: SIMD[DType.int32, 4]) -> Int32:
         Int32,
         has_side_effect=False,
     ](v)
+
+
+# ============================================================================
+# TBL (Table Lookup) - for efficient sign expansion in IQ kernels
+# ============================================================================
+
+@always_inline
+def neon_tbl1(table: SIMD[DType.uint8, 16], indices: SIMD[DType.uint8, 16]) -> SIMD[DType.uint8, 16]:
+    """NEON TBL1: Table lookup using bytes from one vector.
+
+    For each index byte i:
+    - If index < 16: result[i] = table[index]
+    - If index >= 16: result[i] = 0
+
+    Equivalent to vqtbl1q_u8 in ARM NEON.
+    """
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.tbl1.v16i8",
+        SIMD[DType.uint8, 16],
+        has_side_effect=False,
+    ](table, indices)
 
 
 def vec_dot_q4_k_q8_k_full(
