@@ -821,6 +821,8 @@ struct KVCacheLayer(Copyable, Movable):
     var filled: Int  # number of valid positions (0..max_len)
     var page_size: Int  # 0 = dense; > 0 = paged
     var block_table: List[Int]  # position page -> block index (paged)
+    var free_blocks: List[Int]  # available blocks for allocation (paged)
+    var n_blocks: Int  # total blocks allocated (paged)
     var window: Int  # sliding window; 0 = unlimited
     var kv_type: KVCacheType  # FP16 (default) / Q4_0 / Q5_0 / Q8_0 / BF16 / F32
     var n_kv_heads: Int
@@ -840,6 +842,8 @@ struct KVCacheLayer(Copyable, Movable):
         self.filled = 0
         self.page_size = 0
         self.block_table = List[Int]()
+        self.free_blocks = List[Int]()
+        self.n_blocks = 0
         self.window = 0
         # NOTE: no self-method calls below (flow analysis: every field must
         # be initialized before `self` is used), so the layout is computed
@@ -888,6 +892,10 @@ struct KVCacheLayer(Copyable, Movable):
         self.block_table = List[Int]()
         for b in existing.block_table:
             self.block_table.append(b)
+        self.free_blocks = List[Int]()
+        for b in existing.free_blocks:
+            self.free_blocks.append(b)
+        self.n_blocks = existing.n_blocks
         self.window = existing.window
         self.kv_type = existing.kv_type
         self.n_kv_heads = existing.n_kv_heads
@@ -912,35 +920,106 @@ struct KVCacheLayer(Copyable, Movable):
         return nb * KV_Q8_BLOCK_BYTES
 
     def enable_paged(mut self, page_size: Int, n_kv_heads: Int, head_dim: Int):
-        """Switch this layer to paged storage (blocks of `page_size`)."""
+        """Switch this layer to paged storage (blocks of `page_size`).
+
+        Dynamic mode: start with 0 blocks, allocate on demand via ensure_capacity().
+        """
         if page_size < 1:
             unimplemented("KVCacheLayer.enable_paged: bad page size")
-        var n_blocks = (self.max_len + page_size - 1) // page_size
+
         self.page_size = page_size
-        if self.is_quantized():
-            var rb = self.row_bytes()
-            self.kq = tensor_zeros[DType.uint8, 1](
-                StaticTuple[Int, 1](n_blocks * n_kv_heads * page_size * rb)
-            )
-            self.vq = tensor_zeros[DType.uint8, 1](
-                StaticTuple[Int, 1](n_blocks * n_kv_heads * page_size * rb)
-            )
-        else:
-            self.k = tensor_zeros[DType.float16, 3](
-                StaticTuple[Int, 3](n_blocks, n_kv_heads, page_size * head_dim)
-            )
-            self.v = tensor_zeros[DType.float16, 3](
-                StaticTuple[Int, 3](n_blocks, n_kv_heads, page_size * head_dim)
-            )
+        self.n_blocks = 0
+        self.free_blocks = List[Int]()
         self.block_table = List[Int]()
-        for b in range(n_blocks):
-            self.block_table.append(b)
+
+        # Initialize empty storage (will grow dynamically)
+        if self.is_quantized():
+            self.kq = Tensor[DType.uint8, 1](StaticTuple[Int, 1](0))
+            self.vq = Tensor[DType.uint8, 1](StaticTuple[Int, 1](0))
+        else:
+            self.k = Tensor[DType.float16, 3](StaticTuple[Int, 3](0, 0, 0))
+            self.v = Tensor[DType.float16, 3](StaticTuple[Int, 3](0, 0, 0))
 
     def set_window(mut self, window: Int):
         self.window = window
 
     def reset(mut self):
         self.filled = 0
+        # Return all blocks to free pool for paged mode
+        if self.page_size > 0:
+            self.free_blocks = List[Int]()
+            for b in range(self.n_blocks):
+                self.free_blocks.append(b)
+            self.block_table = List[Int]()
+
+    # -- dynamic block allocation (paged mode) -------------------------------
+
+    def alloc_block(mut self) -> Int:
+        """Allocate a block, grow storage if pool empty. Return block index."""
+        if self.page_size == 0:
+            unimplemented("KVCacheLayer.alloc_block: not in paged mode")
+
+        if len(self.free_blocks) == 0:
+            # No free blocks - grow storage
+            self._grow_blocks()
+
+        var block = self.free_blocks.pop()
+        return block
+
+    def _grow_blocks(mut self):
+        """Grow storage by adding a new block (reallocate tensors)."""
+        if self.page_size == 0:
+            unimplemented("KVCacheLayer._grow_blocks: not in paged mode")
+
+        var new_block_id = self.n_blocks
+        self.n_blocks += 1
+
+        if self.is_quantized():
+            var rb = self.row_bytes()
+            # Grow kq/vq by one block
+            var old_size = self.kq.numel()
+            var new_size = old_size + self.n_kv_heads * self.page_size * rb
+            var new_kq = tensor_zeros[DType.uint8, 1](StaticTuple[Int, 1](new_size))
+            var new_vq = tensor_zeros[DType.uint8, 1](StaticTuple[Int, 1](new_size))
+            # Copy old data
+            for i in range(old_size):
+                new_kq.set(i, self.kq.get(i))
+                new_vq.set(i, self.vq.get(i))
+            self.kq = new_kq
+            self.vq = new_vq
+        else:
+            # Grow k/v tensors - need to reallocate
+            # Shape: [n_blocks, n_kv_heads, page_size * head_dim]
+            var new_k = tensor_zeros[DType.float16, 3](
+                StaticTuple[Int, 3](self.n_blocks, self.n_kv_heads, self.page_size * self.head_dim)
+            )
+            var new_v = tensor_zeros[DType.float16, 3](
+                StaticTuple[Int, 3](self.n_blocks, self.n_kv_heads, self.page_size * self.head_dim)
+            )
+            # Copy old data block by block
+            if self.n_blocks > 1:
+                var old_blocks = self.n_blocks - 1
+                for blk in range(old_blocks):
+                    for h in range(self.n_kv_heads):
+                        for d in range(self.page_size * self.head_dim):
+                            var idx = (blk * self.n_kv_heads + h) * self.page_size * self.head_dim + d
+                            new_k.set(idx, self.k.get(idx))
+                            new_v.set(idx, self.v.get(idx))
+            self.k = new_k
+            self.v = new_v
+
+        # Add new block to free pool
+        self.free_blocks.append(new_block_id)
+
+    def ensure_capacity(mut self, n_tokens: Int):
+        """Ensure enough blocks for n_tokens. Call before filling."""
+        if self.page_size == 0:
+            return  # Dense mode uses fixed max_len
+
+        var n_pages_needed = (n_tokens + self.page_size - 1) // self.page_size
+        while len(self.block_table) < n_pages_needed:
+            var block = self.alloc_block()
+            self.block_table.append(block)
 
     # -- storage accessors (dense or paged, transparent to the MHA) ----------
 
@@ -948,6 +1027,11 @@ struct KVCacheLayer(Copyable, Movable):
         """Physical slot for a logical `position` (ring reuse under SWA)."""
         if self.window > 0 and self.window < self.max_len:
             return position % self.window
+        if self.page_size > 0:
+            # Paged mode: dynamic growth, no max_len check
+            if position < 0:
+                unimplemented("KVCacheLayer: negative position")
+            return position
         if position < 0 or position >= self.max_len:
             unimplemented("KVCacheLayer: position out of range")
         return position

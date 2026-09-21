@@ -180,6 +180,11 @@ test-chunked-attention:
 	$(MOJO) build -I . tests/test_chunked_attention.mojo -o tests/test_chunked_attention
 	./tests/test_chunked_attention
 
+# Paged KV Cache test (dynamic block allocation)
+test-paged-kv:
+	$(MOJO) build -I . tests/test_paged_kv_cache.mojo -o tests/test_paged_kv_cache
+	./tests/test_paged_kv_cache
+
 test-m7-python: tp
 	$(MOJO) build -I . src/bindings/infer_train_bindings.mojo $(TP_XLINK) \
 		--emit shared-lib -o python/infer_train/_lib/libinfer_train.dylib
@@ -467,6 +472,8 @@ clean:
 	rm -f tests/bench_kv_cache_neon
 	rm -f tests/bench_flash_attention
 	rm -f tests/bench_flash_attention_llama
+	rm -f tests/test_chunked_attention
+	rm -f tests/test_paged_kv_cache
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
 	      python/infer_train/_lib/libinfer_train_mwq.dylib

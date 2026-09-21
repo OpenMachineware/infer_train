@@ -374,9 +374,13 @@ def mha_forward_v2(
     # store K/V into the cache (dense or paged; M7 1.4).  Quantized caches
     # (kv_cache_type Q4_0/Q8_0) quantize each (head, position) row on write
     # (set_kv_row -> quantize_row_q4_0/q8_0).
-    var max_len = cache.max_len
-    if start_pos < 0 or start_pos >= max_len:
-        unimplemented("mha: position beyond KV cache capacity")
+    # Paged mode: ensure capacity before write, allows dynamic growth.
+    if cache.page_size > 0:
+        cache.ensure_capacity(start_pos + 1)
+    else:
+        var max_len = cache.max_len
+        if start_pos < 0 or start_pos >= max_len:
+            unimplemented("mha: position beyond KV cache capacity")
     if cache.is_quantized():
         var k_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
         var v_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
