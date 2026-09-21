@@ -39,6 +39,7 @@ from ..cpu.rope_cpu import (
     rope_cpu_backward,
     rope_cpu_rot,
 )
+from ..cpu.flash_attention_cpu import flash_attention_decode
 from .kv_cache import KVCacheLayer
 from std.utils.static_tuple import StaticTuple
 from std.math import exp, sqrt
@@ -406,121 +407,23 @@ def mha_forward_v2(
         StaticTuple[Int, 3](n_heads, 1, head_dim)
     )
 
-    # M7 perf: dense caches are read through hoisted raw pointers; paged
-    # caches go through the (slower but allocation-free) accessors.
-    # Quantized caches (kv_cache_type Q4_0/Q8_0) dequantize one row at a
-    # time into fp16 scratch (get_k_row/get_v_row -> dequantize_row_*),
-    # so the scores/output math below is the same fp16-precision path.
-    var quant = cache.is_quantized()
-    var k_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
-    var v_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
-    var k_ptr = cache.k.data()
-    var v_ptr = cache.v.data()
-    var dense = cache.page_size == 0
-    # SIMD-optimized attention computation
-    comptime SIMD_W = 8  # NEON width for Float32
-    var head_main = (head_dim // SIMD_W) * SIMD_W
-
+    # Flash Attention: process each head with online softmax
     for h in range(n_heads):
         var kv_head = h * n_kv_heads // n_heads
-        var scores = List[Float32]()
-        var q_ptr = q_rot.data().unsafe_offset(h * head_dim)
+        var q_vec = Tensor[DType.float16, 1](StaticTuple[Int, 1](head_dim))
 
-        for t in range(first, seq):
-            var acc = Float32(0)
-            var k_base = (kv_head * max_len + t) * head_dim
-            if quant:
-                cache.get_k_row(kv_head, t, k_row)
-                # SIMD dot product
-                var acc_vec = SIMD[DType.float32, SIMD_W](0)
-                var d = 0
-                while d < head_main:
-                    var qv = q_ptr.unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
-                    var kv = k_row.data().unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
-                    acc_vec = acc_vec + qv * kv
-                    d += SIMD_W
-                acc = acc_vec.reduce_add()
-                while d < head_dim:
-                    acc += Float32(q_rot.get(h * head_dim + d)) * Float32(k_row.get(d))
-                    d += 1
-            else:
-                if dense:
-                    # SIMD dot product for dense cache
-                    var acc_vec = SIMD[DType.float32, SIMD_W](0)
-                    var d = 0
-                    while d < head_main:
-                        var qv = q_ptr.unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
-                        var kv = k_ptr.unsafe_load[width=SIMD_W](offset=k_base + d).cast[DType.float32]()
-                        acc_vec = acc_vec + qv * kv
-                        d += SIMD_W
-                    acc = acc_vec.reduce_add()
-                    while d < head_dim:
-                        acc += Float32(q_rot.get(h * head_dim + d)) * Float32(
-                            k_ptr.unsafe_load[width=1](offset=k_base + d)
-                        )
-                        d += 1
-                else:
-                    for d in range(head_dim):
-                        acc += Float32(q_rot.get(h * head_dim + d)) * cache.get_k(kv_head, t, d)
-            scores.append(acc * scale)
+        # Extract Q vector for this head
+        for d in range(head_dim):
+            q_vec.set(d, q_rot.get(h * head_dim + d))
 
-        var n_scores = seq - first
-        # Softmax: find max (scalar loop - scores are sequential)
-        var mx = Float32(-3.0e38)
-        for i in range(n_scores):
-            if scores[i] > mx:
-                mx = scores[i]
+        # Flash Attention decode
+        var out_vec = flash_attention_decode(
+            q_vec, cache, kv_head, start_pos, head_dim, scale
+        )
 
-        # Softmax: compute exp and sum
-        var total = Float32(0)
-        for i in range(n_scores):
-            var e = exp(scores[i] - mx)
-            scores[i] = e
-            total += e
-
-        var inv = Float32(1.0) / total
-        for i in range(n_scores):
-            scores[i] = scores[i] * inv
-
-        if quant:
-            # dequantize each V row once, then fold it into every output dim
-            for d in range(head_dim):
-                var acc_f = Float32(0)
-                for i in range(n_scores):
-                    acc_f += scores[i] * Float32(v_row.get(d))
-                out.set(h * head_dim + d, Scalar[DType.float16](acc_f))
-        else:
-            if dense:
-                # SIMD output accumulation for dense cache
-                var d = 0
-                while d + SIMD_W <= head_dim:
-                    var acc_vec = SIMD[DType.float32, SIMD_W](0)
-                    for i in range(n_scores):
-                        var s = SIMD[DType.float32, SIMD_W](scores[i])
-                        var vv = v_ptr.unsafe_load[width=SIMD_W](
-                            offset=(kv_head * max_len + first + i) * head_dim + d
-                        ).cast[DType.float32]()
-                        acc_vec = acc_vec + s * vv
-                    for j in range(SIMD_W):
-                        out.set(h * head_dim + d + j, Scalar[DType.float16](acc_vec[j]))
-                    d += SIMD_W
-                # Handle remainder
-                while d < head_dim:
-                    var acc_f = Float32(0)
-                    for i in range(n_scores):
-                        acc_f += scores[i] * Float32(
-                            v_ptr.unsafe_load[width=1](
-                                offset=(kv_head * max_len + first + i) * head_dim + d
-                            )
-                        )
-                    out.set(h * head_dim + d, Scalar[DType.float16](acc_f))
-                    d += 1
-            else:
-                for d in range(head_dim):
-                    var acc_f = Float32(0)
-                    for i in range(n_scores):
-                        acc_f += scores[i] * cache.get_v(kv_head, first + i, d)
-                    out.set(h * head_dim + d, Scalar[DType.float16](acc_f))
+        # Store result
+        for d in range(head_dim):
+            out.set(h * head_dim + d, out_vec.get(d))
 
     if opts.gate:
         # qwen35: fused Q+gate projection - the gate lives in the second

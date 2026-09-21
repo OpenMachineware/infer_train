@@ -86,15 +86,15 @@ def _flash_attention_decode_neon(
     head_dim: Int,
     scale: Float32,
 ) -> Tensor[DType.float16, 1]:
-    """Flash Attention NEON SIMD implementation."""
+    """Flash Attention NEON SIMD implementation.
 
     Args:
         q: Query vector [head_dim]
         cache: KV cache
         kv_head: KV head index (for GQA)
-        start_pos: Current position (attend to [first, start_pos])
+        start_pos: Current position
         head_dim: Head dimension
-        scale: Attention scale (1/sqrt(head_dim))
+        scale: Attention scale
 
     Returns:
         Output vector [head_dim]
