@@ -7,6 +7,23 @@ from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
 from std.memory.unsafe import bitcast
 from std.builtin.globals import global_constant
+from std.sys import llvm_intrinsic
+
+# Struct for loading 4 vectors of int8
+struct NeonS8x4(TrivialRegisterPassable):
+    var val0: SIMD[DType.int8, 16]
+    var val1: SIMD[DType.int8, 16]
+    var val2: SIMD[DType.int8, 16]
+    var val3: SIMD[DType.int8, 16]
+
+
+@always_inline
+def neon_ld1_s8_x4(ptr: Pointer[UInt8, MutUntrackedOrigin]) -> NeonS8x4:
+    """Load 64 bytes using ld1.16b instruction (4 vectors)."""
+    var ptr_s8 = ptr.unsafe_bitcast[Pointer[Int8, MutUntrackedOrigin]]()
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.ld1x4.v16i8.p0i8", NeonS8x4, has_side_effect=True
+    ](ptr_s8)
 
 # IQ1S Grid (2048 entries, each entry is 8 int8 values encoded as uint64)
 # Extracted from llama.cpp-0.4.1/ggml/src/ggml-common.h
@@ -587,11 +604,6 @@ def vec_dot_iq1s_q8k_neon(
             var qs_bytes = x.unsafe_load[width=8](offset=qs_base)
 
             # Construct grid indices and load weights
-            # Grid index = qs[i] | (((qh >> 3*l) & 7) << 8)
-            # For l=0: shift = 0, mask = (qh >> 0) & 7
-            # For l=1: shift = 3, mask = (qh >> 3) & 7
-            # For l=2: shift = 6, mask = (qh >> 6) & 7
-            # For l=3: shift = 9, mask = (qh >> 9) & 7
             var q1b0 = combine_s8_from_u64(
                 grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[0]) | (UInt32((qh0 >> 0) & UInt16(7)) << 8))),
                 grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[1]) | (UInt32((qh0 >> 3) & UInt16(7)) << 8))),
@@ -609,26 +621,20 @@ def vec_dot_iq1s_q8k_neon(
                 grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[7]) | (UInt32((qh1 >> 9) & UInt16(7)) << 8))),
             )
 
-            # Load Q8 weights (64 bytes = 4 vectors of 16 int8)
-            var q8b0_bytes = y.unsafe_load[width=16](offset=q8_offset + (ib // 2) * 64)
-            var q8b1_bytes = y.unsafe_load[width=16](offset=q8_offset + (ib // 2) * 64 + 16)
-            var q8b2_bytes = y.unsafe_load[width=16](offset=q8_offset + (ib // 2) * 64 + 32)
-            var q8b3_bytes = y.unsafe_load[width=16](offset=q8_offset + (ib // 2) * 64 + 48)
-
-            var q8b0 = bitcast[DType.int8, 16](q8b0_bytes)
-            var q8b1 = bitcast[DType.int8, 16](q8b1_bytes)
-            var q8b2 = bitcast[DType.int8, 16](q8b2_bytes)
-            var q8b3 = bitcast[DType.int8, 16](q8b3_bytes)
+            # Load Q8 weights (64 bytes) - one instruction for all 4 vectors
+            var q8b = neon_ld1_s8_x4(y.unsafe_offset(q8_offset))
+            q8_offset += 64
 
             # SDOT: dot product
-            var p1 = neon_sdot(SIMD[DType.int32, 4](0), q1b0, q8b0)
-            p1 = neon_sdot(p1, q1b1, q8b1)
-            var p2 = neon_sdot(SIMD[DType.int32, 4](0), q1b2, q8b2)
-            p2 = neon_sdot(p2, q1b3, q8b3)
+            var p1 = neon_sdot(SIMD[DType.int32, 4](0), q1b0, q8b.val0)
+            p1 = neon_sdot(p1, q1b1, q8b.val1)
+            var p2 = neon_sdot(SIMD[DType.int32, 4](0), q1b2, q8b.val2)
+            p2 = neon_sdot(p2, q1b3, q8b.val3)
 
             # Scales: ls = 2*((qh >> 12) & 7) + 1
-            var ls1 = Int32(2 * Int((qh0 >> 12) & UInt16(7)) + 1)
-            var ls2 = Int32(2 * Int((qh1 >> 12) & UInt16(7)) + 1)
+            # Optimized: ((qh >> 11) & 0xe) | 1 (same result, fewer ops)
+            var ls1 = Int32((UInt16(qh0 >> 11) & UInt16(0xe)) | UInt16(1))
+            var ls2 = Int32((UInt16(qh1 >> 11) & UInt16(0xe)) | UInt16(1))
 
             # Accumulate
             sumi1 += neon_addv(p1) * ls1

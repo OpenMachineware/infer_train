@@ -159,13 +159,11 @@ def vec_dot_iq3xxs_q8k_neon(
             var q8b = neon_ld1_s8_x4(y.unsafe_offset(q8_ptr))
             q8_ptr += 64
 
-            # Load scales_and_signs (2 x uint32) for 2 sub-blocks
-            var gas0 = x.unsafe_load[width=4](offset=gas_ptr)
-            var gas1 = x.unsafe_load[width=4](offset=gas_ptr + 4)
+            # Load scales_and_signs (2 x uint32) for 2 sub-blocks - direct load
+            var gas_ptr_u32 = x.unsafe_offset(gas_ptr).unsafe_bitcast[Scalar[DType.uint32]]()
+            var aux32_0 = gas_ptr_u32.unsafe_load[width=1](offset=0)
+            var aux32_1 = gas_ptr_u32.unsafe_load[width=1](offset=1)
             gas_ptr += 8
-
-            var aux32_0 = UInt32(gas0[0]) | (UInt32(gas0[1]) << 8) | (UInt32(gas0[2]) << 16) | (UInt32(gas0[3]) << 24)
-            var aux32_1 = UInt32(gas1[0]) | (UInt32(gas1[1]) << 8) | (UInt32(gas1[2]) << 16) | (UInt32(gas1[3]) << 24)
 
             # Load 16 grid indices for 2 sub-blocks (each sub-block uses 8 grid indices)
             var q3_vals = x.unsafe_load[width=16](offset=q3_ptr)

@@ -28,9 +28,9 @@ def main():
         iq1_ptr.unsafe_store(offset=block_offset, val=UInt8(0x00))
         iq1_ptr.unsafe_store(offset=block_offset + 1, val=UInt8(0x3C))
 
-        # qs[32]: grid indices - match llama.cpp: x[i].qs[j] = (uint8_t)(j % 256)
+        # qs[32]: grid indices - match llama.cpp: x[i].qs[j] = (uint8_t)((i + j) % 256)
         for j in range(32):
-            iq1_ptr.unsafe_offset(block_offset + 2 + j).unsafe_store(UInt8(j % 256))
+            iq1_ptr.unsafe_offset(block_offset + 2 + j).unsafe_store(UInt8((i + j) % 256))
 
         # qh[8]: high bits + scale + sign - match llama.cpp: x[i].qh[j] = 0
         for j in range(8):

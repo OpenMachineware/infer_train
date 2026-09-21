@@ -8,7 +8,7 @@ from std.sys import llvm_intrinsic
 from std.builtin.globals import global_constant
 from std.memory.unsafe import bitcast
 from src.core.ops.cpu.simd.simd_neon import (
-    neon_vmulq_s8, neon_sdot, neon_addv,
+    neon_vmulq_s8, neon_sdot, neon_addv, neon_vpaddq_s32,
 )
 
 comptime QK_K = 256
@@ -257,30 +257,43 @@ def vec_dot_iq2xs_q8k_neon(
         var scales_ptr = x_base + 66  # scales starts at offset 66
         var q8_ptr = y_base + 4  # q8 starts after d (4 bytes)
 
-        # Process scales: load 8 bytes, split into 16 nibbles, expand to 16 int32 scales
-        var scales8 = x.unsafe_load[width=8](offset=scales_ptr)
+        # Process scales: load 8 bytes, split into 16 nibbles - VECTORIZED
+        # Use vectorized load instead of scalar loop
+        var scales8_raw = x.unsafe_load[width=8](offset=scales_ptr)
 
-        # Build 16-element uint8 scale vector
-        var scales_u8 = SIMD[DType.uint8, 16]()
-        for k in range(8):
-            var lo = UInt8(UInt8(scales8[k]) & 0xF)
-            var hi = UInt8(UInt8(scales8[k]) >> 4)
-            scales_u8[k * 2] = lo
-            scales_u8[k * 2 + 1] = hi
+        # Vectorized nibble extraction
+        var mask4 = SIMD[DType.uint8, 8](0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF)
+        var scales_l = scales8_raw & mask4  # Low nibbles
+        var scales_h = scales8_raw >> 4     # High nibbles
+
+        # Zip: interleave l and h to get [l0, h0, l1, h1, ...]
+        var combined = SIMD[DType.uint8, 16]()
+        combined[0] = scales_l[0]
+        combined[1] = scales_h[0]
+        combined[2] = scales_l[1]
+        combined[3] = scales_h[1]
+        combined[4] = scales_l[2]
+        combined[5] = scales_h[2]
+        combined[6] = scales_l[3]
+        combined[7] = scales_h[3]
+        combined[8] = scales_l[4]
+        combined[9] = scales_h[4]
+        combined[10] = scales_l[5]
+        combined[11] = scales_h[5]
+        combined[12] = scales_l[6]
+        combined[13] = scales_h[6]
+        combined[14] = scales_l[7]
+        combined[15] = scales_h[7]
 
         # Apply formula: 2 * scale + 1
-        scales_u8 = scales_u8 * UInt8(2) + UInt8(1)
+        combined = combined * UInt8(2) + UInt8(1)
 
-        # scales32: 4 int32x4 vectors (matching NEON int32x4x4_t layout)
-        # scales32.val[0] = scales_u8[0:4]  (for ib64=0)
-        # scales32.val[1] = scales_u8[4:8]  (for ib64=1)
-        # scales32.val[2] = scales_u8[8:12] (for ib64=2)
-        # scales32.val[3] = scales_u8[12:16] (for ib64=3)
+        # Vectorized conversion to int32x4 vectors
         var scales32 = NeonI32x4(
-            SIMD[DType.int32, 4](Int32(scales_u8[0]), Int32(scales_u8[1]), Int32(scales_u8[2]), Int32(scales_u8[3])),
-            SIMD[DType.int32, 4](Int32(scales_u8[4]), Int32(scales_u8[5]), Int32(scales_u8[6]), Int32(scales_u8[7])),
-            SIMD[DType.int32, 4](Int32(scales_u8[8]), Int32(scales_u8[9]), Int32(scales_u8[10]), Int32(scales_u8[11])),
-            SIMD[DType.int32, 4](Int32(scales_u8[12]), Int32(scales_u8[13]), Int32(scales_u8[14]), Int32(scales_u8[15])),
+            SIMD[DType.int32, 4](Int32(combined[0]), Int32(combined[1]), Int32(combined[2]), Int32(combined[3])),
+            SIMD[DType.int32, 4](Int32(combined[4]), Int32(combined[5]), Int32(combined[6]), Int32(combined[7])),
+            SIMD[DType.int32, 4](Int32(combined[8]), Int32(combined[9]), Int32(combined[10]), Int32(combined[11])),
+            SIMD[DType.int32, 4](Int32(combined[12]), Int32(combined[13]), Int32(combined[14]), Int32(combined[15])),
         )
 
         var sumi = SIMD[DType.int32, 4](0, 0, 0, 0)
@@ -353,16 +366,10 @@ def vec_dot_iq2xs_q8k_neon(
             var p3 = neon_sdot(SIMD[DType.int32, 4](0, 0, 0, 0), q2u_2, q8b.val2)
             var p4 = neon_sdot(SIMD[DType.int32, 4](0, 0, 0, 0), q2u_3, q8b.val3)
 
-            # Pairwise add (matching llama.cpp: vpaddq_s32(vpaddq_s32(p1, p2), vpaddq_s32(p3, p4)))
-            # t1 = vpaddq_s32(p1, p2) = [p1[0]+p1[1], p1[2]+p1[3], p2[0]+p2[1], p2[2]+p2[3]]
-            # t2 = vpaddq_s32(p3, p4) = [p3[0]+p3[1], p3[2]+p3[3], p4[0]+p4[1], p4[2]+p4[3]]
-            # p  = vpaddq_s32(t1, t2)  = [t1[0]+t1[1], t1[2]+t1[3], t2[0]+t2[1], t2[2]+t2[3]]
-            var p = SIMD[DType.int32, 4](
-                (p1[0] + p1[1]) + (p1[2] + p1[3]),
-                (p2[0] + p2[1]) + (p2[2] + p2[3]),
-                (p3[0] + p3[1]) + (p3[2] + p3[3]),
-                (p4[0] + p4[1]) + (p4[2] + p4[3]),
-            )
+            # Pairwise add using NEON intrinsic (matching llama.cpp: vpaddq_s32(vpaddq_s32(p1, p2), vpaddq_s32(p3, p4)))
+            var t1 = neon_vpaddq_s32(p1, p2)
+            var t2 = neon_vpaddq_s32(p3, p4)
+            var p = neon_vpaddq_s32(t1, t2)
 
             # Multiply-accumulate: sumi = sumi + p * scales32.val[ib64]
             var sc: SIMD[DType.int32, 4]

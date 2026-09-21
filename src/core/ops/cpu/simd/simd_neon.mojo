@@ -82,6 +82,31 @@ def neon_vpaddq_s16(
     ](a, b)
 
 
+def neon_vpaddq_s32(
+    a: SIMD[DType.int32, 4],
+    b: SIMD[DType.int32, 4],
+) -> SIMD[DType.int32, 4]:
+    """NEON pairwise add: [a0+a1, a2+a3, b0+b1, b2+b3]."""
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.addp.v4i32",
+        SIMD[DType.int32, 4],
+        has_side_effect=False,
+    ](a, b)
+
+
+def neon_vmlaq_s32(
+    a: SIMD[DType.int32, 4],
+    b: SIMD[DType.int32, 4],
+    c: SIMD[DType.int32, 4],
+) -> SIMD[DType.int32, 4]:
+    """NEON vector multiply-accumulate: a + b * c."""
+    return llvm_intrinsic[
+        "llvm.fma.v4i32",
+        SIMD[DType.int32, 4],
+        has_side_effect=False,
+    ](a, b, c)
+
+
 def neon_vmull_s16(
     a: SIMD[DType.int16, 4],
     b: SIMD[DType.int16, 4],
