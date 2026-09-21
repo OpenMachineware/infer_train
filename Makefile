@@ -461,6 +461,7 @@ clean:
 	rm -f tests/bench_iq2s_neon tests/test_iq2s_correctness tests/bench_iq2xxs_neon tests/bench_iq2xs_neon tests/bench_iq1s_neon tests/bench_iq1m_neon tests/bench_iq4nl_neon tests/test_q3k_mojo_real
 	rm -f tests/bench_kv_cache_neon
 	rm -f tests/bench_flash_attention
+	rm -f tests/bench_flash_attention_llama
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
 	      python/infer_train/_lib/libinfer_train_mwq.dylib

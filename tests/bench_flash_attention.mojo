@@ -127,46 +127,42 @@ def benchmark_decode():
     print("\n=== Benchmarking decode mode ===")
 
     var context_lengths = [64, 256, 1024, 4096]
+    var kv_types = [
+        (KVCacheType.FP16, "FP16"),
+        (KVCacheType.Q8_0, "Q8_0"),
+        (KVCacheType.Q4_0, "Q4_0"),
+    ]
     var scale = Float32(1.0) / sqrt(Float32(HEAD_DIM))
 
-    for ctx_len in context_lengths:
-        var cache = KVCacheLayer(
-            N_KV_HEADS,
-            ctx_len,
-            HEAD_DIM,
-            KVCacheType.FP16,
-        )
-        fill_kv_cache(cache, ctx_len, HEAD_DIM)
+    for (kv_type, type_name) in kv_types:
+        print("\n--- KV Type: ", type_name, " ---")
 
-        var q = Tensor[DType.float16, 1](StaticTuple[Int, 1](HEAD_DIM))
-        for d in range(HEAD_DIM):
-            q.set(d, Scalar[DType.float16](Float16(Float32(d % 64) / 64.0)))
+        for ctx_len in context_lengths:
+            var cache = KVCacheLayer(
+                N_KV_HEADS,
+                ctx_len,
+                HEAD_DIM,
+                kv_type,
+            )
+            fill_kv_cache(cache, ctx_len, HEAD_DIM)
 
-        # Warmup
-        for _ in range(WARMUP):
-            _ = flash_attention_decode(q, cache, 0, ctx_len - 1, HEAD_DIM, scale)
-            _ = current_attention_decode(q, cache, 0, ctx_len - 1, HEAD_DIM, scale)
+            var q = Tensor[DType.float16, 1](StaticTuple[Int, 1](HEAD_DIM))
+            for d in range(HEAD_DIM):
+                q.set(d, Scalar[DType.float16](Float16(Float32(d % 64) / 64.0)))
 
-        # Measure Flash Attention
-        var start = perf_counter_ns()
-        for _ in range(ITERATIONS):
-            _ = flash_attention_decode(q, cache, 0, ctx_len - 1, HEAD_DIM, scale)
-        var flash_ns = perf_counter_ns() - start
+            # Warmup
+            for _ in range(WARMUP):
+                _ = flash_attention_decode(q, cache, 0, ctx_len - 1, HEAD_DIM, scale)
 
-        # Measure Current
-        start = perf_counter_ns()
-        for _ in range(ITERATIONS):
-            _ = current_attention_decode(q, cache, 0, ctx_len - 1, HEAD_DIM, scale)
-        var current_ns = perf_counter_ns() - start
+            # Measure Flash Attention
+            var start = perf_counter_ns()
+            for _ in range(ITERATIONS):
+                _ = flash_attention_decode(q, cache, 0, ctx_len - 1, HEAD_DIM, scale)
+            var flash_ns = perf_counter_ns() - start
 
-        var flash_ms = Float64(flash_ns) / Float64(ITERATIONS) / 1e6
-        var current_ms = Float64(current_ns) / Float64(ITERATIONS) / 1e6
-        var speedup = current_ms / flash_ms
+            var flash_ms = Float64(flash_ns) / Float64(ITERATIONS) / 1e6
 
-        print("\nContext length: ", ctx_len)
-        print("  Flash Attention: ", flash_ms, " ms")
-        print("  Current impl:    ", current_ms, " ms")
-        print("  Speedup:         ", speedup, "x")
+            print("  ctx=", ctx_len, ": ", flash_ms, " ms")
 
 
 def main():

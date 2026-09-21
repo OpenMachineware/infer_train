@@ -25,6 +25,40 @@ from std.utils import StaticTuple
 comptime SIMD_W = 8
 
 
+@always_inline
+def _dot_product_qk_neon(
+    q_ptr: UnsafePointer[Scalar[DType.float16]],
+    k_ptr: UnsafePointer[Scalar[DType.float16]],
+    head_dim: Int,
+) -> Float32:
+    """NEON SIMD dot product for Q·K^T."""
+    var acc_vec = SIMD[DType.float32, SIMD_W](0)
+    var d = 0
+    while d + SIMD_W <= head_dim:
+        var qv = q_ptr.unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
+        var kv = k_ptr.unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
+        acc_vec = acc_vec + qv * kv
+        d += SIMD_W
+    var acc = acc_vec.reduce_add()
+    while d < head_dim:
+        acc += Float32(q_ptr.unsafe_load(offset=d)) * Float32(k_ptr.unsafe_load(offset=d))
+        d += 1
+    return acc
+
+
+@always_inline
+def _dot_product_qk_scalar(
+    q_ptr: UnsafePointer[Scalar[DType.float16]],
+    k_ptr: UnsafePointer[Scalar[DType.float16]],
+    head_dim: Int,
+) -> Float32:
+    """Scalar dot product fallback."""
+    var acc = Float32(0)
+    for d in range(head_dim):
+        acc += Float32(q_ptr.unsafe_load(offset=d)) * Float32(k_ptr.unsafe_load(offset=d))
+    return acc
+
+
 def flash_attention_decode(
     q: Tensor[DType.float16, 1],
     cache: KVCacheLayer,
@@ -34,6 +68,25 @@ def flash_attention_decode(
     scale: Float32,
 ) -> Tensor[DType.float16, 1]:
     """Flash Attention for decode (single query token).
+
+    Dynamic dispatch: uses NEON SIMD if available, scalar fallback otherwise.
+    """
+    var has_neon = detect_cpu_flags().has_neon()
+    if has_neon:
+        return _flash_attention_decode_neon(q, cache, kv_head, start_pos, head_dim, scale)
+    else:
+        return _flash_attention_decode_scalar(q, cache, kv_head, start_pos, head_dim, scale)
+
+
+def _flash_attention_decode_neon(
+    q: Tensor[DType.float16, 1],
+    cache: KVCacheLayer,
+    kv_head: Int,
+    start_pos: Int,
+    head_dim: Int,
+    scale: Float32,
+) -> Tensor[DType.float16, 1]:
+    """Flash Attention NEON SIMD implementation."""
 
     Args:
         q: Query vector [head_dim]
@@ -155,6 +208,97 @@ def flash_attention_decode(
         S = S * ms + vs
 
     # Final normalization: O /= S
+    var S_inv = Float32(0.0)
+    if S != 0.0:
+        S_inv = Float32(1.0) / S
+    var out = Tensor[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+    for d in range(head_dim):
+        out.set(d, Scalar[DType.float16](Float32(O.get(d)) * S_inv))
+
+    return out
+
+
+def _flash_attention_decode_scalar(
+    q: Tensor[DType.float16, 1],
+    cache: KVCacheLayer,
+    kv_head: Int,
+    start_pos: Int,
+    head_dim: Int,
+    scale: Float32,
+) -> Tensor[DType.float16, 1]:
+    """Flash Attention scalar fallback (no SIMD)."""
+    var max_len = cache.max_len
+    var first = cache.first_position()
+    if first < 0:
+        first = 0
+    var seq = start_pos + 1
+
+    var M = Float32(-3.0e38)
+    var S = Float32(0.0)
+    var O = Tensor[DType.float32, 1](StaticTuple[Int, 1](head_dim))
+
+    var quant = cache.is_quantized()
+    var dense = cache.page_size == 0
+    var k_ptr = cache.k.data()
+    var v_ptr = cache.v.data()
+    var k_row = Tensor[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+    var v_row = Tensor[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+    var q_ptr = q.data()
+
+    for ic in range(first, seq):
+        var score = Float32(0)
+        var k_base = (kv_head * max_len + ic) * head_dim
+
+        if quant:
+            cache.get_k_row(kv_head, ic, k_row)
+            for d in range(head_dim):
+                score += Float32(q_ptr.unsafe_load(offset=d)) * Float32(k_row.get(d))
+        else:
+            if dense:
+                for d in range(head_dim):
+                    score += Float32(q_ptr.unsafe_load(offset=d)) * Float32(
+                        k_ptr.unsafe_load(offset=k_base + d)
+                    )
+            else:
+                for d in range(head_dim):
+                    score += Float32(q_ptr.unsafe_load(offset=d)) * cache.get_k(kv_head, ic, d)
+
+        score *= scale
+
+        var Mold = M
+        var ms = Float32(1.0)
+        var vs = Float32(1.0)
+
+        if score > M:
+            M = score
+            ms = exp(Mold - M)
+            for d in range(head_dim):
+                O.set(d, Scalar[DType.float32](Float32(O.get(d)) * ms))
+        else:
+            vs = exp(score - M)
+
+        if quant:
+            cache.get_v_row(kv_head, ic, v_row)
+            for d in range(head_dim):
+                O.set(d, Scalar[DType.float32](
+                    Float32(O.get(d)) + vs * Float32(v_row.get(d))
+                ))
+        else:
+            if dense:
+                for d in range(head_dim):
+                    O.set(d, Scalar[DType.float32](
+                        Float32(O.get(d)) + vs * Float32(
+                            v_ptr.unsafe_load(offset=(kv_head * max_len + ic) * head_dim + d)
+                        )
+                    ))
+            else:
+                for d in range(head_dim):
+                    O.set(d, Scalar[DType.float32](
+                        Float32(O.get(d)) + vs * cache.get_v(kv_head, ic, d)
+                    ))
+
+        S = S * ms + vs
+
     var S_inv = Float32(0.0)
     if S != 0.0:
         S_inv = Float32(1.0) / S
