@@ -140,6 +140,103 @@ def neon_vmovl_u8(a: SIMD[DType.uint8, 8]) -> SIMD[DType.uint16, 8]:
     ](a)
 
 
+@always_inline
+def neon_vmovl_s8(a: SIMD[DType.int8, 8]) -> SIMD[DType.int16, 8]:
+    """NEON vector move long signed: int8x8 -> int16x8.
+
+    Equivalent to vmovl_s8 in ARM NEON intrinsics.
+    Uses inline assembly to generate precise sshll.8h instruction.
+
+    Assembly: sshll v0.8h, v1.8b, #0
+    This widens 8x int8 to 8x int16 with sign extension.
+    """
+    return inlined_assembly[
+        "sshll $0.8h, $1.8b, #0",
+        SIMD[DType.int16, 8],
+        SIMD[DType.int8, 8],
+        constraints="=w,w",
+        has_side_effect=False,
+    ](a)
+
+
+@always_inline
+def neon_vmovl_high_s8(a: SIMD[DType.int8, 16]) -> SIMD[DType.int16, 8]:
+    """NEON vector move long signed (high half): int8x16 -> int16x8.
+
+    Equivalent to vmovl_high_s8 in ARM NEON intrinsics.
+    Uses inline assembly to generate precise sshll2.8h instruction.
+
+    Assembly: sshll2 v0.8h, v1.16b, #0
+    This widens the high 8x int8 to 8x int16 with sign extension.
+    More efficient than vget_high_s8 + vmovl_s8 combination.
+    """
+    return inlined_assembly[
+        "sshll2 $0.8h, $1.16b, #0",
+        SIMD[DType.int16, 8],
+        SIMD[DType.int8, 16],
+        constraints="=w,w",
+        has_side_effect=False,
+    ](a)
+
+
+@always_inline
+def neon_vmovl_s16(a: SIMD[DType.int16, 4]) -> SIMD[DType.int32, 4]:
+    """NEON vector move long signed: int16x4 -> int32x4.
+
+    Equivalent to vmovl_s16 in ARM NEON intrinsics.
+    Uses inline assembly to generate precise sshll.4s instruction.
+
+    Assembly: sshll v0.4s, v1.4h, #0
+    This widens 4x int16 to 4x int32 with sign extension.
+    """
+    return inlined_assembly[
+        "sshll $0.4s, $1.4h, #0",
+        SIMD[DType.int32, 4],
+        SIMD[DType.int16, 4],
+        constraints="=w,w",
+        has_side_effect=False,
+    ](a)
+
+
+@always_inline
+def neon_vmovl_high_s16(a: SIMD[DType.int16, 8]) -> SIMD[DType.int32, 4]:
+    """NEON vector move long signed (high half): int16x8 -> int32x4.
+
+    Equivalent to vmovl_high_s16 in ARM NEON intrinsics.
+    Uses inline assembly to generate precise sshll2.4s instruction.
+
+    Assembly: sshll2 v0.4s, v1.8h, #0
+    This widens the high 4x int16 to 4x int32 with sign extension.
+    More efficient than vget_high_s16 + vmovl_s16 combination.
+    """
+    return inlined_assembly[
+        "sshll2 $0.4s, $1.8h, #0",
+        SIMD[DType.int32, 4],
+        SIMD[DType.int16, 8],
+        constraints="=w,w",
+        has_side_effect=False,
+    ](a)
+
+
+@always_inline
+def neon_vcvtq_f32_s32(a: SIMD[DType.int32, 4]) -> SIMD[DType.float32, 4]:
+    """NEON convert int32x4 to float32x4.
+
+    Equivalent to vcvtq_f32_s32 in ARM NEON intrinsics.
+    Uses inline assembly to generate precise scvtf.4s instruction.
+
+    Assembly: scvtf v0.4s, v1.4s
+    This converts 4x int32 to 4x float32.
+    """
+    return inlined_assembly[
+        "scvtf $0.4s, $1.4s",
+        SIMD[DType.float32, 4],
+        SIMD[DType.int32, 4],
+        constraints="=w,w",
+        has_side_effect=False,
+    ](a)
+
+
 def neon_vget_low_s16(a: SIMD[DType.int16, 8]) -> SIMD[DType.int16, 4]:
     """Extract low half of int16x8 -> int16x4.
 
@@ -170,6 +267,24 @@ def neon_vget_high_u8(a: SIMD[DType.uint8, 16]) -> SIMD[DType.uint8, 8]:
     Equivalent to vget_high_u8 in ARM NEON.
     """
     return SIMD[DType.uint8, 8](a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15])
+
+
+@always_inline
+def neon_vget_low_s8(a: SIMD[DType.int8, 16]) -> SIMD[DType.int8, 8]:
+    """Extract low half of int8x16 -> int8x8.
+
+    Equivalent to vget_low_s8 in ARM NEON.
+    """
+    return SIMD[DType.int8, 8](a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7])
+
+
+@always_inline
+def neon_vget_high_s8(a: SIMD[DType.int8, 16]) -> SIMD[DType.int8, 8]:
+    """Extract high half of int8x16 -> int8x8.
+
+    Equivalent to vget_high_s8 in ARM NEON.
+    """
+    return SIMD[DType.int8, 8](a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15])
 
 
 def neon_vreinterpret_u8_u32(a: SIMD[DType.uint32, 2]) -> SIMD[DType.uint8, 8]:
