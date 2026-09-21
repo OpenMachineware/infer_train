@@ -41,6 +41,11 @@ struct QuantType(Copyable, Equatable, ImplicitlyCopyable, Movable):
     comptime IQ3_S = QuantType(Int8(8))  # IQ3_S super-block, ggml 21
     comptime IQ3_XXS = QuantType(Int8(9))  # IQ3_XXS super-block, ggml 18
     comptime IQ2_S = QuantType(Int8(10))  # IQ2_S super-block, ggml 22
+    comptime IQ2_XXS = QuantType(Int8(11))  # IQ2_XXS super-block, ggml 19
+    comptime IQ2_XS = QuantType(Int8(12))  # IQ2_XS super-block, ggml 20
+    comptime IQ1_S = QuantType(Int8(13))  # IQ1_S super-block, ggml 16
+    comptime IQ1_M = QuantType(Int8(14))  # IQ1_M super-block, ggml 17
+    comptime IQ4_NL = QuantType(Int8(15))  # IQ4_NL block (32 elems), ggml 25
 
     def __eq__(self, other: Self) -> Bool:
         return self._tag == other._tag
@@ -73,6 +78,16 @@ def ggml_type(quant_type: QuantType) -> Int:
         return 18
     if quant_type == QuantType.IQ2_S:
         return 22
+    if quant_type == QuantType.IQ2_XXS:
+        return 19
+    if quant_type == QuantType.IQ2_XS:
+        return 20
+    if quant_type == QuantType.IQ1_S:
+        return 16
+    if quant_type == QuantType.IQ1_M:
+        return 17
+    if quant_type == QuantType.IQ4_NL:
+        return 25
     return -1
 
 
@@ -105,6 +120,16 @@ def num_bits(quant_type: QuantType) -> Int:
         return 3
     if quant_type == QuantType.IQ2_S:
         return 2
+    if quant_type == QuantType.IQ2_XXS:
+        return 2
+    if quant_type == QuantType.IQ2_XS:
+        return 2
+    if quant_type == QuantType.IQ1_S:
+        return 1
+    if quant_type == QuantType.IQ1_M:
+        return 1
+    if quant_type == QuantType.IQ4_NL:
+        return 4
     return 0
 
 
@@ -125,7 +150,13 @@ def group_size(quant_type: QuantType) -> Int:
         or quant_type == QuantType.Q3_K
         or quant_type == QuantType.IQ3_S
         or quant_type == QuantType.IQ3_XXS
+        or quant_type == QuantType.IQ3_XXS
         or quant_type == QuantType.IQ2_S
+        or quant_type == QuantType.IQ2_XXS
+        or quant_type == QuantType.IQ2_XS
+        or quant_type == QuantType.IQ1_S
+        or quant_type == QuantType.IQ1_M
+        or quant_type == QuantType.IQ4_NL
     ):
         return 32
     return 0
@@ -159,6 +190,16 @@ def block_bytes(quant_type: QuantType) -> Int:
         return 98
     if quant_type == QuantType.IQ2_S:
         return 82
+    if quant_type == QuantType.IQ2_XXS:
+        return 66
+    if quant_type == QuantType.IQ2_XS:
+        return 74
+    if quant_type == QuantType.IQ1_S:
+        return 50
+    if quant_type == QuantType.IQ1_M:
+        return 56
+    if quant_type == QuantType.IQ4_NL:
+        return 18
     if quant_type == QuantType.IQ2_S:
         return 82
     return 0
@@ -172,5 +213,7 @@ def block_elems(quant_type: QuantType) -> Int:
     if quant_type == QuantType.Q8_0:
         return 32
     if quant_type == QuantType.Q4_0:
+        return 32
+    if quant_type == QuantType.IQ4_NL:
         return 32
     return 256

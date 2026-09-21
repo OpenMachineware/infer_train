@@ -52,6 +52,16 @@ def vec_dot_qk_q8k(
         return vec_dot_iq2s_q8k(w_block, q8_data, flags)
     elif quant_type == QuantType.IQ4_XS:
         return vec_dot_iq4xs_q8k(w_block, q8_data, flags)
+    elif quant_type == QuantType.IQ2_XXS:
+        return vec_dot_iq2xxs_q8k(w_block, q8_data, flags)
+    elif quant_type == QuantType.IQ2_XS:
+        return vec_dot_iq2xs_q8k(w_block, q8_data, flags)
+    elif quant_type == QuantType.IQ1_S:
+        return vec_dot_iq1s_q8k(w_block, q8_data, flags)
+    elif quant_type == QuantType.IQ1_M:
+        return vec_dot_iq1m_q8k(w_block, q8_data, flags)
+    elif quant_type == QuantType.IQ4_NL:
+        return vec_dot_iq4nl_q80(w_block, q8_data, flags)
     else:
         return Float32(0)
 
@@ -176,6 +186,66 @@ def vec_dot_iq4xs_q8k(
         return _vec_dot_iq4xs_q8k_scalar(w_block, q8_data)
 
 
+def vec_dot_iq2xxs_q8k(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+    flags: CpuFlags,
+) -> Float32:
+    """IQ2_XXS × Q8_K dot product with CPU dispatch (single block)."""
+    if flags.has_neon():
+        return vec_dot_iq2xxs_q8k_neon(w_block, q8_data, 1)
+    else:
+        return _vec_dot_iq2xxs_q8k_scalar(w_block, q8_data)
+
+
+def vec_dot_iq2xs_q8k(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+    flags: CpuFlags,
+) -> Float32:
+    """IQ2_XS × Q8_K dot product with CPU dispatch (single block)."""
+    if flags.has_neon():
+        return vec_dot_iq2xs_q8k_neon(w_block, q8_data, 1)
+    else:
+        return _vec_dot_iq2xs_q8k_scalar(w_block, q8_data)
+
+
+def vec_dot_iq1s_q8k(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+    flags: CpuFlags,
+) -> Float32:
+    """IQ1_S × Q8_K dot product with CPU dispatch (single block)."""
+    if flags.has_neon():
+        return vec_dot_iq1s_q8k_neon(w_block, q8_data, 1)
+    else:
+        return _vec_dot_iq1s_q8k_scalar(w_block, q8_data)
+
+
+def vec_dot_iq1m_q8k(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+    flags: CpuFlags,
+) -> Float32:
+    """IQ1_M × Q8_K dot product with CPU dispatch (single block)."""
+    if flags.has_neon():
+        return vec_dot_iq1m_q8k_neon(w_block, q8_data, 1)
+    else:
+        return _vec_dot_iq1m_q8k_scalar(w_block, q8_data)
+
+
+def vec_dot_iq4nl_q80(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+    flags: CpuFlags,
+) -> Float32:
+    """IQ4_NL × Q8_0 dot product with CPU dispatch (single block)."""
+    if flags.has_neon():
+        return vec_dot_iq4nl_q80_neon(w_block, q8_data, 1)
+    else:
+        return _vec_dot_iq4nl_q80_scalar(w_block, q8_data)
+
+
 # ============================================================================
 # Scalar fallbacks
 # ============================================================================
@@ -244,6 +314,41 @@ def _vec_dot_iq4xs_q8k_scalar(
     return Float32(0)
 
 
+def _vec_dot_iq2xxs_q8k_scalar(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
+
+
+def _vec_dot_iq2xs_q8k_scalar(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
+
+
+def _vec_dot_iq1s_q8k_scalar(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
+
+
+def _vec_dot_iq1m_q8k_scalar(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
+
+
+def _vec_dot_iq4nl_q80_scalar(
+    w_block: Pointer[UInt8, MutUntrackedOrigin],
+    q8_data: Pointer[UInt8, MutUntrackedOrigin],
+) -> Float32:
+    return Float32(0)
+
+
 def _vec_dot_q4_k_q8_k_avx(
     w_block: Pointer[UInt8, MutUntrackedOrigin],
     q8_data: Pointer[UInt8, MutUntrackedOrigin],
@@ -296,3 +401,8 @@ from .iq3s_q8k_neon import vec_dot_iq3s_q8k_neon
 from .iq3xxs_q8k_neon import vec_dot_iq3xxs_q8k_neon
 from .iq2s_q8k_neon import vec_dot_iq2s_q8k_neon
 from .iq4xs_q8k_neon import vec_dot_iq4xs_q8k as vec_dot_iq4xs_q8k_neon
+from .iq2xxs_q8k_neon import vec_dot_iq2xxs_q8k_neon
+from .iq2xs_q8k_neon import vec_dot_iq2xs_q8k_neon
+from .iq1s_q8k_neon import vec_dot_iq1s_q8k_neon
+from .iq1m_q8k_neon import vec_dot_iq1m_q8k_neon
+from .iq4nl_q80_neon import vec_dot_iq4nl_q80_neon
