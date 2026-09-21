@@ -175,6 +175,11 @@ bench-flash:
 	$(MOJO) build -I . tests/bench_flash_attention.mojo -o tests/bench_flash_attention
 	./tests/bench_flash_attention
 
+# Chunked Flash Attention test (correctness + performance on long sequences)
+test-chunked-attention:
+	$(MOJO) build -I . tests/test_chunked_attention.mojo -o tests/test_chunked_attention
+	./tests/test_chunked_attention
+
 test-m7-python: tp
 	$(MOJO) build -I . src/bindings/infer_train_bindings.mojo $(TP_XLINK) \
 		--emit shared-lib -o python/infer_train/_lib/libinfer_train.dylib
