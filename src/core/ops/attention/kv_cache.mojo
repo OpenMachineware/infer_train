@@ -45,8 +45,10 @@ comptime DEFAULT_PAGE_SIZE = 64
 #   Q8_0 block = 34 bytes: d(2, fp16) + qs(32, int8);
 #                     value = d * q,        q = signed int8
 comptime KV_QK = 32
-comptime KV_Q4_BLOCK_BYTES = 18
+comptime KV_Q4_0_BLOCK_BYTES = 18
+comptime KV_Q4_1_BLOCK_BYTES = 20
 comptime KV_Q5_0_BLOCK_BYTES = 22
+comptime KV_Q5_1_BLOCK_BYTES = 24
 comptime KV_Q8_BLOCK_BYTES = 34
 
 
@@ -56,17 +58,21 @@ comptime KV_Q8_BLOCK_BYTES = 34
 
 
 struct KVCacheType(Copyable, Equatable, ImplicitlyCopyable, Movable):
-    """KV cache resident format: FP16 (default) / Q4_0 / Q5_0 / Q8_0."""
+    """KV cache resident format: FP32 / FP16 (default) / BF16 / Q4_0 / Q5_0 / Q8_0 / Q4_1 / Q5_1."""
 
     var _tag: Int8
 
     def __init__(out self, tag: Int8):
         self._tag = tag
 
+    comptime F32 = KVCacheType(Int8(-1))
     comptime FP16 = KVCacheType(Int8(0))
+    comptime BF16 = KVCacheType(Int8(-2))
     comptime Q4_0 = KVCacheType(Int8(1))
     comptime Q5_0 = KVCacheType(Int8(2))
     comptime Q8_0 = KVCacheType(Int8(3))
+    comptime Q4_1 = KVCacheType(Int8(4))
+    comptime Q5_1 = KVCacheType(Int8(5))
 
     def __eq__(self, other: Self) -> Bool:
         return self._tag == other._tag
@@ -76,15 +82,23 @@ struct KVCacheType(Copyable, Equatable, ImplicitlyCopyable, Movable):
 
 
 def kv_cache_type_from_str(s: String) -> KVCacheType:
-    """Parse the --kv-cache-type flag value (fp16 / q4_0 / q5_0 / q8_0)."""
-    if s == "fp16":
+    """Parse the --kv-cache-type flag value (f32 / fp16 / bf16 / q4_0 / q5_0 / q8_0 / q4_1 / q5_1)."""
+    if s == "f32":
+        return KVCacheType.F32
+    if s == "fp16" or s == "f16":
         return KVCacheType.FP16
+    if s == "bf16":
+        return KVCacheType.BF16
     if s == "q4_0":
         return KVCacheType.Q4_0
     if s == "q5_0":
         return KVCacheType.Q5_0
     if s == "q8_0":
         return KVCacheType.Q8_0
+    if s == "q4_1":
+        return KVCacheType.Q4_1
+    if s == "q5_1":
+        return KVCacheType.Q5_1
     unimplemented("kv_cache_type_from_str: unknown type " + s)
     return KVCacheType.FP16
 
@@ -412,6 +426,245 @@ def dequantize_row_q5_0(
         start += KV_QK
 
 
+def quantize_row_q4_1(
+    src: Tensor[DType.float16, 1],
+    dst: Tensor[DType.uint8, 1],
+    dst_off: Int,
+):
+    """Quantize one [head_dim] fp16 row into Q4_1 blocks at dst+dst_off.
+
+    `dst` must hold at least `(numel + 31) // 32 * 20` bytes from
+    `dst_off`.  Q4_1 uses min + scale quantization.
+    Layout: d(2) + m(2) + qs(16) = 20 bytes per 32 elements.
+    """
+    var n = src.numel()
+    var start = 0
+    var off = dst_off
+    while start < n:
+        var cnt = KV_QK
+        if n - start < cnt:
+            cnt = n - start
+
+        # Find min and max
+        var min_val = Float32(1e30)
+        var max_val = Float32(-1e30)
+        for j in range(cnt):
+            var v = Float32(src.get(start + j))
+            if v < min_val:
+                min_val = v
+            if v > max_val:
+                max_val = v
+
+        # Scale: d = (max - min) / 15
+        var d = (max_val - min_val) / Float32(15.0)
+        var id = Float32(0)
+        if d != Float32(0):
+            id = Float32(1.0) / d
+
+        # Store d and m
+        _store_f16(dst, off, d)
+        _store_f16(dst, off + 2, min_val)
+
+        var qs = dst.data().unsafe_offset(off + 4)
+
+        for j in range(16):  # Process in pairs
+            var i0 = j
+            var i1 = j + 16
+
+            var xi0 = 0
+            var xi1 = 0
+
+            if i0 < cnt:
+                var x0 = (Float32(src.get(start + i0)) - min_val) * id
+                xi0 = Int(x0 + Float32(0.5))
+                if xi0 > 15:
+                    xi0 = 15
+                if xi0 < 0:
+                    xi0 = 0
+
+            if i1 < cnt:
+                var x1 = (Float32(src.get(start + i1)) - min_val) * id
+                xi1 = Int(x1 + Float32(0.5))
+                if xi1 > 15:
+                    xi1 = 15
+                if xi1 < 0:
+                    xi1 = 0
+
+            # Store low 4 bits
+            qs.unsafe_store(j, UInt8(xi0 | (xi1 << 4)))
+
+        off += KV_Q4_1_BLOCK_BYTES
+        start += KV_QK
+
+
+def dequantize_row_q4_1(
+    src: Tensor[DType.uint8, 1],
+    src_off: Int,
+    dst: Tensor[DType.float16, 1],
+):
+    """Dequantize Q4_1 blocks at src+src_off into `dst` (fp16).
+
+    Inverse of `quantize_row_q4_1`: value = d * q + m.
+    """
+    var n = dst.numel()
+    var start = 0
+    var off = src_off
+    while start < n:
+        var cnt = KV_QK
+        if n - start < cnt:
+            cnt = n - start
+
+        var d = _load_f16(src, off)
+        var m = _load_f16(src, off + 2)
+        var qs = src.data().unsafe_offset(off + 4)
+
+        for j in range(16):
+            var b = Int(qs.unsafe_load[width=1](offset=j))
+            var i0 = 2 * j
+            var i1 = 2 * j + 1
+
+            if i0 < cnt:
+                var q0 = b & 0x0F
+                dst.set(start + i0, Scalar[DType.float16](d * Float32(q0) + m))
+
+            if i1 < cnt:
+                var q1 = (b >> 4) & 0x0F
+                dst.set(start + i1, Scalar[DType.float16](d * Float32(q1) + m))
+
+        off += KV_Q4_1_BLOCK_BYTES
+        start += KV_QK
+
+
+def quantize_row_q5_1(
+    src: Tensor[DType.float16, 1],
+    dst: Tensor[DType.uint8, 1],
+    dst_off: Int,
+):
+    """Quantize one [head_dim] fp16 row into Q5_1 blocks at dst+dst_off.
+
+    `dst` must hold at least `(numel + 31) // 32 * 24` bytes from
+    `dst_off`.  Q5_1 uses 5-bit quantization with min + scale.
+    Layout: d(2) + m(2) + qh(4) + qs(16) = 24 bytes per 32 elements.
+    """
+    var n = src.numel()
+    var start = 0
+    var off = dst_off
+    while start < n:
+        var cnt = KV_QK
+        if n - start < cnt:
+            cnt = n - start
+
+        # Find min and max
+        var min_val = Float32(1e30)
+        var max_val = Float32(-1e30)
+        for j in range(cnt):
+            var v = Float32(src.get(start + j))
+            if v < min_val:
+                min_val = v
+            if v > max_val:
+                max_val = v
+
+        # Scale: d = (max - min) / 31
+        var d = (max_val - min_val) / Float32(31.0)
+        var id = Float32(0)
+        if d != Float32(0):
+            id = Float32(1.0) / d
+
+        # Store d and m
+        _store_f16(dst, off, d)
+        _store_f16(dst, off + 2, min_val)
+
+        # Quantize and store
+        var qh = UInt32(0)
+        var qs = dst.data().unsafe_offset(off + 8)  # qh is at offset 4, qs at offset 8
+
+        for j in range(16):  # Process in pairs
+            var i0 = j
+            var i1 = j + 16
+
+            var xi0 = 0
+            var xi1 = 0
+
+            if i0 < cnt:
+                var x0 = (Float32(src.get(start + i0)) - min_val) * id
+                xi0 = Int(x0 + Float32(0.5))
+                if xi0 > 31:
+                    xi0 = 31
+                if xi0 < 0:
+                    xi0 = 0
+
+            if i1 < cnt:
+                var x1 = (Float32(src.get(start + i1)) - min_val) * id
+                xi1 = Int(x1 + Float32(0.5))
+                if xi1 > 31:
+                    xi1 = 31
+                if xi1 < 0:
+                    xi1 = 0
+
+            # Store low 4 bits
+            qs.unsafe_store(j, UInt8((xi0 & 0x0F) | ((xi1 & 0x0F) << 4)))
+
+            # Collect 5th bit
+            qh = qh | (UInt32((xi0 >> 4) & 1) << j)
+            qh = qh | (UInt32((xi1 >> 4) & 1) << (j + 16))
+
+        # Store qh (4 bytes, little-endian)
+        var qh_ptr = dst.data().unsafe_offset(off + 4)
+        qh_ptr.unsafe_store(0, UInt8(qh & 0xFF))
+        qh_ptr.unsafe_store(1, UInt8((qh >> 8) & 0xFF))
+        qh_ptr.unsafe_store(2, UInt8((qh >> 16) & 0xFF))
+        qh_ptr.unsafe_store(3, UInt8((qh >> 24) & 0xFF))
+
+        off += KV_Q5_1_BLOCK_BYTES
+        start += KV_QK
+
+
+def dequantize_row_q5_1(
+    src: Tensor[DType.uint8, 1],
+    src_off: Int,
+    dst: Tensor[DType.float16, 1],
+):
+    """Dequantize Q5_1 blocks at src+src_off into `dst` (fp16).
+
+    Inverse of `quantize_row_q5_1`: value = d * q + m.
+    """
+    var n = dst.numel()
+    var start = 0
+    var off = src_off
+    while start < n:
+        var cnt = KV_QK
+        if n - start < cnt:
+            cnt = n - start
+
+        var d = _load_f16(src, off)
+        var m = _load_f16(src, off + 2)
+
+        # Load qh (4 bytes)
+        var qh_ptr = src.data().unsafe_offset(off + 4)
+        var qh = UInt32(qh_ptr.unsafe_load[width=1](offset=0))
+        qh = qh | (UInt32(qh_ptr.unsafe_load[width=1](offset=1)) << 8)
+        qh = qh | (UInt32(qh_ptr.unsafe_load[width=1](offset=2)) << 16)
+        qh = qh | (UInt32(qh_ptr.unsafe_load[width=1](offset=3)) << 24)
+
+        var qs = src.data().unsafe_offset(off + 8)
+
+        for j in range(16):
+            var b = Int(qs.unsafe_load[width=1](offset=j))
+            var i0 = j
+            var i1 = j + 16
+
+            if i0 < cnt:
+                var q0 = (b & 0x0F) | (Int((qh >> j) & 1) << 4)
+                dst.set(start + i0, Scalar[DType.float16](d * Float32(q0) + m))
+
+            if i1 < cnt:
+                var q1 = ((b >> 4) & 0x0F) | (Int((qh >> (j + 16)) & 1) << 4)
+                dst.set(start + i1, Scalar[DType.float16](d * Float32(q1) + m))
+
+        off += KV_Q5_1_BLOCK_BYTES
+        start += KV_QK
+
+
 # ---------------------------------------------------------------------------
 # Layer
 # ---------------------------------------------------------------------------
@@ -425,22 +678,27 @@ struct KVCacheLayer(Copyable, Movable):
     `window > 0` enables the sliding window (attention only reads the last
     `window` positions).
 
-    Quantized: when `kv_type` is Q4_0/Q8_0, `k`/`v` stay empty and the
+    Quantized: when `kv_type` is Q4_0/Q5_0/Q8_0, `k`/`v` stay empty and the
     packed rows live in `kq`/`vq` (uint8, 32-element blocks with an fp16
     scale); `set_kv_row` quantizes on write, `get_k_row`/`get_v_row`
     dequantize to fp16 on read.
+
+    Non-quantized types:
+    - FP16: k/v hold fp16 data (default)
+    - BF16: k/v hold bf16 data (same 2 bytes, different format)
+    - F32: k/v hold fp32 data (4 bytes, needs separate path)
     """
 
     var k: Tensor[DType.float16, 3]
     var v: Tensor[DType.float16, 3]
-    var kq: Tensor[DType.uint8, 1]  # packed K rows (Q4_0/Q8_0 modes)
-    var vq: Tensor[DType.uint8, 1]  # packed V rows (Q4_0/Q8_0 modes)
+    var kq: Tensor[DType.uint8, 1]  # packed K rows (Q4_0/Q4_1/Q5_0/Q5_1/Q8_0 modes)
+    var vq: Tensor[DType.uint8, 1]  # packed V rows (Q4_0/Q4_1/Q5_0/Q5_1/Q8_0 modes)
     var max_len: Int
     var filled: Int  # number of valid positions (0..max_len)
     var page_size: Int  # 0 = dense; > 0 = paged
     var block_table: List[Int]  # position page -> block index (paged)
     var window: Int  # sliding window; 0 = unlimited
-    var kv_type: KVCacheType  # FP16 (default) / Q4_0 / Q8_0
+    var kv_type: KVCacheType  # FP16 (default) / Q4_0 / Q5_0 / Q8_0 / BF16 / F32
     var n_kv_heads: Int
     var head_dim: Int
 
@@ -466,9 +724,13 @@ struct KVCacheLayer(Copyable, Movable):
             var nb = (head_dim + KV_QK - 1) // KV_QK
             var bb: Int
             if kv_type == KVCacheType.Q4_0:
-                bb = KV_Q4_BLOCK_BYTES
+                bb = KV_Q4_0_BLOCK_BYTES
+            elif kv_type == KVCacheType.Q4_1:
+                bb = KV_Q4_1_BLOCK_BYTES
             elif kv_type == KVCacheType.Q5_0:
                 bb = KV_Q5_0_BLOCK_BYTES
+            elif kv_type == KVCacheType.Q5_1:
+                bb = KV_Q5_1_BLOCK_BYTES
             else:
                 bb = KV_Q8_BLOCK_BYTES
             var rb = nb * bb
@@ -516,9 +778,13 @@ struct KVCacheLayer(Copyable, Movable):
             return 0
         var nb = (self.head_dim + KV_QK - 1) // KV_QK
         if self.kv_type == KVCacheType.Q4_0:
-            return nb * KV_Q4_BLOCK_BYTES
+            return nb * KV_Q4_0_BLOCK_BYTES
+        if self.kv_type == KVCacheType.Q4_1:
+            return nb * KV_Q4_1_BLOCK_BYTES
         if self.kv_type == KVCacheType.Q5_0:
             return nb * KV_Q5_0_BLOCK_BYTES
+        if self.kv_type == KVCacheType.Q5_1:
+            return nb * KV_Q5_1_BLOCK_BYTES
         return nb * KV_Q8_BLOCK_BYTES
 
     def enable_paged(mut self, page_size: Int, n_kv_heads: Int, head_dim: Int):
@@ -677,9 +943,15 @@ struct KVCacheLayer(Copyable, Movable):
             if self.kv_type == KVCacheType.Q4_0:
                 quantize_row_q4_0(k_row, self.kq, off)
                 quantize_row_q4_0(v_row, self.vq, off)
+            elif self.kv_type == KVCacheType.Q4_1:
+                quantize_row_q4_1(k_row, self.kq, off)
+                quantize_row_q4_1(v_row, self.vq, off)
             elif self.kv_type == KVCacheType.Q5_0:
                 quantize_row_q5_0(k_row, self.kq, off)
                 quantize_row_q5_0(v_row, self.vq, off)
+            elif self.kv_type == KVCacheType.Q5_1:
+                quantize_row_q5_1(k_row, self.kq, off)
+                quantize_row_q5_1(v_row, self.vq, off)
             else:
                 quantize_row_q8_0(k_row, self.kq, off)
                 quantize_row_q8_0(v_row, self.vq, off)
@@ -701,8 +973,12 @@ struct KVCacheLayer(Copyable, Movable):
             var off = self._quant_row_offset(head, position)
             if self.kv_type == KVCacheType.Q4_0:
                 dequantize_row_q4_0(self.kq, off, dst)
+            elif self.kv_type == KVCacheType.Q4_1:
+                dequantize_row_q4_1(self.kq, off, dst)
             elif self.kv_type == KVCacheType.Q5_0:
                 dequantize_row_q5_0(self.kq, off, dst)
+            elif self.kv_type == KVCacheType.Q5_1:
+                dequantize_row_q5_1(self.kq, off, dst)
             else:
                 dequantize_row_q8_0(self.kq, off, dst)
             return
@@ -735,8 +1011,12 @@ struct KVCacheLayer(Copyable, Movable):
             var off = self._quant_row_offset(head, position)
             if self.kv_type == KVCacheType.Q4_0:
                 dequantize_row_q4_0(self.vq, off, dst)
+            elif self.kv_type == KVCacheType.Q4_1:
+                dequantize_row_q4_1(self.vq, off, dst)
             elif self.kv_type == KVCacheType.Q5_0:
                 dequantize_row_q5_0(self.vq, off, dst)
+            elif self.kv_type == KVCacheType.Q5_1:
+                dequantize_row_q5_1(self.vq, off, dst)
             else:
                 dequantize_row_q8_0(self.vq, off, dst)
             return
@@ -858,9 +1138,13 @@ struct KVCache(Movable):
             var nb = (head_dim + KV_QK - 1) // KV_QK
             var bb: Int
             if kv_type == KVCacheType.Q4_0:
-                bb = KV_Q4_BLOCK_BYTES
+                bb = KV_Q4_0_BLOCK_BYTES
+            elif kv_type == KVCacheType.Q4_1:
+                bb = KV_Q4_1_BLOCK_BYTES
             elif kv_type == KVCacheType.Q5_0:
                 bb = KV_Q5_0_BLOCK_BYTES
+            elif kv_type == KVCacheType.Q5_1:
+                bb = KV_Q5_1_BLOCK_BYTES
             else:
                 bb = KV_Q8_BLOCK_BYTES
             per_pos = n_layers * n_kv * 2 * nb * bb  # K + V, packed
