@@ -46,14 +46,13 @@ from .kv_cache_simd import (
 
 comptime DEFAULT_PAGE_SIZE = 64
 
-# Cached CPU flags for dynamic dispatch
-var _cpu_has_neon_cache: Optional[Bool] = None
 
 @always_inline
 def _cpu_has_neon() -> Bool:
-    if _cpu_has_neon_cache == None:
-        _cpu_has_neon_cache = detect_cpu_flags().has_neon
-    return _cpu_has_neon_cache.value()
+    """Check if CPU has NEON support."""
+    # Note: Mojo doesn't support global variables for caching
+    # CPU feature detection is cheap (reads system registers)
+    return detect_cpu_flags().has_neon()
 
 # Quantized KV storage: 32-element blocks (llama.cpp Q4_0/Q8_0 layout,
 # identical to ops/quantized/dequantize.mojo):
@@ -296,7 +295,7 @@ def quantize_row_q4_0(
                     q = 0
                 hi = q
             qs.unsafe_store(j, UInt8(lo | (hi << 4)))
-        off += KV_Q4_BLOCK_BYTES
+        off += KV_Q4_0_BLOCK_BYTES
         start += KV_QK
 
 
@@ -333,7 +332,7 @@ def _dequantize_row_q4_0_scalar(
                     start + i1,
                     Scalar[DType.float16](d * (Float32(b >> 4) - Float32(8))),
                 )
-        off += KV_Q4_BLOCK_BYTES
+        off += KV_Q4_0_BLOCK_BYTES
         start += KV_QK
 
 
@@ -475,8 +474,8 @@ def quantize_row_q5_0(
             qs.unsafe_store(j, UInt8((xi0 & 0x0F) | ((xi1 & 0x0F) << 4)))
 
             # Collect 5th bit
-            qh = qh | (UInt32((xi0 >> 4) & 1) << j)
-            qh = qh | (UInt32((xi1 >> 4) & 1) << (j + 16))
+            qh = qh | (UInt32((xi0 >> 4) & 1) << UInt32(j))
+            qh = qh | (UInt32((xi1 >> 4) & 1) << UInt32(j + 16))
 
         # Store qh (4 bytes, little-endian)
         var qh_ptr = dst.data().unsafe_offset(off + 2)
@@ -523,11 +522,11 @@ def _dequantize_row_q5_0_scalar(
             var i1 = j + 16
 
             if i0 < cnt:
-                var q0 = (b & 0x0F) | (Int((qh >> j) & 1) << 4)
+                var q0 = (b & 0x0F) | (Int((qh >> UInt32(j)) & 1) << 4)
                 dst.set(start + i0, Scalar[DType.float16](d * Float32(q0 - 16)))
 
             if i1 < cnt:
-                var q1 = ((b >> 4) & 0x0F) | (Int((qh >> (j + 16)) & 1) << 4)
+                var q1 = ((b >> 4) & 0x0F) | (Int((qh >> UInt32(j + 16)) & 1) << 4)
                 dst.set(start + i1, Scalar[DType.float16](d * Float32(q1 - 16)))
 
         off += KV_Q5_0_BLOCK_BYTES
@@ -713,8 +712,8 @@ def quantize_row_q5_1(
             qs.unsafe_store(j, UInt8((xi0 & 0x0F) | ((xi1 & 0x0F) << 4)))
 
             # Collect 5th bit
-            qh = qh | (UInt32((xi0 >> 4) & 1) << j)
-            qh = qh | (UInt32((xi1 >> 4) & 1) << (j + 16))
+            qh = qh | (UInt32((xi0 >> 4) & 1) << UInt32(j))
+            qh = qh | (UInt32((xi1 >> 4) & 1) << UInt32(j + 16))
 
         # Store qh (4 bytes, little-endian)
         var qh_ptr = dst.data().unsafe_offset(off + 4)
@@ -762,11 +761,11 @@ def _dequantize_row_q5_1_scalar(
             var i1 = j + 16
 
             if i0 < cnt:
-                var q0 = (b & 0x0F) | (Int((qh >> j) & 1) << 4)
+                var q0 = (b & 0x0F) | (Int((qh >> UInt32(j)) & 1) << 4)
                 dst.set(start + i0, Scalar[DType.float16](d * Float32(q0) + m))
 
             if i1 < cnt:
-                var q1 = ((b >> 4) & 0x0F) | (Int((qh >> (j + 16)) & 1) << 4)
+                var q1 = ((b >> 4) & 0x0F) | (Int((qh >> UInt32(j + 16)) & 1) << 4)
                 dst.set(start + i1, Scalar[DType.float16](d * Float32(q1) + m))
 
         off += KV_Q5_1_BLOCK_BYTES

@@ -20,7 +20,7 @@ BLAS_XLINK := -Xlinker "-framework" -Xlinker "Accelerate"
         bench_transformer_core bench_blas bench_dequant bench_simd \
         bench_q8k_vs_fp32 bench_qmatmul_threading test-kernel dump-gguf ref-forward \
         test-q2k-perf test-q3k-perf test-q4k-perf test-q4k-multisize test-q5k-perf test-q5k-multisize test-q6k-perf test-q6k-multisize \
-        test-iq4xs-perf bench-kv
+        test-iq4xs-perf bench-kv bench-flash
 
 # M12: the Q4-resident matmul pool workers as a standalone Mojo shared
 # library.  Mojo 1.0 only honors @export in a build's entry module and
@@ -169,6 +169,11 @@ test-m7-mojo: tp
 bench-kv:
 	$(MOJO) build -I . tests/bench_kv_cache_neon.mojo -o tests/bench_kv_cache_neon
 	./tests/bench_kv_cache_neon
+
+# Flash Attention CPU benchmark (online softmax vs current implementation).
+bench-flash:
+	$(MOJO) build -I . tests/bench_flash_attention.mojo -o tests/bench_flash_attention
+	./tests/bench_flash_attention
 
 test-m7-python: tp
 	$(MOJO) build -I . src/bindings/infer_train_bindings.mojo $(TP_XLINK) \
@@ -455,6 +460,7 @@ clean:
 	rm -f tests/bench_iq3s_neon tests/bench_iq3xxs_neon tests/test_iq3s_correctness
 	rm -f tests/bench_iq2s_neon tests/test_iq2s_correctness tests/bench_iq2xxs_neon tests/bench_iq2xs_neon tests/bench_iq1s_neon tests/bench_iq1m_neon tests/bench_iq4nl_neon tests/test_q3k_mojo_real
 	rm -f tests/bench_kv_cache_neon
+	rm -f tests/bench_flash_attention
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
 	      python/infer_train/_lib/libinfer_train_mwq.dylib
