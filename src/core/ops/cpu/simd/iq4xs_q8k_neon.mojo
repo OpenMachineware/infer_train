@@ -92,7 +92,7 @@ def vec_dot_iq4xs_q8k(
     """Compute dot product of IQ4_XS weight block × Q8_K activation block.
 
     x points to nb blocks of IQ4_XS (136 bytes each)
-    y points to nb blocks of Q8_K (336 bytes each)
+    y points to nb blocks of Q8_K (292 bytes each)
 
     Returns the dot product.
     """
@@ -109,7 +109,7 @@ def vec_dot_iq4xs_q8k(
         var d = Float32(d_ptr.unsafe_load[width=1](offset=0))
 
         # Load Q8_K scale (FP32 at offset 0)
-        var y_d_ptr = y.unsafe_offset(ibl * 336).unsafe_bitcast[Scalar[DType.float32]]()
+        var y_d_ptr = y.unsafe_offset(ibl * 292).unsafe_bitcast[Scalar[DType.float32]]()
         var y_d = Float32(y_d_ptr.unsafe_load[width=1](offset=0))
 
         # Load scales_h (uint16 at offset 2)
@@ -120,37 +120,41 @@ def vec_dot_iq4xs_q8k(
         var sumi1 = 0
         var sumi2 = 0
 
-        # Process 4 sub-blocks (64 elements each)
-        for ib in range(4):
-            # Load scales_l[ib] (at offset 4 + ib)
-            var scales_l = x.unsafe_load[width=1](offset=ibl * 136 + 4 + ib)
+        # Process 4 pairs of sub-blocks (ib=0,2,4,6, each pair has 2 sub-blocks)
+        # Total 8 sub-blocks of 32 elements = 256 elements
+        for ib in range(0, 8, 2):
+            # Load scales_l[ib/2]
+            var scales_l = x.unsafe_load[width=1](offset=ibl * 136 + 4 + ib // 2)
 
-            # Decode scales
+            # Decode scales (use current h, then shift)
             var ls1 = Int(scales_l & 0xf) | Int((h << 4) & 0x30)
             ls1 = ls1 - 32
             var ls2 = Int(scales_l >> 4) | Int((h << 2) & 0x30)
             ls2 = ls2 - 32
             h = h >> 4
 
-            # Load 32 bytes of Q4 data
-            var q4_ptr = x.unsafe_offset(ibl * 136 + 8 + ib * 32)
+            # Process first sub-block in this pair (sub-block ib)
+            var q4_ptr = x.unsafe_offset(ibl * 136 + 8 + ib * 16)
             var q4bits = neon_ld1_u8_x2(q4_ptr)
 
-            # Load 64 bytes of Q8 data
-            var q8_ptr = y.unsafe_offset(ibl * 336 + 4 + ib * 64)
+            var q8_ptr = y.unsafe_offset(ibl * 292 + 4 + ib * 32)
             var q8b = neon_ld1_s8_x4(q8_ptr)
 
-            # Table lookup for low and high nibbles
-            var q4b_val0 = neon_tbl1(values, q4bits.val0 & m4b)  # Low nibbles
-            var q4b_val1 = neon_tbl1(values, q4bits.val0 >> 4)   # High nibbles
+            var q4b_val0 = neon_tbl1(values, q4bits.val0 & m4b)
+            var q4b_val1 = neon_tbl1(values, q4bits.val0 >> 4)
+
+            var prod_1 = neon_sdot(SIMD[DType.int32, 4](0), q4b_val0, q8b.val0)
+            prod_1 = neon_sdot(prod_1, q4b_val1, q8b.val1)
+
+            sumi1 += Int(neon_addv(prod_1)) * ls1
+
+            # Process second sub-block in this pair (sub-block ib+1)
             var q4b_val2 = neon_tbl1(values, q4bits.val1 & m4b)
             var q4b_val3 = neon_tbl1(values, q4bits.val1 >> 4)
 
-            # Dot products
-            var prod_1 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0, 0, 0, 0), q4b_val0, q8b.val0), q4b_val1, q8b.val1)
-            var prod_2 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0, 0, 0, 0), q4b_val2, q8b.val2), q4b_val3, q8b.val3)
+            var prod_2 = neon_sdot(SIMD[DType.int32, 4](0), q4b_val2, q8b.val2)
+            prod_2 = neon_sdot(prod_2, q4b_val3, q8b.val3)
 
-            sumi1 += Int(neon_addv(prod_1)) * ls1
             sumi2 += Int(neon_addv(prod_2)) * ls2
 
         sumf += d * y_d * Float32(sumi1 + sumi2)

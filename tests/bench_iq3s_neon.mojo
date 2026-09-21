@@ -13,39 +13,54 @@ def main():
     var x = unsafe_alloc[UInt8](nb * 110, alignment=64)
     var y = unsafe_alloc[UInt8](nb * 292, alignment=64)
 
-    # Initialize IQ3_S data
+    # Initialize IQ3_S data (matching llama.cpp exactly)
     for i in range(nb):
         var x_base = i * 110
 
-        # d = 1.0
-        x.unsafe_offset(x_base).unsafe_bitcast[Scalar[DType.float16]]().unsafe_store(Scalar[DType.float16](1.0))
+        # d = 1.0 (FP16) - manual store
+        # FP16 1.0 = 0x3C00 (little-endian: 0x00, 0x3C)
+        x.unsafe_store(offset=x_base, val=UInt8(0x00))
+        x.unsafe_store(offset=x_base + 1, val=UInt8(0x3C))
 
-        # qs[64]
+        # qs[64]: match llama.cpp - x[i].qs[j] = (uint8_t)((i + j) % 256)
         for j in range(64):
             x.unsafe_store(offset=x_base + 2 + j, val=UInt8((i + j) % 256))
 
-        # qh[8]
+        # qh[8]: match llama.cpp - x[i].qh[j] = 0
         for j in range(8):
             x.unsafe_store(offset=x_base + 66 + j, val=UInt8(0))
 
-        # signs[32]
+        # signs[32]: match llama.cpp - x[i].signs[j] = 0
         for j in range(32):
             x.unsafe_store(offset=x_base + 74 + j, val=UInt8(0))
 
-        # scales[4]
+        # scales[4]: match llama.cpp - x[i].scales[j] = 0
         for j in range(4):
-            x.unsafe_store(offset=x_base + 106 + j, val=UInt8(0x11))
+            x.unsafe_store(offset=x_base + 106 + j, val=UInt8(0))
 
-    # Initialize Q8_K data
+    # Initialize Q8_K data (matching llama.cpp exactly)
     for i in range(nb):
         var y_base = i * 292
 
         # d = 1.0
         y.unsafe_offset(y_base).unsafe_bitcast[Scalar[DType.float32]]().unsafe_store(Scalar[DType.float32](1.0))
 
-        # qs[256]
+        # qs[256]: match llama.cpp - y[i].qs[j] = (int8_t)((j + 1) % 256)
         for j in range(256):
-            y.unsafe_store(offset=y_base + 4 + j, val=UInt8((i + j + 1) % 256))
+            var val = (j + 1) % 256
+            y.unsafe_store(offset=y_base + 4 + j, val=UInt8(val))
+
+        # bsums[16]: match llama.cpp - calculate sum for each group
+        for j in range(16):
+            var sum = 0
+            for k in range(16):
+                var idx = j * 16 + k
+                var val = (idx + 1) % 256
+                var signed_val = val if val < 128 else val - 256
+                sum += signed_val
+            y.unsafe_offset(y_base + 260 + j * 2).unsafe_bitcast[Scalar[DType.int16]]().unsafe_store(
+                Scalar[DType.int16](Int16(sum))
+            )
 
     var x_ptr = Pointer[UInt8, MutUntrackedOrigin](x)
     var y_ptr = Pointer[UInt8, MutUntrackedOrigin](y)

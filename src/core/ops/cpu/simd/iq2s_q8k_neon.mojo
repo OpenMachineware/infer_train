@@ -276,6 +276,31 @@ comptime IQ2S_GRID: Array[UInt64, 1024] = [
 ]
 
 
+# Mask tables for TBL sign expansion
+comptime K_MASK1: Array[UInt8, 32] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+    0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
+]
+
+comptime K_MASK2: Array[UInt8, 16] = [
+    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80,
+    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80,
+]
+
+
+struct NeonU8x2(TrivialRegisterPassable):
+    var val0: SIMD[DType.uint8, 16]
+    var val1: SIMD[DType.uint8, 16]
+
+
+@always_inline
+def neon_ld1_u8_x2[origin: Origin](ptr: Pointer[UInt8, origin]) -> NeonU8x2:
+    """Load 32 bytes using ld1.16b instruction (2 vectors)."""
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.ld1x2.v16i8.p0i8", NeonU8x2, has_side_effect=True
+    ](ptr)
+
+
 # Struct for loading 4 vectors of int8
 struct NeonS8x4(TrivialRegisterPassable):
     var val0: SIMD[DType.int8, 16]
@@ -300,6 +325,60 @@ def combine_s8_from_u64(lo: UInt64, hi: UInt64) -> SIMD[DType.int8, 16]:
     return bitcast[DType.int8, 16](combined)
 
 
+@always_inline
+def neon_vqtbl1q_u8(data: SIMD[DType.uint8, 16], indices: SIMD[DType.uint8, 16]) -> SIMD[DType.uint8, 16]:
+    """NEON TBL instruction for byte lookup."""
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.tbl1.v16i8", SIMD[DType.uint8, 16]
+    ](data, indices)
+
+
+@always_inline
+def neon_vdupq_n_u32(val: UInt32) -> SIMD[DType.uint32, 4]:
+    """NEON duplicate 32-bit value to vector."""
+    return SIMD[DType.uint32, 4](val)
+
+
+@always_inline
+def apply_signs_iq2s(
+    signs0: UInt32, signs1: UInt32,
+    mask1_0: SIMD[DType.uint8, 16], mask1_1: SIMD[DType.uint8, 16],
+    mask2: SIMD[DType.uint8, 16], m1: SIMD[DType.uint8, 16],
+) -> Tuple[
+    SIMD[DType.int8, 16], SIMD[DType.int8, 16], SIMD[DType.int8, 16], SIMD[DType.int8, 16]
+]:
+    """Apply TBL sign expansion for two pairs of uint16 signs.
+
+    Returns four int8 vectors with -1 or +1 for each element.
+    """
+    # Expand first pair of signs to uint8x16
+    var vs_0 = bitcast[DType.uint8, 16](neon_vdupq_n_u32(signs0))
+
+    # TBL to extract bytes, then AND with mask2 to get bit positions
+    var vs_0_0 = neon_vqtbl1q_u8(vs_0, mask1_0) & mask2
+    var vs_0_1 = neon_vqtbl1q_u8(vs_0, mask1_1) & mask2
+
+    # Compare with mask2: if bit is set -> 0xFF, else -> 0x00
+    vs_0_0 = neon_vceqq_u8(vs_0_0, mask2)
+    vs_0_1 = neon_vceqq_u8(vs_0_1, mask2)
+
+    # OR with m1: 0xFF -> 0xFF (-1), 0x00 -> 0x01 (+1)
+    var sign_0 = bitcast[DType.int8, 16](vs_0_0 | m1)
+    var sign_1 = bitcast[DType.int8, 16](vs_0_1 | m1)
+
+    # Expand second pair of signs
+    var vs_1 = bitcast[DType.uint8, 16](neon_vdupq_n_u32(signs1))
+    var vs_1_0 = neon_vqtbl1q_u8(vs_1, mask1_0) & mask2
+    var vs_1_1 = neon_vqtbl1q_u8(vs_1, mask1_1) & mask2
+    vs_1_0 = neon_vceqq_u8(vs_1_0, mask2)
+    vs_1_1 = neon_vceqq_u8(vs_1_1, mask2)
+
+    var sign_2 = bitcast[DType.int8, 16](vs_1_0 | m1)
+    var sign_3 = bitcast[DType.int8, 16](vs_1_1 | m1)
+
+    return (sign_0, sign_1, sign_2, sign_3)
+
+
 def vec_dot_iq2s_q8k_neon(
     x: Pointer[UInt8, MutUntrackedOrigin],
     y: Pointer[UInt8, MutUntrackedOrigin],
@@ -309,134 +388,146 @@ def vec_dot_iq2s_q8k_neon(
 
     Block layout (82 bytes):
     - d: FP16 scale (2 bytes)
-    - qs[0..31]: grid indices (32 bytes)
-    - signs[32..63]: sign bytes (32 bytes)
-    - qh[0..7]: high bits (8 bytes)
-    - scales[0..7]: packed 4-bit scales (8 bytes)
+    - qs[64]: grid indices (64 bytes) - first 32 bytes are indices, next 32 bytes are signs
+    - qh[8]: high bits (8 bytes)
+    - scales[8]: packed 4-bit scales (8 bytes)
     """
     # Get reference to static grid
     ref grid_ref = global_constant[IQ2S_GRID]()
     var grid = grid_ref.unsafe_ptr()
 
+    # Load mask tables
+    ref mask1_ref = global_constant[K_MASK1]()
+    var mask1 = neon_ld1_u8_x2(mask1_ref.unsafe_ptr())
+
+    ref mask2_ref = global_constant[K_MASK2]()
+    var mask2_ptr = mask2_ref.unsafe_ptr()
+    # Load 16 bytes directly using pointer arithmetic
+    var mask2 = SIMD[DType.uint8, 16](
+        mask2_ptr.unsafe_load[width=1](offset=0),
+        mask2_ptr.unsafe_load[width=1](offset=1),
+        mask2_ptr.unsafe_load[width=1](offset=2),
+        mask2_ptr.unsafe_load[width=1](offset=3),
+        mask2_ptr.unsafe_load[width=1](offset=4),
+        mask2_ptr.unsafe_load[width=1](offset=5),
+        mask2_ptr.unsafe_load[width=1](offset=6),
+        mask2_ptr.unsafe_load[width=1](offset=7),
+        mask2_ptr.unsafe_load[width=1](offset=8),
+        mask2_ptr.unsafe_load[width=1](offset=9),
+        mask2_ptr.unsafe_load[width=1](offset=10),
+        mask2_ptr.unsafe_load[width=1](offset=11),
+        mask2_ptr.unsafe_load[width=1](offset=12),
+        mask2_ptr.unsafe_load[width=1](offset=13),
+        mask2_ptr.unsafe_load[width=1](offset=14),
+        mask2_ptr.unsafe_load[width=1](offset=15),
+    )
+
+    var m1 = SIMD[DType.uint8, 16](1)
+
     var sumf = Float32(0)
 
     for i in range(nb):
         var x_base = i * 82
-        var y_base = i * 336
+        var y_base = i * 292
 
         # Load scale
         var d_x = Float32(x.unsafe_offset(x_base).unsafe_bitcast[Scalar[DType.float16]]().unsafe_load[width=1](offset=0))
         var d_y = Float32(y.unsafe_offset(y_base).unsafe_bitcast[Scalar[DType.float32]]().unsafe_load[width=1](offset=0))
         var d = d_x * d_y
 
-        var qs_ptr = x_base + 2
-        var signs_ptr = x_base + 34  # signs start at offset 32 + 2
-        var qh_ptr = x_base + 66    # qh starts after signs (offset 34 + 32)
-        var scales_ptr = x_base + 74 # scales after qh (offset 66 + 8)
+        var qs_offset = x_base + 2
+        var signs_offset = x_base + 2 + 32  # signs are uint16 at qs[32]
+        var qh_offset = x_base + 66
+        var scales_offset = x_base + 74
         var q8_ptr = y_base + 4
 
         var sumi1 = Int32(0)
         var sumi2 = Int32(0)
 
-        # Process 8 groups of 32 elements (pairs)
+        # Process 4 iterations (ib32 = 0, 2, 4, 6)
         for ib32 in range(0, 8, 2):
             # Load 64 bytes of Q8 values
             var q8b = neon_ld1_s8_x4(y.unsafe_offset(q8_ptr))
             q8_ptr += 64
 
-            # Load high bits
-            var qh_val = Int(x.unsafe_load[width=1](offset=qh_ptr + ib32))
-            var qh_val2 = Int(x.unsafe_load[width=1](offset=qh_ptr + ib32 + 1))
+            # Load qh values
+            var qh0 = Int(x.unsafe_load[width=1](offset=qh_offset + ib32))
+            var qh1 = Int(x.unsafe_load[width=1](offset=qh_offset + ib32 + 1))
 
-            # Load grid indices for first group
-            var idx0 = Int(x.unsafe_load[width=1](offset=qs_ptr + ib32 * 4 + 0))
-            var idx1 = Int(x.unsafe_load[width=1](offset=qs_ptr + ib32 * 4 + 1))
-            var idx2 = Int(x.unsafe_load[width=1](offset=qs_ptr + ib32 * 4 + 2))
-            var idx3 = Int(x.unsafe_load[width=1](offset=qs_ptr + ib32 * 4 + 3))
+            # Load 8 grid indices
+            var idx0 = Int(x.unsafe_load[width=1](offset=qs_offset + 0))
+            var idx1 = Int(x.unsafe_load[width=1](offset=qs_offset + 1))
+            var idx2 = Int(x.unsafe_load[width=1](offset=qs_offset + 2))
+            var idx3 = Int(x.unsafe_load[width=1](offset=qs_offset + 3))
+            var idx4 = Int(x.unsafe_load[width=1](offset=qs_offset + 4))
+            var idx5 = Int(x.unsafe_load[width=1](offset=qs_offset + 5))
+            var idx6 = Int(x.unsafe_load[width=1](offset=qs_offset + 6))
+            var idx7 = Int(x.unsafe_load[width=1](offset=qs_offset + 7))
 
-            # Combine with high bits
-            var g0 = grid.unsafe_load[width=1](offset=idx0 | ((qh_val << 8) & 0x300))
-            var g1 = grid.unsafe_load[width=1](offset=idx1 | ((qh_val << 6) & 0x300))
-            var g2 = grid.unsafe_load[width=1](offset=idx2 | ((qh_val << 4) & 0x300))
-            var g3 = grid.unsafe_load[width=1](offset=idx3 | ((qh_val << 2) & 0x300))
+            # Combine with high bits and load grid values
+            var q2s_0 = combine_s8_from_u64(
+                grid.unsafe_load[width=1](offset=idx0 | ((qh0 << 8) & 0x300)),
+                grid.unsafe_load[width=1](offset=idx1 | ((qh0 << 6) & 0x300)),
+            )
+            var q2s_1 = combine_s8_from_u64(
+                grid.unsafe_load[width=1](offset=idx2 | ((qh0 << 4) & 0x300)),
+                grid.unsafe_load[width=1](offset=idx3 | ((qh0 << 2) & 0x300)),
+            )
+            var q2s_2 = combine_s8_from_u64(
+                grid.unsafe_load[width=1](offset=idx4 | ((qh1 << 8) & 0x300)),
+                grid.unsafe_load[width=1](offset=idx5 | ((qh1 << 6) & 0x300)),
+            )
+            var q2s_3 = combine_s8_from_u64(
+                grid.unsafe_load[width=1](offset=idx6 | ((qh1 << 4) & 0x300)),
+                grid.unsafe_load[width=1](offset=idx7 | ((qh1 << 2) & 0x300)),
+            )
 
-            # Combine into int8 vectors
-            var q2v_0 = combine_s8_from_u64(g0, g1)
-            var q2v_1 = combine_s8_from_u64(g2, g3)
+            # Load signs as uint16 values (4 signs per iteration)
+            # signs_offset is byte offset, each uint16 is 2 bytes
+            var s0 = UInt32(x.unsafe_offset(signs_offset + 0).unsafe_bitcast[Scalar[DType.uint16]]().unsafe_load[width=1](offset=0))
+            var s1 = UInt32(x.unsafe_offset(signs_offset + 2).unsafe_bitcast[Scalar[DType.uint16]]().unsafe_load[width=1](offset=0))
+            var s2 = UInt32(x.unsafe_offset(signs_offset + 4).unsafe_bitcast[Scalar[DType.uint16]]().unsafe_load[width=1](offset=0))
+            var s3 = UInt32(x.unsafe_offset(signs_offset + 6).unsafe_bitcast[Scalar[DType.uint16]]().unsafe_load[width=1](offset=0))
 
-            # Load signs for first group (4 bytes = 4 sign bytes for 4 sub-blocks)
-            var signs_bytes_0 = x.unsafe_load[width=4](offset=signs_ptr + ib32 * 4)
-            # q2v_0 needs signs for first 2 sub-blocks (16 elements)
-            var sign_mul_0 = combine_signs(UInt8(signs_bytes_0[0]), UInt8(signs_bytes_0[1]))
-            # q2v_1 needs signs for next 2 sub-blocks (16 elements)
-            var sign_mul_1 = combine_signs(UInt8(signs_bytes_0[2]), UInt8(signs_bytes_0[3]))
+            # Pack into 32-bit values: signs[0] | (signs[1] << 16)
+            var signs_0_1 = s0 | (s1 << 16)
+            var signs_2_3 = s2 | (s3 << 16)
 
-            q2v_0 = q2v_0 * sign_mul_0
-            q2v_1 = q2v_1 * sign_mul_1
+            # Apply TBL sign expansion
+            var signs_result = apply_signs_iq2s(
+                signs_0_1, signs_2_3, mask1.val0, mask1.val1, mask2, m1
+            )
 
-            # Second group
-            var idx4 = Int(x.unsafe_load[width=1](offset=qs_ptr + (ib32 + 1) * 4 + 0))
-            var idx5 = Int(x.unsafe_load[width=1](offset=qs_ptr + (ib32 + 1) * 4 + 1))
-            var idx6 = Int(x.unsafe_load[width=1](offset=qs_ptr + (ib32 + 1) * 4 + 2))
-            var idx7 = Int(x.unsafe_load[width=1](offset=qs_ptr + (ib32 + 1) * 4 + 3))
+            # Apply signs to q2s values
+            q2s_0 = q2s_0 * signs_result[0]
+            q2s_1 = q2s_1 * signs_result[1]
+            q2s_2 = q2s_2 * signs_result[2]
+            q2s_3 = q2s_3 * signs_result[3]
 
-            var g4 = grid.unsafe_load[width=1](offset=idx4 | ((qh_val2 << 8) & 0x300))
-            var g5 = grid.unsafe_load[width=1](offset=idx5 | ((qh_val2 << 6) & 0x300))
-            var g6 = grid.unsafe_load[width=1](offset=idx6 | ((qh_val2 << 4) & 0x300))
-            var g7 = grid.unsafe_load[width=1](offset=idx7 | ((qh_val2 << 2) & 0x300))
+            # SDOT dot products
+            var p1 = neon_sdot(SIMD[DType.int32, 4](0), q2s_0, q8b.val0)
+            var p2 = neon_sdot(SIMD[DType.int32, 4](0), q2s_1, q8b.val1)
+            var p3 = neon_sdot(SIMD[DType.int32, 4](0), q2s_2, q8b.val2)
+            var p4 = neon_sdot(SIMD[DType.int32, 4](0), q2s_3, q8b.val3)
 
-            var q2v_2 = combine_s8_from_u64(g4, g5)
-            var q2v_3 = combine_s8_from_u64(g6, g7)
+            # Load scales and apply
+            var scale0 = Int(x.unsafe_load[width=1](offset=scales_offset + ib32))
+            var scale1 = Int(x.unsafe_load[width=1](offset=scales_offset + ib32 + 1))
 
-            var signs_bytes_1 = x.unsafe_load[width=4](offset=signs_ptr + (ib32 + 1) * 4)
-            var sign_mul_2 = combine_signs(UInt8(signs_bytes_1[0]), UInt8(signs_bytes_1[1]))
-            var sign_mul_3 = combine_signs(UInt8(signs_bytes_1[2]), UInt8(signs_bytes_1[3]))
-
-            q2v_2 = q2v_2 * sign_mul_2
-            q2v_3 = q2v_3 * sign_mul_3
-
-            # SDOT
-            var p1 = neon_sdot(SIMD[DType.int32, 4](0), q2v_0, q8b.val0)
-            var p2 = neon_sdot(SIMD[DType.int32, 4](0), q2v_1, q8b.val1)
-            var p3 = neon_sdot(SIMD[DType.int32, 4](0), q2v_2, q8b.val2)
-            var p4 = neon_sdot(SIMD[DType.int32, 4](0), q2v_3, q8b.val3)
-
-            # Load scales
-            var scale_byte = Int(x.unsafe_load[width=1](offset=scales_ptr + ib32))
-            var scale_byte2 = Int(x.unsafe_load[width=1](offset=scales_ptr + ib32 + 1))
-
-            var ls1 = Int32(1) + 2 * Int32(scale_byte & 0xF)
-            var ls2 = Int32(1) + 2 * Int32(scale_byte >> 4)
-            var ls3 = Int32(1) + 2 * Int32(scale_byte2 & 0xF)
-            var ls4 = Int32(1) + 2 * Int32(scale_byte2 >> 4)
+            var ls1 = Int32(1) + 2 * Int32(scale0 & 0xF)
+            var ls2 = Int32(1) + 2 * Int32(scale0 >> 4)
+            var ls3 = Int32(1) + 2 * Int32(scale1 & 0xF)
+            var ls4 = Int32(1) + 2 * Int32(scale1 >> 4)
 
             sumi1 += neon_addv(p1) * ls1
             sumi2 += neon_addv(p2) * ls2
             sumi1 += neon_addv(p3) * ls3
             sumi2 += neon_addv(p4) * ls4
 
+            # Advance pointers
+            qs_offset += 8
+            signs_offset += 8  # Advance by 8 bytes = 4 uint16 values
+
         sumf += d * Float32(sumi1 + sumi2)
 
     return sumf * Float32(0.125)
-
-
-@always_inline
-def expand_signs_byte(sign_byte: UInt8) -> SIMD[DType.int8, 8]:
-    """Expand one sign byte into 8 sign multipliers.
-
-    Bit i = 1 means element i is negative (-1), bit i = 0 means positive (+1).
-    """
-    var s = Int(sign_byte)
-    var result = SIMD[DType.int8, 8](0)
-    for i in range(8):
-        var bit = (s >> i) & 1
-        result[i] = Int8(-1) if bit == 1 else Int8(1)
-    return result
-
-
-@always_inline
-def combine_signs(sign0: UInt8, sign1: UInt8) -> SIMD[DType.int8, 16]:
-    """Combine two sign bytes into a 16-element sign vector."""
-    var lo = expand_signs_byte(sign0)
-    var hi = expand_signs_byte(sign1)
-    return lo.join(hi)

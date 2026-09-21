@@ -395,6 +395,14 @@ test-iq1m-perf: tp
 	$(MOJO) build -I . -O3 tests/bench_iq1m_neon.mojo $(TP_XLINK) -o tests/bench_iq1m_neon
 	./tests/bench_iq1m_neon
 
+test-iq1m-perf-llama:
+	clang -O3 -I llama.cpp-0.4.1 -I llama.cpp-0.4.1/ggml/src -I llama.cpp-0.4.1/ggml/include tests/bench_iq1m_llama.cpp -L llama.cpp-0.4.1/build/bin -lggml-cpu -lggml -lggml-base -Wl,-rpath,@executable_path/../llama.cpp-0.4.1/build/bin -o tests/bench_iq1m_llama
+	./tests/bench_iq1m_llama
+
+test-iq1m-perf-mojo: tp
+	$(MOJO) build -I . -O3 tests/bench_iq1m_mojo_instrumented.mojo $(TP_XLINK) -o tests/bench_iq1m_mojo_instrumented
+	./tests/bench_iq1m_mojo_instrumented
+
 test-iq1s-perf-llama:
 	clang -O3 -I llama.cpp-0.4.1 -I llama.cpp-0.4.1/ggml/src -I llama.cpp-0.4.1/ggml/include tests/bench_iq1s_llama.cpp -L llama.cpp-0.4.1/build/bin -lggml-cpu -lggml -lggml-base -Wl,-rpath,@executable_path/../llama.cpp-0.4.1/build/bin -o tests/bench_iq1s_llama
 	./tests/bench_iq1s_llama
@@ -448,7 +456,7 @@ clean:
 	rm -f tests/test_fp_weight_matmul
 	rm -f tests/bench_iq4xs tests/test_iq4xs tests/bench_iq4xs_neon tests/bench_iq4xs_single tests/bench_iq4xs_multisize tests/test_neon_tbl
 	rm -f tests/bench_iq3s_neon tests/bench_iq3xxs_neon tests/test_iq3s_correctness
-	rm -f tests/bench_iq2s_neon tests/test_iq2s_correctness tests/bench_iq2xxs_neon tests/bench_iq2xs_neon tests/bench_iq1s_neon tests/bench_iq1m_neon tests/bench_iq4nl_neon tests/test_q3k_mojo_real tests/bench_iq1s_llama tests/bench_iq1s_mojo_instrumented
+	rm -f tests/bench_iq2s_neon tests/test_iq2s_correctness tests/bench_iq2xxs_neon tests/bench_iq2xs_neon tests/bench_iq1s_neon tests/bench_iq1m_neon tests/bench_iq4nl_neon tests/test_q3k_mojo_real tests/bench_iq1s_llama tests/bench_iq1s_mojo_instrumented tests/bench_iq1m_llama tests/bench_iq1m_mojo_instrumented
 	rm -f python/infer_train/_lib/libinfer_train.dylib \
 	      python/infer_train/_lib/libinfer_train_tp.dylib \
 	      python/infer_train/_lib/libinfer_train_mwq.dylib

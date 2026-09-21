@@ -191,6 +191,21 @@ struct NeonS8x4(TrivialRegisterPassable):
     var val3: SIMD[DType.int8, 16]
 
 
+# Struct for 4 int32x4 vectors (matches NEON int32x4x4_t)
+struct NeonI32x4(TrivialRegisterPassable):
+    var val0: SIMD[DType.int32, 4]
+    var val1: SIMD[DType.int32, 4]
+    var val2: SIMD[DType.int32, 4]
+    var val3: SIMD[DType.int32, 4]
+
+    def __init__(out self, v0: SIMD[DType.int32, 4], v1: SIMD[DType.int32, 4],
+                  v2: SIMD[DType.int32, 4], v3: SIMD[DType.int32, 4]):
+        self.val0 = v0
+        self.val1 = v1
+        self.val2 = v2
+        self.val3 = v3
+
+
 @always_inline
 def neon_ld1_s8_x4(ptr: Pointer[UInt8, MutUntrackedOrigin]) -> NeonS8x4:
     """Load 64 bytes using ld1.16b instruction (4 vectors)."""
@@ -214,10 +229,9 @@ def vec_dot_iq2xs_q8k_neon(
 ) -> Float32:
     """IQ2_XS × Q8_K dot product - NEON SIMD optimized version.
 
-    Block layout (74 bytes):
-    - d: FP16 scale (2 bytes)
-    - qs[32]: uint16 array (64 bytes) - grid indices (9 bits) + sign indices (7 bits)
-    - scales[8]: packed scales (8 bytes) - each byte has two 4-bit scales
+    Block layout:
+    - IQ2_XS: 74 bytes (d: 2, qs: 64, scales: 8)
+    - Q8_K: 292 bytes (d: 4, qs: 256, bsums: 32)
 
     Grid: 512 entries
     Sign table: keven_signs_q2xs (128 entries)
@@ -233,7 +247,7 @@ def vec_dot_iq2xs_q8k_neon(
 
     for i in range(nb):
         var x_base = i * 74
-        var y_base = i * 336
+        var y_base = i * 292
 
         var d_x = Float32(x.unsafe_offset(x_base).unsafe_bitcast[Scalar[DType.float16]]().unsafe_load[width=1](offset=0))
         var d_y = Float32(y.unsafe_offset(y_base).unsafe_bitcast[Scalar[DType.float32]]().unsafe_load[width=1](offset=0))
@@ -257,13 +271,16 @@ def vec_dot_iq2xs_q8k_neon(
         # Apply formula: 2 * scale + 1
         scales_u8 = scales_u8 * UInt8(2) + UInt8(1)
 
-        # scales32.val[ib64] = widen scales_u8[ib64*4 : ib64*4+3] to int32
-        # Store as array to avoid branches in the loop
-        var scales32 = SIMD[DType.int32, 16](
-            Int32(scales_u8[0]), Int32(scales_u8[1]), Int32(scales_u8[2]), Int32(scales_u8[3]),
-            Int32(scales_u8[4]), Int32(scales_u8[5]), Int32(scales_u8[6]), Int32(scales_u8[7]),
-            Int32(scales_u8[8]), Int32(scales_u8[9]), Int32(scales_u8[10]), Int32(scales_u8[11]),
-            Int32(scales_u8[12]), Int32(scales_u8[13]), Int32(scales_u8[14]), Int32(scales_u8[15]),
+        # scales32: 4 int32x4 vectors (matching NEON int32x4x4_t layout)
+        # scales32.val[0] = scales_u8[0:4]  (for ib64=0)
+        # scales32.val[1] = scales_u8[4:8]  (for ib64=1)
+        # scales32.val[2] = scales_u8[8:12] (for ib64=2)
+        # scales32.val[3] = scales_u8[12:16] (for ib64=3)
+        var scales32 = NeonI32x4(
+            SIMD[DType.int32, 4](Int32(scales_u8[0]), Int32(scales_u8[1]), Int32(scales_u8[2]), Int32(scales_u8[3])),
+            SIMD[DType.int32, 4](Int32(scales_u8[4]), Int32(scales_u8[5]), Int32(scales_u8[6]), Int32(scales_u8[7])),
+            SIMD[DType.int32, 4](Int32(scales_u8[8]), Int32(scales_u8[9]), Int32(scales_u8[10]), Int32(scales_u8[11])),
+            SIMD[DType.int32, 4](Int32(scales_u8[12]), Int32(scales_u8[13]), Int32(scales_u8[14]), Int32(scales_u8[15])),
         )
 
         var sumi = SIMD[DType.int32, 4](0, 0, 0, 0)
@@ -336,15 +353,28 @@ def vec_dot_iq2xs_q8k_neon(
             var p3 = neon_sdot(SIMD[DType.int32, 4](0, 0, 0, 0), q2u_2, q8b.val2)
             var p4 = neon_sdot(SIMD[DType.int32, 4](0, 0, 0, 0), q2u_3, q8b.val3)
 
-            # Pairwise add and accumulate with scales
-            # p = [p1[0]+p1[1]+p2[0]+p2[1], p1[2]+p1[3]+p2[2]+p2[3], p3[0]+p3[1]+p4[0]+p4[1], p3[2]+p3[3]+p4[2]+p4[3]]
-            # Then apply scale: sumi += p * scales32.val[ib64]
-            sumi = sumi + SIMD[DType.int32, 4](
-                (p1[0] + p1[1] + p2[0] + p2[1]) * scales32[ib64 * 4],
-                (p1[2] + p1[3] + p2[2] + p2[3]) * scales32[ib64 * 4 + 1],
-                (p3[0] + p3[1] + p4[0] + p4[1]) * scales32[ib64 * 4 + 2],
-                (p3[2] + p3[3] + p4[2] + p4[3]) * scales32[ib64 * 4 + 3],
+            # Pairwise add (matching llama.cpp: vpaddq_s32(vpaddq_s32(p1, p2), vpaddq_s32(p3, p4)))
+            # t1 = vpaddq_s32(p1, p2) = [p1[0]+p1[1], p1[2]+p1[3], p2[0]+p2[1], p2[2]+p2[3]]
+            # t2 = vpaddq_s32(p3, p4) = [p3[0]+p3[1], p3[2]+p3[3], p4[0]+p4[1], p4[2]+p4[3]]
+            # p  = vpaddq_s32(t1, t2)  = [t1[0]+t1[1], t1[2]+t1[3], t2[0]+t2[1], t2[2]+t2[3]]
+            var p = SIMD[DType.int32, 4](
+                (p1[0] + p1[1]) + (p1[2] + p1[3]),
+                (p2[0] + p2[1]) + (p2[2] + p2[3]),
+                (p3[0] + p3[1]) + (p3[2] + p3[3]),
+                (p4[0] + p4[1]) + (p4[2] + p4[3]),
             )
+
+            # Multiply-accumulate: sumi = sumi + p * scales32.val[ib64]
+            var sc: SIMD[DType.int32, 4]
+            if ib64 == 0:
+                sc = scales32.val0
+            elif ib64 == 1:
+                sc = scales32.val1
+            elif ib64 == 2:
+                sc = scales32.val2
+            else:
+                sc = scales32.val3
+            sumi = sumi + p * sc
 
         sumf += d * Float32(sumi[0] + sumi[1] + sumi[2] + sumi[3])
 

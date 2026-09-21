@@ -175,7 +175,7 @@ def vec_dot_iq2xxs_q8k_neon(
 
     for i in range(nb):
         var x_base = i * 66
-        var y_base = i * 336
+        var y_base = i * 292
 
         var d_x = Float32(x.unsafe_offset(x_base).unsafe_bitcast[Scalar[DType.float16]]().unsafe_load[width=1](offset=0))
         var d_y = Float32(y.unsafe_offset(y_base).unsafe_bitcast[Scalar[DType.float32]]().unsafe_load[width=1](offset=0))

@@ -26,7 +26,7 @@ def vec_dot_iq4nl_q80_neon(
     - qs[16]: uint8 array (16 bytes, 4-bit packed)
 
     Q8_0 block layout (34 bytes):
-    - d: FP32 scale (4 bytes)
+    - d: FP16 scale (2 bytes)
     - qs[32]: int8 array (32 bytes)
     """
     ref values_ref = global_constant[KVALUES_IQ4NL]()
@@ -43,16 +43,17 @@ def vec_dot_iq4nl_q80_neon(
         var x_base = i * 18
         var y_base = i * 34
 
+        # Q8_0 uses FP16 scale, not FP32!
         var d_x = Float32(x.unsafe_offset(x_base).unsafe_bitcast[Scalar[DType.float16]]().unsafe_load[width=1](offset=0))
-        var d_y = Float32(y.unsafe_offset(y_base).unsafe_bitcast[Scalar[DType.float32]]().unsafe_load[width=1](offset=0))
+        var d_y = Float32(y.unsafe_offset(y_base).unsafe_bitcast[Scalar[DType.float16]]().unsafe_load[width=1](offset=0))
         var d = d_x * d_y
 
         # Load 16 bytes of packed 4-bit values
         var q4bits = x.unsafe_load[width=16](offset=x_base + 2)
 
-        # Load 32 int8 values
-        var q8b0 = bitcast[DType.int8, 16](y.unsafe_load[width=16](offset=y_base + 4))
-        var q8b1 = bitcast[DType.int8, 16](y.unsafe_load[width=16](offset=y_base + 20))
+        # Load 32 int8 values (starts at offset 2, not 4!)
+        var q8b0 = bitcast[DType.int8, 16](y.unsafe_load[width=16](offset=y_base + 2))
+        var q8b1 = bitcast[DType.int8, 16](y.unsafe_load[width=16](offset=y_base + 18))
 
         # Unpack 4-bit values using TBL
         var mask4b = SIMD[DType.uint8, 16](0x0f)

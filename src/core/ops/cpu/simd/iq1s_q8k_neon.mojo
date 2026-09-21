@@ -556,7 +556,7 @@ def vec_dot_iq1s_q8k_neon(
 
     for i in range(nb):
         var x_base = i * 50
-        var y_base = i * 336
+        var y_base = i * 292
 
         var d_x = Float32(x.unsafe_offset(x_base).unsafe_bitcast[Scalar[DType.float16]]().unsafe_load[width=1](offset=0))
         var d_y = Float32(y.unsafe_offset(y_base).unsafe_bitcast[Scalar[DType.float32]]().unsafe_load[width=1](offset=0))
@@ -587,22 +587,26 @@ def vec_dot_iq1s_q8k_neon(
             var qs_bytes = x.unsafe_load[width=8](offset=qs_base)
 
             # Construct grid indices and load weights
-            # Grid index = qs[i] | ((qh << shift) & 0x700)
+            # Grid index = qs[i] | (((qh >> 3*l) & 7) << 8)
+            # For l=0: shift = 0, mask = (qh >> 0) & 7
+            # For l=1: shift = 3, mask = (qh >> 3) & 7
+            # For l=2: shift = 6, mask = (qh >> 6) & 7
+            # For l=3: shift = 9, mask = (qh >> 9) & 7
             var q1b0 = combine_s8_from_u64(
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[0]) | ((UInt32(qh0) << 8) & UInt32(0x700)))),
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[1]) | ((UInt32(qh0) << 5) & UInt32(0x700)))),
+                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[0]) | (UInt32((qh0 >> 0) & UInt16(7)) << 8))),
+                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[1]) | (UInt32((qh0 >> 3) & UInt16(7)) << 8))),
             )
             var q1b1 = combine_s8_from_u64(
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[2]) | ((UInt32(qh0) << 2) & UInt32(0x700)))),
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[3]) | ((UInt32(qh0) >> 1) & UInt32(0x700)))),
+                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[2]) | (UInt32((qh0 >> 6) & UInt16(7)) << 8))),
+                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[3]) | (UInt32((qh0 >> 9) & UInt16(7)) << 8))),
             )
             var q1b2 = combine_s8_from_u64(
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[4]) | ((UInt32(qh1) << 8) & UInt32(0x700)))),
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[5]) | ((UInt32(qh1) << 5) & UInt32(0x700)))),
+                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[4]) | (UInt32((qh1 >> 0) & UInt16(7)) << 8))),
+                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[5]) | (UInt32((qh1 >> 3) & UInt16(7)) << 8))),
             )
             var q1b3 = combine_s8_from_u64(
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[6]) | ((UInt32(qh1) << 2) & UInt32(0x700)))),
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[7]) | ((UInt32(qh1) >> 1) & UInt32(0x700)))),
+                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[6]) | (UInt32((qh1 >> 6) & UInt16(7)) << 8))),
+                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[7]) | (UInt32((qh1 >> 9) & UInt16(7)) << 8))),
             )
 
             # Load Q8 weights (64 bytes = 4 vectors of 16 int8)
@@ -635,16 +639,12 @@ def vec_dot_iq1s_q8k_neon(
             var sign0 = Int32(1 if (qh0 & UInt16(0x8000)) == 0 else -1)
             var sign1 = Int32(1 if (qh1 & UInt16(0x8000)) == 0 else -1)
 
-            # bsums is int16 array, access as bsums[2*ib+0], bsums[2*ib+1], etc.
-            # bsums starts at offset 260, each int16 is 2 bytes
-            var bsum0 = Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 0) * 2)[0]) |
-                        (Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 0) * 2 + 1)[0]) << 8)
-            var bsum1 = Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 1) * 2)[0]) |
-                        (Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 1) * 2 + 1)[0]) << 8)
-            var bsum2 = Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 2) * 2)[0]) |
-                        (Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 2) * 2 + 1)[0]) << 8)
-            var bsum3 = Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 3) * 2)[0]) |
-                        (Int32(y.unsafe_load[width=2](offset=bsums_offset + (2*ib + 3) * 2 + 1)[0]) << 8)
+            # bsums is int16 array at offset 260, access directly
+            var bsums_ptr = y.unsafe_offset(bsums_offset).unsafe_bitcast[Scalar[DType.int16]]()
+            var bsum0 = Int32(bsums_ptr.unsafe_load[width=1](offset=2*ib + 0))
+            var bsum1 = Int32(bsums_ptr.unsafe_load[width=1](offset=2*ib + 1))
+            var bsum2 = Int32(bsums_ptr.unsafe_load[width=1](offset=2*ib + 2))
+            var bsum3 = Int32(bsums_ptr.unsafe_load[width=1](offset=2*ib + 3))
 
             sumi3 += (bsum0 + bsum1) * ls1 * sign0
             sumi3 += (bsum2 + bsum3) * ls2 * sign1

@@ -153,13 +153,13 @@ def vec_dot_iq3xxs_q8k_neon(
         var sumf1 = Float32(0)
         var sumf2 = Float32(0)
 
-        # Process 8 sub-blocks (32 elements each), 2 at a time
-        for _ in range(4):  # 4 iterations of 2 blocks each
-            # Load 64 bytes of Q8 values
+        # Process 8 sub-blocks (32 elements each), processing 2 at a time
+        for _ in range(4):  # 4 iterations, each processes 2 sub-blocks (2 * 32 = 64 elements)
+            # Load 64 bytes of Q8 values for 2 sub-blocks
             var q8b = neon_ld1_s8_x4(y.unsafe_offset(q8_ptr))
             q8_ptr += 64
 
-            # Load scales_and_signs (2 x uint32) using memcpy-like load
+            # Load scales_and_signs (2 x uint32) for 2 sub-blocks
             var gas0 = x.unsafe_load[width=4](offset=gas_ptr)
             var gas1 = x.unsafe_load[width=4](offset=gas_ptr + 4)
             gas_ptr += 8
@@ -167,65 +167,83 @@ def vec_dot_iq3xxs_q8k_neon(
             var aux32_0 = UInt32(gas0[0]) | (UInt32(gas0[1]) << 8) | (UInt32(gas0[2]) << 16) | (UInt32(gas0[3]) << 24)
             var aux32_1 = UInt32(gas1[0]) | (UInt32(gas1[1]) << 8) | (UInt32(gas1[2]) << 16) | (UInt32(gas1[3]) << 24)
 
-            # Load 16 grid indices and create packed vectors
+            # Load 16 grid indices for 2 sub-blocks (each sub-block uses 8 grid indices)
             var q3_vals = x.unsafe_load[width=16](offset=q3_ptr)
             q3_ptr += 16
 
-            var aux32x4_0 = pack_u32x4(
+            # Sub-block 1: grid lookups from q3[0..7]
+            # Each grid entry = 4 int8 values, so 8 entries = 32 int8 values
+            # Split into two vectors: grid values for l=0,1 and l=2,3
+            var aux32x4_0 = pack_u32x4(  # Grid for l=0,1: q3[0..3]
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[0]))),
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[1]))),
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[2]))),
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[3]))),
             )
-            var aux32x4_1 = pack_u32x4(
+            var aux32x4_1 = pack_u32x4(  # Grid for l=2,3: q3[4..7]
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[4]))),
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[5]))),
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[6]))),
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[7]))),
             )
-            var aux32x4_2 = pack_u32x4(
+
+            # Sub-block 2: grid lookups from q3[8..15]
+            var aux32x4_2 = pack_u32x4(  # Grid for l=0,1: q3[8..11]
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[8]))),
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[9]))),
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[10]))),
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[11]))),
             )
-            var aux32x4_3 = pack_u32x4(
+            var aux32x4_3 = pack_u32x4(  # Grid for l=2,3: q3[12..15]
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[12]))),
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[13]))),
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[14]))),
                 UInt32(grid.unsafe_load[width=1](offset=Int(q3_vals[15]))),
             )
 
-            # Load signs from keven_signs_q2xs (like llama.cpp)
-            # signs64 is a uint64 pointer, each entry is 8 bytes of signs
+            # Load signs for each sub-block
+            # Each sub-block needs 32 signs from 4 sign bytes
+            # Each sign byte = 8 signs, so we load 2 uint64 (each = 16 int8 signs) per sub-block
+            # Sub-block 1: signs from aux32_0
             var q3s_val0 = combine_s8_from_u64(
-                signs64.unsafe_load[width=1](offset=Int((aux32_0 >> 0) & 127)),
-                signs64.unsafe_load[width=1](offset=Int((aux32_0 >> 7) & 127)),
+                signs64.unsafe_load[width=1](offset=Int((aux32_0 >> 0) & 127)),   # l=0 signs
+                signs64.unsafe_load[width=1](offset=Int((aux32_0 >> 7) & 127)),   # l=1 signs
             )
             var q3s_val1 = combine_s8_from_u64(
-                signs64.unsafe_load[width=1](offset=Int((aux32_0 >> 14) & 127)),
-                signs64.unsafe_load[width=1](offset=Int((aux32_0 >> 21) & 127)),
+                signs64.unsafe_load[width=1](offset=Int((aux32_0 >> 14) & 127)),  # l=2 signs
+                signs64.unsafe_load[width=1](offset=Int((aux32_0 >> 21) & 127)),  # l=3 signs
             )
+
+            # Sub-block 2: signs from aux32_1
             var q3s_val2 = combine_s8_from_u64(
-                signs64.unsafe_load[width=1](offset=Int((aux32_1 >> 0) & 127)),
-                signs64.unsafe_load[width=1](offset=Int((aux32_1 >> 7) & 127)),
+                signs64.unsafe_load[width=1](offset=Int((aux32_1 >> 0) & 127)),   # l=0 signs
+                signs64.unsafe_load[width=1](offset=Int((aux32_1 >> 7) & 127)),   # l=1 signs
             )
             var q3s_val3 = combine_s8_from_u64(
-                signs64.unsafe_load[width=1](offset=Int((aux32_1 >> 14) & 127)),
-                signs64.unsafe_load[width=1](offset=Int((aux32_1 >> 21) & 127)),
+                signs64.unsafe_load[width=1](offset=Int((aux32_1 >> 14) & 127)),  # l=2 signs
+                signs64.unsafe_load[width=1](offset=Int((aux32_1 >> 21) & 127)),  # l=3 signs
             )
 
             # Multiply signs with grid values
+            # Sub-block 1:
+            # - q3s_val0 (signs for l=0,1) with aux32x4_0 (grid for l=0,1)
+            # - q3s_val1 (signs for l=2,3) with aux32x4_1 (grid for l=2,3)
             q3s_val0 = neon_vmulq_s8(q3s_val0, neon_vreinterpretq_s8_u32(aux32x4_0))
             q3s_val1 = neon_vmulq_s8(q3s_val1, neon_vreinterpretq_s8_u32(aux32x4_1))
+
+            # Sub-block 2:
+            # - q3s_val2 (signs for l=0,1) with aux32x4_2 (grid for l=0,1)
+            # - q3s_val3 (signs for l=2,3) with aux32x4_3 (grid for l=2,3)
             q3s_val2 = neon_vmulq_s8(q3s_val2, neon_vreinterpretq_s8_u32(aux32x4_2))
             q3s_val3 = neon_vmulq_s8(q3s_val3, neon_vreinterpretq_s8_u32(aux32x4_3))
 
             # SDOT dot products
+            # Sub-block 1: 32 int8 grid/sign values with 32 Q8 values (q8b.val0, val1)
             var p1 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0, 0, 0, 0), q3s_val0, q8b.val0), q3s_val1, q8b.val1)
+            # Sub-block 2: 32 int8 grid/sign values with 32 Q8 values (q8b.val2, val3)
             var p2 = neon_sdot(neon_sdot(SIMD[DType.int32, 4](0, 0, 0, 0), q3s_val2, q8b.val2), q3s_val3, q8b.val3)
 
-            # Scale: 0.5 + (aux32 >> 28)
+            # Scale: 0.5 + (aux32 >> 28) (matching llama.cpp)
             var ls1 = Float32(0.5) + Float32(aux32_0 >> 28)
             var ls2 = Float32(0.5) + Float32(aux32_1 >> 28)
 

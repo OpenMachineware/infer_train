@@ -12,14 +12,6 @@ from std.builtin.globals import global_constant
 # IQ1M delta for bias correction
 comptime IQ1M_DELTA: Float32 = 0.125
 
-# Delta vectors for sign correction
-comptime IQ1M_DELTAS: Array[UInt64, 4] = [
-    0x0101010101010101,  # +1, +1
-    0xff01ff01ff01ff01,  # -1, +1
-    0x01ff01ff01ff01ff,  # +1, -1
-    0xffffffffffffffff,  # -1, -1
-]
-
 
 @always_inline
 def combine_s8_from_u64(lo: UInt64, hi: UInt64) -> SIMD[DType.int8, 16]:
@@ -33,121 +25,97 @@ def vec_dot_iq1m_q8k_neon(
     y: Pointer[UInt8, MutUntrackedOrigin],
     nb: Int,
 ) -> Float32:
-    """IQ1_M × Q8_K dot product - NEON SIMD optimized version.
+    """IQ1_M × Q8_K dot product - matching llama.cpp logic exactly.
 
     Block layout (56 bytes):
-    - qs[32]: uint8 array (32 bytes, grid index low 8 bits)
-    - qh[16]: uint8 array (16 bytes, grid index high 3 bits + shift bit)
-    - scales[8]: uint8 array (8 bytes, 3-bit scales)
+    - qs[32]: grid index low 8 bits
+    - qh[16]: grid index high 3 bits + delta bits
+    - scales[8]: 4x uint16 packed scales
     """
     ref grid_ref = global_constant[IQ1S_GRID]()
     var grid = grid_ref.unsafe_ptr()
-
-    ref deltas_ref = global_constant[IQ1M_DELTAS]()
-    var deltas = deltas_ref.unsafe_ptr()
 
     var sumf = Float32(0)
 
     for i in range(nb):
         var x_base = i * 56
-        var y_base = i * 336
+        var y_base = i * 292
 
         var d_y = Float32(y.unsafe_offset(y_base).unsafe_bitcast[Scalar[DType.float32]]().unsafe_load[width=1](offset=0))
 
-        # Extract merged scale from scales (packed as 4x 4-bit values in 16-bit)
-        var scale_bytes = x.unsafe_load[width=2](offset=x_base + 48)
-        var scale_u16 = UInt16(scale_bytes[0]) | (UInt16(scale_bytes[1]) << 8)
-        # Treat uint16 as FP16 bits
+        # Extract merged scale from 4 uint16 values
+        # scale.u16 = (sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) | ((sc[2] >> 4) & 0x0f00) | (sc[3] & 0xf000)
+        var sc0 = UInt16(x.unsafe_load[width=1](offset=x_base + 48)) | (UInt16(x.unsafe_load[width=1](offset=x_base + 49)) << 8)
+        var sc1 = UInt16(x.unsafe_load[width=1](offset=x_base + 50)) | (UInt16(x.unsafe_load[width=1](offset=x_base + 51)) << 8)
+        var sc2 = UInt16(x.unsafe_load[width=1](offset=x_base + 52)) | (UInt16(x.unsafe_load[width=1](offset=x_base + 53)) << 8)
+        var sc3 = UInt16(x.unsafe_load[width=1](offset=x_base + 54)) | (UInt16(x.unsafe_load[width=1](offset=x_base + 55)) << 8)
+        var scale_u16 = (sc0 >> 12) | ((sc1 >> 8) & UInt16(0x00f0)) | ((sc2 >> 4) & UInt16(0x0f00)) | (sc3 & UInt16(0xf000))
         var d_x = Float32(bitcast[DType.float16, 1](SIMD[DType.uint16, 1](scale_u16))[0])
         var d = d_x * d_y
 
-        var qs_offset = x_base
-        var qh_offset = x_base + 32
-        var scales_offset = x_base + 48
-        var q8_offset = y_base + 4
+        var qs_ptr = x.unsafe_offset(x_base)
+        var qh_ptr = x.unsafe_offset(x_base + 32)
+        var q8_ptr = y.unsafe_offset(y_base + 4)
 
         var sumi1 = Int32(0)
         var sumi2 = Int32(0)
 
-        # Process 4 iterations (ib = 0, 2, 4, 6)
-        for ib in range(0, 8, 2):
-            var qs_base = qs_offset + (ib // 2) * 8
-            var qh_base = qh_offset + (ib // 2) * 4
+        # Process 8 sub-blocks (ib = 0..7)
+        for ib in range(8):
+            # Extract deltas from qh[2*ib] and qh[2*ib+1]
+            var qh0 = qh_ptr.unsafe_load[width=1](offset=2*ib)
+            var qh1 = qh_ptr.unsafe_load[width=1](offset=2*ib + 1)
 
-            # Load 8 qs values
-            var qs_bytes = x.unsafe_load[width=8](offset=qs_base)
+            var delta0 = Int32(-1 if (qh0 & 0x08) != 0 else 1)
+            var delta1 = Int32(-1 if (qh0 & 0x80) != 0 else 1)
+            var delta2 = Int32(-1 if (qh1 & 0x08) != 0 else 1)
+            var delta3 = Int32(-1 if (qh1 & 0x80) != 0 else 1)
 
-            # Load 4 qh values
-            var qh_bytes = x.unsafe_load[width=4](offset=qh_base)
+            var sum1_0 = Int32(0)
+            var sum1_1 = Int32(0)
+            var sum2_0 = Int32(0)
+            var sum2_1 = Int32(0)
 
-            # Construct grid indices
-            var q1b0 = combine_s8_from_u64(
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[0]) | ((UInt32(qh_bytes[0]) << 8) & UInt32(0x700)))),
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[1]) | ((UInt32(qh_bytes[0]) << 4) & UInt32(0x700)))),
-            )
-            var q1b1 = combine_s8_from_u64(
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[2]) | ((UInt32(qh_bytes[1]) << 8) & UInt32(0x700)))),
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[3]) | ((UInt32(qh_bytes[1]) << 4) & UInt32(0x700)))),
-            )
-            var q1b2 = combine_s8_from_u64(
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[4]) | ((UInt32(qh_bytes[2]) << 8) & UInt32(0x700)))),
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[5]) | ((UInt32(qh_bytes[2]) << 4) & UInt32(0x700)))),
-            )
-            var q1b3 = combine_s8_from_u64(
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[6]) | ((UInt32(qh_bytes[3]) << 8) & UInt32(0x700)))),
-                grid.unsafe_load[width=1](offset=Int(UInt32(qs_bytes[7]) | ((UInt32(qh_bytes[3]) << 4) & UInt32(0x700)))),
-            )
+            # Process 4 grid lookups (l = 0..3)
+            for l in range(4):
+                var qs_val = qs_ptr.unsafe_load[width=1](offset=4*ib + l)
+                var qh_val = qh_ptr.unsafe_load[width=1](offset=2*ib + l//2)
 
-            # Load Q8 weights (64 bytes)
-            var q8b0 = bitcast[DType.int8, 16](y.unsafe_load[width=16](offset=q8_offset + (ib // 2) * 64))
-            var q8b1 = bitcast[DType.int8, 16](y.unsafe_load[width=16](offset=q8_offset + (ib // 2) * 64 + 16))
-            var q8b2 = bitcast[DType.int8, 16](y.unsafe_load[width=16](offset=q8_offset + (ib // 2) * 64 + 32))
-            var q8b3 = bitcast[DType.int8, 16](y.unsafe_load[width=16](offset=q8_offset + (ib // 2) * 64 + 48))
+                # Grid index = qs[l] | (((uint16_t)qh[l/2] << (8 - 4*(l%2))) & 0x700)
+                var shift = UInt32(8 - 4*(l % 2))
+                var grid_idx = Int(UInt32(qs_val) | ((UInt32(qh_val) * shift) & UInt32(0x700)))
 
-            # SDOT for main dot product
-            var p1 = neon_sdot(SIMD[DType.int32, 4](0), q1b0, q8b0)
-            p1 = neon_sdot(p1, q1b1, q8b1)
-            var p2 = neon_sdot(SIMD[DType.int32, 4](0), q1b2, q8b2)
-            p2 = neon_sdot(p2, q1b3, q8b3)
+                # Load 8 int8 from grid (stored as UInt64)
+                var grid_u64 = grid.unsafe_load[width=1](offset=grid_idx)
+                var grid_vec = bitcast[DType.int8, 8](SIMD[DType.uint64, 1](grid_u64))
 
-            # Delta correction using aux32 bits from qh
-            var qh32_0 = UInt32(qh_bytes[0]) | (UInt32(qh_bytes[1]) << 8) | (UInt32(qh_bytes[2]) << 16) | (UInt32(qh_bytes[3]) << 24)
-            var aux32 = ((qh32_0 >> 3) & UInt32(0x01010101)) | ((qh32_0 >> 6) & UInt32(0x02020202))
+                # Load 8 int8 from q8
+                var q8_vec = bitcast[DType.int8, 8](q8_ptr.unsafe_load[width=8](offset=32*ib + 8*l))
 
-            var delta0 = deltas.unsafe_load[width=1](offset=Int(aux32 & UInt32(0xFF)))
-            var delta1 = deltas.unsafe_load[width=1](offset=Int((aux32 >> 8) & UInt32(0xFF)))
-            var delta2 = deltas.unsafe_load[width=1](offset=Int((aux32 >> 16) & UInt32(0xFF)))
-            var delta3 = deltas.unsafe_load[width=1](offset=Int((aux32 >> 24) & UInt32(0xFF)))
+                # Compute dot product
+                var lsum1 = Int32(0)
+                var lsum2 = Int32(0)
+                for j in range(8):
+                    lsum1 += Int32(grid_vec[j]) * Int32(q8_vec[j])
+                    lsum2 += Int32(q8_vec[j])
 
-            var d0 = combine_s8_from_u64(delta0, delta0)
-            var d1 = combine_s8_from_u64(delta1, delta1)
-            var d2 = combine_s8_from_u64(delta2, delta2)
-            var d3 = combine_s8_from_u64(delta3, delta3)
+                var delta_val = delta0 if l == 0 else (delta1 if l == 1 else (delta2 if l == 2 else delta3))
+                sum1_0 += lsum1 if l < 2 else 0
+                sum1_1 += lsum1 if l >= 2 else 0
+                sum2_0 += lsum2 * delta_val if l < 2 else 0
+                sum2_1 += lsum2 * delta_val if l >= 2 else 0
 
-            var p3 = neon_sdot(SIMD[DType.int32, 4](0), d0, q8b0)
-            p3 = neon_sdot(p3, d1, q8b1)
-            var p4 = neon_sdot(SIMD[DType.int32, 4](0), d2, q8b2)
-            p4 = neon_sdot(p4, d3, q8b3)
+            # Extract scales
+            # ls1 = 2*((sc[ib/2] >> (6*(ib%2)+0)) & 0x7) + 1
+            # ls2 = 2*((sc[ib/2] >> (6*(ib%2)+3)) & 0x7) + 1
+            var sc_val = sc0 if (ib // 2) == 0 else (sc1 if (ib // 2) == 1 else (sc2 if (ib // 2) == 2 else sc3))
+            var shift_base = UInt16(6 * (ib % 2))
+            var ls1 = 2 * Int32((sc_val >> shift_base) & UInt16(0x7)) + 1
+            var ls2 = 2 * Int32((sc_val >> (shift_base + UInt16(3))) & UInt16(0x7)) + 1
 
-            # Load scales
-            var sc = UInt16(x.unsafe_load[width=2](offset=scales_offset + (ib // 2) * 2)[0]) | (UInt16(x.unsafe_load[width=2](offset=scales_offset + (ib // 2) * 2 + 1)[0]) << 8)
+            sumi1 += sum1_0 * ls1 + sum1_1 * ls2
+            sumi2 += sum2_0 * ls1 + sum2_1 * ls2
 
-            # Extract 4 scales from packed 16-bit value
-            var s0 = Int32((sc >> 0) & UInt16(0x7))
-            var s1 = Int32((sc >> 3) & UInt16(0x7))
-            var s2 = Int32((sc >> 6) & UInt16(0x7))
-            var s3 = Int32((sc >> 9) & UInt16(0x7))
-
-            # scales = 2 * (scale_bits & 7) + 1
-            var ls0 = 2 * s0 + 1
-            var ls1 = 2 * s1 + 1
-            var ls2 = 2 * s2 + 1
-            var ls3 = 2 * s3 + 1
-
-            sumi1 += neon_addv(p1) * ls0 + neon_addv(p2) * ls1
-            sumi2 += neon_addv(p3) * ls2 + neon_addv(p4) * ls3
-
-        # Final result
         sumf += d * (Float32(sumi1) + IQ1M_DELTA * Float32(sumi2))
 
     return sumf
