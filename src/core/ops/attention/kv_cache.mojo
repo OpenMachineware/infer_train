@@ -34,9 +34,26 @@
 
 from ...tensor import Tensor, tensor_zeros
 from ...utils import unimplemented
+from ...cpu_features import detect_cpu_flags
 from std.utils.static_tuple import StaticTuple
+from .kv_cache_simd import (
+    dequantize_row_q4_0_neon,
+    dequantize_row_q4_1_neon,
+    dequantize_row_q5_0_neon,
+    dequantize_row_q5_1_neon,
+    dequantize_row_q8_0_neon,
+)
 
 comptime DEFAULT_PAGE_SIZE = 64
+
+# Cached CPU flags for dynamic dispatch
+var _cpu_has_neon_cache: Optional[Bool] = None
+
+@always_inline
+def _cpu_has_neon() -> Bool:
+    if _cpu_has_neon_cache == None:
+        _cpu_has_neon_cache = detect_cpu_flags().has_neon
+    return _cpu_has_neon_cache.value()
 
 # Quantized KV storage: 32-element blocks (llama.cpp Q4_0/Q8_0 layout,
 # identical to ops/quantized/dequantize.mojo):
@@ -143,6 +160,97 @@ def _load_f16(src: Tensor[DType.uint8, 1], off: Int) -> Float32:
     return Float32(p.unsafe_load[width=1](offset=0))
 
 
+# ============================================================================
+# Dynamic dispatch wrappers for quantized KV Cache
+# ============================================================================
+
+@always_inline
+def _dequantize_row_q4_0_dynamic(
+    src: Tensor[DType.uint8, 1],
+    src_off: Int,
+    dst: Tensor[DType.float16, 1],
+):
+    """Dequantize Q4_0 with dynamic CPU dispatch."""
+    if _cpu_has_neon():
+        # Use NEON SIMD kernel
+        dequantize_row_q4_0_neon(
+            src.data().unsafe_offset(src_off),
+            dst.data(),
+            dst.numel(),
+        )
+    else:
+        # Fallback to scalar
+        _dequantize_row_q4_0_scalar(src, src_off, dst)
+
+
+@always_inline
+def _dequantize_row_q4_1_dynamic(
+    src: Tensor[DType.uint8, 1],
+    src_off: Int,
+    dst: Tensor[DType.float16, 1],
+):
+    """Dequantize Q4_1 with dynamic CPU dispatch."""
+    if _cpu_has_neon():
+        dequantize_row_q4_1_neon(
+            src.data().unsafe_offset(src_off),
+            dst.data(),
+            dst.numel(),
+        )
+    else:
+        _dequantize_row_q4_1_scalar(src, src_off, dst)
+
+
+@always_inline
+def _dequantize_row_q5_0_dynamic(
+    src: Tensor[DType.uint8, 1],
+    src_off: Int,
+    dst: Tensor[DType.float16, 1],
+):
+    """Dequantize Q5_0 with dynamic CPU dispatch."""
+    if _cpu_has_neon():
+        dequantize_row_q5_0_neon(
+            src.data().unsafe_offset(src_off),
+            dst.data(),
+            dst.numel(),
+        )
+    else:
+        _dequantize_row_q5_0_scalar(src, src_off, dst)
+
+
+@always_inline
+def _dequantize_row_q5_1_dynamic(
+    src: Tensor[DType.uint8, 1],
+    src_off: Int,
+    dst: Tensor[DType.float16, 1],
+):
+    """Dequantize Q5_1 with dynamic CPU dispatch."""
+    if _cpu_has_neon():
+        dequantize_row_q5_1_neon(
+            src.data().unsafe_offset(src_off),
+            dst.data(),
+            dst.numel(),
+        )
+    else:
+        _dequantize_row_q5_1_scalar(src, src_off, dst)
+
+
+@always_inline
+def _dequantize_row_q8_0_dynamic(
+    src: Tensor[DType.uint8, 1],
+    src_off: Int,
+    dst: Tensor[DType.float16, 1],
+):
+    """Dequantize Q8_0 with dynamic CPU dispatch."""
+    if _cpu_has_neon():
+        dequantize_row_q8_0_neon(
+            src.data().unsafe_offset(src_off),
+            dst.data(),
+            dst.numel(),
+        )
+    else:
+        _dequantize_row_q8_0_scalar(src, src_off, dst)
+
+
 def quantize_row_q4_0(
     src: Tensor[DType.float16, 1],
     dst: Tensor[DType.uint8, 1],
@@ -192,7 +300,7 @@ def quantize_row_q4_0(
         start += KV_QK
 
 
-def dequantize_row_q4_0(
+def _dequantize_row_q4_0_scalar(
     src: Tensor[DType.uint8, 1],
     src_off: Int,
     dst: Tensor[DType.float16, 1],
@@ -267,7 +375,7 @@ def quantize_row_q8_0(
         start += KV_QK
 
 
-def dequantize_row_q8_0(
+def _dequantize_row_q8_0_scalar(
     src: Tensor[DType.uint8, 1],
     src_off: Int,
     dst: Tensor[DType.float16, 1],
@@ -381,7 +489,7 @@ def quantize_row_q5_0(
         start += KV_QK
 
 
-def dequantize_row_q5_0(
+def _dequantize_row_q5_0_scalar(
     src: Tensor[DType.uint8, 1],
     src_off: Int,
     dst: Tensor[DType.float16, 1],
@@ -497,7 +605,7 @@ def quantize_row_q4_1(
         start += KV_QK
 
 
-def dequantize_row_q4_1(
+def _dequantize_row_q4_1_scalar(
     src: Tensor[DType.uint8, 1],
     src_off: Int,
     dst: Tensor[DType.float16, 1],
@@ -619,7 +727,7 @@ def quantize_row_q5_1(
         start += KV_QK
 
 
-def dequantize_row_q5_1(
+def _dequantize_row_q5_1_scalar(
     src: Tensor[DType.uint8, 1],
     src_off: Int,
     dst: Tensor[DType.float16, 1],
@@ -972,15 +1080,15 @@ struct KVCacheLayer(Copyable, Movable):
         if self.is_quantized():
             var off = self._quant_row_offset(head, position)
             if self.kv_type == KVCacheType.Q4_0:
-                dequantize_row_q4_0(self.kq, off, dst)
+                _dequantize_row_q4_0_dynamic(self.kq, off, dst)
             elif self.kv_type == KVCacheType.Q4_1:
-                dequantize_row_q4_1(self.kq, off, dst)
+                _dequantize_row_q4_1_dynamic(self.kq, off, dst)
             elif self.kv_type == KVCacheType.Q5_0:
-                dequantize_row_q5_0(self.kq, off, dst)
+                _dequantize_row_q5_0_dynamic(self.kq, off, dst)
             elif self.kv_type == KVCacheType.Q5_1:
-                dequantize_row_q5_1(self.kq, off, dst)
+                _dequantize_row_q5_1_dynamic(self.kq, off, dst)
             else:
-                dequantize_row_q8_0(self.kq, off, dst)
+                _dequantize_row_q8_0_dynamic(self.kq, off, dst)
             return
         if self.page_size > 0:
             var page = position // self.page_size
@@ -1010,15 +1118,15 @@ struct KVCacheLayer(Copyable, Movable):
         if self.is_quantized():
             var off = self._quant_row_offset(head, position)
             if self.kv_type == KVCacheType.Q4_0:
-                dequantize_row_q4_0(self.vq, off, dst)
+                _dequantize_row_q4_0_dynamic(self.vq, off, dst)
             elif self.kv_type == KVCacheType.Q4_1:
-                dequantize_row_q4_1(self.vq, off, dst)
+                _dequantize_row_q4_1_dynamic(self.vq, off, dst)
             elif self.kv_type == KVCacheType.Q5_0:
-                dequantize_row_q5_0(self.vq, off, dst)
+                _dequantize_row_q5_0_dynamic(self.vq, off, dst)
             elif self.kv_type == KVCacheType.Q5_1:
-                dequantize_row_q5_1(self.vq, off, dst)
+                _dequantize_row_q5_1_dynamic(self.vq, off, dst)
             else:
-                dequantize_row_q8_0(self.vq, off, dst)
+                _dequantize_row_q8_0_dynamic(self.vq, off, dst)
             return
         if self.page_size > 0:
             var page = position // self.page_size
