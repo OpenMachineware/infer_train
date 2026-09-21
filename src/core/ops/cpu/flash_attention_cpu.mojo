@@ -11,6 +11,11 @@
 # - Incremental V update: V += v * exp(score - current_max)
 # - O(1) memory (no score storage)
 #
+# Chunking (llama.cpp ops.cpp:9261-9291):
+# - KV sequence is split into chunks for better cache locality
+# - Each chunk produces partial results: [M, S, O]
+# - Chunks are merged using online softmax reduction
+#
 # Supports:
 # - Decode mode (M=1): single query token
 # - Prefill mode (M>1): batch query tokens (each attends to all previous positions)
@@ -20,6 +25,9 @@ from std.math import exp, sqrt
 from ..attention.kv_cache import KVCacheLayer
 from ...cpu_features import detect_cpu_flags
 from std.utils import StaticTuple
+
+# Chunk size for KV processing (tunable, llama.cpp uses ~256 for typical scenarios)
+comptime KV_CHUNK_SIZE = 256
 
 # NEON width for Float32
 comptime SIMD_W = 8
@@ -69,13 +77,201 @@ def flash_attention_decode(
 ) -> Tensor[DType.float16, 1]:
     """Flash Attention for decode (single query token).
 
+    Uses chunked KV processing for better cache locality on long sequences.
     Dynamic dispatch: uses NEON SIMD if available, scalar fallback otherwise.
     """
     var has_neon = detect_cpu_flags().has_neon()
     if has_neon:
-        return _flash_attention_decode_neon(q, cache, kv_head, start_pos, head_dim, scale)
+        return _flash_attention_decode_neon_chunked(q, cache, kv_head, start_pos, head_dim, scale)
     else:
-        return _flash_attention_decode_scalar(q, cache, kv_head, start_pos, head_dim, scale)
+        return _flash_attention_decode_scalar_chunked(q, cache, kv_head, start_pos, head_dim, scale)
+
+
+# ============================================================================
+# Chunked KV processing with online softmax reduction
+# ============================================================================
+
+@always_inline
+def _merge_online_softmax(
+    M1: Float32, S1: Float32, O1: Tensor[DType.float32, 1],
+    M2: Float32, S2: Float32, O2: Tensor[DType.float32, 1],
+    head_dim: Int,
+) -> Tuple[Float32, Float32]:
+    """Merge two online softmax states (llama.cpp style).
+
+    Args:
+        M1, S1, O1: First partial result (O1 is unnormalized)
+        M2, S2, O2: Second partial result (O2 is unnormalized)
+
+    Returns:
+        Updated (M, S) and O1 is modified in-place
+
+    Algorithm (llama.cpp ops.cpp:9189-9199):
+        M_new = max(M1, M2)
+        scale1 = exp(M1 - M_new)  # rescale O1 (NOT multiply by S1!)
+        scale2 = exp(M2 - M_new)  # rescale O2
+        O = O1 * scale1 + O2 * scale2
+        S = S1 * scale1 + S2 * scale2
+    """
+    var M_new = M1 if M1 > M2 else M2
+
+    # Rescale and merge O (unnormalized)
+    var scale1 = exp(M1 - M_new)
+    var scale2 = exp(M2 - M_new)
+
+    for d in range(head_dim):
+        O1.set(d, O1.get(d) * scale1 + O2.get(d) * scale2)
+
+    var S_new = S1 * scale1 + S2 * scale2
+
+    return (M_new, S_new)
+
+
+def _flash_attention_decode_neon_chunked(
+    q: Tensor[DType.float16, 1],
+    cache: KVCacheLayer,
+    kv_head: Int,
+    start_pos: Int,
+    head_dim: Int,
+    scale: Float32,
+) -> Tensor[DType.float16, 1]:
+    """Flash Attention NEON SIMD with chunked KV processing.
+
+    Splits KV sequence into chunks for better cache locality.
+    Each chunk produces partial [M, S, O] which are merged at the end.
+    """
+    var max_len = cache.max_len
+    var first = cache.first_position()
+    if first < 0:
+        first = 0
+    var seq = start_pos + 1
+    var n_kv = seq - first
+
+    # If KV is small, process directly (no chunking overhead)
+    if n_kv <= KV_CHUNK_SIZE:
+        return _flash_attention_decode_neon(q, cache, kv_head, start_pos, head_dim, scale)
+
+    # Chunked processing
+    var quant = cache.is_quantized()
+    var dense = cache.page_size == 0
+    var k_ptr = cache.k.data()
+    var v_ptr = cache.v.data()
+    var k_row = Tensor[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+    var v_row = Tensor[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+    var q_ptr = q.data()
+
+    # Global online softmax state
+    var M_global = Float32(-3.0e38)
+    var S_global = Float32(0.0)
+    var O_global = Tensor[DType.float32, 1](StaticTuple[Int, 1](head_dim))
+
+    # Chunk partial state
+    var M_chunk = Float32(-3.0e38)
+    var S_chunk = Float32(0.0)
+    var O_chunk = Tensor[DType.float32, 1](StaticTuple[Int, 1](head_dim))
+
+    # Process chunks
+    var ic0 = first
+    while ic0 < seq:
+        var ic1 = ic0 + KV_CHUNK_SIZE
+        if ic1 > seq:
+            ic1 = seq
+
+        # Reset chunk state
+        M_chunk = Float32(-3.0e38)
+        S_chunk = Float32(0.0)
+        for d in range(head_dim):
+            O_chunk.set(d, 0.0)
+
+        # Process one chunk
+        for ic in range(ic0, ic1):
+            # Compute Q·K score
+            var score = Float32(0)
+            var k_base = (kv_head * max_len + ic) * head_dim
+
+            if quant:
+                cache.get_k_row(kv_head, ic, k_row)
+                var acc_vec = SIMD[DType.float32, SIMD_W](0)
+                var d = 0
+                while d + SIMD_W <= head_dim:
+                    var qv = q_ptr.unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
+                    var kv = k_row.data().unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
+                    acc_vec = acc_vec + qv * kv
+                    d += SIMD_W
+                score = acc_vec.reduce_add()
+                while d < head_dim:
+                    score += Float32(q_ptr.unsafe_load(offset=d)) * Float32(k_row.get(d))
+                    d += 1
+            else:
+                if dense:
+                    var acc_vec = SIMD[DType.float32, SIMD_W](0)
+                    var d = 0
+                    while d + SIMD_W <= head_dim:
+                        var qv = q_ptr.unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
+                        var kv = k_ptr.unsafe_load[width=SIMD_W](offset=k_base + d).cast[DType.float32]()
+                        acc_vec = acc_vec + qv * kv
+                        d += SIMD_W
+                    score = acc_vec.reduce_add()
+                    while d < head_dim:
+                        score += Float32(q_ptr.unsafe_load(offset=d)) * Float32(
+                            k_ptr.unsafe_load(offset=k_base + d)
+                        )
+                        d += 1
+                else:
+                    for d in range(head_dim):
+                        score += Float32(q_ptr.unsafe_load(offset=d)) * cache.get_k(kv_head, ic, d)
+
+            score *= scale
+
+            # Online softmax update (chunk-local)
+            var Mold = M_chunk
+            var ms = Float32(1.0)
+            var vs = Float32(1.0)
+
+            if score > M_chunk:
+                M_chunk = score
+                ms = exp(Mold - M_chunk)
+
+            vs = exp(score - M_chunk)
+
+            # Update S and O
+            S_chunk = S_chunk * ms + vs
+
+            # Get V row
+            if quant:
+                cache.get_v_row(kv_head, ic, v_row)
+                for d in range(head_dim):
+                    O_chunk.set(d, O_chunk.get(d) * ms + vs * Float32(v_row.get(d)))
+            else:
+                if dense:
+                    var d = 0
+                    while d + SIMD_W <= head_dim:
+                        var ov = O_chunk.data().unsafe_load[width=SIMD_W](offset=d)
+                        var vv = v_ptr.unsafe_load[width=SIMD_W](offset=(kv_head * max_len + ic) * head_dim + d).cast[DType.float32]()
+                        ov = ov * ms + vv * vs
+                        O_chunk.data().unsafe_store(d, ov)
+                        d += SIMD_W
+                    while d < head_dim:
+                        var ov = O_chunk.get(d)
+                        var vv = Float32(v_ptr.unsafe_load(offset=(kv_head * max_len + ic) * head_dim + d))
+                        O_chunk.set(d, ov * ms + vv * vs)
+                        d += 1
+                else:
+                    for d in range(head_dim):
+                        O_chunk.set(d, O_chunk.get(d) * ms + vs * cache.get_v(kv_head, ic, d))
+
+        # Merge chunk partial into global state
+        (M_global, S_global) = _merge_online_softmax(M_global, S_global, O_global, M_chunk, S_chunk, O_chunk, head_dim)
+
+        ic0 = ic1
+
+    # Final normalization
+    var S_inv = Float32(1.0) / S_global
+    var out = Tensor[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+    for d in range(head_dim):
+        out.set(d, Scalar[DType.float16](O_global.get(d) * S_inv))
+
+    return out
 
 
 def _flash_attention_decode_neon(
@@ -214,6 +410,120 @@ def _flash_attention_decode_neon(
     var out = Tensor[DType.float16, 1](StaticTuple[Int, 1](head_dim))
     for d in range(head_dim):
         out.set(d, Scalar[DType.float16](Float32(O.get(d)) * S_inv))
+
+    return out
+
+
+def _flash_attention_decode_scalar_chunked(
+    q: Tensor[DType.float16, 1],
+    cache: KVCacheLayer,
+    kv_head: Int,
+    start_pos: Int,
+    head_dim: Int,
+    scale: Float32,
+) -> Tensor[DType.float16, 1]:
+    """Scalar fallback with chunked KV processing."""
+    var max_len = cache.max_len
+    var first = cache.first_position()
+    if first < 0:
+        first = 0
+    var seq = start_pos + 1
+    var n_kv = seq - first
+
+    # If KV is small, process directly
+    if n_kv <= KV_CHUNK_SIZE:
+        return _flash_attention_decode_scalar(q, cache, kv_head, start_pos, head_dim, scale)
+
+    # Chunked processing
+    var quant = cache.is_quantized()
+    var dense = cache.page_size == 0
+    var k_ptr = cache.k.data()
+    var v_ptr = cache.v.data()
+    var k_row = Tensor[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+    var v_row = Tensor[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+    var q_ptr = q.data()
+
+    # Global online softmax state
+    var M_global = Float32(-3.0e38)
+    var S_global = Float32(0.0)
+    var O_global = Tensor[DType.float32, 1](StaticTuple[Int, 1](head_dim))
+
+    # Chunk partial state
+    var M_chunk = Float32(-3.0e38)
+    var S_chunk = Float32(0.0)
+    var O_chunk = Tensor[DType.float32, 1](StaticTuple[Int, 1](head_dim))
+
+    # Process chunks
+    var ic0 = first
+    while ic0 < seq:
+        var ic1 = ic0 + KV_CHUNK_SIZE
+        if ic1 > seq:
+            ic1 = seq
+
+        # Reset chunk state
+        M_chunk = Float32(-3.0e38)
+        S_chunk = Float32(0.0)
+        for d in range(head_dim):
+            O_chunk.set(d, 0.0)
+
+        # Process one chunk
+        for ic in range(ic0, ic1):
+            # Compute Q·K score
+            var score = Float32(0)
+
+            if quant:
+                cache.get_k_row(kv_head, ic, k_row)
+                for d in range(head_dim):
+                    score += Float32(q_ptr.unsafe_load(offset=d)) * Float32(k_row.get(d))
+            else:
+                if dense:
+                    for d in range(head_dim):
+                        score += Float32(q_ptr.unsafe_load(offset=d)) * Float32(
+                            k_ptr.unsafe_load(offset=(kv_head * max_len + ic) * head_dim + d)
+                        )
+                else:
+                    for d in range(head_dim):
+                        score += Float32(q_ptr.unsafe_load(offset=d)) * cache.get_k(kv_head, ic, d)
+
+            score *= scale
+
+            # Online softmax update (chunk-local)
+            var Mold = M_chunk
+            var ms = Float32(1.0)
+            var vs = Float32(1.0)
+
+            if score > M_chunk:
+                M_chunk = score
+                ms = exp(Mold - M_chunk)
+
+            vs = exp(score - M_chunk)
+            S_chunk = S_chunk * ms + vs
+
+            # Get V row
+            if quant:
+                cache.get_v_row(kv_head, ic, v_row)
+                for d in range(head_dim):
+                    O_chunk.set(d, O_chunk.get(d) * ms + vs * Float32(v_row.get(d)))
+            else:
+                if dense:
+                    for d in range(head_dim):
+                        var ov = O_chunk.get(d)
+                        var vv = Float32(v_ptr.unsafe_load(offset=(kv_head * max_len + ic) * head_dim + d))
+                        O_chunk.set(d, ov * ms + vv * vs)
+                else:
+                    for d in range(head_dim):
+                        O_chunk.set(d, O_chunk.get(d) * ms + vs * cache.get_v(kv_head, ic, d))
+
+        # Merge chunk partial into global state
+        (M_global, S_global) = _merge_online_softmax(M_global, S_global, O_global, M_chunk, S_chunk, O_chunk, head_dim)
+
+        ic0 = ic1
+
+    # Final normalization
+    var S_inv = Float32(1.0) / S_global
+    var out = Tensor[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+    for d in range(head_dim):
+        out.set(d, Scalar[DType.float16](O_global.get(d) * S_inv))
 
     return out
 
