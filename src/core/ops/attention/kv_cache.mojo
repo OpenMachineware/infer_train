@@ -42,6 +42,7 @@ from .kv_cache_simd import (
     dequantize_row_q5_0_neon,
     dequantize_row_q5_1_neon,
     dequantize_row_q8_0_neon,
+    quantize_row_q8_0_neon,
 )
 
 comptime DEFAULT_PAGE_SIZE = 64
@@ -347,6 +348,22 @@ def quantize_row_q8_0(
     `dst_off`.  The scale is derived per 32-element block (d = amax / 127),
     the inverse of `_dequantize_q8_0_block` in ops/quantized/dequantize.
     """
+    if _cpu_has_neon() and src.numel() % KV_QK == 0:
+        quantize_row_q8_0_neon(
+            src.data(),
+            dst.data().unsafe_offset(dst_off),
+            src.numel(),
+        )
+    else:
+        _quantize_row_q8_0_scalar(src, dst, dst_off)
+
+
+def _quantize_row_q8_0_scalar(
+    src: Tensor[DType.float16, 1],
+    dst: Tensor[DType.uint8, 1],
+    dst_off: Int,
+):
+    """Scalar fallback for Q8_0 quantization."""
     var n = src.numel()
     var start = 0
     var off = dst_off

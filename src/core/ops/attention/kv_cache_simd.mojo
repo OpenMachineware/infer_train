@@ -19,9 +19,15 @@ from src.core.ops.cpu.simd.simd_neon import (
     neon_vcvtq_f32_s32,
     neon_tbl1,
     neon_vreinterpretq_s16_u16,
+    neon_vmaxq_f32,
+    neon_vmaxvq_f32,
+    neon_vabsq_f32,
+    neon_vcvtnq_s32_f32,
+    neon_vqmovn_s32,
 )
 from std.memory import Pointer
 from std.origin import MutUntrackedOrigin
+from std.math import round
 
 # Block constants
 comptime KV_QK = 32
@@ -479,3 +485,178 @@ def dequantize_row_q5_1_neon(
 
         src_off += 24
         dst_off += KV_QK
+
+
+# ============================================================================
+# Q8_0 Quantization SIMD (32 fp16 -> 34 bytes)
+# ============================================================================
+
+def quantize_row_q8_0_neon(
+    src: Pointer[Scalar[DType.float16], MutUntrackedOrigin],
+    dst: Pointer[UInt8, MutUntrackedOrigin],
+    n: Int,
+):
+    """Quantize fp16 values into Q8_0 blocks using NEON SIMD.
+
+    Matches llama.cpp NEON implementation (quants.c:41-83):
+    1. Load 32 fp16 -> 8x float32x4
+    2. Tree-reduce amax using vmaxq_f32 + vmaxvq_f32
+    3. Compute scale d = amax / 127
+    4. Quantize: round -> clamp -> int8
+    5. Store results with scale
+    """
+    var nb = n // KV_QK
+    var src_off = 0
+    var dst_off = 0
+
+    for _ in range(nb):
+        # Load 32 fp16 values, convert to fp32, split into 8 vectors of 4
+        # (matching llama.cpp's 8x float32x4_t)
+        var srcv0 = src.unsafe_load[width=4](offset=src_off).cast[DType.float32]()
+        var srcv1 = src.unsafe_load[width=4](offset=src_off + 4).cast[DType.float32]()
+        var srcv2 = src.unsafe_load[width=4](offset=src_off + 8).cast[DType.float32]()
+        var srcv3 = src.unsafe_load[width=4](offset=src_off + 12).cast[DType.float32]()
+        var srcv4 = src.unsafe_load[width=4](offset=src_off + 16).cast[DType.float32]()
+        var srcv5 = src.unsafe_load[width=4](offset=src_off + 20).cast[DType.float32]()
+        var srcv6 = src.unsafe_load[width=4](offset=src_off + 24).cast[DType.float32]()
+        var srcv7 = src.unsafe_load[width=4](offset=src_off + 28).cast[DType.float32]()
+
+        # Compute abs values using vabsq_f32
+        var asrcv0 = neon_vabsq_f32(srcv0)
+        var asrcv1 = neon_vabsq_f32(srcv1)
+        var asrcv2 = neon_vabsq_f32(srcv2)
+        var asrcv3 = neon_vabsq_f32(srcv3)
+        var asrcv4 = neon_vabsq_f32(srcv4)
+        var asrcv5 = neon_vabsq_f32(srcv5)
+        var asrcv6 = neon_vabsq_f32(srcv6)
+        var asrcv7 = neon_vabsq_f32(srcv7)
+
+        # Tree reduction for amax using vmaxq_f32 (matching llama.cpp)
+        # Level 1: 8 -> 4
+        var amaxv0 = neon_vmaxq_f32(asrcv0, asrcv1)
+        var amaxv1 = neon_vmaxq_f32(asrcv2, asrcv3)
+        var amaxv2 = neon_vmaxq_f32(asrcv4, asrcv5)
+        var amaxv3 = neon_vmaxq_f32(asrcv6, asrcv7)
+
+        # Level 2: 4 -> 2
+        var amaxw0 = neon_vmaxq_f32(amaxv0, amaxv1)
+        var amaxw1 = neon_vmaxq_f32(amaxv2, amaxv3)
+
+        # Level 3: 2 -> 1
+        var amaxx = neon_vmaxq_f32(amaxw0, amaxw1)
+
+        # Final horizontal max using vmaxvq_f32
+        var amax = neon_vmaxvq_f32(amaxx)
+
+        # Compute scale
+        var d = amax / Float32(127.0)
+        var id = Float32(0.0)
+        if d != Float32(0.0):
+            id = Float32(1.0) / d
+
+        # Store scale as fp16 (bitcast pointer)
+        var d_ptr = dst.unsafe_offset(dst_off).unsafe_bitcast[Scalar[DType.float16]]()
+        d_ptr.unsafe_store(0, Scalar[DType.float16](d))
+
+        # Quantize each vector: float32 -> int8 using vcvtnq_s32_f32
+        var qs_ptr = dst.unsafe_offset(dst_off + 2)
+        var id_vec = SIMD[DType.float32, 4](id)
+
+        # Process 8 vectors (matching llama.cpp)
+        # Use vcvtnq_s32_f32 for hardware-accelerated rounding
+        # No clamp needed: scale = amax/127 ensures values fit in [-127, 127]
+        var qsv0 = neon_vcvtnq_s32_f32(srcv0 * id_vec)
+        var qsv1 = neon_vcvtnq_s32_f32(srcv1 * id_vec)
+        var qsv2 = neon_vcvtnq_s32_f32(srcv2 * id_vec)
+        var qsv3 = neon_vcvtnq_s32_f32(srcv3 * id_vec)
+        var qsv4 = neon_vcvtnq_s32_f32(srcv4 * id_vec)
+        var qsv5 = neon_vcvtnq_s32_f32(srcv5 * id_vec)
+        var qsv6 = neon_vcvtnq_s32_f32(srcv6 * id_vec)
+        var qsv7 = neon_vcvtnq_s32_f32(srcv7 * id_vec)
+
+        # Direct store as int8 (matching llama.cpp's vgetq_lane pattern)
+        # Each value is guaranteed in [-127, 127], so lower 8 bits are correct
+        qs_ptr.unsafe_store(0, UInt8(qsv0[0] & 0xFF))
+        qs_ptr.unsafe_store(1, UInt8(qsv0[1] & 0xFF))
+        qs_ptr.unsafe_store(2, UInt8(qsv0[2] & 0xFF))
+        qs_ptr.unsafe_store(3, UInt8(qsv0[3] & 0xFF))
+        qs_ptr.unsafe_store(4, UInt8(qsv1[0] & 0xFF))
+        qs_ptr.unsafe_store(5, UInt8(qsv1[1] & 0xFF))
+        qs_ptr.unsafe_store(6, UInt8(qsv1[2] & 0xFF))
+        qs_ptr.unsafe_store(7, UInt8(qsv1[3] & 0xFF))
+        qs_ptr.unsafe_store(8, UInt8(qsv2[0] & 0xFF))
+        qs_ptr.unsafe_store(9, UInt8(qsv2[1] & 0xFF))
+        qs_ptr.unsafe_store(10, UInt8(qsv2[2] & 0xFF))
+        qs_ptr.unsafe_store(11, UInt8(qsv2[3] & 0xFF))
+        qs_ptr.unsafe_store(12, UInt8(qsv3[0] & 0xFF))
+        qs_ptr.unsafe_store(13, UInt8(qsv3[1] & 0xFF))
+        qs_ptr.unsafe_store(14, UInt8(qsv3[2] & 0xFF))
+        qs_ptr.unsafe_store(15, UInt8(qsv3[3] & 0xFF))
+        qs_ptr.unsafe_store(16, UInt8(qsv4[0] & 0xFF))
+        qs_ptr.unsafe_store(17, UInt8(qsv4[1] & 0xFF))
+        qs_ptr.unsafe_store(18, UInt8(qsv4[2] & 0xFF))
+        qs_ptr.unsafe_store(19, UInt8(qsv4[3] & 0xFF))
+        qs_ptr.unsafe_store(20, UInt8(qsv5[0] & 0xFF))
+        qs_ptr.unsafe_store(21, UInt8(qsv5[1] & 0xFF))
+        qs_ptr.unsafe_store(22, UInt8(qsv5[2] & 0xFF))
+        qs_ptr.unsafe_store(23, UInt8(qsv5[3] & 0xFF))
+        qs_ptr.unsafe_store(24, UInt8(qsv6[0] & 0xFF))
+        qs_ptr.unsafe_store(25, UInt8(qsv6[1] & 0xFF))
+        qs_ptr.unsafe_store(26, UInt8(qsv6[2] & 0xFF))
+        qs_ptr.unsafe_store(27, UInt8(qsv6[3] & 0xFF))
+        qs_ptr.unsafe_store(28, UInt8(qsv7[0] & 0xFF))
+        qs_ptr.unsafe_store(29, UInt8(qsv7[1] & 0xFF))
+        qs_ptr.unsafe_store(30, UInt8(qsv7[2] & 0xFF))
+        qs_ptr.unsafe_store(31, UInt8(qsv7[3] & 0xFF))
+
+        src_off += KV_QK
+        dst_off += 34
+
+
+@always_inline
+def _simd_max_pair(
+    a0: Float32, a1: Float32, a2: Float32, a3: Float32,
+    a4: Float32, a5: Float32, a6: Float32, a7: Float32,
+) -> Float32:
+    """Compute max of 8 values using pairwise reduction."""
+    var m01 = max(a0, a1)
+    var m23 = max(a2, a3)
+    var m45 = max(a4, a5)
+    var m67 = max(a6, a7)
+
+    var m0123 = max(m01, m23)
+    var m4567 = max(m45, m67)
+
+    return max(m0123, m4567)
+
+
+@always_inline
+def _quantize_and_store_8(
+    v: SIMD[DType.float32, 8],
+    id: Float32,
+    ptr: Pointer[UInt8, MutUntrackedOrigin],
+    offset: Int,
+):
+    """Quantize 8 float32 values to int8 and store."""
+    var id_vec = SIMD[DType.float32, 8](id)
+    var scaled = v * id_vec
+
+    # Round and convert to int8
+    for i in range(8):
+        var q = Int(round(scaled[i]))
+        if q > 127:
+            q = 127
+        if q < -127:
+            q = -127
+        ptr.unsafe_store(offset + i, UInt8(q & 0xFF))
+
+
+# ============================================================================
+# Q4_0 Quantization SIMD (32 fp16 -> 18 bytes) - Placeholder for now
+# ============================================================================
+
+# Note: Q4_0/Q4_1/Q5_0/Q5_1 quantization SIMD implementations are complex
+# due to 4-bit packing and offset handling. For now, we keep the scalar
+# implementations in kv_cache.mojo which already work correctly.
+#
+# These can be optimized later using similar NEON intrinsics approach as Q8_0.

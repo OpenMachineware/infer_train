@@ -885,6 +885,70 @@ def neon_vld1q_u32(ptr: Pointer[UInt32, MutUntrackedOrigin]) -> SIMD[DType.uint3
 
 
 @always_inline
+def neon_vmaxq_f32(a: SIMD[DType.float32, 4], b: SIMD[DType.float32, 4]) -> SIMD[DType.float32, 4]:
+    """NEON vmaxq_f32: element-wise max of two float32x4 vectors."""
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.fmax.v4f32",
+        SIMD[DType.float32, 4],
+        has_side_effect=False,
+    ](a, b)
+
+
+@always_inline
+def neon_vmaxvq_f32(v: SIMD[DType.float32, 4]) -> Float32:
+    """NEON vmaxvq_f32: horizontal max across float32x4 vector."""
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.fmaxv.f32.v4f32",
+        Float32,
+        has_side_effect=False,
+    ](v)
+
+
+@always_inline
+def neon_vcvtnq_s32_f32(v: SIMD[DType.float32, 4]) -> SIMD[DType.int32, 4]:
+    """NEON vcvtnq_s32_f32: convert float32x4 to int32x4 with rounding to nearest.
+
+    Equivalent to ARM NEON intrinsics:
+    - C: vcvtnq_s32_f32
+    - Assembly: fcvtns v0.4s, v0.4s
+    """
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.fcvtns.v4f32",
+        SIMD[DType.int32, 4],
+        has_side_effect=False,
+    ](v)
+
+
+@always_inline
+def neon_vqmovn_s32(v: SIMD[DType.int32, 4]) -> SIMD[DType.int16, 4]:
+    """NEON vqmovn_s32: saturating narrow int32x4 -> int16x4."""
+    return llvm_intrinsic[
+        "llvm.aarch64.neon.sqmovn.v4i16",
+        SIMD[DType.int16, 4],
+        has_side_effect=False,
+    ](v)
+
+
+@always_inline
+def neon_vgetq_lane_s32[L: Int](v: SIMD[DType.int32, 4]) -> Int32:
+    """NEON vgetq_lane_s32: extract single element from int32x4.
+
+    Equivalent to vgetq_lane_s32(v, L) in C.
+    """
+    return v[L]
+
+
+@always_inline
+def neon_vabsq_f32(v: SIMD[DType.float32, 4]) -> SIMD[DType.float32, 4]:
+    """NEON vabsq_f32: absolute value of float32x4 vector."""
+    return llvm_intrinsic[
+        "llvm.fabs.v4f32",
+        SIMD[DType.float32, 4],
+        has_side_effect=False,
+    ](v)
+
+
+@always_inline
 def neon_addv(v: SIMD[DType.int32, 4]) -> Int32:
     """Horizontal sum using addv.4s - NEON intrinsic."""
     # Use LLVM intrinsic for vector reduce add
