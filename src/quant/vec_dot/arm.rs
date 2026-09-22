@@ -376,3 +376,176 @@ pub unsafe fn vec_dot_q4_1_q8_1_neon(n: usize, x: &[BlockQ4_1], y: &[BlockQ8_1])
 
     sumf
 }
+
+// ===== K-quant vec_dot NEON implementations =====
+
+use crate::quant::types::{BlockQ2K, BlockQ4K, BlockQ8K, QK_K};
+
+/// Load 2x uint8x16_t from memory
+#[inline(always)]
+unsafe fn vld1q_u8_x2(ptr: *const u8) -> uint8x16x2_t {
+    uint8x16x2_t(vld1q_u8(ptr), vld1q_u8(ptr.add(16)))
+}
+
+/// Load 2x int8x16_t from memory
+#[inline(always)]
+unsafe fn vld1q_s8_x2(ptr: *const i8) -> int8x16x2_t {
+    int8x16x2_t(vld1q_s8(ptr), vld1q_s8(ptr.add(16)))
+}
+
+/// Load 4x int8x16_t from memory
+#[inline(always)]
+unsafe fn vld1q_s8_x4(ptr: *const i8) -> int8x16x4_t {
+    int8x16x4_t(
+        vld1q_s8(ptr),
+        vld1q_s8(ptr.add(16)),
+        vld1q_s8(ptr.add(32)),
+        vld1q_s8(ptr.add(48))
+    )
+}
+
+/// Q2_K × Q8_K vector dot product (NEON implementation)
+#[target_feature(enable = "neon")]
+pub unsafe fn vec_dot_q2_k_q8_k_neon(n: usize, x: &[BlockQ2K], y: &[BlockQ8K]) -> f32 {
+    let nb = n / QK_K;
+    let m3 = vdupq_n_u8(0x03);
+    let m4 = vdupq_n_u8(0x0F);
+    let vzero = vdupq_n_s32(0);
+
+    let mut sum = 0.0f32;
+
+    for i in 0..nb {
+        let d = y[i].d * half::f16::from_bits(x[i].d).to_f32();
+        let dmin = -y[i].d * half::f16::from_bits(x[i].dmin).to_f32();
+
+        let q2 = x[i].qs.as_ptr();
+        let q8 = y[i].qs.as_ptr();
+        let sc = x[i].scales.as_ptr();
+
+        // Load scales and mins (packed in same byte: low 4bits = scale, high 4bits = min)
+        let mins_and_scales = vld1q_u8(sc);
+        let scales = vandq_u8(mins_and_scales, m4);
+        let mins = vshrq_n_u8(mins_and_scales, 4);
+
+        // Calculate min correction using bsums
+        let q8sums = vld1q_s16(y[i].bsums.as_ptr());
+        let mins16 = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(mins)));
+        let mins16_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(mins)));
+
+        let s0 = vaddq_s32(
+            vmull_s16(vget_low_s16(mins16), vget_low_s16(q8sums)),
+            vmull_s16(vget_high_s16(mins16), vget_high_s16(q8sums))
+        );
+        let s1 = vaddq_s32(
+            vmull_s16(vget_low_s16(mins16_hi), vget_low_s16(vld1q_s16(y[i].bsums.as_ptr().add(8)))),
+            vmull_s16(vget_high_s16(mins16_hi), vget_high_s16(vld1q_s16(y[i].bsums.as_ptr().add(8))))
+        );
+        sum += dmin * vaddvq_s32(vaddq_s32(s0, s1)) as f32;
+
+        // Process 256 elements (128 bytes of Q2 data)
+        let mut isum = 0i32;
+        let mut is = 0;
+
+        // Store scales for scalar access
+        let scales_arr: [u8; 16] = std::mem::transmute(scales);
+
+        for j in 0..(QK_K / 128) {
+            let q2bits = vld1q_u8_x2(q2.add(j * 32));
+            let q8bytes = vld1q_s8_x2(q8.add(j * 64));
+
+            // Decode 2-bit values (4 per byte)
+            let q2bytes_0 = vreinterpretq_s8_u8(vandq_u8(q2bits.0, m3));
+            let q2bytes_1 = vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(q2bits.0, 2), m3));
+
+            // Dot products with scales
+            isum += vaddvq_s32(vdotq_s32_manual(vzero, q2bytes_0, q8bytes.0)) * scales_arr[is] as i32;
+            isum += vaddvq_s32(vdotq_s32_manual(vzero, q2bytes_1, q8bytes.1)) * scales_arr[is + 1] as i32;
+
+            // Process second half
+            let q2bytes_4 = vreinterpretq_s8_u8(vandq_u8(q2bits.1, m3));
+            let q2bytes_5 = vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(q2bits.1, 2), m3));
+
+            let q8bytes2 = vld1q_s8_x2(q8.add(j * 64 + 32));
+
+            isum += vaddvq_s32(vdotq_s32_manual(vzero, q2bytes_4, q8bytes2.0)) * scales_arr[is + 2] as i32;
+            isum += vaddvq_s32(vdotq_s32_manual(vzero, q2bytes_5, q8bytes2.1)) * scales_arr[is + 3] as i32;
+
+            is += 4;
+        }
+
+        sum += d * isum as f32;
+    }
+
+    sum
+}
+
+/// Q4_K × Q8_K vector dot product (NEON implementation)
+#[target_feature(enable = "neon")]
+pub unsafe fn vec_dot_q4_k_q8_k_neon(n: usize, x: &[BlockQ4K], y: &[BlockQ8K]) -> f32 {
+    let nb = n / QK_K;
+    let m4b = vdupq_n_u8(0x0F);
+    let vzero = vdupq_n_s32(0);
+
+    const KMASK2: u32 = 0x0f0f0f0f;
+    const KMASK3: u32 = 0x03030303;
+
+    let mut sum = 0.0f32;
+
+    for i in 0..nb {
+        let d = y[i].d * half::f16::from_bits(x[i].d).to_f32();
+        let dmin = y[i].d * half::f16::from_bits(x[i].dmin).to_f32();
+
+        // Decode scales and mins from 12-byte format
+        let mut aux = [0u32; 3];
+        std::ptr::copy_nonoverlapping(x[i].scales.as_ptr(), aux.as_mut_ptr() as *mut u8, 12);
+
+        let mut utmp = [0u32; 4];
+        utmp[3] = ((aux[1] >> 4) & KMASK2) | (((aux[2] >> 6) & KMASK3) << 4);
+        utmp[2] = ((aux[0] >> 4) & KMASK2) | (((aux[2] >> 4) & KMASK3) << 4);
+        utmp[1] = (aux[1] & KMASK2) | (((aux[2] >> 2) & KMASK3) << 4);
+        utmp[0] = (aux[0] & KMASK2) | ((aux[2] & KMASK3) << 4);
+
+        let scales: [i8; 16] = std::mem::transmute(utmp);
+
+        // Calculate min correction using bsums
+        let mins_0 = vld1q_s8(scales.as_ptr().add(8));
+        let bsums_0 = vld1q_s16(y[i].bsums.as_ptr());
+        let bsums_1 = vld1q_s16(y[i].bsums.as_ptr().add(8));
+
+        let min_sum = vaddvq_s32(vaddq_s32(
+            vmull_s16(vget_low_s16(vmovl_s8(vget_low_s8(mins_0))), vget_low_s16(bsums_0)),
+            vmull_s16(vget_high_s16(vmovl_s8(vget_high_s8(mins_0))), vget_high_s16(bsums_0))
+        )) + vaddvq_s32(vaddq_s32(
+            vmull_s16(vget_low_s16(vmovl_s8(vget_low_s8(vld1q_s8(scales.as_ptr().add(8).add(8))))), vget_low_s16(bsums_1)),
+            vmull_s16(vget_high_s16(vmovl_s8(vget_high_s8(vld1q_s8(scales.as_ptr().add(8).add(8))))), vget_high_s16(bsums_1))
+        ));
+
+        // Process 256 elements
+        let q4 = x[i].qs.as_ptr();
+        let q8 = y[i].qs.as_ptr();
+
+        let mut isum = 0i32;
+
+        for j in 0..(QK_K / 128) {
+            let q4bits = vld1q_u8_x2(q4.add(j * 32));
+            let q8bytes = vld1q_s8_x4(q8.add(j * 64));
+
+            // Decode 4-bit values
+            let q4l = vreinterpretq_s8_u8(vandq_u8(q4bits.0, m4b));
+            let q4h = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.0, 4));
+
+            isum += vaddvq_s32(vdotq_s32_manual(vzero, q4l, q8bytes.0)) * scales[j * 4] as i32;
+            isum += vaddvq_s32(vdotq_s32_manual(vzero, q4h, q8bytes.1)) * scales[j * 4 + 1] as i32;
+
+            let q4l2 = vreinterpretq_s8_u8(vandq_u8(q4bits.1, m4b));
+            let q4h2 = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.1, 4));
+
+            isum += vaddvq_s32(vdotq_s32_manual(vzero, q4l2, q8bytes.2)) * scales[j * 4 + 2] as i32;
+            isum += vaddvq_s32(vdotq_s32_manual(vzero, q4h2, q8bytes.3)) * scales[j * 4 + 3] as i32;
+        }
+
+        sum += d * isum as f32 - dmin * min_sum as f32;
+    }
+
+    sum
+}
