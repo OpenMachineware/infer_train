@@ -1138,3 +1138,49 @@ pub unsafe fn vec_dot_iq4_nl_q8_0_neon(n: usize, x: &[BlockIQ4NL], y: &[BlockQ8_
 
     sum
 }
+
+use crate::quant::types::BlockIQ4XS;
+
+/// IQ4_XS × Q8_K vector dot product (NEON implementation)
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn vec_dot_iq4_xs_q8_k_neon(n: usize, x: &[BlockIQ4XS], y: &[BlockQ8K]) -> f32 {
+    let nb = n / QK_K;
+    let m4b = vdupq_n_u8(0x0F);
+    let vzero = vdupq_n_s32(0);
+    let values = vld1q_s8(KVALUES_IQ4NL.as_ptr());
+
+    let mut sum = 0.0f32;
+
+    for ibl in 0..nb {
+        let q4 = x[ibl].qs.as_ptr();
+        let q8 = y[ibl].qs.as_ptr();
+        let mut h = x[ibl].scales_h;
+
+        let mut sumi1 = 0i32;
+        let mut sumi2 = 0i32;
+
+        for ib in 0..(QK_K / 64) {
+            let q4bits = vld1q_u8_x2(q4.add(ib * 32));
+            let q8bytes = vld1q_s8_x4(q8.add(ib * 64));
+
+            let q4b_0 = vqtbl1q_s8(values, vandq_u8(q4bits.0, m4b));
+            let q4b_1 = vqtbl1q_s8(values, vshrq_n_u8(q4bits.0, 4));
+            let q4b_2 = vqtbl1q_s8(values, vandq_u8(q4bits.1, m4b));
+            let q4b_3 = vqtbl1q_s8(values, vshrq_n_u8(q4bits.1, 4));
+
+            let prod_1 = vdotq_s32_manual(vdotq_s32_manual(vzero, q4b_0, q8bytes.0), q4b_1, q8bytes.1);
+            let prod_2 = vdotq_s32_manual(vdotq_s32_manual(vzero, q4b_2, q8bytes.2), q4b_3, q8bytes.3);
+
+            let ls1 = ((x[ibl].scales_l[ib] & 0x0F) as i32 | ((h as i32 & 0x0F) << 4)) - 32;
+            let ls2 = ((x[ibl].scales_l[ib] >> 4) as i32 | ((h as i32 >> 4) << 4)) - 32;
+            h >>= 8;
+
+            sumi1 += vaddvq_s32(prod_1) * ls1;
+            sumi2 += vaddvq_s32(prod_2) * ls2;
+        }
+
+        sum += half::f16::from_bits(x[ibl].d).to_f32() * y[ibl].d * (sumi1 + sumi2) as f32;
+    }
+
+    sum
+}
