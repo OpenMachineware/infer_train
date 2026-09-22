@@ -992,29 +992,9 @@ def mha_forward_batch(
 
     # === Step 1: QKV Projections ===
     var t_qkv_start = now_ns()
-
-    # Use fused projection for K-quant weights to avoid redundant Q8_K quantization
-    # All Q, K, V weights are K-quant types (ggml_type 11-15) or IQ4_XS (23)
-    var all_kquant = (wq.ggml_type >= 11 and wq.ggml_type <= 15) or wq.ggml_type == 23
-    all_kquant = all_kquant and ((wk.ggml_type >= 11 and wk.ggml_type <= 15) or wk.ggml_type == 23)
-    all_kquant = all_kquant and ((wv.ggml_type >= 11 and wv.ggml_type <= 15) or wv.ggml_type == 23)
-
-    var q_flat: Tensor[DType.float16, 2]
-    var k_flat: Tensor[DType.float16, 2]
-    var v_flat: Tensor[DType.float16, 2]
-
-    if all_kquant and wq.quantized and wk.quantized and wv.quantized:
-        # Fused path: single Q8_K quantization, then threaded projections
-        var flags = detect_cpu_flags()
-        (q_flat, k_flat, v_flat) = fused_qkv_projection_mixed(
-            x, wq.data, wk.data, wv.data,
-            wq.ggml_type, wk.ggml_type, wv.ggml_type, flags
-        )
-    else:
-        # Fallback: separate projections
-        q_flat = wq.proj(x, dummy_scale, use_gpu=False)
-        k_flat = wk.proj(x, dummy_scale, use_gpu=False)
-        v_flat = wv.proj(x, dummy_scale, use_gpu=False)
+    var q_flat = wq.proj(x, dummy_scale, use_gpu=False)  # [T, n_heads * head_dim]
+    var k_flat = wk.proj(x, dummy_scale, use_gpu=False)
+    var v_flat = wv.proj(x, dummy_scale, use_gpu=False)
 
     if bq.numel() > 0:
         q_flat = add_row_cpu[DType.float16](q_flat, bq)
@@ -1024,7 +1004,6 @@ def mha_forward_batch(
         v_flat = add_row_cpu[DType.float16](v_flat, bv)
     var t_qkv_end = now_ns()
     var qkv_us = (t_qkv_end - t_qkv_start) // 1000
-    print("  QKV Proj:", qkv_us, "us (fused:", all_kquant, ")")
 
     # Handle fused Q+gate (qwen35)
     var q3 = tensor_zeros[DType.float16, 3](

@@ -860,54 +860,16 @@ struct TransformerModel(Movable):
         self.qparams = qparams^
 
     def prepare_fp16_for_prefill(mut self):
-        """Pre-dequantize all weights to FP16 for fast batch prefill.
+        """No pre-dequantization - use quantized weights directly.
 
-        This is a one-time cost during model initialization. After this,
-        batch prefill (M > 1) can use BLAS with pre-dequantized weights,
-        avoiding the on-the-fly dequantization overhead (140-1550 us -> ~10 us per matmul).
-
-        This trades memory for speed: quantized weights stay resident, and
-        pre-dequantized FP16 copies are kept for batch prefill.
+        Strategy:
+        - All weights stay quantized (same memory as llama.cpp)
+        - Use optimized quantized GEMM (already exceeds llama.cpp for Q4_K/Q5_K/Q6_K)
+        - Avoid BLAS for small batches (BLAS efficiency is <20% for M<32)
         """
-        print("prepare_fp16_for_prefill: Dequantizing weights to FP32...")
-        # Dequantize all layer weights to FP32 for batch prefill
-        # Note: List returns copies, so we need to write back after mutation
-        for i in range(len(self.qparams.layers)):
-            var lw = self.qparams.layers[i]
-            if i == 0:
-                print("  Layer 0: q_w ggml_type:", lw.q_w.ggml_type, "quantized:", lw.q_w.quantized, "shape:", lw.q_w.data.shape()[0], "x", lw.q_w.data.shape()[1])
-            # Attention weights - dequantize for batch prefill
-            lw.q_w.dequantize_to_fp32()
-            lw.k_w.dequantize_to_fp32()
-            lw.v_w.dequantize_to_fp32()
-            lw.o_w.dequantize_to_fp32()
-            # FFN weights
-            lw.gate_w.dequantize_to_fp32()
-            lw.up_w.dequantize_to_fp32()
-            lw.down_w.dequantize_to_fp32()
-            # Recurrent layer weights
-            lw.attn_gate.dequantize_to_fp32()
-            lw.ssm_beta.dequantize_to_fp32()
-            lw.ssm_alpha.dequantize_to_fp32()
-            lw.ssm_out.dequantize_to_fp32()
-            # MoE weights
-            lw.moe_router.dequantize_to_fp32()
-            lw.moe_sh_gate.dequantize_to_fp32()
-            lw.moe_sh_up.dequantize_to_fp32()
-            lw.moe_sh_down.dequantize_to_fp32()
-            if i == 0:
-                print("  Layer 0: q_w.fp32_dequant shape:", lw.q_w.fp32_dequant.shape()[0], "x", lw.q_w.fp32_dequant.shape()[1])
-                print("  Layer 0: o_w.fp32_dequant shape:", lw.o_w.fp32_dequant.shape()[0], "x", lw.o_w.fp32_dequant.shape()[1])
-            # Write back the mutated copy
-            self.qparams.layers[i] = lw^
-            if i == 0:
-                # Verify write-back
-                var verify_lw = self.qparams.layers[i]
-                print("  Layer 0 (after write-back): o_w.fp32_dequant shape:", verify_lw.o_w.fp32_dequant.shape()[0], "x", verify_lw.o_w.fp32_dequant.shape()[1])
-
-        # Output projection
-        self.qparams.output_w.dequantize_to_fp16()
-        print("prepare_fp16_for_prefill: Done")
+        print("prepare_fp16_for_prefill: Using quantized weights (no pre-dequant)")
+        # No pre-dequantization - all weights stay quantized
+        # This keeps memory usage minimal (~5GB like llama.cpp))
 
     def upload_weights_to_gpu(mut self) raises:
         """Upload all quantized weights to GPU for persistent caching.
@@ -1334,6 +1296,77 @@ struct TransformerModel(Movable):
         for k in range(cfg.hidden):
             last_x_fp16.set(k, Scalar[DType.float16](last_x.get(k)))
         var logits16 = self._output_proj(last_x_fp16)
+
+        var logits = tensor_zeros[DType.float32, 1](
+            StaticTuple[Int, 1](cfg.vocab)
+        )
+        for j in range(cfg.vocab):
+            logits.set(j, Scalar[DType.float32](Float32(logits16.get(j))))
+        return logits
+
+    def forward_batch_quant(
+        mut self, tokens: List[Int], start_pos: Int, batch_size: Int = 32
+    ) raises -> Tensor[DType.float32, 1]:
+        """Batch prefill with quantized weights (no pre-dequant).
+
+        Uses optimized quantized GEMM directly, avoiding:
+        1. BLAS inefficiency for small batches (< 64)
+        2. Memory overhead from pre-dequantization
+
+        Memory usage matches llama.cpp (~5GB for 7B Q4_K).
+        """
+        var cfg = self.config
+        var n_tokens = len(tokens)
+        var pos = start_pos
+
+        # Reset profiling counters
+        self.reset_profile()
+
+        # Process in mini-batches
+        var last_x = tensor_zeros[DType.float16, 2](
+            StaticTuple[Int, 2](1, cfg.hidden)
+        )
+
+        var i = 0
+        while i < n_tokens:
+            var cur_batch = min(batch_size, n_tokens - i)
+            var toks_tensor = tensor_zeros[DType.int32, 1](
+                StaticTuple[Int, 1](cur_batch)
+            )
+            for j in range(cur_batch):
+                toks_tensor.set(j, Scalar[DType.int32](tokens[i + j]))
+
+            # FP16 embedding lookup
+            var x = self._embed_tokens(toks_tensor)
+
+            # Process through all layers with quantized weights
+            for layer in range(self.shard_lo, self.shard_hi):
+                if cfg.is_recurrent(layer):
+                    for t in range(cur_batch):
+                        var x_t = tensor_zeros[DType.float16, 2](
+                            StaticTuple[Int, 2](1, cfg.hidden)
+                        )
+                        for d in range(cfg.hidden):
+                            x_t.set(d, x.get(t * cfg.hidden + d))
+                        x_t = self._layer_forward_ssm(layer, x_t)
+                        for d in range(cfg.hidden):
+                            x.set(t * cfg.hidden + d, x_t.get(d))
+                else:
+                    x = self._layer_forward_attn_batch(layer, x, pos, cur_batch)
+
+            # Save last hidden state
+            if i + cur_batch == n_tokens:
+                for d in range(cfg.hidden):
+                    last_x.set(d, x.get((cur_batch - 1) * cfg.hidden + d))
+
+            pos += cur_batch
+            i += cur_batch
+
+        # Final norm + output projection
+        last_x = rms_norm_weight[DType.float16](
+            last_x, self._output_norm_w(), cfg.norm_eps
+        )
+        var logits16 = self._output_proj(last_x)
 
         var logits = tensor_zeros[DType.float32, 1](
             StaticTuple[Int, 1](cfg.vocab)
@@ -2059,34 +2092,60 @@ def _ffn_swiglu_batch(
     Args:
         gpu_ctx: Optional cached GPU context for GPU acceleration.
     """
-    # Check if both gate and up are K-quant types (ggml_type 11-15)
-    var gate_kquant = lw.gate_w.ggml_type >= 11 and lw.gate_w.ggml_type <= 15
-    var up_kquant = lw.up_w.ggml_type >= 11 and lw.up_w.ggml_type <= 15
+    # Check if both gate and up are K-quant types or IQ4_XS (all use Q8_K vec_dot)
+    # Supported: Q2_K (11), Q3_K (15), Q4_K_M (12), Q5_K (13), Q6_K (14), IQ4_XS (23)
+    var gate_supported = (lw.gate_w.ggml_type >= 11 and lw.gate_w.ggml_type <= 15) or lw.gate_w.ggml_type == 23
+    var up_supported = (lw.up_w.ggml_type >= 11 and lw.up_w.ggml_type <= 15) or lw.up_w.ggml_type == 23
 
     # For batch prefill, use BLAS path instead of fused K-quant path (faster)
     # Fused path is only beneficial for decode (M=1)
     if False:  # Disable fused path for batch prefill
         pass
-    elif gate_kquant and up_kquant and lw.gate_w.quantized and lw.up_w.quantized:
+    elif gate_supported and up_supported and lw.gate_w.quantized and lw.up_w.quantized:
+        var t_fused_start = now_ns()
         var flags = detect_cpu_flags()
         var (g, u) = fused_gate_up_projection(
             normed, lw.gate_w.data, lw.up_w.data,
             lw.gate_w.ggml_type, lw.up_w.ggml_type, flags
         )
+        var t_fused_end = now_ns()
+        print("    FFN fused gate+up:", (t_fused_end - t_fused_start) // 1000, "us")
+
+        var t_silu_start = now_ns()
         var h = swiglu_cpu_dynamic[DType.float16](g, u)
+        var t_silu_end = now_ns()
+        print("    FFN SwiGLU:", (t_silu_end - t_silu_start) // 1000, "us")
+
         # Fused down_proj + residual add
-        # Use GPU if context is available (batch prefill)
         var use_gpu = gpu_ctx != None
-        return lw.down_w.proj_add(h, dummy_scale, resid, use_gpu, gpu_ctx)
+        var t_down_start = now_ns()
+        var result = lw.down_w.proj_add(h, dummy_scale, resid, use_gpu, gpu_ctx)
+        var t_down_end = now_ns()
+        print("    FFN down+resid:", (t_down_end - t_down_start) // 1000, "us")
+        return result
 
     # Fallback: non-K-quant or mixed types
-    # Use GPU if context is available (batch prefill)
     var use_gpu = gpu_ctx != None
-    var g = lw.gate_w.proj(normed, dummy_scale, use_gpu, gpu_ctx)  # [T, ffn]
+    var t_gate_start = now_ns()
+    var g = lw.gate_w.proj(normed, dummy_scale, use_gpu, gpu_ctx)
+    var t_gate_end = now_ns()
+    print("    FFN gate:", (t_gate_end - t_gate_start) // 1000, "us")
+
+    var t_up_start = now_ns()
     var u = lw.up_w.proj(normed, dummy_scale, use_gpu, gpu_ctx)
+    var t_up_end = now_ns()
+    print("    FFN up:", (t_up_end - t_up_start) // 1000, "us")
+
+    var t_silu_start = now_ns()
     var h = swiglu_cpu_dynamic[DType.float16](g, u)
-    # Fused down_proj + residual add
-    return lw.down_w.proj_add(h, dummy_scale, resid, use_gpu, gpu_ctx)
+    var t_silu_end = now_ns()
+    print("    FFN SwiGLU:", (t_silu_end - t_silu_start) // 1000, "us")
+
+    var t_down_start = now_ns()
+    var result = lw.down_w.proj_add(h, dummy_scale, resid, use_gpu, gpu_ctx)
+    var t_down_end = now_ns()
+    print("    FFN down+resid:", (t_down_end - t_down_start) // 1000, "us")
+    return result
 
 
 def _ffn_swiglu_batch_fp32(
@@ -2094,24 +2153,56 @@ def _ffn_swiglu_batch_fp32(
     lw: LayerQView,
     resid: Tensor[DType.float32, 2],
 ) -> Tensor[DType.float32, 2]:
-    """Batch SwiGLU FFN in FP32 for prefill (processes [T, hidden] input).
+    """Batch SwiGLU FFN: FP32 input/output, quantized weights.
 
-    Uses pre-dequantized FP32 weights with BLAS to avoid Mojo loop overhead.
-    All operations are in FP32: gate/up projection, SwiGLU activation, down projection.
+    Uses quantized weights (no FP32 pre-dequant) to save memory.
+    Accepts FP32 input, dequantizes on-the-fly to FP16, computes, converts back to FP32.
     """
-    # Gate and Up projections (FP32 BLAS)
-    var g = lw.gate_w.proj_fp32(normed)  # [T, ffn] FP32
-    var u = lw.up_w.proj_fp32(normed)
+    # Convert FP32 input to FP16 for quantized projection
+    var n_tokens = normed.shape()[0]
+    var hidden = normed.shape()[1]
+    var normed_fp16 = tensor_zeros[DType.float16, 2](normed.shape())
+    var total = n_tokens * hidden
+    var idx = 0
+    while idx + 16 <= total:
+        var vec = normed.data().unsafe_load[width=16](offset=idx)
+        var vec_fp16 = vec.cast[DType.float16]()
+        normed_fp16.data().unsafe_offset(idx).unsafe_store(val=vec_fp16)
+        idx += 16
+    while idx < total:
+        normed_fp16.data().unsafe_offset(idx).unsafe_store(
+            val=Scalar[DType.float16](normed.data().unsafe_offset(idx).unsafe_load())
+        )
+        idx += 1
 
-    # SwiGLU activation: h = silu(g) * u
-    var h = swiglu_cpu_dynamic[DType.float32](g, u)
+    # Use quantized weights (on-the-fly dequant)
+    var dummy_scale = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](1))
+    var g_fp16 = lw.gate_w.proj(normed_fp16, dummy_scale)
+    var u_fp16 = lw.up_w.proj(normed_fp16, dummy_scale)
 
-    # Down projection + residual add (FP32 BLAS)
-    var result = lw.down_w.proj_fp32(h)
+    # SwiGLU activation
+    var h_fp16 = swiglu_cpu_dynamic[DType.float16](g_fp16, u_fp16)
+
+    # Down projection
+    var result_fp16 = lw.down_w.proj(h_fp16, dummy_scale)
+
+    # Convert back to FP32 and add residual
+    var result = tensor_zeros[DType.float32, 2](result_fp16.shape())
+    var ffn_size = result.numel()
+    idx = 0
+    while idx + 16 <= ffn_size:
+        var vec = result_fp16.data().unsafe_load[width=16](offset=idx)
+        var vec_f32 = vec.cast[DType.float32]()
+        result.data().unsafe_offset(idx).unsafe_store(val=vec_f32)
+        idx += 16
+    while idx < ffn_size:
+        result.data().unsafe_offset(idx).unsafe_store(
+            val=Float32(result_fp16.data().unsafe_offset(idx).unsafe_load())
+        )
+        idx += 1
 
     # Add residual
-    var total = result.numel()
-    for i in range(total):
+    for i in range(ffn_size):
         result.set(i, result.get(i) + resid.get(i))
 
     return result

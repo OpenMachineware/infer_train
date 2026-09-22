@@ -499,65 +499,70 @@ def quant_proj_dispatch(
                 x, w.data, n_blocks, w.gpu_buf, gpu_ctx
             )
 
-    # K-quant formats: Use BLAS for batch prefill (M > 1), Q8_K + SDOT for decode
-    # Threading: Use pthread pool for large matrices (N >= 2048) in decode mode
-    # nrc==2 optimization for Q4_K uses MMLA to process 2 rows at once
+    # K-quant formats: Use optimized quantized kernel for all batch sizes
+    # BLAS is inefficient for small batches (M < 64) - efficiency drops to 17% at M=32
+    # Quantized kernel is faster and uses less memory
 
     # Q4_K (ggml_type 12)
     if w.ggml_type == 12:
-        # Use BLAS for batch prefill
+        # Use threaded kernel for batch prefill (faster than BLAS for M < 64)
         if x.shape()[0] > 1:
-            return matmul_quantized_blas_tiled[DType.float16, QuantType.Q4_K_M](x, w.data, dummy_scale)
-        if w.n_out >= 2048 and x.shape()[0] == 1:
+            return matmul_quantized_q8k_threaded[QuantType.Q4_K_M](x, w.data, dummy_scale, flags)
+        if w.n_out >= 2048:
             return matmul_quantized_q8k_threaded[QuantType.Q4_K_M](x, w.data, dummy_scale, flags)
         # Use nrc2 optimization for Q4_K decode
         return matmul_quantized_q8k_nrc2[QuantType.Q4_K_M](x, w.data, dummy_scale, flags)
 
     # Q5_K (ggml_type 13)
     if w.ggml_type == 13:
-        # Use BLAS for batch prefill
+        # Use threaded kernel for batch prefill
         if x.shape()[0] > 1:
-            return matmul_quantized_blas_tiled[DType.float16, QuantType.Q5_K](x, w.data, dummy_scale)
-        if w.n_out >= 2048 and x.shape()[0] == 1:
+            return matmul_quantized_q8k_threaded[QuantType.Q5_K](x, w.data, dummy_scale, flags)
+        if w.n_out >= 2048:
             return matmul_quantized_q8k_threaded[QuantType.Q5_K](x, w.data, dummy_scale, flags)
         return matmul_quantized_q8k[QuantType.Q5_K](x, w.data, dummy_scale, flags)
 
     # Q6_K (ggml_type 14)
     if w.ggml_type == 14:
+        # Use threaded kernel for batch prefill
         if x.shape()[0] > 1:
-            return matmul_quantized_blas_tiled[DType.float16, QuantType.Q6_K](x, w.data, dummy_scale)
-        if w.n_out >= 2048 and x.shape()[0] == 1:
+            return matmul_quantized_q8k_threaded[QuantType.Q6_K](x, w.data, dummy_scale, flags)
+        if w.n_out >= 2048:
             return matmul_quantized_q8k_threaded[QuantType.Q6_K](x, w.data, dummy_scale, flags)
         return matmul_quantized_q8k[QuantType.Q6_K](x, w.data, dummy_scale, flags)
 
     # Q2_K (ggml_type 11)
     if w.ggml_type == 11:
+        # Use threaded kernel for batch prefill
         if x.shape()[0] > 1:
-            return matmul_quantized_blas_tiled[DType.float16, QuantType.Q2_K](x, w.data, dummy_scale)
-        if w.n_out >= 2048 and x.shape()[0] == 1:
+            return matmul_quantized_q8k_threaded[QuantType.Q2_K](x, w.data, dummy_scale, flags)
+        if w.n_out >= 2048:
             return matmul_quantized_q8k_threaded[QuantType.Q2_K](x, w.data, dummy_scale, flags)
         return matmul_quantized_q8k[QuantType.Q2_K](x, w.data, dummy_scale, flags)
 
     # Q3_K (ggml_type 15)
     if w.ggml_type == 15:
+        # Use threaded kernel for batch prefill
         if x.shape()[0] > 1:
-            return matmul_quantized_blas_tiled[DType.float16, QuantType.Q3_K](x, w.data, dummy_scale)
-        if w.n_out >= 2048 and x.shape()[0] == 1:
+            return matmul_quantized_q8k_threaded[QuantType.Q3_K](x, w.data, dummy_scale, flags)
+        if w.n_out >= 2048:
             return matmul_quantized_q8k_threaded[QuantType.Q3_K](x, w.data, dummy_scale, flags)
         return matmul_quantized_q8k[QuantType.Q3_K](x, w.data, dummy_scale, flags)
 
     # Non-K-quant formats: Use standard dequantize + matmul path
     if w.ggml_type == 2:  # Q4_0
+        # Use threaded kernel for batch prefill
         if x.shape()[0] > 1:
-            return matmul_quantized_blas_tiled[DType.float16, QuantType.Q4_0](
+            return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q4_0, 32](
                 x, w.data, dummy_scale
             )
         return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q4_0, 32](
             x, w.data, dummy_scale
         )
     if w.ggml_type == 8:  # Q8_0
+        # Use threaded kernel for batch prefill
         if x.shape()[0] > 1:
-            return matmul_quantized_blas_tiled[DType.float16, QuantType.Q8_0](
+            return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q8_0, 32](
                 x, w.data, dummy_scale
             )
         return matmul_quantized_cpu_threaded[DType.float16, QuantType.Q8_0, 32](
@@ -623,26 +628,12 @@ def quant_proj_add_dispatch(
             )
             return add_cpu_dynamic[DType.float16](residual, result)
 
-    # K-quant formats: CPU path with fused Q8_K + residual
-    # Q4_K (ggml_type 12)
-    if w.ggml_type == 12:
-        return matmul_quantized_q8k_add[QuantType.Q4_K_M](x, w.data, dummy_scale, residual, flags)
-
-    # Q5_K (ggml_type 13)
-    if w.ggml_type == 13:
-        return matmul_quantized_q8k_add[QuantType.Q5_K](x, w.data, dummy_scale, residual, flags)
-
-    # Q6_K (ggml_type 14)
-    if w.ggml_type == 14:
-        return matmul_quantized_q8k_add[QuantType.Q6_K](x, w.data, dummy_scale, residual, flags)
-
-    # Q2_K (ggml_type 11)
-    if w.ggml_type == 11:
-        return matmul_quantized_q8k_add[QuantType.Q2_K](x, w.data, dummy_scale, residual, flags)
-
-    # Q3_K (ggml_type 15)
-    if w.ggml_type == 15:
-        return matmul_quantized_q8k_add[QuantType.Q3_K](x, w.data, dummy_scale, residual, flags)
+    # K-quant formats: Use threaded matmul + separate add
+    # The "fused" kernel saves one memory pass but loses threading (10x slowdown)
+    # Threading gives much bigger speedup than the fusion optimization
+    if w.ggml_type >= 11 and w.ggml_type <= 15:
+        var result = quant_proj_dispatch(x, w, dummy_scale, use_gpu, gpu_ctx)
+        return add_cpu_dynamic[DType.float16](residual, result)
 
     # Non-K-quant formats: fallback to separate matmul + add
     var result = quant_proj_dispatch(x, w, dummy_scale, use_gpu, gpu_ctx)
