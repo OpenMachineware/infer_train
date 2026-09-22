@@ -2,3 +2,4 @@
 pub mod arm;
 
 pub mod scalar;
+pub mod tables;
