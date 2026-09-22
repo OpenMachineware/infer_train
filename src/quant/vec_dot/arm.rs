@@ -1077,3 +1077,64 @@ pub unsafe fn vec_dot_q6_k_q8_k_neon(n: usize, x: &[BlockQ6K], y: &[BlockQ8K]) -
 
     sum
 }
+
+// ===== IQ Series =====
+
+use crate::quant::types::BlockIQ4NL;
+
+/// Lookup table for IQ4_NL: maps 4-bit values to actual quantized values
+static KVALUES_IQ4NL: [i8; 16] = [
+    -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
+];
+
+const QK4_NL: usize = 32;
+
+/// IQ4_NL × Q8_0 vector dot product (NEON implementation)
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn vec_dot_iq4_nl_q8_0_neon(n: usize, x: &[BlockIQ4NL], y: &[BlockQ8_0]) -> f32 {
+    let nb = n / QK4_NL;
+    let m4b = vdupq_n_u8(0x0F);
+    let vzero = vdupq_n_s32(0);
+
+    // Load the lookup table into a NEON register
+    let values = vld1q_s8(KVALUES_IQ4NL.as_ptr());
+
+    let mut sum = 0.0f32;
+    let mut ib = 0;
+
+    // Process 2 blocks at a time
+    while ib + 1 < nb {
+        let q4bits_0 = vld1q_u8(x[ib].qs.as_ptr());
+        let q4bits_1 = vld1q_u8(x[ib + 1].qs.as_ptr());
+
+        let q8b_0 = vld1q_s8_x2(y[ib].qs.as_ptr());
+        let q8b_1 = vld1q_s8_x2(y[ib + 1].qs.as_ptr());
+
+        // Lookup 4-bit values using TBL instruction
+        let q4b_0 = vqtbl1q_s8(values, vandq_u8(q4bits_0, m4b));
+        let q4b_1 = vqtbl1q_s8(values, vshrq_n_u8(q4bits_0, 4));
+        let q4b_2 = vqtbl1q_s8(values, vandq_u8(q4bits_1, m4b));
+        let q4b_3 = vqtbl1q_s8(values, vshrq_n_u8(q4bits_1, 4));
+
+        let prod_0 = vdotq_s32_manual(vdotq_s32_manual(vzero, q4b_0, q8b_0.0), q4b_1, q8b_0.1);
+        let prod_1 = vdotq_s32_manual(vdotq_s32_manual(vzero, q4b_2, q8b_1.0), q4b_3, q8b_1.1);
+
+        sum += half::f16::from_bits(x[ib].d).to_f32() * half::f16::from_bits(y[ib].d).to_f32() * vaddvq_s32(prod_0) as f32;
+        sum += half::f16::from_bits(x[ib + 1].d).to_f32() * half::f16::from_bits(y[ib + 1].d).to_f32() * vaddvq_s32(prod_1) as f32;
+
+        ib += 2;
+    }
+
+    // Handle remainder
+    for i in ib..nb {
+        let d = half::f16::from_bits(x[i].d).to_f32() * half::f16::from_bits(y[i].d).to_f32();
+        let mut sumi = 0i32;
+        for j in 0..16 {
+            sumi += y[i].qs[j] as i32 * KVALUES_IQ4NL[(x[i].qs[j] & 0x0F) as usize] as i32;
+            sumi += y[i].qs[j + 16] as i32 * KVALUES_IQ4NL[(x[i].qs[j] >> 4) as usize] as i32;
+        }
+        sum += d * sumi as f32;
+    }
+
+    sum
+}
