@@ -125,20 +125,22 @@ def mha_forward_batch(
 
     Processes multiple requests in parallel using thread pool.
     Each request is independent (different KV cache, different query).
+    Single request (n_requests=1) is handled as a special case.
 
     Returns list of output tensors [n_heads, 1, head_dim] for each request.
     """
     var n_requests = len(queries)
 
-    # Threading threshold
-    if n_requests < MIN_REQUESTS_FOR_THREADING or nthreads == 1:
-        # Fall back to sequential processing
+    # Single request: fall back to sequential (threading doesn't help)
+    # Based on benchmark: threading helps multi-request but not single-request
+    # (memory contention when all threads read the same KV cache)
+    if n_requests == 1:
         return _mha_forward_batch_sequential(
             queries, caches, positions, n_heads_list, n_kv_heads, head_dim
         )
 
-    # Check worker availability
-    if not has_worker("batch_attention_worker"):
+    # Check threading conditions
+    if nthreads == 1 or not has_worker("batch_attention_worker"):
         return _mha_forward_batch_sequential(
             queries, caches, positions, n_heads_list, n_kv_heads, head_dim
         )

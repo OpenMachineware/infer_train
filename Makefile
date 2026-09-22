@@ -20,7 +20,7 @@ BLAS_XLINK := -Xlinker "-framework" -Xlinker "Accelerate"
         bench_transformer_core bench_blas bench_dequant bench_simd \
         bench_q8k_vs_fp32 bench_qmatmul_threading test-kernel dump-gguf ref-forward \
         test-q2k-perf test-q3k-perf test-q4k-perf test-q4k-multisize test-q5k-perf test-q5k-multisize test-q6k-perf test-q6k-multisize \
-        test-iq4xs-perf bench-kv bench-flash
+        test-iq4xs-perf bench-kv bench-flash bench-batch-attention
 
 # M12: the Q4-resident matmul pool workers as a standalone Mojo shared
 # library.  Mojo 1.0 only honors @export in a build's entry module and
@@ -172,8 +172,13 @@ bench-kv:
 
 # Flash Attention CPU benchmark (online softmax vs current implementation).
 bench-flash:
-	$(MOJO) build -I . tests/bench_flash_attention.mojo -o tests/bench_flash_attention
+	$(MOJO) build -I . tests/bench_flash_attention.mojo $(TP_XLINK) -o tests/bench_flash_attention
 	./tests/bench_flash_attention
+
+# Batch Attention benchmark (multi-request parallel processing).
+bench-batch-attention:
+	$(MOJO) build -I . tests/batch_attention_test.mojo $(TP_XLINK) -o tests/batch_attention_test
+	./tests/batch_attention_test
 
 # Chunked Flash Attention test (correctness + performance on long sequences)
 test-chunked-attention:
