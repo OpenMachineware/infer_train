@@ -41,6 +41,8 @@ from ..cpu.rope_cpu import (
 )
 from ..cpu.flash_attention_cpu import flash_attention_decode
 from .kv_cache import KVCacheLayer
+from .mha_threaded import mha_forward_threaded
+from ...thread_pool import resolve_threads
 from std.utils.static_tuple import StaticTuple
 from std.math import exp, sqrt
 
@@ -411,23 +413,38 @@ def mha_forward_v2(
         StaticTuple[Int, 3](n_heads, 1, head_dim)
     )
 
-    # Flash Attention: process each head with online softmax
-    for h in range(n_heads):
-        var kv_head = h * n_kv_heads // n_heads
-        var q_vec = Tensor[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+    # Threading threshold: 4+ heads and multi-threading available
+    comptime MIN_HEADS_FOR_THREADING = 4
+    var threads = resolve_threads(0)  # Use default thread count
+    var use_threaded = (
+        n_heads >= MIN_HEADS_FOR_THREADING and
+        threads > 1 and
+        cache.page_size == 0  # Only dense cache for now (paged needs testing)
+    )
 
-        # Extract Q vector for this head
-        for d in range(head_dim):
-            q_vec.set(d, q_rot.get(h * head_dim + d))
-
-        # Flash Attention decode
-        var out_vec = flash_attention_decode(
-            q_vec, cache, kv_head, start_pos, head_dim, scale
+    if use_threaded:
+        # Threaded path: parallel head processing
+        out = mha_forward_threaded(
+            q_rot, cache, start_pos, n_heads, n_kv_heads, head_dim, scale, threads
         )
+    else:
+        # Flash Attention: process each head with online softmax (single-threaded)
+        for h in range(n_heads):
+            var kv_head = h * n_kv_heads // n_heads
+            var q_vec = Tensor[DType.float16, 1](StaticTuple[Int, 1](head_dim))
 
-        # Store result
-        for d in range(head_dim):
-            out.set(h * head_dim + d, out_vec.get(d))
+            # Extract Q vector for this head
+            for d in range(head_dim):
+                q_vec.set(d, q_rot.get(h * head_dim + d))
+
+            # Flash Attention decode
+            var out_vec = flash_attention_decode(
+                q_vec, cache, kv_head, start_pos, head_dim, scale
+            )
+
+            # Store result
+            for d in range(head_dim):
+                out.set(h * head_dim + d, out_vec.get(d))
 
     if opts.gate:
         # qwen35: fused Q+gate projection - the gate lives in the second

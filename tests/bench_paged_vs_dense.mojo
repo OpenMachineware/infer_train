@@ -9,7 +9,7 @@ from std.math import sqrt
 
 comptime HEAD_DIM = 64
 comptime N_KV_HEADS = 8
-comptime PAGE_SIZE = 16
+comptime PAGE_SIZE = 256  # Optimized for near-zero overhead
 
 def bench_allocation():
     """Compare allocation time: paged vs dense."""

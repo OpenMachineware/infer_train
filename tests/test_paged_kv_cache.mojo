@@ -7,7 +7,7 @@ from std.utils import StaticTuple
 
 comptime HEAD_DIM = 64
 comptime N_KV_HEADS = 8
-comptime PAGE_SIZE = 16  # 16 tokens per block
+comptime PAGE_SIZE = 256  # Optimized for near-zero overhead
 
 def test_paged_basic():
     """Test basic paged KV allocation and access."""

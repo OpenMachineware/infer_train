@@ -963,7 +963,9 @@ struct KVCacheLayer(Copyable, Movable):
             # No free blocks - grow storage
             self._grow_blocks()
 
-        var block = self.free_blocks.pop()
+        # Pop from front (index 0) to allocate blocks in sequential order
+        # This ensures sequential positions use sequential memory addresses
+        var block = self.free_blocks.pop(0)
         return block
 
     def _grow_blocks(mut self):
