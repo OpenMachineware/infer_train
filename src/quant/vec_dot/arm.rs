@@ -1289,20 +1289,23 @@ pub unsafe fn vec_dot_iq3_s_q8_k_neon(n: usize, x: &[BlockIQ3S], y: &[BlockQ8K])
             let idx_l = vld1q_u8(qs);
             qs = qs.add(16);
 
+            // Shift amounts: [8, 7, 6, 5, 4, 3, 2, 1]
+            let hshift = vld1q_s16([8i16, 7, 6, 5, 4, 3, 2, 1].as_ptr());
+            let m256 = vdupq_n_u16(256);
+
             // Combine low bits from qs with high bits from qh
-            // Use vshlq_u16 with immediate for better code gen
+            let qh_bits_0 = vdupq_n_u16(*qh.add(ib32) as u16);
+            let qh_bits_1 = vdupq_n_u16(*qh.add(ib32 + 1) as u16);
+
+            // Index for low 8 bytes: idx + ((qh >> shift) & 1) << 8
             let idx_lo = vmovl_u8(vget_low_u8(idx_l));
             let idx_hi = vmovl_u8(vget_high_u8(idx_l));
 
-            // Add high bits from qh: idx + (qh_bit << 8)
-            let qh_bits_0 = *qh.add(ib32) as u16;
-            let qh_bits_1 = *qh.add(ib32 + 1) as u16;
+            // Shift qh by different amounts for each element, mask with 256, and OR into index
+            let idx_final_0 = vorrq_u16(idx_lo, vandq_u16(vshlq_u16(qh_bits_0, hshift), m256));
+            let idx_final_1 = vorrq_u16(idx_hi, vandq_u16(vshlq_u16(qh_bits_1, hshift), m256));
 
-            // For first 8 elements: shift qh bits into position
-            let idx_final_0 = vorrq_u16(idx_lo, vshlq_n_u16(vdupq_n_u16(qh_bits_0), 8));
-            let idx_final_1 = vorrq_u16(idx_hi, vshlq_n_u16(vdupq_n_u16(qh_bits_1), 8));
-
-            // Extract indices as usize array for table lookup
+            // Extract indices for table lookup
             let indices_0: [u16; 8] = std::mem::transmute(idx_final_0);
             let indices_1: [u16; 8] = std::mem::transmute(idx_final_1);
 
