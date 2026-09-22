@@ -312,6 +312,9 @@ def matmul_quantized_blas_tiled[
     For Qwen2 7B: gate/up_proj is [18944, 3584], tile_rows=256 means
     ~73 tiles, each dequantizing ~2.3MB of FP32.
     """
+    from src.core.thread_pool import now_ns
+
+    var t0 = now_ns()
     var M = x.shape()[0]
     var K = x.shape()[1]
     var N = b_quant.shape()[0]
@@ -322,6 +325,7 @@ def matmul_quantized_blas_tiled[
         return matmul_quantized_cpu_fallback[dtype, quant_type](x, b_quant, scale, zero_point)
 
     var out = tensor_zeros[dtype, 2](StaticTuple[Int, 2](M, N))
+    var t1 = now_ns()
 
     # Convert x to FP32 once
     var x_f32: Tensor[DType.float32, 2]
@@ -337,12 +341,18 @@ def matmul_quantized_blas_tiled[
             x_f32.data().unsafe_offset(i).unsafe_store(
                 val=Float32(x.data().unsafe_offset(i).unsafe_load())
             )
+    var t2 = now_ns()
 
     var gtype = ggml_type(quant_type)
     var nb_per_row = K // be
 
     # Allocate a single row buffer for dequantization
     var row_f32 = tensor_zeros[DType.float32, 2](StaticTuple[Int, 2](tile_rows, K))
+    var t3 = now_ns()
+
+    var t_dequant_total: Int = 0
+    var t_blas_total: Int = 0
+    var t_copy_total: Int = 0
 
     # Process weight rows in tiles
     var j0 = 0
@@ -354,6 +364,7 @@ def matmul_quantized_blas_tiled[
 
         # Dequantize this tile's rows directly into row_f32
         # Each row is K elements, dequantized into row_f32 at offset jt * K
+        var t_dequant_start = now_ns()
         for jt in range(tile_n):
             var j = j0 + jt
             var row_offset = j * nb_per_row * bb
@@ -372,6 +383,8 @@ def matmul_quantized_blas_tiled[
                 row_view,
                 K,
             )
+        var t_dequant_end = now_ns()
+        t_dequant_total += (t_dequant_end - t_dequant_start)
 
         # BLAS for this tile: out[:, j0:j1] = x @ row_f32[:tile_n, :].T
         var tile_weight = Tensor[DType.float32, 2](
@@ -379,16 +392,32 @@ def matmul_quantized_blas_tiled[
             row_f32.data(),
             row_f32.device(),
         )
+        var t_blas_start = now_ns()
         var tile_result = matmul_weight_blas_f32(x_f32, tile_weight)
+        var t_blas_end = now_ns()
+        t_blas_total += (t_blas_end - t_blas_start)
 
         # Copy result to output
+        var t_copy_start = now_ns()
         for i in range(M):
             for jt in range(tile_n):
                 var val = tile_result.data().unsafe_offset(i * tile_n + jt).unsafe_load()
                 out.data().unsafe_offset(i * N + j0 + jt).unsafe_store(
                     val=Scalar[dtype](val)
                 )
+        var t_copy_end = now_ns()
+        t_copy_total += (t_copy_end - t_copy_start)
 
         j0 = j1
+
+    var t_end = now_ns()
+    var us_alloc = (t1 - t0) // 1000
+    var us_conv = (t2 - t1) // 1000
+    var us_rowbuf = (t3 - t2) // 1000
+    var us_dequant = t_dequant_total // 1000
+    var us_blas = t_blas_total // 1000
+    var us_copy = t_copy_total // 1000
+    var us_total = (t_end - t0) // 1000
+    print("    BLAS tiled: alloc", us_alloc, "us, conv", us_conv, "us, rowbuf", us_rowbuf, "us, dequant", us_dequant, "us, blas", us_blas, "us, copy", us_copy, "us, total", us_total, "us")
 
     return out

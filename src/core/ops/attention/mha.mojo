@@ -43,6 +43,7 @@ from ..cpu.flash_attention_cpu import flash_attention_decode, flash_attention_pr
 from .kv_cache import KVCacheLayer
 from std.utils.static_tuple import StaticTuple
 from std.math import exp, sqrt
+from ...thread_pool import now_ns
 
 
 def _qkv_reshape[
@@ -484,6 +485,37 @@ def rms_norm_heads[
                     ),
                 )
     return out
+
+
+def _rms_norm_heads_f32_with_f16_w(
+    x: Tensor[DType.float32, 3],
+    weight: Tensor[DType.float16, 1],
+    eps: Float32,
+) -> Tensor[DType.float32, 3]:
+    """FP32 per-head RMSNorm with FP16 weight (converts weight on-the-fly).
+
+    Helper for FP32 prefill path.
+    """
+    var head_dim = x.shape()[2]
+    if weight.shape()[0] != head_dim:
+        unimplemented("_rms_norm_heads_f32_with_f16_w: weight length != head_dim")
+
+    # Convert FP16 weight to FP32
+    var w_f32 = tensor_zeros[DType.float32, 1](weight.shape())
+    var w_total = weight.numel()
+    var idx = 0
+    while idx + 16 <= w_total:
+        var vec = weight.data().unsafe_load[width=16](offset=idx)
+        var vec_f32 = vec.cast[DType.float32]()
+        w_f32.data().unsafe_offset(idx).unsafe_store(val=vec_f32)
+        idx += 16
+    while idx < w_total:
+        w_f32.data().unsafe_offset(idx).unsafe_store(
+            val=Float32(weight.data().unsafe_offset(idx).unsafe_load())
+        )
+        idx += 1
+
+    return rms_norm_heads[DType.float32](x, w_f32, eps)
 
 
 def multi_head_attention[
@@ -952,16 +984,17 @@ def mha_forward_batch(
     are stored into the cache at positions [start_pos, start_pos + T).
     """
     var n_tokens = x.shape()[0]
-    var hidden = x.shape()[1]  # Use actual hidden from input, not n_heads * head_dim
+    var _ = x.shape()[1]  # hidden, unused warning fix
 
     # Validate: for standard models, hidden == n_heads * head_dim
     # For Qwen3 and some models, hidden may differ (Q projection expands to n_heads * head_dim)
     var q_out_dim = n_heads * head_dim  # Expected Q output dimension
 
-    # Batch QKV projections (T tokens at once)
-    var q_flat = wq.proj(x, dummy_scale)  # [T, n_heads * head_dim]
-    var k_flat = wk.proj(x, dummy_scale)
-    var v_flat = wv.proj(x, dummy_scale)
+    # === Step 1: QKV Projections ===
+    var t_qkv_start = now_ns()
+    var q_flat = wq.proj(x, dummy_scale, use_gpu=False)  # [T, n_heads * head_dim]
+    var k_flat = wk.proj(x, dummy_scale, use_gpu=False)
+    var v_flat = wv.proj(x, dummy_scale, use_gpu=False)
 
     if bq.numel() > 0:
         q_flat = add_row_cpu[DType.float16](q_flat, bq)
@@ -969,6 +1002,8 @@ def mha_forward_batch(
         k_flat = add_row_cpu[DType.float16](k_flat, bk)
     if bv.numel() > 0:
         v_flat = add_row_cpu[DType.float16](v_flat, bv)
+    var t_qkv_end = now_ns()
+    var qkv_us = (t_qkv_end - t_qkv_start) // 1000
 
     # Handle fused Q+gate (qwen35)
     var q3 = tensor_zeros[DType.float16, 3](
@@ -1009,6 +1044,7 @@ def mha_forward_batch(
     # =========================================================================
     # Phase 1: Store K/V into cache (apply RoPE to K)
     # =========================================================================
+    var t_rope_start = now_ns()
     for t in range(n_tokens):
         var pos = start_pos + t
         # Extract per-position K/V
@@ -1055,9 +1091,14 @@ def mha_forward_batch(
         if pos + 1 > cache.filled:
             cache.filled = pos + 1
 
+    var t_rope_end = now_ns()
+    var rope_us = (t_rope_end - t_rope_start) // 1000
+    print("  RoPE+KV: ", rope_us, "us")
+
     # =========================================================================
     # Phase 2: Flash Attention for each head
     # =========================================================================
+    var t_attn_start = now_ns()
     var out3 = tensor_zeros[DType.float16, 3](
         StaticTuple[Int, 3](n_heads, n_tokens, head_dim)
     )
@@ -1130,4 +1171,226 @@ def mha_forward_batch(
                     )
 
     var out_flat = _flat_view[DType.float16](out3, q_out_dim)
-    return wo.proj(out_flat, dummy_scale)
+
+    var t_attn_end = now_ns()
+    var attn_us = (t_attn_end - t_attn_start) // 1000
+    print("  Attention:", attn_us, "us")
+
+    # === Step 4: O Projection ===
+    print("  out_flat shape:", out_flat.shape()[0], "x", out_flat.shape()[1])
+    print("  wo ggml_type:", wo.ggml_type, "quantized:", wo.quantized)
+    print("  wo n_out:", wo.n_out, "n_in:", wo.n_in)
+
+    var t_o_start = now_ns()
+    var result = wo.proj(out_flat, dummy_scale, use_gpu=False)
+    var t_o_end = now_ns()
+    var o_proj_us = (t_o_end - t_o_start) // 1000
+    print("  O Proj:   ", o_proj_us, "us")
+
+    return result
+
+
+def mha_forward_batch_fp32(
+    x: Tensor[DType.float32, 2],
+    wq: QWeight,
+    wk: QWeight,
+    wv: QWeight,
+    wo: QWeight,
+    bq: Tensor[DType.float16, 1],
+    bk: Tensor[DType.float16, 1],
+    bv: Tensor[DType.float16, 1],
+    q_norm_w: Tensor[DType.float16, 1],
+    k_norm_w: Tensor[DType.float16, 1],
+    mut cache: KVCacheLayer,
+    start_pos: Int,
+    n_heads: Int,
+    n_kv_heads: Int,
+    head_dim: Int,
+    rope_theta: Float32,
+    opts: MHAOptions,
+) -> Tensor[DType.float32, 2]:
+    """Batch prefill MHA in FP32 (processes T tokens at once).
+
+    FP32 path for batch prefill: uses pre-dequantized FP32 weights with BLAS
+    to avoid Mojo loop overhead in FP16->FP32 conversion.
+
+    Input x is [T, hidden] FP32, output is [T, hidden] FP32. Each token at
+    position t attends to all positions [0, start_pos + t] (causal). K/V for
+    all T tokens are stored into the cache at positions [start_pos, start_pos + T).
+    """
+    var n_tokens = x.shape()[0]
+    var q_out_dim = n_heads * head_dim
+
+    # === Step 1: QKV Projections (FP32 BLAS with pre-dequantized weights) ===
+    var t_qkv_start = now_ns()
+    var q_flat = wq.proj_fp32(x)  # [T, n_heads * head_dim] FP32
+    var k_flat = wk.proj_fp32(x)
+    var v_flat = wv.proj_fp32(x)
+
+    # Add biases (convert FP16 bias to FP32 on the fly)
+    if bq.numel() > 0:
+        for t in range(n_tokens):
+            for d in range(q_flat.shape()[1]):
+                q_flat.set(
+                    t * q_flat.shape()[1] + d,
+                    q_flat.get(t * q_flat.shape()[1] + d) + Float32(bq.get(d))
+                )
+    if bk.numel() > 0:
+        for t in range(n_tokens):
+            for d in range(k_flat.shape()[1]):
+                k_flat.set(
+                    t * k_flat.shape()[1] + d,
+                    k_flat.get(t * k_flat.shape()[1] + d) + Float32(bk.get(d))
+                )
+    if bv.numel() > 0:
+        for t in range(n_tokens):
+            for d in range(v_flat.shape()[1]):
+                v_flat.set(
+                    t * v_flat.shape()[1] + d,
+                    v_flat.get(t * v_flat.shape()[1] + d) + Float32(bv.get(d))
+                )
+
+    var t_qkv_end = now_ns()
+    var qkv_us = (t_qkv_end - t_qkv_start) // 1000
+    print("  QKV Proj (FP32 BLAS):", qkv_us, "us")
+
+    # Reshape QKV to [n_heads, T, head_dim] FP32
+    var q3 = _qkv_reshape[DType.float32](q_flat, n_heads, head_dim)
+    var k3 = _qkv_reshape[DType.float32](k_flat, n_kv_heads, head_dim)
+    var v3 = _qkv_reshape[DType.float32](v_flat, n_kv_heads, head_dim)
+
+    # === Step 2: Store K/V into cache (apply RoPE to K) ===
+    var t_rope_start = now_ns()
+    for t in range(n_tokens):
+        var pos = start_pos + t
+        var k_t = _extract_token[DType.float32](k3, t)
+        var v_t = _extract_token[DType.float32](v3, t)
+        var k3_t = _qkv_reshape[DType.float32](k_t, n_kv_heads, head_dim)
+
+        if opts.k_norm and opts.norm_before_rope:
+            k3_t = _rms_norm_heads_f32_with_f16_w(k3_t, k_norm_w, opts.norm_eps)
+
+        var k_rot: Tensor[DType.float32, 3]
+        if opts.n_rot > 0 and opts.n_rot < head_dim:
+            k_rot = rope_cpu_rot[DType.float32](k3_t, pos, rope_theta, opts.n_rot)
+        else:
+            k_rot = rope_cpu_dynamic[DType.float32](k3_t, pos, rope_theta)
+
+        if opts.k_norm and not opts.norm_before_rope:
+            k_rot = _rms_norm_heads_f32_with_f16_w(k_rot, k_norm_w, opts.norm_eps)
+
+        # Store K/V into cache (convert to FP16 for storage)
+        if cache.is_quantized():
+            var k_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+            var v_row = tensor_zeros[DType.float16, 1](StaticTuple[Int, 1](head_dim))
+            for h in range(n_kv_heads):
+                for d in range(head_dim):
+                    k_row.set(d, Scalar[DType.float16](k_rot.get(h * head_dim + d)))
+                    v_row.set(d, Scalar[DType.float16](v_t.get(h * head_dim + d)))
+                cache.set_kv_row(h, pos, k_row, v_row)
+        else:
+            for h in range(n_kv_heads):
+                for d in range(head_dim):
+                    cache.set_kv(h, pos, d, k_rot.get(h * head_dim + d), v_t.get(h * head_dim + d))
+        if pos + 1 > cache.filled:
+            cache.filled = pos + 1
+
+    var t_rope_end = now_ns()
+    var rope_us = (t_rope_end - t_rope_start) // 1000
+    print("  RoPE+KV:", rope_us, "us")
+
+    # === Step 3: Flash Attention (FP32) ===
+    var t_attn_start = now_ns()
+    var out3 = tensor_zeros[DType.float32, 3](
+        StaticTuple[Int, 3](n_heads, n_tokens, head_dim)
+    )
+    var scale = Float32(1.0) / sqrt(Float32(head_dim))
+
+    for h in range(n_heads):
+        var kv_head = h * n_kv_heads // n_heads
+        var q_head = tensor_zeros[DType.float32, 2](
+            StaticTuple[Int, 2](n_tokens, head_dim)
+        )
+        for t in range(n_tokens):
+            for d in range(head_dim):
+                q_head.set(t * head_dim + d, q3.get((h * n_tokens + t) * head_dim + d))
+
+        if opts.q_norm and opts.norm_before_rope:
+            var q3_for_norm = _qkv_reshape[DType.float32](q_head, 1, head_dim)
+            q3_for_norm = _rms_norm_heads_f32_with_f16_w(q3_for_norm, q_norm_w, opts.norm_eps)
+            for t in range(n_tokens):
+                for d in range(head_dim):
+                    q_head.set(t * head_dim + d, q3_for_norm.get(t * head_dim + d))
+
+        var q3_head = _qkv_reshape[DType.float32](q_head, 1, head_dim)
+        var q_rot: Tensor[DType.float32, 3]
+        if opts.n_rot > 0 and opts.n_rot < head_dim:
+            q_rot = rope_cpu_rot[DType.float32](q3_head, start_pos, rope_theta, opts.n_rot)
+        else:
+            q_rot = rope_cpu_dynamic[DType.float32](q3_head, start_pos, rope_theta)
+
+        if opts.q_norm and not opts.norm_before_rope:
+            q_rot = _rms_norm_heads_f32_with_f16_w(q_rot, q_norm_w, opts.norm_eps)
+
+        var q_final = tensor_zeros[DType.float32, 2](
+            StaticTuple[Int, 2](n_tokens, head_dim)
+        )
+        for t in range(n_tokens):
+            for d in range(head_dim):
+                q_final.set(t * head_dim + d, q_rot.get(t * head_dim + d))
+
+        # Convert Q to FP16 for flash attention (cache is FP16)
+        var q_final_fp16 = tensor_zeros[DType.float16, 2](
+            StaticTuple[Int, 2](n_tokens, head_dim)
+        )
+        var total_q = n_tokens * head_dim
+        var idx = 0
+        while idx + 16 <= total_q:
+            var vec = q_final.data().unsafe_load[width=16](offset=idx)
+            var vec_fp16 = vec.cast[DType.float16]()
+            q_final_fp16.data().unsafe_offset(idx).unsafe_store(val=vec_fp16)
+            idx += 16
+        while idx < total_q:
+            q_final_fp16.data().unsafe_offset(idx).unsafe_store(
+                val=Scalar[DType.float16](q_final.data().unsafe_offset(idx).unsafe_load())
+            )
+            idx += 1
+
+        # Flash attention (FP16 Q + FP16 cache -> FP16 output)
+        var attn_out_fp16 = flash_attention_prefill(
+            q_final_fp16, cache, kv_head, start_pos, head_dim, scale
+        )
+
+        # Convert attention output back to FP32
+        var attn_out = tensor_zeros[DType.float32, 2](
+            StaticTuple[Int, 2](n_tokens, head_dim)
+        )
+        idx = 0
+        while idx + 16 <= total_q:
+            var vec = attn_out_fp16.data().unsafe_load[width=16](offset=idx)
+            var vec_fp32 = vec.cast[DType.float32]()
+            attn_out.data().unsafe_offset(idx).unsafe_store(val=vec_fp32)
+            idx += 16
+        while idx < total_q:
+            attn_out.data().unsafe_offset(idx).unsafe_store(
+                val=Float32(attn_out_fp16.data().unsafe_offset(idx).unsafe_load())
+            )
+            idx += 1
+
+        for t in range(n_tokens):
+            for d in range(head_dim):
+                out3.set((h * n_tokens + t) * head_dim + d, attn_out.get(t * head_dim + d))
+
+    var out_flat = _flat_view[DType.float32](out3, q_out_dim)
+    var t_attn_end = now_ns()
+    var attn_us = (t_attn_end - t_attn_start) // 1000
+    print("  Attention:", attn_us, "us")
+
+    # === Step 4: O Projection (FP32 BLAS) ===
+    var t_o_start = now_ns()
+    var result = wo.proj_fp32(out_flat)
+    var t_o_end = now_ns()
+    var o_proj_us = (t_o_end - t_o_start) // 1000
+    print("  O Proj (FP32 BLAS):", o_proj_us, "us")
+
+    return result

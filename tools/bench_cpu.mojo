@@ -55,6 +55,9 @@ def load_model_qr(
         config, ctx^, ctx_len, quant_resident=quant_resident
     )
     model.weights = weights^
+    # Pre-dequantize all weights to FP16 for fast batch prefill
+    # This avoids the on-the-fly dequantization overhead (140-1550 us -> ~10 us per matmul)
+    model.prepare_fp16_for_prefill()
     var tokenizer = make_tokenizer(model.ctx, String(""))
     var graph = build_graph(model)
     var registry = OpRegistry()
@@ -64,13 +67,10 @@ def load_model_qr(
 def _forward_prompt(
     mut model: Model, tokens: List[Int]
 ) raises -> Tensor[DType.float32, 1]:
-    """Feed the prompt one token at a time (the engine's prefill path)."""
-    var logits = model.transformer.forward(tokens[0], 0)
-    var i = 1
-    while i < len(tokens):
-        logits = model.transformer.forward(tokens[i], i)
-        i += 1
-    return logits
+    """Feed the prompt using batch prefill (FP32 path for faster prefill)."""
+    # Use forward_batch_fp32 which uses FP32 BLAS with pre-dequantized weights
+    # This avoids Mojo loop overhead in FP16->FP32 conversion
+    return model.transformer.forward_batch_fp32(tokens, 0)
 
 
 def _decode(
@@ -154,6 +154,10 @@ def main() raises:
     var t0 = now_ns()
     var logits = _forward_prompt(model, tokens)
     var t1 = now_ns()
+
+    # Print profiling data
+    model.transformer.print_profile()
+
     var steps = _decode(model, tokens, logits, sampler, n_predict)
     var t2 = now_ns()
 

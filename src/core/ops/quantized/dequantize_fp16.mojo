@@ -8,7 +8,7 @@
 from src.core.tensor import Tensor, tensor_zeros
 from std.utils.static_tuple import StaticTuple
 from std.math import abs
-from .quant_types import QuantType
+from src.core.ops.quantized.quant_types import QuantType
 
 comptime QK_K = 256
 
@@ -111,8 +111,30 @@ def dequantize_weights_to_fp16(
     Returns:
         Dequantized weights in FP16
     """
+    from src.core.ops.quantized.dequantize import dequantize_q5_K, dequantize_q6_K
+
     if quant_type == QuantType.Q4_K_M:
         return dequantize_q4_k_to_fp16(w_quant)
+    elif quant_type == QuantType.Q5_K:
+        # Q5_K: 176 bytes per 256-element block
+        var N = w_quant.shape()[0]
+        var total_bytes = w_quant.shape()[1]
+        var nb = total_bytes // 176
+        var K = nb * QK_K
+
+        var w_fp16 = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](N, K))
+        dequantize_q5_K[DType.float16](w_quant.data(), 0, w_fp16, N * K)
+        return w_fp16
+    elif quant_type == QuantType.Q6_K:
+        # Q6_K: 210 bytes per 256-element block
+        var N = w_quant.shape()[0]
+        var total_bytes = w_quant.shape()[1]
+        var nb = total_bytes // 210
+        var K = nb * QK_K
+
+        var w_fp16 = tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](N, K))
+        dequantize_q6_K[DType.float16](w_quant.data(), 0, w_fp16, N * K)
+        return w_fp16
     else:
-        # TODO: Implement other quantization types
+        # TODO: Q2_K and Q3_K not yet implemented
         return tensor_zeros[DType.float16, 2](StaticTuple[Int, 2](0, 0))

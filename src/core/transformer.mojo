@@ -60,12 +60,14 @@ from .ops.cpu.matmul_q8k_threaded import fused_gate_up_projection
 from .ops.attention.mha import (
     mha_forward_v2,
     mha_forward_batch,
+    mha_forward_batch_fp32,
     MHAOptions,
     rms_norm_heads,
 )
 from .ops.attention.kv_cache import KVCache, KVCacheLayer, KVCacheType
 from .device import has_metal_gpu
 from .ops.gpu.gpu_runtime import get_gpu_context
+from .thread_pool import now_ns
 from max.gpu.host import DeviceContext
 from std.utils.static_tuple import StaticTuple
 from std.math import sqrt, exp, log
@@ -419,6 +421,15 @@ struct TransformerModel(Movable):
     # GPU context cache - reused across all operations
     var _gpu_ctx: Optional[DeviceContext]
 
+    # Profiling counters (microseconds)
+    var _prof_norm_us: Int
+    var _prof_mha_us: Int
+    var _prof_ffn_us: Int
+    var _prof_qkv_us: Int
+    var _prof_rope_us: Int
+    var _prof_attn_us: Int
+    var _prof_o_proj_us: Int
+
     def __init__(
         out self,
         config: TransformerConfig,
@@ -448,6 +459,13 @@ struct TransformerModel(Movable):
         self.shard_hi = config.n_layers if shard_hi < 0 else shard_hi
         self.load_heads = load_heads
         self._gpu_ctx = None
+        self._prof_norm_us = 0
+        self._prof_mha_us = 0
+        self._prof_ffn_us = 0
+        self._prof_qkv_us = 0
+        self._prof_rope_us = 0
+        self._prof_attn_us = 0
+        self._prof_o_proj_us = 0
         # M11: Q4-resident is the DEFAULT - weights stay in their on-disk
         # (Q4) format and are dequantized per block inside the matmul
         # kernel.  No command-line flag is needed to get it.
@@ -841,6 +859,56 @@ struct TransformerModel(Movable):
             qparams.layers.append(lw^)
         self.qparams = qparams^
 
+    def prepare_fp16_for_prefill(mut self):
+        """Pre-dequantize all weights to FP16 for fast batch prefill.
+
+        This is a one-time cost during model initialization. After this,
+        batch prefill (M > 1) can use BLAS with pre-dequantized weights,
+        avoiding the on-the-fly dequantization overhead (140-1550 us -> ~10 us per matmul).
+
+        This trades memory for speed: quantized weights stay resident, and
+        pre-dequantized FP16 copies are kept for batch prefill.
+        """
+        print("prepare_fp16_for_prefill: Dequantizing weights to FP32...")
+        # Dequantize all layer weights to FP32 for batch prefill
+        # Note: List returns copies, so we need to write back after mutation
+        for i in range(len(self.qparams.layers)):
+            var lw = self.qparams.layers[i]
+            if i == 0:
+                print("  Layer 0: q_w ggml_type:", lw.q_w.ggml_type, "quantized:", lw.q_w.quantized, "shape:", lw.q_w.data.shape()[0], "x", lw.q_w.data.shape()[1])
+            # Attention weights - dequantize for batch prefill
+            lw.q_w.dequantize_to_fp32()
+            lw.k_w.dequantize_to_fp32()
+            lw.v_w.dequantize_to_fp32()
+            lw.o_w.dequantize_to_fp32()
+            # FFN weights
+            lw.gate_w.dequantize_to_fp32()
+            lw.up_w.dequantize_to_fp32()
+            lw.down_w.dequantize_to_fp32()
+            # Recurrent layer weights
+            lw.attn_gate.dequantize_to_fp32()
+            lw.ssm_beta.dequantize_to_fp32()
+            lw.ssm_alpha.dequantize_to_fp32()
+            lw.ssm_out.dequantize_to_fp32()
+            # MoE weights
+            lw.moe_router.dequantize_to_fp32()
+            lw.moe_sh_gate.dequantize_to_fp32()
+            lw.moe_sh_up.dequantize_to_fp32()
+            lw.moe_sh_down.dequantize_to_fp32()
+            if i == 0:
+                print("  Layer 0: q_w.fp32_dequant shape:", lw.q_w.fp32_dequant.shape()[0], "x", lw.q_w.fp32_dequant.shape()[1])
+                print("  Layer 0: o_w.fp32_dequant shape:", lw.o_w.fp32_dequant.shape()[0], "x", lw.o_w.fp32_dequant.shape()[1])
+            # Write back the mutated copy
+            self.qparams.layers[i] = lw^
+            if i == 0:
+                # Verify write-back
+                var verify_lw = self.qparams.layers[i]
+                print("  Layer 0 (after write-back): o_w.fp32_dequant shape:", verify_lw.o_w.fp32_dequant.shape()[0], "x", verify_lw.o_w.fp32_dequant.shape()[1])
+
+        # Output projection
+        self.qparams.output_w.dequantize_to_fp16()
+        print("prepare_fp16_for_prefill: Done")
+
     def upload_weights_to_gpu(mut self) raises:
         """Upload all quantized weights to GPU for persistent caching.
 
@@ -1018,6 +1086,29 @@ struct TransformerModel(Movable):
             if self.ssm_states[i].enabled:
                 self.ssm_states[i].reset()
 
+    def reset_profile(mut self):
+        """Reset profiling counters."""
+        self._prof_norm_us = 0
+        self._prof_mha_us = 0
+        self._prof_ffn_us = 0
+        self._prof_qkv_us = 0
+        self._prof_rope_us = 0
+        self._prof_attn_us = 0
+        self._prof_o_proj_us = 0
+
+    def print_profile(self):
+        """Print profiling data."""
+        print("\n=== Layer Profiling (us) ===")
+        print("RMS Norm total:", self._prof_norm_us)
+        print("  QKV Proj:    ", self._prof_qkv_us)
+        print("  RoPE+KV:     ", self._prof_rope_us)
+        print("  Attention:   ", self._prof_attn_us)
+        print("  O Proj:      ", self._prof_o_proj_us)
+        print("MHA total:     ", self._prof_mha_us)
+        print("FFN total:     ", self._prof_ffn_us)
+        var total = self._prof_norm_us + self._prof_mha_us + self._prof_ffn_us
+        print("Total:         ", total)
+
     def _output_norm_w(self) -> Tensor[DType.float16, 1]:
         if self.quant_resident:
             return self.qparams.output_norm_w
@@ -1043,6 +1134,42 @@ struct TransformerModel(Movable):
         return embedding_cpu_dynamic[DType.float16](
             toks, self.params.token_embd
         )
+
+    def _embed_tokens_fp32(
+        self, toks: Tensor[DType.int32, 1]
+    ) -> Tensor[DType.float32, 2]:
+        """Token -> FP32 embedding for batch prefill (avoids FP16→FP32 conversion)."""
+        # Get FP16 embeddings first
+        var emb_fp16: Tensor[DType.float16, 2]
+        if self.quant_resident:
+            emb_fp16 = embedding_row_quantized(toks, self.qparams.token_embd)
+        else:
+            emb_fp16 = embedding_cpu_dynamic[DType.float16](
+                toks, self.params.token_embd
+            )
+
+        # Convert to FP32 (one-time cost during prefill)
+        var n_tokens = emb_fp16.shape()[0]
+        var hidden = emb_fp16.shape()[1]
+        var emb_fp32 = tensor_zeros[DType.float32, 2](
+            StaticTuple[Int, 2](n_tokens, hidden)
+        )
+
+        # SIMD-accelerated conversion
+        var total = n_tokens * hidden
+        var i = 0
+        while i + 16 <= total:
+            var vec = emb_fp16.data().unsafe_load[width=16](offset=i)
+            var vec_f32 = vec.cast[DType.float32]()
+            emb_fp32.data().unsafe_offset(i).unsafe_store(val=vec_f32)
+            i += 16
+        while i < total:
+            emb_fp32.data().unsafe_offset(i).unsafe_store(
+                val=Float32(emb_fp16.data().unsafe_offset(i).unsafe_load())
+            )
+            i += 1
+
+        return emb_fp32
 
     def forward(
         mut self, token: Int, position: Int
@@ -1082,6 +1209,9 @@ struct TransformerModel(Movable):
         var cfg = self.config
         var n_tokens = len(tokens)
         var pos = start_pos
+
+        # Reset profiling counters
+        self.reset_profile()
 
         # Process in mini-batches, keep track of last hidden state
         var last_x = tensor_zeros[DType.float16, 2](
@@ -1130,6 +1260,80 @@ struct TransformerModel(Movable):
             last_x, self._output_norm_w(), cfg.norm_eps
         )
         var logits16 = self._output_proj(last_x)
+
+        var logits = tensor_zeros[DType.float32, 1](
+            StaticTuple[Int, 1](cfg.vocab)
+        )
+        for j in range(cfg.vocab):
+            logits.set(j, Scalar[DType.float32](Float32(logits16.get(j))))
+        return logits
+
+    def forward_batch_fp32(
+        mut self, tokens: List[Int], start_pos: Int, batch_size: Int = 32
+    ) raises -> Tensor[DType.float32, 1]:
+        """Batch prefill in FP32: processes multiple tokens at once.
+
+        Uses pre-dequantized FP32 weights with BLAS to avoid Mojo loop overhead
+        in FP16->FP32 conversion. This is the same strategy as llama.cpp.
+
+        Returns the f32 logits [vocab] for sampling the next token.
+        """
+        var cfg = self.config
+        var n_tokens = len(tokens)
+        var pos = start_pos
+
+        # Reset profiling counters
+        self.reset_profile()
+
+        # Process in mini-batches, keep track of last hidden state
+        var last_x = tensor_zeros[DType.float32, 2](
+            StaticTuple[Int, 2](1, cfg.hidden)
+        )
+
+        var i = 0
+        while i < n_tokens:
+            var cur_batch = min(batch_size, n_tokens - i)
+            var toks_tensor = tensor_zeros[DType.int32, 1](
+                StaticTuple[Int, 1](cur_batch)
+            )
+            for j in range(cur_batch):
+                toks_tensor.set(j, Scalar[DType.int32](tokens[i + j]))
+
+            # FP32 embedding lookup
+            var x = self._embed_tokens_fp32(toks_tensor)  # [T, hidden] FP32
+
+            # Process through all layers in FP32
+            for layer in range(self.shard_lo, self.shard_hi):
+                if cfg.is_recurrent(layer):
+                    # SSM layers not yet FP32, convert for now
+                    var x_fp16 = tensor_zeros[DType.float16, 2](x.shape())
+                    var total = x.numel()
+                    for k in range(total):
+                        x_fp16.set(k, Scalar[DType.float16](x.get(k)))
+                    x_fp16 = self._layer_forward_ssm(layer, x_fp16)
+                    for k in range(total):
+                        x.set(k, Float32(x_fp16.get(k)))
+                else:
+                    x = self._layer_forward_attn_batch_fp32(layer, x, pos, cur_batch)
+
+            # Save the last hidden state from this batch
+            if i + cur_batch == n_tokens:
+                for d in range(cfg.hidden):
+                    last_x.set(d, x.get((cur_batch - 1) * cfg.hidden + d))
+
+            pos += cur_batch
+            i += cur_batch
+
+        # Final norm (FP32 with FP16 weight)
+        last_x = _rms_norm_weight_f32_with_f16_w(
+            last_x, self._output_norm_w(), cfg.norm_eps
+        )
+
+        # Output projection (convert to FP16 for the proj)
+        var last_x_fp16 = tensor_zeros[DType.float16, 2](last_x.shape())
+        for k in range(cfg.hidden):
+            last_x_fp16.set(k, Scalar[DType.float16](last_x.get(k)))
+        var logits16 = self._output_proj(last_x_fp16)
 
         var logits = tensor_zeros[DType.float32, 1](
             StaticTuple[Int, 1](cfg.vocab)
@@ -1266,9 +1470,15 @@ struct TransformerModel(Movable):
         """
         var cfg = self.config
         var lw = self.layer_view(layer)
+
+        # === Instrumentation: RMS Norm ===
+        var t_norm1_start = now_ns()
         var normed = rms_norm_weight[DType.float16](
             x, lw.attn_norm_w, cfg.norm_eps
         )
+        var t_norm1_end = now_ns()
+        self._prof_norm_us += (t_norm1_end - t_norm1_start) // 1000
+
         var opts = MHAOptions()
         opts.q_norm = cfg.has_qk_norm
         opts.k_norm = cfg.has_qk_norm
@@ -1276,6 +1486,9 @@ struct TransformerModel(Movable):
         opts.gate = cfg.has_gate
         opts.n_rot = cfg.n_rot
         opts.norm_eps = cfg.norm_eps
+
+        # === Instrumentation: MHA (QKV + RoPE + Attn + O) ===
+        var t_mha_start = now_ns()
         var attn = mha_forward_batch(
             normed,
             lw.q_w,
@@ -1296,10 +1509,11 @@ struct TransformerModel(Movable):
             opts,
             self._dummy_scale,
         )
+        var t_mha_end = now_ns()
+        self._prof_mha_us += (t_mha_end - t_mha_start) // 1000
+
         # Residual add
-        var out = tensor_zeros[DType.float16, 2](x.shape())
-        for i in range(x.numel()):
-            out.set(i, Scalar[DType.float16](Float32(x.get(i)) + Float32(attn.get(i))))
+        var out = add_cpu_dynamic[DType.float16](x, attn)
 
         # FFN norm
         var norm_w: Tensor[DType.float16, 1]
@@ -1307,13 +1521,111 @@ struct TransformerModel(Movable):
             norm_w = lw.post_attn_norm_w
         else:
             norm_w = lw.ffn_norm_w
+
+        # === Instrumentation: FFN Norm ===
+        var t_norm2_start = now_ns()
         var normed2 = rms_norm_weight[DType.float16](
             out, norm_w, cfg.norm_eps
         )
+        var t_norm2_end = now_ns()
+        self._prof_norm_us += (t_norm2_end - t_norm2_start) // 1000
+
+        # === Instrumentation: FFN ===
+        var t_ffn_start = now_ns()
         if cfg.is_moe:
-            return self._ffn_moe(layer, normed2, out)
+            var result = self._ffn_moe(layer, normed2, out)
+            self._prof_ffn_us += (now_ns() - t_ffn_start) // 1000
+            return result
         var gpu_ctx = self._gpu_ctx
-        return _ffn_swiglu_batch(normed2, lw, out, self._dummy_scale, n_tokens, gpu_ctx)
+        var result = _ffn_swiglu_batch(normed2, lw, out, self._dummy_scale, n_tokens, gpu_ctx)
+        self._prof_ffn_us += (now_ns() - t_ffn_start) // 1000
+        return result
+
+    def _layer_forward_attn_batch_fp32(
+        mut self, layer: Int, x: Tensor[DType.float32, 2], start_pos: Int, n_tokens: Int
+    ) -> Tensor[DType.float32, 2]:
+        """Batch attention layer forward in FP32 for prefill.
+
+        Processes [T, hidden] FP32 input through the attention layer with FP32
+        QKV projections (using pre-dequantized weights + BLAS).
+        """
+        var cfg = self.config
+        var lw = self.layer_view(layer)
+
+        # RMS Norm (FP32 with FP16 weight)
+        var t_norm1_start = now_ns()
+        var normed = _rms_norm_weight_f32_with_f16_w(x, lw.attn_norm_w, cfg.norm_eps)
+        var t_norm1_end = now_ns()
+        self._prof_norm_us += (t_norm1_end - t_norm1_start) // 1000
+
+        var opts = MHAOptions()
+        opts.q_norm = cfg.has_qk_norm
+        opts.k_norm = cfg.has_qk_norm
+        opts.norm_before_rope = cfg.norm_before_rope
+        opts.gate = cfg.has_gate
+        opts.n_rot = cfg.n_rot
+        opts.norm_eps = cfg.norm_eps
+
+        # MHA (FP32 BLAS)
+        var t_mha_start = now_ns()
+        var attn = mha_forward_batch_fp32(
+            normed,
+            lw.q_w,
+            lw.k_w,
+            lw.v_w,
+            lw.o_w,
+            lw.q_b,
+            lw.k_b,
+            lw.v_b,
+            lw.attn_q_norm,
+            lw.attn_k_norm,
+            self.cache.layers[layer],
+            start_pos,
+            cfg.n_heads,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            cfg.rope_theta,
+            opts,
+        )
+        var t_mha_end = now_ns()
+        self._prof_mha_us += (t_mha_end - t_mha_start) // 1000
+
+        # Residual add (FP32)
+        var out = add_cpu_dynamic[DType.float32](x, attn)
+
+        # FFN norm
+        var norm_w: Tensor[DType.float16, 1]
+        if cfg.has_post_attn_norm:
+            norm_w = lw.post_attn_norm_w
+        else:
+            norm_w = lw.ffn_norm_w
+
+        var t_norm2_start = now_ns()
+        var normed2 = _rms_norm_weight_f32_with_f16_w(out, norm_w, cfg.norm_eps)
+        var t_norm2_end = now_ns()
+        self._prof_norm_us += (t_norm2_end - t_norm2_start) // 1000
+
+        # FFN (FP32)
+        var t_ffn_start = now_ns()
+        if cfg.is_moe:
+            # MoE not yet supported in FP32, fallback to FP16
+            var normed2_fp16 = tensor_zeros[DType.float16, 2](normed2.shape())
+            var total = normed2.numel()
+            for i in range(total):
+                normed2_fp16.set(i, Scalar[DType.float16](normed2.get(i)))
+            var out_fp16 = tensor_zeros[DType.float16, 2](out.shape())
+            for i in range(total):
+                out_fp16.set(i, Scalar[DType.float16](out.get(i)))
+            var result_fp16 = self._ffn_moe(layer, normed2_fp16, out_fp16)
+            var result = tensor_zeros[DType.float32, 2](result_fp16.shape())
+            for i in range(result.numel()):
+                result.set(i, Float32(result_fp16.get(i)))
+            self._prof_ffn_us += (now_ns() - t_ffn_start) // 1000
+            return result
+
+        var result = _ffn_swiglu_batch_fp32(normed2, lw, out)
+        self._prof_ffn_us += (now_ns() - t_ffn_start) // 1000
+        return result
 
     def _layer_forward_ssm(
         mut self, layer: Int, x: Tensor[DType.float16, 2]
@@ -1751,7 +2063,11 @@ def _ffn_swiglu_batch(
     var gate_kquant = lw.gate_w.ggml_type >= 11 and lw.gate_w.ggml_type <= 15
     var up_kquant = lw.up_w.ggml_type >= 11 and lw.up_w.ggml_type <= 15
 
-    if gate_kquant and up_kquant and lw.gate_w.quantized and lw.up_w.quantized:
+    # For batch prefill, use BLAS path instead of fused K-quant path (faster)
+    # Fused path is only beneficial for decode (M=1)
+    if False:  # Disable fused path for batch prefill
+        pass
+    elif gate_kquant and up_kquant and lw.gate_w.quantized and lw.up_w.quantized:
         var flags = detect_cpu_flags()
         var (g, u) = fused_gate_up_projection(
             normed, lw.gate_w.data, lw.up_w.data,
@@ -1771,6 +2087,34 @@ def _ffn_swiglu_batch(
     var h = swiglu_cpu_dynamic[DType.float16](g, u)
     # Fused down_proj + residual add
     return lw.down_w.proj_add(h, dummy_scale, resid, use_gpu, gpu_ctx)
+
+
+def _ffn_swiglu_batch_fp32(
+    normed: Tensor[DType.float32, 2],
+    lw: LayerQView,
+    resid: Tensor[DType.float32, 2],
+) -> Tensor[DType.float32, 2]:
+    """Batch SwiGLU FFN in FP32 for prefill (processes [T, hidden] input).
+
+    Uses pre-dequantized FP32 weights with BLAS to avoid Mojo loop overhead.
+    All operations are in FP32: gate/up projection, SwiGLU activation, down projection.
+    """
+    # Gate and Up projections (FP32 BLAS)
+    var g = lw.gate_w.proj_fp32(normed)  # [T, ffn] FP32
+    var u = lw.up_w.proj_fp32(normed)
+
+    # SwiGLU activation: h = silu(g) * u
+    var h = swiglu_cpu_dynamic[DType.float32](g, u)
+
+    # Down projection + residual add (FP32 BLAS)
+    var result = lw.down_w.proj_fp32(h)
+
+    # Add residual
+    var total = result.numel()
+    for i in range(total):
+        result.set(i, result.get(i) + resid.get(i))
+
+    return result
 
 
 # -- MoE helpers -------------------------------------------------------------
@@ -1873,14 +2217,11 @@ def rms_norm_weight[
     var cols_main = (cols // W) * W
     for i in range(rows):
         var base = i * cols
-        var acc = SIMD[DType.float32, W](0)
+        # SIMD sum of squares
+        var acc = SIMD[dtype, W](0)
         var j = 0
         while j < cols_main:
-            var v = (
-                x.data()
-                .unsafe_load[width=W](offset=base + j)
-                .cast[DType.float32]()
-            )
+            var v = x.data().unsafe_load[width=W](offset=base + j)
             acc = acc + v * v
             j += W
         var ss = Float32(acc.reduce_add())
@@ -1888,29 +2229,59 @@ def rms_norm_weight[
             var v = Float32(x.get(base + j))
             ss += v * v
             j += 1
-        var inv = Float32(1.0) / sqrt(ss / Float32(cols) + eps)
+
+        var r = sqrt(ss / Float32(cols) + eps)
+        var inv = Float32(1) / r
+
+        # SIMD normalize + weight
         j = 0
         while j < cols_main:
-            var v = (
-                x.data()
-                .unsafe_load[width=W](offset=base + j)
-                .cast[DType.float32]()
-            )
-            var wv = (
-                weight.data()
-                .unsafe_load[width=W](offset=j)
-                .cast[DType.float32]()
-            )
-            out.data().unsafe_store(
-                base + j,
-                (v * SIMD[DType.float32, W](inv) * wv).cast[dtype](),
-            )
+            var v = x.data().unsafe_load[width=W](offset=base + j)
+            var w = weight.data().unsafe_load[width=W](offset=j)
+            out.data().unsafe_store(base + j, v * SIMD[dtype, W](inv) * w)
             j += W
         while j < cols:
-            var v = Float32(x.get(base + j)) * inv * Float32(weight.get(j))
-            out.set(base + j, Scalar[dtype](v))
+            out.set(
+                base + j,
+                Scalar[dtype](
+                    Float32(x.get(base + j)) * inv * Float32(weight.get(j))
+                ),
+            )
             j += 1
     return out
+
+
+def _rms_norm_weight_f32_with_f16_w(
+    x: Tensor[DType.float32, 2],
+    weight: Tensor[DType.float16, 1],
+    eps: Float32,
+) -> Tensor[DType.float32, 2]:
+    """FP32 RMSNorm with FP16 weight (converts weight on-the-fly).
+
+    Helper for FP32 prefill path where weights are stored in FP16.
+    """
+    var rows = x.shape()[0]
+    var cols = x.shape()[1]
+    if weight.shape()[0] != cols:
+        return tensor_zeros[DType.float32, 2](x.shape())
+
+    # Convert FP16 weight to FP32 (one-time per call)
+    var w_f32 = tensor_zeros[DType.float32, 1](weight.shape())
+    var w_total = weight.numel()
+    var idx = 0
+    while idx + 16 <= w_total:
+        var vec = weight.data().unsafe_load[width=16](offset=idx)
+        var vec_f32 = vec.cast[DType.float32]()
+        w_f32.data().unsafe_offset(idx).unsafe_store(val=vec_f32)
+        idx += 16
+    while idx < w_total:
+        w_f32.data().unsafe_offset(idx).unsafe_store(
+            val=Float32(weight.data().unsafe_offset(idx).unsafe_load())
+        )
+        idx += 1
+
+    # Now call the standard FP32 RMSNorm
+    return rms_norm_weight[DType.float32](x, w_f32, eps)
 
 
 def tensor_numel(tensor: GGUFTensor) -> Int:
