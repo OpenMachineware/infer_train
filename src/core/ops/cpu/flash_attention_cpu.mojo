@@ -218,8 +218,19 @@ def _flash_attention_decode_neon_chunked(
                         )
                         d += 1
                 else:
-                    for d in range(head_dim):
-                        score += Float32(q_ptr.unsafe_load(offset=d)) * cache.get_k(kv_head, ic, d)
+                    # Paged: use row buffer for SIMD (not element-wise get_k)
+                    cache.get_k_row(kv_head, ic, k_row)
+                    var acc_vec = SIMD[DType.float32, SIMD_W](0)
+                    var d = 0
+                    while d + SIMD_W <= head_dim:
+                        var qv = q_ptr.unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
+                        var kv = k_row.data().unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
+                        acc_vec = acc_vec + qv * kv
+                        d += SIMD_W
+                    score = acc_vec.reduce_add()
+                    while d < head_dim:
+                        score += Float32(q_ptr.unsafe_load(offset=d)) * Float32(k_row.get(d))
+                        d += 1
 
             score *= scale
 
@@ -257,8 +268,18 @@ def _flash_attention_decode_neon_chunked(
                         O_chunk.set(d, ov * ms + vv * vs)
                         d += 1
                 else:
-                    for d in range(head_dim):
-                        O_chunk.set(d, O_chunk.get(d) * ms + vs * cache.get_v(kv_head, ic, d))
+                    # Paged: use row buffer for SIMD
+                    cache.get_v_row(kv_head, ic, v_row)
+                    var d = 0
+                    while d + SIMD_W <= head_dim:
+                        var ov = O_chunk.data().unsafe_load[width=SIMD_W](offset=d)
+                        var vv = v_row.data().unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
+                        ov = ov * ms + vv * vs
+                        O_chunk.data().unsafe_store(d, ov)
+                        d += SIMD_W
+                    while d < head_dim:
+                        O_chunk.set(d, O_chunk.get(d) * ms + vs * Float32(v_row.get(d)))
+                        d += 1
 
         # Merge chunk partial into global state
         (M_global, S_global) = _merge_online_softmax(M_global, S_global, O_global, M_chunk, S_chunk, O_chunk, head_dim)
@@ -395,9 +416,11 @@ def _flash_attention_decode_neon(
                         )
                     ))
             else:
+                # Paged: use row buffer
+                cache.get_v_row(kv_head, ic, v_row)
                 for d in range(head_dim):
                     O.set(d, Scalar[DType.float32](
-                        Float32(O.get(d)) + vs * cache.get_v(kv_head, ic, d)
+                        Float32(O.get(d)) + vs * Float32(v_row.get(d))
                     ))
 
         # Update running sum: S = S*ms + vs
@@ -482,8 +505,10 @@ def _flash_attention_decode_scalar_chunked(
                             k_ptr.unsafe_load(offset=(kv_head * max_len + ic) * head_dim + d)
                         )
                 else:
+                    # Paged: use row buffer
+                    cache.get_k_row(kv_head, ic, k_row)
                     for d in range(head_dim):
-                        score += Float32(q_ptr.unsafe_load(offset=d)) * cache.get_k(kv_head, ic, d)
+                        score += Float32(q_ptr.unsafe_load(offset=d)) * Float32(k_row.get(d))
 
             score *= scale
 
@@ -511,8 +536,10 @@ def _flash_attention_decode_scalar_chunked(
                         var vv = Float32(v_ptr.unsafe_load(offset=(kv_head * max_len + ic) * head_dim + d))
                         O_chunk.set(d, ov * ms + vv * vs)
                 else:
+                    # Paged: use row buffer
+                    cache.get_v_row(kv_head, ic, v_row)
                     for d in range(head_dim):
-                        O_chunk.set(d, O_chunk.get(d) * ms + vs * cache.get_v(kv_head, ic, d))
+                        O_chunk.set(d, O_chunk.get(d) * ms + vs * Float32(v_row.get(d)))
 
         # Merge chunk partial into global state
         (M_global, S_global) = _merge_online_softmax(M_global, S_global, O_global, M_chunk, S_chunk, O_chunk, head_dim)
@@ -570,8 +597,10 @@ def _flash_attention_decode_scalar(
                         k_ptr.unsafe_load(offset=k_base + d)
                     )
             else:
+                # Paged: use row buffer
+                cache.get_k_row(kv_head, ic, k_row)
                 for d in range(head_dim):
-                    score += Float32(q_ptr.unsafe_load(offset=d)) * cache.get_k(kv_head, ic, d)
+                    score += Float32(q_ptr.unsafe_load(offset=d)) * Float32(k_row.get(d))
 
         score *= scale
 
@@ -602,9 +631,11 @@ def _flash_attention_decode_scalar(
                         )
                     ))
             else:
+                # Paged: use row buffer
+                cache.get_v_row(kv_head, ic, v_row)
                 for d in range(head_dim):
                     O.set(d, Scalar[DType.float32](
-                        Float32(O.get(d)) + vs * cache.get_v(kv_head, ic, d)
+                        Float32(O.get(d)) + vs * Float32(v_row.get(d))
                     ))
 
         S = S * ms + vs
@@ -704,8 +735,19 @@ def flash_attention_prefill(
                         )
                         d += 1
                 else:
-                    for d in range(head_dim):
-                        score += Float32(q_ptr.unsafe_load(offset=d)) * cache.get_k(kv_head, ic, d)
+                    # Paged: use row buffer for SIMD
+                    cache.get_k_row(kv_head, ic, k_row)
+                    var acc_vec = SIMD[DType.float32, SIMD_W](0)
+                    var d = 0
+                    while d + SIMD_W <= head_dim:
+                        var qv = q_ptr.unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
+                        var kv = k_row.data().unsafe_load[width=SIMD_W](offset=d).cast[DType.float32]()
+                        acc_vec = acc_vec + qv * kv
+                        d += SIMD_W
+                    score = acc_vec.reduce_add()
+                    while d < head_dim:
+                        score += Float32(q_ptr.unsafe_load(offset=d)) * Float32(k_row.get(d))
+                        d += 1
 
             score *= scale
 
@@ -738,9 +780,11 @@ def flash_attention_prefill(
                             )
                         ))
                 else:
+                    # Paged: use row buffer
+                    cache.get_v_row(kv_head, ic, v_row)
                     for d in range(head_dim):
                         O.set(d, Scalar[DType.float32](
-                            Float32(O.get(d)) + vs * cache.get_v(kv_head, ic, d)
+                            Float32(O.get(d)) + vs * Float32(v_row.get(d))
                         ))
 
             S = S * ms + vs

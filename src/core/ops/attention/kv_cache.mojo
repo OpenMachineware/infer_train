@@ -1206,22 +1206,32 @@ struct KVCacheLayer(Copyable, Movable):
             var page = position // self.page_size
             var off = position % self.page_size
             var block = self.block_table[page]
-            for d in range(self.head_dim):
-                dst.set(
-                    d,
-                    self.k.get(
-                        (block * self.k.shape()[1] + head) * self.k.shape()[2]
-                        + off * self.head_dim
-                        + d
-                    ),
-                )
+            var base = (block * self.n_kv_heads + head) * (self.page_size * self.head_dim) + off * self.head_dim
+            var src_ptr = self.k.data().unsafe_offset(base)
+            var dst_ptr = dst.data()
+            # SIMD copy for speed
+            var d = 0
+            while d + 8 <= self.head_dim:
+                var v = src_ptr.unsafe_load[width=8](offset=d)
+                dst_ptr.unsafe_store(d, v)
+                d += 8
+            while d < self.head_dim:
+                dst_ptr.unsafe_store(d, src_ptr.unsafe_load(offset=d))
+                d += 1
             return
         var slot = self.storage_pos(position)
-        for d in range(self.head_dim):
-            dst.set(
-                d,
-                self.k.get((head * self.max_len + slot) * self.head_dim + d),
-            )
+        var base = (head * self.max_len + slot) * self.head_dim
+        var src_ptr = self.k.data().unsafe_offset(base)
+        var dst_ptr = dst.data()
+        # SIMD copy for speed
+        var d = 0
+        while d + 8 <= self.head_dim:
+            var v = src_ptr.unsafe_load[width=8](offset=d)
+            dst_ptr.unsafe_store(d, v)
+            d += 8
+        while d < self.head_dim:
+            dst_ptr.unsafe_store(d, src_ptr.unsafe_load(offset=d))
+            d += 1
 
     def get_v_row(
         self, head: Int, position: Int, dst: Tensor[DType.float16, 1]
@@ -1244,22 +1254,32 @@ struct KVCacheLayer(Copyable, Movable):
             var page = position // self.page_size
             var off = position % self.page_size
             var block = self.block_table[page]
-            for d in range(self.head_dim):
-                dst.set(
-                    d,
-                    self.v.get(
-                        (block * self.v.shape()[1] + head) * self.v.shape()[2]
-                        + off * self.head_dim
-                        + d
-                    ),
-                )
+            var base = (block * self.n_kv_heads + head) * (self.page_size * self.head_dim) + off * self.head_dim
+            var src_ptr = self.v.data().unsafe_offset(base)
+            var dst_ptr = dst.data()
+            # SIMD copy for speed
+            var d = 0
+            while d + 8 <= self.head_dim:
+                var v = src_ptr.unsafe_load[width=8](offset=d)
+                dst_ptr.unsafe_store(d, v)
+                d += 8
+            while d < self.head_dim:
+                dst_ptr.unsafe_store(d, src_ptr.unsafe_load(offset=d))
+                d += 1
             return
         var slot = self.storage_pos(position)
-        for d in range(self.head_dim):
-            dst.set(
-                d,
-                self.v.get((head * self.max_len + slot) * self.head_dim + d),
-            )
+        var base = (head * self.max_len + slot) * self.head_dim
+        var src_ptr = self.v.data().unsafe_offset(base)
+        var dst_ptr = dst.data()
+        # SIMD copy for speed
+        var d = 0
+        while d + 8 <= self.head_dim:
+            var v = src_ptr.unsafe_load[width=8](offset=d)
+            dst_ptr.unsafe_store(d, v)
+            d += 8
+        while d < self.head_dim:
+            dst_ptr.unsafe_store(d, src_ptr.unsafe_load(offset=d))
+            d += 1
 
     def first_position(self) -> Int:
         """First position the sliding window still attends to."""
