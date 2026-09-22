@@ -233,8 +233,9 @@ pub struct BlockIQ4XS {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockTQ1_0 {
+    pub qs: [u8; 48], // 48 bytes encode 240 elements (5 per byte)
+    pub qh: [u8; 4],  // 4 bytes encode remaining 16 elements
     pub d: u16,       // FP16 scale
-    pub qs: [u8; 32], // QK_K/8 = 256/8 = 32
 }
 
 /// TQ2_0 block: 2 bpw
