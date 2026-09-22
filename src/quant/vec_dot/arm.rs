@@ -549,7 +549,8 @@ use crate::quant::types::{BlockQ3K, BlockQ5K, BlockQ6K, BlockQ5_0, BlockQ5_1};
 
 /// Table for bit expansion: expand 8 bits to 8 bytes
 /// For each bit: if bit is 0, output byte is 0x10; if bit is 1, output byte is 0x00
-const TABLE_B2B_1: [u64; 256] = {
+#[inline(always)]
+const fn build_table_b2b_1() -> [u64; 256] {
     let mut table = [0u64; 256];
     let mut i = 0;
     while i < 256 {
@@ -566,7 +567,9 @@ const TABLE_B2B_1: [u64; 256] = {
         i += 1;
     }
     table
-};
+}
+
+static TABLE_B2B_1: [u64; 256] = build_table_b2b_1();
 
 /// Q5_0 × Q8_0 vector dot product (NEON implementation)
 #[target_feature(enable = "neon,dotprod")]
@@ -598,21 +601,22 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(n: usize, x: &[BlockQ5_0], y: &[BlockQ8_0])
         let v0_1h = vreinterpretq_s8_u8(vshrq_n_u8(v0_1, 4));
 
         // Extract 5th bit from qh (4 bytes = 32 bits for 32 elements)
-        let qh0 = u32::from_le_bytes(std::mem::transmute::<[u8; 4], [u8; 4]>(x0.qh));
-        let qh1 = u32::from_le_bytes(std::mem::transmute::<[u8; 4], [u8; 4]>(x1.qh));
+        let qh0 = u32::from_le_bytes(x0.qh);
+        let qh1 = u32::from_le_bytes(x1.qh);
 
-        // Use lookup table to expand bits
+        // Use lookup table to expand bits (unsafe for no bounds check)
+        let table_ptr = TABLE_B2B_1.as_ptr();
         let tmp0: [u64; 4] = [
-            TABLE_B2B_1[(qh0 >> 0) as usize & 0xFF],
-            TABLE_B2B_1[(qh0 >> 8) as usize & 0xFF],
-            TABLE_B2B_1[(qh0 >> 16) as usize & 0xFF],
-            TABLE_B2B_1[(qh0 >> 24) as usize],
+            *table_ptr.add(((qh0 >> 0) & 0xFF) as usize),
+            *table_ptr.add(((qh0 >> 8) & 0xFF) as usize),
+            *table_ptr.add(((qh0 >> 16) & 0xFF) as usize),
+            *table_ptr.add((qh0 >> 24) as usize),
         ];
         let tmp1: [u64; 4] = [
-            TABLE_B2B_1[(qh1 >> 0) as usize & 0xFF],
-            TABLE_B2B_1[(qh1 >> 8) as usize & 0xFF],
-            TABLE_B2B_1[(qh1 >> 16) as usize & 0xFF],
-            TABLE_B2B_1[(qh1 >> 24) as usize],
+            *table_ptr.add(((qh1 >> 0) & 0xFF) as usize),
+            *table_ptr.add(((qh1 >> 8) & 0xFF) as usize),
+            *table_ptr.add(((qh1 >> 16) & 0xFF) as usize),
+            *table_ptr.add((qh1 >> 24) as usize),
         ];
 
         // Load expanded bits as int8 vectors
@@ -663,14 +667,15 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(n: usize, x: &[BlockQ5_0], y: &[BlockQ8_0])
         let mut isum = 0i32;
 
         for j in 0..16 {
-            let bit_lo = ((qh >> (j * 2)) & 1) as i32;
-            let bit_hi = ((qh >> (j * 2 + 1)) & 1) as i32;
+            // Bits 0-15 for low nibbles, bits 16-31 for high nibbles
+            let bit_lo = ((qh >> j) & 1) as i32;
+            let bit_hi = ((qh >> (j + 16)) & 1) as i32;
 
             let v0 = ((x_b.qs[j] & 0x0F) as i32 | (bit_lo << 4)) - 16;
             let v1 = ((x_b.qs[j] >> 4) as i32 | (bit_hi << 4)) - 16;
 
-            isum += v0 * y_b.qs[j * 2] as i32;
-            isum += v1 * y_b.qs[j * 2 + 1] as i32;
+            isum += v0 * y_b.qs[j] as i32;
+            isum += v1 * y_b.qs[j + 16] as i32;
         }
 
         sumf += isum as f32 * d;
@@ -718,17 +723,19 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(n: usize, x: &[BlockQ5_1], y: &[BlockQ8_1])
         let qh0 = u32::from_le_bytes(x0.qh);
         let qh1 = u32::from_le_bytes(x1.qh);
 
+        // Use lookup table to expand bits (unsafe for no bounds check)
+        let table_ptr = TABLE_B2B_1.as_ptr();
         let tmp0: [u64; 4] = [
-            TABLE_B2B_1[(qh0 >> 0) as usize & 0xFF],
-            TABLE_B2B_1[(qh0 >> 8) as usize & 0xFF],
-            TABLE_B2B_1[(qh0 >> 16) as usize & 0xFF],
-            TABLE_B2B_1[(qh0 >> 24) as usize],
+            *table_ptr.add(((qh0 >> 0) & 0xFF) as usize),
+            *table_ptr.add(((qh0 >> 8) & 0xFF) as usize),
+            *table_ptr.add(((qh0 >> 16) & 0xFF) as usize),
+            *table_ptr.add((qh0 >> 24) as usize),
         ];
         let tmp1: [u64; 4] = [
-            TABLE_B2B_1[(qh1 >> 0) as usize & 0xFF],
-            TABLE_B2B_1[(qh1 >> 8) as usize & 0xFF],
-            TABLE_B2B_1[(qh1 >> 16) as usize & 0xFF],
-            TABLE_B2B_1[(qh1 >> 24) as usize],
+            *table_ptr.add(((qh1 >> 0) & 0xFF) as usize),
+            *table_ptr.add(((qh1 >> 8) & 0xFF) as usize),
+            *table_ptr.add(((qh1 >> 16) & 0xFF) as usize),
+            *table_ptr.add((qh1 >> 24) as usize),
         ];
 
         let qhl0 = vld1q_s8(tmp0.as_ptr() as *const i8);
@@ -779,14 +786,15 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(n: usize, x: &[BlockQ5_1], y: &[BlockQ8_1])
         let mut isum = 0i32;
 
         for j in 0..16 {
-            let bit_lo = ((qh >> (j * 2)) & 1) as i32;
-            let bit_hi = ((qh >> (j * 2 + 1)) & 1) as i32;
+            // Bits 0-15 for low nibbles, bits 16-31 for high nibbles
+            let bit_lo = ((qh >> j) & 1) as i32;
+            let bit_hi = ((qh >> (j + 16)) & 1) as i32;
 
             let v0 = (x_b.qs[j] & 0x0F) as i32 + (bit_lo << 4);
             let v1 = (x_b.qs[j] >> 4) as i32 + (bit_hi << 4);
 
-            isum += v0 * y_b.qs[j * 2] as i32;
-            isum += v1 * y_b.qs[j * 2 + 1] as i32;
+            isum += v0 * y_b.qs[j] as i32;
+            isum += v1 * y_b.qs[j + 16] as i32;
         }
 
         sumf += isum as f32 * d + m;
