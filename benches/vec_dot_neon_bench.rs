@@ -1,6 +1,12 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use infer_train::quant::vec_dot::arm;
-use infer_train::quant::types::{BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, BlockQ8_1, QK4_0, QK_K, BlockQ2K, BlockQ3K, BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K};
+use infer_train::quant::types::{
+    BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, BlockQ8_1,
+    QK4_0, QK_K, BlockQ2K, BlockQ3K, BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K,
+    BlockIQ1S, BlockIQ1M, BlockIQ2XXS, BlockIQ2XS, BlockIQ2S,
+    BlockIQ3XXS, BlockIQ3S, BlockIQ4NL, BlockIQ4XS,
+    BlockTQ1_0, BlockTQ2_0,
+};
 use half::{f16, bf16};
 
 fn generate_fp32_data(n: usize) -> Vec<f32> {
@@ -337,6 +343,261 @@ fn bench_k_quant_neon(c: &mut Criterion) {
     });
 }
 
+// ===== IQ/TQ Series Benchmarks =====
+
+fn generate_iq4_nl_blocks(nb: usize) -> Vec<BlockIQ4NL> {
+    (0..nb).map(|i| {
+        let mut qs = [0u8; 16];
+        for j in 0..16 {
+            qs[j] = ((i + j) % 256) as u8;
+        }
+        BlockIQ4NL { d: f16::from_f32(1.0).to_bits(), qs }
+    }).collect()
+}
+
+fn generate_iq4_xs_blocks(nb: usize) -> Vec<BlockIQ4XS> {
+    (0..nb).map(|i| {
+        let mut qs = [0u8; 128];
+        let mut scales_l = [0u8; 4];
+        for j in 0..128 {
+            qs[j] = ((i + j) % 256) as u8;
+        }
+        for j in 0..4 {
+            scales_l[j] = ((i + j * 16) % 256) as u8;
+        }
+        BlockIQ4XS {
+            d: f16::from_f32(1.0).to_bits(),
+            scales_h: ((i % 256) as u16),
+            scales_l,
+            qs,
+        }
+    }).collect()
+}
+
+fn generate_iq1_s_blocks(nb: usize) -> Vec<BlockIQ1S> {
+    (0..nb).map(|i| {
+        let mut qs = [0u8; 32];
+        let mut qh = [0u16; 8];
+        for j in 0..32 {
+            qs[j] = ((i + j) % 256) as u8;
+        }
+        for j in 0..8 {
+            qh[j] = ((i + j) % 65536) as u16;
+        }
+        BlockIQ1S { d: f16::from_f32(1.0).to_bits(), qs, qh }
+    }).collect()
+}
+
+fn generate_iq1_m_blocks(nb: usize) -> Vec<BlockIQ1M> {
+    (0..nb).map(|i| {
+        let mut qs = [0u8; 32];
+        let mut qh = [0u8; 16];
+        let mut scales = [0u8; 8];
+        for j in 0..32 {
+            qs[j] = ((i + j) % 256) as u8;
+        }
+        for j in 0..16 {
+            qh[j] = ((i + j) % 256) as u8;
+        }
+        for j in 0..8 {
+            scales[j] = ((i + j) % 256) as u8;
+        }
+        BlockIQ1M { qs, qh, scales }
+    }).collect()
+}
+
+fn generate_iq2_xxs_blocks(nb: usize) -> Vec<BlockIQ2XXS> {
+    (0..nb).map(|i| {
+        let mut qs = [0u16; 32];
+        for j in 0..32 {
+            qs[j] = ((i + j) % 65536) as u16;
+        }
+        BlockIQ2XXS { d: f16::from_f32(1.0).to_bits(), qs }
+    }).collect()
+}
+
+fn generate_iq2_xs_blocks(nb: usize) -> Vec<BlockIQ2XS> {
+    (0..nb).map(|i| {
+        let mut qs = [0u16; 32];
+        let mut scales = [0u8; 8];
+        for j in 0..32 {
+            qs[j] = ((i + j) % 65536) as u16;
+        }
+        for j in 0..8 {
+            scales[j] = ((i + j) % 256) as u8;
+        }
+        BlockIQ2XS { d: f16::from_f32(1.0).to_bits(), qs, scales }
+    }).collect()
+}
+
+fn generate_iq2_s_blocks(nb: usize) -> Vec<BlockIQ2S> {
+    (0..nb).map(|i| {
+        let mut qs = [0u8; 64];
+        let mut qh = [0u8; 8];
+        let mut scales = [0u8; 8];
+        for j in 0..64 {
+            qs[j] = ((i + j) % 256) as u8;
+        }
+        for j in 0..8 {
+            qh[j] = ((i + j) % 256) as u8;
+            scales[j] = ((i + j) % 256) as u8;
+        }
+        BlockIQ2S { d: f16::from_f32(1.0).to_bits(), qs, qh, scales }
+    }).collect()
+}
+
+fn generate_iq3_xxs_blocks(nb: usize) -> Vec<BlockIQ3XXS> {
+    (0..nb).map(|i| {
+        let mut qs = [0u8; 96];
+        for j in 0..96 {
+            qs[j] = ((i + j) % 256) as u8;
+        }
+        BlockIQ3XXS { d: f16::from_f32(1.0).to_bits(), qs }
+    }).collect()
+}
+
+fn generate_iq3_s_blocks(nb: usize) -> Vec<BlockIQ3S> {
+    (0..nb).map(|i| {
+        let mut qs = [0u8; 64];
+        let mut qh = [0u8; 8];
+        let mut signs = [0u8; 32];
+        let mut scales = [0u8; 4];
+        for j in 0..64 {
+            qs[j] = ((i + j) % 256) as u8;
+        }
+        for j in 0..8 {
+            qh[j] = ((i + j) % 256) as u8;
+        }
+        for j in 0..32 {
+            signs[j] = ((i + j) % 256) as u8;
+        }
+        for j in 0..4 {
+            scales[j] = ((i + j) % 256) as u8;
+        }
+        BlockIQ3S { d: f16::from_f32(1.0).to_bits(), qs, qh, signs, scales }
+    }).collect()
+}
+
+fn generate_tq1_0_blocks(nb: usize) -> Vec<BlockTQ1_0> {
+    (0..nb).map(|i| {
+        let mut qs = [0u8; 48];
+        let mut qh = [0u8; 4];
+        for j in 0..48 {
+            qs[j] = ((i + j) % 256) as u8;
+        }
+        for j in 0..4 {
+            qh[j] = ((i + j) % 256) as u8;
+        }
+        BlockTQ1_0 { d: f16::from_f32(1.0).to_bits(), qs, qh }
+    }).collect()
+}
+
+fn generate_tq2_0_blocks(nb: usize) -> Vec<BlockTQ2_0> {
+    (0..nb).map(|i| {
+        let mut qs = [0u8; 64];
+        for j in 0..64 {
+            qs[j] = ((i + j) % 256) as u8;
+        }
+        BlockTQ2_0 { d: f16::from_f32(1.0).to_bits(), qs }
+    }).collect()
+}
+
+fn bench_iq_tq_neon(c: &mut Criterion) {
+    let nb = 256;
+    let n = nb * QK_K;
+
+    let y_q8k = generate_q8_k_blocks(nb);
+    let y_q8_0 = generate_q8_0_blocks(nb * 8); // QK_K / QK4_NL = 8
+
+    // IQ4_NL (block=32)
+    let x_iq4_nl = generate_iq4_nl_blocks(nb * 8);
+    c.bench_function("neon_iq4_nl_q8_0_262k", |bencher| {
+        bencher.iter(|| unsafe {
+            black_box(arm::vec_dot_iq4_nl_q8_0_neon(black_box(n), black_box(&x_iq4_nl), black_box(&y_q8_0)))
+        })
+    });
+
+    // IQ4_XS
+    let x_iq4_xs = generate_iq4_xs_blocks(nb);
+    c.bench_function("neon_iq4_xs_q8_k_65k", |bencher| {
+        bencher.iter(|| unsafe {
+            black_box(arm::vec_dot_iq4_xs_q8_k_neon(black_box(n), black_box(&x_iq4_xs), black_box(&y_q8k)))
+        })
+    });
+
+    // IQ1_S
+    let x_iq1_s = generate_iq1_s_blocks(nb);
+    c.bench_function("neon_iq1_s_q8_k_65k", |bencher| {
+        bencher.iter(|| unsafe {
+            black_box(arm::vec_dot_iq1_s_q8_k_neon(black_box(n), black_box(&x_iq1_s), black_box(&y_q8k)))
+        })
+    });
+
+    // IQ1_M
+    let x_iq1_m = generate_iq1_m_blocks(nb);
+    c.bench_function("neon_iq1_m_q8_k_65k", |bencher| {
+        bencher.iter(|| unsafe {
+            black_box(arm::vec_dot_iq1_m_q8_k_neon(black_box(n), black_box(&x_iq1_m), black_box(&y_q8k)))
+        })
+    });
+
+    // IQ2_XXS
+    let x_iq2_xxs = generate_iq2_xxs_blocks(nb);
+    c.bench_function("neon_iq2_xxs_q8_k_65k", |bencher| {
+        bencher.iter(|| unsafe {
+            black_box(arm::vec_dot_iq2_xxs_q8_k_neon(black_box(n), black_box(&x_iq2_xxs), black_box(&y_q8k)))
+        })
+    });
+
+    // IQ2_XS
+    let x_iq2_xs = generate_iq2_xs_blocks(nb);
+    c.bench_function("neon_iq2_xs_q8_k_65k", |bencher| {
+        bencher.iter(|| unsafe {
+            black_box(arm::vec_dot_iq2_xs_q8_k_neon(black_box(n), black_box(&x_iq2_xs), black_box(&y_q8k)))
+        })
+    });
+
+    // IQ2_S
+    let x_iq2_s = generate_iq2_s_blocks(nb);
+    c.bench_function("neon_iq2_s_q8_k_65k", |bencher| {
+        bencher.iter(|| unsafe {
+            black_box(arm::vec_dot_iq2_s_q8_k_neon(black_box(n), black_box(&x_iq2_s), black_box(&y_q8k)))
+        })
+    });
+
+    // IQ3_XXS
+    let x_iq3_xxs = generate_iq3_xxs_blocks(nb);
+    c.bench_function("neon_iq3_xxs_q8_k_65k", |bencher| {
+        bencher.iter(|| unsafe {
+            black_box(arm::vec_dot_iq3_xxs_q8_k_neon(black_box(n), black_box(&x_iq3_xxs), black_box(&y_q8k)))
+        })
+    });
+
+    // IQ3_S
+    let x_iq3_s = generate_iq3_s_blocks(nb);
+    c.bench_function("neon_iq3_s_q8_k_65k", |bencher| {
+        bencher.iter(|| unsafe {
+            black_box(arm::vec_dot_iq3_s_q8_k_neon(black_box(n), black_box(&x_iq3_s), black_box(&y_q8k)))
+        })
+    });
+
+    // TQ1_0
+    let x_tq1_0 = generate_tq1_0_blocks(nb);
+    c.bench_function("neon_tq1_0_q8_k_65k", |bencher| {
+        bencher.iter(|| unsafe {
+            black_box(arm::vec_dot_tq1_0_q8_k_neon(black_box(n), black_box(&x_tq1_0), black_box(&y_q8k)))
+        })
+    });
+
+    // TQ2_0
+    let x_tq2_0 = generate_tq2_0_blocks(nb);
+    c.bench_function("neon_tq2_0_q8_k_65k", |bencher| {
+        bencher.iter(|| unsafe {
+            black_box(arm::vec_dot_tq2_0_q8_k_neon(black_box(n), black_box(&x_tq2_0), black_box(&y_q8k)))
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_fp32_neon,
@@ -345,6 +606,7 @@ criterion_group!(
     bench_q4_1_neon,
     bench_q5_0_neon,
     bench_q5_1_neon,
-    bench_k_quant_neon
+    bench_k_quant_neon,
+    bench_iq_tq_neon
 );
 criterion_main!(benches);
