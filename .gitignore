@@ -52,3 +52,8 @@ llama.cpp-0.4.1/
 modular-mojo-v1.0.0/
 llvm-project-llvmorg-23.1.0/
 vllm-0.29.0/
+
+
+# Added by cargo
+
+/target
