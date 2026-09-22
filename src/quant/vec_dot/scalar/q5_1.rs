@@ -1,0 +1,29 @@
+use crate::quant::types::{BlockQ5_1, BlockQ8_1, QK4_0};
+use half::f16;
+
+/// Q5_1 × Q8_1 vector dot product (scalar implementation)
+pub fn vec_dot_q5_1_q8_1(n: usize, x: &[BlockQ5_1], y: &[BlockQ8_1]) -> f32 {
+    let nb = n / QK4_0;
+    let mut sum = 0.0f32;
+
+    for i in 0..nb {
+        let d = f16::from_bits(x[i].d).to_f32() * f16::from_bits(y[i].d).to_f32();
+        let m = f16::from_bits(x[i].m).to_f32() * f16::from_bits(y[i].s).to_f32();
+
+        let mut isum = 0i32;
+        for j in 0..16 {
+            let qh_idx = j / 8;
+            let qh_bit = (x[i].qh[qh_idx as usize] >> (j % 8)) & 1;
+
+            let v0 = ((x[i].qs[j] & 0x0F) as i32) | ((qh_bit as i32) << 4);
+            let v1 = ((x[i].qs[j] >> 4) as i32) | ((qh_bit as i32) << 4);
+
+            isum += v0 * y[i].qs[j * 2] as i32;
+            isum += v1 * y[i].qs[j * 2 + 1] as i32;
+        }
+
+        sum += d * isum as f32 + m;
+    }
+
+    sum
+}
