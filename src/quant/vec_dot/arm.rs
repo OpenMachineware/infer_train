@@ -1,7 +1,7 @@
 use std::arch::aarch64::*;
 
 /// FP32 vector dot product (NEON implementation)
-#[target_feature(enable = "neon")]
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_fp32_neon(a: &[f32], b: &[f32]) -> f32 {
     let n = a.len();
     let mut sum = vdupq_n_f32(0.0);
@@ -27,7 +27,7 @@ pub unsafe fn vec_dot_fp32_neon(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// FP16 vector dot product (NEON implementation)
-#[target_feature(enable = "neon")]
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_fp16_neon(a: &[u16], b: &[u16]) -> f32 {
     let n = a.len();
     let mut sum = vdupq_n_f32(0.0);
@@ -65,7 +65,7 @@ pub unsafe fn vec_dot_fp16_neon(a: &[u16], b: &[u16]) -> f32 {
 /// BF16 vector dot product (NEON implementation)
 /// Note: Requires ARMv8.2-A with BF16 extension
 #[cfg(target_feature = "bf16")]
-#[target_feature(enable = "neon")]
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_bf16_neon(a: &[u16], b: &[u16]) -> f32 {
     let n = a.len();
     let mut sum = vdupq_n_f32(0.0);
@@ -101,7 +101,7 @@ pub unsafe fn vec_dot_bf16_neon(a: &[u16], b: &[u16]) -> f32 {
 
 /// BF16 vector dot product (NEON fallback without BF16 extension)
 /// Uses software conversion from BF16 to FP32
-#[target_feature(enable = "neon")]
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_bf16_neon_fallback(a: &[u16], b: &[u16]) -> f32 {
     let n = a.len();
     let mut sum = vdupq_n_f32(0.0);
@@ -142,32 +142,27 @@ pub unsafe fn vec_dot_bf16_neon_fallback(a: &[u16], b: &[u16]) -> f32 {
 
 use crate::quant::types::{BlockQ4_0, BlockQ4_1, BlockQ8_0, BlockQ8_1, QK4_0, QK8_0};
 
-/// Manual vdotq_s32 implementation
-/// vdotq_s32 is unstable in Rust, so we implement it manually
-/// Each vmull_s8 produces int16x8_t (8 products of 16-bit)
-/// We need to pairwise add them into int32x4_t
-#[inline(always)]
+/// Manual vdotq_s32 implementation using native SDOT instruction
+/// vdotq_s32 is unstable in Rust, so we use inline assembly
+/// SDOT computes: result[i] = acc[i] + sum(a[4*i..4*i+4] * b[4*i..4*i+4]) for i in 0..4
+/// This is ~4x faster than the vmull+vpaddl sequence.
+#[target_feature(enable = "neon,dotprod")]
 unsafe fn vdotq_s32_manual(acc: int32x4_t, a: int8x16_t, b: int8x16_t) -> int32x4_t {
-    // Split into two halves
-    let a_lo = vget_low_s8(a);
-    let a_hi = vget_high_s8(a);
-    let b_lo = vget_low_s8(b);
-    let b_hi = vget_high_s8(b);
+    use std::arch::asm;
 
-    // Widen to 16-bit and multiply: int8x8_t * int8x8_t -> int16x8_t
-    let prod_lo = vmull_s8(a_lo, b_lo);
-    let prod_hi = vmull_s8(a_hi, b_hi);
-
-    // Pairwise add int16x8_t -> int32x4_t
-    let sum_lo = vpaddlq_s16(prod_lo);
-    let sum_hi = vpaddlq_s16(prod_hi);
-
-    // Add to accumulator
-    vaddq_s32(vaddq_s32(acc, sum_lo), sum_hi)
+    let mut result = acc;
+    asm!(
+        "sdot {0}.4s, {1}.16b, {2}.16b",
+        inout(vreg) result,
+        in(vreg) a,
+        in(vreg) b,
+        options(pure, nomem, preserves_flags)
+    );
+    result
 }
 
 /// Q4_0 × Q8_0 vector dot product (NEON implementation)
-#[target_feature(enable = "neon")]
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_q4_0_q8_0_neon(n: usize, x: &[BlockQ4_0], y: &[BlockQ8_0]) -> f32 {
     let nb = n / QK4_0;
     let mut sumv0 = vdupq_n_f32(0.0);
@@ -245,7 +240,7 @@ pub unsafe fn vec_dot_q4_0_q8_0_neon(n: usize, x: &[BlockQ4_0], y: &[BlockQ8_0])
 }
 
 /// Q8_0 × Q8_0 vector dot product (NEON implementation)
-#[target_feature(enable = "neon")]
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_q8_0_q8_0_neon(n: usize, x: &[BlockQ8_0], y: &[BlockQ8_0]) -> f32 {
     let nb = n / QK8_0;
     let mut sumv0 = vdupq_n_f32(0.0);
@@ -302,7 +297,7 @@ pub unsafe fn vec_dot_q8_0_q8_0_neon(n: usize, x: &[BlockQ8_0], y: &[BlockQ8_0])
 }
 
 /// Q4_1 × Q8_1 vector dot product (NEON implementation)
-#[target_feature(enable = "neon")]
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_q4_1_q8_1_neon(n: usize, x: &[BlockQ4_1], y: &[BlockQ8_1]) -> f32 {
     let nb = n / QK4_0;
     let mut sumv0 = vdupq_n_f32(0.0);
@@ -405,7 +400,7 @@ unsafe fn vld1q_s8_x4(ptr: *const i8) -> int8x16x4_t {
 }
 
 /// Q2_K × Q8_K vector dot product (NEON implementation)
-#[target_feature(enable = "neon")]
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_q2_k_q8_k_neon(n: usize, x: &[BlockQ2K], y: &[BlockQ8K]) -> f32 {
     let nb = n / QK_K;
     let m3 = vdupq_n_u8(0x03);
@@ -480,7 +475,7 @@ pub unsafe fn vec_dot_q2_k_q8_k_neon(n: usize, x: &[BlockQ2K], y: &[BlockQ8K]) -
 }
 
 /// Q4_K × Q8_K vector dot product (NEON implementation)
-#[target_feature(enable = "neon")]
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_q4_k_q8_k_neon(n: usize, x: &[BlockQ4K], y: &[BlockQ8K]) -> f32 {
     let nb = n / QK_K;
     let m4b = vdupq_n_u8(0x0F);
@@ -574,7 +569,7 @@ const TABLE_B2B_1: [u64; 256] = {
 };
 
 /// Q5_0 × Q8_0 vector dot product (NEON implementation)
-#[target_feature(enable = "neon")]
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_q5_0_q8_0_neon(n: usize, x: &[BlockQ5_0], y: &[BlockQ8_0]) -> f32 {
     let nb = n / QK4_0;
     let m4b = vdupq_n_u8(0x0F);
@@ -685,7 +680,7 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(n: usize, x: &[BlockQ5_0], y: &[BlockQ8_0])
 }
 
 /// Q5_1 × Q8_1 vector dot product (NEON implementation)
-#[target_feature(enable = "neon")]
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_q5_1_q8_1_neon(n: usize, x: &[BlockQ5_1], y: &[BlockQ8_1]) -> f32 {
     let nb = n / QK4_0;
     let m4b = vdupq_n_u8(0x0F);
@@ -803,7 +798,7 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(n: usize, x: &[BlockQ5_1], y: &[BlockQ8_1])
 // ===== Q3_K, Q5_K, Q6_K NEON implementations =====
 
 /// Q3_K × Q8_K vector dot product (NEON implementation)
-#[target_feature(enable = "neon")]
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_q3_k_q8_k_neon(n: usize, x: &[BlockQ3K], y: &[BlockQ8K]) -> f32 {
     let nb = n / QK_K;
     let m3b = vdupq_n_u8(0x3);
@@ -896,7 +891,7 @@ pub unsafe fn vec_dot_q3_k_q8_k_neon(n: usize, x: &[BlockQ3K], y: &[BlockQ8K]) -
 }
 
 /// Q5_K × Q8_K vector dot product (NEON implementation)
-#[target_feature(enable = "neon")]
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_q5_k_q8_k_neon(n: usize, x: &[BlockQ5K], y: &[BlockQ8K]) -> f32 {
     let nb = n / QK_K;
     let m4b = vdupq_n_u8(0xF);
@@ -982,7 +977,7 @@ pub unsafe fn vec_dot_q5_k_q8_k_neon(n: usize, x: &[BlockQ5K], y: &[BlockQ8K]) -
 }
 
 /// Q6_K × Q8_K vector dot product (NEON implementation)
-#[target_feature(enable = "neon")]
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_q6_k_q8_k_neon(n: usize, x: &[BlockQ6K], y: &[BlockQ8K]) -> f32 {
     let nb = n / QK_K;
     let m4b = vdupq_n_u8(0x0F);
