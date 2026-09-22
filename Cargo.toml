@@ -13,6 +13,15 @@ metal = "0.31"
 
 [dev-dependencies]
 approx = "0.5"
+criterion = "0.5"
+
+[[bench]]
+name = "vec_dot_bench"
+harness = false
+
+[[bench]]
+name = "vec_dot_neon_bench"
+harness = false
 
 [features]
 default = []
