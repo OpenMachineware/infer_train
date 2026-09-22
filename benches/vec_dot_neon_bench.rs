@@ -148,19 +148,22 @@ fn generate_q3_k_blocks(nb: usize) -> Vec<BlockQ3K> {
     }).collect()
 }
 
-fn generate_q4_k_blocks(nb: usize) -> Vec<BlockQ4K> {
+fn generate_q4_k_blocks(nb: usize, seed: u64) -> Vec<BlockQ4K> {
     (0..nb).map(|i| {
         let mut scales = [0u8; 12];
         let mut qs = [0u8; 128];
+        let base = i as u64 + seed;
         for j in 0..12 {
-            scales[j] = ((i + j) % 64 + 16) as u8;
+            scales[j] = ((base + j as u64) % 64 + 16) as u8;
         }
         for j in 0..128 {
-            qs[j] = ((i * 2 + j) % 256) as u8;
+            qs[j] = ((base * 2 + j as u64) % 256) as u8;
         }
+        let d_val = 1.0 + (seed as f32 % 10.0); // 非常量
+        let dmin_val = (seed as f32 % 5.0) * 0.1; // 非常量
         BlockQ4K {
-            d: f16::from_f32(1.0).to_bits(),
-            dmin: f16::from_f32(0.0).to_bits(),
+            d: f16::from_f32(d_val).to_bits(),
+            dmin: f16::from_f32(dmin_val).to_bits(),
             scales,
             qs,
         }
@@ -301,35 +304,35 @@ fn bench_k_quant_neon(c: &mut Criterion) {
     let y_q8k = generate_q8_k_blocks(nb);
     c.bench_function("neon_q2_k_q8_k_65k", |bencher| {
         bencher.iter(|| unsafe {
-            arm::vec_dot_q2_k_q8_k_neon(black_box(n), black_box(&x_q2k), black_box(&y_q8k))
+            black_box(arm::vec_dot_q2_k_q8_k_neon(black_box(n), black_box(&x_q2k), black_box(&y_q8k)))
         })
     });
 
     let x_q3k = generate_q3_k_blocks(nb);
     c.bench_function("neon_q3_k_q8_k_65k", |bencher| {
         bencher.iter(|| unsafe {
-            arm::vec_dot_q3_k_q8_k_neon(black_box(n), black_box(&x_q3k), black_box(&y_q8k))
+            black_box(arm::vec_dot_q3_k_q8_k_neon(black_box(n), black_box(&x_q3k), black_box(&y_q8k)))
         })
     });
 
-    let x_q4k = generate_q4_k_blocks(nb);
+    let x_q4k = generate_q4_k_blocks(nb, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64);
     c.bench_function("neon_q4_k_q8_k_65k", |bencher| {
         bencher.iter(|| unsafe {
-            arm::vec_dot_q4_k_q8_k_neon(black_box(n), black_box(&x_q4k), black_box(&y_q8k))
+            black_box(arm::vec_dot_q4_k_q8_k_neon(black_box(n), black_box(&x_q4k), black_box(&y_q8k)))
         })
     });
 
     let x_q5k = generate_q5_k_blocks(nb);
     c.bench_function("neon_q5_k_q8_k_65k", |bencher| {
         bencher.iter(|| unsafe {
-            arm::vec_dot_q5_k_q8_k_neon(black_box(n), black_box(&x_q5k), black_box(&y_q8k))
+            black_box(arm::vec_dot_q5_k_q8_k_neon(black_box(n), black_box(&x_q5k), black_box(&y_q8k)))
         })
     });
 
     let x_q6k = generate_q6_k_blocks(nb);
     c.bench_function("neon_q6_k_q8_k_65k", |bencher| {
         bencher.iter(|| unsafe {
-            arm::vec_dot_q6_k_q8_k_neon(black_box(n), black_box(&x_q6k), black_box(&y_q8k))
+            black_box(arm::vec_dot_q6_k_q8_k_neon(black_box(n), black_box(&x_q6k), black_box(&y_q8k)))
         })
     });
 }

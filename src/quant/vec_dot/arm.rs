@@ -481,71 +481,96 @@ pub unsafe fn vec_dot_q4_k_q8_k_neon(n: usize, x: &[BlockQ4K], y: &[BlockQ8K]) -
     let m4b = vdupq_n_u8(0x0F);
     let vzero = vdupq_n_s32(0);
 
+    const KMASK1: u32 = 0x3f3f3f3f;
     const KMASK2: u32 = 0x0f0f0f0f;
     const KMASK3: u32 = 0x03030303;
 
     let mut sum = 0.0f32;
 
     for i in 0..nb {
-        let d = y[i].d * half::f16::from_bits(x[i].d).to_f32();
-        let dmin = y[i].d * half::f16::from_bits(x[i].dmin).to_f32();
+        let x_i = x.get_unchecked(i);
+        let y_i = y.get_unchecked(i);
 
-        // Decode scales and mins from 12-byte format
-        let mut aux = [0u32; 3];
-        std::ptr::copy_nonoverlapping(x[i].scales.as_ptr(), aux.as_mut_ptr() as *mut u8, 12);
+        let d = y_i.d * half::f16::from_bits(x_i.d).to_f32();
+        let dmin = y_i.d * half::f16::from_bits(x_i.dmin).to_f32();
 
+        // Decode scales and mins from 12-byte format (matching llama.cpp exactly)
         let mut utmp = [0u32; 4];
-        utmp[3] = ((aux[1] >> 4) & KMASK2) | (((aux[2] >> 6) & KMASK3) << 4);
-        utmp[2] = ((aux[0] >> 4) & KMASK2) | (((aux[2] >> 4) & KMASK3) << 4);
-        utmp[1] = (aux[1] & KMASK2) | (((aux[2] >> 2) & KMASK3) << 4);
-        utmp[0] = (aux[0] & KMASK2) | ((aux[2] & KMASK3) << 4);
+        std::ptr::copy_nonoverlapping(x_i.scales.as_ptr(), utmp.as_mut_ptr() as *mut u8, 12);
 
-        let scales: [i8; 16] = std::mem::transmute(utmp);
+        // Extract mins first (before modifying utmp)
+        let mut mins8 = vdup_n_u32(0);
+        mins8 = vset_lane_u32(utmp[1] & KMASK1, mins8, 0);
+        mins8 = vset_lane_u32(((utmp[2] >> 4) & KMASK2) | (((utmp[1] >> 6) & KMASK3) << 4), mins8, 1);
 
-        // Calculate min correction using bsums
-        let mins_0 = vld1q_s8(scales.as_ptr().add(8));
-        let bsums_0 = vld1q_s16(y[i].bsums.as_ptr());
-        let bsums_1 = vld1q_s16(y[i].bsums.as_ptr().add(8));
+        // Now modify utmp for scales
+        utmp[1] = (utmp[2] & KMASK2) | (((utmp[0] >> 6) & KMASK3) << 4);
+        utmp[0] &= KMASK1;
 
-        let min_sum = vaddvq_s32(vaddq_s32(
-            vmull_s16(vget_low_s16(vmovl_s8(vget_low_s8(mins_0))), vget_low_s16(bsums_0)),
-            vmull_s16(vget_high_s16(vmovl_s8(vget_high_s8(mins_0))), vget_high_s16(bsums_0))
-        )) + vaddvq_s32(vaddq_s32(
-            vmull_s16(vget_low_s16(vmovl_s8(vget_low_s8(vld1q_s8(scales.as_ptr().add(8).add(8))))), vget_low_s16(bsums_1)),
-            vmull_s16(vget_high_s16(vmovl_s8(vget_high_s8(vld1q_s8(scales.as_ptr().add(8).add(8))))), vget_high_s16(bsums_1))
-        ));
+        // Calculate min correction using vpaddq (matching llama.cpp)
+        let q8sums = vpaddq_s16(vld1q_s16(y_i.bsums.as_ptr()), vld1q_s16(y_i.bsums.as_ptr().add(8)));
+        let mins = vreinterpretq_s16_u16(vmovl_u8(vreinterpret_u8_u32(mins8)));
+        let prod = vaddq_s32(
+            vmull_s16(vget_low_s16(q8sums), vget_low_s16(mins)),
+            vmull_s16(vget_high_s16(q8sums), vget_high_s16(mins))
+        );
+        let min_sum = vaddvq_s32(prod);
+
+        // Get scales pointer
+        let scales = utmp.as_ptr() as *const u8;
 
         // Process 256 elements
-        let q4 = x[i].qs.as_ptr();
-        let q8 = y[i].qs.as_ptr();
+        let q4 = x_i.qs.as_ptr();
+        let q8 = y_i.qs.as_ptr();
 
-        let mut isum = 0i32;
+        let mut sumi1 = 0i32;
+        let mut sumi2 = 0i32;
 
-        for j in 0..(QK_K / 128) {
+        for j in 0..(QK_K / 64) {
             let q4bits = vld1q_u8_x2(q4.add(j * 32));
-            let q8bytes = vld1q_s8_x4(q8.add(j * 64));
+            let q8bytes_0 = vld1q_s8_x2(q8.add(j * 64));
 
-            // Decode 4-bit values
-            let q4l = vreinterpretq_s8_u8(vandq_u8(q4bits.0, m4b));
-            let q4h = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.0, 4));
+            // Decode 4-bit low values
+            let q4l_0 = vreinterpretq_s8_u8(vandq_u8(q4bits.0, m4b));
+            let q4l_1 = vreinterpretq_s8_u8(vandq_u8(q4bits.1, m4b));
 
-            isum += vaddvq_s32(vdotq_s32_manual(vzero, q4l, q8bytes.0)) * scales[j * 4] as i32;
-            isum += vaddvq_s32(vdotq_s32_manual(vzero, q4h, q8bytes.1)) * scales[j * 4 + 1] as i32;
+            let p1 = vdotq_s32_manual(vdotq_s32_manual(vzero, q4l_0, q8bytes_0.0), q4l_1, q8bytes_0.1);
+            sumi1 += vaddvq_s32(p1) * *scales.add(j * 2) as i32;
 
-            let q4l2 = vreinterpretq_s8_u8(vandq_u8(q4bits.1, m4b));
-            let q4h2 = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.1, 4));
+            // Decode 4-bit high values
+            let q8bytes_1 = vld1q_s8_x2(q8.add(j * 64 + 32));
+            let q4h_0 = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.0, 4));
+            let q4h_1 = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.1, 4));
 
-            isum += vaddvq_s32(vdotq_s32_manual(vzero, q4l2, q8bytes.2)) * scales[j * 4 + 2] as i32;
-            isum += vaddvq_s32(vdotq_s32_manual(vzero, q4h2, q8bytes.3)) * scales[j * 4 + 3] as i32;
+            let p2 = vdotq_s32_manual(vdotq_s32_manual(vzero, q4h_0, q8bytes_1.0), q4h_1, q8bytes_1.1);
+            sumi2 += vaddvq_s32(p2) * *scales.add(j * 2 + 1) as i32;
         }
 
-        sum += d * isum as f32 - dmin * min_sum as f32;
+        sum += d * (sumi1 + sumi2) as f32 - dmin * min_sum as f32;
     }
 
     sum
 }
 
 use crate::quant::types::{BlockQ3K, BlockQ5K, BlockQ6K, BlockQ5_0, BlockQ5_1};
+
+/// Expand 32-bit qh to two int8x16_t vectors using TABLE_B2B_1 lookup
+/// Each bit in qh becomes 0x10 (if bit=0) or 0x00 (if bit=1)
+/// Returns (low_16_bytes, high_16_bytes)
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn expand_qh_to_vectors(qh: u32) -> (int8x16_t, int8x16_t) {
+    let tmp: [u64; 4] = [
+        TABLE_B2B_1[(qh >> 0) as usize & 0xFF],
+        TABLE_B2B_1[(qh >> 8) as usize & 0xFF],
+        TABLE_B2B_1[(qh >> 16) as usize & 0xFF],
+        TABLE_B2B_1[(qh >> 24) as usize],
+    ];
+
+    let qhl = vld1q_s8(tmp.as_ptr() as *const i8);
+    let qhh = vld1q_s8(tmp.as_ptr().add(2) as *const i8);
+
+    (qhl, qhh)
+}
 
 /// Table for bit expansion: expand 8 bits to 8 bytes
 /// For each bit: if bit is 0, output byte is 0x10; if bit is 1, output byte is 0x00
