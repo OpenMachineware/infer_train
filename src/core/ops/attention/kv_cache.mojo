@@ -967,20 +967,32 @@ struct KVCacheLayer(Copyable, Movable):
         return block
 
     def _grow_blocks(mut self):
-        """Grow storage by adding a new block (reallocate tensors)."""
+        """Grow storage by adding blocks (reallocate tensors).
+
+        Allocates multiple blocks at once (BLOCK_CHUNK) for efficiency.
+        BLOCK_CHUNK = ctx_size / 512 tokens, min 16, max 64.
+        """
         if self.page_size == 0:
             unimplemented("KVCacheLayer._grow_blocks: not in paged mode")
 
-        var new_block_id = self.n_blocks
-        self.n_blocks += 1
+        # Calculate optimal chunk size based on expected context
+        # Rule: allocate ctx_size/512 blocks at a time, clamped to [16, 64]
+        var estimated_ctx = max(self.max_len, 2048)  # Use max_len as hint, min 2048
+        var block_chunk = estimated_ctx // 512  # 512 tokens per chunk
+        block_chunk = max(block_chunk, 16)  # At least 16 blocks
+        block_chunk = min(block_chunk, 64)  # At most 64 blocks
+
+        var old_n_blocks = self.n_blocks
+        self.n_blocks += block_chunk
 
         if self.is_quantized():
             var rb = self.row_bytes()
-            # Grow kq/vq by one block
+            # Grow kq/vq by block_chunk blocks
             var old_size = self.kq.numel()
-            var new_size = old_size + self.n_kv_heads * self.page_size * rb
-            var new_kq = tensor_zeros[DType.uint8, 1](StaticTuple[Int, 1](new_size))
-            var new_vq = tensor_zeros[DType.uint8, 1](StaticTuple[Int, 1](new_size))
+            var new_size = old_n_blocks * self.n_kv_heads * self.page_size * rb
+            var grow_size = block_chunk * self.n_kv_heads * self.page_size * rb
+            var new_kq = tensor_zeros[DType.uint8, 1](StaticTuple[Int, 1](old_size + grow_size))
+            var new_vq = tensor_zeros[DType.uint8, 1](StaticTuple[Int, 1](old_size + grow_size))
             # Copy old data
             for i in range(old_size):
                 new_kq.set(i, self.kq.get(i))
@@ -997,9 +1009,8 @@ struct KVCacheLayer(Copyable, Movable):
                 StaticTuple[Int, 3](self.n_blocks, self.n_kv_heads, self.page_size * self.head_dim)
             )
             # Copy old data block by block
-            if self.n_blocks > 1:
-                var old_blocks = self.n_blocks - 1
-                for blk in range(old_blocks):
+            if old_n_blocks > 0:
+                for blk in range(old_n_blocks):
                     for h in range(self.n_kv_heads):
                         for d in range(self.page_size * self.head_dim):
                             var idx = (blk * self.n_kv_heads + h) * self.page_size * self.head_dim + d
@@ -1008,8 +1019,9 @@ struct KVCacheLayer(Copyable, Movable):
             self.k = new_k
             self.v = new_v
 
-        # Add new block to free pool
-        self.free_blocks.append(new_block_id)
+        # Add new blocks to free pool
+        for b in range(old_n_blocks, self.n_blocks):
+            self.free_blocks.append(b)
 
     def ensure_capacity(mut self, n_tokens: Int):
         """Ensure enough blocks for n_tokens. Call before filling."""

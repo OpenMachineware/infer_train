@@ -111,7 +111,7 @@ def main() raises:
         name = basename(args.model)
 
     var model_p = load_model_heap(
-        args.model, args.ctx_size, kv_cache_type_from_str(args.kv_cache_type)
+        args.model, args.ctx_size, kv_cache_type_from_str(args.kv_cache_type), args.paged_kv
     )
     print("loaded:", args.model)
     print(

@@ -429,6 +429,7 @@ struct TransformerModel(Movable):
         load_heads: Bool = True,
         quant_resident: Bool = True,
         kv_cache_type: KVCacheType = KVCacheType.FP16,
+        paged_kv: Bool = False,
     ):
         self.config = config
         self.ctx = ctx^
@@ -469,6 +470,11 @@ struct TransformerModel(Movable):
                 self.cache.layers[l] = KVCacheLayer(
                     config.n_kv_heads, 0, config.head_dim, kv_cache_type
                 )
+                # Enable paged mode if requested (dynamic KV growth)
+                if paged_kv:
+                    self.cache.layers[l].enable_paged(
+                        16, config.n_kv_heads, config.head_dim
+                    )  # page_size=16 tokens
         # hybrid (SSM) models: recurrent layers keep no KV cache and carry
         # SSM state.
         if config.has_ssm:

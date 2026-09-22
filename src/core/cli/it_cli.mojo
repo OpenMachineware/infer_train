@@ -74,7 +74,7 @@ weight requantization in `it-server quantize`.
 
 def run_local(args: CliArgs) raises:
     var kv_type = kv_cache_type_from_str(args.kv_cache_type)
-    var mp = load_model_heap(args.model, args.ctx_size, kv_type)
+    var mp = load_model_heap(args.model, args.ctx_size, kv_type, args.paged_kv)
     print_banner(
         args.model,
         mp[unsafe_offset=0].transformer.config,
@@ -83,6 +83,8 @@ def run_local(args: CliArgs) raises:
     )
     if args.kv_cache_type != "fp16":
         print("  kv cache type:", args.kv_cache_type)
+    if args.paged_kv:
+        print("  paged KV: enabled (unlimited context)")
     if args.mode != "off":
         print("  infer-train mode:", args.mode, "lr:", args.lr)
         print(

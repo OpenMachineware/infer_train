@@ -89,6 +89,7 @@ struct CliArgs(Movable):
     # specialization on the CPU path (off by default: the generic kernel)
     # KV cache resident format (off by default: fp16, unchanged behavior)
     var kv_cache_type: String  # --kv-cache-type: fp16 | q4_0 | q8_0
+    var paged_kv: Bool  # --paged-kv: enable paged KV cache (dynamic growth)
 
     def __init__(out self):
         self.model = String("")
@@ -122,6 +123,7 @@ struct CliArgs(Movable):
         self.jit_stats = False
         self.jit_specialize = False
         self.kv_cache_type = String("fp16")
+        self.paged_kv = False
 
 
 def parse_args(
@@ -226,6 +228,8 @@ def parse_args(
         elif a == "--kv-cache-type":
             args.kv_cache_type = _next(arg_list, i)
             i += 1
+        elif a == "--paged-kv":
+            args.paged_kv = True
         elif a == "--infer-train-mode":
             args.mode = _next(arg_list, i)
             i += 1
@@ -310,6 +314,7 @@ def load_model_heap(
     path: String,
     ctx_size: Int,
     kv_cache_type: KVCacheType = KVCacheType.FP16,
+    paged_kv: Bool = False,
 ) raises -> Pointer[Model, MutUntrackedOrigin]:
     """Load the model into one heap slot and return the owning pointer.
 
@@ -319,11 +324,12 @@ def load_model_heap(
     (infer_train_load_model) the slot is not freed explicitly - the engine
     buffers are MutUntrackedOrigin and the process reclaims them at exit.
     `kv_cache_type` is the --kv-cache-type flag (fp16 default: the
-    existing behavior is unchanged).
+    existing behavior is unchanged).  `paged_kv` enables dynamic KV cache
+    growth (--paged-kv flag).
     """
     # CPU detection happens in Model.__init__
     var mp = unsafe_alloc[Model](1)
-    mp[unsafe_offset=0] = load_model(path, ctx_size, kv_cache_type)
+    mp[unsafe_offset=0] = load_model(path, ctx_size, kv_cache_type, paged_kv)
 
     # Print CPU info
     var cpu = mp[unsafe_offset=0].cpu_flags
@@ -829,6 +835,7 @@ llama.cpp-compatible options:
       --kv-cache-type T     KV cache format: fp16 | q4_0 | q8_0
                             (default fp16; q4_0/q8_0 shrink the KV cache
                             for long contexts at a small accuracy cost)
+      --paged-kv           enable paged KV cache (dynamic growth, unlimited context)
       --no-cnv              raw completion mode (no conversation)
   -np, --parallel N         parallel slots (accepted; single-slot engine)
   -sm, --split-mode M       layer | row   (row: not implemented yet)

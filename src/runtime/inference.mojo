@@ -55,6 +55,7 @@ def load_model(
     path: String,
     ctx_len: Int = DEFAULT_KV_CACHE_LEN,
     kv_cache_type: KVCacheType = KVCacheType.FP16,
+    paged_kv: Bool = False,
 ) raises -> Model:
     """Load a GGUF, dequantize weights, build the transformer + tokenizer.
 
@@ -63,7 +64,8 @@ def load_model(
     tokenizer.json is read.  `ctx_len` sizes the KV cache (the CLI's
     -c/--ctx-size; the C-API keeps the default).  `kv_cache_type` selects
     the KV cache resident format (the CLI's --kv-cache-type; fp16 default
-    keeps the existing behavior).
+    keeps the existing behavior).  `paged_kv` enables dynamic KV cache
+    growth (unlimited context, memory-efficient).
     """
     var ctx = load_gguf(path)
     # head_dim comes from load_config: the metadata `attention.key_length`
@@ -73,7 +75,7 @@ def load_model(
 
     var weights = collect_weights(ctx)
     var model = TransformerModel(
-        config, ctx^, ctx_len, kv_cache_type=kv_cache_type
+        config, ctx^, ctx_len, kv_cache_type=kv_cache_type, paged_kv=paged_kv
     )
     model.weights = weights^
 
