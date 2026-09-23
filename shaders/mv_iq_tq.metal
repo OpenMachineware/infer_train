@@ -985,3 +985,555 @@ kernel void kernel_mul_mv_iq4_xs_f32(
         }
     }
 }
+
+// ===== IQ1_S kernel =====
+struct block_iq1_s {
+    half d;
+    uint8_t qs[32];
+    uint16_t qh[8];
+};
+
+kernel void kernel_mul_mv_iq1_s_f32(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device float * dst [[buffer(2)]],
+    constant mv_args & args [[buffer(3)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const short NSG = N_SG_TQ2_0;
+    const short NR0 = 2;
+
+    const int nb = args.ne00/QK_K;
+    const int r0 = tgpig.x;
+    const int first_row = (r0 * NSG + sgitg) * NR0;
+
+    if (first_row >= args.ne01) return;
+
+    device const block_iq1_s * x = (device const block_iq1_s *)(src0 + first_row * args.nb01);
+    const int ns01 = args.nb01/2;
+
+    const int nb32 = nb * (QK_K / 32);
+
+    const short ntx = 32;
+    const short ix = tiisg % ntx;
+
+    float yl[32];
+    float sumf[NR0] = {0.f};
+
+    device const float * y4 = src1 + 32 * ix;
+
+    for (int ib32 = ix; ib32 < nb32; ib32 += ntx) {
+        float sumy = 0;
+        for (short i = 0; i < 32; ++i) {
+            yl[i] = y4[i];
+            sumy += yl[i];
+        }
+
+        const int ibl = ib32 / (QK_K / 32);
+        const int ib = ib32 % (QK_K / 32);
+
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            device const block_iq1_s & xr = x[row*ns01 + ibl];
+            device const uint8_t * qs = xr.qs + 4 * ib;
+            device const uint16_t * qh = xr.qh + ib;
+
+            constant const uint8_t * grid1 = (constant const uint8_t *)(iq1s_grid + (qs[0] | ((qh[0] << 8) & 0x700)));
+            constant const uint8_t * grid2 = (constant const uint8_t *)(iq1s_grid + (qs[1] | ((qh[0] << 5) & 0x700)));
+            constant const uint8_t * grid3 = (constant const uint8_t *)(iq1s_grid + (qs[2] | ((qh[0] << 2) & 0x700)));
+            constant const uint8_t * grid4 = (constant const uint8_t *)(iq1s_grid + (qs[3] | ((qh[0] >> 1) & 0x700)));
+
+            float sum = 0;
+            for (short j = 0; j < 4; ++j) {
+                sum += yl[j+ 0] * (grid1[j] & 0xf) + yl[j+ 4] * (grid1[j] >> 4)
+                     + yl[j+ 8] * (grid2[j] & 0xf) + yl[j+12] * (grid2[j] >> 4)
+                     + yl[j+16] * (grid3[j] & 0xf) + yl[j+20] * (grid3[j] >> 4)
+                     + yl[j+24] * (grid4[j] & 0xf) + yl[j+28] * (grid4[j] >> 4);
+            }
+
+            sumf[row] += (float)xr.d * (sum + sumy * (qh[0] & 0x8000 ? -1 - IQ1S_DELTA : -1 + IQ1S_DELTA)) * (2*((qh[0] >> 12) & 7) + 1);
+        }
+
+        y4 += 32 * ntx;
+    }
+
+    device float * dst_f32 = dst + first_row;
+
+    for (int row = 0; row < NR0 && first_row + row < args.ne01; ++row) {
+        float sum_all = simd_sum(sumf[row]);
+        if (tiisg == 0) {
+            dst_f32[row] = sum_all;
+        }
+    }
+}
+
+// ===== IQ1_M kernel =====
+struct block_iq1_m {
+    uint8_t qs[32];
+    uint8_t qh[16];
+    uint8_t scales[8];
+};
+
+kernel void kernel_mul_mv_iq1_m_f32(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device float * dst [[buffer(2)]],
+    constant mv_args & args [[buffer(3)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const short NSG = N_SG_TQ2_0;
+    const short NR0 = 2;
+
+    const int nb = args.ne00/QK_K;
+    const int r0 = tgpig.x;
+    const int first_row = (r0 * NSG + sgitg) * NR0;
+
+    if (first_row >= args.ne01) return;
+
+    device const block_iq1_m * x = (device const block_iq1_m *)(src0 + first_row * args.nb01);
+    const int ns01 = args.nb01/2;
+
+    const int nb32 = nb * (QK_K / 32);
+    const short ntx = 32;
+    const short ix = tiisg % ntx;
+
+    float yl[32];
+    float sumf[NR0] = {0.f};
+
+    device const float * y4 = src1 + 32 * ix;
+
+    for (int ib32 = ix; ib32 < nb32; ib32 += ntx) {
+        float4 sumy = {0.f};
+        for (short i = 0; i < 8; ++i) {
+            yl[i+ 0] = y4[i+ 0]; sumy[0] += yl[i+ 0];
+            yl[i+ 8] = y4[i+ 8]; sumy[1] += yl[i+ 8];
+            yl[i+16] = y4[i+16]; sumy[2] += yl[i+16];
+            yl[i+24] = y4[i+24]; sumy[3] += yl[i+24];
+        }
+
+        const int ibl = ib32 / (QK_K / 32);
+        const int ib = ib32 % (QK_K / 32);
+
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            device const block_iq1_m & xr = x[row*ns01 + ibl];
+            device const uint8_t * qs = xr.qs + 4 * ib;
+            device const uint8_t * qh = xr.qh + 2 * ib;
+            device const uint16_t * sc = (device const uint16_t *)xr.scales;
+
+            // Merged scale
+            uint16_t scale16 = (sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) | ((sc[2] >> 4) & 0x0f00) | (sc[3] & 0xf000);
+            half d = as_type<half>(scale16);
+
+            constant const uint8_t * grid1 = (constant const uint8_t *)(iq1s_grid + (qs[0] | ((qh[0] << 8) & 0x700)));
+            constant const uint8_t * grid2 = (constant const uint8_t *)(iq1s_grid + (qs[1] | ((qh[0] << 4) & 0x700)));
+            constant const uint8_t * grid3 = (constant const uint8_t *)(iq1s_grid + (qs[2] | ((qh[1] << 8) & 0x700)));
+            constant const uint8_t * grid4 = (constant const uint8_t *)(iq1s_grid + (qs[3] | ((qh[1] << 4) & 0x700)));
+
+            float2 sum = {0.f};
+            for (short j = 0; j < 4; ++j) {
+                sum[0] += yl[j+ 0] * (grid1[j] & 0xf) + yl[j+ 4] * (grid1[j] >> 4)
+                        + yl[j+ 8] * (grid2[j] & 0xf) + yl[j+12] * (grid2[j] >> 4);
+                sum[1] += yl[j+16] * (grid3[j] & 0xf) + yl[j+20] * (grid3[j] >> 4)
+                        + yl[j+24] * (grid4[j] & 0xf) + yl[j+28] * (grid4[j] >> 4);
+            }
+
+            const float delta1 = sumy[0] * (qh[0] & 0x08 ? -1 - IQ1M_DELTA : -1 + IQ1M_DELTA) + sumy[1] * (qh[0] & 0x80 ? -1 - IQ1M_DELTA : -1 + IQ1M_DELTA);
+            const float delta2 = sumy[2] * (qh[1] & 0x08 ? -1 - IQ1M_DELTA : -1 + IQ1M_DELTA) + sumy[3] * (qh[1] & 0x80 ? -1 - IQ1M_DELTA : -1 + IQ1M_DELTA);
+
+            sumf[row] += (float)d * ((sum[0] + delta1) * (2*((sc[ib/2] >> (6*(ib%2)+0)) & 7) + 1) +
+                                     (sum[1] + delta2) * (2*((sc[ib/2] >> (6*(ib%2)+3)) & 7) + 1));
+        }
+
+        y4 += 32 * ntx;
+    }
+
+    device float * dst_f32 = dst + first_row;
+
+    for (int row = 0; row < NR0 && first_row + row < args.ne01; ++row) {
+        float sum_all = simd_sum(sumf[row]);
+        if (tiisg == 0) {
+            dst_f32[row] = sum_all;
+        }
+    }
+}
+
+// ===== IQ2_XXS kernel =====
+struct block_iq2_xxs {
+    half d;
+    uint16_t qs[32];
+};
+
+kernel void kernel_mul_mv_iq2_xxs_f32(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device float * dst [[buffer(2)]],
+    constant mv_args & args [[buffer(3)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const short NSG = N_SG_TQ2_0;
+    const short NR0 = 2;
+
+    const int nb = args.ne00/QK_K;
+    const int r0 = tgpig.x;
+    const int first_row = (r0 * NSG + sgitg) * NR0;
+
+    if (first_row >= args.ne01) return;
+
+    device const block_iq2_xxs * x = (device const block_iq2_xxs *)(src0 + first_row * args.nb01);
+    const int ns01 = args.nb01/2;
+
+    const int nb32 = nb * (QK_K / 32);
+    const short ntx = 32;
+    const short ix = tiisg % ntx;
+
+    float yl[32];
+    float sumf[NR0] = {0.f};
+
+    device const float * y4 = src1 + 32 * ix;
+
+    for (int ib32 = ix; ib32 < nb32; ib32 += ntx) {
+        for (short i = 0; i < 32; ++i) {
+            yl[i] = y4[i];
+        }
+
+        const int ibl = ib32 / (QK_K / 32);
+        const int ib = ib32 % (QK_K / 32);
+
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            device const block_iq2_xxs & xr = x[row*ns01 + ibl];
+            const uint16_t q2 = xr.qs[ib];
+
+            constant const uint8_t * grid = (constant const uint8_t *)(iq2xxs_grid + (q2 & 0x1ff));
+            const uint8_t signs = (q2 >> 9) & 0x7f;
+
+            float sum = 0;
+            for (short j = 0; j < 8; ++j) {
+                const float grid_val = (grid[j] & 0xf) + ((grid[j] >> 4) & 0xf);
+                const float sign = (signs & (1 << j)) ? -1.0f : 1.0f;
+                sum += yl[j] * grid_val * sign;
+            }
+
+            sumf[row] += (float)xr.d * sum;
+        }
+
+        y4 += 32 * ntx;
+    }
+
+    device float * dst_f32 = dst + first_row;
+
+    for (int row = 0; row < NR0 && first_row + row < args.ne01; ++row) {
+        float sum_all = simd_sum(sumf[row]);
+        if (tiisg == 0) {
+            dst_f32[row] = sum_all;
+        }
+    }
+}
+
+// ===== IQ2_XS kernel =====
+struct block_iq2_xs {
+    half d;
+    uint16_t qs[32];
+    uint8_t scales[8];
+};
+
+kernel void kernel_mul_mv_iq2_xs_f32(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device float * dst [[buffer(2)]],
+    constant mv_args & args [[buffer(3)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const short NSG = N_SG_TQ2_0;
+    const short NR0 = 2;
+
+    const int nb = args.ne00/QK_K;
+    const int r0 = tgpig.x;
+    const int first_row = (r0 * NSG + sgitg) * NR0;
+
+    if (first_row >= args.ne01) return;
+
+    device const block_iq2_xs * x = (device const block_iq2_xs *)(src0 + first_row * args.nb01);
+    const int ns01 = args.nb01/2;
+
+    const int nb32 = nb * (QK_K / 32);
+    const short ntx = 32;
+    const short ix = tiisg % ntx;
+
+    float yl[32];
+    float sumf[NR0] = {0.f};
+
+    device const float * y4 = src1 + 32 * ix;
+
+    for (int ib32 = ix; ib32 < nb32; ib32 += ntx) {
+        for (short i = 0; i < 32; ++i) {
+            yl[i] = y4[i];
+        }
+
+        const int ibl = ib32 / (QK_K / 32);
+        const int ib = ib32 % (QK_K / 32);
+
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            device const block_iq2_xs & xr = x[row*ns01 + ibl];
+            const uint16_t q2 = xr.qs[ib];
+            const uint8_t scale = xr.scales[ib/4];
+
+            constant const uint8_t * grid = (constant const uint8_t *)(iq2xs_grid + (q2 & 0x1ff));
+            const uint8_t signs = (q2 >> 9) & 0x7f;
+
+            float sum = 0;
+            for (short j = 0; j < 8; ++j) {
+                const float grid_val = (grid[j] & 0xf) + ((grid[j] >> 4) & 0xf);
+                const float sign = keven_signs_q2xs[(signs << 3) | j];
+                sum += yl[j] * grid_val * sign;
+            }
+
+            const float ls = (scale >> (2 * (ib % 4))) & 0x3;
+            sumf[row] += (float)xr.d * ls * sum;
+        }
+
+        y4 += 32 * ntx;
+    }
+
+    device float * dst_f32 = dst + first_row;
+
+    for (int row = 0; row < NR0 && first_row + row < args.ne01; ++row) {
+        float sum_all = simd_sum(sumf[row]);
+        if (tiisg == 0) {
+            dst_f32[row] = sum_all;
+        }
+    }
+}
+
+// ===== IQ2_S kernel =====
+struct block_iq2_s {
+    half d;
+    uint8_t qs[64];
+    uint8_t qh[8];
+};
+
+kernel void kernel_mul_mv_iq2_s_f32(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device float * dst [[buffer(2)]],
+    constant mv_args & args [[buffer(3)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const short NSG = N_SG_TQ2_0;
+    const short NR0 = 2;
+
+    const int nb = args.ne00/QK_K;
+    const int r0 = tgpig.x;
+    const int first_row = (r0 * NSG + sgitg) * NR0;
+
+    if (first_row >= args.ne01) return;
+
+    device const block_iq2_s * x = (device const block_iq2_s *)(src0 + first_row * args.nb01);
+    const int ns01 = args.nb01/2;
+
+    const int nb32 = nb * (QK_K / 32);
+    const short ntx = 32;
+    const short ix = tiisg % ntx;
+
+    float yl[32];
+    float sumf[NR0] = {0.f};
+
+    device const float * y4 = src1 + 32 * ix;
+
+    for (int ib32 = ix; ib32 < nb32; ib32 += ntx) {
+        for (short i = 0; i < 32; ++i) {
+            yl[i] = y4[i];
+        }
+
+        const int ibl = ib32 / (QK_K / 32);
+        const int ib = ib32 % (QK_K / 32);
+
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            device const block_iq2_s & xr = x[row*ns01 + ibl];
+            device const uint8_t * qs = xr.qs + 8 * ib;
+            const uint16_t qh = xr.qh[ib];
+
+            float sum = 0;
+            for (short j = 0; j < 8; ++j) {
+                const uint16_t idx = qs[j] | ((qh << (8 - j)) & 0x300);
+                constant const uint8_t * grid = (constant const uint8_t *)(iq2s_grid + idx);
+
+                sum += yl[j+ 0] * (grid[0] & 0xf) + yl[j+ 8] * ((grid[0] >> 4) & 0xf)
+                     + yl[j+16] * (grid[1] & 0xf) + yl[j+24] * ((grid[1] >> 4) & 0xf);
+            }
+
+            sumf[row] += (float)xr.d * sum;
+        }
+
+        y4 += 32 * ntx;
+    }
+
+    device float * dst_f32 = dst + first_row;
+
+    for (int row = 0; row < NR0 && first_row + row < args.ne01; ++row) {
+        float sum_all = simd_sum(sumf[row]);
+        if (tiisg == 0) {
+            dst_f32[row] = sum_all;
+        }
+    }
+}
+
+// ===== IQ3_XXS kernel =====
+struct block_iq3_xxs {
+    half d;
+    uint8_t qs[96];
+};
+
+kernel void kernel_mul_mv_iq3_xxs_f32(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device float * dst [[buffer(2)]],
+    constant mv_args & args [[buffer(3)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const short NSG = N_SG_TQ2_0;
+    const short NR0 = 2;
+
+    const int nb = args.ne00/QK_K;
+    const int r0 = tgpig.x;
+    const int first_row = (r0 * NSG + sgitg) * NR0;
+
+    if (first_row >= args.ne01) return;
+
+    device const block_iq3_xxs * x = (device const block_iq3_xxs *)(src0 + first_row * args.nb01);
+    const int ns01 = args.nb01/2;
+
+    const int nb32 = nb * (QK_K / 32);
+    const short ntx = 32;
+    const short ix = tiisg % ntx;
+
+    float yl[32];
+    float sumf[NR0] = {0.f};
+
+    device const float * y4 = src1 + 32 * ix;
+
+    for (int ib32 = ix; ib32 < nb32; ib32 += ntx) {
+        for (short i = 0; i < 32; ++i) {
+            yl[i] = y4[i];
+        }
+
+        const int ibl = ib32 / (QK_K / 32);
+        const int ib = ib32 % (QK_K / 32);
+
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            device const block_iq3_xxs & xr = x[row*ns01 + ibl];
+            device const uint8_t * qs = xr.qs + 12 * ib;
+
+            float sum = 0;
+            for (short j = 0; j < 4; ++j) {
+                const uint8_t q1 = qs[3*j + 0];
+                const uint8_t q2 = qs[3*j + 1];
+                const uint8_t q3 = qs[3*j + 2];
+
+                const uint32_t idx = q1 | (q2 << 8) | ((q3 & 0x0f) << 16);
+                const uint32_t grid_val = iq3xxs_grid[idx & 0xff];
+
+                sum += yl[j*8 + 0] * (grid_val & 0x0f) + yl[j*8 + 1] * ((grid_val >> 4) & 0x0f)
+                     + yl[j*8 + 2] * ((grid_val >> 8) & 0x0f) + yl[j*8 + 3] * ((grid_val >> 12) & 0x0f);
+            }
+
+            sumf[row] += (float)xr.d * sum;
+        }
+
+        y4 += 32 * ntx;
+    }
+
+    device float * dst_f32 = dst + first_row;
+
+    for (int row = 0; row < NR0 && first_row + row < args.ne01; ++row) {
+        float sum_all = simd_sum(sumf[row]);
+        if (tiisg == 0) {
+            dst_f32[row] = sum_all;
+        }
+    }
+}
+
+// ===== IQ3_S kernel =====
+struct block_iq3_s {
+    half d;
+    uint8_t qs[64];
+    uint8_t qh[8];
+};
+
+kernel void kernel_mul_mv_iq3_s_f32(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device float * dst [[buffer(2)]],
+    constant mv_args & args [[buffer(3)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const short NSG = N_SG_TQ2_0;
+    const short NR0 = 2;
+
+    const int nb = args.ne00/QK_K;
+    const int r0 = tgpig.x;
+    const int first_row = (r0 * NSG + sgitg) * NR0;
+
+    if (first_row >= args.ne01) return;
+
+    device const block_iq3_s * x = (device const block_iq3_s *)(src0 + first_row * args.nb01);
+    const int ns01 = args.nb01/2;
+
+    const int nb32 = nb * (QK_K / 32);
+    const short ntx = 32;
+    const short ix = tiisg % ntx;
+
+    float yl[32];
+    float sumf[NR0] = {0.f};
+
+    device const float * y4 = src1 + 32 * ix;
+
+    for (int ib32 = ix; ib32 < nb32; ib32 += ntx) {
+        for (short i = 0; i < 32; ++i) {
+            yl[i] = y4[i];
+        }
+
+        const int ibl = ib32 / (QK_K / 32);
+        const int ib = ib32 % (QK_K / 32);
+
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            device const block_iq3_s & xr = x[row*ns01 + ibl];
+            device const uint8_t * qs = xr.qs + 8 * ib;
+            const uint8_t qh = xr.qh[ib];
+
+            float sum = 0;
+            for (short j = 0; j < 8; ++j) {
+                const uint16_t idx = qs[j] | ((qh << (5 - j)) & 0x100);
+                const uint32_t grid_val = iq3s_grid[idx & 0x1ff];
+
+                sum += yl[j+ 0] * (grid_val & 0x0f) + yl[j+ 8] * ((grid_val >> 4) & 0x0f)
+                     + yl[j+16] * ((grid_val >> 8) & 0x0f) + yl[j+24] * ((grid_val >> 12) & 0x0f);
+            }
+
+            sumf[row] += (float)xr.d * sum;
+        }
+
+        y4 += 32 * ntx;
+    }
+
+    device float * dst_f32 = dst + first_row;
+
+    for (int row = 0; row < NR0 && first_row + row < args.ne01; ++row) {
+        float sum_all = simd_sum(sumf[row]);
+        if (tiisg == 0) {
+            dst_f32[row] = sum_all;
+        }
+    }
+}
