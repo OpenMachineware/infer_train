@@ -1864,20 +1864,20 @@ pub unsafe fn vec_dot_iq2_s_q8_k_neon(n: usize, x: &[BlockIQ2S], y: &[BlockQ8K])
 
             // Compute grid indices and load values
             let q2s_0 = vcombine_s8(
-                vld1_s8(IQ2_S_GRID[(qs_vals[0] as usize | (((qh0 << 8) & 0x300) as usize))].to_le_bytes().as_ptr() as *const i8),
-                vld1_s8(IQ2_S_GRID[(qs_vals[1] as usize | (((qh0 << 6) & 0x300) as usize))].to_le_bytes().as_ptr() as *const i8),
+                vld1_s8(IQ2_S_GRID[qs_vals[0] as usize | ((qh0 << 8) & 0x300) as usize].to_le_bytes().as_ptr() as *const i8),
+                vld1_s8(IQ2_S_GRID[qs_vals[1] as usize | ((qh0 << 6) & 0x300) as usize].to_le_bytes().as_ptr() as *const i8),
             );
             let q2s_1 = vcombine_s8(
-                vld1_s8(IQ2_S_GRID[(qs_vals[2] as usize | (((qh0 << 4) & 0x300) as usize))].to_le_bytes().as_ptr() as *const i8),
-                vld1_s8(IQ2_S_GRID[(qs_vals[3] as usize | (((qh0 << 2) & 0x300) as usize))].to_le_bytes().as_ptr() as *const i8),
+                vld1_s8(IQ2_S_GRID[qs_vals[2] as usize | ((qh0 << 4) & 0x300) as usize].to_le_bytes().as_ptr() as *const i8),
+                vld1_s8(IQ2_S_GRID[qs_vals[3] as usize | ((qh0 << 2) & 0x300) as usize].to_le_bytes().as_ptr() as *const i8),
             );
             let q2s_2 = vcombine_s8(
-                vld1_s8(IQ2_S_GRID[(qs_vals[4] as usize | (((qh1 << 8) & 0x300) as usize))].to_le_bytes().as_ptr() as *const i8),
-                vld1_s8(IQ2_S_GRID[(qs_vals[5] as usize | (((qh1 << 6) & 0x300) as usize))].to_le_bytes().as_ptr() as *const i8),
+                vld1_s8(IQ2_S_GRID[qs_vals[4] as usize | ((qh1 << 8) & 0x300) as usize].to_le_bytes().as_ptr() as *const i8),
+                vld1_s8(IQ2_S_GRID[qs_vals[5] as usize | ((qh1 << 6) & 0x300) as usize].to_le_bytes().as_ptr() as *const i8),
             );
             let q2s_3 = vcombine_s8(
-                vld1_s8(IQ2_S_GRID[(qs_vals[6] as usize | (((qh1 << 4) & 0x300) as usize))].to_le_bytes().as_ptr() as *const i8),
-                vld1_s8(IQ2_S_GRID[(qs_vals[7] as usize | (((qh1 << 2) & 0x300) as usize))].to_le_bytes().as_ptr() as *const i8),
+                vld1_s8(IQ2_S_GRID[qs_vals[6] as usize | ((qh1 << 4) & 0x300) as usize].to_le_bytes().as_ptr() as *const i8),
+                vld1_s8(IQ2_S_GRID[qs_vals[7] as usize | ((qh1 << 2) & 0x300) as usize].to_le_bytes().as_ptr() as *const i8),
             );
 
             // Load signs (4 u16 values)
