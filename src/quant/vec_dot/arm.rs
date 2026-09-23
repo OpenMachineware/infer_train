@@ -1931,7 +1931,6 @@ pub unsafe fn vec_dot_iq2_s_q8_k_neon(n: usize, x: &[BlockIQ2S], y: &[BlockQ8K])
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_tq2_0_q8_k_neon(n: usize, x: &[BlockTQ2_0], y: &[BlockQ8K]) -> f32 {
     let nb = n / QK_K;
-    let vzero = vdupq_n_s32(0);
     let m3 = vdupq_n_u8(3);
 
     let mut sumf = 0.0f32;
@@ -1940,7 +1939,8 @@ pub unsafe fn vec_dot_tq2_0_q8_k_neon(n: usize, x: &[BlockTQ2_0], y: &[BlockQ8K]
         let q2 = x[i].qs.as_ptr();
         let q8 = y[i].qs.as_ptr();
 
-        let mut sumi = vdupq_n_s32(0);
+        let mut sumi0 = vdupq_n_s32(0);
+        let mut sumi1 = vdupq_n_s32(0);
 
         // Process 64 bytes (256 elements, 2 bits each, 4 elements per byte)
         for j in (0..64).step_by(32) {
@@ -1967,19 +1967,26 @@ pub unsafe fn vec_dot_tq2_0_q8_k_neon(n: usize, x: &[BlockTQ2_0], y: &[BlockQ8K]
             let qy6 = vld1q_s8(q8.add(j * 4 + 96));
             let qy7 = vld1q_s8(q8.add(j * 4 + 112));
 
-            // Dot products
-            sumi = vdotq_s32_manual(sumi, sqx0, qy0);
-            sumi = vdotq_s32_manual(sumi, sqx1, qy1);
-            sumi = vdotq_s32_manual(sumi, sqx2, qy2);
-            sumi = vdotq_s32_manual(sumi, sqx3, qy3);
-            sumi = vdotq_s32_manual(sumi, sqx4, qy4);
-            sumi = vdotq_s32_manual(sumi, sqx5, qy5);
-            sumi = vdotq_s32_manual(sumi, sqx6, qy6);
-            sumi = vdotq_s32_manual(sumi, sqx7, qy7);
+            // Dot products - accumulate in two registers for better ILP
+            sumi0 = vdotq_s32_manual(sumi0, sqx0, qy0);
+            sumi1 = vdotq_s32_manual(sumi1, sqx1, qy1);
+            sumi0 = vdotq_s32_manual(sumi0, sqx2, qy2);
+            sumi1 = vdotq_s32_manual(sumi1, sqx3, qy3);
+            sumi0 = vdotq_s32_manual(sumi0, sqx4, qy4);
+            sumi1 = vdotq_s32_manual(sumi1, sqx5, qy5);
+            sumi0 = vdotq_s32_manual(sumi0, sqx6, qy6);
+            sumi1 = vdotq_s32_manual(sumi1, sqx7, qy7);
         }
 
+        // Subtract bsums (for trinary representation bias)
+        let ysum0 = vld1q_s16(y[i].bsums.as_ptr());
+        let ysum1 = vld1q_s16(y[i].bsums.as_ptr().add(8));
+
+        sumi0 = vaddq_s32(sumi0, sumi1);
+        sumi0 = vsubq_s32(sumi0, vpaddlq_s16(vaddq_s16(ysum0, ysum1)));
+
         let d = half::f16::from_bits(x[i].d).to_f32() * y[i].d;
-        sumf += d * vaddvq_s32(sumi) as f32;
+        sumf += d * vaddvq_s32(sumi0) as f32;
     }
 
     sumf
@@ -2002,7 +2009,9 @@ pub unsafe fn vec_dot_tq1_0_q8_k_neon(n: usize, x: &[BlockTQ1_0], y: &[BlockQ8K]
         let qh = x[i].qh.as_ptr();
         let q8 = y[i].qs.as_ptr();
 
-        let mut sumi = vdupq_n_s32(0);
+        // Use dual accumulators for better ILP
+        let mut sumi0 = vdupq_n_s32(0);
+        let mut sumi1 = vdupq_n_s32(0);
 
         // First 32 bytes encode 160 elements (5 elements per byte)
         {
@@ -2044,17 +2053,17 @@ pub unsafe fn vec_dot_tq1_0_q8_k_neon(n: usize, x: &[BlockTQ1_0], y: &[BlockQ8K]
             let qy8 = vld1q_s8(q8.add(128));
             let qy9 = vld1q_s8(q8.add(144));
 
-            // Dot products
-            sumi = vdotq_s32_manual(sumi, sqx0, qy0);
-            sumi = vdotq_s32_manual(sumi, sqx1, qy1);
-            sumi = vdotq_s32_manual(sumi, sqx2, qy2);
-            sumi = vdotq_s32_manual(sumi, sqx3, qy3);
-            sumi = vdotq_s32_manual(sumi, sqx4, qy4);
-            sumi = vdotq_s32_manual(sumi, sqx5, qy5);
-            sumi = vdotq_s32_manual(sumi, sqx6, qy6);
-            sumi = vdotq_s32_manual(sumi, sqx7, qy7);
-            sumi = vdotq_s32_manual(sumi, sqx8, qy8);
-            sumi = vdotq_s32_manual(sumi, sqx9, qy9);
+            // Dot products with dual accumulators
+            sumi0 = vdotq_s32_manual(sumi0, sqx0, qy0);
+            sumi1 = vdotq_s32_manual(sumi1, sqx1, qy1);
+            sumi0 = vdotq_s32_manual(sumi0, sqx2, qy2);
+            sumi1 = vdotq_s32_manual(sumi1, sqx3, qy3);
+            sumi0 = vdotq_s32_manual(sumi0, sqx4, qy4);
+            sumi1 = vdotq_s32_manual(sumi1, sqx5, qy5);
+            sumi0 = vdotq_s32_manual(sumi0, sqx6, qy6);
+            sumi1 = vdotq_s32_manual(sumi1, sqx7, qy7);
+            sumi0 = vdotq_s32_manual(sumi0, sqx8, qy8);
+            sumi1 = vdotq_s32_manual(sumi1, sqx9, qy9);
         }
 
         // Last 16 bytes encode 80 elements
@@ -2087,25 +2096,24 @@ pub unsafe fn vec_dot_tq1_0_q8_k_neon(n: usize, x: &[BlockTQ1_0], y: &[BlockQ8K]
             let qy4 = vld1q_s8(q8.add(224));
             let qy5 = vld1q_s8(q8.add(240));
 
-            // Dot products
-            sumi = vdotq_s32_manual(sumi, sqx0, qy0);
-            sumi = vdotq_s32_manual(sumi, sqx1, qy1);
-            sumi = vdotq_s32_manual(sumi, sqx2, qy2);
-            sumi = vdotq_s32_manual(sumi, sqx3, qy3);
-            sumi = vdotq_s32_manual(sumi, sqx4, qy4);
-            sumi = vdotq_s32_manual(sumi, sqx5, qy5);
+            // Dot products with dual accumulators
+            sumi0 = vdotq_s32_manual(sumi0, sqx0, qy0);
+            sumi1 = vdotq_s32_manual(sumi1, sqx1, qy1);
+            sumi0 = vdotq_s32_manual(sumi0, sqx2, qy2);
+            sumi1 = vdotq_s32_manual(sumi1, sqx3, qy3);
+            sumi0 = vdotq_s32_manual(sumi0, sqx4, qy4);
+            sumi1 = vdotq_s32_manual(sumi1, sqx5, qy5);
         }
 
-        // Subtract sum of Q8 values (for trinary -1, 0, 1 representation)
+        // Combine accumulators and subtract bsums (for trinary -1, 0, 1 representation)
         let ysum0 = vld1q_s16(y[i].bsums.as_ptr());
         let ysum1 = vld1q_s16(y[i].bsums.as_ptr().add(8));
-        let ysum = vaddq_s16(ysum0, ysum1);
-        let sum_ysum = vaddvq_s16(ysum);
 
-        sumi = vsubq_s32(sumi, vdupq_n_s32(sum_ysum as i32));
+        sumi0 = vaddq_s32(sumi0, sumi1);
+        sumi0 = vsubq_s32(sumi0, vpaddlq_s16(vaddq_s16(ysum0, ysum1)));
 
         let d = half::f16::from_bits(x[i].d).to_f32() * y[i].d;
-        sumf += d * vaddvq_s32(sumi) as f32;
+        sumf += d * vaddvq_s32(sumi0) as f32;
     }
 
     sumf
