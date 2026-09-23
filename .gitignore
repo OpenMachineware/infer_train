@@ -1,65 +1,19 @@
-# pixi environments
-.pixi/*
-!.pixi/config.toml
-
 # IDE/Editor files
 .idea/
 .vscode/
-
-# AI files
-AGENTS.md
-CLAUDE.md
 
 # build artifacts
 infer_train
 it-server
 it-cli
-it-rpc-server
-*.mojoc
-src/version.mojo
-test_core
-test_quant
-test_cpuops
-test_registry
-test_e2e
-test_all_imports
-test_pkg
-tests/test_json
-tests/test_tokenizer
-tests/test_ops
-tests/test_sampler
-tests/test_forward
-tests/test_thread_pool
-tests/test_gguf_split
-tests/test_gguf
-tests/test_qwen3
-tests/test_qwen35
-tests/test_qwen35moe
-tests/test_hunyuan
-tests/test_gpu_pipeline
-tests/test_gpuops
-reference_dump.log
-
-# M4 Python artifacts
-python/infer_train/_lib/
-python/*.egg-info/
-python/build/
-__pycache__/
-.pytest_cache/
 
 *.gguf
 llama.cpp-0.4.1/
-modular-mojo-v1.0.0/
 llvm-project-llvmorg-23.1.0/
 vllm-0.29.0/
 
-
 # Added by cargo
-
 /target
 
 # Benchmark tools (llama.cpp binaries)
 .llama-cpp-tools/
-
-# Qoder settings
-.qoder/
