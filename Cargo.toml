@@ -35,6 +35,10 @@ harness = false
 name = "mv_q4_0_bench"
 harness = false
 
+[[bench]]
+name = "mv_q4_k_bench"
+harness = false
+
 [features]
 default = []
 metal = []

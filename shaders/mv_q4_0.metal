@@ -104,7 +104,7 @@ kernel void kernel_mul_mv_q4_0_f32(
         const float tot = simd_sum(sumf[row]);
 
         if (tiisg == 0 && r0 + row < args.ne01) {
-            dst_f32[r0 + row] = tot;
+            dst_f32[row] = tot;
         }
     }
 }
