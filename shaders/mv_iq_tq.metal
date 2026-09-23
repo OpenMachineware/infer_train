@@ -215,3 +215,98 @@ kernel void kernel_mul_mv_tq2_0_f32(
         }
     }
 }
+
+// ===== IQ4_XS kernel =====
+// Based on llama.cpp mul_mv.metal kernel_mul_mv_iq4_xs_f32_impl
+#define N_R0_IQ4_XS 2
+
+struct block_iq4_xs {
+    half d;
+    ushort scales_h;
+    uchar scales_l[4];
+    uchar qs[128];
+};
+
+kernel void kernel_mul_mv_iq4_xs_f32(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device float * dst [[buffer(2)]],
+    constant mv_args & args [[buffer(3)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const short NSG = N_SG_TQ2_0;
+    const short NR0 = N_R0_IQ4_XS;
+
+    const int nb = args.ne00/QK_K;
+
+    const int r0 = tgpig.x;
+    const int first_row = (r0 * NSG + sgitg) * NR0;
+
+    if (first_row >= args.ne01) return;
+
+    device const block_iq4_xs * x = (device const block_iq4_xs *)(src0 + first_row * args.nb01);
+
+    const int ns01 = args.nb01/2;  // Byte stride / sizeof(block)
+
+    const short ix = tiisg/16;  // 0 or 1
+    const short it = tiisg%16;  // 0...15
+    const short ib = it/2;
+    const short il = it%2;
+
+    float4 yl[4];
+    float sumf[NR0]={0.f};
+
+    device const float * yb = src1 + ix * QK_K + ib * 32 + il * 8;
+
+    uint32_t aux32[2];
+    thread const uint8_t * q8 = (thread const uint8_t *)aux32;
+
+    float4 qf1, qf2;
+
+    for (int ibl = ix; ibl < nb && ibl < ns01; ibl += 2) {
+        device const float4 * y4 = (device const float4 *)yb;
+        yl[0] = y4[0];
+        yl[1] = y4[4];
+        yl[2] = y4[1];
+        yl[3] = y4[5];
+
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            device const block_iq4_xs & xb = x[row*ns01 + ibl];
+            device const uint32_t * q4 = (device const uint32_t *)(xb.qs + 16*ib + 8*il);
+
+            float4 acc1 = {0.f}, acc2 = {0.f};
+
+            aux32[0] = (q4[0]     ) & 0x0f0f0f0f;
+            aux32[1] = (q4[0] >> 4) & 0x0f0f0f0f;
+            qf1 = {kvalues_iq4nl_f[q8[0]], kvalues_iq4nl_f[q8[1]], kvalues_iq4nl_f[q8[2]], kvalues_iq4nl_f[q8[3]]};
+            qf2 = {kvalues_iq4nl_f[q8[4]], kvalues_iq4nl_f[q8[5]], kvalues_iq4nl_f[q8[6]], kvalues_iq4nl_f[q8[7]]};
+            acc1 += yl[0] * qf1;
+            acc2 += yl[1] * qf2;
+
+            aux32[0] = (q4[1]     ) & 0x0f0f0f0f;
+            aux32[1] = (q4[1] >> 4) & 0x0f0f0f0f;
+            qf1 = {kvalues_iq4nl_f[q8[0]], kvalues_iq4nl_f[q8[1]], kvalues_iq4nl_f[q8[2]], kvalues_iq4nl_f[q8[3]]};
+            qf2 = {kvalues_iq4nl_f[q8[4]], kvalues_iq4nl_f[q8[5]], kvalues_iq4nl_f[q8[6]], kvalues_iq4nl_f[q8[7]]};
+            acc1 += yl[2] * qf1;
+            acc2 += yl[3] * qf2;
+
+            acc1 += acc2;
+
+            const int ls = (((xb.scales_l[ib/2] >> 4*(ib%2)) & 0xf) | (((xb.scales_h >> 2*ib) & 3) << 4)) - 32;
+            sumf[row] += (float)xb.d * ls * (acc1[0] + acc1[1] + acc1[2] + acc1[3]);
+        }
+
+        yb += 2 * QK_K;
+    }
+
+    device float * dst_f32 = dst + first_row;
+
+    for (int row = 0; row < NR0 && first_row + row < args.ne01; ++row) {
+        float sum_all = simd_sum(sumf[row]);
+        if (tiisg == 0) {
+            dst_f32[row] = sum_all;
+        }
+    }
+}
