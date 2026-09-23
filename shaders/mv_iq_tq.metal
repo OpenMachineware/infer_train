@@ -1,6 +1,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
+#define QK_K 256
 #define QK4_NL 32
 #define N_SIMDWIDTH 32
 
@@ -110,6 +111,107 @@ kernel void kernel_mul_mv_iq4_nl_f32(
         float sum_all = simd_sum(sumf[row]);
         if (tiisg == 0) {
             dst_f32[row] = sum_all;
+        }
+    }
+}
+
+// ===== TQ2_0 kernel =====
+// Based on llama.cpp mul_mv.metal kernel_mul_mv_tq2_0_f32_impl
+#define N_R0_TQ2_0 2
+#define N_SG_TQ2_0 2
+
+kernel void kernel_mul_mv_tq2_0_f32(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device float * dst [[buffer(2)]],
+    constant mv_args & args [[buffer(3)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const short NSG = N_SG_TQ2_0;
+    const short NR0 = N_R0_TQ2_0;
+
+    const int nb = args.ne00/QK_K;
+
+    const int r0 = tgpig.x;
+    const int r1 = tgpig.y;
+    const int im = tgpig.z;
+
+    const int first_row = (r0 * NSG + sgitg) * NR0;
+
+    const uint64_t offset1 = r1 * 4; // nb11 = 4 (sizeof(float))
+
+    device const float * y = (device const float *)(src1 + offset1);
+
+    device const block_tq2_0 * ax[NR0];
+    for (int row = 0; row < NR0; ++row) {
+        ax[row] = (device const block_tq2_0 *)(src0 + (first_row + row) * args.nb01);
+    }
+
+    float sumf[NR0] = {0.f};
+
+    // 8 threads per block, NBLOCK blocks per pass, 2 halves per block per pass
+    constexpr short NBLOCK = 4;
+    constexpr short NB = N_SIMDWIDTH/NBLOCK; // threads per block = 8
+
+    const short blk = tiisg / NB;    // 0..NBLOCK-1
+    const short htg = tiisg % NB;    // 0..NB-1
+
+    // byte and y base offsets within the block (32 elements per thread, 4 per byte)
+    device const float4 * yb4 = (device const float4 *)(y + 4*htg + blk*QK_K);
+
+    // hoisted per-byte coefficients (from y) and total y-sum, shared across rows
+    float4 coef[4];
+
+    for (int ib = blk; ib < nb; ib += NBLOCK) {
+        FOR_UNROLL (short h0 = 0; h0 < 2; ++h0) {
+            const float4 y0 = yb4[ 0 + 32*h0];
+            const float4 y1 = yb4[ 8 + 32*h0];
+            const float4 y2 = yb4[16 + 32*h0];
+            const float4 y3 = yb4[24 + 32*h0];
+
+            float sumy = 0.f;
+            FOR_UNROLL (short j = 0; j < 4; ++j) {
+                coef[j] = float4(
+                        y0[j],
+                        y1[j] - 4.0f*y0[j],
+                        y2[j] - 4.0f*y1[j],
+                        y3[j] - 4.0f*y2[j]);
+
+                sumy += (y0[j] + y1[j]) + (y2[j] + y3[j]);
+            }
+
+            FOR_UNROLL (short row = 0; row < NR0; ++row) {
+                device const block_tq2_0 & xb = ax[row][ib];
+                device const uchar * qs = xb.qs + 4*htg + 32*h0;
+
+                float sum = -sumy;
+                FOR_UNROLL (short j = 0; j < 4; ++j) {
+                    // express the 2-bit field shifts (v>>2, v>>4, v>>6) as float floor ops
+                    const float v = (float)qs[j];
+
+                    const float f0 = v;
+                    const float f1 = floor(v*0.25f);    // v>>2
+                    const float f2 = floor(v*0.0625);   // v>>4
+                    const float f3 = floor(v*0.015625); // v>>6
+
+                    sum += coef[j][0]*f0 + coef[j][1]*f1 + coef[j][2]*f2 + coef[j][3]*f3;
+                }
+
+                sumf[row] += (float)xb.d * sum;
+            }
+        }
+
+        yb4 += QK_K * NBLOCK / 4;
+    }
+
+    device float * dst_f32 = dst + r1*args.ne00 + first_row;
+
+    for (int row = 0; row < NR0; ++row) {
+        const float tot = simd_sum(sumf[row]);
+        if (tiisg == 0 && first_row + row < args.ne01) {
+            dst_f32[first_row + row] = tot;
         }
     }
 }
