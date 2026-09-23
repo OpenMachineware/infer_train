@@ -118,7 +118,6 @@ pub unsafe fn matmul_q4_k_q8_k(
 }
 
 /// Q6_K × Q8_K matrix-vector multiplication
-#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q6_k_q8_k(
     weights: &[BlockQ6K],
     x: &[BlockQ8K],
@@ -128,73 +127,9 @@ pub unsafe fn matmul_q6_k_q8_k(
 ) {
     let nb = k / QK_K;
 
-    const BLCK_1: usize = 16;
-    let vzero = vdupq_n_s32(0);
-
-    for ib1 in (0..m).step_by(BLCK_1) {
-        let ib1_end = (ib1 + BLCK_1).min(m);
-        let mut row_sums = [0.0f32; BLCK_1];
-
-        for ib in 0..nb {
-            let x_block = &x[ib];
-            let q8 = x_block.qs.as_ptr();
-            let d_x = x_block.d;
-
-            for ir in ib1..ib1_end {
-                let w_block = &weights[ir * nb + ib];
-                let d = d_x * half::f16::from_bits(w_block.d).to_f32();
-                let scales = w_block.scales.as_ptr();
-                let ql = w_block.ql.as_ptr();
-                let qh = w_block.qh.as_ptr();
-
-                let mut sumi = 0i32;
-
-                for j in 0..(QK_K / 128) {
-                    let qh_vals = vld1q_u8(qh.add(j * 8));
-                    let ql_vals = vld1q_u8_x2(ql.add(j * 16));
-
-                    // Process low 4 bits
-                    let aux_0 = vreinterpretq_s8_u8(vandq_u8(ql_vals.0, vdupq_n_u8(0x0F)));
-                    let aux_1 = vreinterpretq_s8_u8(vandq_u8(ql_vals.1, vdupq_n_u8(0x0F)));
-
-                    let auxh_0 = vreinterpretq_s8_u8(vshlq_n_u8(vandq_u8(qh_vals, vdupq_n_u8(0x03)), 4));
-                    let auxh_1 = vreinterpretq_s8_u8(vshlq_n_u8(vandq_u8(vextq_u8(qh_vals, qh_vals, 4), vdupq_n_u8(0x03)), 4));
-
-                    let q6_0 = vaddq_s8(aux_0, auxh_0);
-                    let q6_1 = vaddq_s8(aux_1, auxh_1);
-
-                    let q8_vals = vld1q_s8_x2(q8.add(j * 32));
-
-                    let p0 = vdotq_s32_manual(vzero, q6_0, q8_vals.0);
-                    let p1 = vdotq_s32_manual(vzero, q6_1, q8_vals.1);
-
-                    sumi += (vaddvq_s32(p0) + vaddvq_s32(p1)) * *scales.add(j * 2) as i32;
-
-                    // Process high 4 bits
-                    let auxh_0 = vreinterpretq_s8_u8(vshlq_n_u8(vandq_u8(vshrq_n_u8(qh_vals, 2), vdupq_n_u8(0x03)), 4));
-                    let auxh_1 = vreinterpretq_s8_u8(vshlq_n_u8(vandq_u8(vshrq_n_u8(vextq_u8(qh_vals, qh_vals, 4), 2), vdupq_n_u8(0x03)), 4));
-
-                    let aux_0 = vreinterpretq_s8_u8(vshrq_n_u8(ql_vals.0, 4));
-                    let aux_1 = vreinterpretq_s8_u8(vshrq_n_u8(ql_vals.1, 4));
-
-                    let q6_0 = vaddq_s8(aux_0, auxh_0);
-                    let q6_1 = vaddq_s8(aux_1, auxh_1);
-
-                    let q8_vals = vld1q_s8_x2(q8.add(j * 32 + 16));
-
-                    let p0 = vdotq_s32_manual(vzero, q6_0, q8_vals.0);
-                    let p1 = vdotq_s32_manual(vzero, q6_1, q8_vals.1);
-
-                    sumi += (vaddvq_s32(p0) + vaddvq_s32(p1)) * *scales.add(j * 2 + 1) as i32;
-                }
-
-                row_sums[ir - ib1] += d * sumi as f32;
-            }
-        }
-
-        for ir in ib1..ib1_end {
-            dst[ir] = row_sums[ir - ib1];
-        }
+    for i in 0..m {
+        let row_sum = vec_dot_q6_k_q8_k_neon(k, &weights[i * nb..(i + 1) * nb], x);
+        dst[i] = row_sum;
     }
 }
 
