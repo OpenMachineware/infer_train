@@ -23,6 +23,18 @@ harness = false
 name = "vec_dot_neon_bench"
 harness = false
 
+[[bench]]
+name = "vec_dot_gpu_bench"
+harness = false
+
+[[bench]]
+name = "mv_gpu_bench"
+harness = false
+
+[[bench]]
+name = "mv_q4_0_bench"
+harness = false
+
 [features]
 default = []
 metal = []
