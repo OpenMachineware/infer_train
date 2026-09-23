@@ -33,6 +33,12 @@ pub struct MetalContext {
     mv_iq2_s_pipeline: ComputePipelineState,
     mv_iq3_xxs_pipeline: ComputePipelineState,
     mv_iq3_s_pipeline: ComputePipelineState,
+    // Split=1 pipelines for large K sizes
+    mv_iq2_xxs_split1_pipeline: ComputePipelineState,
+    mv_iq2_xs_split1_pipeline: ComputePipelineState,
+    mv_iq2_s_split1_pipeline: ComputePipelineState,
+    mv_iq3_xxs_split1_pipeline: ComputePipelineState,
+    mv_iq3_s_split1_pipeline: ComputePipelineState,
     // Cached buffers for MV operations
     // Once created with data, reuse without copy
     mv_weights_buffer: RefCell<Option<Buffer>>,
@@ -51,7 +57,10 @@ impl MetalContext {
 
         let queue = device.new_command_queue();
 
+        // Set optimization level for Metal shader compilation
         let compile_options = metal::CompileOptions::new();
+        // Note: metal-rs 0.31 doesn't expose set_optimization_level directly
+        // but the default should be equivalent to -O3
 
         let vec_dot_source = include_str!("../../../../shaders/vec_dot.metal");
         let vec_dot_library = device
@@ -99,8 +108,10 @@ impl MetalContext {
             .map_err(|e| format!("Failed to compile mv_q3_k library: {}", e))?;
 
         let mv_iq_tq_source = include_str!("../../../../shaders/mv_iq_tq.metal");
+        let iq_grid_tables = include_str!("../../../../shaders/iq_grid_tables.h");
+        let mv_iq_tq_combined = mv_iq_tq_source.replace("#include \"iq_grid_tables.h\"", iq_grid_tables);
         let mv_iq_tq_library = device
-            .new_library_with_source(mv_iq_tq_source, &compile_options)
+            .new_library_with_source(&mv_iq_tq_combined, &compile_options)
             .map_err(|e| format!("Failed to compile mv_iq_tq library: {}", e))?;
 
         // Create cached pipeline for Q4_0 MV
@@ -179,25 +190,50 @@ impl MetalContext {
         let mv_iq2_xxs_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq2_xxs_kernel)
             .map_err(|e| format!("Failed to create IQ2_XXS pipeline: {}", e))?;
 
+        let mv_iq2_xxs_split1_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq2_xxs_f32_split1", None)
+            .map_err(|e| format!("Failed to get IQ2_XXS split1 kernel: {}", e))?;
+        let mv_iq2_xxs_split1_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq2_xxs_split1_kernel)
+            .map_err(|e| format!("Failed to create IQ2_XXS split1 pipeline: {}", e))?;
+
         let mv_iq2_xs_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq2_xs_f32", None)
             .map_err(|e| format!("Failed to get IQ2_XS kernel: {}", e))?;
         let mv_iq2_xs_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq2_xs_kernel)
             .map_err(|e| format!("Failed to create IQ2_XS pipeline: {}", e))?;
 
-        let mv_iq2_s_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq2_s_f32", None)
+        let mv_iq2_xs_split1_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq2_xs_f32_split1", None)
+            .map_err(|e| format!("Failed to get IQ2_XS split1 kernel: {}", e))?;
+        let mv_iq2_xs_split1_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq2_xs_split1_kernel)
+            .map_err(|e| format!("Failed to create IQ2_XS split1 pipeline: {}", e))?;
+
+        let mv_iq2_s_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq2_s_f32_split0", None)
             .map_err(|e| format!("Failed to get IQ2_S kernel: {}", e))?;
         let mv_iq2_s_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq2_s_kernel)
             .map_err(|e| format!("Failed to create IQ2_S pipeline: {}", e))?;
+
+        let mv_iq2_s_split1_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq2_s_f32_split1", None)
+            .map_err(|e| format!("Failed to get IQ2_S split1 kernel: {}", e))?;
+        let mv_iq2_s_split1_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq2_s_split1_kernel)
+            .map_err(|e| format!("Failed to create IQ2_S split1 pipeline: {}", e))?;
 
         let mv_iq3_xxs_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq3_xxs_f32", None)
             .map_err(|e| format!("Failed to get IQ3_XXS kernel: {}", e))?;
         let mv_iq3_xxs_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq3_xxs_kernel)
             .map_err(|e| format!("Failed to create IQ3_XXS pipeline: {}", e))?;
 
+        let mv_iq3_xxs_split1_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq3_xxs_f32_split1", None)
+            .map_err(|e| format!("Failed to get IQ3_XXS split1 kernel: {}", e))?;
+        let mv_iq3_xxs_split1_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq3_xxs_split1_kernel)
+            .map_err(|e| format!("Failed to create IQ3_XXS split1 pipeline: {}", e))?;
+
         let mv_iq3_s_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq3_s_f32", None)
             .map_err(|e| format!("Failed to get IQ3_S kernel: {}", e))?;
         let mv_iq3_s_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq3_s_kernel)
             .map_err(|e| format!("Failed to create IQ3_S pipeline: {}", e))?;
+
+        let mv_iq3_s_split1_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq3_s_f32_split1", None)
+            .map_err(|e| format!("Failed to get IQ3_S split1 kernel: {}", e))?;
+        let mv_iq3_s_split1_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq3_s_split1_kernel)
+            .map_err(|e| format!("Failed to create IQ3_S split1 pipeline: {}", e))?;
 
         Ok(Self {
             device,
@@ -229,6 +265,11 @@ impl MetalContext {
             mv_iq2_s_pipeline,
             mv_iq3_xxs_pipeline,
             mv_iq3_s_pipeline,
+            mv_iq2_xxs_split1_pipeline,
+            mv_iq2_xs_split1_pipeline,
+            mv_iq2_s_split1_pipeline,
+            mv_iq3_xxs_split1_pipeline,
+            mv_iq3_s_split1_pipeline,
             mv_weights_buffer: RefCell::new(None),
             mv_input_buffer: RefCell::new(None),
             mv_output_buffer: RefCell::new(None),
@@ -1122,7 +1163,7 @@ impl MetalContext {
     pub fn mv_iq4_nl_f32(&self, m: usize, k: usize, weights: &[BlockIQ4NL], input: &[f32]) -> Result<Vec<f32>, String> {
         let nb = k / 32;  // QK4_NL = 32
         let nb01 = (nb * std::mem::size_of::<BlockIQ4NL>()) as u64;
-        const NR0: u64 = 4;  // N_R0_IQ4_NL = 4
+        const NR0: u64 = 2;  // Keep at 2 (optimal)
 
         #[repr(C)]
         struct MvArgs {
@@ -1202,6 +1243,11 @@ impl MetalContext {
         encoder.set_buffer(1, Some(&input_buffer), 0);
         encoder.set_buffer(2, Some(&output_buffer), 0);
         encoder.set_bytes(3, std::mem::size_of::<MvArgs>() as u64, &args as *const MvArgs as *const std::ffi::c_void);
+
+        // Set threadgroup memory: 32 floats for kvalues lookup table
+        // Round up to multiple of 16 as required by Metal
+        const THREADGROUP_MEM_SIZE: u64 = 32 * std::mem::size_of::<f32>() as u64;  // 128 bytes
+        encoder.set_threadgroup_memory_length(THREADGROUP_MEM_SIZE, 0);
 
         const NSG: u64 = 2;
         const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
@@ -1547,6 +1593,518 @@ impl MetalContext {
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
 
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
+    }
+
+    /// IQ1_S x F32 Matrix-Vector
+    pub fn mv_iq1_s_f32(&self, m: usize, k: usize, weights: &[BlockIQ1S], input: &[f32]) -> Result<Vec<f32>, String> {
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockIQ1S>()) as u64;
+        const NR0: u64 = 4;  // N_R0_IQ1_S = 4
+
+        #[repr(C)]
+        struct MvArgs { ne00: u32, ne01: u32, nb01: u64 }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+        let weights_size = weights.len() * std::mem::size_of::<BlockIQ1S>();
+        let input_size = input.len() * std::mem::size_of::<f32>();
+        let output_size = m * std::mem::size_of::<f32>();
+
+        let weights_buffer = {
+            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
+            let mut size_cell = self.mv_weights_size.borrow_mut();
+            if *size_cell != weights_size {
+                let buf = self.device.new_buffer_with_data(weights.as_ptr() as *const std::ffi::c_void, weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = weights_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let input_buffer = {
+            let mut buf_cell = self.mv_input_buffer.borrow_mut();
+            let mut size_cell = self.mv_input_size.borrow_mut();
+            if *size_cell != input_size {
+                let buf = self.device.new_buffer_with_data(input.as_ptr() as *const std::ffi::c_void, input_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = input_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let output_buffer = {
+            let mut buf_cell = self.mv_output_buffer.borrow_mut();
+            let mut size_cell = self.mv_output_size.borrow_mut();
+            if *size_cell != output_size {
+                let buf = self.device.new_buffer(output_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = output_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.mv_iq1_s_pipeline);
+        encoder.set_buffer(0, Some(&weights_buffer), 0);
+        encoder.set_buffer(1, Some(&input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(3, std::mem::size_of::<MvArgs>() as u64, &args as *const MvArgs as *const std::ffi::c_void);
+
+        const NSG: u64 = 2;
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize { width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
+    }
+
+    /// IQ1_M x F32 Matrix-Vector
+    pub fn mv_iq1_m_f32(&self, m: usize, k: usize, weights: &[BlockIQ1M], input: &[f32]) -> Result<Vec<f32>, String> {
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockIQ1M>()) as u64;
+        const NR0: u64 = 4;  // N_R0_IQ1_M = 4
+
+        #[repr(C)]
+        struct MvArgs { ne00: u32, ne01: u32, nb01: u64 }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+        let weights_size = weights.len() * std::mem::size_of::<BlockIQ1M>();
+        let input_size = input.len() * std::mem::size_of::<f32>();
+        let output_size = m * std::mem::size_of::<f32>();
+
+        let weights_buffer = {
+            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
+            let mut size_cell = self.mv_weights_size.borrow_mut();
+            if *size_cell != weights_size {
+                let buf = self.device.new_buffer_with_data(weights.as_ptr() as *const std::ffi::c_void, weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = weights_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let input_buffer = {
+            let mut buf_cell = self.mv_input_buffer.borrow_mut();
+            let mut size_cell = self.mv_input_size.borrow_mut();
+            if *size_cell != input_size {
+                let buf = self.device.new_buffer_with_data(input.as_ptr() as *const std::ffi::c_void, input_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = input_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let output_buffer = {
+            let mut buf_cell = self.mv_output_buffer.borrow_mut();
+            let mut size_cell = self.mv_output_size.borrow_mut();
+            if *size_cell != output_size {
+                let buf = self.device.new_buffer(output_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = output_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.mv_iq1_m_pipeline);
+        encoder.set_buffer(0, Some(&weights_buffer), 0);
+        encoder.set_buffer(1, Some(&input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(3, std::mem::size_of::<MvArgs>() as u64, &args as *const MvArgs as *const std::ffi::c_void);
+
+        const NSG: u64 = 2;
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize { width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
+    }
+
+    /// IQ2_XXS x F32 Matrix-Vector with dynamic kernel selection
+    pub fn mv_iq2_xxs_f32(&self, m: usize, k: usize, weights: &[BlockIQ2XXS], input: &[f32]) -> Result<Vec<f32>, String> {
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockIQ2XXS>()) as u64;
+        let nb32 = nb * (256 / 32);
+
+        // Dynamic dispatch: use split=1 for small nb32
+        let use_split = nb32 < 32;
+        let nr0 = if use_split { 8u64 } else { 4u64 };
+
+        #[repr(C)]
+        struct MvArgs { ne00: u32, ne01: u32, nb01: u64 }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+        let weights_size = weights.len() * std::mem::size_of::<BlockIQ2XXS>();
+        let input_size = input.len() * std::mem::size_of::<f32>();
+        let output_size = m * std::mem::size_of::<f32>();
+
+        let weights_buffer = {
+            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
+            let mut size_cell = self.mv_weights_size.borrow_mut();
+            if *size_cell != weights_size {
+                let buf = self.device.new_buffer_with_data(weights.as_ptr() as *const std::ffi::c_void, weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = weights_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let input_buffer = {
+            let mut buf_cell = self.mv_input_buffer.borrow_mut();
+            let mut size_cell = self.mv_input_size.borrow_mut();
+            if *size_cell != input_size {
+                let buf = self.device.new_buffer_with_data(input.as_ptr() as *const std::ffi::c_void, input_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = input_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let output_buffer = {
+            let mut buf_cell = self.mv_output_buffer.borrow_mut();
+            let mut size_cell = self.mv_output_size.borrow_mut();
+            if *size_cell != output_size {
+                let buf = self.device.new_buffer(output_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = output_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        // Select appropriate pipeline
+        if use_split {
+            encoder.set_compute_pipeline_state(&self.mv_iq2_xxs_split1_pipeline);
+        } else {
+            encoder.set_compute_pipeline_state(&self.mv_iq2_xxs_pipeline);
+        }
+
+        encoder.set_buffer(0, Some(&weights_buffer), 0);
+        encoder.set_buffer(1, Some(&input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(3, std::mem::size_of::<MvArgs>() as u64, &args as *const MvArgs as *const std::ffi::c_void);
+
+        // Threadgroup memory for IQ2_XXS: svalues (256*8) + ssigns (128) = 2176 bytes
+        const THREADGROUP_MEM_SIZE: u64 = 256 * 8 + 128;
+        encoder.set_threadgroup_memory_length(THREADGROUP_MEM_SIZE, 0);
+
+        const NSG: u64 = 2;
+        let rows_per_threadgroup = NSG * nr0;
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize { width: (m as u64 + rows_per_threadgroup - 1) / rows_per_threadgroup, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
+    }
+
+    /// IQ2_XS x F32 Matrix-Vector with dynamic kernel selection
+    pub fn mv_iq2_xs_f32(&self, m: usize, k: usize, weights: &[BlockIQ2XS], input: &[f32]) -> Result<Vec<f32>, String> {
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockIQ2XS>()) as u64;
+        let nb32 = nb * (256 / 32);
+
+        // Dynamic dispatch: use split=1 for small nb32
+        let use_split = nb32 < 32;
+        let nr0 = if use_split { 8u64 } else { 4u64 };
+
+        #[repr(C)]
+        struct MvArgs { ne00: u32, ne01: u32, nb01: u64 }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+        let weights_size = weights.len() * std::mem::size_of::<BlockIQ2XS>();
+        let input_size = input.len() * std::mem::size_of::<f32>();
+        let output_size = m * std::mem::size_of::<f32>();
+
+        let weights_buffer = {
+            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
+            let mut size_cell = self.mv_weights_size.borrow_mut();
+            if *size_cell != weights_size {
+                let buf = self.device.new_buffer_with_data(weights.as_ptr() as *const std::ffi::c_void, weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = weights_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let input_buffer = {
+            let mut buf_cell = self.mv_input_buffer.borrow_mut();
+            let mut size_cell = self.mv_input_size.borrow_mut();
+            if *size_cell != input_size {
+                let buf = self.device.new_buffer_with_data(input.as_ptr() as *const std::ffi::c_void, input_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = input_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let output_buffer = {
+            let mut buf_cell = self.mv_output_buffer.borrow_mut();
+            let mut size_cell = self.mv_output_size.borrow_mut();
+            if *size_cell != output_size {
+                let buf = self.device.new_buffer(output_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = output_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        // Select appropriate pipeline
+        if use_split {
+            encoder.set_compute_pipeline_state(&self.mv_iq2_xs_split1_pipeline);
+        } else {
+            encoder.set_compute_pipeline_state(&self.mv_iq2_xs_pipeline);
+        }
+        encoder.set_buffer(0, Some(&weights_buffer), 0);
+        encoder.set_buffer(1, Some(&input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(3, std::mem::size_of::<MvArgs>() as u64, &args as *const MvArgs as *const std::ffi::c_void);
+
+        // Set threadgroup memory size: 512*8 (grid) + 128 (signs) = 4224 bytes
+        // Round up to multiple of 16 as required by Metal
+        const THREADGROUP_MEM_SIZE: u64 = 4224;
+        encoder.set_threadgroup_memory_length(THREADGROUP_MEM_SIZE, 0);
+
+        const NSG: u64 = 2;
+        let rows_per_threadgroup = NSG * nr0;
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize { width: (m as u64 + rows_per_threadgroup - 1) / rows_per_threadgroup, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
+    }
+
+    /// IQ2_S x F32 Matrix-Vector with dynamic kernel selection
+    pub fn mv_iq2_s_f32(&self, m: usize, k: usize, weights: &[BlockIQ2S], input: &[f32]) -> Result<Vec<f32>, String> {
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockIQ2S>()) as u64;
+        let nb32 = nb * (256 / 32);  // nb32 = nb * 8
+
+        // Dynamic dispatch: use split=1 for small nb32
+        let use_split = nb32 < 32;
+        let nr0 = if use_split { 8u64 } else { 4u64 };
+
+        #[repr(C)]
+        struct MvArgs { ne00: u32, ne01: u32, nb01: u64 }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+        let weights_size = weights.len() * std::mem::size_of::<BlockIQ2S>();
+        let input_size = input.len() * std::mem::size_of::<f32>();
+        let output_size = m * std::mem::size_of::<f32>();
+
+        let weights_buffer = {
+            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
+            let mut size_cell = self.mv_weights_size.borrow_mut();
+            if *size_cell != weights_size {
+                let buf = self.device.new_buffer_with_data(weights.as_ptr() as *const std::ffi::c_void, weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = weights_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let input_buffer = {
+            let mut buf_cell = self.mv_input_buffer.borrow_mut();
+            let mut size_cell = self.mv_input_size.borrow_mut();
+            if *size_cell != input_size {
+                let buf = self.device.new_buffer_with_data(input.as_ptr() as *const std::ffi::c_void, input_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = input_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let output_buffer = {
+            let mut buf_cell = self.mv_output_buffer.borrow_mut();
+            let mut size_cell = self.mv_output_size.borrow_mut();
+            if *size_cell != output_size {
+                let buf = self.device.new_buffer(output_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = output_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        // Select appropriate pipeline
+        if use_split {
+            encoder.set_compute_pipeline_state(&self.mv_iq2_s_split1_pipeline);
+        } else {
+            encoder.set_compute_pipeline_state(&self.mv_iq2_s_pipeline);
+        }
+
+        encoder.set_buffer(0, Some(&weights_buffer), 0);
+        encoder.set_buffer(1, Some(&input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(3, std::mem::size_of::<MvArgs>() as u64, &args as *const MvArgs as *const std::ffi::c_void);
+
+        const NSG: u64 = 2;
+        let rows_per_threadgroup = NSG * nr0;
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize { width: (m as u64 + rows_per_threadgroup - 1) / rows_per_threadgroup, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
+    }
+
+    /// IQ3_XXS x F32 Matrix-Vector with dynamic kernel selection
+    pub fn mv_iq3_xxs_f32(&self, m: usize, k: usize, weights: &[BlockIQ3XXS], input: &[f32]) -> Result<Vec<f32>, String> {
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockIQ3XXS>()) as u64;
+        let nb32 = nb * (256 / 32);
+
+        // Dynamic dispatch: use split=1 for small nb32
+        let use_split = nb32 < 32;
+        let nr0 = if use_split { 8u64 } else { 4u64 };
+
+        #[repr(C)]
+        struct MvArgs { ne00: u32, ne01: u32, nb01: u64 }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+        let weights_size = weights.len() * std::mem::size_of::<BlockIQ3XXS>();
+        let input_size = input.len() * std::mem::size_of::<f32>();
+        let output_size = m * std::mem::size_of::<f32>();
+
+        let weights_buffer = {
+            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
+            let mut size_cell = self.mv_weights_size.borrow_mut();
+            if *size_cell != weights_size {
+                let buf = self.device.new_buffer_with_data(weights.as_ptr() as *const std::ffi::c_void, weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = weights_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let input_buffer = {
+            let mut buf_cell = self.mv_input_buffer.borrow_mut();
+            let mut size_cell = self.mv_input_size.borrow_mut();
+            if *size_cell != input_size {
+                let buf = self.device.new_buffer_with_data(input.as_ptr() as *const std::ffi::c_void, input_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = input_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let output_buffer = {
+            let mut buf_cell = self.mv_output_buffer.borrow_mut();
+            let mut size_cell = self.mv_output_size.borrow_mut();
+            if *size_cell != output_size {
+                let buf = self.device.new_buffer(output_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = output_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        // Select appropriate pipeline
+        if use_split {
+            encoder.set_compute_pipeline_state(&self.mv_iq3_xxs_split1_pipeline);
+        } else {
+            encoder.set_compute_pipeline_state(&self.mv_iq3_xxs_pipeline);
+        }
+
+        encoder.set_buffer(0, Some(&weights_buffer), 0);
+        encoder.set_buffer(1, Some(&input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(3, std::mem::size_of::<MvArgs>() as u64, &args as *const MvArgs as *const std::ffi::c_void);
+
+        // Threadgroup memory for IQ3_XXS: svalues (256*4) + ssigns (128) = 1152 bytes
+        const THREADGROUP_MEM_SIZE: u64 = 256 * 4 + 128;
+        encoder.set_threadgroup_memory_length(THREADGROUP_MEM_SIZE, 0);
+
+        const NSG: u64 = 2;
+        let rows_per_threadgroup = NSG * nr0;
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize { width: (m as u64 + rows_per_threadgroup - 1) / rows_per_threadgroup, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
+    }
+
+    /// IQ3_S x F32 Matrix-Vector with dynamic kernel selection
+    pub fn mv_iq3_s_f32(&self, m: usize, k: usize, weights: &[BlockIQ3S], input: &[f32]) -> Result<Vec<f32>, String> {
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockIQ3S>()) as u64;
+        let nb32 = nb * (256 / 32);
+
+        // Dynamic dispatch: use split=1 for small nb32
+        let use_split = nb32 < 32;
+        let nr0 = if use_split { 8u64 } else { 4u64 };
+
+        #[repr(C)]
+        struct MvArgs { ne00: u32, ne01: u32, nb01: u64 }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+        let weights_size = weights.len() * std::mem::size_of::<BlockIQ3S>();
+        let input_size = input.len() * std::mem::size_of::<f32>();
+        let output_size = m * std::mem::size_of::<f32>();
+
+        let weights_buffer = {
+            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
+            let mut size_cell = self.mv_weights_size.borrow_mut();
+            if *size_cell != weights_size {
+                let buf = self.device.new_buffer_with_data(weights.as_ptr() as *const std::ffi::c_void, weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = weights_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let input_buffer = {
+            let mut buf_cell = self.mv_input_buffer.borrow_mut();
+            let mut size_cell = self.mv_input_size.borrow_mut();
+            if *size_cell != input_size {
+                let buf = self.device.new_buffer_with_data(input.as_ptr() as *const std::ffi::c_void, input_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = input_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let output_buffer = {
+            let mut buf_cell = self.mv_output_buffer.borrow_mut();
+            let mut size_cell = self.mv_output_size.borrow_mut();
+            if *size_cell != output_size {
+                let buf = self.device.new_buffer(output_size as u64, metal::MTLResourceOptions::StorageModeShared);
+                *buf_cell = Some(buf.clone()); *size_cell = output_size; buf
+            } else { buf_cell.as_ref().unwrap().clone() }
+        };
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        // Select appropriate pipeline
+        if use_split {
+            encoder.set_compute_pipeline_state(&self.mv_iq3_s_split1_pipeline);
+        } else {
+            encoder.set_compute_pipeline_state(&self.mv_iq3_s_pipeline);
+        }
+
+        encoder.set_buffer(0, Some(&weights_buffer), 0);
+        encoder.set_buffer(1, Some(&input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(3, std::mem::size_of::<MvArgs>() as u64, &args as *const MvArgs as *const std::ffi::c_void);
+
+        // Threadgroup memory for IQ3_S: svalues (512*4) = 2048 bytes
+        const THREADGROUP_MEM_SIZE: u64 = 512 * 4;
+        encoder.set_threadgroup_memory_length(THREADGROUP_MEM_SIZE, 0);
+
+        const NSG: u64 = 2;
+        let rows_per_threadgroup = NSG * nr0;
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize { width: (m as u64 + rows_per_threadgroup - 1) / rows_per_threadgroup, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
