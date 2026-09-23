@@ -27,6 +27,15 @@ pub unsafe fn matmul_q4_k_q8_k(
     k: usize,
     m: usize,
 ) {
+    // For small M, use simple vec_dot loop for better performance
+    if m < 16 {
+        let nb = k / QK_K;
+        for i in 0..m {
+            dst[i] = vec_dot_q4_k_q8_k_neon(k, &weights[i * nb..(i + 1) * nb], x);
+        }
+        return;
+    }
+
     let nb = k / QK_K;
 
     // Process in chunks of 16 rows to improve cache utilization
