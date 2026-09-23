@@ -1,5 +1,5 @@
 use metal::{Device, CommandQueue, Library, ComputePipelineState, MTLSize, Buffer};
-use crate::quant::types::{BlockIQ4NL, BlockQ8_0, BlockQ4_0, BlockQ4K, BlockQ5K, BlockQ2K, BlockQ6K, BlockQ3K, BlockTQ2_0, BlockIQ4XS};
+use crate::quant::types::{BlockIQ4NL, BlockQ8_0, BlockQ4_0, BlockQ4K, BlockQ5K, BlockQ2K, BlockQ6K, BlockQ3K, BlockTQ2_0, BlockTQ1_0, BlockIQ4XS, BlockIQ1S, BlockIQ1M, BlockIQ2XXS, BlockIQ2XS, BlockIQ2S, BlockIQ3XXS, BlockIQ3S};
 use std::cell::RefCell;
 
 pub struct MetalContext {
@@ -24,7 +24,15 @@ pub struct MetalContext {
     mv_q3_k_pipeline: ComputePipelineState,
     mv_iq4_nl_pipeline: ComputePipelineState,
     mv_tq2_0_pipeline: ComputePipelineState,
+    mv_tq1_0_pipeline: ComputePipelineState,
     mv_iq4_xs_pipeline: ComputePipelineState,
+    mv_iq1_s_pipeline: ComputePipelineState,
+    mv_iq1_m_pipeline: ComputePipelineState,
+    mv_iq2_xxs_pipeline: ComputePipelineState,
+    mv_iq2_xs_pipeline: ComputePipelineState,
+    mv_iq2_s_pipeline: ComputePipelineState,
+    mv_iq3_xxs_pipeline: ComputePipelineState,
+    mv_iq3_s_pipeline: ComputePipelineState,
     // Cached buffers for MV operations
     // Once created with data, reuse without copy
     mv_weights_buffer: RefCell<Option<Buffer>>,
@@ -149,6 +157,48 @@ impl MetalContext {
         let mv_iq4_xs_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq4_xs_kernel)
             .map_err(|e| format!("Failed to create IQ4_XS pipeline: {}", e))?;
 
+        // Create cached pipeline for TQ1_0 MV
+        let mv_tq1_0_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_tq1_0_f32", None)
+            .map_err(|e| format!("Failed to get TQ1_0 kernel: {}", e))?;
+        let mv_tq1_0_pipeline = device.new_compute_pipeline_state_with_function(&mv_tq1_0_kernel)
+            .map_err(|e| format!("Failed to create TQ1_0 pipeline: {}", e))?;
+
+        // Create pipelines for IQ series
+        let mv_iq1_s_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq1_s_f32", None)
+            .map_err(|e| format!("Failed to get IQ1_S kernel: {}", e))?;
+        let mv_iq1_s_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq1_s_kernel)
+            .map_err(|e| format!("Failed to create IQ1_S pipeline: {}", e))?;
+
+        let mv_iq1_m_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq1_m_f32", None)
+            .map_err(|e| format!("Failed to get IQ1_M kernel: {}", e))?;
+        let mv_iq1_m_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq1_m_kernel)
+            .map_err(|e| format!("Failed to create IQ1_M pipeline: {}", e))?;
+
+        let mv_iq2_xxs_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq2_xxs_f32", None)
+            .map_err(|e| format!("Failed to get IQ2_XXS kernel: {}", e))?;
+        let mv_iq2_xxs_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq2_xxs_kernel)
+            .map_err(|e| format!("Failed to create IQ2_XXS pipeline: {}", e))?;
+
+        let mv_iq2_xs_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq2_xs_f32", None)
+            .map_err(|e| format!("Failed to get IQ2_XS kernel: {}", e))?;
+        let mv_iq2_xs_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq2_xs_kernel)
+            .map_err(|e| format!("Failed to create IQ2_XS pipeline: {}", e))?;
+
+        let mv_iq2_s_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq2_s_f32", None)
+            .map_err(|e| format!("Failed to get IQ2_S kernel: {}", e))?;
+        let mv_iq2_s_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq2_s_kernel)
+            .map_err(|e| format!("Failed to create IQ2_S pipeline: {}", e))?;
+
+        let mv_iq3_xxs_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq3_xxs_f32", None)
+            .map_err(|e| format!("Failed to get IQ3_XXS kernel: {}", e))?;
+        let mv_iq3_xxs_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq3_xxs_kernel)
+            .map_err(|e| format!("Failed to create IQ3_XXS pipeline: {}", e))?;
+
+        let mv_iq3_s_kernel = mv_iq_tq_library.get_function("kernel_mul_mv_iq3_s_f32", None)
+            .map_err(|e| format!("Failed to get IQ3_S kernel: {}", e))?;
+        let mv_iq3_s_pipeline = device.new_compute_pipeline_state_with_function(&mv_iq3_s_kernel)
+            .map_err(|e| format!("Failed to create IQ3_S pipeline: {}", e))?;
+
         Ok(Self {
             device,
             queue,
@@ -170,7 +220,15 @@ impl MetalContext {
             mv_q3_k_pipeline,
             mv_iq4_nl_pipeline,
             mv_tq2_0_pipeline,
+            mv_tq1_0_pipeline,
             mv_iq4_xs_pipeline,
+            mv_iq1_s_pipeline,
+            mv_iq1_m_pipeline,
+            mv_iq2_xxs_pipeline,
+            mv_iq2_xs_pipeline,
+            mv_iq2_s_pipeline,
+            mv_iq3_xxs_pipeline,
+            mv_iq3_s_pipeline,
             mv_weights_buffer: RefCell::new(None),
             mv_input_buffer: RefCell::new(None),
             mv_output_buffer: RefCell::new(None),
@@ -1358,6 +1416,115 @@ impl MetalContext {
         let encoder = command_buffer.new_compute_command_encoder();
 
         encoder.set_compute_pipeline_state(&self.mv_iq4_xs_pipeline);
+        encoder.set_buffer(0, Some(&weights_buffer), 0);
+        encoder.set_buffer(1, Some(&input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(3, std::mem::size_of::<MvArgs>() as u64, &args as *const MvArgs as *const std::ffi::c_void);
+
+        const NSG: u64 = 2;
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
+
+        let thread_group_size = MTLSize {
+            width: 32,
+            height: NSG,
+            depth: 1,
+        };
+        let thread_group_count = MTLSize {
+            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
+    }
+
+    /// TQ1_0 x F32 Matrix-Vector
+    pub fn mv_tq1_0_f32(&self, m: usize, k: usize, weights: &[BlockTQ1_0], input: &[f32]) -> Result<Vec<f32>, String> {
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockTQ1_0>()) as u64;
+        const NR0: u64 = 2;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: u32,
+            ne01: u32,
+            nb01: u64,
+        }
+
+        let args = MvArgs {
+            ne00: k as u32,
+            ne01: m as u32,
+            nb01,
+        };
+
+        let weights_size = weights.len() * std::mem::size_of::<BlockTQ1_0>();
+        let input_size = input.len() * std::mem::size_of::<f32>();
+        let output_size = m * std::mem::size_of::<f32>();
+
+        let weights_buffer = {
+            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
+            let mut size_cell = self.mv_weights_size.borrow_mut();
+
+            if *size_cell != weights_size {
+                let buf = self.device.new_buffer_with_data(
+                    weights.as_ptr() as *const std::ffi::c_void,
+                    weights_size as u64,
+                    metal::MTLResourceOptions::StorageModeShared,
+                );
+                *buf_cell = Some(buf.clone());
+                *size_cell = weights_size;
+                buf
+            } else {
+                buf_cell.as_ref().unwrap().clone()
+            }
+        };
+
+        let input_buffer = {
+            let mut buf_cell = self.mv_input_buffer.borrow_mut();
+            let mut size_cell = self.mv_input_size.borrow_mut();
+
+            if *size_cell != input_size {
+                let buf = self.device.new_buffer_with_data(
+                    input.as_ptr() as *const std::ffi::c_void,
+                    input_size as u64,
+                    metal::MTLResourceOptions::StorageModeShared,
+                );
+                *buf_cell = Some(buf.clone());
+                *size_cell = input_size;
+                buf
+            } else {
+                buf_cell.as_ref().unwrap().clone()
+            }
+        };
+
+        let output_buffer = {
+            let mut buf_cell = self.mv_output_buffer.borrow_mut();
+            let mut size_cell = self.mv_output_size.borrow_mut();
+
+            if *size_cell != output_size {
+                let buf = self.device.new_buffer(
+                    output_size as u64,
+                    metal::MTLResourceOptions::StorageModeShared,
+                );
+                *buf_cell = Some(buf.clone());
+                *size_cell = output_size;
+                buf
+            } else {
+                buf_cell.as_ref().unwrap().clone()
+            }
+        };
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.mv_tq1_0_pipeline);
         encoder.set_buffer(0, Some(&weights_buffer), 0);
         encoder.set_buffer(1, Some(&input_buffer), 0);
         encoder.set_buffer(2, Some(&output_buffer), 0);
