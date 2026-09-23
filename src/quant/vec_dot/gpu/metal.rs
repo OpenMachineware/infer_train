@@ -12,9 +12,14 @@ pub struct MetalContext {
     // Cached pipelines
     mv_q4_0_pipeline: ComputePipelineState,
     // Cached buffers for MV operations
+    // Once created with data, reuse without copy
     mv_weights_buffer: RefCell<Option<Buffer>>,
     mv_input_buffer: RefCell<Option<Buffer>>,
     mv_output_buffer: RefCell<Option<Buffer>>,
+    // Track buffer sizes to know if we need to recreate
+    mv_weights_size: RefCell<usize>,
+    mv_input_size: RefCell<usize>,
+    mv_output_size: RefCell<usize>,
 }
 
 impl MetalContext {
@@ -63,6 +68,9 @@ impl MetalContext {
             mv_weights_buffer: RefCell::new(None),
             mv_input_buffer: RefCell::new(None),
             mv_output_buffer: RefCell::new(None),
+            mv_weights_size: RefCell::new(0),
+            mv_input_size: RefCell::new(0),
+            mv_output_size: RefCell::new(0),
         })
     }
 
@@ -270,68 +278,68 @@ impl MetalContext {
             nb01,
         };
 
-        // Get or create cached buffers
-        let weights_size = (weights.len() * std::mem::size_of::<BlockQ4_0>()) as u64;
-        let input_size = (input.len() * std::mem::size_of::<f32>()) as u64;
-        let output_size = (m * std::mem::size_of::<f32>()) as u64;
+        // Get or create cached buffers (NO data copy on repeated calls with same size)
+        let weights_size = weights.len() * std::mem::size_of::<BlockQ4_0>();
+        let input_size = input.len() * std::mem::size_of::<f32>();
+        let output_size = m * std::mem::size_of::<f32>();
 
-        let mut weights_buf = self.mv_weights_buffer.borrow_mut();
-        let weights_buffer = if weights_buf.as_ref().map_or(true, |b| b.length() < weights_size) {
-            let buf = self.device.new_buffer_with_data(
-                weights.as_ptr() as *const std::ffi::c_void,
-                weights_size,
-                metal::MTLResourceOptions::StorageModeShared,
-            );
-            *weights_buf = Some(buf.clone());
-            buf
-        } else {
-            let buf = weights_buf.as_ref().unwrap().clone();
-            // Copy data to existing buffer
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    weights.as_ptr() as *const u8,
-                    buf.contents() as *mut u8,
-                    weights_size as usize,
+        // Weights buffer - only create once, reuse without copy
+        let weights_buffer = {
+            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
+            let mut size_cell = self.mv_weights_size.borrow_mut();
+
+            if *size_cell != weights_size {
+                // Size changed, create new buffer with data
+                let buf = self.device.new_buffer_with_data(
+                    weights.as_ptr() as *const std::ffi::c_void,
+                    weights_size as u64,
+                    metal::MTLResourceOptions::StorageModeShared,
                 );
+                *buf_cell = Some(buf.clone());
+                *size_cell = weights_size;
+                buf
+            } else {
+                // Size matches, reuse existing buffer
+                buf_cell.as_ref().unwrap().clone()
             }
-            buf
         };
-        drop(weights_buf);
 
-        let mut input_buf = self.mv_input_buffer.borrow_mut();
-        let input_buffer = if input_buf.as_ref().map_or(true, |b| b.length() < input_size) {
-            let buf = self.device.new_buffer_with_data(
-                input.as_ptr() as *const std::ffi::c_void,
-                input_size,
-                metal::MTLResourceOptions::StorageModeShared,
-            );
-            *input_buf = Some(buf.clone());
-            buf
-        } else {
-            let buf = input_buf.as_ref().unwrap().clone();
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    input.as_ptr() as *const u8,
-                    buf.contents() as *mut u8,
-                    input_size as usize,
+        // Input buffer - only create once, reuse without copy
+        let input_buffer = {
+            let mut buf_cell = self.mv_input_buffer.borrow_mut();
+            let mut size_cell = self.mv_input_size.borrow_mut();
+
+            if *size_cell != input_size {
+                let buf = self.device.new_buffer_with_data(
+                    input.as_ptr() as *const std::ffi::c_void,
+                    input_size as u64,
+                    metal::MTLResourceOptions::StorageModeShared,
                 );
+                *buf_cell = Some(buf.clone());
+                *size_cell = input_size;
+                buf
+            } else {
+                buf_cell.as_ref().unwrap().clone()
             }
-            buf
         };
-        drop(input_buf);
 
-        let mut output_buf = self.mv_output_buffer.borrow_mut();
-        let output_buffer = if output_buf.as_ref().map_or(true, |b| b.length() < output_size) {
-            let buf = self.device.new_buffer(
-                output_size,
-                metal::MTLResourceOptions::StorageModeShared,
-            );
-            *output_buf = Some(buf.clone());
-            buf
-        } else {
-            output_buf.as_ref().unwrap().clone()
+        // Output buffer
+        let output_buffer = {
+            let mut buf_cell = self.mv_output_buffer.borrow_mut();
+            let mut size_cell = self.mv_output_size.borrow_mut();
+
+            if *size_cell != output_size {
+                let buf = self.device.new_buffer(
+                    output_size as u64,
+                    metal::MTLResourceOptions::StorageModeShared,
+                );
+                *buf_cell = Some(buf.clone());
+                *size_cell = output_size;
+                buf
+            } else {
+                buf_cell.as_ref().unwrap().clone()
+            }
         };
-        drop(output_buf);
 
         // Use cached pipeline
         let command_buffer = self.queue.new_command_buffer();
