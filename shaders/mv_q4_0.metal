@@ -1,24 +1,26 @@
 #include <metal_stdlib>
 using namespace metal;
 
-#define QK 32
+#define QK4_0 32
 #define N_SIMDWIDTH 32
-#define NR0 4   // Rows per SIMD group
-#define NSG 2   // SIMD groups per threadgroup
+#define N_R0_Q4_0 4   // Rows per SIMD group (llama.cpp: N_R0_Q4_0)
+#define N_SG_Q4_0 2   // SIMD groups per threadgroup (llama.cpp: N_SG_Q4_0)
 
-struct BlockQ4_0 {
+// Loop unroll pragma matching llama.cpp
+#define FOR_UNROLL(x) _Pragma("clang loop unroll(full)") for (x)
+
+struct block_q4_0 {
     half d;
-    uint8_t qs[QK/2];
+    uint8_t qs[QK4_0 / 2];
 };
 
-// Helper function matching llama.cpp
+// Helper function matching llama.cpp exactly
 // Calculate dot product between half a Q4_0 block and 16 floats
-inline float block_q4_0_dot_y(device const BlockQ4_0 * qb_curr, float sumy, thread float * yl, int il) {
-    float d = float(qb_curr->d);
+inline float block_q_n_dot_y(device const block_q4_0 * qb_curr, float sumy, thread float * yl, int il) {
+    float d = qb_curr->d;
 
     float acc[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
-    // Load qs as uint16_t for efficient bit extraction
     device const uint16_t * qs = ((device const uint16_t *) qb_curr + 1 + il/2);
 
     for (int i = 0; i < 8; i += 2) {
@@ -31,72 +33,78 @@ inline float block_q4_0_dot_y(device const BlockQ4_0 * qb_curr, float sumy, thre
     return d * (sumy * -8.f + acc[0] + acc[1] + acc[2] + acc[3]);
 }
 
-// Q4_0 x F32: matching llama.cpp kernel exactly
-// Each SIMD group processes NR0 rows
-// Each threadgroup has NSG SIMD groups
-// Total rows per threadgroup = NSG * NR0 = 8
-kernel void mv_q4_0_f32_simd(
-    device const BlockQ4_0* weights [[buffer(0)]],
-    device const float* input [[buffer(1)]],
-    device float* output [[buffer(2)]],
-    constant uint& m [[buffer(3)]],
-    constant uint& nb [[buffer(4)]],
+// Q4_0 x F32 MV kernel matching llama.cpp exactly
+// Args structure to match llama.cpp
+struct mv_args {
+    uint32_t ne00;  // K dimension
+    uint32_t ne01;  // M dimension (rows)
+    uint64_t nb01;  // Byte stride for rows in src0
+};
+
+kernel void kernel_mul_mv_q4_0_f32(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device float * dst [[buffer(2)]],
+    constant mv_args & args [[buffer(3)]],
     uint3 tgpig [[threadgroup_position_in_grid]],
     ushort tiisg [[thread_index_in_simdgroup]],
     ushort sgitg [[simdgroup_index_in_threadgroup]])
 {
-    const int r0 = (tgpig.x * NSG + sgitg) * NR0;
-    if (r0 >= m) return;
+    const short NSG = N_SG_Q4_0;
+    const short NR0 = N_R0_Q4_0;
+    constexpr short NW = N_SIMDWIDTH;
+    constexpr short NQ = 16;
 
-    // Which blocks this thread processes
-    const short NQ = 16;
-    const short ix = tiisg / 2;      // Block index (0-15)
-    const short il = (tiisg % 2) * 8; // Offset within block (0 or 8)
+    const int nb = args.ne00 / QK4_0;  // Number of blocks per row
+    const int r0 = (tgpig.x * NSG + sgitg) * NR0;
+
+    if (r0 >= args.ne01) return;
 
     // Load pointers to NR0 rows
-    device const BlockQ4_0* ax[NR0];
-    for (int row = 0; row < NR0; ++row) {
-        if (r0 + row < m) {
-            ax[row] = weights + (r0 + row) * nb;
-        }
+    device const block_q4_0 * ax[NR0];
+    FOR_UNROLL (int row = 0; row < NR0; ++row) {
+        const uint64_t offset0 = (r0 + row) * args.nb01;
+        ax[row] = (device const block_q4_0 *) ((device char *) src0 + offset0);
     }
 
     float sumf[NR0] = {0.f};
 
-    device const float * yb = input + ix * QK + il;
+    const short ix = (tiisg / (NW / NQ));
+    const short il = (tiisg % (NW / NQ)) * 8;
 
-    // Load y values and apply scaling for bit extraction
-    float yl[16];
-    float sumy[2] = { 0.f, 0.f };
+    const int ib0 = ix;
 
-    // Process blocks with stride NQ=16
-    for (int ib = ix; ib < nb; ib += NQ) {
-        // Load and scale y values (matching llama.cpp pattern)
-        for (int i = 0; i < 8; i += 2) {
-            sumy[0] += yb[i +  0] + yb[i +  1];
+    float yl[16]; // src1 vector cache
+    device const float * yb = src1 + ib0 * QK4_0 + il;
+
+    // Each thread in a SIMD group deals with half a block
+    for (int ib = ib0; ib < nb; ib += NQ) {
+        float sumy[2] = { 0.f, 0.f };
+
+        FOR_UNROLL (short i = 0; i < 8; i += 2) {
+            sumy[0]  += yb[i +  0] + yb[i +  1];
             yl[i + 0] = yb[i +  0];
             yl[i + 1] = yb[i +  1] / 256.f;
 
-            sumy[1] += yb[i + 16] + yb[i + 17];
+            sumy[1]  += yb[i + 16] + yb[i + 17];
             yl[i + 8] = yb[i + 16] / 16.f;
             yl[i + 9] = yb[i + 17] / 4096.f;
         }
 
-        // Compute for all NR0 rows
-        for (int row = 0; row < NR0; ++row) {
-            if (r0 + row >= m) break;
-            sumf[row] += block_q4_0_dot_y(ax[row] + ib, sumy[0] + sumy[1], yl, il);
+        FOR_UNROLL (short row = 0; row < NR0; row++) {
+            sumf[row] += block_q_n_dot_y(ax[row] + ib, sumy[0] + sumy[1], yl, il);
         }
 
-        yb += QK * NQ;
+        yb += QK4_0 * 16;
     }
 
-    // SIMD reduction and write results
-    device float* dst = output + r0;
+    device float * dst_f32 = dst + r0;
+
     for (int row = 0; row < NR0; ++row) {
-        float tot = simd_sum(sumf[row]);
-        if (tiisg == 0 && r0 + row < m) {
-            dst[row] = tot;
+        const float tot = simd_sum(sumf[row]);
+
+        if (tiisg == 0 && r0 + row < args.ne01) {
+            dst_f32[r0 + row] = tot;
         }
     }
 }
