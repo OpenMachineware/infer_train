@@ -42,6 +42,10 @@ harness = false
 name = "mv_q4_k_bench"
 harness = false
 
+[[bench]]
+name = "gpu_kernel_comparison"
+harness = false
+
 [features]
 default = []
 metal = []
