@@ -386,45 +386,9 @@ pub unsafe fn vec_dot_q4_1_q8_1_neon(n: usize, x: &[BlockQ4_1], y: &[BlockQ8_1])
 
 use crate::quant::types::{BlockQ2K, BlockQ4K, BlockQ8K, QK_K};
 
-/// Load 2x uint8x16_t from memory
-#[inline(always)]
-unsafe fn vld1q_u8_x2(ptr: *const u8) -> uint8x16x2_t {
-    uint8x16x2_t(
-        vld1q_u8(ptr),
-        vld1q_u8(ptr.add(16))
-    )
-}
-
-/// Load 2x int8x16_t from memory
-#[inline(always)]
-unsafe fn vld1q_s8_x2(ptr: *const i8) -> int8x16x2_t {
-    int8x16x2_t(
-        vld1q_s8(ptr),
-        vld1q_s8(ptr.add(16))
-    )
-}
-
-/// Load 4x int8x16_t from memory
-#[inline(always)]
-unsafe fn vld1q_s8_x4(ptr: *const i8) -> int8x16x4_t {
-    int8x16x4_t(
-        vld1q_s8(ptr),
-        vld1q_s8(ptr.add(16)),
-        vld1q_s8(ptr.add(32)),
-        vld1q_s8(ptr.add(48))
-    )
-}
-
-/// Load 4x uint8x16_t from memory
-#[inline(always)]
-unsafe fn vld1q_u8_x4(ptr: *const u8) -> uint8x16x4_t {
-    uint8x16x4_t(
-        vld1q_u8(ptr),
-        vld1q_u8(ptr.add(16)),
-        vld1q_u8(ptr.add(32)),
-        vld1q_u8(ptr.add(48))
-    )
-}
+// Use standard NEON intrinsics
+// Note: Standard vld1q_u8_x2 generates ldp, which is equivalent performance to ld1.16b
+// Testing shows ldp with proper register allocation is optimal
 
 /// Q2_K × Q8_K vector dot product (NEON implementation)
 #[target_feature(enable = "neon,dotprod")]
