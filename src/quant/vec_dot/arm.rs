@@ -1,5 +1,15 @@
 use std::arch::aarch64::*;
 
+/// Convert FP16 to FP32 using NEON fcvt instruction
+#[inline(always)]
+pub unsafe fn fp16_to_fp32(bits: u16) -> f32 {
+    // Use NEON fcvt instruction for efficient conversion
+    let f16_vec = vdup_n_u16(bits);
+    let f16 = vreinterpret_f16_u16(f16_vec);
+    let f32_vec = vcvt_f32_f16(f16);
+    vgetq_lane_f32(f32_vec, 0)
+}
+
 /// FP32 vector dot product (NEON implementation)
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_fp32_neon(a: &[f32], b: &[f32]) -> f32 {
@@ -54,8 +64,8 @@ pub unsafe fn vec_dot_fp16_neon(a: &[u16], b: &[u16]) -> f32 {
     // Handle remainder
     let mut remainder = 0.0f32;
     for i in (chunks * 8)..n {
-        let a_f32 = half::f16::from_bits(a[i]).to_f32();
-        let b_f32 = half::f16::from_bits(b[i]).to_f32();
+        let a_f32 = fp16_to_fp32(a[i]);
+        let b_f32 = fp16_to_fp32(b[i]);
         remainder += a_f32 * b_f32;
     }
 
@@ -207,8 +217,8 @@ pub unsafe fn vec_dot_q4_0_q8_0_neon(n: usize, x: &[BlockQ4_0], y: &[BlockQ8_0])
         let p_1 = vdotq_s32_manual(vdotq_s32_manual(vdupq_n_s32(0), v0_1ls, v1_1l), v0_1hs, v1_1h);
 
         // Multiply by scales
-        let d0 = half::f16::from_bits(x0.d).to_f32() * half::f16::from_bits(y0.d).to_f32();
-        let d1 = half::f16::from_bits(x1.d).to_f32() * half::f16::from_bits(y1.d).to_f32();
+        let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d);
+        let d1 = fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d);
 
         sumv0 = vmlaq_n_f32(sumv0, vcvtq_f32_s32(p_0), d0);
         sumv1 = vmlaq_n_f32(sumv1, vcvtq_f32_s32(p_1), d1);
@@ -220,7 +230,7 @@ pub unsafe fn vec_dot_q4_0_q8_0_neon(n: usize, x: &[BlockQ4_0], y: &[BlockQ8_0])
     for ib in (chunks * 2)..nb {
         let x_b = &x[ib];
         let y_b = &y[ib];
-        let d = half::f16::from_bits(x_b.d).to_f32() * half::f16::from_bits(y_b.d).to_f32();
+        let d = fp16_to_fp32(x_b.d) * fp16_to_fp32(y_b.d);
 
         let mut sumi0 = 0i32;
         let mut sumi1 = 0i32;
@@ -271,8 +281,8 @@ pub unsafe fn vec_dot_q8_0_q8_0_neon(n: usize, x: &[BlockQ8_0], y: &[BlockQ8_0])
         let p_1 = vdotq_s32_manual(vdotq_s32_manual(vdupq_n_s32(0), x1_l, y1_l), x1_h, y1_h);
 
         // Multiply by scales
-        let d0 = half::f16::from_bits(x0.d).to_f32() * half::f16::from_bits(y0.d).to_f32();
-        let d1 = half::f16::from_bits(x1.d).to_f32() * half::f16::from_bits(y1.d).to_f32();
+        let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d);
+        let d1 = fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d);
 
         sumv0 = vmlaq_n_f32(sumv0, vcvtq_f32_s32(p_0), d0);
         sumv1 = vmlaq_n_f32(sumv1, vcvtq_f32_s32(p_1), d1);
@@ -284,7 +294,7 @@ pub unsafe fn vec_dot_q8_0_q8_0_neon(n: usize, x: &[BlockQ8_0], y: &[BlockQ8_0])
     for ib in (chunks * 2)..nb {
         let x_b = &x[ib];
         let y_b = &y[ib];
-        let d = half::f16::from_bits(x_b.d).to_f32() * half::f16::from_bits(y_b.d).to_f32();
+        let d = fp16_to_fp32(x_b.d) * fp16_to_fp32(y_b.d);
 
         let isum: i32 = x_b.qs.iter().zip(y_b.qs.iter())
             .map(|(&a, &b)| a as i32 * b as i32)
@@ -316,8 +326,8 @@ pub unsafe fn vec_dot_q4_1_q8_1_neon(n: usize, x: &[BlockQ4_1], y: &[BlockQ8_1])
         let y1 = &y[ib + 1];
 
         // Add min * sum term
-        let m0 = half::f16::from_bits(x0.m).to_f32() * half::f16::from_bits(y0.s).to_f32();
-        let m1 = half::f16::from_bits(x1.m).to_f32() * half::f16::from_bits(y1.s).to_f32();
+        let m0 = fp16_to_fp32(x0.m) * fp16_to_fp32(y0.s);
+        let m1 = fp16_to_fp32(x1.m) * fp16_to_fp32(y1.s);
         summs += m0 + m1;
 
         // Load 4-bit quants
@@ -341,8 +351,8 @@ pub unsafe fn vec_dot_q4_1_q8_1_neon(n: usize, x: &[BlockQ4_1], y: &[BlockQ8_1])
         let p_1 = vdotq_s32_manual(vdotq_s32_manual(vdupq_n_s32(0), v0_1l, v1_1l), v0_1h, v1_1h);
 
         // Multiply by scales
-        let d0 = half::f16::from_bits(x0.d).to_f32() * half::f16::from_bits(y0.d).to_f32();
-        let d1 = half::f16::from_bits(x1.d).to_f32() * half::f16::from_bits(y1.d).to_f32();
+        let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d);
+        let d1 = fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d);
 
         sumv0 = vmlaq_n_f32(sumv0, vcvtq_f32_s32(p_0), d0);
         sumv1 = vmlaq_n_f32(sumv1, vcvtq_f32_s32(p_1), d1);
@@ -354,8 +364,8 @@ pub unsafe fn vec_dot_q4_1_q8_1_neon(n: usize, x: &[BlockQ4_1], y: &[BlockQ8_1])
     for ib in (chunks * 2)..nb {
         let x_b = &x[ib];
         let y_b = &y[ib];
-        let d = half::f16::from_bits(x_b.d).to_f32() * half::f16::from_bits(y_b.d).to_f32();
-        let m = half::f16::from_bits(x_b.m).to_f32() * half::f16::from_bits(y_b.s).to_f32();
+        let d = fp16_to_fp32(x_b.d) * fp16_to_fp32(y_b.d);
+        let m = fp16_to_fp32(x_b.m) * fp16_to_fp32(y_b.s);
 
         let mut isum = 0i32;
         for j in 0..16 {
@@ -379,13 +389,19 @@ use crate::quant::types::{BlockQ2K, BlockQ4K, BlockQ8K, QK_K};
 /// Load 2x uint8x16_t from memory
 #[inline(always)]
 unsafe fn vld1q_u8_x2(ptr: *const u8) -> uint8x16x2_t {
-    uint8x16x2_t(vld1q_u8(ptr), vld1q_u8(ptr.add(16)))
+    uint8x16x2_t(
+        vld1q_u8(ptr),
+        vld1q_u8(ptr.add(16))
+    )
 }
 
 /// Load 2x int8x16_t from memory
 #[inline(always)]
 unsafe fn vld1q_s8_x2(ptr: *const i8) -> int8x16x2_t {
-    int8x16x2_t(vld1q_s8(ptr), vld1q_s8(ptr.add(16)))
+    int8x16x2_t(
+        vld1q_s8(ptr),
+        vld1q_s8(ptr.add(16))
+    )
 }
 
 /// Load 4x int8x16_t from memory
@@ -396,6 +412,17 @@ unsafe fn vld1q_s8_x4(ptr: *const i8) -> int8x16x4_t {
         vld1q_s8(ptr.add(16)),
         vld1q_s8(ptr.add(32)),
         vld1q_s8(ptr.add(48))
+    )
+}
+
+/// Load 4x uint8x16_t from memory
+#[inline(always)]
+unsafe fn vld1q_u8_x4(ptr: *const u8) -> uint8x16x4_t {
+    uint8x16x4_t(
+        vld1q_u8(ptr),
+        vld1q_u8(ptr.add(16)),
+        vld1q_u8(ptr.add(32)),
+        vld1q_u8(ptr.add(48))
     )
 }
 
@@ -410,8 +437,8 @@ pub unsafe fn vec_dot_q2_k_q8_k_neon(n: usize, x: &[BlockQ2K], y: &[BlockQ8K]) -
     let mut sum = 0.0f32;
 
     for i in 0..nb {
-        let d = y[i].d * half::f16::from_bits(x[i].d).to_f32();
-        let dmin = -y[i].d * half::f16::from_bits(x[i].dmin).to_f32();
+        let d = y[i].d * fp16_to_fp32(x[i].d);
+        let dmin = -y[i].d * fp16_to_fp32(x[i].dmin);
 
         let q2 = x[i].qs.as_ptr();
         let q8 = y[i].qs.as_ptr();
@@ -491,10 +518,13 @@ pub unsafe fn vec_dot_q4_k_q8_k_neon(n: usize, x: &[BlockQ4K], y: &[BlockQ8K]) -
         let x_i = x.get_unchecked(i);
         let y_i = y.get_unchecked(i);
 
-        let d = y_i.d * half::f16::from_bits(x_i.d).to_f32();
-        let dmin = y_i.d * half::f16::from_bits(x_i.dmin).to_f32();
+        let d = y_i.d * fp16_to_fp32(x_i.d);
+        let dmin = y_i.d * fp16_to_fp32(x_i.dmin);
 
-        // Decode scales and mins from 12-byte format (matching llama.cpp exactly)
+        // Calculate min correction first (matching llama.cpp order)
+        let q8sums = vpaddq_s16(vld1q_s16(y_i.bsums.as_ptr()), vld1q_s16(y_i.bsums.as_ptr().add(8)));
+
+        // Decode scales and mins from 12-byte format
         let mut utmp = [0u32; 4];
         std::ptr::copy_nonoverlapping(x_i.scales.as_ptr(), utmp.as_mut_ptr() as *mut u8, 12);
 
@@ -507,8 +537,7 @@ pub unsafe fn vec_dot_q4_k_q8_k_neon(n: usize, x: &[BlockQ4K], y: &[BlockQ8K]) -
         utmp[1] = (utmp[2] & KMASK2) | (((utmp[0] >> 6) & KMASK3) << 4);
         utmp[0] &= KMASK1;
 
-        // Calculate min correction using vpaddq (matching llama.cpp)
-        let q8sums = vpaddq_s16(vld1q_s16(y_i.bsums.as_ptr()), vld1q_s16(y_i.bsums.as_ptr().add(8)));
+        // Calculate min using vmull_s16 (matching llama.cpp)
         let mins = vreinterpretq_s16_u16(vmovl_u8(vreinterpret_u8_u32(mins8)));
         let prod = vaddq_s32(
             vmull_s16(vget_low_s16(q8sums), vget_low_s16(mins)),
@@ -516,37 +545,39 @@ pub unsafe fn vec_dot_q4_k_q8_k_neon(n: usize, x: &[BlockQ4K], y: &[BlockQ8K]) -
         );
         let min_sum = vaddvq_s32(prod);
 
-        // Get scales pointer
-        let scales = utmp.as_ptr() as *const u8;
+        // Get scales - load all 8 scales at once to avoid pointer arithmetic in loop
+        let sc = std::slice::from_raw_parts(utmp.as_ptr() as *const u8, 8);
 
         // Process 256 elements
-        let q4 = x_i.qs.as_ptr();
-        let q8 = y_i.qs.as_ptr();
+        let mut q4 = x_i.qs.as_ptr();
+        let mut q8 = y_i.qs.as_ptr();
 
         let mut sumi1 = 0i32;
         let mut sumi2 = 0i32;
 
-        for j in 0..(QK_K / 64) {
-            let q4bits = vld1q_u8_x2(q4.add(j * 32));
-            let q8bytes_0 = vld1q_s8_x2(q8.add(j * 64));
+        for j in 0..4 {
+            let q4bits = vld1q_u8_x2(q4);
+            let q8bytes = vld1q_s8_x2(q8);
 
-            // Decode 4-bit low values
             let q4l_0 = vreinterpretq_s8_u8(vandq_u8(q4bits.0, m4b));
             let q4l_1 = vreinterpretq_s8_u8(vandq_u8(q4bits.1, m4b));
 
-            let p1 = vdotq_s32_manual(vdotq_s32_manual(vzero, q4l_0, q8bytes_0.0), q4l_1, q8bytes_0.1);
-            sumi1 += vaddvq_s32(p1) * *scales.add(j * 2) as i32;
+            let p1 = vdotq_s32_manual(vdotq_s32_manual(vzero, q4l_0, q8bytes.0), q4l_1, q8bytes.1);
+            sumi1 += vaddvq_s32(p1) * sc[j * 2] as i32;
 
-            // Decode 4-bit high values
-            let q8bytes_1 = vld1q_s8_x2(q8.add(j * 64 + 32));
+            let q8bytes_1 = vld1q_s8_x2(q8.add(32));
             let q4h_0 = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.0, 4));
             let q4h_1 = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.1, 4));
 
             let p2 = vdotq_s32_manual(vdotq_s32_manual(vzero, q4h_0, q8bytes_1.0), q4h_1, q8bytes_1.1);
-            sumi2 += vaddvq_s32(p2) * *scales.add(j * 2 + 1) as i32;
+            sumi2 += vaddvq_s32(p2) * sc[j * 2 + 1] as i32;
+
+            q4 = q4.add(32);
+            q8 = q8.add(64);
         }
 
-        sum += d * (sumi1 + sumi2) as f32 - dmin * min_sum as f32;
+        sum -= dmin * min_sum as f32;
+        sum += d * (sumi1 + sumi2) as f32;
     }
 
     sum
@@ -673,8 +704,8 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(n: usize, x: &[BlockQ5_0], y: &[BlockQ8_0])
         );
 
         // Multiply by scales
-        let d0 = half::f16::from_bits(x0.d).to_f32() * half::f16::from_bits(y0.d).to_f32();
-        let d1 = half::f16::from_bits(x1.d).to_f32() * half::f16::from_bits(y1.d).to_f32();
+        let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d);
+        let d1 = fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d);
 
         sumv0 = vmlaq_n_f32(sumv0, vcvtq_f32_s32(p_0), d0);
         sumv1 = vmlaq_n_f32(sumv1, vcvtq_f32_s32(p_1), d1);
@@ -686,7 +717,7 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(n: usize, x: &[BlockQ5_0], y: &[BlockQ8_0])
     for ib in (chunks * 2)..nb {
         let x_b = &x[ib];
         let y_b = &y[ib];
-        let d = half::f16::from_bits(x_b.d).to_f32() * half::f16::from_bits(y_b.d).to_f32();
+        let d = fp16_to_fp32(x_b.d) * fp16_to_fp32(y_b.d);
 
         let qh = u32::from_le_bytes(x_b.qh);
         let mut isum = 0i32;
@@ -730,8 +761,8 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(n: usize, x: &[BlockQ5_1], y: &[BlockQ8_1])
         let y1 = &y[ib + 1];
 
         // Add min * sum term
-        let m0 = half::f16::from_bits(x0.m).to_f32() * half::f16::from_bits(y0.s).to_f32();
-        let m1 = half::f16::from_bits(x1.m).to_f32() * half::f16::from_bits(y1.s).to_f32();
+        let m0 = fp16_to_fp32(x0.m) * fp16_to_fp32(y0.s);
+        let m1 = fp16_to_fp32(x1.m) * fp16_to_fp32(y1.s);
         summs += m0 + m1;
 
         // Load 4-bit quants
@@ -791,8 +822,8 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(n: usize, x: &[BlockQ5_1], y: &[BlockQ8_1])
         );
 
         // Multiply by scales
-        let d0 = half::f16::from_bits(x0.d).to_f32() * half::f16::from_bits(y0.d).to_f32();
-        let d1 = half::f16::from_bits(x1.d).to_f32() * half::f16::from_bits(y1.d).to_f32();
+        let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d);
+        let d1 = fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d);
 
         sumv0 = vmlaq_n_f32(sumv0, vcvtq_f32_s32(p_0), d0);
         sumv1 = vmlaq_n_f32(sumv1, vcvtq_f32_s32(p_1), d1);
@@ -804,8 +835,8 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(n: usize, x: &[BlockQ5_1], y: &[BlockQ8_1])
     for ib in (chunks * 2)..nb {
         let x_b = &x[ib];
         let y_b = &y[ib];
-        let d = half::f16::from_bits(x_b.d).to_f32() * half::f16::from_bits(y_b.d).to_f32();
-        let m = half::f16::from_bits(x_b.m).to_f32() * half::f16::from_bits(y_b.s).to_f32();
+        let d = fp16_to_fp32(x_b.d) * fp16_to_fp32(y_b.d);
+        let m = fp16_to_fp32(x_b.m) * fp16_to_fp32(y_b.s);
 
         let qh = u32::from_le_bytes(x_b.qh);
         let mut isum = 0i32;
@@ -849,7 +880,7 @@ pub unsafe fn vec_dot_q3_k_q8_k_neon(n: usize, x: &[BlockQ3K], y: &[BlockQ8K]) -
     let mut sum = 0.0f32;
 
     for i in 0..nb {
-        let d = y[i].d * half::f16::from_bits(x[i].d).to_f32();
+        let d = y[i].d * fp16_to_fp32(x[i].d);
 
         let q3 = x[i].qs.as_ptr();
         let qh = x[i].hmask.as_ptr();
@@ -939,8 +970,8 @@ pub unsafe fn vec_dot_q5_k_q8_k_neon(n: usize, x: &[BlockQ5K], y: &[BlockQ8K]) -
     let mut sumf = 0.0f32;
 
     for i in 0..nb {
-        let d = y[i].d * half::f16::from_bits(x[i].d).to_f32();
-        let dmin = y[i].d * half::f16::from_bits(x[i].dmin).to_f32();
+        let d = y[i].d * fp16_to_fp32(x[i].d);
+        let dmin = y[i].d * fp16_to_fp32(x[i].dmin);
 
         // Calculate min correction using bsums
         let q8sums = vpaddq_s16(vld1q_s16(y[i].bsums.as_ptr()), vld1q_s16(y[i].bsums.as_ptr().add(8)));
@@ -1020,7 +1051,7 @@ pub unsafe fn vec_dot_q6_k_q8_k_neon(n: usize, x: &[BlockQ6K], y: &[BlockQ8K]) -
     let mut sum = 0.0f32;
 
     for i in 0..nb {
-        let d = y[i].d * half::f16::from_bits(x[i].d).to_f32();
+        let d = y[i].d * fp16_to_fp32(x[i].d);
 
         let ql = x[i].ql.as_ptr();
         let qh = x[i].qh.as_ptr();
@@ -1119,15 +1150,15 @@ pub unsafe fn vec_dot_iq4_nl_q8_0_neon(n: usize, x: &[BlockIQ4NL], y: &[BlockQ8_
         let prod_0 = vdotq_s32_manual(vdotq_s32_manual(vzero, q4b_0, q8b_0.0), q4b_1, q8b_0.1);
         let prod_1 = vdotq_s32_manual(vdotq_s32_manual(vzero, q4b_2, q8b_1.0), q4b_3, q8b_1.1);
 
-        sum += half::f16::from_bits(x[ib].d).to_f32() * half::f16::from_bits(y[ib].d).to_f32() * vaddvq_s32(prod_0) as f32;
-        sum += half::f16::from_bits(x[ib + 1].d).to_f32() * half::f16::from_bits(y[ib + 1].d).to_f32() * vaddvq_s32(prod_1) as f32;
+        sum += fp16_to_fp32(x[ib].d) * fp16_to_fp32(y[ib].d) * vaddvq_s32(prod_0) as f32;
+        sum += fp16_to_fp32(x[ib + 1].d) * fp16_to_fp32(y[ib + 1].d) * vaddvq_s32(prod_1) as f32;
 
         ib += 2;
     }
 
     // Handle remainder
     for i in ib..nb {
-        let d = half::f16::from_bits(x[i].d).to_f32() * half::f16::from_bits(y[i].d).to_f32();
+        let d = fp16_to_fp32(x[i].d) * fp16_to_fp32(y[i].d);
         let mut sumi = 0i32;
         for j in 0..16 {
             sumi += y[i].qs[j] as i32 * KVALUES_IQ4NL[(x[i].qs[j] & 0x0F) as usize] as i32;
@@ -1151,7 +1182,7 @@ pub unsafe fn vec_dot_iq3_xxs_q8_k_neon(n: usize, x: &[BlockIQ3XXS], y: &[BlockQ
     let mut sum = 0.0f32;
 
     for i in 0..nb {
-        let d = half::f16::from_bits(x[i].d).to_f32() * y[i].d;
+        let d = fp16_to_fp32(x[i].d) * y[i].d;
         let q3 = x[i].qs.as_ptr();
         let gas = q3.add(QK_K / 4); // Signs and scales start after grid indices
         let q8 = y[i].qs.as_ptr();
@@ -1264,7 +1295,7 @@ pub unsafe fn vec_dot_iq3_s_q8_k_neon(n: usize, x: &[BlockIQ3S], y: &[BlockQ8K])
     let mut sumf = 0.0f32;
 
     for i in 0..nb {
-        let d = half::f16::from_bits(x[i].d).to_f32() * y[i].d;
+        let d = fp16_to_fp32(x[i].d) * y[i].d;
         let mut qs = x[i].qs.as_ptr();
         let qh = x[i].qh.as_ptr();
         let mut signs = x[i].signs.as_ptr() as *const u16;
@@ -1391,7 +1422,7 @@ pub unsafe fn vec_dot_iq1_s_q8_k_neon(n: usize, x: &[BlockIQ1S], y: &[BlockQ8K])
     let mut sumf = 0.0f32;
 
     for i in 0..nb {
-        let d = half::f16::from_bits(x[i].d).to_f32() * y[i].d;
+        let d = fp16_to_fp32(x[i].d) * y[i].d;
         let mut qs = x[i].qs.as_ptr();
         let qh = x[i].qh.as_ptr();
         let q8 = y[i].qs.as_ptr();
@@ -1512,7 +1543,6 @@ pub unsafe fn vec_dot_iq1_m_q8_k_neon(n: usize, x: &[BlockIQ1M], y: &[BlockQ8K])
 
         // Extract merged scale from 4 u16 values
         let scale_u16 = (*sc.add(0) >> 12) | ((*sc.add(1) >> 8) & 0x00f0) | ((*sc.add(2) >> 4) & 0x0f00) | (*sc.add(3) & 0xf000);
-        let scale_f16 = half::f16::from_bits(scale_u16);
 
         let mut sumi1 = vdupq_n_s32(0);
         let mut sumi2 = vdupq_n_s32(0);
@@ -1599,7 +1629,7 @@ pub unsafe fn vec_dot_iq1_m_q8_k_neon(n: usize, x: &[BlockIQ1M], y: &[BlockQ8K])
             sumi2 = vmlaq_s32(sumi2, scales_4, p34);
         }
 
-        sumf += y[i].d * scale_f16.to_f32() * (vaddvq_s32(sumi1) as f32 + IQ1M_DELTA * vaddvq_s32(sumi2) as f32);
+        sumf += y[i].d * fp16_to_fp32(scale_u16) * (vaddvq_s32(sumi1) as f32 + IQ1M_DELTA * vaddvq_s32(sumi2) as f32);
     }
 
     sumf
@@ -1616,7 +1646,7 @@ pub unsafe fn vec_dot_iq2_xxs_q8_k_neon(n: usize, x: &[BlockIQ2XXS], y: &[BlockQ
     let mut sumf = 0.0f32;
 
     for i in 0..nb {
-        let d = half::f16::from_bits(x[i].d).to_f32() * y[i].d;
+        let d = fp16_to_fp32(x[i].d) * y[i].d;
         let mut q2 = x[i].qs.as_ptr() as *const u32;
         let q8 = y[i].qs.as_ptr();
 
@@ -1707,7 +1737,7 @@ pub unsafe fn vec_dot_iq2_xs_q8_k_neon(n: usize, x: &[BlockIQ2XS], y: &[BlockQ8K
     let mut sumf = 0.0f32;
 
     for i in 0..nb {
-        let d = half::f16::from_bits(x[i].d).to_f32() * y[i].d;
+        let d = fp16_to_fp32(x[i].d) * y[i].d;
         let q2 = x[i].qs.as_ptr();
         let q8 = y[i].qs.as_ptr();
 
@@ -1837,7 +1867,7 @@ pub unsafe fn vec_dot_iq2_s_q8_k_neon(n: usize, x: &[BlockIQ2S], y: &[BlockQ8K])
     let mut sumf = 0.0f32;
 
     for i in 0..nb {
-        let d = half::f16::from_bits(x[i].d).to_f32() * y[i].d;
+        let d = fp16_to_fp32(x[i].d) * y[i].d;
 
         let mut qs = x[i].qs.as_ptr();
         let qh = x[i].qh.as_ptr();
@@ -1985,7 +2015,7 @@ pub unsafe fn vec_dot_tq2_0_q8_k_neon(n: usize, x: &[BlockTQ2_0], y: &[BlockQ8K]
         sumi0 = vaddq_s32(sumi0, sumi1);
         sumi0 = vsubq_s32(sumi0, vpaddlq_s16(vaddq_s16(ysum0, ysum1)));
 
-        let d = half::f16::from_bits(x[i].d).to_f32() * y[i].d;
+        let d = fp16_to_fp32(x[i].d) * y[i].d;
         sumf += d * vaddvq_s32(sumi0) as f32;
     }
 
@@ -2112,7 +2142,7 @@ pub unsafe fn vec_dot_tq1_0_q8_k_neon(n: usize, x: &[BlockTQ1_0], y: &[BlockQ8K]
         sumi0 = vaddq_s32(sumi0, sumi1);
         sumi0 = vsubq_s32(sumi0, vpaddlq_s16(vaddq_s16(ysum0, ysum1)));
 
-        let d = half::f16::from_bits(x[i].d).to_f32() * y[i].d;
+        let d = fp16_to_fp32(x[i].d) * y[i].d;
         sumf += d * vaddvq_s32(sumi0) as f32;
     }
 
@@ -2157,7 +2187,7 @@ pub unsafe fn vec_dot_iq4_xs_q8_k_neon(n: usize, x: &[BlockIQ4XS], y: &[BlockQ8K
             sumi2 += vaddvq_s32(prod_2) * ls2;
         }
 
-        sum += half::f16::from_bits(x[ibl].d).to_f32() * y[ibl].d * (sumi1 + sumi2) as f32;
+        sum += fp16_to_fp32(x[ibl].d) * y[ibl].d * (sumi1 + sumi2) as f32;
     }
 
     sum
