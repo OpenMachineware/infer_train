@@ -199,6 +199,7 @@ kernel void kernel_soft_max_f32(
     constant int32_t & ne00 [[buffer(0)]],
     device const float * src [[buffer(1)]],
     device float * dst [[buffer(2)]],
+    constant int32_t & ne01 [[buffer(3)]],
     threadgroup float * buf [[threadgroup(0)]],
     uint3 tgpig [[threadgroup_position_in_grid]],
     uint3 tpitg [[thread_position_in_threadgroup]],
@@ -212,7 +213,7 @@ kernel void kernel_soft_max_f32(
     const int32_t i02 = tgpig.y;
     const int32_t i01 = tgpig.x;
     const uint64_t nb01 = ne00 * 4;
-    const uint64_t nb02 = nb01;
+    const uint64_t nb02 = ne01 * nb01;
 
     const uint64_t row_offset = i02 * nb02 + i01 * nb01;
     device const float* psrc = src + row_offset / 4;
@@ -258,6 +259,7 @@ kernel void kernel_soft_max_f32_4(
     constant int32_t & ne00 [[buffer(0)]],
     device const float * src [[buffer(1)]],
     device float * dst [[buffer(2)]],
+    constant int32_t & ne01 [[buffer(3)]],
     threadgroup float * buf [[threadgroup(0)]],
     uint3 tgpig [[threadgroup_position_in_grid]],
     uint3 tpitg [[thread_position_in_threadgroup]],
@@ -271,7 +273,7 @@ kernel void kernel_soft_max_f32_4(
     const int32_t i02 = tgpig.y;
     const int32_t i01 = tgpig.x;
     const uint64_t nb01 = ne00 * 4;
-    const uint64_t nb02 = nb01;
+    const uint64_t nb02 = ne01 * nb01;
 
     const uint64_t row_offset = i02 * nb02 + i01 * nb01;
     device const float4* psrc4 = (device const float4*)(src + row_offset / 4);
@@ -368,10 +370,11 @@ kernel void kernel_soft_max_f32_4(
         let shmem_size = simd_groups * 4;
 
         let ne00 = seq_len as i32;
+        let ne01 = n_heads as i32;
 
         // Warmup - increased to 100 iterations for GPU frequency stabilization
         for _ in 0..100 {
-            let _ = self.dispatch(&input_buffer, &output_buffer, ne00, n_heads, batch_size, threads_per_row, pipeline, shmem_size);
+            let _ = self.dispatch(&input_buffer, &output_buffer, ne00, ne01, n_heads, batch_size, threads_per_row, pipeline, shmem_size);
         }
 
         // Measure using batched dispatch to reduce CPU timing variance
@@ -388,6 +391,7 @@ kernel void kernel_soft_max_f32_4(
                 encoder.set_bytes(0, 4, &ne00 as *const i32 as *const std::ffi::c_void);
                 encoder.set_buffer(1, Some(&input_buffer), 0);
                 encoder.set_buffer(2, Some(&output_buffer), 0);
+                encoder.set_bytes(3, 4, &ne01 as *const i32 as *const std::ffi::c_void);
 
                 let grid_size = MTLSize { width: n_heads as u64, height: batch_size as u64, depth: 1 };
                 let threadgroup_size = MTLSize { width: threads_per_row as u64, height: 1, depth: 1 };
@@ -406,7 +410,7 @@ kernel void kernel_soft_max_f32_4(
         total_time / (num_batches * batch_iters) as f64
     }
 
-    fn dispatch(&self, input: &Buffer, output: &Buffer, ne00: i32, n_heads: usize, batch_size: usize, threads_per_row: usize, pipeline: &ComputePipelineState, shmem_size: usize) -> Result<(), String> {
+    fn dispatch(&self, input: &Buffer, output: &Buffer, ne00: i32, ne01: i32, n_heads: usize, batch_size: usize, threads_per_row: usize, pipeline: &ComputePipelineState, shmem_size: usize) -> Result<(), String> {
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
 
@@ -414,6 +418,7 @@ kernel void kernel_soft_max_f32_4(
         encoder.set_bytes(0, 4, &ne00 as *const i32 as *const std::ffi::c_void);
         encoder.set_buffer(1, Some(input), 0);
         encoder.set_buffer(2, Some(output), 0);
+        encoder.set_bytes(3, 4, &ne01 as *const i32 as *const std::ffi::c_void);
 
         let grid_size = MTLSize { width: n_heads as u64, height: batch_size as u64, depth: 1 };
         let threadgroup_size = MTLSize { width: threads_per_row as u64, height: 1, depth: 1 };
