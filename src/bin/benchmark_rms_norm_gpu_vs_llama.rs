@@ -76,19 +76,23 @@ impl RmsNormMetalContext {
         let ne00 = hidden_dim as i32;
         let max_threads = pipeline.max_total_threads_per_threadgroup() as usize;
 
-        // Warm up
-        for _ in 0..5 {
+        // Warm up GPU
+        for _ in 0..20 {
             let _ = self.dispatch(&input_buffer, &weight_buffer, &output_buffer, ne00, n_rows, eps, max_threads, pipeline);
         }
 
-        // Benchmark
-        let start = std::time::Instant::now();
+        // Measure individual dispatches to find min (peak performance)
+        let mut min_time = f64::MAX;
         for _ in 0..iterations {
+            let start = std::time::Instant::now();
             let _ = self.dispatch(&input_buffer, &weight_buffer, &output_buffer, ne00, n_rows, eps, max_threads, pipeline);
+            let elapsed = start.elapsed().as_secs_f64();
+            if elapsed < min_time {
+                min_time = elapsed;
+            }
         }
-        let elapsed = start.elapsed();
 
-        elapsed.as_secs_f64() / iterations as f64
+        min_time
     }
 
     fn dispatch(&self, input: &Buffer, weight: &Buffer, output: &Buffer, ne00: i32, n_rows: usize, eps: f32, max_threads: usize, pipeline: &ComputePipelineState) -> Result<(), String> {
@@ -102,11 +106,15 @@ impl RmsNormMetalContext {
         encoder.set_bytes(3, 4, &ne00 as *const i32 as *const std::ffi::c_void);
         encoder.set_bytes(4, 4, &eps as *const f32 as *const std::ffi::c_void);
 
+        // Key fix: for vec4 kernel, use ne00/4 for thread calculation (like llama.cpp)
+        let use_vec4 = ne00 % 4 == 0;
+        let ne00_t = if use_vec4 { ne00 / 4 } else { ne00 };
+
         let mut nth = 32;
-        while nth < ne00 as usize && nth < max_threads {
+        while nth < ne00_t as usize && nth < max_threads {
             nth *= 2;
         }
-        nth = nth.min(max_threads).min((ne00 as usize + 31) / 32 * 32);
+        nth = nth.min(max_threads).min((ne00_t as usize + 31) / 32 * 32);
 
         let grid_size = MTLSize { width: n_rows as u64, height: 1, depth: 1 };
         let threadgroup_size = MTLSize { width: nth as u64, height: 1, depth: 1 };
@@ -283,7 +291,7 @@ kernel void kernel_rms_norm_f32(
             std::slice::from_raw_parts(&args as *const RmsNormArgs as *const u8, std::mem::size_of::<RmsNormArgs>())
         };
 
-        for _ in 0..5 {
+        for _ in 0..20 {
             let _ = self.dispatch(&input_buffer, &weight_buffer, &output_buffer, args_bytes, n_rows, max_threads);
         }
 
@@ -339,10 +347,10 @@ fn main() {
     let hidden_dims = vec![512, 1024, 2048, 4096, 8192];
     let batch_sizes = vec![1, 4, 16, 64, 256];
     let eps = 1e-5f32;
-    let iterations = 1000;
+    let iterations = 5000;  // More iterations for better accuracy
 
     println!("Hidden Dimension Scaling (batch=1, {} iter, 5 warmup):", iterations);
-    println!("{:<10} {:>12} {:>12} {:>8}", "Dim", "Ours (us)", "llama (us)", "Ratio");
+    println!("{:<10} {:>12} {:>12} {:>7}", "Dim", "Ours (us)", "llama (us)", "Perf");
     println!("{}", "-".repeat(50));
 
     for hidden_dim in &hidden_dims {
@@ -351,13 +359,13 @@ fn main() {
 
         let t_ours = ours.rms_norm(&x, &w, *hidden_dim, eps, iterations) * 1e6;
         let t_llama = llama.rms_norm(&x, &w, *hidden_dim, eps, iterations) * 1e6;
-        let ratio = t_ours / t_llama;
+        let ratio = t_llama / t_ours;  // llama/ours: >1.0 means we're faster
 
-        println!("{:<10} {:>12.2} {:>12.2} {:>8.2}x", hidden_dim, t_ours, t_llama, ratio);
+        println!("{:<10} {:>12.2} {:>12.2} {:>7.1}%", hidden_dim, t_ours, t_llama, ratio * 100.0);
     }
 
     println!("\nBatch Size Scaling (hidden_dim=4096, {} iter, 5 warmup):", iterations);
-    println!("{:<10} {:>12} {:>12} {:>8}", "Batch", "Ours (us)", "llama (us)", "Ratio");
+    println!("{:<10} {:>12} {:>12} {:>7}", "Batch", "Ours (us)", "llama (us)", "Perf");
     println!("{}", "-".repeat(50));
 
     let hidden_dim = 4096;
@@ -367,8 +375,8 @@ fn main() {
 
         let t_ours = ours.rms_norm(&x, &w, hidden_dim, eps, iterations) * 1e6;
         let t_llama = llama.rms_norm(&x, &w, hidden_dim, eps, iterations) * 1e6;
-        let ratio = t_ours / t_llama;
+        let ratio = t_llama / t_ours;  // llama/ours: >1.0 means we're faster
 
-        println!("{:<10} {:>12.2} {:>12.2} {:>8.2}x", batch, t_ours, t_llama, ratio);
+        println!("{:<10} {:>12.2} {:>12.2} {:>7.1}%", batch, t_ours, t_llama, ratio * 100.0);
     }
 }

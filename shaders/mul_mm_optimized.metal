@@ -182,5 +182,5 @@ kernel void kernel_mul_mm_opt(
 
 typedef decltype(kernel_mul_mm_opt<half, half4x4, simdgroup_half8x8, half, half2x4, simdgroup_half8x8, block_q4_K, QK_NL, dequantize_q4_K, float, float4x4, half, half2x4>) mul_mm_opt_t;
 
-template [[host_name("kernel_mul_mm_q4_K_opt")]] 
+template [[host_name("kernel_mul_mm_q4_K_opt")]]
     kernel mul_mm_opt_t kernel_mul_mm_opt<half, half4x4, simdgroup_half8x8, half, half2x4, simdgroup_half8x8, block_q4_K, QK_NL, dequantize_q4_K, float, float4x4, half, half2x4>;

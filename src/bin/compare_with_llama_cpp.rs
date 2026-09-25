@@ -21,17 +21,17 @@ fn main() {
     let weights: Vec<BlockQ4K> = (0..m * k / 256).map(|block_idx| {
         let mut scales = [0u8; 12];
         let mut qs = [0u8; 128];
-        
+
         // Initialize with llama.cpp pattern: (i * 17 + 13) % 256
-        for j in 0..12 { 
+        for j in 0..12 {
             let val = ((block_idx * 17 + j + 13) % 256) as u8;
-            scales[j] = val; 
+            scales[j] = val;
         }
-        for j in 0..128 { 
+        for j in 0..128 {
             let val = ((block_idx * 17 + j + 13) % 256) as u8;
-            qs[j] = val; 
+            qs[j] = val;
         }
-        
+
         // Set d and dmin
         BlockQ4K {
             d: f16::from_f32(1.0).to_bits(),
@@ -124,7 +124,7 @@ fn main() {
     // Benchmark
     let n_iter = 10;
     let mut times = Vec::new();
-    
+
     for _ in 0..n_iter {
         let cb = queue.new_command_buffer();
         let enc = cb.new_compute_command_encoder();
@@ -138,7 +138,7 @@ fn main() {
         let tg = MTLSize::new(32, 4, 1);
         enc.dispatch_thread_groups(grid, tg);
         enc.end_encoding();
-        
+
         let start = std::time::Instant::now();
         cb.commit();
         cb.wait_until_completed();
@@ -170,7 +170,7 @@ fn main() {
 
     // Sample values
     println!("\n=== Sample Output Values ===");
-    println!("First 5 values: {:.2} {:.2} {:.2} {:.2} {:.2}", 
+    println!("First 5 values: {:.2} {:.2} {:.2} {:.2} {:.2}",
         output[0], output[1], output[2], output[3], output[4]);
     println!("Last 5 values: {:.2} {:.2} {:.2} {:.2} {:.2}",
         output[m*n-5], output[m*n-4], output[m*n-3], output[m*n-2], output[m*n-1]);

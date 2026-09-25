@@ -97,7 +97,7 @@ fn main() {
     encoder.set_buffer(2, Some(&input_buffer), 0);
     encoder.set_buffer(3, Some(&output_buffer), 0);
     encoder.set_threadgroup_memory_length(0, 8192);
-    
+
     // Correct grid: x=4 (columns), y=64 (rows)
     let grid = MTLSize::new(4, 64, 1);
     let threadgroup = MTLSize::new(32, 4, 1);

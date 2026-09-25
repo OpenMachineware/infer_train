@@ -66,12 +66,12 @@ fn main() {
 
     let opt_kernel = opt_library.get_function("kernel_mul_mm_q4_K_opt", None)
         .expect("Failed to get optimized kernel");
-    
+
     // For original kernel with function constants, we need to specialize it
     let constant_values = FunctionConstantValues::new();
     let false_val: bool = false;
     let one_val: i16 = 1;
-    
+
     unsafe {
         constant_values.set_constant_value_at_index(
             &false_val as *const _ as *const std::ffi::c_void,
@@ -104,11 +104,11 @@ fn main() {
             5
         );
     }
-    
+
     let descriptor = FunctionDescriptor::new();
     descriptor.set_name("kernel_mul_mm_q4_K_f32");
     descriptor.set_constant_values(&constant_values);
-    
+
     let orig_kernel = orig_library.new_function_with_descriptor(&descriptor)
         .expect("Failed to create specialized original kernel");
 

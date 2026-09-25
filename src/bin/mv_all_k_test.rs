@@ -40,25 +40,25 @@ fn generate_q4_k_weights(m: usize, k: usize) -> Vec<BlockQ4K> {
 
 fn main() {
     let metal_ctx = MetalContext::new().expect("Failed to create Metal context");
-    
+
     println!("GPU MV Performance - All Formats, All K Sizes");
     println!("================================================\n");
-    
+
     let k_sizes = [256, 512, 1024, 2048, 4096];
     let m_sizes = [256, 1024, 4096];
-    
+
     // Test Q4_0
     println!("## Q4_0 MV Performance\n");
     println!("K\\M\t256\t1024\t4096");
-    
+
     for k in k_sizes.iter() {
         if k % 32 != 0 { continue; }
         print!("{}\t", k);
-        
+
         for m in m_sizes.iter() {
             let weights = generate_q4_0_weights(*m, *k);
             let input = generate_f32_vector(*k);
-            
+
             let start = Instant::now();
             for _ in 0..10 {
                 let _ = metal_ctx.mv_q4_0_f32(*m, *k, &weights, &input);
@@ -66,24 +66,24 @@ fn main() {
             let elapsed = start.elapsed().as_micros() as f64 / 10.0;
             let flops = 2.0 * *m as f64 * *k as f64;
             let gflops = flops / elapsed / 1000.0;
-            
+
             print!("{:.1}\t", gflops);
         }
         println!();
     }
-    
+
     // Test Q4_K
     println!("\n## Q4_K MV Performance\n");
     println!("K\\M\t256\t1024\t4096");
-    
+
     for k in k_sizes.iter() {
         if k % 256 != 0 { continue; }
         print!("{}\t", k);
-        
+
         for m in m_sizes.iter() {
             let weights = generate_q4_k_weights(*m, *k);
             let input = generate_f32_vector(*k);
-            
+
             let start = Instant::now();
             for _ in 0..10 {
                 let _ = metal_ctx.mv_q4_k_f32(*m, *k, &weights, &input);
@@ -91,12 +91,12 @@ fn main() {
             let elapsed = start.elapsed().as_micros() as f64 / 10.0;
             let flops = 2.0 * *m as f64 * *k as f64;
             let gflops = flops / elapsed / 1000.0;
-            
+
             print!("{:.1}\t", gflops);
         }
         println!();
     }
-    
+
     println!("\n## Next Steps");
     println!("1. Run llama-bench with Q4_0 and Q4_K models");
     println!("2. Compare MV performance at each K size");

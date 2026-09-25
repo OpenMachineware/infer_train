@@ -11,11 +11,11 @@ fn main() {
 
     // ========== 阶段1: GPU预热 ==========
     println!("阶段1: GPU预热 (100次迭代)...");
-    
+
     let warmup_shader = include_str!("../../shaders/mv_iq_tq.metal");
     let iq_grid_tables = include_str!("../../shaders/iq_grid_tables.h");
     let warmup_combined = warmup_shader.replace("#include \"iq_grid_tables.h\"", iq_grid_tables);
-    
+
     let warmup_options = CompileOptions::new();
     warmup_options.set_fast_math_enabled(true);
     let warmup_lib = device.new_library_with_source(&warmup_combined, &warmup_options).unwrap();
@@ -28,11 +28,11 @@ fn main() {
     let block_size = 32; // IQ4_NL block size
     let num_blocks = k / block_size;
     let weights_size = m * num_blocks * block_size / 2; // 4-bit
-    
+
     let weights = device.new_buffer(weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
     let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
     let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
-    
+
     #[repr(C)]
     struct Args { ne00: u32, ne01: u32, nb01: u64 }
     let args = Args { ne00: k as u32, ne01: m as u32, nb01: (num_blocks * block_size / 2) as u64 };
@@ -58,7 +58,7 @@ fn main() {
         enc.end_encoding();
         cmd.commit();
         cmd.wait_until_completed();
-        
+
         if i % 20 == 19 {
             println!("  预热进度: {}/100", i + 1);
         }
@@ -95,7 +95,7 @@ fn main() {
                 continue;
             }
         };
-        
+
         let ratio = gflops / 87.0 * 100.0;
         let status = if ratio >= 100.0 { "✓ EXCEED" } else if ratio >= 95.0 { "~ MATCH" } else { "✗ BELOW" };
 
@@ -118,7 +118,7 @@ fn benchmark_format(
     let shader = include_str!("../../shaders/mv_iq_tq.metal");
     let iq_grid_tables = include_str!("../../shaders/iq_grid_tables.h");
     let combined = shader.replace("#include \"iq_grid_tables.h\"", iq_grid_tables);
-    
+
     let opts = CompileOptions::new();
     opts.set_fast_math_enabled(true);
     let lib = device.new_library_with_source(&combined, &opts)
@@ -131,17 +131,17 @@ fn benchmark_format(
     // Allocate buffers
     let num_blocks = k / block_size;
     let weights_size = m * num_blocks * bytes_per_block;
-    
+
     let weights = device.new_buffer(weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
     let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
     let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
 
     #[repr(C)]
     struct Args { ne00: u32, ne01: u32, nb01: u64 }
-    let args = Args { 
-        ne00: k as u32, 
-        ne01: m as u32, 
-        nb01: (num_blocks * bytes_per_block) as u64 
+    let args = Args {
+        ne00: k as u32,
+        ne01: m as u32,
+        nb01: (num_blocks * bytes_per_block) as u64
     };
     let args_buf = device.new_buffer_with_data(
         &args as *const Args as *const std::ffi::c_void,

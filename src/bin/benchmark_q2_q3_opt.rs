@@ -25,7 +25,7 @@ fn main() {
     let constant_values = FunctionConstantValues::new();
     let false_val: bool = false;
     let one_val: i16 = 1;
-    
+
     unsafe {
         constant_values.set_constant_value_at_index(
             &false_val as *const _ as *const std::ffi::c_void, MTLDataType::Bool, 0);
@@ -52,7 +52,7 @@ fn main() {
         let descriptor = FunctionDescriptor::new();
         descriptor.set_name(kernel_name);
         descriptor.set_constant_values(&constant_values);
-        
+
         let function = orig_library.new_function_with_descriptor(&descriptor)
             .expect("Failed to create function");
         let pipeline = device.new_compute_pipeline_state_with_function(&function)
@@ -104,7 +104,7 @@ fn main() {
         };
         let coverage = output.iter().filter(|&&x| x != 0.0).count() as f64 / (m * n) as f64 * 100.0;
 
-        println!("│ {:6} │ {:8.2} │ {:7.1}%  │ {:7.1}% │", 
+        println!("│ {:6} │ {:8.2} │ {:7.1}%  │ {:7.1}% │",
             name, gflops, gflops / llama_gflops * 100.0, coverage);
     }
 

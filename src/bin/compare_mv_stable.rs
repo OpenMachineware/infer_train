@@ -17,13 +17,13 @@ fn main() {
     // ========== 阶段2: llama.cpp基线 ==========
     println!("阶段2: 测量llama.cpp基线...");
     println!("(运行llama.cpp的test-kquant-metal)\n");
-    
+
     // 运行llama.cpp测试
     let llama_output = std::process::Command::new("./test-kquant-metal")
         .current_dir("/Users/jia/Desktop/infer_train/llama.cpp-0.5.0")
         .output()
         .expect("Failed to run llama.cpp test");
-    
+
     let llama_stdout = String::from_utf8_lossy(&llama_output.stdout);
     println!("{}", llama_stdout);
 
@@ -71,7 +71,7 @@ fn main() {
         let ratio = our_gflops / llama_gflops * 100.0;
         let status = if ratio >= 100.0 { "✓ EXCEED" } else if ratio >= 95.0 { "~ MATCH" } else { "✗ BELOW" };
 
-        println!("│ {:7} │ {:8.2} │ {:8.2} │ {:7.1}% │ {:8} │", 
+        println!("│ {:7} │ {:8.2} │ {:8.2} │ {:7.1}% │ {:8} │",
             name, our_gflops, llama_gflops, ratio, status);
     }
 
@@ -90,7 +90,7 @@ fn warmup_gpu(device: &Device, queue: &metal::CommandQueue) {
     let k = 4096usize;
     let nb = (k + 255) / 256;
     let ws = m * nb * 144;
-    
+
     let weights = device.new_buffer(ws as u64, metal::MTLResourceOptions::StorageModeShared);
     let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
     let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
@@ -132,7 +132,7 @@ fn benchmark(
 ) -> f64 {
     let nb = (k + 255) / 256;
     let ws = m * nb * bs;
-    
+
     let weights = device.new_buffer(ws as u64, metal::MTLResourceOptions::StorageModeShared);
     let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
     let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);

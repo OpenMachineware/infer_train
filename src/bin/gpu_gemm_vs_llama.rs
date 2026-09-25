@@ -33,21 +33,21 @@ fn main() {
     println!("llama.cpp uses: Tiled GEMM with dequantization to FP16");
     println!("Our kernel: Direct K-quant processing without dequantization");
     println!();
-    
+
     let metal_ctx = MetalContext::new().expect("Failed to create Metal context");
     let m = 4096;
-    
+
     println!("Testing Q4_K GEMM across K dimensions (M={}, N=16)", m);
     println!();
     println!("K\tGFLOPS\tNotes");
-    
+
     for k in [256, 512, 1024, 2048, 4096].iter() {
         if k % 256 != 0 { continue; }
-        
+
         let nb = k / 256;
         let weights = generate_q4_k_weights(m, *k);
         let input = generate_f32_input(16, *k);
-        
+
         // Run multiple iterations for stable measurement
         let start = Instant::now();
         let iterations = 10;
@@ -57,12 +57,12 @@ fn main() {
         let elapsed = start.elapsed().as_micros() as f64 / iterations as f64;
         let flops = 2.0 * m as f64 * 16.0 * *k as f64;
         let gflops = flops / elapsed / 1000.0;
-        
+
         let path = if nb <= 4 { "Small K (per-thread output)" } else { "Large K (block parallel)" };
-        
+
         println!("{}\t{:.0}\t{}", k, gflops, path);
     }
-    
+
     println!();
     println!("To compare with llama.cpp:");
     println!("  1. llama-bench -m <model.q4_k.gguf> -p 16 -n 128");

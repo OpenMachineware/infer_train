@@ -67,7 +67,7 @@ fn test_q4_k_gemm(device: &Device, pipeline: &metal::ComputePipelineState) {
     // Allocate buffers with test data
     // For now, use simple test: all weights = 1.0, all inputs = 1.0
     // Expected: each output = K * 1.0 = K
-    
+
     // Create weights: For Q4_K, we need to create blocks
     // For simplicity, create blocks with d=1.0 (scale), dmin=0, scales=1, qs encoding 1.0
     let mut weights = vec![0u8; weights_size];
@@ -89,7 +89,7 @@ fn test_q4_k_gemm(device: &Device, pipeline: &metal::ComputePipelineState) {
             weights[offset + 16 + j] = 0x11; // Both nibbles = 1
         }
     }
-    
+
     // Create input: all 1.0 in FP16 = 0x3C00
     let input: Vec<u16> = vec![0x3C00; k * n];
     let output = vec![0f32; m * n];

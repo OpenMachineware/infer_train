@@ -147,23 +147,19 @@ impl RmsNormMetalContext {
         encoder.set_bytes(3, std::mem::size_of::<i32>() as u64, &ne00 as *const i32 as *const std::ffi::c_void);
         encoder.set_bytes(4, std::mem::size_of::<f32>() as u64, &eps as *const f32 as *const std::ffi::c_void);
 
-        // Calculate threadgroup size
-        // Each threadgroup processes one row
-        // Use 32 threads minimum (Metal SIMD width) for proper reduction
+        // Calculate threadgroup size - match llama.cpp's pattern
+        // For vec4 kernel, use hidden_dim/4; for scalar, use hidden_dim
+        let ne00_t = if use_vec4 { hidden_dim / 4 } else { hidden_dim };
         let max_threads_per_group = pipeline.max_total_threads_per_threadgroup() as usize;
-        let threads_per_row = if hidden_dim <= 32 {
-            32  // Minimum for proper simd_sum reduction
-        } else if hidden_dim <= 64 {
-            64
-        } else if hidden_dim <= 128 {
-            128
-        } else if hidden_dim <= 256 {
-            256
-        } else {
-            max_threads_per_group.min(512)
-        };
 
-        let threads_per_row = threads_per_row.min(max_threads_per_group);
+        // Start at 32 (SIMD width) and double until >= ne00_t
+        let mut threads_per_row = 32;
+        while threads_per_row < ne00_t && threads_per_row < max_threads_per_group {
+            threads_per_row *= 2;
+        }
+        // Cap at max threads and round up to nearest 32
+        threads_per_row = threads_per_row.min(max_threads_per_group);
+        threads_per_row = ((ne00_t + 31) / 32 * 32).min(threads_per_row);
 
         let threadgroup_size = MTLSize {
             width: threads_per_row as u64,

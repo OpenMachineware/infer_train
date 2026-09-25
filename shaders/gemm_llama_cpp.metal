@@ -350,7 +350,7 @@ kernel void kernel_mul_mm(
     // For simple case (no batch), im=0, so no batch offset needed
     // For batched case, output is laid out as [batch][M][N] = [ne12*ne13][ne0][ne1]
     const int batch_offset = i12 * args.ne0 * args.ne1 + i13 * args.ne12 * args.ne0 * args.ne1;
-    
+
     device float * dst_f32 = (device float *)dst
         + batch_offset
         + args.ne1*r0 + r1;

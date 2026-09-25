@@ -46,13 +46,13 @@ fn main() {
 
     println!("Testing Q4_K templated GEMM (M={}, N={}, K={})", m, n, k);
     println!("Weights: {} blocks ({} bytes), Input: {} elements", weights.len(), weights.len() * std::mem::size_of::<BlockQ4K>(), input.len());
-    
+
     // Check input layout
     println!("\nInput matrix layout check:");
     println!("  Element 0: {:.4}", input[0]);
     println!("  Element K: {:.4} (expect column 1 start if column-major)", input[k]);
     println!("  Element K+1: {:.4}", input[k+1]);
-    
+
     // Test templated kernel
     println!("\n1. Testing templated kernel...");
     let template_result = match ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input) {
@@ -84,20 +84,20 @@ fn main() {
             None
         }
     };
-    
+
     // Compare results
     if let (Some(t), Some(h)) = (&template_result, &hand_result) {
         println!("\n3. Result comparison:");
         let ratio = t[0] / h[0];
         println!("   Ratio of first values: {:.4} / {:.4} = {:.4}", t[0], h[0], ratio);
-        
+
         // Check if ratio is consistent
         let ratios: Vec<f64> = t.iter().zip(h.iter())
             .filter(|(_, hv)| hv.abs() > 0.001)
             .take(100)
             .map(|(tv, hv)| *tv as f64 / *hv as f64)
             .collect();
-        
+
         if !ratios.is_empty() {
             let avg_ratio = ratios.iter().sum::<f64>() / ratios.len() as f64;
             println!("   Average ratio (first 100 non-zero): {:.4}", avg_ratio);

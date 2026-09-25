@@ -63,7 +63,7 @@ fn main() {
 
     // Create specialized function with function constants
     let constant_values = FunctionConstantValues::new();
-    
+
     // Set function constants for optimization
     // bc_inp = false (K=4096 is divisible by 32)
     // bc_out = false (M=4096 divisible by 64, N=128 divisible by 32)
@@ -71,7 +71,7 @@ fn main() {
     // r2 = 1, r3 = 1 (no broadcast)
     let false_val: bool = false;
     let one_val: i16 = 1;
-    
+
     unsafe {
         constant_values.set_constant_value_at_index(
             &false_val as *const _ as *const std::ffi::c_void,

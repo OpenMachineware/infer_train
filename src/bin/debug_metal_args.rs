@@ -17,7 +17,7 @@ fn main() {
     let w: Vec<f32> = vec![1.0, 1.0, 1.0, 1.0];
 
     println!("Input: {:?}", x);
-    
+
     // Expected
     let sum: f64 = x.iter().map(|&v| (v * v) as f64).sum();
     let mean = sum / hidden_dim as f64;
@@ -25,7 +25,7 @@ fn main() {
     println!("Sum of squares: {}", sum);
     println!("Mean: {}", mean);
     println!("Scale: {}", scale);
-    
+
     let expected: Vec<f32> = x.iter().map(|&v| v * scale).collect();
     println!("Expected: {:?}", expected);
 

@@ -3,35 +3,35 @@ use metal::{Device, MTLSize, CompileOptions, FunctionDescriptor, FunctionConstan
 
 fn main() {
     println!("=== All N Range Performance ===\n");
-    
+
     let device = Device::system_default().expect("No Metal device found");
     let queue = device.new_command_queue();
-    
+
     // Compile template kernel with function constants
     let template_shader = include_str!("../../shaders/mul_mm_standalone.metal");
     let opts = CompileOptions::new();
     opts.set_fast_math_enabled(true);
     let template_lib = device.new_library_with_source(template_shader, &opts).unwrap();
-    
+
     // Test different N values
     let n_values = [1, 2, 4, 8, 16, 32, 64, 128];
     let m = 4096usize;
     let k = 4096usize;
     let block_size = 144;
-    
+
     println!("┌─────┬──────────┬────────────┬──────────┐");
     println!("│  N  │ GFLOPS   │ Kernel     │ Status   │");
     println!("├─────┼──────────┼────────────┼──────────┤");
-    
+
     // Warmup
     warmup_gpu(&device, &queue);
-    
+
     for n in n_values {
         let (gflops, kernel_type) = benchmark_n(&device, &queue, &template_lib, m, n, k, block_size);
         let status = if gflops > 1000.0 { "✓ GOOD" } else if gflops > 500.0 { "~ OK" } else { "✗ SLOW" };
         println!("│ {:3} │ {:8.2} │ {:10} │ {:8} │", n, gflops, kernel_type, status);
     }
-    
+
     println!("└─────┴──────────┴────────────┴──────────┘");
 }
 
@@ -41,7 +41,7 @@ fn warmup_gpu(device: &Device, queue: &metal::CommandQueue) {
     let opts = CompileOptions::new();
     opts.set_fast_math_enabled(true);
     let lib = device.new_library_with_source(shader, &opts).unwrap();
-    
+
     // Create function constants
     let cv = FunctionConstantValues::new();
     let false_val: bool = false;
@@ -51,14 +51,14 @@ fn warmup_gpu(device: &Device, queue: &metal::CommandQueue) {
         cv.set_constant_value_at_index(&false_val as *const _ as *const std::ffi::c_void, MTLDataType::Bool, 1);
         cv.set_constant_value_at_index(&one_val as *const _ as *const std::ffi::c_void, MTLDataType::Short, 2);
     }
-    
+
     let desc = FunctionDescriptor::new();
     desc.set_name("kernel_mul_mm_q4_K_f32");
     desc.set_constant_values(&cv);
-    
+
     let func = lib.new_function_with_descriptor(&desc).unwrap();
     let pipe = device.new_compute_pipeline_state_with_function(&func).unwrap();
-    
+
     // Warmup iterations
     for _ in 0..100 {
         let cmd = queue.new_command_buffer();
@@ -90,7 +90,7 @@ fn benchmark_n(
         let lib = device.new_library_with_source(shader, &opts).unwrap();
         let func = lib.get_function("kernel_mul_mv_q4_K_f32", None).unwrap();
         let pipe = device.new_compute_pipeline_state_with_function(&func).unwrap();
-        
+
         let gflops = benchmark_mv(&device, &queue, &pipe, m, k, block_size);
         (gflops, "MV")
     } else if n >= 32 {
@@ -105,14 +105,14 @@ fn benchmark_n(
             cv.set_constant_value_at_index(&bc_out_val as *const _ as *const std::ffi::c_void, MTLDataType::Bool, 1);
             cv.set_constant_value_at_index(&one_val as *const _ as *const std::ffi::c_void, MTLDataType::Short, 2);
         }
-        
+
         let desc = FunctionDescriptor::new();
         desc.set_name("kernel_mul_mm_q4_K_f32");
         desc.set_constant_values(&cv);
-        
+
         let func = template_lib.new_function_with_descriptor(&desc).unwrap();
         let pipe = device.new_compute_pipeline_state_with_function(&func).unwrap();
-        
+
         let gflops = benchmark_gemm(&device, &queue, &pipe, m, n, k, block_size);
         (gflops, "Template")
     } else {
@@ -123,7 +123,7 @@ fn benchmark_n(
         let lib = device.new_library_with_source(shader, &opts).unwrap();
         let func = lib.get_function("kernel_gemm_q4_k_f32", None).unwrap();
         let pipe = device.new_compute_pipeline_state_with_function(&func).unwrap();
-        
+
         let gflops = benchmark_old_gemm(&device, &queue, &pipe, m, n, k, block_size);
         (gflops, "Old GEMM")
     }
@@ -139,11 +139,11 @@ fn benchmark_mv(
 ) -> f64 {
     let num_blocks = (k + 255) / 256;
     let ws = m * num_blocks * block_size;
-    
+
     let weights = device.new_buffer(ws as u64, metal::MTLResourceOptions::StorageModeShared);
     let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
     let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
-    
+
     #[repr(C)]
     struct Args { ne00: u32, ne01: u32, nb01: u64 }
     let args = Args { ne00: k as u32, ne01: m as u32, nb01: (num_blocks * block_size) as u64 };
@@ -152,10 +152,10 @@ fn benchmark_mv(
         std::mem::size_of::<Args>() as u64,
         metal::MTLResourceOptions::StorageModeShared,
     );
-    
+
     let grid = MTLSize::new((m / 4) as u64, 1, 1);
     let tg = MTLSize::new(32, 2, 1);
-    
+
     // Warmup
     for _ in 0..20 {
         let cmd = queue.new_command_buffer();
@@ -170,7 +170,7 @@ fn benchmark_mv(
         cmd.commit();
         cmd.wait_until_completed();
     }
-    
+
     // Benchmark
     let start = std::time::Instant::now();
     for _ in 0..30 {
@@ -186,7 +186,7 @@ fn benchmark_mv(
         cmd.commit();
         cmd.wait_until_completed();
     }
-    
+
     let elapsed = start.elapsed().as_secs_f64();
     2.0 * m as f64 * k as f64 * 30.0 / elapsed / 1e9
 }
@@ -204,11 +204,11 @@ fn benchmark_gemm(
     let ws = m * num_blocks * block_size;
     let is = n * k * 2; // FP16
     let os = m * n * 4;
-    
+
     let weights = device.new_buffer(ws as u64, metal::MTLResourceOptions::StorageModeShared);
     let input = device.new_buffer(is as u64, metal::MTLResourceOptions::StorageModeShared);
     let output = device.new_buffer(os as u64, metal::MTLResourceOptions::StorageModeShared);
-    
+
     #[repr(C)]
     struct Args {
         ne00: i32, ne02: i32, nb01: u64, nb02: u64, nb03: u64,
@@ -225,10 +225,10 @@ fn benchmark_gemm(
         std::mem::size_of::<Args>() as u64,
         metal::MTLResourceOptions::StorageModeShared,
     );
-    
+
     let grid = MTLSize::new(((n + 31) / 32) as u64, ((m + 63) / 64) as u64, 1);
     let tg = MTLSize::new(32, 4, 1);
-    
+
     // Warmup + benchmark
     for _ in 0..20 {
         let cmd = queue.new_command_buffer();
@@ -244,7 +244,7 @@ fn benchmark_gemm(
         cmd.commit();
         cmd.wait_until_completed();
     }
-    
+
     let start = std::time::Instant::now();
     for _ in 0..30 {
         let cmd = queue.new_command_buffer();
@@ -260,7 +260,7 @@ fn benchmark_gemm(
         cmd.commit();
         cmd.wait_until_completed();
     }
-    
+
     let elapsed = start.elapsed().as_secs_f64();
     2.0 * m as f64 * n as f64 * k as f64 * 30.0 / elapsed / 1e9
 }

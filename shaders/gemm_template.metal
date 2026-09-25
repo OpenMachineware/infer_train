@@ -34,11 +34,11 @@ inline void dequantize_q4_K(device const block_q4_K& xb, threadgroup T4x4& reg, 
     // i is in range 0..15 (16 blocks of 16 values each)
     const uint32_t q_offset = i * 8;  // 8 bytes per block of 16 values
     const uint32_t scale_idx = i / 8;  // 2 blocks share a scale
-    
+
     // Get scales
     const uint8_t sc = xb.scales[scale_idx] & 0x3F;
     const uint8_t m = xb.scales[scale_idx + 1] & 0x3F;
-    
+
     // Dequantize 16 values from 8 bytes
     for (uint32_t j = 0; j < 4; ++j) {
         const uint8_t q = xb.qs[q_offset + j];
@@ -49,7 +49,7 @@ inline void dequantize_q4_K(device const block_q4_K& xb, threadgroup T4x4& reg, 
 
 // Templated GEMM kernel
 template <typename T, typename T4x4, typename simdgroup_T8x8,
-          typename block_q, int qk, 
+          typename block_q, int qk,
           void (*dequantize_func)(device const block_q&, threadgroup T4x4&, uint32_t),
           typename TACC, typename TACC4x4, typename TACC2x4>
 kernel void kernel_mul_mm(
@@ -75,21 +75,21 @@ kernel void kernel_mul_mm(
     const int nb = ne00 / qk;
     const int nsg = 4;  // 4 simdgroups per threadgroup (like llama.cpp)
     const int nk = N_MM_NK_TOTAL;  // 32
-    
+
     // Threadgroup shared memory for dequantized A tile
     threadgroup T4x4 A_tile[4][nk];  // 4 rows x 32 columns per row = 128 values
     threadgroup T4x4 B_tile[nsg][nk];  // 4 simdgroups x 32 columns
-    
+
     // Get row/column indices
     const int r0 = tgpig.x;
     const int c0 = tgpig.y;
-    
+
     device const block_q* x = (device const block_q*)(src0 + r0 * nb01);
     device const half* y = (device const half*)(src1 + c0 * nb11);
-    
+
     simdgroup_T8x8 C_result;
     simdgroup_fill(C_result, 0);
-    
+
     for (int k0 = 0; k0 < nb; k0 += nk / 4) {  // Each iteration processes 8 blocks (32 values per row)
         // Dequantize A tile into threadgroup memory
         for (int k = tiisg; k < nk; k += 32) {
@@ -98,9 +98,9 @@ kernel void kernel_mul_mm(
                 dequantize_func(x[k_block], A_tile[sgitg][k], k % 4);
             }
         }
-        
+
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        
+
         // Load B tile from src1 (FP16)
         for (int k = tiisg; k < nk; k += 32) {
             const int k_offset = (k0 + k / 4) * qk + (k % 4) * 8;
@@ -108,21 +108,21 @@ kernel void kernel_mul_mm(
             device const half* y_ptr = y + k_offset;
             // ... load into B_tile ...
         }
-        
+
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        
+
         // Matrix multiplication using Metal tensor operations
         // Each simdgroup multiplies 8x8 tile of A x 8x8 tile of B
         simdgroup_T8x8 A_sg;
         simdgroup_T8x8 B_sg;
-        
+
         // Load from threadgroup tiles into simdgroup registers
         simdgroup_load(A_sg, A_tile[sgitg], nk);
         simdgroup_load(B_sg, B_tile[sgitg], nk);
-        
+
         simdgroup_multiply(C_result, A_sg, B_sg);
     }
-    
+
     // Store result
     if (r0 < ne01 && c0 < ne11) {
         simdgroup_store(C_result, dst + r0 * ne11 + c0, ne11);

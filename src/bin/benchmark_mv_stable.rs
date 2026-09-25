@@ -24,11 +24,11 @@ fn main() {
     let block_size = 144;
     let num_blocks = (k + 255) / 256;
     let weights_size = m * num_blocks * block_size;
-    
+
     let weights = device.new_buffer(weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
     let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
     let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
-    
+
     #[repr(C)]
     struct Args { ne00: u32, ne01: u32, nb01: u64 }
     let args = Args { ne00: k as u32, ne01: m as u32, nb01: (num_blocks * block_size) as u64 };
@@ -54,14 +54,14 @@ fn main() {
         enc.end_encoding();
         cmd.commit();
         cmd.wait_until_completed();
-        
+
         if i % 20 == 19 {
             println!("  预热进度: {}/100", i + 1);
         }
     }
 
     println!("预热完成，GPU已热\n");
-    
+
     // ========== 阶段2: 稳定基准测试 ==========
     println!("阶段2: 稳定基准测试\n");
 
@@ -105,7 +105,7 @@ fn benchmark(
 ) -> f64 {
     let nb = (k + 255) / 256;
     let ws = m * nb * bs;
-    
+
     let weights = device.new_buffer(ws as u64, metal::MTLResourceOptions::StorageModeShared);
     let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
     let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);

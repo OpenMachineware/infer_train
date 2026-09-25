@@ -49,8 +49,8 @@ fn main() {
             .find(|(n, _)| n == name)
             .map(|(_, g)| *g)
             .unwrap_or(0.0);
-        
-        println!("│ {:7} │ {:8.2} │ {:8.2} │ GPU vs CPU│", 
+
+        println!("│ {:7} │ {:8.2} │ {:8.2} │ GPU vs CPU│",
             name, our_gflops, llama_gflops);
     }
 
@@ -70,7 +70,7 @@ fn warmup_gpu(device: &Device, queue: &metal::CommandQueue) {
     let k = 4096usize;
     let nb = (k + 255) / 256;
     let ws = m * nb * 144;
-    
+
     let weights = device.new_buffer(ws as u64, metal::MTLResourceOptions::StorageModeShared);
     let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
     let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
@@ -143,7 +143,7 @@ fn benchmark_format(
     let shader = include_str!("../../shaders/mv_iq_tq.metal");
     let iq_grid_tables = include_str!("../../shaders/iq_grid_tables.h");
     let combined = shader.replace("#include \"iq_grid_tables.h\"", iq_grid_tables);
-    
+
     let opts = CompileOptions::new();
     opts.set_fast_math_enabled(true);
     let lib = device.new_library_with_source(&combined, &opts)?;
@@ -152,7 +152,7 @@ fn benchmark_format(
 
     let num_blocks = k / block_size;
     let weights_size = m * num_blocks * bytes_per_block;
-    
+
     let weights = device.new_buffer(weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
     let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
     let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
