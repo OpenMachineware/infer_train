@@ -128,8 +128,7 @@ impl RmsNormMetalContext {
         let encoder = command_buffer.new_compute_command_encoder();
 
         // Use vectorized version if hidden_dim is divisible by 4
-        // Note: Disable vec4 for now until we fix it
-        let use_vec4 = false; // hidden_dim % 4 == 0;
+        let use_vec4 = hidden_dim % 4 == 0;
         let pipeline = if use_vec4 {
             &self.pipeline_vec4
         } else {

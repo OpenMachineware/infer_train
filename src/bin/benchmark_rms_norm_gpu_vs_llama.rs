@@ -1,12 +1,13 @@
 use metal::{Device, CommandQueue, Library, ComputePipelineState, MTLSize, Buffer};
 use std::cell::RefCell;
 
-// Our Metal context
+// Our Metal context with both scalar and vec4 kernels
 struct RmsNormMetalContext {
     device: Device,
     queue: CommandQueue,
     library: Library,
     pipeline: ComputePipelineState,
+    pipeline_vec4: ComputePipelineState,
     input_buffer: RefCell<Option<Buffer>>,
     weight_buffer: RefCell<Option<Buffer>>,
     output_buffer: RefCell<Option<Buffer>>,
@@ -23,7 +24,6 @@ impl RmsNormMetalContext {
         let compile_options = metal::CompileOptions::new();
         compile_options.set_fast_math_enabled(true);
 
-        // Use our simplified kernel
         let source = include_str!("../../shaders/rms_norm.metal");
         let library = device.new_library_with_source(source, &compile_options)
             .map_err(|e| format!("Failed to compile library: {}", e))?;
@@ -33,8 +33,13 @@ impl RmsNormMetalContext {
         let pipeline = device.new_compute_pipeline_state_with_function(&kernel)
             .map_err(|e| format!("Failed to create pipeline: {}", e))?;
 
+        let kernel_vec4 = library.get_function("kernel_rms_norm_f32_4", None)
+            .map_err(|e| format!("Failed to get vec4 kernel: {}", e))?;
+        let pipeline_vec4 = device.new_compute_pipeline_state_with_function(&kernel_vec4)
+            .map_err(|e| format!("Failed to create vec4 pipeline: {}", e))?;
+
         Ok(Self {
-            device, queue, library, pipeline,
+            device, queue, library, pipeline, pipeline_vec4,
             input_buffer: RefCell::new(None),
             weight_buffer: RefCell::new(None),
             output_buffer: RefCell::new(None),
@@ -61,42 +66,42 @@ impl RmsNormMetalContext {
         let weight_buffer = self.get_buffer(w.len() * 4, &self.weight_buffer, &self.weight_size);
         let output_buffer = self.get_buffer(x.len() * 4, &self.output_buffer, &self.output_size);
 
-        // Copy input once
         unsafe {
             std::ptr::copy_nonoverlapping(x.as_ptr(), input_buffer.contents() as *mut f32, x.len());
             std::ptr::copy_nonoverlapping(w.as_ptr(), weight_buffer.contents() as *mut f32, w.len());
         }
 
+        let use_vec4 = hidden_dim % 4 == 0;
+        let pipeline = if use_vec4 { &self.pipeline_vec4 } else { &self.pipeline };
         let ne00 = hidden_dim as i32;
-        let max_threads = self.pipeline.max_total_threads_per_threadgroup() as usize;
+        let max_threads = pipeline.max_total_threads_per_threadgroup() as usize;
 
         // Warm up
         for _ in 0..5 {
-            let _ = self.dispatch(&input_buffer, &weight_buffer, &output_buffer, ne00, n_rows, eps, max_threads);
+            let _ = self.dispatch(&input_buffer, &weight_buffer, &output_buffer, ne00, n_rows, eps, max_threads, pipeline);
         }
 
         // Benchmark
         let start = std::time::Instant::now();
         for _ in 0..iterations {
-            let _ = self.dispatch(&input_buffer, &weight_buffer, &output_buffer, ne00, n_rows, eps, max_threads);
+            let _ = self.dispatch(&input_buffer, &weight_buffer, &output_buffer, ne00, n_rows, eps, max_threads, pipeline);
         }
         let elapsed = start.elapsed();
 
         elapsed.as_secs_f64() / iterations as f64
     }
 
-    fn dispatch(&self, input: &Buffer, weight: &Buffer, output: &Buffer, ne00: i32, n_rows: usize, eps: f32, max_threads: usize) -> Result<(), String> {
+    fn dispatch(&self, input: &Buffer, weight: &Buffer, output: &Buffer, ne00: i32, n_rows: usize, eps: f32, max_threads: usize, pipeline: &ComputePipelineState) -> Result<(), String> {
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
 
-        encoder.set_compute_pipeline_state(&self.pipeline);
+        encoder.set_compute_pipeline_state(pipeline);
         encoder.set_buffer(0, Some(input), 0);
         encoder.set_buffer(1, Some(weight), 0);
         encoder.set_buffer(2, Some(output), 0);
         encoder.set_bytes(3, 4, &ne00 as *const i32 as *const std::ffi::c_void);
         encoder.set_bytes(4, 4, &eps as *const f32 as *const std::ffi::c_void);
 
-        // Match llama.cpp's thread calculation
         let mut nth = 32;
         while nth < ne00 as usize && nth < max_threads {
             nth *= 2;
@@ -106,7 +111,6 @@ impl RmsNormMetalContext {
         let grid_size = MTLSize { width: n_rows as u64, height: 1, depth: 1 };
         let threadgroup_size = MTLSize { width: nth as u64, height: 1, depth: 1 };
 
-        // Allocate threadgroup memory (32 floats minimum)
         let simd_groups = (nth + 31) / 32;
         let shmem_size = std::cmp::max(32, simd_groups) * 4;
         encoder.set_threadgroup_memory_length(0, shmem_size as u64);
@@ -121,7 +125,7 @@ impl RmsNormMetalContext {
     }
 }
 
-// llama.cpp-style kernel from their norm.metal
+// llama.cpp-style kernel
 struct LlamaCppMetalContext {
     device: Device,
     queue: CommandQueue,
@@ -143,7 +147,6 @@ impl LlamaCppMetalContext {
         let compile_options = metal::CompileOptions::new();
         compile_options.set_fast_math_enabled(true);
 
-        // Use llama.cpp's exact kernel structure
         let source = r#"
 #include <metal_stdlib>
 using namespace metal;
@@ -167,7 +170,6 @@ struct rms_norm_args {
     uint64_t nb1_out;
 };
 
-// Simplified version of llama.cpp's kernel_rms_norm_fuse_impl
 kernel void kernel_rms_norm_f32(
         constant rms_norm_args & args,
         device const char * src0,
@@ -185,11 +187,9 @@ kernel void kernel_rms_norm_f32(
     }
 
     const int i01 = tgpig.x;
-    const int i02 = tgpig.y;
-    const int i03 = tgpig.z;
 
-    device const float * x = (device const float *) (src0 + i03*args.nb3 + i02*args.nb2 + i01*args.nb1);
-    device const float * w = (device const float *) (src1_0);
+    device const float * x = (device const float *) (src0 + i01*args.nb1);
+    device const float * w = (device const float *) src1_0;
 
     float sumf = 0.0f;
 
@@ -212,7 +212,7 @@ kernel void kernel_rms_norm_f32(
     const float mean  = sumf / args.ne00;
     const float scale = 1.0f / sqrt(mean + args.eps);
 
-    device float * y = (device float *) (dst + i03*args.nb3_out + i02*args.nb2_out + i01*args.nb1_out);
+    device float * y = (device float *) (dst + i01*args.nb1_out);
     for (int i00 = tpitg.x; i00 < args.ne00_t; i00 += ntg.x) {
         y[i00] = x[i00] * scale * w[i00];
     }
@@ -256,7 +256,6 @@ kernel void kernel_rms_norm_f32(
         let weight_buffer = self.get_buffer(w.len() * 4, &self.weight_buffer, &self.weight_size);
         let output_buffer = self.get_buffer(x.len() * 4, &self.output_buffer, &self.output_size);
 
-        // Copy input once
         unsafe {
             std::ptr::copy_nonoverlapping(x.as_ptr(), input_buffer.contents() as *mut f32, x.len());
             std::ptr::copy_nonoverlapping(w.as_ptr(), weight_buffer.contents() as *mut f32, w.len());
@@ -264,55 +263,30 @@ kernel void kernel_rms_norm_f32(
 
         let max_threads = self.pipeline.max_total_threads_per_threadgroup() as usize;
 
-        // Build args struct matching llama.cpp
         #[repr(C)]
         struct RmsNormArgs {
-            ne00: i32,
-            ne00_t: i32,
-            nb1: u64,
-            nb2: u64,
-            nb3: u64,
-            eps: f32,
-            nef1: [i32; 4],
-            nef2: [i32; 4],
-            nef3: [i32; 4],
-            nbf1: [u64; 4],
-            nbf2: [u64; 4],
-            nbf3: [u64; 4],
-            scale: f32,
-            nb3_out: u64,
-            nb2_out: u64,
-            nb1_out: u64,
+            ne00: i32, ne00_t: i32, nb1: u64, nb2: u64, nb3: u64, eps: f32,
+            nef1: [i32; 4], nef2: [i32; 4], nef3: [i32; 4],
+            nbf1: [u64; 4], nbf2: [u64; 4], nbf3: [u64; 4],
+            scale: f32, nb3_out: u64, nb2_out: u64, nb1_out: u64,
         }
 
         let args = RmsNormArgs {
-            ne00: hidden_dim as i32,
-            ne00_t: hidden_dim as i32,
-            nb1: row_bytes as u64,
-            nb2: 0,
-            nb3: 0,
-            eps,
-            nef1: [hidden_dim as i32, 0, 0, 0],
-            nef2: [1, 0, 0, 0],
-            nef3: [1, 0, 0, 0],
-            nbf1: [row_bytes as u64, 0, 0, 0],
-            nbf2: [0, 0, 0, 0],
-            nbf3: [0, 0, 0, 0],
-            scale: 1.0,
-            nb3_out: 0,
-            nb2_out: 0,
-            nb1_out: row_bytes as u64,
+            ne00: hidden_dim as i32, ne00_t: hidden_dim as i32,
+            nb1: row_bytes as u64, nb2: 0, nb3: 0, eps,
+            nef1: [hidden_dim as i32, 0, 0, 0], nef2: [1, 0, 0, 0], nef3: [1, 0, 0, 0],
+            nbf1: [row_bytes as u64, 0, 0, 0], nbf2: [0, 0, 0, 0], nbf3: [0, 0, 0, 0],
+            scale: 1.0, nb3_out: 0, nb2_out: 0, nb1_out: row_bytes as u64,
         };
 
-        // Warm up
         let args_bytes = unsafe {
             std::slice::from_raw_parts(&args as *const RmsNormArgs as *const u8, std::mem::size_of::<RmsNormArgs>())
         };
+
         for _ in 0..5 {
             let _ = self.dispatch(&input_buffer, &weight_buffer, &output_buffer, args_bytes, n_rows, max_threads);
         }
 
-        // Benchmark
         let start = std::time::Instant::now();
         for _ in 0..iterations {
             let _ = self.dispatch(&input_buffer, &weight_buffer, &output_buffer, args_bytes, n_rows, max_threads);
@@ -332,7 +306,6 @@ kernel void kernel_rms_norm_f32(
         encoder.set_buffer(2, Some(weight), 0);
         encoder.set_buffer(3, Some(output), 0);
 
-        // Match llama.cpp's thread calculation
         let ne00 = unsafe { *(args.as_ptr() as *const i32) };
         let mut nth = 32;
         while nth < ne00 as usize && nth < max_threads {
@@ -361,16 +334,16 @@ fn main() {
     let ours = RmsNormMetalContext::new().expect("Failed to create our context");
     let llama = LlamaCppMetalContext::new().expect("Failed to create llama.cpp context");
 
-    println!("=== Metal RMSNorm: Our Implementation vs llama.cpp Style ===\n");
+    println!("=== Metal RMSNorm: Our Implementation vs llama.cpp ===\n");
 
     let hidden_dims = vec![512, 1024, 2048, 4096, 8192];
     let batch_sizes = vec![1, 4, 16, 64, 256];
     let eps = 1e-5f32;
-    let iterations = 100;
+    let iterations = 1000;
 
-    println!("Hidden Dimension Scaling (batch=1):");
-    println!("{:<10} {:>15} {:>15} {:>10}", "Dim", "Ours (us)", "llama.cpp (us)", "Ratio");
-    println!("{}", "-".repeat(55));
+    println!("Hidden Dimension Scaling (batch=1, {} iter, 5 warmup):", iterations);
+    println!("{:<10} {:>12} {:>12} {:>8}", "Dim", "Ours (us)", "llama (us)", "Ratio");
+    println!("{}", "-".repeat(50));
 
     for hidden_dim in &hidden_dims {
         let x: Vec<f32> = (0..*hidden_dim).map(|i| ((i % 100) as f32 + 1.0) / 50.0).collect();
@@ -380,12 +353,12 @@ fn main() {
         let t_llama = llama.rms_norm(&x, &w, *hidden_dim, eps, iterations) * 1e6;
         let ratio = t_ours / t_llama;
 
-        println!("{:<10} {:>15.2} {:>15.2} {:>10.2}x", hidden_dim, t_ours, t_llama, ratio);
+        println!("{:<10} {:>12.2} {:>12.2} {:>8.2}x", hidden_dim, t_ours, t_llama, ratio);
     }
 
-    println!("\nBatch Size Scaling (hidden_dim=4096):");
-    println!("{:<10} {:>15} {:>15} {:>10}", "Batch", "Ours (us)", "llama.cpp (us)", "Ratio");
-    println!("{}", "-".repeat(55));
+    println!("\nBatch Size Scaling (hidden_dim=4096, {} iter, 5 warmup):", iterations);
+    println!("{:<10} {:>12} {:>12} {:>8}", "Batch", "Ours (us)", "llama (us)", "Ratio");
+    println!("{}", "-".repeat(50));
 
     let hidden_dim = 4096;
     for batch in &batch_sizes {
@@ -396,6 +369,6 @@ fn main() {
         let t_llama = llama.rms_norm(&x, &w, hidden_dim, eps, iterations) * 1e6;
         let ratio = t_ours / t_llama;
 
-        println!("{:<10} {:>15.2} {:>15.2} {:>10.2}x", batch, t_ours, t_llama, ratio);
+        println!("{:<10} {:>12.2} {:>12.2} {:>8.2}x", batch, t_ours, t_llama, ratio);
     }
 }
