@@ -656,3 +656,124 @@ impl SoftmaxMetalContext {
         Ok(output)
     }
 }
+
+// ============== Activation Metal Context ==============
+
+pub struct ActivationMetalContext {
+    device: Device,
+    queue: CommandQueue,
+    silu_pipeline: ComputePipelineState,
+    gelu_pipeline: ComputePipelineState,
+    gelu_quick_pipeline: ComputePipelineState,
+    input_buffer: RefCell<Option<Buffer>>,
+    output_buffer: RefCell<Option<Buffer>>,
+    buffer_size: RefCell<usize>,
+}
+
+impl ActivationMetalContext {
+    pub fn new() -> Result<Self, String> {
+        let device = Device::system_default()
+            .ok_or("No Metal device found")?;
+
+        let queue = device.new_command_queue();
+
+        let compile_options = metal::CompileOptions::new();
+        compile_options.set_fast_math_enabled(true);
+
+        let source = include_str!("../../../shaders/activation.metal");
+        let library = device
+            .new_library_with_source(source, &compile_options)
+            .map_err(|e| format!("Failed to compile activation library: {}", e))?;
+
+        let silu_kernel = library.get_function("kernel_silu_f32", None)
+            .map_err(|e| format!("Failed to get SiLU kernel: {}", e))?;
+        let silu_pipeline = device.new_compute_pipeline_state_with_function(&silu_kernel)
+            .map_err(|e| format!("Failed to create SiLU pipeline: {}", e))?;
+
+        let gelu_kernel = library.get_function("kernel_gelu_f32", None)
+            .map_err(|e| format!("Failed to get GELU kernel: {}", e))?;
+        let gelu_pipeline = device.new_compute_pipeline_state_with_function(&gelu_kernel)
+            .map_err(|e| format!("Failed to create GELU pipeline: {}", e))?;
+
+        let gelu_quick_kernel = library.get_function("kernel_gelu_quick_f32", None)
+            .map_err(|e| format!("Failed to get GELU-Quick kernel: {}", e))?;
+        let gelu_quick_pipeline = device.new_compute_pipeline_state_with_function(&gelu_quick_kernel)
+            .map_err(|e| format!("Failed to create GELU-Quick pipeline: {}", e))?;
+
+        Ok(Self {
+            device,
+            queue,
+            silu_pipeline,
+            gelu_pipeline,
+            gelu_quick_pipeline,
+            input_buffer: RefCell::new(None),
+            output_buffer: RefCell::new(None),
+            buffer_size: RefCell::new(0),
+        })
+    }
+
+    fn get_or_create_buffer(&self, size: usize) -> (Buffer, Buffer) {
+        let mut buffer_size = self.buffer_size.borrow_mut();
+        let mut input_buffer = self.input_buffer.borrow_mut();
+        let mut output_buffer = self.output_buffer.borrow_mut();
+
+        if *buffer_size != size {
+            *input_buffer = Some(self.device.new_buffer(size as u64, metal::MTLResourceOptions::StorageModeShared));
+            *output_buffer = Some(self.device.new_buffer(size as u64, metal::MTLResourceOptions::StorageModeShared));
+            *buffer_size = size;
+        }
+
+        (input_buffer.as_ref().unwrap().clone(), output_buffer.as_ref().unwrap().clone())
+    }
+
+    pub fn silu(&self, input: &[f32]) -> Result<Vec<f32>, String> {
+        self.run_activation(&self.silu_pipeline, input)
+    }
+
+    pub fn gelu(&self, input: &[f32]) -> Result<Vec<f32>, String> {
+        self.run_activation(&self.gelu_pipeline, input)
+    }
+
+    pub fn gelu_quick(&self, input: &[f32]) -> Result<Vec<f32>, String> {
+        self.run_activation(&self.gelu_quick_pipeline, input)
+    }
+
+    fn run_activation(&self, pipeline: &ComputePipelineState, input: &[f32]) -> Result<Vec<f32>, String> {
+        let n = input.len();
+        let size = n * std::mem::size_of::<f32>();
+        let (input_buffer, output_buffer) = self.get_or_create_buffer(size);
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                input.as_ptr(),
+                input_buffer.contents() as *mut f32,
+                n,
+            );
+        }
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(pipeline);
+        encoder.set_buffer(0, Some(&input_buffer), 0);
+        encoder.set_buffer(1, Some(&output_buffer), 0);
+
+        let threadgroup_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let grid_size = MTLSize { width: n as u64, height: 1, depth: 1 };
+        encoder.dispatch_threads(grid_size, threadgroup_size);
+        encoder.end_encoding();
+
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let mut output = vec![0.0f32; n];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                output_buffer.contents() as *const f32,
+                output.as_mut_ptr(),
+                n,
+            );
+        }
+
+        Ok(output)
+    }
+}
