@@ -24,6 +24,7 @@ pub unsafe fn rms_norm_f32(
         let dst_row = &mut dst[row_offset..row_offset + hidden_dim];
 
         // Compute sum of squares using NEON
+        // Use f64 for sum accumulation (like llama.cpp's ggml_float)
         // Process 4 elements at a time
         let chunks = hidden_dim / 4;
         let mut sum_vec = vdupq_n_f32(0.0);
@@ -33,16 +34,17 @@ pub unsafe fn rms_norm_f32(
             sum_vec = vmlaq_f32(sum_vec, v, v);
         }
 
-        let mut sum_sq = vaddvq_f32(sum_vec);
+        // Accumulate in f64 for precision (matches llama.cpp)
+        let mut sum_sq: f64 = vaddvq_f32(sum_vec) as f64;
 
         // Handle remainder
         for i in (chunks * 4)..hidden_dim {
-            sum_sq += x_row[i] * x_row[i];
+            sum_sq += (x_row[i] * x_row[i]) as f64;
         }
 
-        // Compute scale
-        let mean_sq = sum_sq / hidden_dim as f32;
-        let scale = 1.0 / (mean_sq + eps).sqrt();
+        // Compute scale (llama.cpp: scale = 1/sqrt(mean + eps))
+        let mean = sum_sq / hidden_dim as f64;
+        let scale = (1.0 / (mean + eps as f64).sqrt()) as f32;
 
         // Apply normalization and weight
         for i in 0..chunks {
@@ -76,6 +78,7 @@ pub unsafe fn rms_norm_fp16_to_f32(
         let dst_row = &mut dst[row_offset..row_offset + hidden_dim];
 
         // Compute sum of squares using NEON
+        // Use f64 for sum accumulation (like llama.cpp's ggml_float)
         // Process 8 FP16 at a time
         let chunks = hidden_dim / 8;
         let mut sum_vec = vdupq_n_f32(0.0);
@@ -92,17 +95,18 @@ pub unsafe fn rms_norm_fp16_to_f32(
             sum_vec = vmlaq_f32(sum_vec, v_f32_hi, v_f32_hi);
         }
 
-        let mut sum_sq = vaddvq_f32(sum_vec);
+        // Accumulate in f64 for precision (matches llama.cpp)
+        let mut sum_sq: f64 = vaddvq_f32(sum_vec) as f64;
 
         // Handle remainder
         for i in (chunks * 8)..hidden_dim {
-            let x_f32 = f32::from_bits((x_row[i] as u32) << 16);
-            sum_sq += x_f32 * x_f32;
+            let x_f32 = half::f16::from_bits(x_row[i]).to_f32();
+            sum_sq += (x_f32 * x_f32) as f64;
         }
 
-        // Compute scale
-        let mean_sq = sum_sq / hidden_dim as f32;
-        let scale = 1.0 / (mean_sq + eps).sqrt();
+        // Compute scale (llama.cpp: scale = 1/sqrt(mean + eps))
+        let mean = sum_sq / hidden_dim as f64;
+        let scale = (1.0 / (mean + eps as f64).sqrt()) as f32;
 
         // Apply normalization and weight
         for i in 0..chunks {
@@ -124,7 +128,7 @@ pub unsafe fn rms_norm_fp16_to_f32(
 
         // Handle remainder
         for i in (chunks * 8)..hidden_dim {
-            let x_f32 = f32::from_bits((x_row[i] as u32) << 16);
+            let x_f32 = half::f16::from_bits(x_row[i]).to_f32();
             dst_row[i] = x_f32 * scale * w[i];
         }
     }
