@@ -99,23 +99,42 @@ impl OurSoftmaxMetalContext {
         let ne00 = seq_len as i32;
         let ne01 = n_heads as i32;
 
-        // Warmup
-        for _ in 0..20 {
+        // Warmup - increased to 100 iterations for GPU frequency stabilization
+        for _ in 0..100 {
             let _ = self.dispatch(&input_buffer, &output_buffer, ne00, ne01, n_heads, batch_size, threads_per_row, pipeline, shmem_size);
         }
 
-        // Measure
-        let mut min_time = f64::MAX;
-        for _ in 0..iterations {
+        // Measure using batched dispatch to reduce CPU timing variance
+        let batch_iters = 100; // dispatches per command buffer
+        let num_batches = iterations / batch_iters;
+        let mut total_time = 0.0f64;
+
+        for _ in 0..num_batches {
             let start = std::time::Instant::now();
-            let _ = self.dispatch(&input_buffer, &output_buffer, ne00, ne01, n_heads, batch_size, threads_per_row, pipeline, shmem_size);
-            let elapsed = start.elapsed().as_secs_f64();
-            if elapsed < min_time {
-                min_time = elapsed;
+            {
+                let command_buffer = self.queue.new_command_buffer();
+                let encoder = command_buffer.new_compute_command_encoder();
+                encoder.set_compute_pipeline_state(pipeline);
+                encoder.set_bytes(0, 4, &ne00 as *const i32 as *const std::ffi::c_void);
+                encoder.set_buffer(1, Some(&input_buffer), 0);
+                encoder.set_buffer(2, Some(&output_buffer), 0);
+                encoder.set_bytes(3, 4, &ne01 as *const i32 as *const std::ffi::c_void);
+
+                let grid_size = MTLSize { width: n_heads as u64, height: batch_size as u64, depth: 1 };
+                let threadgroup_size = MTLSize { width: threads_per_row as u64, height: 1, depth: 1 };
+                encoder.set_threadgroup_memory_length(0, shmem_size as u64);
+
+                for _ in 0..batch_iters {
+                    encoder.dispatch_thread_groups(grid_size, threadgroup_size);
+                }
+                encoder.end_encoding();
+                command_buffer.commit();
+                command_buffer.wait_until_completed();
             }
+            total_time += start.elapsed().as_secs_f64();
         }
 
-        min_time
+        total_time / (num_batches * batch_iters) as f64
     }
 
     fn dispatch(&self, input: &Buffer, output: &Buffer, ne00: i32, ne01: i32, n_heads: usize, batch_size: usize, threads_per_row: usize, pipeline: &ComputePipelineState, shmem_size: usize) -> Result<(), String> {
@@ -350,23 +369,41 @@ kernel void kernel_soft_max_f32_4(
 
         let ne00 = seq_len as i32;
 
-        // Warmup
-        for _ in 0..20 {
+        // Warmup - increased to 100 iterations for GPU frequency stabilization
+        for _ in 0..100 {
             let _ = self.dispatch(&input_buffer, &output_buffer, ne00, n_heads, batch_size, threads_per_row, pipeline, shmem_size);
         }
 
-        // Measure
-        let mut min_time = f64::MAX;
-        for _ in 0..iterations {
+        // Measure using batched dispatch to reduce CPU timing variance
+        let batch_iters = 100;
+        let num_batches = iterations / batch_iters;
+        let mut total_time = 0.0f64;
+
+        for _ in 0..num_batches {
             let start = std::time::Instant::now();
-            let _ = self.dispatch(&input_buffer, &output_buffer, ne00, n_heads, batch_size, threads_per_row, pipeline, shmem_size);
-            let elapsed = start.elapsed().as_secs_f64();
-            if elapsed < min_time {
-                min_time = elapsed;
+            {
+                let command_buffer = self.queue.new_command_buffer();
+                let encoder = command_buffer.new_compute_command_encoder();
+                encoder.set_compute_pipeline_state(pipeline);
+                encoder.set_bytes(0, 4, &ne00 as *const i32 as *const std::ffi::c_void);
+                encoder.set_buffer(1, Some(&input_buffer), 0);
+                encoder.set_buffer(2, Some(&output_buffer), 0);
+
+                let grid_size = MTLSize { width: n_heads as u64, height: batch_size as u64, depth: 1 };
+                let threadgroup_size = MTLSize { width: threads_per_row as u64, height: 1, depth: 1 };
+                encoder.set_threadgroup_memory_length(0, shmem_size as u64);
+
+                for _ in 0..batch_iters {
+                    encoder.dispatch_thread_groups(grid_size, threadgroup_size);
+                }
+                encoder.end_encoding();
+                command_buffer.commit();
+                command_buffer.wait_until_completed();
             }
+            total_time += start.elapsed().as_secs_f64();
         }
 
-        min_time
+        total_time / (num_batches * batch_iters) as f64
     }
 
     fn dispatch(&self, input: &Buffer, output: &Buffer, ne00: i32, n_heads: usize, batch_size: usize, threads_per_row: usize, pipeline: &ComputePipelineState, shmem_size: usize) -> Result<(), String> {
