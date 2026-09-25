@@ -248,18 +248,15 @@ pub fn dequantize_row_iq4_nl(x: &[BlockIQ4NL], y: &mut [f32]) {
     let nb = x.len();
     assert!(y.len() >= nb * QK);
 
-    let mut yi = 0;
-    for block in x {
+    for (i, block) in x.iter().enumerate() {
         let d = fp16_to_fp32(block.d);
         for j in 0..QK / 2 {
-            let q = block.qs[j];
             // Unpack 2 4-bit indices
-            let idx0 = (q & 0x0F) as usize;
-            let idx1 = ((q >> 4) & 0x0F) as usize;
-            // Lookup and scale
-            y[yi] = KVALUES_IQ4NL[idx0] * d;
-            y[yi + 1] = KVALUES_IQ4NL[idx1] * d;
-            yi += 2;
+            let idx0 = (block.qs[j] & 0x0F) as usize;
+            let idx1 = ((block.qs[j] >> 4) & 0x0F) as usize;
+            // llama.cpp layout: low nibbles to 0-15, high nibbles to 16-31
+            y[i * QK + j] = KVALUES_IQ4NL[idx0] * d;
+            y[i * QK + j + QK / 2] = KVALUES_IQ4NL[idx1] * d;
         }
     }
 }

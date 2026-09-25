@@ -377,3 +377,98 @@ pub fn bf16_to_fp32(h: u16) -> f32 {
     // Extend BF16 to FP32 by setting lower 16 bits to 0
     f32::from_bits((h as u32) << 16)
 }
+
+// ============================================================================
+// IQ4_NL Quantization
+// ============================================================================
+
+/// Find best index in lookup table (binary search)
+fn best_index_iq4nl(x: f32) -> usize {
+    let values = &super::KVALUES_IQ4NL;
+    if x <= values[0] {
+        return 0;
+    }
+    if x >= values[15] {
+        return 15;
+    }
+
+    let mut lo = 0usize;
+    let mut hi = 15usize;
+
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if x < values[mid] {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+
+    if x - values[lo] < values[hi] - x {
+        lo
+    } else {
+        hi
+    }
+}
+
+/// Quantize FP32 to IQ4_NL (scalar)
+/// IQ4_NL: 4-bit indices into non-linear lookup table
+pub fn quantize_row_iq4_nl(x: &[f32], y: &mut [super::BlockIQ4NL]) {
+    use super::KVALUES_IQ4NL;
+
+    assert!(x.len() % super::QK == 0);
+    let nb = x.len() / super::QK;
+
+    for i in 0..nb {
+        let x_block = &x[i * super::QK..(i + 1) * super::QK];
+
+        // Find max absolute value
+        let mut amax: f32 = 0.0;
+        let mut max_val: f32 = 0.0;
+        for &val in x_block {
+            let abs_val = val.abs();
+            if abs_val > amax {
+                amax = abs_val;
+                max_val = val;
+            }
+        }
+
+        // Calculate initial scale
+        let d = if amax < 1e-15 {
+            0.0
+        } else {
+            max_val / KVALUES_IQ4NL[0]
+        };
+
+        let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+
+        // Find indices and optimize scale
+        let mut sumqx: f32 = 0.0;
+        let mut sumq2: f32 = 0.0;
+
+        for &val in x_block {
+            let al = id * val;
+            let l = best_index_iq4nl(al);
+            let q = KVALUES_IQ4NL[l];
+            sumqx += q * val * val; // weight = x^2
+            sumq2 += q * q * val * val;
+        }
+
+        let d = if sumq2 > 0.0 { sumqx / sumq2 } else { 0.0 };
+        let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+
+        y[i].d = fp32_to_fp16(d);
+
+        // Find final indices and pack
+        let mut indices = [0u8; super::QK];
+        for (j, &val) in x_block.iter().enumerate() {
+            let al = id * val;
+            indices[j] = best_index_iq4nl(al) as u8;
+        }
+
+        // Pack: low nibbles from indices[0..15], high nibbles from indices[16..31]
+        for j in 0..super::QK / 2 {
+            y[i].qs[j] = (indices[j] & 0x0F) | ((indices[j + super::QK / 2] & 0x0F) << 4);
+        }
+    }
+}
