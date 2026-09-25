@@ -300,8 +300,6 @@ pub fn quantize_row_q5_0(x: &[f32], y: &mut [BlockQ5_0]) {
 // ============================================================================
 
 /// Quantize FP32 to Q5_1 (scalar)
-/// Q5_1: block of 32 values with 5-bit quantization, scale and min offset
-/// Formula: q = round((x - min) / scale), where scale = (max - min) / 31
 pub fn quantize_row_q5_1(x: &[f32], y: &mut [BlockQ5_1]) {
     assert!(x.len() % QK == 0);
     let nb = x.len() / QK;
@@ -311,39 +309,115 @@ pub fn quantize_row_q5_1(x: &[f32], y: &mut [BlockQ5_1]) {
 
         // Find min and max
         let mut min = f32::MAX;
-        let mut max = f32::MIN;
-        for &val in x_block {
-            if val < min { min = val; }
-            if val > max { max = val; }
+        let mut max = -f32::MAX;
+        for &v in x_block {
+            if v < min { min = v; }
+            if v > max { max = v; }
         }
 
-        // Calculate scale and offset (5-bit range: 0-31)
         let d = (max - min) / 31.0;
         let id = if d != 0.0 { 1.0 / d } else { 0.0 };
 
         y[i].d = fp32_to_fp16(d);
         y[i].m = fp32_to_fp16(min);
 
-        // Pack 5-bit values
-        // llama.cpp layout: low nibbles from x[0..15], high nibbles from x[16..31]
-        let mut qh = 0u32;
+        let mut qh: u32 = 0;
+
         for j in 0..QK / 2 {
-            let q0 = ((x_block[j] - min) * id).round() as i32;
-            let q1 = ((x_block[j + QK / 2] - min) * id).round() as i32;
+            let x0 = (x_block[j] - min) * id;
+            let x1 = (x_block[j + QK / 2] - min) * id;
 
-            // Low 4 bits in qs
-            y[i].qs[j] = ((q0 & 0xF) | ((q1 & 0xF) << 4)) as u8;
+            let xi0 = (x0 + 0.5) as u8;
+            let xi1 = (x1 + 0.5) as u8;
 
-            // High bits in qh
-            if q0 & 0x10 != 0 { qh |= 1 << j; }
-            if q1 & 0x10 != 0 { qh |= 1 << (j + 16); }
+            y[i].qs[j] = (xi0 & 0x0F) | ((xi1 & 0x0F) << 4);
+
+            qh |= ((xi0 & 0x10) as u32) >> 4 << j;
+            qh |= ((xi1 & 0x10) as u32) >> 4 << (j + 16);
         }
 
-        // Pack qh into 4 bytes
-        y[i].qh[0] = (qh & 0xFF) as u8;
-        y[i].qh[1] = ((qh >> 8) & 0xFF) as u8;
-        y[i].qh[2] = ((qh >> 16) & 0xFF) as u8;
-        y[i].qh[3] = ((qh >> 24) & 0xFF) as u8;
+        y[i].qh[0] = qh as u8;
+        y[i].qh[1] = (qh >> 8) as u8;
+        y[i].qh[2] = (qh >> 16) as u8;
+        y[i].qh[3] = (qh >> 24) as u8;
+    }
+}
+
+/// Quantize FP32 to Q5_1 (NEON)
+#[cfg(target_arch = "aarch64")]
+pub fn quantize_row_q5_1_neon(x: &[f32], y: &mut [BlockQ5_1]) {
+    assert!(x.len() % QK == 0);
+    let nb = x.len() / QK;
+
+    unsafe {
+        let x_ptr = x.as_ptr();
+
+        for i in 0..nb {
+            // Find min and max using NEON
+            let mut min_vec = vdupq_n_f32(f32::MAX);
+            let mut max_vec = vdupq_n_f32(f32::MIN);
+
+            for j in 0..8 {
+                let xv = vld1q_f32(x_ptr.add(i * QK + j * 4));
+                min_vec = vminq_f32(min_vec, xv);
+                max_vec = vmaxq_f32(max_vec, xv);
+            }
+
+            let min = vminvq_f32(min_vec);
+            let max = vmaxvq_f32(max_vec);
+
+            let d = (max - min) / 31.0;
+            let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+
+            y[i].d = fp32_to_fp16(d);
+            y[i].m = fp32_to_fp16(min);
+
+            let min_vec = vdupq_n_f32(min);
+            let id_vec = vdupq_n_f32(id);
+
+            let mut qh = 0u32;
+            for j in 0..4 {
+                let x0 = vld1q_f32(x_ptr.add(i * QK + j * 4));
+                let x1 = vld1q_f32(x_ptr.add(i * QK + 16 + j * 4));
+
+                let q0_v = vmulq_f32(vsubq_f32(x0, min_vec), id_vec);
+                let q1_v = vmulq_f32(vsubq_f32(x1, min_vec), id_vec);
+
+                let q0_i = vcvtnq_s32_f32(q0_v);
+                let q1_i = vcvtnq_s32_f32(q1_v);
+
+                // Unrolled extraction
+                let q0_0 = vgetq_lane_s32(q0_i, 0);
+                let q0_1 = vgetq_lane_s32(q0_i, 1);
+                let q0_2 = vgetq_lane_s32(q0_i, 2);
+                let q0_3 = vgetq_lane_s32(q0_i, 3);
+
+                let q1_0 = vgetq_lane_s32(q1_i, 0);
+                let q1_1 = vgetq_lane_s32(q1_i, 1);
+                let q1_2 = vgetq_lane_s32(q1_i, 2);
+                let q1_3 = vgetq_lane_s32(q1_i, 3);
+
+                let byte_idx = j * 4;
+                y[i].qs[byte_idx + 0] = ((q0_0 & 0xF) | ((q1_0 & 0xF) << 4)) as u8;
+                y[i].qs[byte_idx + 1] = ((q0_1 & 0xF) | ((q1_1 & 0xF) << 4)) as u8;
+                y[i].qs[byte_idx + 2] = ((q0_2 & 0xF) | ((q1_2 & 0xF) << 4)) as u8;
+                y[i].qs[byte_idx + 3] = ((q0_3 & 0xF) | ((q1_3 & 0xF) << 4)) as u8;
+
+                if q0_0 & 0x10 != 0 { qh |= 1 << (byte_idx + 0); }
+                if q0_1 & 0x10 != 0 { qh |= 1 << (byte_idx + 1); }
+                if q0_2 & 0x10 != 0 { qh |= 1 << (byte_idx + 2); }
+                if q0_3 & 0x10 != 0 { qh |= 1 << (byte_idx + 3); }
+                if q1_0 & 0x10 != 0 { qh |= 1 << (byte_idx + 0 + 16); }
+                if q1_1 & 0x10 != 0 { qh |= 1 << (byte_idx + 1 + 16); }
+                if q1_2 & 0x10 != 0 { qh |= 1 << (byte_idx + 2 + 16); }
+                if q1_3 & 0x10 != 0 { qh |= 1 << (byte_idx + 3 + 16); }
+            }
+
+            y[i].qh[0] = (qh & 0xFF) as u8;
+            y[i].qh[1] = ((qh >> 8) & 0xFF) as u8;
+            y[i].qh[2] = ((qh >> 16) & 0xFF) as u8;
+            y[i].qh[3] = ((qh >> 24) & 0xFF) as u8;
+        }
     }
 }
 

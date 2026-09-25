@@ -93,6 +93,7 @@ pub fn dequantize_row_q8_0(x: &[BlockQ8_0], y: &mut [f32]) {
 }
 
 /// Dequantize Q8_0 to FP32 (NEON)
+/// Use efficient int8 load and widen to int32
 #[cfg(target_arch = "aarch64")]
 pub fn dequantize_row_q8_0_neon(x: &[BlockQ8_0], y: &mut [f32]) {
     let nb = x.len();
@@ -105,21 +106,20 @@ pub fn dequantize_row_q8_0_neon(x: &[BlockQ8_0], y: &mut [f32]) {
             let d = fp16_to_fp32(block.d);
             let d_vec = vdupq_n_f32(d);
 
-            // Process 8 x 4 values
+            // Process all 32 values in 8 iterations of 4
             for j in 0..8 {
-                // Load 4 int8 values using scalar and convert to int32x4
                 let idx = j * 4;
-                let qs = [
-                    block.qs[idx + 0] as i32,
-                    block.qs[idx + 1] as i32,
-                    block.qs[idx + 2] as i32,
-                    block.qs[idx + 3] as i32,
-                ];
-                let qs_i32 = vld1q_s32(qs.as_ptr());
 
-                // Convert to float and multiply by scale
-                let y_vec = vmulq_f32(vcvtq_f32_s32(qs_i32), d_vec);
-                vst1q_f32(y_ptr.add(i * QK + j * 4), y_vec);
+                // Load 4 int8 values and widen to int32
+                let qs = vld1_s8(block.qs.as_ptr().add(idx));
+
+                // Widen int8 -> int16 -> int32
+                let qs_16 = vmovl_s8(qs); // int16x8_t
+                let qs_32_low = vmovl_s16(vget_low_s16(qs_16)); // int32x4_t (first 4)
+
+                // Convert to float and multiply
+                let y_vec = vmulq_f32(vcvtq_f32_s32(qs_32_low), d_vec);
+                vst1q_f32(y_ptr.add(i * QK + idx), y_vec);
             }
         }
     }
@@ -138,12 +138,45 @@ pub fn dequantize_row_q4_0(x: &[BlockQ4_0], y: &mut [f32]) {
         let d = fp16_to_fp32(block.d);
         for j in 0..QK / 2 {
             let q = block.qs[j];
-            // Unpack 2 4-bit values
-            // llama.cpp layout: low nibbles go to positions 0-15, high nibbles to 16-31
-            let q0 = (q & 0x0F) as i32 - 8;  // shift back to -8 to 7 range
+            let q0 = (q & 0x0F) as i32 - 8;
             let q1 = ((q >> 4) & 0x0F) as i32 - 8;
             y[i * QK + j] = q0 as f32 * d;
             y[i * QK + j + QK / 2] = q1 as f32 * d;
+        }
+    }
+}
+
+/// Dequantize Q4_0 to FP32 (NEON)
+#[cfg(target_arch = "aarch64")]
+pub fn dequantize_row_q4_0_neon(x: &[BlockQ4_0], y: &mut [f32]) {
+    let nb = x.len();
+    assert!(y.len() >= nb * QK);
+
+    unsafe {
+        for (i, block) in x.iter().enumerate() {
+            let d = fp16_to_fp32(block.d);
+
+            // Process 4 bytes at a time (8 4-bit values)
+            for j in 0..4 {
+                let idx = j * 4;
+                let qs = vld1_u8(block.qs.as_ptr().add(idx));
+
+                // Unpack low nibbles (positions 0-15)
+                let q0 = vand_u8(qs, vdup_n_u8(0x0F));
+                // Unpack high nibbles (positions 16-31)
+                let q1 = vshr_n_u8(qs, 4);
+
+                // Unrolled loop - process 4 values
+                y[i * QK + idx + 0] = (vget_lane_u8(q0, 0) as i32 - 8) as f32 * d;
+                y[i * QK + idx + 1] = (vget_lane_u8(q0, 1) as i32 - 8) as f32 * d;
+                y[i * QK + idx + 2] = (vget_lane_u8(q0, 2) as i32 - 8) as f32 * d;
+                y[i * QK + idx + 3] = (vget_lane_u8(q0, 3) as i32 - 8) as f32 * d;
+
+                y[i * QK + idx + QK / 2 + 0] = (vget_lane_u8(q1, 0) as i32 - 8) as f32 * d;
+                y[i * QK + idx + QK / 2 + 1] = (vget_lane_u8(q1, 1) as i32 - 8) as f32 * d;
+                y[i * QK + idx + QK / 2 + 2] = (vget_lane_u8(q1, 2) as i32 - 8) as f32 * d;
+                y[i * QK + idx + QK / 2 + 3] = (vget_lane_u8(q1, 3) as i32 - 8) as f32 * d;
+            }
         }
     }
 }
@@ -257,6 +290,41 @@ pub fn dequantize_row_iq4_nl(x: &[BlockIQ4NL], y: &mut [f32]) {
             // llama.cpp layout: low nibbles to 0-15, high nibbles to 16-31
             y[i * QK + j] = KVALUES_IQ4NL[idx0] * d;
             y[i * QK + j + QK / 2] = KVALUES_IQ4NL[idx1] * d;
+        }
+    }
+}
+
+/// Dequantize IQ4_NL to FP32 (NEON)
+#[cfg(target_arch = "aarch64")]
+pub fn dequantize_row_iq4_nl_neon(x: &[BlockIQ4NL], y: &mut [f32]) {
+    let nb = x.len();
+    assert!(y.len() >= nb * QK);
+
+    unsafe {
+        // Process 4 bytes at a time (8 4-bit indices)
+        for (i, block) in x.iter().enumerate() {
+            let d = fp16_to_fp32(block.d);
+
+            for j in 0..4 {
+                let byte_idx = j * 4;
+                let qs = vld1_u8(block.qs.as_ptr().add(byte_idx));
+
+                // Unpack low nibbles
+                let idx0 = vand_u8(qs, vdup_n_u8(0x0F));
+                // Unpack high nibbles
+                let idx1 = vshr_n_u8(qs, 4);
+
+                // Unrolled lookup and scale
+                y[i * QK + byte_idx + 0] = KVALUES_IQ4NL[vget_lane_u8(idx0, 0) as usize] * d;
+                y[i * QK + byte_idx + 1] = KVALUES_IQ4NL[vget_lane_u8(idx0, 1) as usize] * d;
+                y[i * QK + byte_idx + 2] = KVALUES_IQ4NL[vget_lane_u8(idx0, 2) as usize] * d;
+                y[i * QK + byte_idx + 3] = KVALUES_IQ4NL[vget_lane_u8(idx0, 3) as usize] * d;
+
+                y[i * QK + byte_idx + QK / 2 + 0] = KVALUES_IQ4NL[vget_lane_u8(idx1, 0) as usize] * d;
+                y[i * QK + byte_idx + QK / 2 + 1] = KVALUES_IQ4NL[vget_lane_u8(idx1, 1) as usize] * d;
+                y[i * QK + byte_idx + QK / 2 + 2] = KVALUES_IQ4NL[vget_lane_u8(idx1, 2) as usize] * d;
+                y[i * QK + byte_idx + QK / 2 + 3] = KVALUES_IQ4NL[vget_lane_u8(idx1, 3) as usize] * d;
+            }
         }
     }
 }
