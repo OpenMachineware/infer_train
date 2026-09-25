@@ -23,9 +23,7 @@ pub unsafe fn rms_norm_f32(
         let x_row = &x[row_offset..row_offset + hidden_dim];
         let dst_row = &mut dst[row_offset..row_offset + hidden_dim];
 
-        // Compute sum of squares
-        let mut sum_sq = 0.0f32;
-
+        // Compute sum of squares using NEON
         // Process 4 elements at a time
         let chunks = hidden_dim / 4;
         let mut sum_vec = vdupq_n_f32(0.0);
@@ -35,7 +33,7 @@ pub unsafe fn rms_norm_f32(
             sum_vec = vmlaq_f32(sum_vec, v, v);
         }
 
-        sum_sq = vaddvq_f32(sum_vec);
+        let mut sum_sq = vaddvq_f32(sum_vec);
 
         // Handle remainder
         for i in (chunks * 4)..hidden_dim {
@@ -77,9 +75,7 @@ pub unsafe fn rms_norm_fp16_to_f32(
         let x_row = &x[row_offset..row_offset + hidden_dim];
         let dst_row = &mut dst[row_offset..row_offset + hidden_dim];
 
-        // Compute sum of squares
-        let mut sum_sq = 0.0f32;
-
+        // Compute sum of squares using NEON
         // Process 8 FP16 at a time
         let chunks = hidden_dim / 8;
         let mut sum_vec = vdupq_n_f32(0.0);
@@ -96,7 +92,7 @@ pub unsafe fn rms_norm_fp16_to_f32(
             sum_vec = vmlaq_f32(sum_vec, v_f32_hi, v_f32_hi);
         }
 
-        sum_sq = vaddvq_f32(sum_vec);
+        let mut sum_sq = vaddvq_f32(sum_vec);
 
         // Handle remainder
         for i in (chunks * 8)..hidden_dim {
