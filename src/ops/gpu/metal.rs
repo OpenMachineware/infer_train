@@ -150,10 +150,10 @@ impl RmsNormMetalContext {
 
         // Calculate threadgroup size
         // Each threadgroup processes one row
-        // Use 32 or 64 threads per threadgroup for good occupancy
-        let max_threads_per_group = pipeline.max_total_threads_per_threadgroup();
+        // Use 32 threads minimum (Metal SIMD width) for proper reduction
+        let max_threads_per_group = pipeline.max_total_threads_per_threadgroup() as usize;
         let threads_per_row = if hidden_dim <= 32 {
-            hidden_dim
+            32  // Minimum for proper simd_sum reduction
         } else if hidden_dim <= 64 {
             64
         } else if hidden_dim <= 128 {
@@ -161,11 +161,10 @@ impl RmsNormMetalContext {
         } else if hidden_dim <= 256 {
             256
         } else {
-            max_threads_per_group.min(256) as usize
+            max_threads_per_group.min(512)
         };
 
-        // Ensure threads_per_row divides hidden_dim evenly, or is >= hidden_dim
-        let threads_per_row = threads_per_row.max(hidden_dim.next_power_of_two()).min(max_threads_per_group as usize);
+        let threads_per_row = threads_per_row.min(max_threads_per_group);
 
         let threadgroup_size = MTLSize {
             width: threads_per_row as u64,
@@ -180,9 +179,13 @@ impl RmsNormMetalContext {
         };
 
         // Allocate threadgroup memory for reduction
-        // Each SIMD group (32 threads) needs 1 float
+        // Need at least 32 floats (Metal SIMD width) for the two-stage reduction:
+        // 1. First SIMD group initializes all 32 slots
+        // 2. Each SIMD group writes to shmem_f32[sgitg]
+        // 3. All threads read from shmem_f32[tiisg]
         let simd_groups_per_tg = (threads_per_row + 31) / 32;
-        encoder.set_threadgroup_memory_length((simd_groups_per_tg * std::mem::size_of::<f32>()) as u64, 0);
+        let shmem_size = std::cmp::max(32, simd_groups_per_tg) * std::mem::size_of::<f32>();
+        encoder.set_threadgroup_memory_length(0, shmem_size as u64);  // index first, then size
 
         // Use threadgroup size to ensure proper reduction
         encoder.dispatch_thread_groups(grid_size, threadgroup_size);
