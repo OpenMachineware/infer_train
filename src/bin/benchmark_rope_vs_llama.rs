@@ -3,32 +3,44 @@
 
 use infer_train::ops::rope::rope_neox_simple;
 
-// llama.cpp's exact scalar (separate cos/sin calls)
+// llama.cpp's exact scalar (separate cos/sin calls) - no bounds check for fair comparison
 fn rope_llama_cpp(src: &[f32], dst: &mut [f32], pos: usize, n_dims: usize, freq_base: f32) {
     let n_dims_half = n_dims / 2;
     let theta_scale = freq_base.powf(-2.0 / n_dims as f32);
     let mut theta = pos as f32;
 
-    for ic in 0..n_dims_half {
-        let cos_theta = theta.cos();
-        let sin_theta = theta.sin();
-        dst[ic] = src[ic] * cos_theta - src[ic + n_dims_half] * sin_theta;
-        dst[ic + n_dims_half] = src[ic] * sin_theta + src[ic + n_dims_half] * cos_theta;
-        theta *= theta_scale;
+    unsafe {
+        for ic in 0..n_dims_half {
+            let cos_theta = theta.cos();
+            let sin_theta = theta.sin();
+
+            let x0 = *src.get_unchecked(ic);
+            let x1 = *src.get_unchecked(ic + n_dims_half);
+
+            *dst.get_unchecked_mut(ic) = x0 * cos_theta - x1 * sin_theta;
+            *dst.get_unchecked_mut(ic + n_dims_half) = x0 * sin_theta + x1 * cos_theta;
+            theta *= theta_scale;
+        }
     }
 }
 
-// llama.cpp style with sin_cos (our optimization)
+// llama.cpp style with sin_cos (our optimization) - no bounds check for fair comparison
 fn rope_llama_cpp_sincos(src: &[f32], dst: &mut [f32], pos: usize, n_dims: usize, freq_base: f32) {
     let n_dims_half = n_dims / 2;
     let theta_scale = freq_base.powf(-2.0 / n_dims as f32);
     let mut theta = pos as f32;
 
-    for ic in 0..n_dims_half {
-        let (sin_theta, cos_theta) = theta.sin_cos();
-        dst[ic] = src[ic] * cos_theta - src[ic + n_dims_half] * sin_theta;
-        dst[ic + n_dims_half] = src[ic] * sin_theta + src[ic + n_dims_half] * cos_theta;
-        theta *= theta_scale;
+    unsafe {
+        for ic in 0..n_dims_half {
+            let (sin_theta, cos_theta) = theta.sin_cos();
+
+            let x0 = *src.get_unchecked(ic);
+            let x1 = *src.get_unchecked(ic + n_dims_half);
+
+            *dst.get_unchecked_mut(ic) = x0 * cos_theta - x1 * sin_theta;
+            *dst.get_unchecked_mut(ic + n_dims_half) = x0 * sin_theta + x1 * cos_theta;
+            theta *= theta_scale;
+        }
     }
 }
 

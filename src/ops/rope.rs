@@ -103,18 +103,24 @@ pub fn rope_neox(src: &[f32], dst: &mut [f32], pos: usize, params: &RopeParams) 
 
 // Simple version (no YaRN) for common case - matches llama.cpp's simple path
 // Use sin_cos for potentially faster combined computation
+// Unsafe version eliminates bounds checking for performance
 pub fn rope_neox_simple(src: &[f32], dst: &mut [f32], pos: usize, n_dims: usize, freq_base: f32) {
     let n_dims_half = n_dims / 2;
     let theta_scale = freq_base.powf(-2.0 / n_dims as f32);
     let mut theta = pos as f32;
 
-    for ic in 0..n_dims_half {
-        let (sin_theta, cos_theta) = theta.sin_cos();
+    unsafe {
+        for ic in 0..n_dims_half {
+            let (sin_theta, cos_theta) = theta.sin_cos();
 
-        dst[ic] = src[ic] * cos_theta - src[ic + n_dims_half] * sin_theta;
-        dst[ic + n_dims_half] = src[ic] * sin_theta + src[ic + n_dims_half] * cos_theta;
+            let x0 = *src.get_unchecked(ic);
+            let x1 = *src.get_unchecked(ic + n_dims_half);
 
-        theta *= theta_scale;
+            *dst.get_unchecked_mut(ic) = x0 * cos_theta - x1 * sin_theta;
+            *dst.get_unchecked_mut(ic + n_dims_half) = x0 * sin_theta + x1 * cos_theta;
+
+            theta *= theta_scale;
+        }
     }
 }
 
