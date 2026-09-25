@@ -230,7 +230,8 @@ kernel void kernel_soft_max_f32(
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (tiisg == 0) { buf[sgitg] = max_val; }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        max_val = simd_max(buf[tiisg]);
+        max_val = buf[tiisg];
+        max_val = simd_max(max_val);
     }
 
     float lsum = 0.0f;
@@ -246,8 +247,13 @@ kernel void kernel_soft_max_f32(
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (tiisg == 0) { buf[sgitg] = sum; }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        sum = simd_sum(buf[tiisg]);
+        sum = buf[tiisg];
+        sum = simd_sum(sum);
     }
+
+    // This barrier fixes a failing test
+    // ref: https://github.com/ggml-org/ggml/pull/621#discussion_r1425156335
+    threadgroup_barrier(mem_flags::mem_none);
 
     const float inv_sum = 1.0f / sum;
     for (int i00 = tpitg.x; i00 < ne00; i00 += tptg.x) {
@@ -292,7 +298,8 @@ kernel void kernel_soft_max_f32_4(
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (tiisg == 0) { buf[sgitg] = max_val; }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        max_val = simd_max(buf[tiisg]);
+        max_val = buf[tiisg];
+        max_val = simd_max(max_val);
     }
 
     float4 lsum4 = 0.0f;
@@ -309,8 +316,13 @@ kernel void kernel_soft_max_f32_4(
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (tiisg == 0) { buf[sgitg] = sum; }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        sum = simd_sum(buf[tiisg]);
+        sum = buf[tiisg];
+        sum = simd_sum(sum);
     }
+
+    // This barrier fixes a failing test
+    // ref: https://github.com/ggml-org/ggml/pull/621#discussion_r1425156335
+    threadgroup_barrier(mem_flags::mem_none);
 
     const float inv_sum = 1.0f / sum;
     for (int i00 = tpitg.x; i00 < ne00_4; i00 += tptg.x) {
