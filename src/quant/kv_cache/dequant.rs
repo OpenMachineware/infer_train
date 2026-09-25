@@ -134,17 +134,16 @@ pub fn dequantize_row_q4_0(x: &[BlockQ4_0], y: &mut [f32]) {
     let nb = x.len();
     assert!(y.len() >= nb * QK);
 
-    let mut yi = 0;
-    for block in x {
+    for (i, block) in x.iter().enumerate() {
         let d = fp16_to_fp32(block.d);
         for j in 0..QK / 2 {
             let q = block.qs[j];
             // Unpack 2 4-bit values
+            // llama.cpp layout: low nibbles go to positions 0-15, high nibbles to 16-31
             let q0 = (q & 0x0F) as i32 - 8;  // shift back to -8 to 7 range
             let q1 = ((q >> 4) & 0x0F) as i32 - 8;
-            y[yi] = q0 as f32 * d;
-            y[yi + 1] = q1 as f32 * d;
-            yi += 2;
+            y[i * QK + j] = q0 as f32 * d;
+            y[i * QK + j + QK / 2] = q1 as f32 * d;
         }
     }
 }
@@ -159,17 +158,15 @@ pub fn dequantize_row_q4_1(x: &[BlockQ4_1], y: &mut [f32]) {
     let nb = x.len();
     assert!(y.len() >= nb * QK);
 
-    let mut yi = 0;
-    for block in x {
+    for (i, block) in x.iter().enumerate() {
         let d = fp16_to_fp32(block.d);
         let m = fp16_to_fp32(block.m);
         for j in 0..QK / 2 {
             let q = block.qs[j];
             let q0 = (q & 0x0F) as f32;  // 0-15 range
             let q1 = ((q >> 4) & 0x0F) as f32;
-            y[yi] = d * q0 + m;
-            y[yi + 1] = d * q1 + m;
-            yi += 2;
+            y[i * QK + j] = d * q0 + m;
+            y[i * QK + j + QK / 2] = d * q1 + m;
         }
     }
 }
@@ -184,28 +181,27 @@ pub fn dequantize_row_q5_0(x: &[BlockQ5_0], y: &mut [f32]) {
     let nb = x.len();
     assert!(y.len() >= nb * QK);
 
-    let mut yi = 0;
-    for block in x {
+    for (i, block) in x.iter().enumerate() {
         let d = fp16_to_fp32(block.d);
-        for j in 0..QK {
-            // Get low 4 bits from qs
-            let qs_idx = j / 2;
-            let is_high = j % 2 == 1;
-            let low4 = if is_high {
-                (block.qs[qs_idx] >> 4) & 0x0F
-            } else {
-                block.qs[qs_idx] & 0x0F
-            };
 
-            // Get 5th bit from qh
-            let qh_byte = j / 8;
-            let qh_bit = j % 8;
-            let high1 = ((block.qh[qh_byte] >> qh_bit) & 1) as u8;
+        // Reconstruct qh as 32-bit value
+        let qh = block.qh[0] as u32
+              | ((block.qh[1] as u32) << 8)
+              | ((block.qh[2] as u32) << 16)
+              | ((block.qh[3] as u32) << 24);
 
-            // Combine to 5-bit value (-16 to 15)
-            let q5 = ((low4 | (high1 << 4)) as i32) - 16;
-            y[yi] = q5 as f32 * d;
-            yi += 1;
+        // llama.cpp layout: low nibbles go to positions 0-15, high nibbles to 16-31
+        for j in 0..QK / 2 {
+            // Extract 5th bits
+            let xh0 = ((qh >> j) & 1) << 4;
+            let xh1 = ((qh >> (j + 16)) & 1) << 4;
+
+            // Combine low 4 bits with 5th bit
+            let q0 = ((block.qs[j] & 0x0F) as i32 | xh0 as i32) - 16;
+            let q1 = (((block.qs[j] >> 4) & 0x0F) as i32 | xh1 as i32) - 16;
+
+            y[i * QK + j] = q0 as f32 * d;
+            y[i * QK + j + QK / 2] = q1 as f32 * d;
         }
     }
 }
@@ -220,29 +216,24 @@ pub fn dequantize_row_q5_1(x: &[BlockQ5_1], y: &mut [f32]) {
     let nb = x.len();
     assert!(y.len() >= nb * QK);
 
-    let mut yi = 0;
-    for block in x {
+    for (i, block) in x.iter().enumerate() {
         let d = fp16_to_fp32(block.d);
         let m = fp16_to_fp32(block.m);
-        for j in 0..QK {
-            // Get low 4 bits from qs
-            let qs_idx = j / 2;
-            let is_high = j % 2 == 1;
-            let low4 = if is_high {
-                (block.qs[qs_idx] >> 4) & 0x0F
-            } else {
-                block.qs[qs_idx] & 0x0F
-            };
 
-            // Get 5th bit from qh
-            let qh_byte = j / 8;
-            let qh_bit = j % 8;
-            let high1 = ((block.qh[qh_byte] >> qh_bit) & 1) as u8;
+        let qh = block.qh[0] as u32
+              | ((block.qh[1] as u32) << 8)
+              | ((block.qh[2] as u32) << 16)
+              | ((block.qh[3] as u32) << 24);
 
-            // Combine to 5-bit value (0-31)
-            let q5 = (low4 | (high1 << 4)) as f32;
-            y[yi] = d * q5 + m;
-            yi += 1;
+        for j in 0..QK / 2 {
+            let xh0 = ((qh >> j) & 1) << 4;
+            let xh1 = ((qh >> (j + 16)) & 1) << 4;
+
+            let q0 = ((block.qs[j] & 0x0F) as i32 | xh0 as i32);
+            let q1 = (((block.qs[j] >> 4) & 0x0F) as i32 | xh1 as i32);
+
+            y[i * QK + j] = q0 as f32 * d + m;
+            y[i * QK + j + QK / 2] = q1 as f32 * d + m;
         }
     }
 }

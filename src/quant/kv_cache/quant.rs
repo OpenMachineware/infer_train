@@ -167,7 +167,7 @@ pub fn quantize_row_q8_0_neon(x: &[f32], y: &mut [BlockQ8_0]) {
 
 /// Quantize FP32 to Q4_0 (scalar)
 /// Q4_0: block of 32 values, each stored as 4-bit nibbles
-/// Formula: q = round(x / scale), where scale = max(abs(x)) / 7
+/// llama.cpp formula: d = max_val / -8, where max_val has largest abs
 pub fn quantize_row_q4_0(x: &[f32], y: &mut [BlockQ4_0]) {
     assert!(x.len() % QK == 0);
     let nb = x.len() / QK;
@@ -175,27 +175,175 @@ pub fn quantize_row_q4_0(x: &[f32], y: &mut [BlockQ4_0]) {
     for i in 0..nb {
         let x_block = &x[i * QK..(i + 1) * QK];
 
-        // Find max absolute value
+        // Find value with largest absolute value
         let mut amax: f32 = 0.0;
+        let mut max_val: f32 = 0.0;
         for &val in x_block {
             let abs_val = val.abs();
             if abs_val > amax {
                 amax = abs_val;
+                max_val = val;
             }
         }
 
-        // Calculate scale (range: -8 to 7, so divide by 8)
-        let d = amax / 8.0;
+        // llama.cpp formula: d = max_val / -8
+        let d = max_val / -8.0;
         let id = if d != 0.0 { 1.0 / d } else { 0.0 };
 
         y[i].d = fp32_to_fp16(d);
 
         // Pack 2 4-bit values into 1 byte
+        // llama.cpp layout: low nibbles from x[0..15], high nibbles from x[16..31]
         for j in 0..QK / 2 {
-            let q0 = (x_block[2*j] * id).round() as i32 + 8;  // shift to 0-15 range
-            let q1 = (x_block[2*j + 1] * id).round() as i32 + 8;
+            let q0 = ((x_block[j] * id + 8.5).min(15.0)) as u32;
+            let q1 = ((x_block[j + QK / 2] * id + 8.5).min(15.0)) as u32;
             y[i].qs[j] = ((q0 & 0xF) | ((q1 & 0xF) << 4)) as u8;
         }
+    }
+}
+
+// ============================================================================
+// Q4_1 Quantization
+// ============================================================================
+
+/// Quantize FP32 to Q4_1 (scalar)
+/// Q4_1: block of 32 values with scale and min offset
+/// Formula: q = round((x - min) / scale), where scale = (max - min) / 15
+pub fn quantize_row_q4_1(x: &[f32], y: &mut [BlockQ4_1]) {
+    assert!(x.len() % QK == 0);
+    let nb = x.len() / QK;
+
+    for i in 0..nb {
+        let x_block = &x[i * QK..(i + 1) * QK];
+
+        // Find min and max
+        let mut min = f32::MAX;
+        let mut max = f32::MIN;
+        for &val in x_block {
+            if val < min { min = val; }
+            if val > max { max = val; }
+        }
+
+        // Calculate scale and offset
+        let d = (max - min) / 15.0;
+        let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+
+        y[i].d = fp32_to_fp16(d);
+        y[i].m = fp32_to_fp16(min);
+
+        // Pack 2 4-bit values into 1 byte
+        // llama.cpp layout: low nibbles from x[0..15], high nibbles from x[16..31]
+        for j in 0..QK / 2 {
+            let q0 = ((x_block[j] - min) * id).round() as i32;
+            let q1 = ((x_block[j + QK / 2] - min) * id).round() as i32;
+            y[i].qs[j] = ((q0 & 0xF) | ((q1 & 0xF) << 4)) as u8;
+        }
+    }
+}
+
+// ============================================================================
+// Q5_0 Quantization
+// ============================================================================
+
+/// Quantize FP32 to Q5_0 (scalar)
+/// Q5_0: block of 32 values with 5-bit quantization
+/// llama.cpp formula: d = max_val / -16, where max_val has largest abs
+pub fn quantize_row_q5_0(x: &[f32], y: &mut [BlockQ5_0]) {
+    assert!(x.len() % QK == 0);
+    let nb = x.len() / QK;
+
+    for i in 0..nb {
+        let x_block = &x[i * QK..(i + 1) * QK];
+
+        // Find value with largest absolute value
+        let mut amax: f32 = 0.0;
+        let mut max_val: f32 = 0.0;
+        for &val in x_block {
+            let abs_val = val.abs();
+            if abs_val > amax {
+                amax = abs_val;
+                max_val = val;
+            }
+        }
+
+        // llama.cpp formula: d = max_val / -16
+        let d = max_val / -16.0;
+        let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+
+        y[i].d = fp32_to_fp16(d);
+
+        // Pack 5-bit values: low 4 bits in qs, high bit in qh
+        // llama.cpp layout: low nibbles from x[0..15], high nibbles from x[16..31]
+        let mut qh = 0u32;
+        for j in 0..QK / 2 {
+            let q0 = ((x_block[j] * id + 16.5).min(31.0)) as u32;
+            let q1 = ((x_block[j + QK / 2] * id + 16.5).min(31.0)) as u32;
+
+            // Low 4 bits in qs
+            y[i].qs[j] = ((q0 & 0xF) | ((q1 & 0xF) << 4)) as u8;
+
+            // High bits in qh
+            if q0 & 0x10 != 0 { qh |= 1 << j; }
+            if q1 & 0x10 != 0 { qh |= 1 << (j + 16); }
+        }
+
+        // Pack qh into 4 bytes
+        y[i].qh[0] = (qh & 0xFF) as u8;
+        y[i].qh[1] = ((qh >> 8) & 0xFF) as u8;
+        y[i].qh[2] = ((qh >> 16) & 0xFF) as u8;
+        y[i].qh[3] = ((qh >> 24) & 0xFF) as u8;
+    }
+}
+
+// ============================================================================
+// Q5_1 Quantization
+// ============================================================================
+
+/// Quantize FP32 to Q5_1 (scalar)
+/// Q5_1: block of 32 values with 5-bit quantization, scale and min offset
+/// Formula: q = round((x - min) / scale), where scale = (max - min) / 31
+pub fn quantize_row_q5_1(x: &[f32], y: &mut [BlockQ5_1]) {
+    assert!(x.len() % QK == 0);
+    let nb = x.len() / QK;
+
+    for i in 0..nb {
+        let x_block = &x[i * QK..(i + 1) * QK];
+
+        // Find min and max
+        let mut min = f32::MAX;
+        let mut max = f32::MIN;
+        for &val in x_block {
+            if val < min { min = val; }
+            if val > max { max = val; }
+        }
+
+        // Calculate scale and offset (5-bit range: 0-31)
+        let d = (max - min) / 31.0;
+        let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+
+        y[i].d = fp32_to_fp16(d);
+        y[i].m = fp32_to_fp16(min);
+
+        // Pack 5-bit values
+        // llama.cpp layout: low nibbles from x[0..15], high nibbles from x[16..31]
+        let mut qh = 0u32;
+        for j in 0..QK / 2 {
+            let q0 = ((x_block[j] - min) * id).round() as i32;
+            let q1 = ((x_block[j + QK / 2] - min) * id).round() as i32;
+
+            // Low 4 bits in qs
+            y[i].qs[j] = ((q0 & 0xF) | ((q1 & 0xF) << 4)) as u8;
+
+            // High bits in qh
+            if q0 & 0x10 != 0 { qh |= 1 << j; }
+            if q1 & 0x10 != 0 { qh |= 1 << (j + 16); }
+        }
+
+        // Pack qh into 4 bytes
+        y[i].qh[0] = (qh & 0xFF) as u8;
+        y[i].qh[1] = ((qh >> 8) & 0xFF) as u8;
+        y[i].qh[2] = ((qh >> 16) & 0xFF) as u8;
+        y[i].qh[3] = ((qh >> 24) & 0xFF) as u8;
     }
 }
 
