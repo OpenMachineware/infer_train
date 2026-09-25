@@ -87,7 +87,7 @@ kernel void kernel_mul_mv_q5_K_f32(
             yh[l+8] = y2[l+ 32]; sumy[3] += yh[l+8];
         }
 
-        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+        for (short row = 0; row < NR0; ++row) {
             device const uint8_t * q2 = q1 + 64;
 
             sc16[0] = a[0] & kmask1;

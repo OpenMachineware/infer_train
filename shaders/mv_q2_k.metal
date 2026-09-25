@@ -88,7 +88,7 @@ kernel void kernel_mul_mv_q2_K_f32(
         device const uint8_t * q = x[i].qs + q_offset;
         device const half * dh = &x[i].d;
 
-        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+        for (short row = 0; row < NR0; ++row) {
             const float d = (float)dh[0];
             const float dmin = (float)dh[1];
 

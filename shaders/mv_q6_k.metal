@@ -76,7 +76,7 @@ kernel void kernel_mul_mv_q6_K_f32(
             yl[4*l + 3] = y[l + 96];
         }
 
-        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+        for (short row = 0; row < NR0; ++row) {
             float4 sums = {0.f, 0.f, 0.f, 0.f};
 
             FOR_UNROLL (short l = 0; l < 4; ++l) {

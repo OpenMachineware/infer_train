@@ -78,7 +78,7 @@ kernel void kernel_mul_mv_q4_K_f32(
         device const uint16_t * q1 = (device const uint16_t *)x[ib].qs + 16 * iq + 4 * ir;
         device const half     * dh = &x[ib].d;
 
-        FOR_UNROLL (short row = 0; row < NR0; row++) {
+        for (short row = 0; row < NR0; row++) {
             sc16[0] = sc[0] & kmask1;
             sc16[1] = sc[2] & kmask1;
             sc16[2] = ((sc[4] >> 0) & kmask2) | ((sc[0] & kmask3) >> 2);

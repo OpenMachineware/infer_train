@@ -89,7 +89,7 @@ kernel void kernel_mul_mv_q3_K_f32(
         device const uint16_t * a = (device const uint16_t *)(x[i].scales);
         device const half * dh = &x[i].d;
 
-        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+        for (short row = 0; row < NR0; ++row) {
             const float d_all = (float)dh[0];
 
             scales16[0] = a[4];

@@ -118,17 +118,19 @@ fn benchmark_mv(
         metal::MTLResourceOptions::StorageModeShared,
     );
 
-    // MV dispatch: one threadgroup per row segment, 32 threads per SIMD
+    // MV dispatch: matching llama.cpp exactly
+    // 2D threadgroup: (32, 2, 1) where Y dimension = NSG = 2
+    // Metal maps Y=0 -> sgitg=0, Y=1 -> sgitg=1
     let nr0 = 2; // Rows per SIMD group for Q4_K
     let nsg = 2; // SIMD groups per threadgroup
     let rows_per_tg = nr0 * nsg;
-    let grid_x = 1;
-    let grid_y = (m + rows_per_tg - 1) / rows_per_tg;
+    let grid_x = (m + rows_per_tg - 1) / rows_per_tg;
+    let grid_y = n;
     let grid_size = MTLSize::new(grid_x as u64, grid_y as u64, 1);
-    let threadgroup_size = MTLSize::new(32, nsg as u64, 1);
+    let threadgroup_size = MTLSize::new(32, nsg as u64, 1); // 2D: 32x2
 
-    // Warmup
-    for _ in 0..10 {
+    // Warmup - extended for GPU frequency stability
+    for _ in 0..20 {
         let cmd_buffer = queue.new_command_buffer();
         let encoder = cmd_buffer.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&pipeline);
