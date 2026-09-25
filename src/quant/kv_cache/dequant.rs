@@ -78,16 +78,15 @@ pub fn dequantize_row_bf16_neon(x: &[u16], y: &mut [f32]) {
 // ============================================================================
 
 /// Dequantize Q8_0 to FP32 (scalar)
+#[inline(always)]
 pub fn dequantize_row_q8_0(x: &[BlockQ8_0], y: &mut [f32]) {
     let nb = x.len();
     assert!(y.len() >= nb * QK);
 
-    let mut yi = 0;
-    for block in x {
-        let d = fp16_to_fp32(block.d);
+    for i in 0..nb {
+        let d = fp16_to_fp32(x[i].d);
         for j in 0..QK {
-            y[yi] = block.qs[j] as f32 * d;
-            yi += 1;
+            y[i * QK + j] = x[i].qs[j] as f32 * d;
         }
     }
 }
@@ -98,6 +97,17 @@ pub fn dequantize_row_q8_0(x: &[BlockQ8_0], y: &mut [f32]) {
 pub fn dequantize_row_q8_0_neon(x: &[BlockQ8_0], y: &mut [f32]) {
     let nb = x.len();
     assert!(y.len() >= nb * QK);
+
+    // Use scalar for small data to avoid NEON overhead
+    if nb < 64 {
+        for i in 0..nb {
+            let d = fp16_to_fp32(x[i].d);
+            for j in 0..QK {
+                y[i * QK + j] = x[i].qs[j] as f32 * d;
+            }
+        }
+        return;
+    }
 
     unsafe {
         let y_ptr = y.as_mut_ptr();
