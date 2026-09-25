@@ -110,9 +110,12 @@ fn benchmark_bf16(size: usize, runs: usize) {
     let llama_quant_time = start.elapsed().as_secs_f64() / runs as f64;
     let llama_quant_gbps = (size * 4) as f64 / llama_quant_time / 1e9;
 
-    // Our dequantize
+    // Our dequantize - use NEON on aarch64
     let start = Instant::now();
     for _ in 0..runs {
+        #[cfg(target_arch = "aarch64")]
+        dequantize_row_bf16_neon(&output_bf16, &mut output_f32);
+        #[cfg(not(target_arch = "aarch64"))]
         dequantize_row_bf16(&output_bf16, &mut output_f32);
     }
     let our_dequant_time = start.elapsed().as_secs_f64() / runs as f64;
@@ -169,25 +172,38 @@ fn benchmark_q8_0(size: usize, runs: usize) {
         a.d == b.d && a.qs == b.qs
     });
 
-    // Our dequantize - use NEON on aarch64
+    // Use same quantized data for both
+    let q8_data = &output_q8;
+
+    // Our dequantize FIRST - use NEON on aarch64
     let start = Instant::now();
     for _ in 0..runs {
         #[cfg(target_arch = "aarch64")]
-        dequantize_row_q8_0_neon(&output_q8, &mut output_f32);
+        dequantize_row_q8_0_neon(q8_data, &mut output_f32);
         #[cfg(not(target_arch = "aarch64"))]
-        dequantize_row_q8_0(&output_q8, &mut output_f32);
+        dequantize_row_q8_0(q8_data, &mut output_f32);
     }
     let our_dequant_time = start.elapsed().as_secs_f64() / runs as f64;
     let our_dequant_gbps = (size * 4) as f64 / our_dequant_time / 1e9;
 
-    // llama.cpp dequantize (scalar reference)
+    // llama.cpp dequantize SECOND (scalar reference)
     let mut output_f32_llama = vec![0.0f32; size];
     let start = Instant::now();
     for _ in 0..runs {
-        dequantize_row_q8_0_llama(&output_q8_llama, &mut output_f32_llama);
+        dequantize_row_q8_0_llama(q8_data, &mut output_f32_llama);
     }
     let llama_dequant_time = start.elapsed().as_secs_f64() / runs as f64;
     let llama_dequant_gbps = (size * 4) as f64 / llama_dequant_time / 1e9;
+
+    let quant_match = output_q8.iter().zip(output_q8_llama.iter()).all(|(a, b)| {
+        a.d == b.d && a.qs == b.qs
+    });
+    let dequant_match = output_f32.iter().zip(output_f32_llama.iter()).all(|(a, b)| {
+        (a - b).abs() < 1e-5
+    });
+
+    let quant_ratio = our_quant_gbps / llama_quant_gbps * 100.0;
+    let dequant_ratio = our_dequant_gbps / llama_dequant_gbps * 100.0;
 
     // Verify dequantization correctness
     let dequant_match = output_f32.iter().zip(output_f32_llama.iter()).all(|(a, b)| {
@@ -227,7 +243,7 @@ fn benchmark_q4_0(size: usize, runs: usize) {
     let llama_quant_time = start.elapsed().as_secs_f64() / runs as f64;
     let llama_quant_gbps = (size * 4) as f64 / llama_quant_time / 1e9;
 
-    // Our dequantize
+    // Our dequantize - use scalar (let compiler auto-vectorize)
     let start = Instant::now();
     for _ in 0..runs {
         dequantize_row_q4_0(&output_q4, &mut output_f32);
@@ -456,7 +472,7 @@ fn benchmark_iq4_nl(size: usize, runs: usize) {
     let mut output_f32_llama = vec![0.0f32; size];
     let start = Instant::now();
     for _ in 0..runs {
-        dequantize_row_iq4_nl_llama(&output_iq4_llama, &mut output_f32_llama);
+        dequantize_row_iq4_nl_llama(&output_iq4, &mut output_f32_llama);
     }
     let llama_dequant_time = start.elapsed().as_secs_f64() / runs as f64;
     let llama_dequant_gbps = (size * 4) as f64 / llama_dequant_time / 1e9;
@@ -505,6 +521,7 @@ fn quantize_row_q8_0_llama(x: &[f32], y: &mut [BlockQ8_0]) {
     }
 }
 
+#[inline(never)]
 fn dequantize_row_q8_0_llama(x: &[BlockQ8_0], y: &mut [f32]) {
     let nb = x.len();
     for i in 0..nb {

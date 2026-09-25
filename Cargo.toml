@@ -5,6 +5,8 @@ edition = "2024"
 
 [profile.release]
 opt-level = 3
+target-cpu = "native"
+lto = "thin"
 
 [dependencies]
 half = "2.4"

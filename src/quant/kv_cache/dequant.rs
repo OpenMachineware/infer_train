@@ -43,6 +43,7 @@ pub fn dequantize_row_f16_neon(x: &[u16], y: &mut [f32]) {
 // ============================================================================
 
 /// Dequantize BF16 to FP32 (scalar)
+#[inline(never)]
 pub fn dequantize_row_bf16(x: &[u16], y: &mut [f32]) {
     assert!(x.len() == y.len());
     for i in 0..x.len() {
@@ -51,11 +52,23 @@ pub fn dequantize_row_bf16(x: &[u16], y: &mut [f32]) {
 }
 
 /// Dequantize BF16 to FP32 (NEON)
+/// Use NEON for small sizes, scalar for large (auto-vectorizes better)
+#[inline(never)]
 #[cfg(target_arch = "aarch64")]
 pub fn dequantize_row_bf16_neon(x: &[u16], y: &mut [f32]) {
     assert!(x.len() == y.len());
-    assert!(x.len() % 4 == 0);
 
+    // Use scalar for most sizes - compiler auto-vectorizes very well
+    // Only use NEON for very small sizes where overhead dominates
+    if x.len() > 2048 {
+        for i in 0..x.len() {
+            y[i] = bf16_to_fp32(x[i]);
+        }
+        return;
+    }
+
+    // NEON for small sizes
+    assert!(x.len() % 4 == 0);
     let n = x.len() / 4;
     let x_ptr = x.as_ptr();
     let y_ptr = y.as_mut_ptr();
@@ -78,7 +91,7 @@ pub fn dequantize_row_bf16_neon(x: &[u16], y: &mut [f32]) {
 // ============================================================================
 
 /// Dequantize Q8_0 to FP32 (scalar)
-#[inline(always)]
+#[inline(never)]
 pub fn dequantize_row_q8_0(x: &[BlockQ8_0], y: &mut [f32]) {
     let nb = x.len();
     assert!(y.len() >= nb * QK);
@@ -92,14 +105,15 @@ pub fn dequantize_row_q8_0(x: &[BlockQ8_0], y: &mut [f32]) {
 }
 
 /// Dequantize Q8_0 to FP32 (NEON)
-/// Use efficient int8 load and widen to int32
+/// Use scalar for small sizes, SIMD for large sizes
+#[inline(never)]
 #[cfg(target_arch = "aarch64")]
 pub fn dequantize_row_q8_0_neon(x: &[BlockQ8_0], y: &mut [f32]) {
     let nb = x.len();
     assert!(y.len() >= nb * QK);
 
-    // Use scalar for small data to avoid NEON overhead
-    if nb < 64 {
+    // Use scalar for small data - matches llama.cpp exactly
+    if nb < 128 {
         for i in 0..nb {
             let d = fp16_to_fp32(x[i].d);
             for j in 0..QK {
@@ -110,26 +124,34 @@ pub fn dequantize_row_q8_0_neon(x: &[BlockQ8_0], y: &mut [f32]) {
     }
 
     unsafe {
+        let x_ptr = x.as_ptr();
         let y_ptr = y.as_mut_ptr();
 
-        for (i, block) in x.iter().enumerate() {
+        for i in 0..nb {
+            let block = &*x_ptr.add(i);
             let d = fp16_to_fp32(block.d);
             let d_vec = vdupq_n_f32(d);
 
-            // Process all 32 values in 8 iterations of 4
-            for j in 0..8 {
-                let idx = j * 4;
+            // Process all 32 values in 4 iterations of 8
+            for j in 0..4 {
+                let idx = j * 8;
 
-                // Load 4 int8 values and widen to int32
+                // Load 8 int8 values
                 let qs = vld1_s8(block.qs.as_ptr().add(idx));
 
                 // Widen int8 -> int16 -> int32
                 let qs_16 = vmovl_s8(qs); // int16x8_t
-                let qs_32_low = vmovl_s16(vget_low_s16(qs_16)); // int32x4_t (first 4)
+
+                // Process low 4 and high 4 separately
+                let qs_32_low = vmovl_s16(vget_low_s16(qs_16));
+                let qs_32_high = vmovl_s16(vget_high_s16(qs_16));
 
                 // Convert to float and multiply
-                let y_vec = vmulq_f32(vcvtq_f32_s32(qs_32_low), d_vec);
-                vst1q_f32(y_ptr.add(i * QK + idx), y_vec);
+                let y_low = vmulq_f32(vcvtq_f32_s32(qs_32_low), d_vec);
+                let y_high = vmulq_f32(vcvtq_f32_s32(qs_32_high), d_vec);
+
+                vst1q_f32(y_ptr.add(i * QK + idx), y_low);
+                vst1q_f32(y_ptr.add(i * QK + idx + 4), y_high);
             }
         }
     }
@@ -140,14 +162,15 @@ pub fn dequantize_row_q8_0_neon(x: &[BlockQ8_0], y: &mut [f32]) {
 // ============================================================================
 
 /// Dequantize Q4_0 to FP32 (scalar)
+#[inline(never)]
 pub fn dequantize_row_q4_0(x: &[BlockQ4_0], y: &mut [f32]) {
     let nb = x.len();
     assert!(y.len() >= nb * QK);
 
-    for (i, block) in x.iter().enumerate() {
-        let d = fp16_to_fp32(block.d);
+    for i in 0..nb {
+        let d = fp16_to_fp32(x[i].d);
         for j in 0..QK / 2 {
-            let q = block.qs[j];
+            let q = x[i].qs[j];
             let q0 = (q & 0x0F) as i32 - 8;
             let q1 = ((q >> 4) & 0x0F) as i32 - 8;
             y[i * QK + j] = q0 as f32 * d;
@@ -157,36 +180,17 @@ pub fn dequantize_row_q4_0(x: &[BlockQ4_0], y: &mut [f32]) {
 }
 
 /// Dequantize Q4_0 to FP32 (NEON)
+/// Simple scalar version - compiler auto-vectorizes
 #[cfg(target_arch = "aarch64")]
 pub fn dequantize_row_q4_0_neon(x: &[BlockQ4_0], y: &mut [f32]) {
     let nb = x.len();
-    assert!(y.len() >= nb * QK);
-
-    unsafe {
-        for (i, block) in x.iter().enumerate() {
-            let d = fp16_to_fp32(block.d);
-
-            // Process 4 bytes at a time (8 4-bit values)
-            for j in 0..4 {
-                let idx = j * 4;
-                let qs = vld1_u8(block.qs.as_ptr().add(idx));
-
-                // Unpack low nibbles (positions 0-15)
-                let q0 = vand_u8(qs, vdup_n_u8(0x0F));
-                // Unpack high nibbles (positions 16-31)
-                let q1 = vshr_n_u8(qs, 4);
-
-                // Unrolled loop - process 4 values
-                y[i * QK + idx + 0] = (vget_lane_u8(q0, 0) as i32 - 8) as f32 * d;
-                y[i * QK + idx + 1] = (vget_lane_u8(q0, 1) as i32 - 8) as f32 * d;
-                y[i * QK + idx + 2] = (vget_lane_u8(q0, 2) as i32 - 8) as f32 * d;
-                y[i * QK + idx + 3] = (vget_lane_u8(q0, 3) as i32 - 8) as f32 * d;
-
-                y[i * QK + idx + QK / 2 + 0] = (vget_lane_u8(q1, 0) as i32 - 8) as f32 * d;
-                y[i * QK + idx + QK / 2 + 1] = (vget_lane_u8(q1, 1) as i32 - 8) as f32 * d;
-                y[i * QK + idx + QK / 2 + 2] = (vget_lane_u8(q1, 2) as i32 - 8) as f32 * d;
-                y[i * QK + idx + QK / 2 + 3] = (vget_lane_u8(q1, 3) as i32 - 8) as f32 * d;
-            }
+    for i in 0..nb {
+        let d = fp16_to_fp32(x[i].d);
+        for j in 0..(QK / 2) {
+            let q0 = (x[i].qs[j] & 0x0F) as i32 - 8;
+            let q1 = ((x[i].qs[j] >> 4) & 0x0F) as i32 - 8;
+            y[i * QK + j] = q0 as f32 * d;
+            y[i * QK + j + QK / 2] = q1 as f32 * d;
         }
     }
 }
@@ -255,25 +259,26 @@ pub fn dequantize_row_q5_0(x: &[BlockQ5_0], y: &mut [f32]) {
 
 /// Dequantize Q5_1 to FP32 (scalar)
 /// Q5_1: x = d * q + m, with 5-bit values
+#[inline(never)]
 pub fn dequantize_row_q5_1(x: &[BlockQ5_1], y: &mut [f32]) {
     let nb = x.len();
     assert!(y.len() >= nb * QK);
 
-    for (i, block) in x.iter().enumerate() {
-        let d = fp16_to_fp32(block.d);
-        let m = fp16_to_fp32(block.m);
+    for i in 0..nb {
+        let d = fp16_to_fp32(x[i].d);
+        let m = fp16_to_fp32(x[i].m);
 
-        let qh = block.qh[0] as u32
-              | ((block.qh[1] as u32) << 8)
-              | ((block.qh[2] as u32) << 16)
-              | ((block.qh[3] as u32) << 24);
+        let qh = x[i].qh[0] as u32
+              | ((x[i].qh[1] as u32) << 8)
+              | ((x[i].qh[2] as u32) << 16)
+              | ((x[i].qh[3] as u32) << 24);
 
         for j in 0..QK / 2 {
             let xh0 = ((qh >> j) & 1) << 4;
             let xh1 = ((qh >> (j + 16)) & 1) << 4;
 
-            let q0 = ((block.qs[j] & 0x0F) as i32 | xh0 as i32);
-            let q1 = (((block.qs[j] >> 4) & 0x0F) as i32 | xh1 as i32);
+            let q0 = ((x[i].qs[j] & 0x0F) as i32 | xh0 as i32);
+            let q1 = (((x[i].qs[j] >> 4) & 0x0F) as i32 | xh1 as i32);
 
             y[i * QK + j] = q0 as f32 * d + m;
             y[i * QK + j + QK / 2] = q1 as f32 * d + m;
@@ -287,17 +292,16 @@ pub fn dequantize_row_q5_1(x: &[BlockQ5_1], y: &mut [f32]) {
 
 /// Dequantize IQ4_NL to FP32 (scalar)
 /// IQ4_NL: 4-bit indices into lookup table
+#[inline(never)]
 pub fn dequantize_row_iq4_nl(x: &[BlockIQ4NL], y: &mut [f32]) {
     let nb = x.len();
     assert!(y.len() >= nb * QK);
 
-    for (i, block) in x.iter().enumerate() {
-        let d = fp16_to_fp32(block.d);
+    for i in 0..nb {
+        let d = fp16_to_fp32(x[i].d);
         for j in 0..QK / 2 {
-            // Unpack 2 4-bit indices
-            let idx0 = (block.qs[j] & 0x0F) as usize;
-            let idx1 = ((block.qs[j] >> 4) & 0x0F) as usize;
-            // llama.cpp layout: low nibbles to 0-15, high nibbles to 16-31
+            let idx0 = (x[i].qs[j] & 0x0F) as usize;
+            let idx1 = ((x[i].qs[j] >> 4) & 0x0F) as usize;
             y[i * QK + j] = KVALUES_IQ4NL[idx0] * d;
             y[i * QK + j + QK / 2] = KVALUES_IQ4NL[idx1] * d;
         }
