@@ -1,0 +1,231 @@
+// Quantization kernels: FP32 -> Quantized formats
+
+use super::*;
+
+#[cfg(target_arch = "aarch64")]
+use std::arch::aarch64::*;
+
+// ============================================================================
+// F16 Quantization
+// ============================================================================
+
+/// Quantize FP32 to F16 (scalar)
+pub fn quantize_row_f16(x: &[f32], y: &mut [u16]) {
+    assert!(x.len() == y.len());
+    for i in 0..x.len() {
+        y[i] = fp32_to_fp16(x[i]);
+    }
+}
+
+/// Quantize FP32 to F16 (NEON)
+/// Uses vcvtnq_f16_f32 which is available on ARMv8.2+
+#[cfg(target_arch = "aarch64")]
+pub fn quantize_row_f16_neon(x: &[f32], y: &mut [u16]) {
+    assert!(x.len() == y.len());
+    assert!(x.len() % 4 == 0);
+
+    let n = x.len() / 4;
+    let x_ptr = x.as_ptr();
+    let y_ptr = y.as_mut_ptr();
+
+    unsafe {
+        for i in 0..n {
+            let x_vec = vld1q_f32(x_ptr.add(i * 4));
+            // Convert F32 to F16 using NEON
+            // Note: vcvt_f16_f32 converts to f16 but we need to store as u16
+            let y_vec = vcvt_f16_f32(x_vec);
+            // Reinterpret as u16 and store
+            let y_u16 = vreinterpret_u16_f16(y_vec);
+            vst1_u16(y_ptr.add(i * 4), y_u16);
+        }
+    }
+}
+
+// ============================================================================
+// BF16 Quantization
+// ============================================================================
+
+/// Quantize FP32 to BF16 (scalar)
+/// BF16: 1 sign bit, 8 exponent bits, 7 mantissa bits
+/// Simply truncate the lower 16 bits of FP32
+pub fn quantize_row_bf16(x: &[f32], y: &mut [u16]) {
+    assert!(x.len() == y.len());
+    for i in 0..x.len() {
+        y[i] = fp32_to_bf16(x[i]);
+    }
+}
+
+/// Quantize FP32 to BF16 (NEON)
+#[cfg(target_arch = "aarch64")]
+pub fn quantize_row_bf16_neon(x: &[f32], y: &mut [u16]) {
+    assert!(x.len() == y.len());
+    assert!(x.len() % 4 == 0);
+
+    let n = x.len() / 4;
+    let x_ptr = x.as_ptr();
+    let y_ptr = y.as_mut_ptr();
+
+    unsafe {
+        for i in 0..n {
+            let x_vec = vld1q_f32(x_ptr.add(i * 4));
+            // BF16: shift right by 16 bits to keep upper 16 bits
+            let x_u32 = vreinterpretq_u32_f32(x_vec);
+            let y_u32 = vshrq_n_u32(x_u32, 16);
+            let y_u16 = vmovn_u32(y_u32);
+            vst1_u16(y_ptr.add(i * 4), y_u16);
+        }
+    }
+}
+
+// ============================================================================
+// Q8_0 Quantization
+// ============================================================================
+
+/// Quantize FP32 to Q8_0 (scalar)
+/// Q8_0: block of 32 values, each scaled by a single FP16 scale
+/// Formula: q = round(x / scale), where scale = max(abs(x)) / 127
+pub fn quantize_row_q8_0(x: &[f32], y: &mut [BlockQ8_0]) {
+    assert!(x.len() % QK == 0);
+    let nb = x.len() / QK;
+
+    for i in 0..nb {
+        let x_block = &x[i * QK..(i + 1) * QK];
+
+        // Find max absolute value
+        let mut amax: f32 = 0.0;
+        for &val in x_block {
+            let abs_val = val.abs();
+            if abs_val > amax {
+                amax = abs_val;
+            }
+        }
+
+        // Calculate scale
+        let d = amax / 127.0;
+        let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+
+        // Quantize
+        y[i].d = fp32_to_fp16(d);
+        for j in 0..QK {
+            y[i].qs[j] = (x_block[j] * id).round() as i8;
+        }
+    }
+}
+
+/// Quantize FP32 to Q8_0 (NEON)
+#[cfg(target_arch = "aarch64")]
+pub fn quantize_row_q8_0_neon(x: &[f32], y: &mut [BlockQ8_0]) {
+    assert!(x.len() % QK == 0);
+    let nb = x.len() / QK;
+
+    unsafe {
+        for i in 0..nb {
+            let x_ptr = x.as_ptr().add(i * QK);
+
+            // Load 8 x 4 floats
+            let mut srcv = [vdupq_n_f32(0.0); 8];
+            let mut asrcv = [vdupq_n_f32(0.0); 8];
+            for j in 0..8 {
+                srcv[j] = vld1q_f32(x_ptr.add(j * 4));
+                asrcv[j] = vabsq_f32(srcv[j]);
+            }
+
+            // Find max by reduction
+            let mut amaxv = [vdupq_n_f32(0.0); 4];
+            for j in 0..4 {
+                amaxv[j] = vmaxq_f32(asrcv[2*j], asrcv[2*j+1]);
+            }
+            amaxv[0] = vmaxq_f32(amaxv[0], amaxv[1]);
+            amaxv[0] = vmaxq_f32(amaxv[2], amaxv[3]);
+            amaxv[0] = vmaxq_f32(amaxv[0], amaxv[0]); // Final max
+
+            let amax = vmaxvq_f32(amaxv[0]);
+
+            // Calculate scale
+            let d = amax / 127.0;
+            let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+
+            y[i].d = fp32_to_fp16(d);
+
+            // Quantize and store
+            for j in 0..8 {
+                let v = vmulq_n_f32(srcv[j], id);
+                let vi = vcvtnq_s32_f32(v);
+
+                y[i].qs[j * 4 + 0] = vgetq_lane_s32(vi, 0) as i8;
+                y[i].qs[j * 4 + 1] = vgetq_lane_s32(vi, 1) as i8;
+                y[i].qs[j * 4 + 2] = vgetq_lane_s32(vi, 2) as i8;
+                y[i].qs[j * 4 + 3] = vgetq_lane_s32(vi, 3) as i8;
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Q4_0 Quantization
+// ============================================================================
+
+/// Quantize FP32 to Q4_0 (scalar)
+/// Q4_0: block of 32 values, each stored as 4-bit nibbles
+/// Formula: q = round(x / scale), where scale = max(abs(x)) / 7
+pub fn quantize_row_q4_0(x: &[f32], y: &mut [BlockQ4_0]) {
+    assert!(x.len() % QK == 0);
+    let nb = x.len() / QK;
+
+    for i in 0..nb {
+        let x_block = &x[i * QK..(i + 1) * QK];
+
+        // Find max absolute value
+        let mut amax: f32 = 0.0;
+        for &val in x_block {
+            let abs_val = val.abs();
+            if abs_val > amax {
+                amax = abs_val;
+            }
+        }
+
+        // Calculate scale (range: -8 to 7, so divide by 8)
+        let d = amax / 8.0;
+        let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+
+        y[i].d = fp32_to_fp16(d);
+
+        // Pack 2 4-bit values into 1 byte
+        for j in 0..QK / 2 {
+            let q0 = (x_block[2*j] * id).round() as i32 + 8;  // shift to 0-15 range
+            let q1 = (x_block[2*j + 1] * id).round() as i32 + 8;
+            y[i].qs[j] = ((q0 & 0xF) | ((q1 & 0xF) << 4)) as u8;
+        }
+    }
+}
+
+// ============================================================================
+// Helper functions
+// ============================================================================
+
+/// Convert FP32 to FP16
+#[inline]
+pub fn fp32_to_fp16(f: f32) -> u16 {
+    // Use half crate's conversion
+    half::f16::from_f32(f).to_bits()
+}
+
+/// Convert FP16 to FP32
+#[inline]
+pub fn fp16_to_fp32(h: u16) -> f32 {
+    half::f16::from_bits(h).to_f32()
+}
+
+/// Convert FP32 to BF16 (truncate lower 16 bits)
+#[inline]
+pub fn fp32_to_bf16(f: f32) -> u16 {
+    // BF16 is just the upper 16 bits of FP32
+    (f.to_bits() >> 16) as u16
+}
+
+/// Convert BF16 to FP32
+#[inline]
+pub fn bf16_to_fp32(h: u16) -> f32 {
+    // Extend BF16 to FP32 by setting lower 16 bits to 0
+    f32::from_bits((h as u32) << 16)
+}
