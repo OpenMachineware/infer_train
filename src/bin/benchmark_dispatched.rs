@@ -9,14 +9,18 @@ fn main() {
     let device = Device::system_default().expect("No Metal device found");
     let queue = device.new_command_queue();
 
-    // Compile MV shaders
+    // Compile MV shaders with fast math enabled
     let mv_shader = include_str!("../../shaders/mv_q4_k.metal");
-    let mv_library = device.new_library_with_source(mv_shader, &CompileOptions::new())
+    let mv_compile_options = CompileOptions::new();
+    mv_compile_options.set_fast_math_enabled(true);
+    let mv_library = device.new_library_with_source(mv_shader, &mv_compile_options)
         .expect("Failed to compile MV shader");
 
-    // Compile GEMM template shader
+    // Compile GEMM template shader with fast math enabled
     let gemm_shader = include_str!("../../shaders/mul_mm_standalone.metal");
-    let gemm_library = device.new_library_with_source(gemm_shader, &CompileOptions::new())
+    let gemm_compile_options = CompileOptions::new();
+    gemm_compile_options.set_fast_math_enabled(true);
+    let gemm_library = device.new_library_with_source(gemm_shader, &gemm_compile_options)
         .expect("Failed to compile GEMM shader");
 
     // Test scenarios

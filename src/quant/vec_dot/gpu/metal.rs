@@ -98,7 +98,9 @@ impl MetalContext {
         let queue = device.new_command_queue();
 
         // Set optimization level for Metal shader compilation
+        // Enable fast math for better GPU performance (matches llama.cpp approach)
         let compile_options = metal::CompileOptions::new();
+        compile_options.set_fast_math_enabled(true);
         // Note: metal-rs 0.31 doesn't expose set_optimization_level directly
         // but the default should be equivalent to -O3
 
