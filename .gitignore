@@ -8,7 +8,7 @@ it-server
 it-cli
 
 *.gguf
-llama.cpp-0.4.1/
+llama.cpp-0.5.0/
 llvm-project-llvmorg-23.1.0/
 vllm-0.29.0/
 
