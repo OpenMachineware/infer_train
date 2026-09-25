@@ -22,7 +22,20 @@ struct SoftmaxArgs {
     nb01: u64,
     nb02: u64,
     nb03: u64,
+    ne11: i32,
+    ne12: i32,
+    ne13: i32,
+    nb11: u64,
+    nb12: u64,
+    nb13: u64,
+    nb1: u64,
+    nb2: u64,
+    nb3: u64,
     scale: f32,
+    max_bias: f32,
+    m0: f32,
+    m1: f32,
+    n_head_log2: i32,
 }
 
 impl OurSoftmaxMetalContext {
@@ -37,12 +50,12 @@ impl OurSoftmaxMetalContext {
         let library = device.new_library_with_source(source, &compile_options)
             .map_err(|e| format!("Failed to compile library: {}", e))?;
 
-        let kernel = library.get_function("kernel_soft_max_f32", None)
+        let kernel = library.get_function("kernel_soft_max_f32_fast", None)
             .map_err(|e| format!("Failed to get kernel: {}", e))?;
         let pipeline = device.new_compute_pipeline_state_with_function(&kernel)
             .map_err(|e| format!("Failed to create pipeline: {}", e))?;
 
-        let kernel_vec4 = library.get_function("kernel_soft_max_f32_4", None)
+        let kernel_vec4 = library.get_function("kernel_soft_max_f32_4_fast", None)
             .map_err(|e| format!("Failed to get vec4 kernel: {}", e))?;
         let pipeline_vec4 = device.new_compute_pipeline_state_with_function(&kernel_vec4)
             .map_err(|e| format!("Failed to create vec4 pipeline: {}", e))?;
@@ -66,7 +79,7 @@ impl OurSoftmaxMetalContext {
         buffer_cell.as_ref().unwrap().clone()
     }
 
-    fn softmax(&self, src: &[f32], n_heads: usize, seq_len: usize, scale: f32, iterations: usize) -> f64 {
+    fn softmax(&self, src: &[f32], n_heads: usize, seq_len: usize, _scale: f32, iterations: usize) -> f64 {
         let batch_size = src.len() / (n_heads * seq_len);
         let total_size = src.len();
 
@@ -77,33 +90,25 @@ impl OurSoftmaxMetalContext {
             std::ptr::copy_nonoverlapping(src.as_ptr(), input_buffer.contents() as *mut f32, total_size);
         }
 
-        let args = SoftmaxArgs {
-            ne00: seq_len as i32,
-            ne01: n_heads as i32,
-            ne02: batch_size as i32,
-            nb01: (seq_len * 4) as u64,
-            nb02: (n_heads * seq_len * 4) as u64,
-            nb03: 0,
-            scale,
-        };
-
         let use_vec4 = seq_len % 4 == 0;
         let pipeline = if use_vec4 { &self.pipeline_vec4 } else { &self.pipeline };
         let max_threads = pipeline.max_total_threads_per_threadgroup() as usize;
         let threads_per_row = seq_len.min(max_threads).next_power_of_two();
         let simd_groups = (threads_per_row + 31) / 32;
         let shmem_size = simd_groups * 4;
+        let ne00 = seq_len as i32;
+        let ne01 = n_heads as i32;
 
         // Warmup
         for _ in 0..20 {
-            let _ = self.dispatch(&input_buffer, &output_buffer, &args, n_heads, batch_size, threads_per_row, pipeline, shmem_size);
+            let _ = self.dispatch(&input_buffer, &output_buffer, ne00, ne01, n_heads, batch_size, threads_per_row, pipeline, shmem_size);
         }
 
         // Measure
         let mut min_time = f64::MAX;
         for _ in 0..iterations {
             let start = std::time::Instant::now();
-            let _ = self.dispatch(&input_buffer, &output_buffer, &args, n_heads, batch_size, threads_per_row, pipeline, shmem_size);
+            let _ = self.dispatch(&input_buffer, &output_buffer, ne00, ne01, n_heads, batch_size, threads_per_row, pipeline, shmem_size);
             let elapsed = start.elapsed().as_secs_f64();
             if elapsed < min_time {
                 min_time = elapsed;
@@ -113,14 +118,15 @@ impl OurSoftmaxMetalContext {
         min_time
     }
 
-    fn dispatch(&self, input: &Buffer, output: &Buffer, args: &SoftmaxArgs, n_heads: usize, batch_size: usize, threads_per_row: usize, pipeline: &ComputePipelineState, shmem_size: usize) -> Result<(), String> {
+    fn dispatch(&self, input: &Buffer, output: &Buffer, ne00: i32, ne01: i32, n_heads: usize, batch_size: usize, threads_per_row: usize, pipeline: &ComputePipelineState, shmem_size: usize) -> Result<(), String> {
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
 
         encoder.set_compute_pipeline_state(pipeline);
-        encoder.set_bytes(0, std::mem::size_of::<SoftmaxArgs>() as u64, args as *const SoftmaxArgs as *const std::ffi::c_void);
+        encoder.set_bytes(0, 4, &ne00 as *const i32 as *const std::ffi::c_void);
         encoder.set_buffer(1, Some(input), 0);
         encoder.set_buffer(2, Some(output), 0);
+        encoder.set_bytes(3, 4, &ne01 as *const i32 as *const std::ffi::c_void);
 
         let grid_size = MTLSize { width: n_heads as u64, height: batch_size as u64, depth: 1 };
         let threadgroup_size = MTLSize { width: threads_per_row as u64, height: 1, depth: 1 };
@@ -433,10 +439,6 @@ fn main() {
     // Get outputs from both implementations
     let input_buffer = ours.get_buffer(total_size * 4, &ours.input_buffer, &ours.input_size);
     let output_buffer = ours.get_buffer(total_size * 4, &ours.output_buffer, &ours.output_size);
-    let args = SoftmaxArgs {
-        ne00: seq_len as i32, ne01: n_heads as i32, ne02: batch_size as i32,
-        nb01: (seq_len * 4) as u64, nb02: (n_heads * seq_len * 4) as u64, nb03: 0, scale,
-    };
 
     unsafe {
         std::ptr::copy_nonoverlapping(src.as_ptr(), input_buffer.contents() as *mut f32, total_size);
@@ -448,8 +450,10 @@ fn main() {
     let threads_per_row = seq_len.min(max_threads).next_power_of_two();
     let simd_groups = (threads_per_row + 31) / 32;
     let shmem_size = simd_groups * 4;
+    let ne00 = seq_len as i32;
+    let ne01 = n_heads as i32;
 
-    let _ = ours.dispatch(&input_buffer, &output_buffer, &args, n_heads, batch_size, threads_per_row, pipeline, shmem_size);
+    let _ = ours.dispatch(&input_buffer, &output_buffer, ne00, ne01, n_heads, batch_size, threads_per_row, pipeline, shmem_size);
 
     let mut y_ours = vec![0.0f32; total_size];
     unsafe {

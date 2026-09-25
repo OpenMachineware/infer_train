@@ -405,8 +405,12 @@ impl RopeMetalContext {
 pub struct SoftmaxMetalContext {
     device: Device,
     queue: CommandQueue,
+    // Full-featured pipelines (support mask and ALiBi)
     pipeline: ComputePipelineState,
     pipeline_vec4: ComputePipelineState,
+    // Fast path pipelines (no mask, no ALiBi)
+    pipeline_fast: ComputePipelineState,
+    pipeline_vec4_fast: ComputePipelineState,
     input_buffer: RefCell<Option<Buffer>>,
     output_buffer: RefCell<Option<Buffer>>,
     input_size: RefCell<usize>,
@@ -421,7 +425,20 @@ struct SoftmaxArgs {
     nb01: u64,
     nb02: u64,
     nb03: u64,
+    ne11: i32,
+    ne12: i32,
+    ne13: i32,
+    nb11: u64,
+    nb12: u64,
+    nb13: u64,
+    nb1: u64,
+    nb2: u64,
+    nb3: u64,
     scale: f32,
+    max_bias: f32,
+    m0: f32,
+    m1: f32,
+    n_head_log2: i32,
 }
 
 impl SoftmaxMetalContext {
@@ -447,11 +464,24 @@ impl SoftmaxMetalContext {
         let pipeline_vec4 = device.new_compute_pipeline_state_with_function(&kernel_vec4)
             .map_err(|e| format!("Failed to create Softmax vec4 pipeline: {}", e))?;
 
+        // Fast path kernels
+        let kernel_fast = library.get_function("kernel_soft_max_f32_fast", None)
+            .map_err(|e| format!("Failed to get Softmax fast kernel: {}", e))?;
+        let pipeline_fast = device.new_compute_pipeline_state_with_function(&kernel_fast)
+            .map_err(|e| format!("Failed to create Softmax fast pipeline: {}", e))?;
+
+        let kernel_vec4_fast = library.get_function("kernel_soft_max_f32_4_fast", None)
+            .map_err(|e| format!("Failed to get Softmax vec4 fast kernel: {}", e))?;
+        let pipeline_vec4_fast = device.new_compute_pipeline_state_with_function(&kernel_vec4_fast)
+            .map_err(|e| format!("Failed to create Softmax vec4 fast pipeline: {}", e))?;
+
         Ok(Self {
             device,
             queue,
             pipeline,
             pipeline_vec4,
+            pipeline_fast,
+            pipeline_vec4_fast,
             input_buffer: RefCell::new(None),
             output_buffer: RefCell::new(None),
             input_size: RefCell::new(0),
@@ -478,15 +508,19 @@ impl SoftmaxMetalContext {
     ///
     /// # Arguments
     /// * `src` - Input tensor [batch, heads, seq_len]
+    /// * `mask` - Optional mask tensor [batch, heads, seq_len] or [1, 1, seq_len]
     /// * `n_heads` - Number of attention heads
     /// * `seq_len` - Sequence length (row length)
     /// * `scale` - Temperature scaling factor
+    /// * `max_bias` - ALiBi max bias (0 if not using ALiBi)
     pub fn softmax_f32(
         &self,
         src: &[f32],
+        mask: Option<&[f32]>,
         n_heads: usize,
         seq_len: usize,
         scale: f32,
+        max_bias: f32,
     ) -> Result<Vec<f32>, String> {
         let batch_size = src.len() / (n_heads * seq_len);
         let total_size = src.len();
@@ -510,30 +544,89 @@ impl SoftmaxMetalContext {
             );
         }
 
-        let args = SoftmaxArgs {
-            ne00: seq_len as i32,
-            ne01: n_heads as i32,
-            ne02: batch_size as i32,
-            nb01: (seq_len * std::mem::size_of::<f32>()) as u64,
-            nb02: (n_heads * seq_len * std::mem::size_of::<f32>()) as u64,
-            nb03: 0,
-            scale,
+        // Mask buffer (optional)
+        let mask_buffer = if let Some(m) = mask {
+            let buf = self.device.new_buffer(m.len() as u64 * 4, metal::MTLResourceOptions::StorageModeShared);
+            unsafe {
+                std::ptr::copy_nonoverlapping(m.as_ptr(), buf.contents() as *mut f32, m.len());
+            }
+            Some(buf)
+        } else {
+            None
+        };
+
+        // ALiBi parameters
+        let (m0, m1, n_head_log2) = if max_bias > 0.0 {
+            let n_head_log2 = (n_heads as f32).log2() as i32;
+            let m0 = (-max_bias / n_head_log2 as f32).exp2();
+            let m1 = (-max_bias / (2.0f32 * n_head_log2 as f32)).exp2();
+            (m0, m1, n_head_log2)
+        } else {
+            (1.0f32, 1.0f32, 0)
         };
 
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
 
-        // Use vec4 kernel if seq_len is divisible by 4
+        // Use fast path if no mask, no ALiBi, and default scale
+        let use_fast = mask.is_none() && max_bias == 0.0 && scale == 1.0;
         let use_vec4 = seq_len % 4 == 0;
-        let pipeline = if use_vec4 { &self.pipeline_vec4 } else { &self.pipeline };
+
+        let pipeline = if use_fast {
+            if use_vec4 { &self.pipeline_vec4_fast } else { &self.pipeline_fast }
+        } else {
+            if use_vec4 { &self.pipeline_vec4 } else { &self.pipeline }
+        };
         encoder.set_compute_pipeline_state(pipeline);
 
-        encoder.set_bytes(0, std::mem::size_of::<SoftmaxArgs>() as u64, &args as *const SoftmaxArgs as *const std::ffi::c_void);
-        encoder.set_buffer(1, Some(&input_buffer), 0);
-        encoder.set_buffer(2, Some(&output_buffer), 0);
+        if use_fast {
+            // Fast path: just ne00, ne01
+            let ne00 = seq_len as i32;
+            let ne01 = n_heads as i32;
+            encoder.set_bytes(0, 4, &ne00 as *const i32 as *const std::ffi::c_void);
+            encoder.set_buffer(1, Some(&input_buffer), 0);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            encoder.set_bytes(3, 4, &ne01 as *const i32 as *const std::ffi::c_void);
+        } else {
+            // Full path: SoftmaxArgs struct
+            let args = SoftmaxArgs {
+                ne00: seq_len as i32,
+                ne01: n_heads as i32,
+                ne02: batch_size as i32,
+                nb01: (seq_len * std::mem::size_of::<f32>()) as u64,
+                nb02: (n_heads * seq_len * std::mem::size_of::<f32>()) as u64,
+                nb03: 0,
+                ne11: mask.as_ref().map(|m| m.len() / seq_len).unwrap_or(0) as i32,
+                ne12: n_heads as i32,
+                ne13: batch_size as i32,
+                nb11: (seq_len * std::mem::size_of::<f32>()) as u64,
+                nb12: (n_heads * seq_len * std::mem::size_of::<f32>()) as u64,
+                nb13: 0,
+                nb1: (seq_len * std::mem::size_of::<f32>()) as u64,
+                nb2: (n_heads * seq_len * std::mem::size_of::<f32>()) as u64,
+                nb3: 0,
+                scale,
+                max_bias,
+                m0,
+                m1,
+                n_head_log2,
+            };
+
+            encoder.set_bytes(0, std::mem::size_of::<SoftmaxArgs>() as u64, &args as *const SoftmaxArgs as *const std::ffi::c_void);
+            encoder.set_buffer(1, Some(&input_buffer), 0);
+
+            // Set mask buffer (or nullptr)
+            if let Some(ref mb) = mask_buffer {
+                encoder.set_buffer(2, Some(mb), 0);
+            } else {
+                // Use input_buffer as placeholder (shader checks src1 != src0)
+                encoder.set_buffer(2, Some(&input_buffer), 0);
+            }
+
+            encoder.set_buffer(3, Some(&output_buffer), 0);
+        }
 
         // Grid: one threadgroup per row
-        let n_rows = batch_size * n_heads;
         let max_threads = pipeline.max_total_threads_per_threadgroup() as usize;
         let threads_per_row = seq_len.min(max_threads).next_power_of_two();
 
