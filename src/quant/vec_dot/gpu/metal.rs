@@ -3198,4 +3198,22 @@ impl MetalContext {
         let output_ptr = output_buffer.contents() as *const f32;
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, m * n).to_vec() })
     }
+
+    /// Unified dispatch: uses MV for decode (N=1), GEMM template for batch (N≥32)
+    /// This is the main entry point for quantized matrix multiplication
+    pub fn matmul_q4_k_f32(&self, m: usize, n: usize, k: usize, weights: &[BlockQ4K], input: &[f32]) -> Result<Vec<f32>, String> {
+        // Dispatch strategy based on batch size:
+        // N=1 (decode): use MV kernel
+        // N≥32 (batch): use GEMM template kernel
+        if n == 1 {
+            self.mv_q4_k_f32(m, k, weights, input)
+        } else if n >= 32 {
+            // Use GEMM template for batch processing
+            self.gemm_template_q4_k_f32(m, n, k, weights, input)
+        } else {
+            // Fallback to old GEMM for intermediate sizes (N=2-31)
+            // This path should be optimized later
+            self.gemm_q4_k_f32(m, n, k, weights, input)
+        }
+    }
 }
