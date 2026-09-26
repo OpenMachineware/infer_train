@@ -167,6 +167,46 @@ pub fn quantize_row_q8_0_neon(x: &[f32], y: &mut [BlockQ8_0]) {
 }
 
 // ============================================================================
+// Q8_1 Quantization
+// ============================================================================
+
+/// Quantize FP32 to Q8_1 (scalar)
+/// Q8_1: block of 32 values with scale and sum
+/// Formula: q = round(x / scale), sum = sum(q)
+pub fn quantize_row_q8_1(x: &[f32], y: &mut [BlockQ8_1]) {
+    assert!(x.len() % QK == 0);
+    let nb = x.len() / QK;
+
+    for i in 0..nb {
+        let x_block = &x[i * QK..(i + 1) * QK];
+
+        // Find max absolute value
+        let mut amax: f32 = 0.0;
+        for &val in x_block {
+            let abs_val = val.abs();
+            if abs_val > amax {
+                amax = abs_val;
+            }
+        }
+
+        // Calculate scale
+        let d = amax / 127.0;
+        let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+
+        // Quantize and compute sum
+        let mut sum: i32 = 0;
+        for j in 0..QK {
+            let q = (x_block[j] * id).round() as i8;
+            y[i].qs[j] = q;
+            sum += q as i32;
+        }
+
+        y[i].d = fp32_to_fp16(d);
+        y[i].s = fp32_to_fp16(sum as f32);
+    }
+}
+
+// ============================================================================
 // Q4_0 Quantization
 // ============================================================================
 

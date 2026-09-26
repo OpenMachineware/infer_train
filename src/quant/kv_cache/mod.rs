@@ -1,8 +1,8 @@
 // KV Cache Quantization
 // Supports: F16, BF16, Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, IQ4_NL
 
-mod quant;
-mod dequant;
+pub mod quant;
+pub mod dequant;
 
 pub use quant::*;
 pub use dequant::*;
@@ -16,6 +16,17 @@ pub const QK: usize = 32;
 #[repr(C, packed)]
 pub struct BlockQ8_0 {
     pub d: u16,        // FP16 scale
+    pub qs: [i8; QK],  // 32 int8 quantized values
+}
+
+/// Q8_1 block: 32 int8 values + FP16 scale + FP16 sum
+/// Memory: 2 + 2 + 32 = 36 bytes per 32 floats
+/// Used for Q4_1 and Q5_1 vec_dot
+#[derive(Clone, Copy, Debug)]
+#[repr(C, packed)]
+pub struct BlockQ8_1 {
+    pub d: u16,        // FP16 scale
+    pub s: u16,        // FP16 sum of quantized values
     pub qs: [i8; QK],  // 32 int8 quantized values
 }
 
