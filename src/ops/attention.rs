@@ -96,8 +96,18 @@ pub unsafe fn decode_attention_f16_neon(
             if score > old_max {
                 let correction = (old_max - max_val).exp();
                 sum_exp *= correction;
-                for d in 0..head_dim {
-                    output_head[d] *= correction;
+                // NEON vector scaling
+                let corr_vec = vdupq_n_f32(correction);
+                for d in (0..head_dim).step_by(4) {
+                    if d + 4 <= head_dim {
+                        let out_vec = vld1q_f32(output_head.as_ptr().add(d));
+                        let scaled = vmulq_f32(out_vec, corr_vec);
+                        vst1q_f32(output_head.as_mut_ptr().add(d), scaled);
+                    } else {
+                        for dd in d..head_dim {
+                            output_head[dd] *= correction;
+                        }
+                    }
                 }
                 weight = 1.0;
             } else {
@@ -185,8 +195,18 @@ pub unsafe fn decode_attention_bf16_neon(
             if score > old_max {
                 let correction = (old_max - max_val).exp();
                 sum_exp *= correction;
-                for d in 0..head_dim {
-                    output_head[d] *= correction;
+                // NEON vector scaling
+                let corr_vec = vdupq_n_f32(correction);
+                for d in (0..head_dim).step_by(4) {
+                    if d + 4 <= head_dim {
+                        let out_vec = vld1q_f32(output_head.as_ptr().add(d));
+                        let scaled = vmulq_f32(out_vec, corr_vec);
+                        vst1q_f32(output_head.as_mut_ptr().add(d), scaled);
+                    } else {
+                        for dd in d..head_dim {
+                            output_head[dd] *= correction;
+                        }
+                    }
                 }
                 weight = 1.0;
             } else {
@@ -298,8 +318,18 @@ pub unsafe fn decode_attention_q8_0_neon(
             if score > old_max {
                 let correction = (old_max - max_val).exp();
                 sum_exp *= correction;
-                for d in 0..head_dim {
-                    output_head[d] *= correction;
+                // NEON vector scaling
+                let corr_vec = vdupq_n_f32(correction);
+                for d in (0..head_dim).step_by(4) {
+                    if d + 4 <= head_dim {
+                        let out_vec = vld1q_f32(output_head.as_ptr().add(d));
+                        let scaled = vmulq_f32(out_vec, corr_vec);
+                        vst1q_f32(output_head.as_mut_ptr().add(d), scaled);
+                    } else {
+                        for dd in d..head_dim {
+                            output_head[dd] *= correction;
+                        }
+                    }
                 }
                 weight = 1.0;
             } else {
@@ -386,8 +416,18 @@ pub unsafe fn decode_attention_q4_0_neon(
             if score > old_max {
                 let correction = (old_max - max_val).exp();
                 sum_exp *= correction;
-                for d in 0..head_dim {
-                    output_head[d] *= correction;
+                // NEON vector scaling
+                let corr_vec = vdupq_n_f32(correction);
+                for d in (0..head_dim).step_by(4) {
+                    if d + 4 <= head_dim {
+                        let out_vec = vld1q_f32(output_head.as_ptr().add(d));
+                        let scaled = vmulq_f32(out_vec, corr_vec);
+                        vst1q_f32(output_head.as_mut_ptr().add(d), scaled);
+                    } else {
+                        for dd in d..head_dim {
+                            output_head[dd] *= correction;
+                        }
+                    }
                 }
                 weight = 1.0;
             } else {
@@ -477,8 +517,18 @@ pub unsafe fn decode_attention_q4_1_neon(
             if score > old_max {
                 let correction = (old_max - max_val).exp();
                 sum_exp *= correction;
-                for d in 0..head_dim {
-                    output_head[d] *= correction;
+                // NEON vector scaling
+                let corr_vec = vdupq_n_f32(correction);
+                for d in (0..head_dim).step_by(4) {
+                    if d + 4 <= head_dim {
+                        let out_vec = vld1q_f32(output_head.as_ptr().add(d));
+                        let scaled = vmulq_f32(out_vec, corr_vec);
+                        vst1q_f32(output_head.as_mut_ptr().add(d), scaled);
+                    } else {
+                        for dd in d..head_dim {
+                            output_head[dd] *= correction;
+                        }
+                    }
                 }
                 weight = 1.0;
             } else {
@@ -571,8 +621,18 @@ pub unsafe fn decode_attention_q5_0_neon(
             if score > old_max {
                 let correction = (old_max - max_val).exp();
                 sum_exp *= correction;
-                for d in 0..head_dim {
-                    output_head[d] *= correction;
+                // NEON vector scaling
+                let corr_vec = vdupq_n_f32(correction);
+                for d in (0..head_dim).step_by(4) {
+                    if d + 4 <= head_dim {
+                        let out_vec = vld1q_f32(output_head.as_ptr().add(d));
+                        let scaled = vmulq_f32(out_vec, corr_vec);
+                        vst1q_f32(output_head.as_mut_ptr().add(d), scaled);
+                    } else {
+                        for dd in d..head_dim {
+                            output_head[dd] *= correction;
+                        }
+                    }
                 }
                 weight = 1.0;
             } else {
@@ -660,8 +720,18 @@ pub unsafe fn decode_attention_q5_1_neon(
             if score > old_max {
                 let correction = (old_max - max_val).exp();
                 sum_exp *= correction;
-                for d in 0..head_dim {
-                    output_head[d] *= correction;
+                // NEON vector scaling
+                let corr_vec = vdupq_n_f32(correction);
+                for d in (0..head_dim).step_by(4) {
+                    if d + 4 <= head_dim {
+                        let out_vec = vld1q_f32(output_head.as_ptr().add(d));
+                        let scaled = vmulq_f32(out_vec, corr_vec);
+                        vst1q_f32(output_head.as_mut_ptr().add(d), scaled);
+                    } else {
+                        for dd in d..head_dim {
+                            output_head[dd] *= correction;
+                        }
+                    }
                 }
                 weight = 1.0;
             } else {
@@ -758,8 +828,18 @@ pub unsafe fn decode_attention_iq4_nl_neon(
             if score > old_max {
                 let correction = (old_max - max_val).exp();
                 sum_exp *= correction;
-                for d in 0..head_dim {
-                    output_head[d] *= correction;
+                // NEON vector scaling
+                let corr_vec = vdupq_n_f32(correction);
+                for d in (0..head_dim).step_by(4) {
+                    if d + 4 <= head_dim {
+                        let out_vec = vld1q_f32(output_head.as_ptr().add(d));
+                        let scaled = vmulq_f32(out_vec, corr_vec);
+                        vst1q_f32(output_head.as_mut_ptr().add(d), scaled);
+                    } else {
+                        for dd in d..head_dim {
+                            output_head[dd] *= correction;
+                        }
+                    }
                 }
                 weight = 1.0;
             } else {

@@ -247,6 +247,7 @@ pub unsafe fn vec_mad_f32_q8_0_neon(y: &mut [f32], v: &[BlockQ8_0], weight: f32,
 }
 
 /// Fused vec_mad: y += weight * V (Q4_0 format)
+/// Optimized: scalar dequant + NEON accumulation (matches llama.cpp approach)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_q4_0_neon(y: &mut [f32], v: &[BlockQ4_0], weight: f32, n: usize) {
@@ -255,20 +256,33 @@ pub unsafe fn vec_mad_f32_q4_0_neon(y: &mut [f32], v: &[BlockQ4_0], weight: f32,
     for b in 0..nb {
         let block = &v[b];
         let scale = fp16_to_fp32_scalar(block.d);
-        let combined_scale = scale * weight;
 
-        for j in 0..QK / 2 {
+        // Scalar dequantization
+        let mut vals = [0.0f32; QK];
+        for j in 0..(QK / 2) {
             let packed = block.qs[j];
             let lo = (packed & 0x0F) as i32 - 8;
             let hi = ((packed >> 4) & 0x0F) as i32 - 8;
 
-            y[b * QK + j] += (lo as f32) * combined_scale;
-            y[b * QK + j + QK / 2] += (hi as f32) * combined_scale;
+            vals[j] = (lo as f32) * scale;
+            vals[j + QK / 2] = (hi as f32) * scale;
+        }
+
+        // NEON accumulation: y += weight * vals
+        let weight_vec = vdupq_n_f32(weight);
+        let base = b * QK;
+
+        for i in (0..QK).step_by(4) {
+            let y_vec = vld1q_f32(y.as_ptr().add(base + i));
+            let v_vec = vld1q_f32(vals.as_ptr().add(i));
+            let result = vmlaq_f32(y_vec, v_vec, weight_vec);
+            vst1q_f32(y.as_mut_ptr().add(base + i), result);
         }
     }
 }
 
 /// Fused vec_mad: y += weight * V (Q4_1 format)
+/// Optimized: scalar dequant + NEON accumulation (matches llama.cpp approach)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_q4_1_neon(y: &mut [f32], v: &[BlockQ4_1], weight: f32, n: usize) {
@@ -279,47 +293,75 @@ pub unsafe fn vec_mad_f32_q4_1_neon(y: &mut [f32], v: &[BlockQ4_1], weight: f32,
         let scale = fp16_to_fp32_scalar(block.d);
         let min = fp16_to_fp32_scalar(block.m);
 
-        for j in 0..QK / 2 {
+        // Scalar dequantization
+        let mut vals = [0.0f32; QK];
+        for j in 0..(QK / 2) {
             let packed = block.qs[j];
             let lo = (packed & 0x0F) as f32;
             let hi = ((packed >> 4) & 0x0F) as f32;
 
-            y[b * QK + j] += weight * (scale * lo + min);
-            y[b * QK + j + QK / 2] += weight * (scale * hi + min);
+            vals[j] = scale * lo + min;
+            vals[j + QK / 2] = scale * hi + min;
+        }
+
+        // NEON accumulation: y += weight * vals
+        let weight_vec = vdupq_n_f32(weight);
+        let base = b * QK;
+
+        for i in (0..QK).step_by(4) {
+            let y_vec = vld1q_f32(y.as_ptr().add(base + i));
+            let v_vec = vld1q_f32(vals.as_ptr().add(i));
+            let result = vmlaq_f32(y_vec, v_vec, weight_vec);
+            vst1q_f32(y.as_mut_ptr().add(base + i), result);
         }
     }
 }
 
 /// Fused vec_mad: y += weight * V (Q5_0 format)
+/// Optimized: scalar dequant + NEON accumulation (matches llama.cpp approach)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_q5_0_neon(y: &mut [f32], v: &[BlockQ5_0], weight: f32, n: usize) {
     let nb = n / QK;
 
+    // Process each block
     for b in 0..nb {
         let block = &v[b];
         let scale = fp16_to_fp32_scalar(block.d);
-        let combined_scale = scale * weight;
+        let qh = u32::from_le_bytes(block.qh);
 
-        for j in 0..QK / 2 {
+        // Scalar dequantization
+        let mut vals = [0.0f32; QK];
+        for j in 0..(QK / 2) {
             let packed = block.qs[j];
             let lo = (packed & 0x0F) as i32;
             let hi = ((packed >> 4) & 0x0F) as i32;
 
-            let qh = u32::from_le_bytes(block.qh);
             let bit_lo = ((qh >> j) & 1) as i32;
             let bit_hi = ((qh >> (j + 16)) & 1) as i32;
 
-            let val_lo = (lo | (bit_lo << 4)) - 16;
-            let val_hi = (hi | (bit_hi << 4)) - 16;
+            let val_lo = ((lo | (bit_lo << 4)) - 16) as f32 * scale;
+            let val_hi = ((hi | (bit_hi << 4)) - 16) as f32 * scale;
 
-            y[b * QK + j] += (val_lo as f32) * combined_scale;
-            y[b * QK + j + QK / 2] += (val_hi as f32) * combined_scale;
+            vals[j] = val_lo;
+            vals[j + QK / 2] = val_hi;
+        }
+
+        // NEON accumulation: y += weight * vals
+        let weight_vec = vdupq_n_f32(weight);
+        let base = b * QK;
+
+        for i in (0..QK).step_by(4) {
+            let y_vec = vld1q_f32(y.as_ptr().add(base + i));
+            let v_vec = vld1q_f32(vals.as_ptr().add(i));
+            let result = vmlaq_f32(y_vec, v_vec, weight_vec);
+            vst1q_f32(y.as_mut_ptr().add(base + i), result);
         }
     }
 }
 
 /// Fused vec_mad: y += weight * V (Q5_1 format)
+/// Optimized: scalar dequant + NEON accumulation (matches llama.cpp approach)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_q5_1_neon(y: &mut [f32], v: &[BlockQ5_1], weight: f32, n: usize) {
@@ -329,18 +371,31 @@ pub unsafe fn vec_mad_f32_q5_1_neon(y: &mut [f32], v: &[BlockQ5_1], weight: f32,
         let block = &v[b];
         let scale = fp16_to_fp32_scalar(block.d);
         let min = fp16_to_fp32_scalar(block.m);
+        let qh = u32::from_le_bytes(block.qh);
 
-        for j in 0..QK / 2 {
+        // Scalar dequantization
+        let mut vals = [0.0f32; QK];
+        for j in 0..(QK / 2) {
             let packed = block.qs[j];
             let lo = (packed & 0x0F) as f32;
             let hi = ((packed >> 4) & 0x0F) as f32;
 
-            let qh = u32::from_le_bytes(block.qh);
             let bit_lo = ((qh >> j) & 1) as f32;
             let bit_hi = ((qh >> (j + 16)) & 1) as f32;
 
-            y[b * QK + j] += weight * (scale * (lo + bit_lo * 16.0) + min);
-            y[b * QK + j + QK / 2] += weight * (scale * (hi + bit_hi * 16.0) + min);
+            vals[j] = scale * (lo + bit_lo * 16.0) + min;
+            vals[j + QK / 2] = scale * (hi + bit_hi * 16.0) + min;
+        }
+
+        // NEON accumulation: y += weight * vals
+        let weight_vec = vdupq_n_f32(weight);
+        let base = b * QK;
+
+        for i in (0..QK).step_by(4) {
+            let y_vec = vld1q_f32(y.as_ptr().add(base + i));
+            let v_vec = vld1q_f32(vals.as_ptr().add(i));
+            let result = vmlaq_f32(y_vec, v_vec, weight_vec);
+            vst1q_f32(y.as_mut_ptr().add(base + i), result);
         }
     }
 }
