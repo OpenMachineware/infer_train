@@ -10,6 +10,7 @@ use std::arch::aarch64::*;
 // ============================================================================
 
 /// Quantize FP32 to F16 (scalar)
+#[inline(never)]
 pub fn quantize_row_f16(x: &[f32], y: &mut [u16]) {
     assert!(x.len() == y.len());
     for i in 0..x.len() {
@@ -18,25 +19,39 @@ pub fn quantize_row_f16(x: &[f32], y: &mut [u16]) {
 }
 
 /// Quantize FP32 to F16 (NEON)
-/// Uses vcvtnq_f16_f32 which is available on ARMv8.2+
+/// Use NEON intrinsics for better performance
+#[inline(never)]
 #[cfg(target_arch = "aarch64")]
 pub fn quantize_row_f16_neon(x: &[f32], y: &mut [u16]) {
     assert!(x.len() == y.len());
-    assert!(x.len() % 4 == 0);
-
-    let n = x.len() / 4;
-    let x_ptr = x.as_ptr();
-    let y_ptr = y.as_mut_ptr();
+    let n = x.len();
 
     unsafe {
-        for i in 0..n {
-            let x_vec = vld1q_f32(x_ptr.add(i * 4));
-            // Convert F32 to F16 using NEON
-            // Note: vcvt_f16_f32 converts to f16 but we need to store as u16
-            let y_vec = vcvt_f16_f32(x_vec);
-            // Reinterpret as u16 and store
-            let y_u16 = vreinterpret_u16_f16(y_vec);
-            vst1_u16(y_ptr.add(i * 4), y_u16);
+        let x_ptr = x.as_ptr();
+        let y_ptr = y.as_mut_ptr();
+
+        // Process 8 elements at a time
+        let n8 = n / 8;
+        for i in 0..n8 {
+            let offset = i * 8;
+            let x0 = vld1q_f32(x_ptr.add(offset));
+            let x1 = vld1q_f32(x_ptr.add(offset + 4));
+
+            // Convert F32 to F16
+            let y0 = vcvt_f16_f32(x0);
+            let y1 = vcvt_f16_f32(x1);
+
+            // Combine and store as u16
+            let y_combined = vcombine_u16(
+                vreinterpret_u16_f16(y0),
+                vreinterpret_u16_f16(y1)
+            );
+            vst1q_u16(y_ptr.add(offset), y_combined);
+        }
+
+        // Handle remaining elements
+        for i in (n8 * 8)..n {
+            y[i] = fp32_to_fp16(x[i]);
         }
     }
 }
@@ -48,6 +63,7 @@ pub fn quantize_row_f16_neon(x: &[f32], y: &mut [u16]) {
 /// Quantize FP32 to BF16 (scalar)
 /// BF16: 1 sign bit, 8 exponent bits, 7 mantissa bits
 /// Simply truncate the lower 16 bits of FP32
+#[inline(never)]
 pub fn quantize_row_bf16(x: &[f32], y: &mut [u16]) {
     assert!(x.len() == y.len());
     for i in 0..x.len() {
@@ -56,24 +72,13 @@ pub fn quantize_row_bf16(x: &[f32], y: &mut [u16]) {
 }
 
 /// Quantize FP32 to BF16 (NEON)
+/// Use scalar - compiler auto-vectorizes better
+#[inline(never)]
 #[cfg(target_arch = "aarch64")]
 pub fn quantize_row_bf16_neon(x: &[f32], y: &mut [u16]) {
     assert!(x.len() == y.len());
-    assert!(x.len() % 4 == 0);
-
-    let n = x.len() / 4;
-    let x_ptr = x.as_ptr();
-    let y_ptr = y.as_mut_ptr();
-
-    unsafe {
-        for i in 0..n {
-            let x_vec = vld1q_f32(x_ptr.add(i * 4));
-            // BF16: shift right by 16 bits to keep upper 16 bits
-            let x_u32 = vreinterpretq_u32_f32(x_vec);
-            let y_u32 = vshrq_n_u32(x_u32, 16);
-            let y_u16 = vmovn_u32(y_u32);
-            vst1_u16(y_ptr.add(i * 4), y_u16);
-        }
+    for i in 0..x.len() {
+        y[i] = fp32_to_bf16(x[i]);
     }
 }
 
@@ -209,6 +214,7 @@ pub fn quantize_row_q4_0(x: &[f32], y: &mut [BlockQ4_0]) {
 /// Quantize FP32 to Q4_1 (scalar)
 /// Q4_1: block of 32 values with scale and min offset
 /// Formula: q = round((x - min) / scale), where scale = (max - min) / 15
+#[inline(never)]
 pub fn quantize_row_q4_1(x: &[f32], y: &mut [BlockQ4_1]) {
     assert!(x.len() % QK == 0);
     let nb = x.len() / QK;

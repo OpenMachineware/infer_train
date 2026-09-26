@@ -7,6 +7,7 @@ edition = "2024"
 opt-level = 3
 target-cpu = "native"
 lto = "thin"
+codegen-units = 1
 
 [dependencies]
 half = "2.4"
