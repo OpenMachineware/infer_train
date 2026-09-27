@@ -35,8 +35,8 @@ pub unsafe fn vec_dot_iq4_nl_q8_0_neon(n: usize, x: &[BlockIQ4NL], y: &[crate::q
     let m4b = vdupq_n_u8(0x0F);
     let vzero = vdupq_n_s32(0);
 
-    // Load the lookup table into a NEON register
-    let values = vld1q_s8(KVALUES_IQ4NL.as_ptr());
+    // Load the lookup table into a NEON register (as int8)
+    let values = vld1q_s8(crate::quant::kv_cache::KVALUES_IQ4NL_I8.as_ptr());
 
     let mut sum = 0.0f32;
     let mut ib = 0;
@@ -868,7 +868,7 @@ pub unsafe fn vec_dot_iq4_xs_q8_k_neon(n: usize, x: &[BlockIQ4XS], y: &[BlockQ8K
     let nb = n / QK_K;
     let m4b = vdupq_n_u8(0x0F);
     let vzero = vdupq_n_s32(0);
-    let values = vld1q_s8(KVALUES_IQ4NL.as_ptr());
+    let values = vld1q_s8(crate::quant::kv_cache::KVALUES_IQ4NL_I8.as_ptr());
 
     let mut sum = 0.0f32;
 

@@ -35,8 +35,10 @@ fn main() {
 
     let blocks_per_row = head_dim / QK;
 
-    // Prepare data
-    let q = vec![1.0f32; num_heads * head_dim];
+    // Prepare data with random values (matching llama.cpp)
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let q: Vec<f32> = (0..num_heads * head_dim).map(|_| rng.gen_range(-1.0..1.0)).collect();
     let mut output = vec![0.0f32; num_heads * head_dim];
 
     // FLOPS = 2 * num_heads * seq_len * head_dim (counting multiply-add as 1 FLOP)

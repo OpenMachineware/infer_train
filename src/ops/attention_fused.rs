@@ -5,7 +5,7 @@
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
 
-use crate::quant::kv_cache::{BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, BlockQ8_1, BlockIQ4NL, QK, KVALUES_IQ4NL};
+use crate::quant::kv_cache::{BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, BlockQ8_1, BlockIQ4NL, QK, KVALUES_IQ4NL, KVALUES_IQ4NL_I8};
 use crate::quant::kv_cache::quant::{quantize_row_q8_0_neon, quantize_row_q8_1};
 
 // ============================================================================
@@ -414,76 +414,162 @@ pub unsafe fn vec_mad_f32_q5_0_neon(y: &mut [f32], v: &[BlockQ5_0], weight: f32,
 }
 
 /// Fused vec_mad: y += weight * V (Q5_1 format)
-/// Optimized: scalar dequant + NEON accumulation (matches llama.cpp approach)
+/// Optimized: NEON for parallel unpack + accumulation (matches llama.cpp approach)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_q5_1_neon(y: &mut [f32], v: &[BlockQ5_1], weight: f32, n: usize) {
     let nb = n / QK;
 
+    let table_ptr = TABLE_B2B_1_Q5_0.as_ptr();
+
+    let m4b = vdupq_n_u8(0x0F);
+    let v16 = vdupq_n_s8(16);
+    let weight_vec = vdupq_n_f32(weight);
+
     for b in 0..nb {
         let block = &v[b];
         let scale = fp16_to_fp32_scalar(block.d);
         let min = fp16_to_fp32_scalar(block.m);
-        let qh = u32::from_le_bytes(block.qh);
-
-        // Scalar dequantization
-        let mut vals = [0.0f32; QK];
-        for j in 0..(QK / 2) {
-            let packed = block.qs[j];
-            let lo = (packed & 0x0F) as f32;
-            let hi = ((packed >> 4) & 0x0F) as f32;
-
-            let bit_lo = ((qh >> j) & 1) as f32;
-            let bit_hi = ((qh >> (j + 16)) & 1) as f32;
-
-            vals[j] = scale * (lo + bit_lo * 16.0) + min;
-            vals[j + QK / 2] = scale * (hi + bit_hi * 16.0) + min;
-        }
-
-        // NEON accumulation: y += weight * vals
-        let weight_vec = vdupq_n_f32(weight);
+        let scale_vec = vdupq_n_f32(scale);
+        let min_vec = vdupq_n_f32(min);
         let base = b * QK;
 
-        for i in (0..QK).step_by(4) {
-            let y_vec = vld1q_f32(y.as_ptr().add(base + i));
-            let v_vec = vld1q_f32(vals.as_ptr().add(i));
-            let result = vmlaq_f32(y_vec, v_vec, weight_vec);
-            vst1q_f32(y.as_mut_ptr().add(base + i), result);
-        }
+        // Load 4-bit quants
+        let qs = vld1q_u8(block.qs.as_ptr());
+
+        // Unpack 4-bit to 8-bit
+        let qsl = vreinterpretq_s8_u8(vandq_u8(qs, m4b));
+        let qsh = vreinterpretq_s8_u8(vshrq_n_u8(qs, 4));
+
+        // Extract 5th bit via lookup table
+        let mut qh: u32 = 0;
+        std::ptr::copy_nonoverlapping(block.qh.as_ptr(), &mut qh as *mut u32 as *mut u8, 4);
+
+        let tmp: [u64; 4] = [
+            *table_ptr.add(((qh >> 0) & 0xFF) as usize),
+            *table_ptr.add(((qh >> 8) & 0xFF) as usize),
+            *table_ptr.add(((qh >> 16) & 0xFF) as usize),
+            *table_ptr.add((qh >> 24) as usize),
+        ];
+
+        let qhl = vld1q_s8(tmp.as_ptr() as *const i8);
+        let qhh = vld1q_s8(tmp.as_ptr().add(2) as *const i8);
+
+        // Q5_1: value = scale * q + min, where q is 0-31
+        // q = nibble + bit*16, no bias subtraction needed (unlike Q5_0)
+        let vl_i8 = vaddq_s8(qsl, qhl);  // nibble + bit*16
+        let vh_i8 = vaddq_s8(qsh, qhh);
+
+        // Convert i8 -> i16 -> i32 -> f32
+        let vl_0_i16 = vmovl_s8(vget_low_s8(vl_i8));
+        let vl_1_i16 = vmovl_s8(vget_high_s8(vl_i8));
+        let vh_0_i16 = vmovl_s8(vget_low_s8(vh_i8));
+        let vh_1_i16 = vmovl_s8(vget_high_s8(vh_i8));
+
+        let vl_0_i32 = vmovl_s16(vget_low_s16(vl_0_i16));
+        let vl_1_i32 = vmovl_s16(vget_high_s16(vl_0_i16));
+        let vl_2_i32 = vmovl_s16(vget_low_s16(vl_1_i16));
+        let vl_3_i32 = vmovl_s16(vget_high_s16(vl_1_i16));
+
+        let vh_0_i32 = vmovl_s16(vget_low_s16(vh_0_i16));
+        let vh_1_i32 = vmovl_s16(vget_high_s16(vh_0_i16));
+        let vh_2_i32 = vmovl_s16(vget_low_s16(vh_1_i16));
+        let vh_3_i32 = vmovl_s16(vget_high_s16(vh_1_i16));
+
+        // Convert to f32: value = scale * q + min
+        // y += weight * (scale * q + min) = weight * scale * q + weight * min
+        // Optimize: pre-compute weight * scale and weight * min
+        let ws_vec = vmulq_n_f32(scale_vec, weight);
+        let wm_vec = vmulq_n_f32(min_vec, weight);
+
+        let vl_0 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vl_0_i32), ws_vec);
+        let vl_1 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vl_1_i32), ws_vec);
+        let vl_2 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vl_2_i32), ws_vec);
+        let vl_3 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vl_3_i32), ws_vec);
+
+        let vh_0 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vh_0_i32), ws_vec);
+        let vh_1 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vh_1_i32), ws_vec);
+        let vh_2 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vh_2_i32), ws_vec);
+        let vh_3 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vh_3_i32), ws_vec);
+
+        // Accumulate: y += value
+        vst1q_f32(y.as_mut_ptr().add(base + 0), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 0)), vl_0));
+        vst1q_f32(y.as_mut_ptr().add(base + 4), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 4)), vl_1));
+        vst1q_f32(y.as_mut_ptr().add(base + 8), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 8)), vl_2));
+        vst1q_f32(y.as_mut_ptr().add(base + 12), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 12)), vl_3));
+        vst1q_f32(y.as_mut_ptr().add(base + 16), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 16)), vh_0));
+        vst1q_f32(y.as_mut_ptr().add(base + 20), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 20)), vh_1));
+        vst1q_f32(y.as_mut_ptr().add(base + 24), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 24)), vh_2));
+        vst1q_f32(y.as_mut_ptr().add(base + 28), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 28)), vh_3));
     }
 }
 
 /// Fused vec_mad: y += weight * V (IQ4_NL format)
-/// Optimized: scalar dequant + NEON accumulation (matches llama.cpp approach)
+/// Optimized: NEON TBL for parallel lookup + NEON accumulation
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_iq4_nl_neon(y: &mut [f32], v: &[BlockIQ4NL], weight: f32, n: usize) {
     let nb = n / QK;
 
+    // Load int8 kvalues lookup table
+    let lut = vld1q_s8(KVALUES_IQ4NL_I8.as_ptr());
+    let m4b = vdupq_n_u8(0x0F);
+    let weight_vec = vdupq_n_f32(weight);
+
     for b in 0..nb {
         let block = &v[b];
         let scale = fp16_to_fp32_scalar(block.d);
-
-        // Scalar dequantization
-        let mut vals = [0.0f32; QK];
-        for j in 0..QK / 2 {
-            let packed = block.qs[j];
-            let lo = (packed & 0x0F) as usize;
-            let hi = ((packed >> 4) & 0x0F) as usize;
-
-            vals[j] = KVALUES_IQ4NL[lo] as f32 * scale;
-            vals[j + QK / 2] = KVALUES_IQ4NL[hi] as f32 * scale;
-        }
-
-        // NEON accumulation: y += weight * vals
-        let weight_vec = vdupq_n_f32(weight);
+        let scale_vec = vdupq_n_f32(scale);
         let base = b * QK;
 
-        for i in (0..QK).step_by(4) {
-            let y_vec = vld1q_f32(y.as_ptr().add(base + i));
-            let v_vec = vld1q_f32(vals.as_ptr().add(i));
-            let result = vmlaq_f32(y_vec, v_vec, weight_vec);
-            vst1q_f32(y.as_mut_ptr().add(base + i), result);
-        }
+        // Load 4-bit packed values
+        let qs = vld1q_u8(block.qs.as_ptr());
+
+        // Unpack 4-bit nibbles to indices (0-15)
+        let qsl_idx = vandq_u8(qs, m4b);
+        let qsh_idx = vshrq_n_u8(qs, 4);
+
+        // TBL lookup: get int8 kvalues
+        let qsl_i8 = vqtbl1q_s8(lut, qsl_idx);
+        let qsh_i8 = vqtbl1q_s8(lut, qsh_idx);
+
+        // Convert i8 -> i16 -> i32 -> f32 for low nibbles
+        let qsl_0_i16 = vmovl_s8(vget_low_s8(qsl_i8));
+        let qsl_1_i16 = vmovl_s8(vget_high_s8(qsl_i8));
+
+        let qsl_0_i32 = vmovl_s16(vget_low_s16(qsl_0_i16));
+        let qsl_1_i32 = vmovl_s16(vget_high_s16(qsl_0_i16));
+        let qsl_2_i32 = vmovl_s16(vget_low_s16(qsl_1_i16));
+        let qsl_3_i32 = vmovl_s16(vget_high_s16(qsl_1_i16));
+
+        // Convert to f32, scale, multiply by weight
+        let qsl_0 = vmulq_f32(vcvtq_f32_s32(qsl_0_i32), scale_vec);
+        let qsl_1 = vmulq_f32(vcvtq_f32_s32(qsl_1_i32), scale_vec);
+        let qsl_2 = vmulq_f32(vcvtq_f32_s32(qsl_2_i32), scale_vec);
+        let qsl_3 = vmulq_f32(vcvtq_f32_s32(qsl_3_i32), scale_vec);
+
+        // Same for high nibbles
+        let qsh_0_i16 = vmovl_s8(vget_low_s8(qsh_i8));
+        let qsh_1_i16 = vmovl_s8(vget_high_s8(qsh_i8));
+
+        let qsh_0_i32 = vmovl_s16(vget_low_s16(qsh_0_i16));
+        let qsh_1_i32 = vmovl_s16(vget_high_s16(qsh_0_i16));
+        let qsh_2_i32 = vmovl_s16(vget_low_s16(qsh_1_i16));
+        let qsh_3_i32 = vmovl_s16(vget_high_s16(qsh_1_i16));
+
+        let qsh_0 = vmulq_f32(vcvtq_f32_s32(qsh_0_i32), scale_vec);
+        let qsh_1 = vmulq_f32(vcvtq_f32_s32(qsh_1_i32), scale_vec);
+        let qsh_2 = vmulq_f32(vcvtq_f32_s32(qsh_2_i32), scale_vec);
+        let qsh_3 = vmulq_f32(vcvtq_f32_s32(qsh_3_i32), scale_vec);
+
+        // y += weight * (scale * value)
+        vst1q_f32(y.as_mut_ptr().add(base + 0), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 0)), qsl_0, weight_vec));
+        vst1q_f32(y.as_mut_ptr().add(base + 4), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 4)), qsl_1, weight_vec));
+        vst1q_f32(y.as_mut_ptr().add(base + 8), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 8)), qsl_2, weight_vec));
+        vst1q_f32(y.as_mut_ptr().add(base + 12), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 12)), qsl_3, weight_vec));
+        vst1q_f32(y.as_mut_ptr().add(base + 16), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 16)), qsh_0, weight_vec));
+        vst1q_f32(y.as_mut_ptr().add(base + 20), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 20)), qsh_1, weight_vec));
+        vst1q_f32(y.as_mut_ptr().add(base + 24), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 24)), qsh_2, weight_vec));
+        vst1q_f32(y.as_mut_ptr().add(base + 28), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 28)), qsh_3, weight_vec));
     }
 }

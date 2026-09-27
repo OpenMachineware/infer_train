@@ -1,72 +1,113 @@
-// Benchmark template kernel performance
-// Run: cargo run --release --bin benchmark_template_perf
+// Benchmark attention operator vs llama.cpp
+// Tests all 9 KV cache formats with fused NEON implementation
 
-use infer_train::quant::types::BlockQ4K;
-use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use half::f16;
 use std::time::Instant;
+use infer_train::quant::kv_cache::{
+    BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, BlockIQ4NL, QK,
+};
+use infer_train::ops::attention::{
+    decode_attention_f32,
+};
+#[cfg(target_arch = "aarch64")]
+use infer_train::ops::attention::{
+    decode_attention_f16_neon,
+    decode_attention_q8_0_neon,
+    decode_attention_q4_0_neon,
+    decode_attention_q4_1_neon,
+    decode_attention_q5_0_neon,
+    decode_attention_q5_1_neon,
+    decode_attention_iq4_nl_neon,
+};
+
+const NUM_HEADS: usize = 32;
+const HEAD_DIM: usize = 128;
+const NUM_ITER: usize = 10;
+
+fn benchmark_fp16(seq_len: usize) {
+    let q_f32 = vec![1.0f32; NUM_HEADS * HEAD_DIM];
+    let k_f32 = vec![0.5f32; seq_len * NUM_HEADS * HEAD_DIM];
+    let v_f32 = vec![0.3f32; seq_len * NUM_HEADS * HEAD_DIM];
+    let mut output = vec![0.0f32; NUM_HEADS * HEAD_DIM];
+    let scale = 1.0 / (HEAD_DIM as f32).sqrt();
+
+    // Convert to FP16
+    let q: Vec<u16> = q_f32.iter().map(|&x| half::f16::from_f32(x).to_bits()).collect();
+    let k: Vec<u16> = k_f32.iter().map(|&x| half::f16::from_f32(x).to_bits()).collect();
+    let v: Vec<u16> = v_f32.iter().map(|&x| half::f16::from_f32(x).to_bits()).collect();
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        // Warmup
+        decode_attention_f16_neon(&q, &k, &v, &mut output, NUM_HEADS, HEAD_DIM, seq_len, scale);
+
+        let start = Instant::now();
+        for _ in 0..NUM_ITER {
+            decode_attention_f16_neon(&q, &k, &v, &mut output, NUM_HEADS, HEAD_DIM, seq_len, scale);
+        }
+        let elapsed = start.elapsed();
+
+        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * seq_len as f64;
+        let gflops = (flops * NUM_ITER as f64) / elapsed.as_secs_f64() / 1e9;
+
+        println!("f16\t| {:8.2} GFLOPS | {:.3} ms/iter", gflops, elapsed.as_secs_f64() * 1000.0 / NUM_ITER as f64);
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    println!("FP16 benchmark only available on aarch64");
+}
+
+fn benchmark_q8_0(seq_len: usize) {
+    let q = vec![1.0f32; NUM_HEADS * HEAD_DIM];
+    let blocks_per_row = HEAD_DIM / QK;
+    let num_k_blocks = seq_len * NUM_HEADS * blocks_per_row;
+
+    let mut k_blocks: Vec<BlockQ8_0> = Vec::with_capacity(num_k_blocks);
+    let mut v_blocks: Vec<BlockQ8_0> = Vec::with_capacity(num_k_blocks);
+
+    for _ in 0..num_k_blocks {
+        let scale = half::f16::from_f32(0.5).to_bits();
+        let qs = [50i8; QK];
+        k_blocks.push(BlockQ8_0 { d: scale, qs });
+        v_blocks.push(BlockQ8_0 { d: scale, qs });
+    }
+
+    let mut output = vec![0.0f32; NUM_HEADS * HEAD_DIM];
+    let scale = 1.0 / (HEAD_DIM as f32).sqrt();
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        // Warmup
+        decode_attention_q8_0_neon(&q, &k_blocks, &v_blocks, &mut output, NUM_HEADS, HEAD_DIM, seq_len, scale);
+
+        let start = Instant::now();
+        for _ in 0..NUM_ITER {
+            decode_attention_q8_0_neon(&q, &k_blocks, &v_blocks, &mut output, NUM_HEADS, HEAD_DIM, seq_len, scale);
+        }
+        let elapsed = start.elapsed();
+
+        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * seq_len as f64;
+        let gflops = (flops * NUM_ITER as f64) / elapsed.as_secs_f64() / 1e9;
+
+        println!("q8_0\t| {:8.2} GFLOPS | {:.3} ms/iter", gflops, elapsed.as_secs_f64() * 1000.0 / NUM_ITER as f64);
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    println!("Q8_0 benchmark only available on aarch64");
+}
 
 fn main() {
-    println!("=== Template Kernel Performance Benchmark ===\n");
+    let args: Vec<String> = std::env::args().collect();
 
-    let ctx = MetalContext::new().expect("Failed to create MetalContext");
+    let seq_len = if args.len() > 1 {
+        args[1].parse().unwrap_or(512)
+    } else {
+        512
+    };
 
-    let m = 4096;
-    let k = 4096;
-    let n = 128;
-
-    println!("M={}, K={}, N={} (typical batch size)\n", m, k, n);
-
-    // Create weights
-    let weights: Vec<BlockQ4K> = (0..m * k / 256).map(|i| {
-        let mut scales = [0u8; 12];
-        let mut qs = [0u8; 128];
-        for j in 0..12 { scales[j] = (40 + j as u8 % 8) as u8; }
-        for j in 0..128 { qs[j] = ((i * 17 + j * 3) % 256) as u8; }
-        BlockQ4K {
-            d: f16::from_f32(1.0).to_bits(),
-            dmin: f16::from_f32(0.0).to_bits(),
-            scales,
-            qs,
-        }
-    }).collect();
-
-    // Create input (pre-convert to FP16 to exclude conversion time from benchmark)
-    let input_f32: Vec<f32> = (0..k * n).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
-    let input_f16: Vec<u16> = input_f32.iter()
-        .map(|&x| half::f16::from_f32(x).to_bits())
-        .collect();
-
-    // Warmup
-    let _ = ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input_f16);
-    let _ = ctx.gemm_q4_k_f32(m, n, k, &weights, &input_f16);
-
-    // Benchmark template kernel
-    let n_iter = 10;
-    let start = Instant::now();
-    for _ in 0..n_iter {
-        let _ = ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input_f16);
-    }
-    let template_time = start.elapsed().as_micros() as f64 / n_iter as f64;
-
-    // Benchmark hand-written kernel
-    let start = Instant::now();
-    for _ in 0..n_iter {
-        let _ = ctx.gemm_q4_k_f32(m, n, k, &weights, &input_f16);
-    }
-    let hand_time = start.elapsed().as_micros() as f64 / n_iter as f64;
-
-    // Calculate GFLOPS
-    let flops = 2.0 * m as f64 * n as f64 * k as f64;
-    let template_gflops = flops / (template_time * 1e-6) / 1e9;
-    let hand_gflops = flops / (hand_time * 1e-6) / 1e9;
-
-    println!("┌────────────────────┬────────────┬──────────┐");
-    println!("│ Kernel             │ Time (µs)  │ GFLOPS   │");
-    println!("├────────────────────┼────────────┼──────────┤");
-    println!("│ Template (llama.cpp) │ {:10.2} │ {:8.2} │", template_time, template_gflops);
-    println!("│ Hand-written       │ {:10.2} │ {:8.2} │", hand_time, hand_gflops);
-    println!("└────────────────────┴────────────┴──────────┘");
+    println!("=== Attention Benchmark ===");
+    println!("Config: {} heads, {} head_dim, {} seq_len, {} iterations", NUM_HEADS, HEAD_DIM, seq_len, NUM_ITER);
     println!();
-    println!("Speedup: {:.2}x", hand_time / template_time);
+
+    benchmark_fp16(seq_len);
+    benchmark_q8_0(seq_len);
 }

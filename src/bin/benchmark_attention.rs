@@ -23,7 +23,7 @@ use infer_train::ops::attention::{
 const NUM_HEADS: usize = 32;
 const HEAD_DIM: usize = 128;
 const SEQ_LEN: usize = 512;
-const NUM_ITER: usize = 10;
+const NUM_ITER: usize = 50;
 
 fn benchmark_fp32() {
     let q = vec![1.0f32; NUM_HEADS * HEAD_DIM];
@@ -41,7 +41,7 @@ fn benchmark_fp32() {
     }
     let elapsed = start.elapsed();
 
-    let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64 * 2.0; // Q@K + V@attn
+    let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64; // Q@K + V@attn
     let gflops = (flops * NUM_ITER as f64) / elapsed.as_secs_f64() / 1e9;
 
     println!("FP32 Attention: {:.2} GFLOPS ({:.2?} per iter)", gflops, elapsed / NUM_ITER as u32);
@@ -70,7 +70,7 @@ fn benchmark_fp16() {
         }
         let elapsed = start.elapsed();
 
-        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64 * 2.0;
+        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64;
         let gflops = (flops * NUM_ITER as f64) / elapsed.as_secs_f64() / 1e9;
 
         println!("FP16 Attention: {:.2} GFLOPS ({:.2?} per iter)", gflops, elapsed / NUM_ITER as u32);
@@ -108,7 +108,7 @@ fn benchmark_q8_0() {
         let elapsed = start.elapsed();
 
         // Q8_0: 2 bytes scale + 32 bytes qs = 34 bytes per 32 floats = 1.0625 bytes/float
-        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64 * 2.0;
+        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64;
         let gflops = (flops * NUM_ITER as f64) / elapsed.as_secs_f64() / 1e9;
         let bandwidth = (NUM_HEADS * SEQ_LEN * HEAD_DIM * 2 * 34 / 32) as f64 * NUM_ITER as f64
             / elapsed.as_secs_f64() / 1e9;
@@ -147,7 +147,7 @@ fn benchmark_q4_0() {
         }
         let elapsed = start.elapsed();
 
-        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64 * 2.0;
+        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64;
         let gflops = (flops * NUM_ITER as f64) / elapsed.as_secs_f64() / 1e9;
         // Q4_0: 2 bytes scale + 16 bytes qs = 18 bytes per 32 floats = 0.5625 bytes/float
         let bandwidth = (NUM_HEADS * SEQ_LEN * HEAD_DIM * 2 * 18 / 32) as f64 * NUM_ITER as f64
@@ -186,7 +186,7 @@ fn benchmark_q4_1() {
         }
         let elapsed = start.elapsed();
 
-        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64 * 2.0;
+        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64;
         let gflops = (flops * NUM_ITER as f64) / elapsed.as_secs_f64() / 1e9;
         // Q4_1: 4 bytes scales + 16 bytes qs = 20 bytes per 32 floats
         let bandwidth = (NUM_HEADS * SEQ_LEN * HEAD_DIM * 2 * 20 / 32) as f64 * NUM_ITER as f64
@@ -225,7 +225,7 @@ fn benchmark_q5_0() {
         }
         let elapsed = start.elapsed();
 
-        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64 * 2.0;
+        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64;
         let gflops = (flops * NUM_ITER as f64) / elapsed.as_secs_f64() / 1e9;
         // Q5_0: 2 + 4 + 16 = 22 bytes per 32 floats
         let bandwidth = (NUM_HEADS * SEQ_LEN * HEAD_DIM * 2 * 22 / 32) as f64 * NUM_ITER as f64
@@ -265,7 +265,7 @@ fn benchmark_q5_1() {
         }
         let elapsed = start.elapsed();
 
-        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64 * 2.0;
+        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64;
         let gflops = (flops * NUM_ITER as f64) / elapsed.as_secs_f64() / 1e9;
         // Q5_1: 4 + 4 + 16 = 24 bytes per 32 floats
         let bandwidth = (NUM_HEADS * SEQ_LEN * HEAD_DIM * 2 * 24 / 32) as f64 * NUM_ITER as f64
@@ -303,7 +303,7 @@ fn benchmark_iq4_nl() {
         }
         let elapsed = start.elapsed();
 
-        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64 * 2.0;
+        let flops = 2.0 * NUM_HEADS as f64 * HEAD_DIM as f64 * SEQ_LEN as f64;
         let gflops = (flops * NUM_ITER as f64) / elapsed.as_secs_f64() / 1e9;
         // IQ4_NL: 2 + 16 = 18 bytes per 32 floats
         let bandwidth = (NUM_HEADS * SEQ_LEN * HEAD_DIM * 2 * 18 / 32) as f64 * NUM_ITER as f64
