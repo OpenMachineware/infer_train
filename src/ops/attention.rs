@@ -287,26 +287,15 @@ pub unsafe fn decode_attention_q8_0_neon(
         }
 
         for s in 0..seq_len {
-            // Q8_0 × Q8_0 fused vec_dot
+            // Q8_0 × Q8_0 NEON vec_dot
             let k_offset = (s * num_heads + h) * blocks_per_row;
-
-            // Inline Q8_0 vec_dot to avoid type conversion overhead
             let score = {
-                let q_ptr = q_q8.as_ptr();
-                let k_ptr = k.as_ptr().add(k_offset);
-                let mut sum = 0.0f32;
-                for b in 0..blocks_per_row {
-                    let q_block = &*q_ptr.add(b);
-                    let k_block = &*k_ptr.add(b);
-                    let scale_q = fp16_to_fp32_scalar(q_block.d);
-                    let scale_k = fp16_to_fp32_scalar(k_block.d);
-                    let mut block_sum: i32 = 0;
-                    for i in 0..QK {
-                        block_sum += (q_block.qs[i] as i32) * (k_block.qs[i] as i32);
-                    }
-                    sum += (block_sum as f32) * scale_q * scale_k;
-                }
-                sum
+                // Transmute to types module blocks (same repr(C))
+                let q_ptr = q_q8.as_ptr() as *const crate::quant::types::BlockQ8_0;
+                let q_slice = std::slice::from_raw_parts(q_ptr, blocks_per_row);
+                let k_ptr = k.as_ptr().add(k_offset) as *const crate::quant::types::BlockQ8_0;
+                let k_slice = std::slice::from_raw_parts(k_ptr, blocks_per_row);
+                crate::quant::vec_dot::arm::q_0_1::vec_dot_q8_0_q8_0_neon(head_dim, q_slice, k_slice)
             } * scale;
 
             let old_max = max_val;
@@ -338,16 +327,9 @@ pub unsafe fn decode_attention_q8_0_neon(
 
             sum_exp += weight;
 
-            // Accumulate V with inline Q8_0 dequant
+            // Accumulate V with NEON vec_mad
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            for b in 0..blocks_per_row {
-                let v_block = &v[v_offset + b];
-                let scale_v = fp16_to_fp32_scalar(v_block.d);
-                let combined_scale = scale_v * weight;
-                for i in 0..QK {
-                    output_head[b * QK + i] += (v_block.qs[i] as f32) * combined_scale;
-                }
-            }
+            vec_mad_f32_q8_0_neon(output_head, &v[v_offset..v_offset + blocks_per_row], weight, head_dim);
         }
 
         let inv_sum = 1.0 / sum_exp;
@@ -537,25 +519,9 @@ pub unsafe fn decode_attention_q4_1_neon(
 
             sum_exp += weight;
 
-            // Accumulate V with inline Q4_1 dequant
+            // Accumulate V with NEON vec_mad
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            for b in 0..blocks_per_row {
-                let v_block = &v[v_offset + b];
-                let scale_v = fp16_to_fp32_scalar(v_block.d);
-                let min_v = fp16_to_fp32_scalar(v_block.m);
-
-                for j in 0..(QK / 2) {
-                    let packed = v_block.qs[j];
-                    let lo = (packed & 0x0F) as f32;
-                    let hi = ((packed >> 4) & 0x0F) as f32;
-
-                    let v_lo = (scale_v * lo + min_v) * weight;
-                    let v_hi = (scale_v * hi + min_v) * weight;
-
-                    output_head[b * QK + j] += v_lo;
-                    output_head[b * QK + j + QK / 2] += v_hi;
-                }
-            }
+            vec_mad_f32_q4_1_neon(output_head, &v[v_offset..v_offset + blocks_per_row], weight, head_dim);
         }
 
         let inv_sum = 1.0 / sum_exp;
@@ -740,29 +706,9 @@ pub unsafe fn decode_attention_q5_1_neon(
 
             sum_exp += weight;
 
-            // Accumulate V with inline Q5_1 dequant
+            // Accumulate V with NEON vec_mad
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            for b in 0..blocks_per_row {
-                let v_block = &v[v_offset + b];
-                let scale_v = fp16_to_fp32_scalar(v_block.d);
-                let min_v = fp16_to_fp32_scalar(v_block.m);
-                let qh = u32::from_le_bytes(v_block.qh);
-
-                for j in 0..(QK / 2) {
-                    let packed = v_block.qs[j];
-                    let lo = (packed & 0x0F) as f32;
-                    let hi = ((packed >> 4) & 0x0F) as f32;
-
-                    let bit_lo = ((qh >> j) & 1) as f32;
-                    let bit_hi = ((qh >> (j + 16)) & 1) as f32;
-
-                    let v_lo = (scale_v * (lo + bit_lo * 16.0) + min_v) * weight;
-                    let v_hi = (scale_v * (hi + bit_hi * 16.0) + min_v) * weight;
-
-                    output_head[b * QK + j] += v_lo;
-                    output_head[b * QK + j + QK / 2] += v_hi;
-                }
-            }
+            vec_mad_f32_q5_1_neon(output_head, &v[v_offset..v_offset + blocks_per_row], weight, head_dim);
         }
 
         let inv_sum = 1.0 / sum_exp;

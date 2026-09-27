@@ -38,21 +38,21 @@ fn main() {
         .collect();
 
     // Warmup
-    let _ = ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input);
-    let _ = ctx.gemm_q4_k_f32(m, n, k, &weights, &input);
+    let _ = ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input_f16);
+    let _ = ctx.gemm_q4_k_f32(m, n, k, &weights, &input_f16);
 
     // Benchmark template kernel
     let n_iter = 10;
     let start = Instant::now();
     for _ in 0..n_iter {
-        let _ = ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input);
+        let _ = ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input_f16);
     }
     let template_time = start.elapsed().as_micros() as f64 / n_iter as f64;
 
     // Benchmark hand-written kernel
     let start = Instant::now();
     for _ in 0..n_iter {
-        let _ = ctx.gemm_q4_k_f32(m, n, k, &weights, &input);
+        let _ = ctx.gemm_q4_k_f32(m, n, k, &weights, &input_f16);
     }
     let hand_time = start.elapsed().as_micros() as f64 / n_iter as f64;
 

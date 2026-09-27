@@ -222,7 +222,7 @@ pub unsafe fn vec_mad_f32_q8_0_neon(y: &mut [f32], v: &[BlockQ8_0], weight: f32,
 
         let y_ptr = y.as_mut_ptr().add(b * QK);
 
-        for i in (0..QK).step_by(4) {
+        for i in (0..QK).step_by(8) {
             let k_i8 = vld1_s8(block.qs.as_ptr().add(i));
             let k_i16 = vmovl_s8(k_i8);
             let k_i32_0 = vmovl_s16(vget_low_s16(k_i16));
@@ -337,7 +337,7 @@ static TABLE_B2B_1_Q5_0: [u64; 256] = {
 };
 
 /// Fused vec_mad: y += weight * V (Q5_0 format)
-/// Optimized: NEON dequant + NEON accumulation
+/// Optimized: use lookup table for qh bit expansion (matches llama.cpp exactly)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_q5_0_neon(y: &mut [f32], v: &[BlockQ5_0], weight: f32, n: usize) {
@@ -345,6 +345,7 @@ pub unsafe fn vec_mad_f32_q5_0_neon(y: &mut [f32], v: &[BlockQ5_0], weight: f32,
     let m4b = vdupq_n_u8(0x0F);
     let v16 = vdupq_n_s8(16);
     let weight_vec = vdupq_n_f32(weight);
+    let table_ptr = TABLE_B2B_1_Q5_0.as_ptr();
 
     for b in 0..nb {
         let block = &v[b];
@@ -359,9 +360,10 @@ pub unsafe fn vec_mad_f32_q5_0_neon(y: &mut [f32], v: &[BlockQ5_0], weight: f32,
         let qsl = vreinterpretq_s8_u8(vandq_u8(qs, m4b));
         let qsh = vreinterpretq_s8_u8(vshrq_n_u8(qs, 4));
 
-        // Extract 5th bit via lookup table
-        let qh = u32::from_le_bytes(block.qh);
-        let table_ptr = TABLE_B2B_1_Q5_0.as_ptr();
+        // Extract 5th bit via lookup table (use memcpy like llama.cpp)
+        let mut qh: u32 = 0;
+        std::ptr::copy_nonoverlapping(block.qh.as_ptr(), &mut qh as *mut u32 as *mut u8, 4);
+
         let tmp: [u64; 4] = [
             *table_ptr.add(((qh >> 0) & 0xFF) as usize),
             *table_ptr.add(((qh >> 8) & 0xFF) as usize),
@@ -369,7 +371,7 @@ pub unsafe fn vec_mad_f32_q5_0_neon(y: &mut [f32], v: &[BlockQ5_0], weight: f32,
             *table_ptr.add((qh >> 24) as usize),
         ];
 
-        // Load expanded bits
+        // Load expanded bits as int8 vectors
         let qhl = vld1q_s8(tmp.as_ptr() as *const i8);
         let qhh = vld1q_s8(tmp.as_ptr().add(2) as *const i8);
 
@@ -378,7 +380,7 @@ pub unsafe fn vec_mad_f32_q5_0_neon(y: &mut [f32], v: &[BlockQ5_0], weight: f32,
         let vh_i8 = vsubq_s8(vaddq_s8(qsh, qhh), v16);
 
         // Convert to FP32 and accumulate
-        // Low 16 bytes -> 4 vectors of 4 floats
+        // Process low 16 bytes -> 4 vectors of 4 floats
         let vl_0 = vget_low_s8(vl_i8);
         let vl_1 = vget_high_s8(vl_i8);
         let vh_0 = vget_low_s8(vh_i8);
@@ -400,7 +402,8 @@ pub unsafe fn vec_mad_f32_q5_0_neon(y: &mut [f32], v: &[BlockQ5_0], weight: f32,
         let vh_2_i32 = vmovl_s16(vget_low_s16(vh_1_i16));
         let vh_3_i32 = vmovl_s16(vget_high_s16(vh_1_i16));
 
-        // Convert to f32, scale
+        // Convert to f32, scale, multiply by weight, and accumulate
+        // y += weight * (scale * value)
         let vl_0_f32 = vmulq_f32(vcvtq_f32_s32(vl_0_i32), scale_vec);
         let vl_1_f32 = vmulq_f32(vcvtq_f32_s32(vl_1_i32), scale_vec);
         let vl_2_f32 = vmulq_f32(vcvtq_f32_s32(vl_2_i32), scale_vec);
@@ -464,6 +467,7 @@ pub unsafe fn vec_mad_f32_q5_1_neon(y: &mut [f32], v: &[BlockQ5_1], weight: f32,
 }
 
 /// Fused vec_mad: y += weight * V (IQ4_NL format)
+/// Optimized: scalar dequant + NEON accumulation (matches llama.cpp approach)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_iq4_nl_neon(y: &mut [f32], v: &[BlockIQ4NL], weight: f32, n: usize) {
@@ -472,15 +476,27 @@ pub unsafe fn vec_mad_f32_iq4_nl_neon(y: &mut [f32], v: &[BlockIQ4NL], weight: f
     for b in 0..nb {
         let block = &v[b];
         let scale = fp16_to_fp32_scalar(block.d);
-        let combined_scale = scale * weight;
 
+        // Scalar dequantization
+        let mut vals = [0.0f32; QK];
         for j in 0..QK / 2 {
             let packed = block.qs[j];
             let lo = (packed & 0x0F) as usize;
             let hi = ((packed >> 4) & 0x0F) as usize;
 
-            y[b * QK + j] += KVALUES_IQ4NL[lo] * combined_scale;
-            y[b * QK + j + QK / 2] += KVALUES_IQ4NL[hi] * combined_scale;
+            vals[j] = KVALUES_IQ4NL[lo] as f32 * scale;
+            vals[j + QK / 2] = KVALUES_IQ4NL[hi] as f32 * scale;
+        }
+
+        // NEON accumulation: y += weight * vals
+        let weight_vec = vdupq_n_f32(weight);
+        let base = b * QK;
+
+        for i in (0..QK).step_by(4) {
+            let y_vec = vld1q_f32(y.as_ptr().add(base + i));
+            let v_vec = vld1q_f32(vals.as_ptr().add(i));
+            let result = vmlaq_f32(y_vec, v_vec, weight_vec);
+            vst1q_f32(y.as_mut_ptr().add(base + i), result);
         }
     }
 }
