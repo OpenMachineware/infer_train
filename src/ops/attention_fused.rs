@@ -161,36 +161,14 @@ pub unsafe fn vec_dot_q5_1_q8_1(n: usize, q: &[BlockQ8_0], k: &[BlockQ5_1]) -> f
     sum
 }
 
-/// IQ4_NL × Q8_0 fused vec_dot (scalar fallback)
+/// IQ4_NL × Q8_0 fused vec_dot using existing SIMD implementation
+/// Direct transmute to types module blocks (same repr(C))
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_iq4_nl_q8_0(n: usize, q: &[BlockQ8_0], k: &[BlockIQ4NL]) -> f32 {
-    let nb = n / QK;
-    let mut sum = 0.0f32;
-
-    for b in 0..nb {
-        let k_block = &k[b];
-        let q_block = &q[b];
-
-        let scale_k = fp16_to_fp32_scalar(k_block.d);
-        let scale_q = fp16_to_fp32_scalar(q_block.d);
-
-        for j in 0..QK / 2 {
-            let packed = k_block.qs[j];
-            let lo = (packed & 0x0F) as usize;
-            let hi = ((packed >> 4) & 0x0F) as usize;
-
-            let k_lo = KVALUES_IQ4NL[lo] * scale_k;
-            let k_hi = KVALUES_IQ4NL[hi] * scale_k;
-
-            let q_lo = q_block.qs[j] as f32 * scale_q;
-            let q_hi = q_block.qs[j + QK / 2] as f32 * scale_q;
-
-            sum += q_lo * k_lo + q_hi * k_hi;
-        }
-    }
-
-    sum
+    let q_types = std::slice::from_raw_parts(q.as_ptr() as *const crate::quant::types::BlockQ8_0, q.len());
+    let k_types = std::slice::from_raw_parts(k.as_ptr() as *const crate::quant::types::BlockIQ4NL, k.len());
+    crate::quant::vec_dot::arm::iq::vec_dot_iq4_nl_q8_0_neon(n, k_types, q_types)
 }
 
 // ============================================================================
@@ -505,60 +483,36 @@ pub unsafe fn vec_mad_f32_q5_1_neon(y: &mut [f32], v: &[BlockQ5_1], weight: f32,
 }
 
 /// Fused vec_mad: y += weight * V (IQ4_NL format)
-/// Optimized: NEON TBL + i8->f32 widening with fused multiply-add
+/// Strategy: scalar dequant + NEON FMA (matches llama.cpp approach)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_iq4_nl_neon(y: &mut [f32], v: &[BlockIQ4NL], weight: f32, n: usize) {
     let nb = n / QK;
 
-    // Load int8 kvalues lookup table
-    let lut = vld1q_s8(KVALUES_IQ4NL_I8.as_ptr());
-    let m4b = vdupq_n_u8(0x0F);
-
     for b in 0..nb {
         let block = &v[b];
         let scale = fp16_to_fp32_scalar(block.d);
-        let ws = weight * scale; // Combined weight * scale
-        let ws_vec = vdupq_n_f32(ws);
+        let ws = weight * scale;
         let base = b * QK;
 
-        // Load 4-bit packed values
-        let qs = vld1q_u8(block.qs.as_ptr());
+        // Scalar dequantization (matches llama.cpp's approach)
+        // This is memory-bound, SIMD widening overhead doesn't help
+        let mut vals = [0.0f32; QK];
+        for j in 0..(QK / 2) {
+            let packed = block.qs[j];
+            let lo = (packed & 0x0F) as usize;
+            let hi = ((packed >> 4) & 0x0F) as usize;
 
-        // Unpack 4-bit nibbles to indices (0-15)
-        let qsl_idx = vandq_u8(qs, m4b);
-        let qsh_idx = vshrq_n_u8(qs, 4);
+            vals[j] = KVALUES_IQ4NL[lo];
+            vals[j + QK / 2] = KVALUES_IQ4NL[hi];
+        }
 
-        // TBL lookup: get int8 kvalues
-        let qsl_i8 = vqtbl1q_s8(lut, qsl_idx);
-        let qsh_i8 = vqtbl1q_s8(lut, qsh_idx);
-
-        // Convert i8 -> i16 -> i32 -> f32 for low nibbles
-        let qsl_0_i16 = vmovl_s8(vget_low_s8(qsl_i8));
-        let qsl_1_i16 = vmovl_s8(vget_high_s8(qsl_i8));
-
-        let qsl_0_i32 = vmovl_s16(vget_low_s16(qsl_0_i16));
-        let qsl_1_i32 = vmovl_s16(vget_high_s16(qsl_0_i16));
-        let qsl_2_i32 = vmovl_s16(vget_low_s16(qsl_1_i16));
-        let qsl_3_i32 = vmovl_s16(vget_high_s16(qsl_1_i16));
-
-        // Same for high nibbles
-        let qsh_0_i16 = vmovl_s8(vget_low_s8(qsh_i8));
-        let qsh_1_i16 = vmovl_s8(vget_high_s8(qsh_i8));
-
-        let qsh_0_i32 = vmovl_s16(vget_low_s16(qsh_0_i16));
-        let qsh_1_i32 = vmovl_s16(vget_high_s16(qsh_0_i16));
-        let qsh_2_i32 = vmovl_s16(vget_low_s16(qsh_1_i16));
-        let qsh_3_i32 = vmovl_s16(vget_high_s16(qsh_1_i16));
-
-        // Convert to f32 and y += v * ws using fused multiply-add
-        vst1q_f32(y.as_mut_ptr().add(base + 0), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 0)), vcvtq_f32_s32(qsl_0_i32), ws_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 4), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 4)), vcvtq_f32_s32(qsl_1_i32), ws_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 8), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 8)), vcvtq_f32_s32(qsl_2_i32), ws_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 12), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 12)), vcvtq_f32_s32(qsl_3_i32), ws_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 16), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 16)), vcvtq_f32_s32(qsh_0_i32), ws_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 20), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 20)), vcvtq_f32_s32(qsh_1_i32), ws_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 24), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 24)), vcvtq_f32_s32(qsh_2_i32), ws_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 28), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 28)), vcvtq_f32_s32(qsh_3_i32), ws_vec));
+        // NEON FMA: y += ws * vals
+        let ws_vec = vdupq_n_f32(ws);
+        for i in (0..QK).step_by(4) {
+            let y_vec = vld1q_f32(y.as_ptr().add(base + i));
+            let v_vec = vld1q_f32(vals.as_ptr().add(i));
+            vst1q_f32(y.as_mut_ptr().add(base + i), vfmaq_f32(y_vec, v_vec, ws_vec));
+        }
     }
 }
