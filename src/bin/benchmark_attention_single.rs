@@ -39,7 +39,9 @@ fn main() {
     let q = vec![1.0f32; num_heads * head_dim];
     let mut output = vec![0.0f32; num_heads * head_dim];
 
-    let flops = 2.0 * num_heads as f64 * head_dim as f64 * seq_len as f64 * 2.0;
+    // FLOPS = 2 * num_heads * seq_len * head_dim (counting multiply-add as 1 FLOP)
+    // This matches llama.cpp's FLOPS calculation
+    let flops = 2.0 * num_heads as f64 * head_dim as f64 * seq_len as f64;
 
     match format {
         "f32" => {
