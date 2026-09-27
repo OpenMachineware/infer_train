@@ -505,7 +505,7 @@ pub unsafe fn vec_mad_f32_q5_1_neon(y: &mut [f32], v: &[BlockQ5_1], weight: f32,
 }
 
 /// Fused vec_mad: y += weight * V (IQ4_NL format)
-/// Optimized: NEON TBL for parallel lookup + NEON accumulation
+/// Optimized: NEON TBL + i8->f32 widening with fused multiply-add
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_iq4_nl_neon(y: &mut [f32], v: &[BlockIQ4NL], weight: f32, n: usize) {
@@ -514,12 +514,12 @@ pub unsafe fn vec_mad_f32_iq4_nl_neon(y: &mut [f32], v: &[BlockIQ4NL], weight: f
     // Load int8 kvalues lookup table
     let lut = vld1q_s8(KVALUES_IQ4NL_I8.as_ptr());
     let m4b = vdupq_n_u8(0x0F);
-    let weight_vec = vdupq_n_f32(weight);
 
     for b in 0..nb {
         let block = &v[b];
         let scale = fp16_to_fp32_scalar(block.d);
-        let scale_vec = vdupq_n_f32(scale);
+        let ws = weight * scale; // Combined weight * scale
+        let ws_vec = vdupq_n_f32(ws);
         let base = b * QK;
 
         // Load 4-bit packed values
@@ -542,12 +542,6 @@ pub unsafe fn vec_mad_f32_iq4_nl_neon(y: &mut [f32], v: &[BlockIQ4NL], weight: f
         let qsl_2_i32 = vmovl_s16(vget_low_s16(qsl_1_i16));
         let qsl_3_i32 = vmovl_s16(vget_high_s16(qsl_1_i16));
 
-        // Convert to f32, scale, multiply by weight
-        let qsl_0 = vmulq_f32(vcvtq_f32_s32(qsl_0_i32), scale_vec);
-        let qsl_1 = vmulq_f32(vcvtq_f32_s32(qsl_1_i32), scale_vec);
-        let qsl_2 = vmulq_f32(vcvtq_f32_s32(qsl_2_i32), scale_vec);
-        let qsl_3 = vmulq_f32(vcvtq_f32_s32(qsl_3_i32), scale_vec);
-
         // Same for high nibbles
         let qsh_0_i16 = vmovl_s8(vget_low_s8(qsh_i8));
         let qsh_1_i16 = vmovl_s8(vget_high_s8(qsh_i8));
@@ -557,19 +551,14 @@ pub unsafe fn vec_mad_f32_iq4_nl_neon(y: &mut [f32], v: &[BlockIQ4NL], weight: f
         let qsh_2_i32 = vmovl_s16(vget_low_s16(qsh_1_i16));
         let qsh_3_i32 = vmovl_s16(vget_high_s16(qsh_1_i16));
 
-        let qsh_0 = vmulq_f32(vcvtq_f32_s32(qsh_0_i32), scale_vec);
-        let qsh_1 = vmulq_f32(vcvtq_f32_s32(qsh_1_i32), scale_vec);
-        let qsh_2 = vmulq_f32(vcvtq_f32_s32(qsh_2_i32), scale_vec);
-        let qsh_3 = vmulq_f32(vcvtq_f32_s32(qsh_3_i32), scale_vec);
-
-        // y += weight * (scale * value)
-        vst1q_f32(y.as_mut_ptr().add(base + 0), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 0)), qsl_0, weight_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 4), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 4)), qsl_1, weight_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 8), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 8)), qsl_2, weight_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 12), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 12)), qsl_3, weight_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 16), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 16)), qsh_0, weight_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 20), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 20)), qsh_1, weight_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 24), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 24)), qsh_2, weight_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 28), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 28)), qsh_3, weight_vec));
+        // Convert to f32 and y += v * ws using fused multiply-add
+        vst1q_f32(y.as_mut_ptr().add(base + 0), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 0)), vcvtq_f32_s32(qsl_0_i32), ws_vec));
+        vst1q_f32(y.as_mut_ptr().add(base + 4), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 4)), vcvtq_f32_s32(qsl_1_i32), ws_vec));
+        vst1q_f32(y.as_mut_ptr().add(base + 8), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 8)), vcvtq_f32_s32(qsl_2_i32), ws_vec));
+        vst1q_f32(y.as_mut_ptr().add(base + 12), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 12)), vcvtq_f32_s32(qsl_3_i32), ws_vec));
+        vst1q_f32(y.as_mut_ptr().add(base + 16), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 16)), vcvtq_f32_s32(qsh_0_i32), ws_vec));
+        vst1q_f32(y.as_mut_ptr().add(base + 20), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 20)), vcvtq_f32_s32(qsh_1_i32), ws_vec));
+        vst1q_f32(y.as_mut_ptr().add(base + 24), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 24)), vcvtq_f32_s32(qsh_2_i32), ws_vec));
+        vst1q_f32(y.as_mut_ptr().add(base + 28), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 28)), vcvtq_f32_s32(qsh_3_i32), ws_vec));
     }
 }

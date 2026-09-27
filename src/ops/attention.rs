@@ -7,6 +7,7 @@ use std::arch::aarch64::*;
 use crate::quant::kv_cache::{
     BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, BlockQ8_1, BlockIQ4NL, QK,
     dequant::dequantize_row_f16_neon,
+    dequant as kv_dequant,
 };
 use crate::ops::softmax::softmax_f32_dispatch;
 
