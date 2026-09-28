@@ -68,10 +68,12 @@
 
 | Operator | Template | Status | Notes |
 |----------|----------|--------|-------|
-| DUP      | Yes      | ❌     | `template<typename src_t, typename dst_t>` - copy with type conversion |
-| CPY      | Calls DUP | ❌    | Just calls `ggml_compute_forward_dup` |
-| CONT     | Calls DUP | ❌    | Just calls `ggml_compute_forward_dup` |
+| DUP      | Yes      | ✅     | Same type (memcpy), F32↔F16 conversion |
+| CPY      | Calls DUP | ✅    | Just calls `dup` |
+| CONT     | Calls DUP | ✅    | Just calls `dup` |
 | SET      | Switch   | ❌     | Like CPY but with offset |
+
+**Supported types**: F32, F16 (type conversion supported)
 
 ---
 
@@ -79,8 +81,8 @@
 
 | Operator | Template | Status | Notes |
 |----------|----------|--------|-------|
-| SCALE    | No (Switch) | ❌ | Only F32 supported: `ggml_compute_forward_scale_f32` |
-| ADD1     | No (Switch) | ❌ | F32, F16, BF16, Quantized variants |
+| SCALE    | No (Switch) | ✅ | vDSP on macOS, scalar elsewhere |
+| ADD1     | No (Switch) | ✅ | vDSP on macOS, scalar elsewhere |
 | CLAMP    | No (Switch) | ❌ | Only F32 supported |
 
 ---
