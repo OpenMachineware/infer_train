@@ -7,17 +7,17 @@ use std::time::Instant;
 fn cpu_attention_reference(q: &[f32], k: &[f32], v: &[f32], n_heads: usize, head_dim: usize, seq_len: usize) -> Vec<f32> {
     let scale = 1.0 / (head_dim as f32).sqrt();
     let mut output = vec![0.0f32; n_heads * head_dim];
-    
+
     for h in 0..n_heads {
         let q_offset = h * head_dim;
-        
+
         // K and V are [n_heads, seq_len, head_dim]
         // K[h][s][d] = k[h * seq_len * head_dim + s * head_dim + d]
-        
+
         // Compute attention scores and apply softmax
         let mut scores = vec![0.0f32; seq_len];
         let mut max_score = f32::NEG_INFINITY;
-        
+
         for s in 0..seq_len {
             let k_offset = h * seq_len * head_dim + s * head_dim;
             let mut dot = 0.0f32;
@@ -27,14 +27,14 @@ fn cpu_attention_reference(q: &[f32], k: &[f32], v: &[f32], n_heads: usize, head
             scores[s] = dot * scale;
             max_score = max_score.max(scores[s]);
         }
-        
+
         // Softmax
         let mut sum_exp = 0.0f32;
         for s in 0..seq_len {
             scores[s] = (scores[s] - max_score).exp();
             sum_exp += scores[s];
         }
-        
+
         // Weighted sum of V
         for d in 0..head_dim {
             let mut out = 0.0f32;
@@ -45,7 +45,7 @@ fn cpu_attention_reference(q: &[f32], k: &[f32], v: &[f32], n_heads: usize, head
             output[h * head_dim + d] = out;
         }
     }
-    
+
     output
 }
 
@@ -70,7 +70,7 @@ fn main() {
     // Create simple test data with correct layout
     // Q layout: [n_heads, head_dim] - each head has one query
     let q: Vec<f32> = (0..n_heads * head_dim).map(|i| 0.5 + 0.01 * (i as f32 % 100.0)).collect();
-    
+
     // K layout for the kernel: [n_heads, seq_len, head_dim]
     // The kernel accesses K[h, s, d] at offset h*nb12 + s*nb11 + d
     // where nb11 = head_dim * 2 (for F16) and nb12 = seq_len * nb11
@@ -104,7 +104,7 @@ fn main() {
     match ctx.flash_attn_decode(&q, k_bytes, v_bytes, None, n_heads as u32, n_heads as u32, head_dim as u32, seq_len as u32, KvFormat::F16) {
         Ok(gpu_output) => {
             println!("GPU output sample: {:?}", &gpu_output[0..4]);
-            
+
             // Compare
             let mut max_diff = 0.0f32;
             let mut total_diff = 0.0f32;
@@ -114,11 +114,11 @@ fn main() {
                 total_diff += diff;
             }
             let avg_diff = total_diff / cpu_output.len() as f32;
-            
+
             println!("\nComparison:");
             println!("  Max difference: {:.6}", max_diff);
             println!("  Avg difference: {:.6}", avg_diff);
-            
+
             if max_diff < 0.01 {
                 println!("  ✓ PASS: Output matches CPU reference");
             } else {

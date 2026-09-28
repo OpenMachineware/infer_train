@@ -76,19 +76,19 @@ void our_attention(const ggml_fp16_t* q, const ggml_fp16_t* k, const ggml_fp16_t
     const __fp16* q_ptr = (const __fp16*)q;
     const __fp16* k_ptr = (const __fp16*)k;
     const __fp16* v_ptr = (const __fp16*)v;
-    
+
     for (int h = 0; h < num_heads; h++) {
         const __fp16* q_head = q_ptr + h * head_dim;
         float* output_head = output + h * head_dim;
         memset(vkq16, 0, head_dim * sizeof(ggml_fp16_t));
         float M = -INFINITY;
         float S = 0.0f;
-        
+
         for (int s = 0; s < seq_len; s++) {
             const __fp16* k_row = k_ptr + (s * num_heads + h) * head_dim;
             const __fp16* v_row = v_ptr + (s * num_heads + h) * head_dim;
             float score = vec_dot_f16(q_head, k_row, head_dim) * scale;
-            
+
             float old_max = M;
             if (score > M) M = score;
             float weight;
@@ -103,7 +103,7 @@ void our_attention(const ggml_fp16_t* q, const ggml_fp16_t* k, const ggml_fp16_t
             S += weight;
             vec_mad_f16(vkq16, (const ggml_fp16_t*)v_row, weight, head_dim);
         }
-        
+
         float inv_S = 1.0f / S;
         for (int d = 0; d < head_dim; d += 8) {
             float16x8_t acc = vld1q_f16((const __fp16*)vkq16 + d);
@@ -120,20 +120,20 @@ void our_attention(const ggml_fp16_t* q, const ggml_fp16_t* k, const ggml_fp16_t
 
 int main() {
     int num_heads = 32, head_dim = 128, seq_len = 1024;
-    
+
     ggml_fp16_t* q = aligned_alloc(64, num_heads * head_dim * sizeof(ggml_fp16_t));
     ggml_fp16_t* k = aligned_alloc(64, seq_len * num_heads * head_dim * sizeof(ggml_fp16_t));
     ggml_fp16_t* v = aligned_alloc(64, seq_len * num_heads * head_dim * sizeof(ggml_fp16_t));
     float* output = aligned_alloc(64, num_heads * head_dim * sizeof(float));
     void* vkq = aligned_alloc(64, head_dim * sizeof(ggml_fp16_t));
-    
+
     for (int i = 0; i < num_heads * head_dim; i++) q[i] = (rand() % 1000) / 1000.0;
     for (int i = 0; i < seq_len * num_heads * head_dim; i++) { k[i] = (rand() % 1000) / 1000.0; v[i] = (rand() % 1000) / 1000.0; }
-    
+
     float scale = 1.0f / sqrtf((float)head_dim);
-    
+
     for (int w = 0; w < 20; w++) our_attention(q, k, v, output, num_heads, head_dim, seq_len, scale, vkq);
-    
+
     double total_ns = 0;
     for (int iter = 0; iter < 100; iter++) {
         struct timespec t1, t2;
@@ -142,9 +142,9 @@ int main() {
         clock_gettime(CLOCK_MONOTONIC, &t2);
         total_ns += (t2.tv_sec - t1.tv_sec) * 1e9 + (t2.tv_nsec - t1.tv_nsec);
     }
-    
+
     printf("Average: %.2f ms\n", total_ns / 100 / 1e6);
     printf("GFLOPS:  %.2f\n", 2.0 * num_heads * seq_len * head_dim / (total_ns / 100) * 1e9 / 1e9);
-    
+
     return 0;
 }

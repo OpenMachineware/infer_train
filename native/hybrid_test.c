@@ -90,20 +90,20 @@ void attention_hybrid(const ggml_fp16_t *q, const ggml_fp16_t *k, const ggml_fp1
 
 int main() {
     int num_heads = 32, head_dim = 128, seq_len = 1024;
-    
+
     ggml_fp16_t* q = aligned_alloc(64, num_heads * head_dim * sizeof(ggml_fp16_t));
     ggml_fp16_t* k = aligned_alloc(64, seq_len * num_heads * head_dim * sizeof(ggml_fp16_t));
     ggml_fp16_t* v = aligned_alloc(64, seq_len * num_heads * head_dim * sizeof(ggml_fp16_t));
     float* output = aligned_alloc(64, num_heads * head_dim * sizeof(float));
     void* work = aligned_alloc(64, head_dim * sizeof(ggml_fp16_t));
-    
+
     for (int i = 0; i < num_heads * head_dim; i++) q[i] = (rand() % 1000) / 1000.0;
     for (int i = 0; i < seq_len * num_heads * head_dim; i++) { k[i] = (rand() % 1000) / 1000.0; v[i] = (rand() % 1000) / 1000.0; }
-    
+
     float scale = 1.0f / sqrtf((float)head_dim);
-    
+
     for (int w = 0; w < 20; w++) attention_hybrid(q, k, v, output, num_heads, head_dim, seq_len, scale, work);
-    
+
     double total_ns = 0;
     for (int iter = 0; iter < 100; iter++) {
         struct timespec t1, t2;
@@ -112,9 +112,9 @@ int main() {
         clock_gettime(CLOCK_MONOTONIC, &t2);
         total_ns += (t2.tv_sec - t1.tv_sec) * 1e9 + (t2.tv_nsec - t1.tv_nsec);
     }
-    
-    printf("Hybrid (our funcs, llama structure): %.2f ms, %.2f GFLOPS\n", 
+
+    printf("Hybrid (our funcs, llama structure): %.2f ms, %.2f GFLOPS\n",
            total_ns / 100 / 1e6, 2.0 * num_heads * seq_len * head_dim / (total_ns / 100) * 1e9 / 1e9);
-    
+
     return 0;
 }

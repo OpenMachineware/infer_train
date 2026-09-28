@@ -236,6 +236,7 @@ pub unsafe fn vec_dot_q4_1_q8_1_neon(n: usize, x: &[BlockQ4_1], y: &[BlockQ8_1])
 
 /// Table for bit expansion: expand 8 bits to 8 bytes
 /// For each bit: if bit is 0, output byte is 0x10; if bit is 1, output byte is 0x00
+/// Used by Q5_0: value = low4bit - table_bit_expansion
 #[inline(always)]
 const fn build_table_b2b_1() -> [u64; 256] {
     let mut table = [0u64; 256];
@@ -256,7 +257,31 @@ const fn build_table_b2b_1() -> [u64; 256] {
     table
 }
 
+/// Table for bit expansion: expand 8 bits to 8 bytes
+/// For each bit: if bit is 0, output byte is 0x00; if bit is 1, output byte is 0x10
+/// Used by Q5_1: value = low4bit | table_bit_expansion
+#[inline(always)]
+const fn build_table_b2b_0() -> [u64; 256] {
+    let mut table = [0u64; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut val: u64 = 0;
+        let mut j = 0;
+        while j < 8 {
+            let bit = (i >> j) & 1;
+            // (b) << 4: if bit=0, result=0x00; if bit=1, result=0x10
+            let byte = if bit == 0 { 0x00u64 } else { 0x10u64 };
+            val |= byte << (j * 8);
+            j += 1;
+        }
+        table[i] = val;
+        i += 1;
+    }
+    table
+}
+
 static TABLE_B2B_1: [u64; 256] = build_table_b2b_1();
+static TABLE_B2B_0: [u64; 256] = build_table_b2b_0();
 
 /// Q5_0 × Q8_0 vector dot product (NEON implementation)
 #[target_feature(enable = "neon,dotprod")]
@@ -410,8 +435,8 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(n: usize, x: &[BlockQ5_1], y: &[BlockQ8_1])
         let qh0 = u32::from_le_bytes(x0.qh);
         let qh1 = u32::from_le_bytes(x1.qh);
 
-        // Use lookup table to expand bits (unsafe for no bounds check)
-        let table_ptr = TABLE_B2B_1.as_ptr();
+        // Use lookup table to expand bits (table_b2b_0: bit=0→0x00, bit=1→0x10)
+        let table_ptr = TABLE_B2B_0.as_ptr();
         let tmp0: [u64; 4] = [
             *table_ptr.add(((qh0 >> 0) & 0xFF) as usize),
             *table_ptr.add(((qh0 >> 8) & 0xFF) as usize),
@@ -430,11 +455,11 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(n: usize, x: &[BlockQ5_1], y: &[BlockQ8_1])
         let qhl1 = vld1q_s8(tmp1.as_ptr() as *const i8);
         let qhh1 = vld1q_s8(tmp1.as_ptr().add(2) as *const i8);
 
-        // Add high bit (for Q5_1, we add the bit, not subtract)
-        let v0_0lf = vaddq_s8(v0_0l, qhl0);
-        let v0_0hf = vaddq_s8(v0_0h, qhh0);
-        let v0_1lf = vaddq_s8(v0_1l, qhl1);
-        let v0_1hf = vaddq_s8(v0_1h, qhh1);
+        // OR high bit (for Q5_1, we OR the bit into the 4-bit value)
+        let v0_0lf = vorrq_s8(v0_0l, qhl0);
+        let v0_0hf = vorrq_s8(v0_0h, qhh0);
+        let v0_1lf = vorrq_s8(v0_1l, qhl1);
+        let v0_1hf = vorrq_s8(v0_1h, qhh1);
 
         // Load Q8 values
         let v1_0l = vld1q_s8(y0.qs.as_ptr());

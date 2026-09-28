@@ -52,13 +52,13 @@ void vec_scale_f16(int n, ggml_fp16_t * y, float v) {
 void attention(const ggml_fp16_t *q, const ggml_fp16_t *k, const ggml_fp16_t *v, float *output) {
     ggml_fp16_t VKQ[HEAD_DIM];
     float scale = 1.0f / 11.313708498984761f;
-    
+
     for (int h = 0; h < NUM_HEADS; h++) {
         const ggml_fp16_t *q_head = q + h * HEAD_DIM;
         float *out_head = output + h * HEAD_DIM;
         memset(VKQ, 0, HEAD_DIM * sizeof(ggml_fp16_t));
         float M = -1e30f, S = 0.0f;
-        
+
         for (int s = 0; s < SEQ_LEN; s++) {
             const ggml_fp16_t *k_row = k + (s * NUM_HEADS + h) * HEAD_DIM;
             const ggml_fp16_t *v_row = v + (s * NUM_HEADS + h) * HEAD_DIM;
@@ -87,17 +87,17 @@ int main() {
     ggml_fp16_t *k = aligned_alloc(64, size);
     ggml_fp16_t *v = aligned_alloc(64, size);
     float *output = aligned_alloc(64, NUM_HEADS * HEAD_DIM * sizeof(float));
-    
+
     for (int i = 0; i < NUM_HEADS * HEAD_DIM; i++) q[i] = 0x3800;
     for (size_t i = 0; i < (size_t)SEQ_LEN * NUM_HEADS * HEAD_DIM; i++) { k[i] = 0x3400; v[i] = 0x3000; }
-    
+
     for (int w = 0; w < WARMUP; w++) attention(q, k, v, output);
-    
+
     struct timespec ts1, ts2;
     clock_gettime(CLOCK_MONOTONIC, &ts1);
     for (int i = 0; i < NUM_ITER; i++) attention(q, k, v, output);
     clock_gettime(CLOCK_MONOTONIC, &ts2);
-    
+
     double ms = ((ts2.tv_sec - ts1.tv_sec) * 1000.0 + (ts2.tv_nsec - ts1.tv_nsec) / 1000000.0) / NUM_ITER;
     double gflops = 2.0 * NUM_HEADS * SEQ_LEN * HEAD_DIM * NUM_ITER / ((ts2.tv_sec - ts1.tv_sec) + (ts2.tv_nsec - ts1.tv_nsec) / 1e9) / 1e9;
     printf("C: %.2f ms, %.2f GFLOPS\n", ms, gflops);

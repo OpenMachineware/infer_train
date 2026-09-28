@@ -54,11 +54,11 @@ fn main() {
                 let vals = &output[start..start + 4];
                 println!("  Head {}: {:?}", h, vals);
             }
-            
+
             // Check for non-zero values
             let non_zero_count = output.iter().filter(|&&x| x != 0.0).count();
             println!("\n  Non-zero values: {}/{}", non_zero_count, output.len());
-            
+
             // Compute expected output manually (simple attention)
             // For uniform K/V, the output should be close to the average
             if non_zero_count > 0 {

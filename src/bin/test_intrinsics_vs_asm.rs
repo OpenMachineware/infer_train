@@ -8,38 +8,38 @@ const SIZE: usize = 128;
 fn main() {
     let mut a: Vec<f32> = vec![0.5; SIZE];
     let mut b: Vec<f32> = vec![0.3; SIZE];
-    
+
     // Modify data each iteration to prevent optimization
     let mut sum_intrinsics: f32 = 0.0;
     let mut sum_asm: f32 = 0.0;
-    
+
     unsafe {
         let t1 = Instant::now();
         for iter in 0..NUM_ITER {
             let a_ptr = a.as_ptr();
             let b_ptr = b.as_ptr();
-            
+
             let a0 = vld1q_f32(a_ptr);
             let a1 = vld1q_f32(a_ptr.add(4));
             let b0 = vld1q_f32(b_ptr);
             let b1 = vld1q_f32(b_ptr.add(4));
             let sum0 = vfmaq_f32(vdupq_n_f32(0.0), a0, b0);
             let sum1 = vfmaq_f32(vdupq_n_f32(0.0), a1, b1);
-            
+
             let a2 = vld1q_f32(a_ptr.add(8));
             let a3 = vld1q_f32(a_ptr.add(12));
             let b2 = vld1q_f32(b_ptr.add(8));
             let b3 = vld1q_f32(b_ptr.add(12));
             let sum2 = vfmaq_f32(vdupq_n_f32(0.0), a2, b2);
             let sum3 = vfmaq_f32(vdupq_n_f32(0.0), a3, b3);
-            
+
             sum_intrinsics = vaddvq_f32(vaddq_f32(vaddq_f32(sum0, sum1), vaddq_f32(sum2, sum3)));
-            
+
             // Touch data to prevent optimization
             a[0] = iter as f32;
         }
         let intrinsics_ns = t1.elapsed().as_nanos() as f64 / NUM_ITER as f64;
-        
+
         let t2 = Instant::now();
         for iter in 0..NUM_ITER {
             let a_ptr = a.as_ptr();
@@ -57,7 +57,7 @@ fn main() {
             b[0] = iter as f32;
         }
         let asm_ns = t2.elapsed().as_nanos() as f64 / NUM_ITER as f64;
-        
+
         println!("Intrinsics: {:.2} ns (sum={})", intrinsics_ns, sum_intrinsics);
         println!("ASM ldp:    {:.2} ns (sum={})", asm_ns, sum_asm);
         println!("Ratio:      {:.2}x", intrinsics_ns / asm_ns);

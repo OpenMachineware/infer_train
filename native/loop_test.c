@@ -50,9 +50,9 @@ int main() {
     __fp16* a = aligned_alloc(64, N * sizeof(__fp16));
     __fp16* b = aligned_alloc(64, N * sizeof(__fp16));
     for (int i = 0; i < N; i++) { a[i] = i * 0.01; b[i] = i * 0.02; }
-    
+
     volatile float result = 0;
-    
+
     // Test our style
     struct timespec t1, t2;
     clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -61,7 +61,7 @@ int main() {
     }
     clock_gettime(CLOCK_MONOTONIC, &t2);
     double time_our = (t2.tv_sec - t1.tv_sec) * 1e9 + (t2.tv_nsec - t1.tv_nsec);
-    
+
     // Test llama style
     float s;
     clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -71,10 +71,10 @@ int main() {
     }
     clock_gettime(CLOCK_MONOTONIC, &t2);
     double time_llama = (t2.tv_sec - t1.tv_sec) * 1e9 + (t2.tv_nsec - t1.tv_nsec);
-    
+
     printf("Our style:   %.2f ns\n", time_our / NUM_ITER);
     printf("llama style: %.2f ns\n", time_llama / NUM_ITER);
     printf("Ratio: %.2fx\n", time_our / time_llama);
-    
+
     return 0;
 }

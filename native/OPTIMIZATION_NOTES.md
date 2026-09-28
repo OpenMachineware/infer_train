@@ -18,7 +18,7 @@ After extensive investigation, we identified the root cause of the performance g
    // llama.cpp style (faster)
    const int np = (n & ~31);
    for (int i = 0; i < np; i += 32) { ... }
-   
+
    // vs our original (slower)
    for (; i + 32 <= n; i += 32) { ... }
    ```
@@ -33,7 +33,7 @@ After extensive investigation, we identified the root cause of the performance g
        M = score;
    }
    float vs = expf(score - M);
-   
+
    // vs tracking old_max (slower)
    ```
 

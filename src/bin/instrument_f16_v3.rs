@@ -70,11 +70,11 @@ unsafe fn vec_dot_inline(q_ptr: *const u16, k_ptr: *const u16) -> f32 {
 fn main() {
     let q_f16: Vec<u16> = vec![0x3800; HEAD_DIM];
     let k_f16: Vec<u16> = vec![0x3400; HEAD_DIM];
-    
+
     unsafe {
         let q_ptr = q_f16.as_ptr();
         let k_ptr = k_f16.as_ptr();
-        
+
         // Test 1: With #[target_feature] function
         let start = Instant::now();
         for _ in 0..NUM_ITER {
@@ -82,7 +82,7 @@ fn main() {
         }
         let elapsed = start.elapsed();
         println!("With #[target_feature]: {} ns/iter", elapsed.as_nanos() as u64 / NUM_ITER as u64);
-        
+
         // Test 2: With #[inline(always)] function
         let start = Instant::now();
         for _ in 0..NUM_ITER {
@@ -90,7 +90,7 @@ fn main() {
         }
         let elapsed = start.elapsed();
         println!("With #[inline(always)]: {} ns/iter", elapsed.as_nanos() as u64 / NUM_ITER as u64);
-        
+
         // Test 3: Direct inline assembly
         let start = Instant::now();
         for _ in 0..NUM_ITER {

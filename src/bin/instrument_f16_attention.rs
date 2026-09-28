@@ -10,7 +10,7 @@ fn main() {
     let q_f16: Vec<u16> = (0..HEAD_DIM).map(|_| half::f16::from_f32(0.5).to_bits()).collect();
     let k_f16: Vec<u16> = (0..HEAD_DIM).map(|_| half::f16::from_f32(0.3).to_bits()).collect();
     let v_f16: Vec<u16> = (0..HEAD_DIM).map(|_| half::f16::from_f32(0.4).to_bits()).collect();
-    
+
     unsafe {
         // Test 1: FP16 dot product
         let mut total_dot = 0u64;
@@ -20,7 +20,7 @@ fn main() {
             total_dot += start.elapsed().as_nanos() as u64;
         }
         println!("FP16 vec_dot: {} ns/iter (head_dim={})", total_dot / NUM_ITER as u64, HEAD_DIM);
-        
+
         // Test 2: FP16 vec_mad
         let mut vkq = v_f16.clone();
         let mut total_mad = 0u64;
@@ -30,7 +30,7 @@ fn main() {
             total_mad += start.elapsed().as_nanos() as u64;
         }
         println!("FP16 vec_mad: {} ns/iter", total_mad / NUM_ITER as u64);
-        
+
         // Test 3: FP16 vec_scale
         let mut total_scale = 0u64;
         for _ in 0..NUM_ITER {
@@ -39,7 +39,7 @@ fn main() {
             total_scale += start.elapsed().as_nanos() as u64;
         }
         println!("FP16 vec_scale: {} ns/iter", total_scale / NUM_ITER as u64);
-        
+
         // Test 4: FP32 -> FP16 conversion
         let mut total_conv = 0u64;
         let mut q_f16_out: Vec<u16> = vec![0; HEAD_DIM];
@@ -62,16 +62,16 @@ fn main() {
 unsafe fn vec_dot_f16_test(q: &[u16], k: &[u16], n: usize) -> f32 {
     let q_ptr = q.as_ptr() as *const float16x8_t;
     let k_ptr = k.as_ptr() as *const float16x8_t;
-    
+
     let zero_f16 = vreinterpretq_f16_u16(vdupq_n_u16(0));
     let mut sum0 = zero_f16;
     let mut sum1 = zero_f16;
     let mut sum2 = zero_f16;
     let mut sum3 = zero_f16;
-    
+
     let np = n & !31;
     let mut i = 0;
-    
+
     // Use ldp-style loading via inline assembly for better performance
     while i < np {
         // Load pairs (ldp equivalent) - 4 vectors per iteration
@@ -79,19 +79,19 @@ unsafe fn vec_dot_f16_test(q: &[u16], k: &[u16], n: usize) -> f32 {
         let (q2, q3) = load_pair_f16(q_ptr.add(i / 8 + 2));
         let (k0, k1) = load_pair_f16(k_ptr.add(i / 8));
         let (k2, k3) = load_pair_f16(k_ptr.add(i / 8 + 2));
-        
+
         sum0 = vfmaq_f16_asm(sum0, q0, k0);
         sum1 = vfmaq_f16_asm(sum1, q1, k1);
         sum2 = vfmaq_f16_asm(sum2, q2, k2);
         sum3 = vfmaq_f16_asm(sum3, q3, k3);
-        
+
         i += 32;
     }
-    
+
     sum0 = vaddq_f16_asm(sum0, sum1);
     sum2 = vaddq_f16_asm(sum2, sum3);
     sum0 = vaddq_f16_asm(sum0, sum2);
-    
+
     let sum_f32_0 = vcvt_f32_f16(vget_low_f16(sum0));
     let sum_f32_1 = vcvt_high_f32_f16(sum0);
     vaddvq_f32(vaddq_f32(sum_f32_0, sum_f32_1))
@@ -119,10 +119,10 @@ unsafe fn vec_mad_f16_test(y: &mut [u16], x: &[u16], v: f32, n: usize) {
     let x_ptr = x.as_ptr();
     let v_bits = half::f16::from_f32(v).to_bits();
     let v_f16 = vreinterpretq_f16_u16(vdupq_n_u16(v_bits));
-    
+
     let np = n & !7;
     let mut i = 0;
-    
+
     while i < np {
         let x8 = vreinterpretq_f16_u16(vld1q_u16(x_ptr.add(i)));
         let y8 = vreinterpretq_f16_u16(vld1q_u16(y_ptr.add(i)));
@@ -137,10 +137,10 @@ unsafe fn vec_scale_f16_test(y: &mut [u16], v: f32, n: usize) {
     let y_ptr = y.as_mut_ptr();
     let v_bits = half::f16::from_f32(v).to_bits();
     let v_f16 = vreinterpretq_f16_u16(vdupq_n_u16(v_bits));
-    
+
     let np = n & !7;
     let mut i = 0;
-    
+
     while i < np {
         let y8 = vreinterpretq_f16_u16(vld1q_u16(y_ptr.add(i)));
         let result = vmulq_f16_asm(y8, v_f16);
