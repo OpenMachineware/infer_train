@@ -9,6 +9,7 @@ use infer_train::ops::attention::decode_attention_f32;
 #[cfg(target_arch = "aarch64")]
 use infer_train::ops::attention::{
     decode_attention_f16_neon,
+    decode_attention_f32_q_f16_kv_neon,
     decode_attention_q8_0_neon,
     decode_attention_q4_0_neon,
     decode_attention_q4_1_neon,
@@ -18,6 +19,7 @@ use infer_train::ops::attention::{
 };
 
 const NUM_ITER: usize = 20;
+const WARMUP_ITER: usize = 10;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -63,18 +65,19 @@ fn main() {
         },
         #[cfg(target_arch = "aarch64")]
         "f16" => {
-            let k_f32 = vec![0.5f32; seq_len * num_heads * head_dim];
-            let v_f32 = vec![0.3f32; seq_len * num_heads * head_dim];
-            let q_u16: Vec<u16> = q.iter().map(|&x| half::f16::from_f32(x).to_bits()).collect();
-            let k_u16: Vec<u16> = k_f32.iter().map(|&x| half::f16::from_f32(x).to_bits()).collect();
-            let v_u16: Vec<u16> = v_f32.iter().map(|&x| half::f16::from_f32(x).to_bits()).collect();
+            // Allocate only the necessary u16 vectors (avoid intermediate f32 allocation)
+            let k_u16: Vec<u16> = (0..seq_len * num_heads * head_dim).map(|_| half::f16::from_f32(0.5).to_bits()).collect();
+            let v_u16: Vec<u16> = (0..seq_len * num_heads * head_dim).map(|_| half::f16::from_f32(0.3).to_bits()).collect();
 
             unsafe {
-                decode_attention_f16_neon(&q_u16, &k_u16, &v_u16, &mut output, num_heads, head_dim, seq_len, scale);
+                // Warmup (more iterations for CPU frequency scaling)
+                for _ in 0..WARMUP_ITER {
+                    decode_attention_f32_q_f16_kv_neon(&q, &k_u16, &v_u16, &mut output, num_heads, head_dim, seq_len, scale);
+                }
 
                 let start = Instant::now();
                 for _ in 0..NUM_ITER {
-                    decode_attention_f16_neon(&q_u16, &k_u16, &v_u16, &mut output, num_heads, head_dim, seq_len, scale);
+                    decode_attention_f32_q_f16_kv_neon(&q, &k_u16, &v_u16, &mut output, num_heads, head_dim, seq_len, scale);
                 }
                 let elapsed = start.elapsed();
                 let gflops = (flops * NUM_ITER as f64) / elapsed.as_secs_f64() / 1e9;
