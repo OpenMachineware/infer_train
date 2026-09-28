@@ -18,8 +18,8 @@ use infer_train::ops::attention::{
     decode_attention_iq4_nl_neon,
 };
 
-const NUM_ITER: usize = 20;
-const WARMUP_ITER: usize = 10;
+const NUM_ITER: usize = 50;
+const WARMUP_ITER: usize = 30;
 
 fn main() {
     let args: Vec<String> = env::args().collect();

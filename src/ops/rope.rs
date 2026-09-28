@@ -1,4 +1,4 @@
-// RoPE (Rotary Position Embedding) - Scalar implementation
+// RoPE (Rotary Position Embedding) with precomputed cache
 // Matches llama.cpp's ggml_compute_forward_rope
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -39,6 +39,49 @@ impl Default for RopeParams {
     }
 }
 
+/// RoPE cache for precomputed cos/sin values
+pub struct RopeCache {
+    pub cos_sin: Vec<f32>,  // [cos0, sin0, cos1, sin1, ...]
+    pub n_dims: usize,
+    pub last_pos: i64,
+}
+
+impl RopeCache {
+    pub fn new(n_dims: usize) -> Self {
+        Self {
+            cos_sin: vec![0.0; n_dims],
+            n_dims,
+            last_pos: -1,
+        }
+    }
+
+    /// Initialize cache for a position (matches llama.cpp's ggml_rope_cache_init)
+    pub fn init(&mut self, pos: usize, params: &RopeParams) {
+        if self.last_pos == pos as i64 {
+            return; // Cache already valid
+        }
+        self.last_pos = pos as i64;
+
+        let n_dims_half = params.n_dims / 2;
+        let theta_scale = params.freq_base.powf(-2.0 / params.n_dims as f32);
+        let corr_dims = rope_yarn_corr_dims(params.n_dims, params.n_ctx_orig, params.freq_base, params.beta_fast, params.beta_slow);
+
+        let mut theta = pos as f32;
+        for ic in 0..n_dims_half {
+            let (cos_theta, sin_theta) = rope_yarn(
+                theta, params.freq_scale, corr_dims, (ic * 2) as i64,
+                params.ext_factor, params.attn_factor
+            );
+
+            let idx = ic * 2;
+            self.cos_sin[idx] = cos_theta;
+            self.cos_sin[idx + 1] = sin_theta;
+
+            theta *= theta_scale;
+        }
+    }
+}
+
 // YaRN correction dimensions
 #[inline]
 fn rope_yarn_corr_dims(n_dims: usize, n_ctx_orig: usize, freq_base: f32, beta_fast: f32, beta_slow: f32) -> (f32, f32) {
@@ -57,7 +100,7 @@ fn rope_yarn_ramp(low: f32, high: f32, i0: i64) -> f32 {
     1.0 - 1.0_f32.min(0.0_f32.max(y))
 }
 
-// Compute cos and sin with YaRN
+// Compute cos and sin with YaRN (matches llama.cpp's rope_yarn)
 #[inline]
 fn rope_yarn(theta_extrap: f32, freq_scale: f32, corr_dims: (f32, f32), i0: i64, ext_factor: f32, mscale: f32) -> (f32, f32) {
     let theta_interp = freq_scale * theta_extrap;
@@ -72,6 +115,55 @@ fn rope_yarn(theta_extrap: f32, freq_scale: f32, corr_dims: (f32, f32), i0: i64,
 
     (theta.cos() * scale, theta.sin() * scale)
 }
+
+/// RoPE NeoX with precomputed cache (matches llama.cpp's rotate_pairs)
+pub fn rope_neox_with_cache(cache: &RopeCache, src: &[f32], dst: &mut [f32]) {
+    let n_dims_half = cache.n_dims / 2;
+
+    unsafe {
+        for ic in 0..n_dims_half {
+            let idx = ic * 2;
+            let cos_theta = *cache.cos_sin.get_unchecked(idx);
+            let sin_theta = *cache.cos_sin.get_unchecked(idx + 1);
+
+            let x0 = *src.get_unchecked(ic);
+            let x1 = *src.get_unchecked(ic + n_dims_half);
+
+            *dst.get_unchecked_mut(ic) = x0 * cos_theta - x1 * sin_theta;
+            *dst.get_unchecked_mut(ic + n_dims_half) = x0 * sin_theta + x1 * cos_theta;
+        }
+    }
+}
+
+/// Batch processing with cache (optimized - reuses cache per position)
+pub fn rope_neox_batch_with_cache(
+    src: &[f32],
+    dst: &mut [f32],
+    positions: &[i32],
+    params: &RopeParams,
+) {
+    let head_dim = src.len() / positions.len();
+    let n_dims = params.n_dims.min(head_dim);
+
+    let mut cache = RopeCache::new(n_dims);
+    let mut last_pos: i64 = -1;
+
+    let params_adjusted = RopeParams {
+        n_dims,
+        ..params.clone()
+    };
+
+    for (i, &pos) in positions.iter().enumerate() {
+        // Only init cache if position changed (matches llama.cpp's last_i2 check)
+        if last_pos != pos as i64 {
+            cache.init(pos as usize, &params_adjusted);
+            last_pos = pos as i64;
+        }
+        rope_neox_with_cache(&cache, &src[i * head_dim..], &mut dst[i * head_dim..]);
+    }
+}
+
+// Legacy functions without cache (kept for compatibility)
 
 // Main RoPE NeoX - scalar implementation matching llama.cpp
 pub fn rope_neox(src: &[f32], dst: &mut [f32], pos: usize, params: &RopeParams) {
@@ -101,9 +193,7 @@ pub fn rope_neox(src: &[f32], dst: &mut [f32], pos: usize, params: &RopeParams) 
     }
 }
 
-// Simple version (no YaRN) for common case - matches llama.cpp's simple path
-// Use sin_cos for potentially faster combined computation
-// Unsafe version eliminates bounds checking for performance
+// Simple version (no YaRN) for common case
 pub fn rope_neox_simple(src: &[f32], dst: &mut [f32], pos: usize, n_dims: usize, freq_base: f32) {
     let n_dims_half = n_dims / 2;
     let theta_scale = freq_base.powf(-2.0 / n_dims as f32);
@@ -124,7 +214,7 @@ pub fn rope_neox_simple(src: &[f32], dst: &mut [f32], pos: usize, n_dims: usize,
     }
 }
 
-// Batch processing
+// Batch processing (legacy)
 pub fn rope_neox_batch(src: &[f32], dst: &mut [f32], positions: &[i32], params: &RopeParams) {
     let head_dim = src.len() / positions.len();
     let n_dims = params.n_dims.min(head_dim);
@@ -141,24 +231,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_rope_correctness() {
+    fn test_rope_cache() {
         let n_dims = 128;
-        let src: Vec<f32> = (0..n_dims).map(|i| (i as f32 + 1.0) / 100.0).collect();
-        let mut dst = vec![0.0f32; n_dims];
-
         let params = RopeParams {
             n_dims,
-            rope_type: RopeType::NeoX,
-            freq_base: 10000.0,
-            ext_factor: 0.0,
             ..Default::default()
         };
 
+        let mut cache = RopeCache::new(n_dims);
+
+        cache.init(0, &params);
+        assert_eq!(cache.last_pos, 0);
+
+        // Re-init same position should be no-op
+        cache.init(0, &params);
+        assert_eq!(cache.last_pos, 0);
+
+        cache.init(1, &params);
+        assert_eq!(cache.last_pos, 1);
+    }
+
+    #[test]
+    fn test_rope_with_cache_correctness() {
+        let n_dims = 128;
+        let src: Vec<f32> = (0..n_dims).map(|i| (i as f32 + 1.0) / 100.0).collect();
+        let mut dst_cache = vec![0.0f32; n_dims];
+        let mut dst_no_cache = vec![0.0f32; n_dims];
+
+        let params = RopeParams {
+            n_dims,
+            ..Default::default()
+        };
+
+        let mut cache = RopeCache::new(n_dims);
+
         for pos in 0..10 {
-            rope_neox(&src, &mut dst, pos, &params);
-            // Verify it produces valid output (no NaN, reasonable range)
+            cache.init(pos, &params);
+            rope_neox_with_cache(&cache, &src, &mut dst_cache);
+            rope_neox(&src, &mut dst_no_cache, pos, &params);
+
             for i in 0..n_dims {
-                assert!(dst[i].is_finite());
+                let diff = (dst_cache[i] - dst_no_cache[i]).abs();
+                assert!(diff < 1e-6, "Mismatch at pos {} idx {}", pos, i);
             }
         }
     }
