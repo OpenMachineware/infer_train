@@ -1,7 +1,10 @@
 // Benchmark different matrix sizes for template GEMM
 // Run: cargo run --release --bin benchmark_sizes
 
-use metal::{Device, MTLSize, CompileOptions, FunctionDescriptor, FunctionConstantValues, MTLDataType};
+use metal::{
+    CompileOptions, Device, FunctionConstantValues, FunctionDescriptor,
+    MTLDataType, MTLSize,
+};
 
 fn main() {
     println!("=== Template GEMM Size Variations ===\n");
@@ -12,7 +15,8 @@ fn main() {
     // Compile shader
     let shader_source = include_str!("../../shaders/mul_mm_standalone.metal");
     let compile_options = CompileOptions::new();
-    let library = device.new_library_with_source(shader_source, &compile_options)
+    let library = device
+        .new_library_with_source(shader_source, &compile_options)
         .expect("Failed to compile shader");
 
     // Test scenarios: (M, N, K) - typical for LLM inference
@@ -42,19 +46,35 @@ fn main() {
     println!("├──────────────┼───────┼──────┼──────┼──────────┼──────────┤");
 
     for (format_name, kernel_name, block_size) in formats.iter() {
-        println!("│ {}                                                                │", format_name);
+        println!(
+            "│ {}                                                                │",
+            format_name
+        );
 
         for (scenario_name, m, n, k) in scenarios.iter() {
-            let gflops = benchmark_gemm(&device, &queue, &library, *m, *n, *k, *block_size, kernel_name);
+            let gflops = benchmark_gemm(
+                &device,
+                &queue,
+                &library,
+                *m,
+                *n,
+                *k,
+                *block_size,
+                kernel_name,
+            );
 
             // Estimate llama.cpp baseline
             let llama_baseline = estimate_llama_baseline(*m, *n, *k);
             let ratio = gflops / llama_baseline * 100.0;
 
-            println!("│ {:12} │ {:5} │ {:4} │ {:4} │ {:8.2} │ {:7.1}% │",
-                scenario_name, m, n, k, gflops, ratio);
+            println!(
+                "│ {:12} │ {:5} │ {:4} │ {:4} │ {:8.2} │ {:7.1}% │",
+                scenario_name, m, n, k, gflops, ratio
+            );
         }
-        println!("├──────────────┼───────┼──────┼──────┼──────────┼──────────┤");
+        println!(
+            "├──────────────┼───────┼──────┼──────┼──────────┼──────────┤"
+        );
     }
     println!("└──────────────┴───────┴──────┴──────┴──────────┴──────────┘");
 }
@@ -91,17 +111,35 @@ fn benchmark_gemm(
 
     unsafe {
         constant_values.set_constant_value_at_index(
-            &false_val as *const _ as *const std::ffi::c_void, MTLDataType::Bool, 0);
+            &false_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Bool,
+            0,
+        );
         constant_values.set_constant_value_at_index(
-            &bc_out_val as *const _ as *const std::ffi::c_void, MTLDataType::Bool, 1);
+            &bc_out_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Bool,
+            1,
+        );
         constant_values.set_constant_value_at_index(
-            &one_val as *const _ as *const std::ffi::c_void, MTLDataType::Short, 2);
+            &one_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Short,
+            2,
+        );
         constant_values.set_constant_value_at_index(
-            &one_val as *const _ as *const std::ffi::c_void, MTLDataType::Short, 3);
+            &one_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Short,
+            3,
+        );
         constant_values.set_constant_value_at_index(
-            &one_val as *const _ as *const std::ffi::c_void, MTLDataType::Short, 4);
+            &one_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Short,
+            4,
+        );
         constant_values.set_constant_value_at_index(
-            &one_val as *const _ as *const std::ffi::c_void, MTLDataType::Short, 5);
+            &one_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Short,
+            5,
+        );
     }
 
     let descriptor = FunctionDescriptor::new();
@@ -113,7 +151,8 @@ fn benchmark_gemm(
         Err(_) => return 0.0,
     };
 
-    let pipeline = device.new_compute_pipeline_state_with_function(&function)
+    let pipeline = device
+        .new_compute_pipeline_state_with_function(&function)
         .expect("Failed to create pipeline");
 
     // Allocate buffers
@@ -122,22 +161,53 @@ fn benchmark_gemm(
     let input_size = n * k * 2; // FP16
     let output_size = m * n * 4; // FP32
 
-    let weights_buffer = device.new_buffer(weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
-    let input_buffer = device.new_buffer(input_size as u64, metal::MTLResourceOptions::StorageModeShared);
-    let output_buffer = device.new_buffer(output_size as u64, metal::MTLResourceOptions::StorageModeShared);
+    let weights_buffer = device.new_buffer(
+        weights_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let input_buffer = device.new_buffer(
+        input_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let output_buffer = device.new_buffer(
+        output_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
 
     // Args
     #[repr(C)]
     struct GemmArgs {
-        ne00: i32, ne02: i32, nb01: u64, nb02: u64, nb03: u64,
-        ne12: i32, nb10: u64, nb11: u64, nb12: u64, nb13: u64,
-        ne0: i32, ne1: i32, r2: i16, r3: i16,
+        ne00: i32,
+        ne02: i32,
+        nb01: u64,
+        nb02: u64,
+        nb03: u64,
+        ne12: i32,
+        nb10: u64,
+        nb11: u64,
+        nb12: u64,
+        nb13: u64,
+        ne0: i32,
+        ne1: i32,
+        r2: i16,
+        r3: i16,
     }
 
     let args = GemmArgs {
-        ne00: k as i32, ne02: 1, nb01: (num_blocks_k * block_size) as u64, nb02: 0, nb03: 0,
-        ne12: 1, nb10: 2, nb11: (k * 2) as u64, nb12: 0, nb13: 0,
-        ne0: m as i32, ne1: n as i32, r2: 1, r3: 1,
+        ne00: k as i32,
+        ne02: 1,
+        nb01: (num_blocks_k * block_size) as u64,
+        nb02: 0,
+        nb03: 0,
+        ne12: 1,
+        nb10: 2,
+        nb11: (k * 2) as u64,
+        nb12: 0,
+        nb13: 0,
+        ne0: m as i32,
+        ne1: n as i32,
+        r2: 1,
+        r3: 1,
     };
     let args_buffer = device.new_buffer_with_data(
         &args as *const GemmArgs as *const std::ffi::c_void,

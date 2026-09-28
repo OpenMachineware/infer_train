@@ -1,8 +1,10 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{
+    BenchmarkId, Criterion, black_box, criterion_group, criterion_main,
+};
+use half::f16;
 use infer_train::quant::types::{BlockIQ4NL, BlockQ8_0, QK4_0 as QK};
 use infer_train::quant::vec_dot::arm::vec_dot_iq4_nl_q8_0_neon;
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use half::f16;
 
 fn generate_iq4_nl_data(nb: usize) -> Vec<BlockIQ4NL> {
     let mut blocks = Vec::with_capacity(nb);
@@ -46,19 +48,25 @@ fn bench_gpu_vs_cpu(c: &mut Criterion) {
         let x = generate_iq4_nl_data(nb);
         let y = generate_q8_0_data(nb);
 
-        group.bench_with_input(BenchmarkId::new("cpu_neon", nb), &nb, |b, _| {
-            b.iter(|| {
-                unsafe {
+        group.bench_with_input(
+            BenchmarkId::new("cpu_neon", nb),
+            &nb,
+            |b, _| {
+                b.iter(|| unsafe {
                     black_box(vec_dot_iq4_nl_q8_0_neon(n, &x, &y))
-                }
-            });
-        });
+                });
+            },
+        );
 
-        group.bench_with_input(BenchmarkId::new("gpu_metal", nb), &nb, |b, _| {
-            b.iter(|| {
-                black_box(ctx.vec_dot_iq4_nl_q8_0(n, &x, &y).unwrap())
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("gpu_metal", nb),
+            &nb,
+            |b, _| {
+                b.iter(|| {
+                    black_box(ctx.vec_dot_iq4_nl_q8_0(n, &x, &y).unwrap())
+                });
+            },
+        );
     }
 
     group.finish();

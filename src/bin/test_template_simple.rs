@@ -11,20 +11,23 @@ fn main() {
     // Load shader
     let shader_source = include_str!("../../shaders/gemm_llama_cpp.metal");
     let compile_options = metal::CompileOptions::new();
-    let library = device.new_library_with_source(shader_source, &compile_options)
+    let library = device
+        .new_library_with_source(shader_source, &compile_options)
         .expect("Failed to compile shader");
     println!("✓ Shader compiled");
 
-    let kernel = library.get_function("kernel_mul_mm_q4_K_f32", None)
+    let kernel = library
+        .get_function("kernel_mul_mm_q4_K_f32", None)
         .expect("Failed to get kernel");
-    let pipeline = device.new_compute_pipeline_state_with_function(&kernel)
+    let pipeline = device
+        .new_compute_pipeline_state_with_function(&kernel)
         .expect("Failed to create pipeline");
     println!("✓ Pipeline created");
 
     // Test case: small dimensions for debugging
-    let m = 64;   // rows
-    let k = 256;  // K dimension (1 block)
-    let n = 32;   // columns
+    let m = 64; // rows
+    let k = 256; // K dimension (1 block)
+    let n = 32; // columns
 
     println!("\nTest dimensions: M={}, K={}, N={}", m, k, n);
 
@@ -34,12 +37,23 @@ fn main() {
     let input_size = k * n * 2; // FP16
     let output_size = m * n * 4; // FP32
 
-    println!("Buffer sizes: weights={}, input={}, output={}",
-             weights_size, input_size, output_size);
+    println!(
+        "Buffer sizes: weights={}, input={}, output={}",
+        weights_size, input_size, output_size
+    );
 
-    let weights_buffer = device.new_buffer(weights_size as u64, metal::MTLResourceOptions::StorageModeManaged);
-    let input_buffer = device.new_buffer(input_size as u64, metal::MTLResourceOptions::StorageModeManaged);
-    let output_buffer = device.new_buffer(output_size as u64, metal::MTLResourceOptions::StorageModeManaged);
+    let weights_buffer = device.new_buffer(
+        weights_size as u64,
+        metal::MTLResourceOptions::StorageModeManaged,
+    );
+    let input_buffer = device.new_buffer(
+        input_size as u64,
+        metal::MTLResourceOptions::StorageModeManaged,
+    );
+    let output_buffer = device.new_buffer(
+        output_size as u64,
+        metal::MTLResourceOptions::StorageModeManaged,
+    );
 
     println!("✓ Buffers allocated");
 
@@ -48,30 +62,60 @@ fn main() {
     #[repr(C)]
     #[derive(Debug)]
     struct Args {
-        ne00: i32, ne01: i32, ne02: i32, ne03: i32,  // src0 dimensions
-        nb00: u64, nb01: u64, nb02: u64, nb03: u64,  // src0 strides
-        ne10: i32, ne11: i32, ne12: i32, ne13: i32,  // src1 dimensions
-        nb10: u64, nb11: u64, nb12: u64, nb13: u64,  // src1 strides
-        ne0: i32, ne1: i32, ne2: i32, ne3: i32,      // dst dimensions
-        nb0: u64, nb1: u64, nb2: u64, nb3: u64,      // dst strides
+        ne00: i32,
+        ne01: i32,
+        ne02: i32,
+        ne03: i32, // src0 dimensions
+        nb00: u64,
+        nb01: u64,
+        nb02: u64,
+        nb03: u64, // src0 strides
+        ne10: i32,
+        ne11: i32,
+        ne12: i32,
+        ne13: i32, // src1 dimensions
+        nb10: u64,
+        nb11: u64,
+        nb12: u64,
+        nb13: u64, // src1 strides
+        ne0: i32,
+        ne1: i32,
+        ne2: i32,
+        ne3: i32, // dst dimensions
+        nb0: u64,
+        nb1: u64,
+        nb2: u64,
+        nb3: u64, // dst strides
     }
 
     let args = Args {
         // src0 (A): [M, K] in Q4_K
-        ne00: k as i32, ne01: m as i32, ne02: 1, ne03: 1,
-        nb00: 144,                    // BlockQ4K size
+        ne00: k as i32,
+        ne01: m as i32,
+        ne02: 1,
+        ne03: 1,
+        nb00: 144,                       // BlockQ4K size
         nb01: (num_blocks * 144) as u64, // Row stride in bytes
-        nb02: 0, nb03: 0,
+        nb02: 0,
+        nb03: 0,
         // src1 (B): [K, N] in FP16 (column-major)
-        ne10: k as i32, ne11: n as i32, ne12: 1, ne13: 1,
-        nb10: 2,                      // Element size (FP16)
-        nb11: (k * 2) as u64,         // Column stride in bytes
-        nb12: 0, nb13: 0,
+        ne10: k as i32,
+        ne11: n as i32,
+        ne12: 1,
+        ne13: 1,
+        nb10: 2,              // Element size (FP16)
+        nb11: (k * 2) as u64, // Column stride in bytes
+        nb12: 0,
+        nb13: 0,
         // dst (C): [M, N] in FP32
-        ne0: m as i32, ne1: n as i32, ne2: 1, ne3: 1,
-        nb0: 4,                       // Element size (FP32)
-        nb1: (n * 4) as u64,          // Row stride in bytes
-        nb2: 0, nb3: 0,
+        ne0: m as i32,
+        ne1: n as i32,
+        ne2: 1,
+        ne3: 1,
+        nb0: 4,              // Element size (FP32)
+        nb1: (n * 4) as u64, // Row stride in bytes
+        nb2: 0,
+        nb3: 0,
     };
 
     println!("\nArgs: {:?}", args);
@@ -98,8 +142,8 @@ fn main() {
 
     // Grid: ceil(M/64) x ceil(N/32) threadgroups
     let grid_size = MTLSize::new(
-        ((n + 31) / 32) as u64,  // N dimension
-        ((m + 63) / 64) as u64,  // M dimension
+        ((n + 31) / 32) as u64, // N dimension
+        ((m + 63) / 64) as u64, // M dimension
         1,
     );
 

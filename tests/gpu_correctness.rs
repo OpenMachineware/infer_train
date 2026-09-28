@@ -1,10 +1,10 @@
 #[cfg(target_arch = "aarch64")]
 #[test]
 fn test_gpu_correctness() {
+    use half::f16;
     use infer_train::quant::types::{BlockIQ4NL, BlockQ8_0};
     use infer_train::quant::vec_dot::arm::vec_dot_iq4_nl_q8_0_neon;
     use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-    use half::f16;
 
     let nb = 64;
     let n = nb * 32;
@@ -35,11 +35,13 @@ fn test_gpu_correctness() {
     }
 
     // CPU result
-    let cpu_result = unsafe { vec_dot_iq4_nl_q8_0_neon(n, &x_blocks, &y_blocks) };
+    let cpu_result =
+        unsafe { vec_dot_iq4_nl_q8_0_neon(n, &x_blocks, &y_blocks) };
 
     // GPU result
     let ctx = MetalContext::new().expect("Failed to create Metal context");
-    let gpu_result = ctx.vec_dot_iq4_nl_q8_0(n, &x_blocks, &y_blocks).expect("GPU failed");
+    let gpu_result =
+        ctx.vec_dot_iq4_nl_q8_0(n, &x_blocks, &y_blocks).expect("GPU failed");
 
     println!("CPU result: {}", cpu_result);
     println!("GPU result: {}", gpu_result);
@@ -53,6 +55,11 @@ fn test_gpu_correctness() {
 
     // Allow small floating point difference
     let rel_error = diff / cpu_result.abs().max(1e-10);
-    assert!(rel_error < 1e-4, "GPU result differs from CPU: {} vs {}, rel_error={}",
-            cpu_result, gpu_result, rel_error);
+    assert!(
+        rel_error < 1e-4,
+        "GPU result differs from CPU: {} vs {}, rel_error={}",
+        cpu_result,
+        gpu_result,
+        rel_error
+    );
 }

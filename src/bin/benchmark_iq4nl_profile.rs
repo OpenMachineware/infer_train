@@ -10,7 +10,8 @@ fn main() {
     let seq_len = 512;
 
     // 初始化数据
-    let q: Vec<f32> = (0..num_heads * head_dim).map(|i| (i % 100) as f32 / 100.0).collect();
+    let q: Vec<f32> =
+        (0..num_heads * head_dim).map(|i| (i % 100) as f32 / 100.0).collect();
     let mut output = vec![0.0f32; num_heads * head_dim];
 
     // 创建K/V缓存
@@ -25,16 +26,24 @@ fn main() {
         for j in 0..16 {
             qs[j] = ((j * 17) % 256) as u8;
         }
-        k_cache.push(infer_train::quant::kv_cache::BlockIQ4NL { d: 0x3C00, qs });
-        v_cache.push(infer_train::quant::kv_cache::BlockIQ4NL { d: 0x3C00, qs });
+        k_cache
+            .push(infer_train::quant::kv_cache::BlockIQ4NL { d: 0x3C00, qs });
+        v_cache
+            .push(infer_train::quant::kv_cache::BlockIQ4NL { d: 0x3C00, qs });
     }
 
     // 预热
     for _ in 0..3 {
         unsafe {
             infer_train::ops::attention::decode_attention_iq4_nl_neon(
-                &q, &k_cache, &v_cache, &mut output,
-                num_heads, head_dim, seq_len, 0.125,
+                &q,
+                &k_cache,
+                &v_cache,
+                &mut output,
+                num_heads,
+                head_dim,
+                seq_len,
+                0.125,
             );
         }
     }
@@ -52,8 +61,14 @@ fn main() {
 
         unsafe {
             profile_iq4_nl_attention(
-                &q, &k_cache, &v_cache, &mut output,
-                num_heads, head_dim, seq_len, 0.125,
+                &q,
+                &k_cache,
+                &v_cache,
+                &mut output,
+                num_heads,
+                head_dim,
+                seq_len,
+                0.125,
                 &mut time_quantize,
                 &mut time_vec_dot,
                 &mut time_softmax,
@@ -64,15 +79,73 @@ fn main() {
     }
 
     println!("=== IQ4_NL Attention Profiling (seq_len={}) ===", seq_len);
-    println!("A. Quantize Q to Q8_0:   {:8} ns ({}%)", time_quantize / iterations, time_quantize * 100 / (time_quantize + time_vec_dot + time_softmax + time_vec_mad + time_normalize));
-    println!("B. Q × K vec_dot:        {:8} ns ({}%)", time_vec_dot / iterations, time_vec_dot * 100 / (time_quantize + time_vec_dot + time_softmax + time_vec_mad + time_normalize));
-    println!("C. Softmax + scaling:    {:8} ns ({}%)", time_softmax / iterations, time_softmax * 100 / (time_quantize + time_vec_dot + time_softmax + time_vec_mad + time_normalize));
-    println!("D. weight × V vec_mad:   {:8} ns ({}%)", time_vec_mad / iterations, time_vec_mad * 100 / (time_quantize + time_vec_dot + time_softmax + time_vec_mad + time_normalize));
-    println!("E. Normalize output:     {:8} ns ({}%)", time_normalize / iterations, time_normalize * 100 / (time_quantize + time_vec_dot + time_softmax + time_vec_mad + time_normalize));
-    println!("Total:                   {:8} ns", (time_quantize + time_vec_dot + time_softmax + time_vec_mad + time_normalize) / iterations);
+    println!(
+        "A. Quantize Q to Q8_0:   {:8} ns ({}%)",
+        time_quantize / iterations,
+        time_quantize * 100
+            / (time_quantize
+                + time_vec_dot
+                + time_softmax
+                + time_vec_mad
+                + time_normalize)
+    );
+    println!(
+        "B. Q × K vec_dot:        {:8} ns ({}%)",
+        time_vec_dot / iterations,
+        time_vec_dot * 100
+            / (time_quantize
+                + time_vec_dot
+                + time_softmax
+                + time_vec_mad
+                + time_normalize)
+    );
+    println!(
+        "C. Softmax + scaling:    {:8} ns ({}%)",
+        time_softmax / iterations,
+        time_softmax * 100
+            / (time_quantize
+                + time_vec_dot
+                + time_softmax
+                + time_vec_mad
+                + time_normalize)
+    );
+    println!(
+        "D. weight × V vec_mad:   {:8} ns ({}%)",
+        time_vec_mad / iterations,
+        time_vec_mad * 100
+            / (time_quantize
+                + time_vec_dot
+                + time_softmax
+                + time_vec_mad
+                + time_normalize)
+    );
+    println!(
+        "E. Normalize output:     {:8} ns ({}%)",
+        time_normalize / iterations,
+        time_normalize * 100
+            / (time_quantize
+                + time_vec_dot
+                + time_softmax
+                + time_vec_mad
+                + time_normalize)
+    );
+    println!(
+        "Total:                   {:8} ns",
+        (time_quantize
+            + time_vec_dot
+            + time_softmax
+            + time_vec_mad
+            + time_normalize)
+            / iterations
+    );
 
     // 计算GFLOPS
-    let total_time_ns = (time_quantize + time_vec_dot + time_softmax + time_vec_mad + time_normalize) / iterations;
+    let total_time_ns = (time_quantize
+        + time_vec_dot
+        + time_softmax
+        + time_vec_mad
+        + time_normalize)
+        / iterations;
     let total_flops = 2 * seq_len * head_dim * num_heads; // Q×K + V×output
     let gflops = total_flops as f64 / (total_time_ns as f64 / 1e9) / 1e9;
     println!("\nGFLOPS: {:.2}", gflops);
@@ -95,11 +168,10 @@ pub unsafe fn profile_iq4_nl_attention(
     time_vec_mad: &mut u64,
     time_normalize: &mut u64,
 ) {
-    use infer_train::quant::kv_cache::{BlockQ8_0, QK};
     use infer_train::ops::attention_fused::{
-        quantize_query_to_q8_0,
-        vec_mad_f32_iq4_nl_neon,
+        quantize_query_to_q8_0, vec_mad_f32_iq4_nl_neon,
     };
+    use infer_train::quant::kv_cache::{BlockQ8_0, QK};
 
     let blocks_per_row = head_dim / QK;
 
@@ -126,9 +198,19 @@ pub unsafe fn profile_iq4_nl_attention(
 
             // B. Q × K vec_dot (直接调用attention.rs中的函数)
             let t1 = std::time::Instant::now();
-            let q_types = std::slice::from_raw_parts(q_q8.as_ptr() as *const infer_train::quant::types::BlockQ8_0, q_q8.len());
-            let k_types = std::slice::from_raw_parts(k.as_ptr().add(k_offset) as *const infer_train::quant::types::BlockIQ4NL, blocks_per_row);
-            let score = infer_train::quant::vec_dot::arm::iq::vec_dot_iq4_nl_q8_0_neon(head_dim, k_types, q_types) * scale;
+            let q_types = std::slice::from_raw_parts(
+                q_q8.as_ptr() as *const infer_train::quant::types::BlockQ8_0,
+                q_q8.len(),
+            );
+            let k_types = std::slice::from_raw_parts(
+                k.as_ptr().add(k_offset)
+                    as *const infer_train::quant::types::BlockIQ4NL,
+                blocks_per_row,
+            );
+            let score =
+                infer_train::quant::vec_dot::arm::iq::vec_dot_iq4_nl_q8_0_neon(
+                    head_dim, k_types, q_types,
+                ) * scale;
             *time_vec_dot += t1.elapsed().as_nanos() as u64;
 
             // C. Softmax + scaling
@@ -164,7 +246,12 @@ pub unsafe fn profile_iq4_nl_attention(
             // D. weight × V vec_mad
             let t3 = std::time::Instant::now();
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            vec_mad_f32_iq4_nl_neon(output_head, &v[v_offset..v_offset + blocks_per_row], weight, head_dim);
+            vec_mad_f32_iq4_nl_neon(
+                output_head,
+                &v[v_offset..v_offset + blocks_per_row],
+                weight,
+                head_dim,
+            );
             *time_vec_mad += t3.elapsed().as_nanos() as u64;
         }
 

@@ -1,7 +1,7 @@
 // Benchmark all K-quant MV kernels vs llama.cpp
 // Run: cargo run --release --bin benchmark_mv_all_formats
 
-use metal::{Device, MTLSize, CompileOptions};
+use metal::{CompileOptions, Device, MTLSize};
 
 fn main() {
     println!("=== K-Quant MV Performance (All Formats) ===\n");
@@ -18,11 +18,8 @@ fn main() {
     ];
 
     // Test sizes: small, medium, large
-    let sizes = [
-        ("Small", 1024, 1024),
-        ("Medium", 2048, 2048),
-        ("Large", 4096, 4096),
-    ];
+    let sizes =
+        [("Small", 1024, 1024), ("Medium", 2048, 2048), ("Large", 4096, 4096)];
 
     println!("┌─────────┬────────┬──────────┬──────────┬──────────┐");
     println!("│ Format  │ Size   │ Our      │ llama.cpp│ Ratio    │");
@@ -43,24 +40,38 @@ fn main() {
             .expect(&format!("Failed to read {}", shader_path));
         let compile_options = CompileOptions::new();
         compile_options.set_fast_math_enabled(true);
-        let library = device.new_library_with_source(&shader_source, &compile_options)
+        let library = device
+            .new_library_with_source(&shader_source, &compile_options)
             .expect("Failed to compile shader");
-        let function = library.get_function(kernel_name, None).expect("Failed to get function");
-        let pipeline = device.new_compute_pipeline_state_with_function(&function)
+        let function = library
+            .get_function(kernel_name, None)
+            .expect("Failed to get function");
+        let pipeline = device
+            .new_compute_pipeline_state_with_function(&function)
             .expect("Failed to create pipeline");
 
         // Get llama.cpp baseline
-        let llama_baseline = llama_baselines.iter()
+        let llama_baseline = llama_baselines
+            .iter()
             .find(|(name, _)| name == format_name)
             .map(|(_, gflops)| *gflops)
             .unwrap_or(70.0);
 
         for (size_name, m, k) in sizes.iter() {
-            let gflops = benchmark_mv_format(&device, &queue, &pipeline, *m, *k, *block_size);
+            let gflops = benchmark_mv_format(
+                &device,
+                &queue,
+                &pipeline,
+                *m,
+                *k,
+                *block_size,
+            );
             let ratio = gflops / llama_baseline * 100.0;
 
-            println!("│ {:7} │ {:6} │ {:8.2} │ {:8.1} │ {:7.1}% │",
-                format_name, size_name, gflops, llama_baseline, ratio);
+            println!(
+                "│ {:7} │ {:6} │ {:8.2} │ {:8.1} │ {:7.1}% │",
+                format_name, size_name, gflops, llama_baseline, ratio
+            );
         }
     }
 
@@ -80,9 +91,18 @@ fn benchmark_mv_format(
     let input_size = k * 4;
     let output_size = m * 4;
 
-    let weights_buffer = device.new_buffer(weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
-    let input_buffer = device.new_buffer(input_size as u64, metal::MTLResourceOptions::StorageModeShared);
-    let output_buffer = device.new_buffer(output_size as u64, metal::MTLResourceOptions::StorageModeShared);
+    let weights_buffer = device.new_buffer(
+        weights_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let input_buffer = device.new_buffer(
+        input_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let output_buffer = device.new_buffer(
+        output_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
 
     #[repr(C)]
     struct MvArgs {

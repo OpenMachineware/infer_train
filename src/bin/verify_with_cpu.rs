@@ -1,7 +1,7 @@
 // 用CPU计算作为ground truth
+use half::f16;
 use infer_train::quant::types::BlockQ4K;
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use half::f16;
 
 fn dequantize_q4_k_cpu(block: &BlockQ4K) -> Vec<f32> {
     // 简化的CPU dequantize
@@ -16,8 +16,8 @@ fn dequantize_q4_k_cpu(block: &BlockQ4K) -> Vec<f32> {
     for i in 0..128 {
         let low = (block.qs[i] & 0xF) as f32;
         let high = (block.qs[i] >> 4) as f32;
-        result[2*i] = d * 1.0 * low - dmin * 0.0;
-        result[2*i + 1] = d * 1.0 * high - dmin * 0.0;
+        result[2 * i] = d * 1.0 * low - dmin * 0.0;
+        result[2 * i + 1] = d * 1.0 * high - dmin * 0.0;
     }
 
     result
@@ -31,19 +31,22 @@ fn main() {
     let n = 2;
 
     // 简单的测试数据：d=1, dmin=0, qs=[15,15,...]
-    let weights = vec![BlockQ4K {
-        d: f16::from_f32(1.0).to_bits(),
-        dmin: f16::from_f32(0.0).to_bits(),
-        scales: [1u8; 12],  // Simplified
-        qs: [15u8; 128],
-    }, BlockQ4K {
-        d: f16::from_f32(1.0).to_bits(),
-        dmin: f16::from_f32(0.0).to_bits(),
-        scales: [2u8; 12],  // Different scale
-        qs: [15u8; 128],
-    }];
+    let weights = vec![
+        BlockQ4K {
+            d: f16::from_f32(1.0).to_bits(),
+            dmin: f16::from_f32(0.0).to_bits(),
+            scales: [1u8; 12], // Simplified
+            qs: [15u8; 128],
+        },
+        BlockQ4K {
+            d: f16::from_f32(1.0).to_bits(),
+            dmin: f16::from_f32(0.0).to_bits(),
+            scales: [2u8; 12], // Different scale
+            qs: [15u8; 128],
+        },
+    ];
 
-    let input: Vec<f32> = vec![1.0; 512];  // k*n = 256*2
+    let input: Vec<f32> = vec![1.0; 512]; // k*n = 256*2
 
     // CPU计算
     let dequant0 = dequantize_q4_k_cpu(&weights[0]);
@@ -69,12 +72,15 @@ fn main() {
     let result_hw = ctx.gemm_q4_k_f32(m, n, k, &weights, &input).unwrap();
     println!("GPU hand-written: {:?}", result_hw);
 
-    let result_tp = ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input).unwrap();
+    let result_tp =
+        ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input).unwrap();
     println!("GPU templated: {:?}", result_tp);
 
     // 检查误差
-    for i in 0..(m*n) {
-        println!("Result[{}]: CPU={:.2}, HW={:.2}, TP={:.2}",
-                 i, cpu_result[i], result_hw[i], result_tp[i]);
+    for i in 0..(m * n) {
+        println!(
+            "Result[{}]: CPU={:.2}, HW={:.2}, TP={:.2}",
+            i, cpu_result[i], result_hw[i], result_tp[i]
+        );
     }
 }

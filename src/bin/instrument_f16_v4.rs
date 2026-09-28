@@ -42,6 +42,9 @@ fn main() {
             DUMMY = vec_dot_target_feature(q_ptr, k_ptr);
         }
         let elapsed = start.elapsed();
-        println!("#[target_feature]: {} ns/iter", elapsed.as_nanos() as u64 / NUM_ITER as u64);
+        println!(
+            "#[target_feature]: {} ns/iter",
+            elapsed.as_nanos() as u64 / NUM_ITER as u64
+        );
     }
 }

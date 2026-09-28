@@ -1,6 +1,6 @@
+use half::f16;
 use infer_train::quant::types::BlockQ4K;
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use half::f16;
 
 fn main() {
     let ctx = MetalContext::new().unwrap();
@@ -9,12 +9,14 @@ fn main() {
     let k = 256;
     let n = 128;
 
-    let weights: Vec<BlockQ4K> = (0..m).map(|i| BlockQ4K {
-        d: f16::from_f32(1.0).to_bits(),
-        dmin: f16::from_f32(0.0).to_bits(),
-        scales: [((i % 16) + 1) as u8; 12],
-        qs: [((i * 17) % 256) as u8; 128],
-    }).collect();
+    let weights: Vec<BlockQ4K> = (0..m)
+        .map(|i| BlockQ4K {
+            d: f16::from_f32(1.0).to_bits(),
+            dmin: f16::from_f32(0.0).to_bits(),
+            scales: [((i % 16) + 1) as u8; 12],
+            qs: [((i * 17) % 256) as u8; 128],
+        })
+        .collect();
 
     let input: Vec<f32> = (0..(k * n)).map(|i| (i % 10) as f32).collect();
 
@@ -25,14 +27,24 @@ fn main() {
         let row = *row;
         let row_start = row * n;
         let row_end = row_start + n;
-        let first_nonzero = result[row_start..row_end].iter().position(|&x| x != 0.0);
-        let last_nonzero = result[row_start..row_end].iter().rposition(|&x| x != 0.0);
-        println!("Row {:3}: cols {:?} .. {:?}", row, first_nonzero, last_nonzero);
+        let first_nonzero =
+            result[row_start..row_end].iter().position(|&x| x != 0.0);
+        let last_nonzero =
+            result[row_start..row_end].iter().rposition(|&x| x != 0.0);
+        println!(
+            "Row {:3}: cols {:?} .. {:?}",
+            row, first_nonzero, last_nonzero
+        );
     }
 
     // 计算总数
     let total_nonzero = result.iter().filter(|&&x| x != 0.0).count();
-    println!("\nTotal non-zero: {}/{} = {:.1}%", total_nonzero, m*n, 100.0 * total_nonzero as f64 / (m*n) as f64);
+    println!(
+        "\nTotal non-zero: {}/{} = {:.1}%",
+        total_nonzero,
+        m * n,
+        100.0 * total_nonzero as f64 / (m * n) as f64
+    );
 
     // 这4096个值来自哪些threadgroup?
     // Grid: 4x2 (width=N方向, height=M方向)

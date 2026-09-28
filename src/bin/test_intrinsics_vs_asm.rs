@@ -33,7 +33,10 @@ fn main() {
             let sum2 = vfmaq_f32(vdupq_n_f32(0.0), a2, b2);
             let sum3 = vfmaq_f32(vdupq_n_f32(0.0), a3, b3);
 
-            sum_intrinsics = vaddvq_f32(vaddq_f32(vaddq_f32(sum0, sum1), vaddq_f32(sum2, sum3)));
+            sum_intrinsics = vaddvq_f32(vaddq_f32(
+                vaddq_f32(sum0, sum1),
+                vaddq_f32(sum2, sum3),
+            ));
 
             // Touch data to prevent optimization
             a[0] = iter as f32;
@@ -58,7 +61,10 @@ fn main() {
         }
         let asm_ns = t2.elapsed().as_nanos() as f64 / NUM_ITER as f64;
 
-        println!("Intrinsics: {:.2} ns (sum={})", intrinsics_ns, sum_intrinsics);
+        println!(
+            "Intrinsics: {:.2} ns (sum={})",
+            intrinsics_ns, sum_intrinsics
+        );
         println!("ASM ldp:    {:.2} ns (sum={})", asm_ns, sum_asm);
         println!("Ratio:      {:.2}x", intrinsics_ns / asm_ns);
     }

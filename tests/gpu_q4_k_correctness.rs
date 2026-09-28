@@ -1,9 +1,9 @@
 #[cfg(target_arch = "aarch64")]
 mod tests {
-    use infer_train::quant::types::{BlockQ4K, BlockQ8K, QK_K};
-    use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-    use infer_train::quant::vec_dot::arm::vec_dot_q4_k_q8_k_neon;
     use half::f16;
+    use infer_train::quant::types::{BlockQ4K, BlockQ8K, QK_K};
+    use infer_train::quant::vec_dot::arm::vec_dot_q4_k_q8_k_neon;
+    use infer_train::quant::vec_dot::gpu::metal::MetalContext;
 
     fn generate_q4_k_blocks(m: usize, k: usize) -> Vec<BlockQ4K> {
         let nb = k / QK_K;
@@ -60,7 +60,8 @@ mod tests {
         let input = generate_f32_input(k);
 
         // GPU computation
-        let gpu_result = ctx.mv_q4_k_f32(m, k, &weights, &input).expect("GPU kernel failed");
+        let gpu_result =
+            ctx.mv_q4_k_f32(m, k, &weights, &input).expect("GPU kernel failed");
 
         println!("GPU result for M={}, K={}", m, k);
         for i in 0..m {
@@ -69,7 +70,12 @@ mod tests {
 
         // For now, just check that GPU returns values (not NaN or Inf)
         for i in 0..m {
-            assert!(gpu_result[i].is_finite(), "GPU result[{}] is not finite: {}", i, gpu_result[i]);
+            assert!(
+                gpu_result[i].is_finite(),
+                "GPU result[{}] is not finite: {}",
+                i,
+                gpu_result[i]
+            );
             assert!(gpu_result[i] != 0.0, "GPU result[{}] is zero", i);
         }
     }
@@ -87,7 +93,9 @@ mod tests {
         let f32_input = generate_f32_input(k);
 
         // GPU computation (Q4_K x F32)
-        let gpu_result = ctx.mv_q4_k_f32(m, k, &q4_k_weights, &f32_input).expect("GPU kernel failed");
+        let gpu_result = ctx
+            .mv_q4_k_f32(m, k, &q4_k_weights, &f32_input)
+            .expect("GPU kernel failed");
 
         // CPU computation requires Q8_K, so we skip for now
         // The llama.cpp kernel uses Q4_K x F32 directly, not Q4_K x Q8_K

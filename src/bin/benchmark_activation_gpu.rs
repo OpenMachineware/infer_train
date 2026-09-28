@@ -1,5 +1,5 @@
 // Benchmark GPU activation functions
-use metal::{Device, CompileOptions, MTLSize};
+use metal::{CompileOptions, Device, MTLSize};
 
 fn main() {
     let device = Device::system_default().expect("No Metal device");
@@ -9,29 +9,48 @@ fn main() {
     let source = include_str!("../../shaders/activation.metal");
     let compile_options = CompileOptions::new();
     compile_options.set_fast_math_enabled(true);
-    let library = device.new_library_with_source(source, &compile_options).expect("Compile failed");
+    let library = device
+        .new_library_with_source(source, &compile_options)
+        .expect("Compile failed");
 
     let silu_kernel = library.get_function("kernel_silu_f32", None).unwrap();
     let gelu_kernel = library.get_function("kernel_gelu_f32", None).unwrap();
-    let quick_kernel = library.get_function("kernel_gelu_quick_f32", None).unwrap();
+    let quick_kernel =
+        library.get_function("kernel_gelu_quick_f32", None).unwrap();
 
-    let silu_4_kernel = library.get_function("kernel_silu_f32_4", None).unwrap();
-    let gelu_4_kernel = library.get_function("kernel_gelu_f32_4", None).unwrap();
-    let quick_4_kernel = library.get_function("kernel_gelu_quick_f32_4", None).unwrap();
+    let silu_4_kernel =
+        library.get_function("kernel_silu_f32_4", None).unwrap();
+    let gelu_4_kernel =
+        library.get_function("kernel_gelu_f32_4", None).unwrap();
+    let quick_4_kernel =
+        library.get_function("kernel_gelu_quick_f32_4", None).unwrap();
 
-    let silu_pipeline = device.new_compute_pipeline_state_with_function(&silu_kernel).unwrap();
-    let gelu_pipeline = device.new_compute_pipeline_state_with_function(&gelu_kernel).unwrap();
-    let quick_pipeline = device.new_compute_pipeline_state_with_function(&quick_kernel).unwrap();
+    let silu_pipeline =
+        device.new_compute_pipeline_state_with_function(&silu_kernel).unwrap();
+    let gelu_pipeline =
+        device.new_compute_pipeline_state_with_function(&gelu_kernel).unwrap();
+    let quick_pipeline =
+        device.new_compute_pipeline_state_with_function(&quick_kernel).unwrap();
 
-    let silu_4_pipeline = device.new_compute_pipeline_state_with_function(&silu_4_kernel).unwrap();
-    let gelu_4_pipeline = device.new_compute_pipeline_state_with_function(&gelu_4_kernel).unwrap();
-    let quick_4_pipeline = device.new_compute_pipeline_state_with_function(&quick_4_kernel).unwrap();
+    let silu_4_pipeline = device
+        .new_compute_pipeline_state_with_function(&silu_4_kernel)
+        .unwrap();
+    let gelu_4_pipeline = device
+        .new_compute_pipeline_state_with_function(&gelu_4_kernel)
+        .unwrap();
+    let quick_4_pipeline = device
+        .new_compute_pipeline_state_with_function(&quick_4_kernel)
+        .unwrap();
 
     let sizes = [1024, 4096, 16384, 65536, 262144, 1048576];
 
     println!("=== GPU Activation Benchmark ===\n");
-    println!("Size      | SiLU (GB/s) | GELU (GB/s) | Quick (GB/s) | SiLU-4 | GELU-4 | Quick-4");
-    println!("----------+-------------+-------------+--------------+--------+--------+--------");
+    println!(
+        "Size      | SiLU (GB/s) | GELU (GB/s) | Quick (GB/s) | SiLU-4 | GELU-4 | Quick-4"
+    );
+    println!(
+        "----------+-------------+-------------+--------------+--------+--------+--------"
+    );
 
     for &size in &sizes {
         let input = vec![1.0f32; size];
@@ -46,17 +65,66 @@ fn main() {
         );
 
         // Warmup
-        run_kernel(&queue, &silu_pipeline, &input_buffer, &output_buffer, size, 10);
+        run_kernel(
+            &queue,
+            &silu_pipeline,
+            &input_buffer,
+            &output_buffer,
+            size,
+            10,
+        );
 
         // Benchmark scalar kernels
-        let silu_time = run_kernel(&queue, &silu_pipeline, &input_buffer, &output_buffer, size, 100);
-        let gelu_time = run_kernel(&queue, &gelu_pipeline, &input_buffer, &output_buffer, size, 100);
-        let quick_time = run_kernel(&queue, &quick_pipeline, &input_buffer, &output_buffer, size, 100);
+        let silu_time = run_kernel(
+            &queue,
+            &silu_pipeline,
+            &input_buffer,
+            &output_buffer,
+            size,
+            100,
+        );
+        let gelu_time = run_kernel(
+            &queue,
+            &gelu_pipeline,
+            &input_buffer,
+            &output_buffer,
+            size,
+            100,
+        );
+        let quick_time = run_kernel(
+            &queue,
+            &quick_pipeline,
+            &input_buffer,
+            &output_buffer,
+            size,
+            100,
+        );
 
         // Benchmark vec4 kernels
-        let silu_4_time = run_kernel(&queue, &silu_4_pipeline, &input_buffer, &output_buffer, size/4, 100);
-        let gelu_4_time = run_kernel(&queue, &gelu_4_pipeline, &input_buffer, &output_buffer, size/4, 100);
-        let quick_4_time = run_kernel(&queue, &quick_4_pipeline, &input_buffer, &output_buffer, size/4, 100);
+        let silu_4_time = run_kernel(
+            &queue,
+            &silu_4_pipeline,
+            &input_buffer,
+            &output_buffer,
+            size / 4,
+            100,
+        );
+        let gelu_4_time = run_kernel(
+            &queue,
+            &gelu_4_pipeline,
+            &input_buffer,
+            &output_buffer,
+            size / 4,
+            100,
+        );
+        let quick_4_time = run_kernel(
+            &queue,
+            &quick_4_pipeline,
+            &input_buffer,
+            &output_buffer,
+            size / 4,
+            100,
+        );
 
         let bytes = (size * 4 * 2) as f64; // read + write
 

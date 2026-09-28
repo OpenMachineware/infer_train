@@ -44,7 +44,7 @@ pub fn quantize_row_f16_neon(x: &[f32], y: &mut [u16]) {
             // Combine and store as u16
             let y_combined = vcombine_u16(
                 vreinterpret_u16_f16(y0),
-                vreinterpret_u16_f16(y1)
+                vreinterpret_u16_f16(y1),
             );
             vst1q_u16(y_ptr.add(offset), y_combined);
         }
@@ -138,7 +138,7 @@ pub fn quantize_row_q8_0_neon(x: &[f32], y: &mut [BlockQ8_0]) {
             // Find max by reduction
             let mut amaxv = [vdupq_n_f32(0.0); 4];
             for j in 0..4 {
-                amaxv[j] = vmaxq_f32(asrcv[2*j], asrcv[2*j+1]);
+                amaxv[j] = vmaxq_f32(asrcv[2 * j], asrcv[2 * j + 1]);
             }
             amaxv[0] = vmaxq_f32(amaxv[0], amaxv[1]);
             amaxv[0] = vmaxq_f32(amaxv[2], amaxv[3]);
@@ -266,8 +266,12 @@ pub fn quantize_row_q4_1(x: &[f32], y: &mut [BlockQ4_1]) {
         let mut min = f32::MAX;
         let mut max = f32::MIN;
         for &val in x_block {
-            if val < min { min = val; }
-            if val > max { max = val; }
+            if val < min {
+                min = val;
+            }
+            if val > max {
+                max = val;
+            }
         }
 
         // Calculate scale and offset
@@ -329,8 +333,12 @@ pub fn quantize_row_q5_0(x: &[f32], y: &mut [BlockQ5_0]) {
             y[i].qs[j] = ((q0 & 0xF) | ((q1 & 0xF) << 4)) as u8;
 
             // High bits in qh
-            if q0 & 0x10 != 0 { qh |= 1 << j; }
-            if q1 & 0x10 != 0 { qh |= 1 << (j + 16); }
+            if q0 & 0x10 != 0 {
+                qh |= 1 << j;
+            }
+            if q1 & 0x10 != 0 {
+                qh |= 1 << (j + 16);
+            }
         }
 
         // Pack qh into 4 bytes
@@ -357,8 +365,12 @@ pub fn quantize_row_q5_1(x: &[f32], y: &mut [BlockQ5_1]) {
         let mut min = f32::MAX;
         let mut max = -f32::MAX;
         for &v in x_block {
-            if v < min { min = v; }
-            if v > max { max = v; }
+            if v < min {
+                min = v;
+            }
+            if v > max {
+                max = v;
+            }
         }
 
         let d = (max - min) / 31.0;
@@ -444,19 +456,39 @@ pub fn quantize_row_q5_1_neon(x: &[f32], y: &mut [BlockQ5_1]) {
                 let q1_3 = vgetq_lane_s32(q1_i, 3);
 
                 let byte_idx = j * 4;
-                y[i].qs[byte_idx + 0] = ((q0_0 & 0xF) | ((q1_0 & 0xF) << 4)) as u8;
-                y[i].qs[byte_idx + 1] = ((q0_1 & 0xF) | ((q1_1 & 0xF) << 4)) as u8;
-                y[i].qs[byte_idx + 2] = ((q0_2 & 0xF) | ((q1_2 & 0xF) << 4)) as u8;
-                y[i].qs[byte_idx + 3] = ((q0_3 & 0xF) | ((q1_3 & 0xF) << 4)) as u8;
+                y[i].qs[byte_idx + 0] =
+                    ((q0_0 & 0xF) | ((q1_0 & 0xF) << 4)) as u8;
+                y[i].qs[byte_idx + 1] =
+                    ((q0_1 & 0xF) | ((q1_1 & 0xF) << 4)) as u8;
+                y[i].qs[byte_idx + 2] =
+                    ((q0_2 & 0xF) | ((q1_2 & 0xF) << 4)) as u8;
+                y[i].qs[byte_idx + 3] =
+                    ((q0_3 & 0xF) | ((q1_3 & 0xF) << 4)) as u8;
 
-                if q0_0 & 0x10 != 0 { qh |= 1 << (byte_idx + 0); }
-                if q0_1 & 0x10 != 0 { qh |= 1 << (byte_idx + 1); }
-                if q0_2 & 0x10 != 0 { qh |= 1 << (byte_idx + 2); }
-                if q0_3 & 0x10 != 0 { qh |= 1 << (byte_idx + 3); }
-                if q1_0 & 0x10 != 0 { qh |= 1 << (byte_idx + 0 + 16); }
-                if q1_1 & 0x10 != 0 { qh |= 1 << (byte_idx + 1 + 16); }
-                if q1_2 & 0x10 != 0 { qh |= 1 << (byte_idx + 2 + 16); }
-                if q1_3 & 0x10 != 0 { qh |= 1 << (byte_idx + 3 + 16); }
+                if q0_0 & 0x10 != 0 {
+                    qh |= 1 << (byte_idx + 0);
+                }
+                if q0_1 & 0x10 != 0 {
+                    qh |= 1 << (byte_idx + 1);
+                }
+                if q0_2 & 0x10 != 0 {
+                    qh |= 1 << (byte_idx + 2);
+                }
+                if q0_3 & 0x10 != 0 {
+                    qh |= 1 << (byte_idx + 3);
+                }
+                if q1_0 & 0x10 != 0 {
+                    qh |= 1 << (byte_idx + 0 + 16);
+                }
+                if q1_1 & 0x10 != 0 {
+                    qh |= 1 << (byte_idx + 1 + 16);
+                }
+                if q1_2 & 0x10 != 0 {
+                    qh |= 1 << (byte_idx + 2 + 16);
+                }
+                if q1_3 & 0x10 != 0 {
+                    qh |= 1 << (byte_idx + 3 + 16);
+                }
             }
 
             y[i].qh[0] = (qh & 0xFF) as u8;
@@ -524,11 +556,7 @@ fn best_index_iq4nl(x: f32) -> usize {
         }
     }
 
-    if x - values[lo] < values[hi] - x {
-        lo
-    } else {
-        hi
-    }
+    if x - values[lo] < values[hi] - x { lo } else { hi }
 }
 
 /// Quantize FP32 to IQ4_NL (scalar)
@@ -554,11 +582,7 @@ pub fn quantize_row_iq4_nl(x: &[f32], y: &mut [super::BlockIQ4NL]) {
         }
 
         // Calculate initial scale
-        let d = if amax < 1e-15 {
-            0.0
-        } else {
-            max_val / KVALUES_IQ4NL[0]
-        };
+        let d = if amax < 1e-15 { 0.0 } else { max_val / KVALUES_IQ4NL[0] };
 
         let id = if d != 0.0 { 1.0 / d } else { 0.0 };
 
@@ -588,7 +612,8 @@ pub fn quantize_row_iq4_nl(x: &[f32], y: &mut [super::BlockIQ4NL]) {
 
         // Pack: low nibbles from indices[0..15], high nibbles from indices[16..31]
         for j in 0..super::QK / 2 {
-            y[i].qs[j] = (indices[j] & 0x0F) | ((indices[j + super::QK / 2] & 0x0F) << 4);
+            y[i].qs[j] = (indices[j] & 0x0F)
+                | ((indices[j + super::QK / 2] & 0x0F) << 4);
         }
     }
 }

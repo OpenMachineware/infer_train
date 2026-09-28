@@ -1,8 +1,24 @@
 // Benchmark Q5_0 and Q5_1 vec_dot performance
-use infer_train::quant::types::{BlockQ5_0, BlockQ5_1, BlockQ8_0, BlockQ8_1, QK4_0};
-use infer_train::quant::vec_dot::arm::{vec_dot_q5_0_q8_0_neon, vec_dot_q5_1_q8_1_neon};
 use half::f16;
+use infer_train::quant::types::{
+    BlockQ5_0, BlockQ5_1, BlockQ8_0, BlockQ8_1, QK4_0,
+};
+use infer_train::quant::vec_dot::arm::{
+    vec_dot_q5_0_q8_0_neon, vec_dot_q5_1_q8_1_neon,
+};
 use std::time::Instant;
+
+/// Warm up CPU to stabilize frequency
+fn warmup(iterations: usize) {
+    let mut sum = 0.0f64;
+    for i in 0..iterations {
+        sum = sum.sqrt() + i as f64;
+    }
+    // Prevent compiler from optimizing away
+    if sum < 0.0 {
+        println!("This should never print");
+    }
+}
 
 fn generate_q8_0_input(k: usize) -> Vec<BlockQ8_0> {
     let nb = k / 32;
@@ -81,6 +97,11 @@ fn generate_q5_1_weights(k: usize) -> Vec<BlockQ5_1> {
 }
 
 fn main() {
+    // Warm up CPU to stabilize frequency
+    println!("Warming up CPU...");
+    warmup(50_000_000); // More iterations for better warmup
+    std::thread::sleep(std::time::Duration::from_millis(500)); // Longer sleep
+
     unsafe {
         let k = 4096;
         let iterations = 10000;
@@ -101,7 +122,12 @@ fn main() {
         let ops = iterations as f64 * 2.0 * k as f64;
         let gflops_q5_0 = ops / elapsed.as_secs_f64() / 1e9;
 
-        println!("Q5_0: {:.2} GFLOPS ({:.2} ms for {} iterations)", gflops_q5_0, elapsed.as_secs_f64() * 1000.0, iterations);
+        println!(
+            "Q5_0: {:.2} GFLOPS ({:.2} ms for {} iterations)",
+            gflops_q5_0,
+            elapsed.as_secs_f64() * 1000.0,
+            iterations
+        );
 
         // Q5_1
         let weights_q5_1 = generate_q5_1_weights(k);
@@ -115,7 +141,12 @@ fn main() {
         let ops = iterations as f64 * 2.0 * k as f64;
         let gflops_q5_1 = ops / elapsed.as_secs_f64() / 1e9;
 
-        println!("Q5_1: {:.2} GFLOPS ({:.2} ms for {} iterations)", gflops_q5_1, elapsed.as_secs_f64() * 1000.0, iterations);
+        println!(
+            "Q5_1: {:.2} GFLOPS ({:.2} ms for {} iterations)",
+            gflops_q5_1,
+            elapsed.as_secs_f64() * 1000.0,
+            iterations
+        );
 
         println!("{}", "=".repeat(50));
 

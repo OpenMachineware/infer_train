@@ -87,10 +87,14 @@ pub unsafe fn vec_dot_bf16_neon(a: &[u16], b: &[u16]) -> f32 {
         let vb = vld1q_u16(b.as_ptr().add(i * 8));
 
         // Convert BF16 to FP32 and multiply
-        let va_f32_lo = vcvt_f32_bf16(vget_low_bf16(vreinterpretq_bf16_u16(va)));
-        let va_f32_hi = vcvt_f32_bf16(vget_high_bf16(vreinterpretq_bf16_u16(va)));
-        let vb_f32_lo = vcvt_f32_bf16(vget_low_bf16(vreinterpretq_bf16_u16(vb)));
-        let vb_f32_hi = vcvt_f32_bf16(vget_high_bf16(vreinterpretq_bf16_u16(vb)));
+        let va_f32_lo =
+            vcvt_f32_bf16(vget_low_bf16(vreinterpretq_bf16_u16(va)));
+        let va_f32_hi =
+            vcvt_f32_bf16(vget_high_bf16(vreinterpretq_bf16_u16(va)));
+        let vb_f32_lo =
+            vcvt_f32_bf16(vget_low_bf16(vreinterpretq_bf16_u16(vb)));
+        let vb_f32_hi =
+            vcvt_f32_bf16(vget_high_bf16(vreinterpretq_bf16_u16(vb)));
 
         sum = vmlaq_f32(sum, va_f32_lo, vb_f32_lo);
         sum = vmlaq_f32(sum, va_f32_hi, vb_f32_hi);

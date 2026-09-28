@@ -7,10 +7,11 @@ use std::arch::aarch64::*;
 #[cfg(target_arch = "aarch64")]
 use std::arch::asm;
 
-use crate::quant::kv_cache::{
-    BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, BlockQ8_1, BlockIQ4NL, QK,
-};
 use crate::ops::softmax::softmax_f32_dispatch;
+use crate::quant::kv_cache::{
+    BlockIQ4NL, BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0,
+    BlockQ8_1, QK,
+};
 
 // ============================================================================
 // FP16 NEON via inline assembly (stable Rust compatible)
@@ -20,7 +21,11 @@ use crate::ops::softmax::softmax_f32_dispatch;
 /// This gives us access to vfmaq_f16 without needing nightly features
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn vfmaq_f16_asm(a: float16x8_t, b: float16x8_t, c: float16x8_t) -> float16x8_t {
+unsafe fn vfmaq_f16_asm(
+    a: float16x8_t,
+    b: float16x8_t,
+    c: float16x8_t,
+) -> float16x8_t {
     use std::arch::asm;
     let result: float16x8_t;
     asm!(
@@ -87,7 +92,8 @@ pub fn decode_attention_f32(
         let mut scores = vec![0.0f32; seq_len];
 
         for s in 0..seq_len {
-            let k_row = &k[(s * num_heads + h) * head_dim..(s * num_heads + h + 1) * head_dim];
+            let k_row = &k[(s * num_heads + h) * head_dim
+                ..(s * num_heads + h + 1) * head_dim];
             scores[s] = vec_dot_f32_scalar(q_head, k_row) * scale;
         }
 
@@ -136,7 +142,10 @@ pub unsafe fn decode_attention_bf16_neon(
 
         for s in 0..seq_len {
             let k_offset = (s * num_heads + h) * head_dim;
-            dequantize_row_bf16_neon_inline(&k[k_offset..k_offset + head_dim], &mut k_f32);
+            dequantize_row_bf16_neon_inline(
+                &k[k_offset..k_offset + head_dim],
+                &mut k_f32,
+            );
 
             let score = vec_dot_f32_neon(q_head, &k_f32, head_dim) * scale;
 
@@ -246,11 +255,15 @@ pub unsafe fn decode_attention_q8_0_neon(
             let k_offset = (s * num_heads + h) * blocks_per_row;
             let score = {
                 // Transmute to types module blocks (same repr(C))
-                let q_ptr = q_q8.as_ptr() as *const crate::quant::types::BlockQ8_0;
+                let q_ptr =
+                    q_q8.as_ptr() as *const crate::quant::types::BlockQ8_0;
                 let q_slice = std::slice::from_raw_parts(q_ptr, blocks_per_row);
-                let k_ptr = k.as_ptr().add(k_offset) as *const crate::quant::types::BlockQ8_0;
+                let k_ptr = k.as_ptr().add(k_offset)
+                    as *const crate::quant::types::BlockQ8_0;
                 let k_slice = std::slice::from_raw_parts(k_ptr, blocks_per_row);
-                crate::quant::vec_dot::arm::q_0_1::vec_dot_q8_0_q8_0_neon(head_dim, q_slice, k_slice)
+                crate::quant::vec_dot::arm::q_0_1::vec_dot_q8_0_q8_0_neon(
+                    head_dim, q_slice, k_slice,
+                )
             } * scale;
 
             let old_max = max_val;
@@ -266,7 +279,10 @@ pub unsafe fn decode_attention_q8_0_neon(
                 let corr_vec = vdupq_n_f32(correction);
                 for d in (0..head_dim).step_by(4) {
                     let out_vec = vld1q_f32(output_head.as_ptr().add(d));
-                    vst1q_f32(output_head.as_mut_ptr().add(d), vmulq_f32(out_vec, corr_vec));
+                    vst1q_f32(
+                        output_head.as_mut_ptr().add(d),
+                        vmulq_f32(out_vec, corr_vec),
+                    );
                 }
                 weight = 1.0;
             } else {
@@ -277,13 +293,21 @@ pub unsafe fn decode_attention_q8_0_neon(
 
             // Accumulate V with NEON vec_mad
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            vec_mad_f32_q8_0_neon(output_head, &v[v_offset..v_offset + blocks_per_row], weight, head_dim);
+            vec_mad_f32_q8_0_neon(
+                output_head,
+                &v[v_offset..v_offset + blocks_per_row],
+                weight,
+                head_dim,
+            );
         }
 
         let inv_sum = 1.0 / sum_exp;
         for d in (0..head_dim).step_by(4) {
             let out_vec = vld1q_f32(output_head.as_ptr().add(d));
-            vst1q_f32(output_head.as_mut_ptr().add(d), vmulq_f32(out_vec, vdupq_n_f32(inv_sum)));
+            vst1q_f32(
+                output_head.as_mut_ptr().add(d),
+                vmulq_f32(out_vec, vdupq_n_f32(inv_sum)),
+            );
         }
     }
 }
@@ -328,7 +352,11 @@ pub unsafe fn decode_attention_q4_0_neon(
         for s in 0..seq_len {
             // Q8_0 × Q4_0 fused vec_dot
             let k_offset = (s * num_heads + h) * blocks_per_row;
-            let score = vec_dot_q4_0_q8_0(head_dim, &q_q8, &k[k_offset..k_offset + blocks_per_row]) * scale;
+            let score = vec_dot_q4_0_q8_0(
+                head_dim,
+                &q_q8,
+                &k[k_offset..k_offset + blocks_per_row],
+            ) * scale;
 
             let old_max = max_val;
             if score > max_val {
@@ -361,7 +389,12 @@ pub unsafe fn decode_attention_q4_0_neon(
 
             // Accumulate V
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            vec_mad_f32_q4_0_neon(output_head, &v[v_offset..v_offset + blocks_per_row], weight, head_dim);
+            vec_mad_f32_q4_0_neon(
+                output_head,
+                &v[v_offset..v_offset + blocks_per_row],
+                weight,
+                head_dim,
+            );
         }
 
         let inv_sum = 1.0 / sum_exp;
@@ -401,7 +434,8 @@ pub unsafe fn decode_attention_q4_1_neon(
     let blocks_per_row = head_dim / QK;
 
     // Quantize Q to Q8_1 (with sum field)
-    let mut q_q8 = vec![BlockQ8_1 { d: 0, s: 0, qs: [0i8; QK] }; blocks_per_row];
+    let mut q_q8 =
+        vec![BlockQ8_1 { d: 0, s: 0, qs: [0i8; QK] }; blocks_per_row];
 
     for h in 0..num_heads {
         let q_head = &q[h * head_dim..(h + 1) * head_dim];
@@ -424,11 +458,15 @@ pub unsafe fn decode_attention_q4_1_neon(
             // The function expects (K: Q4_1, Q: Q8_1) which matches our data
             let score = {
                 // Transmute to types module blocks (same repr(C))
-                let k_ptr = k.as_ptr().add(k_offset) as *const crate::quant::types::BlockQ4_1;
+                let k_ptr = k.as_ptr().add(k_offset)
+                    as *const crate::quant::types::BlockQ4_1;
                 let k_slice = std::slice::from_raw_parts(k_ptr, blocks_per_row);
-                let q_ptr = q_q8.as_ptr() as *const crate::quant::types::BlockQ8_1;
+                let q_ptr =
+                    q_q8.as_ptr() as *const crate::quant::types::BlockQ8_1;
                 let q_slice = std::slice::from_raw_parts(q_ptr, blocks_per_row);
-                crate::quant::vec_dot::arm::q_0_1::vec_dot_q4_1_q8_1_neon(head_dim, k_slice, q_slice)
+                crate::quant::vec_dot::arm::q_0_1::vec_dot_q4_1_q8_1_neon(
+                    head_dim, k_slice, q_slice,
+                )
             } * scale;
 
             let old_max = max_val;
@@ -462,7 +500,12 @@ pub unsafe fn decode_attention_q4_1_neon(
 
             // Accumulate V with NEON vec_mad
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            vec_mad_f32_q4_1_neon(output_head, &v[v_offset..v_offset + blocks_per_row], weight, head_dim);
+            vec_mad_f32_q4_1_neon(
+                output_head,
+                &v[v_offset..v_offset + blocks_per_row],
+                weight,
+                head_dim,
+            );
         }
 
         let inv_sum = 1.0 / sum_exp;
@@ -517,7 +560,11 @@ pub unsafe fn decode_attention_q5_0_neon(
 
         for s in 0..seq_len {
             let k_offset = (s * num_heads + h) * blocks_per_row;
-            let score = vec_dot_q5_0_q8_0(head_dim, &q_q8, &k[k_offset..k_offset + blocks_per_row]) * scale;
+            let score = vec_dot_q5_0_q8_0(
+                head_dim,
+                &q_q8,
+                &k[k_offset..k_offset + blocks_per_row],
+            ) * scale;
 
             let old_max = max_val;
             if score > max_val {
@@ -549,7 +596,12 @@ pub unsafe fn decode_attention_q5_0_neon(
             sum_exp += weight;
 
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            vec_mad_f32_q5_0_neon(output_head, &v[v_offset..v_offset + blocks_per_row], weight, head_dim);
+            vec_mad_f32_q5_0_neon(
+                output_head,
+                &v[v_offset..v_offset + blocks_per_row],
+                weight,
+                head_dim,
+            );
         }
 
         let inv_sum = 1.0 / sum_exp;
@@ -589,7 +641,8 @@ pub unsafe fn decode_attention_q5_1_neon(
     let blocks_per_row = head_dim / QK;
 
     // Quantize Q to Q8_1 (with sum field)
-    let mut q_q8 = vec![BlockQ8_1 { d: 0, s: 0, qs: [0i8; QK] }; blocks_per_row];
+    let mut q_q8 =
+        vec![BlockQ8_1 { d: 0, s: 0, qs: [0i8; QK] }; blocks_per_row];
 
     for h in 0..num_heads {
         let q_head = &q[h * head_dim..(h + 1) * head_dim];
@@ -611,11 +664,15 @@ pub unsafe fn decode_attention_q5_1_neon(
             // Use NEON vec_dot: K is Q5_1, Q is Q8_1
             let score = {
                 // Transmute to types module blocks (same repr(C))
-                let k_ptr = k.as_ptr().add(k_offset) as *const crate::quant::types::BlockQ5_1;
+                let k_ptr = k.as_ptr().add(k_offset)
+                    as *const crate::quant::types::BlockQ5_1;
                 let k_slice = std::slice::from_raw_parts(k_ptr, blocks_per_row);
-                let q_ptr = q_q8.as_ptr() as *const crate::quant::types::BlockQ8_1;
+                let q_ptr =
+                    q_q8.as_ptr() as *const crate::quant::types::BlockQ8_1;
                 let q_slice = std::slice::from_raw_parts(q_ptr, blocks_per_row);
-                crate::quant::vec_dot::arm::q_0_1::vec_dot_q5_1_q8_1_neon(head_dim, k_slice, q_slice)
+                crate::quant::vec_dot::arm::q_0_1::vec_dot_q5_1_q8_1_neon(
+                    head_dim, k_slice, q_slice,
+                )
             } * scale;
 
             let old_max = max_val;
@@ -649,7 +706,12 @@ pub unsafe fn decode_attention_q5_1_neon(
 
             // Accumulate V with NEON vec_mad
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            vec_mad_f32_q5_1_neon(output_head, &v[v_offset..v_offset + blocks_per_row], weight, head_dim);
+            vec_mad_f32_q5_1_neon(
+                output_head,
+                &v[v_offset..v_offset + blocks_per_row],
+                weight,
+                head_dim,
+            );
         }
 
         let inv_sum = 1.0 / sum_exp;
@@ -704,7 +766,11 @@ pub unsafe fn decode_attention_iq4_nl_neon(
 
         for s in 0..seq_len {
             let k_offset = (s * num_heads + h) * blocks_per_row;
-            let score = vec_dot_iq4_nl_q8_0(head_dim, &q_q8, &k[k_offset..k_offset + blocks_per_row]) * scale;
+            let score = vec_dot_iq4_nl_q8_0(
+                head_dim,
+                &q_q8,
+                &k[k_offset..k_offset + blocks_per_row],
+            ) * scale;
 
             let old_max = max_val;
             if score > max_val {
@@ -736,7 +802,12 @@ pub unsafe fn decode_attention_iq4_nl_neon(
             sum_exp += weight;
 
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            vec_mad_f32_iq4_nl_neon(output_head, &v[v_offset..v_offset + blocks_per_row], weight, head_dim);
+            vec_mad_f32_iq4_nl_neon(
+                output_head,
+                &v[v_offset..v_offset + blocks_per_row],
+                weight,
+                head_dim,
+            );
         }
 
         let inv_sum = 1.0 / sum_exp;
@@ -1019,7 +1090,10 @@ pub unsafe fn decode_attention_f32_q_f16_kv_neon(
             let q1 = vld1q_f32(q_head.as_ptr().add(d + 4));
             let q_f16_low = vcvt_f16_f32(q0);
             let q_f16_vec = vcvt_high_f16_f32(q_f16_low, q1);
-            vst1q_u16(q_f16.as_mut_ptr().add(d), vreinterpretq_u16_f16(q_f16_vec));
+            vst1q_u16(
+                q_f16.as_mut_ptr().add(d),
+                vreinterpretq_u16_f16(q_f16_vec),
+            );
         }
 
         // Zero accumulator using SIMD
@@ -1104,8 +1178,14 @@ pub unsafe fn decode_attention_f32_q_f16_kv_neon(
 
                 for d in (0..head_dim).step_by(16) {
                     let (v0, v1) = load_pair_f16(vkq.as_ptr().add(d));
-                    vst1q_u16(vkq.as_mut_ptr().add(d), vreinterpretq_u16_f16(vmulq_f16_asm(v0, ms_vec)));
-                    vst1q_u16(vkq.as_mut_ptr().add(d + 8), vreinterpretq_u16_f16(vmulq_f16_asm(v1, ms_vec)));
+                    vst1q_u16(
+                        vkq.as_mut_ptr().add(d),
+                        vreinterpretq_u16_f16(vmulq_f16_asm(v0, ms_vec)),
+                    );
+                    vst1q_u16(
+                        vkq.as_mut_ptr().add(d + 8),
+                        vreinterpretq_u16_f16(vmulq_f16_asm(v1, ms_vec)),
+                    );
                 }
             }
 
@@ -1125,8 +1205,14 @@ pub unsafe fn decode_attention_f32_q_f16_kv_neon(
             for d in (0..head_dim).step_by(16) {
                 let (v0, v1) = load_pair_f16(v_row.add(d));
                 let (vkq0, vkq1) = load_pair_f16(vkq.as_ptr().add(d));
-                vst1q_u16(vkq.as_mut_ptr().add(d), vreinterpretq_u16_f16(vfmaq_f16_asm(vkq0, v0, vs_vec)));
-                vst1q_u16(vkq.as_mut_ptr().add(d + 8), vreinterpretq_u16_f16(vfmaq_f16_asm(vkq1, v1, vs_vec)));
+                vst1q_u16(
+                    vkq.as_mut_ptr().add(d),
+                    vreinterpretq_u16_f16(vfmaq_f16_asm(vkq0, v0, vs_vec)),
+                );
+                vst1q_u16(
+                    vkq.as_mut_ptr().add(d + 8),
+                    vreinterpretq_u16_f16(vfmaq_f16_asm(vkq1, v1, vs_vec)),
+                );
             }
         }
 
@@ -1144,7 +1230,11 @@ pub unsafe fn decode_attention_f32_q_f16_kv_neon(
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
-pub unsafe fn vec_dot_f32_f16_neon(q_f32: &[f32], k_f16: &[u16], n: usize) -> f32 {
+pub unsafe fn vec_dot_f32_f16_neon(
+    q_f32: &[f32],
+    k_f16: &[u16],
+    n: usize,
+) -> f32 {
     let ptr_q = q_f32.as_ptr();
     let ptr_k = k_f16.as_ptr();
     let mut i = 0;
@@ -1173,7 +1263,8 @@ pub unsafe fn vec_dot_f32_f16_neon(q_f32: &[f32], k_f16: &[u16], n: usize) -> f3
         sum2 = vfmaq_f32(sum2, q2, k2);
 
         // Load and convert 4 FP16 to FP32 (iteration 3)
-        let k3 = vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(ptr_k.add(i + 12))));
+        let k3 =
+            vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(ptr_k.add(i + 12))));
         let q3 = vld1q_f32(ptr_q.add(i + 12));
         sum3 = vfmaq_f32(sum3, q3, k3);
 
@@ -1208,7 +1299,12 @@ pub unsafe fn vec_dot_f32_f16_neon(q_f32: &[f32], k_f16: &[u16], n: usize) -> f3
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
-pub unsafe fn vec_mad_f32_f16_neon(output: &mut [f32], v_f16: &[u16], weight: f32, n: usize) {
+pub unsafe fn vec_mad_f32_f16_neon(
+    output: &mut [f32],
+    v_f16: &[u16],
+    weight: f32,
+    n: usize,
+) {
     let w_vec = vdupq_n_f32(weight);
     let ptr_out = output.as_mut_ptr();
     let ptr_v = v_f16.as_ptr();
@@ -1232,7 +1328,8 @@ pub unsafe fn vec_mad_f32_f16_neon(output: &mut [f32], v_f16: &[u16], weight: f3
         vst1q_f32(ptr_out.add(i + 8), vfmaq_f32(out2, v2, w_vec));
 
         // Convert 4 FP16 to FP32 and do FMA (iteration 3)
-        let v3 = vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(ptr_v.add(i + 12))));
+        let v3 =
+            vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(ptr_v.add(i + 12))));
         let out3 = vld1q_f32(ptr_out.add(i + 12));
         vst1q_f32(ptr_out.add(i + 12), vfmaq_f32(out3, v3, w_vec));
 
@@ -1291,21 +1388,11 @@ pub unsafe fn dequantize_row_bf16_neon_inline(x: &[u16], y: &mut [f32]) {
 
 // Fused vec_dot and vec_mad functions are provided by attention_fused module
 use super::attention_fused::{
-    quantize_query_to_q8_0,
-    quantize_query_to_q8_1,
-    fp16_to_fp32_scalar,
-    vec_dot_q8_0_q8_0,
-    vec_dot_q4_0_q8_0,
-    vec_dot_q4_1_q8_1,
-    vec_dot_q5_0_q8_0,
-    vec_dot_q5_1_q8_1,
-    vec_dot_iq4_nl_q8_0,
-    vec_mad_f32_q8_0_neon,
-    vec_mad_f32_q4_0_neon,
-    vec_mad_f32_q4_1_neon,
-    vec_mad_f32_q5_0_neon,
-    vec_mad_f32_q5_1_neon,
-    vec_mad_f32_iq4_nl_neon,
+    fp16_to_fp32_scalar, quantize_query_to_q8_0, quantize_query_to_q8_1,
+    vec_dot_iq4_nl_q8_0, vec_dot_q4_0_q8_0, vec_dot_q4_1_q8_1,
+    vec_dot_q5_0_q8_0, vec_dot_q5_1_q8_1, vec_dot_q8_0_q8_0,
+    vec_mad_f32_iq4_nl_neon, vec_mad_f32_q4_0_neon, vec_mad_f32_q4_1_neon,
+    vec_mad_f32_q5_0_neon, vec_mad_f32_q5_1_neon, vec_mad_f32_q8_0_neon,
 };
 
 #[cfg(test)]
@@ -1321,25 +1408,26 @@ mod tests {
 
         let q = vec![1.0f32; num_heads * head_dim];
         let k = vec![
-            1.0, 2.0, 3.0, 4.0,
-            2.0, 3.0, 4.0, 5.0,
-            1.0, 1.0, 1.0, 1.0,
-            2.0, 2.0, 2.0, 2.0,
-            0.5, 0.5, 0.5, 0.5,
-            1.0, 1.0, 1.0, 1.0,
+            1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0, 1.0, 1.0, 1.0, 1.0, 2.0,
+            2.0, 2.0, 2.0, 0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0,
         ];
         let v = vec![
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
-            1.0, 1.0, 1.0, 1.0,
-            0.5, 0.5, 0.5, 0.5,
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 0.5, 0.5, 0.5,
         ];
 
         let mut output = vec![0.0f32; num_heads * head_dim];
 
-        decode_attention_f32(&q, &k, &v, &mut output, num_heads, head_dim, seq_len, scale);
+        decode_attention_f32(
+            &q,
+            &k,
+            &v,
+            &mut output,
+            num_heads,
+            head_dim,
+            seq_len,
+            scale,
+        );
 
         let sum: f32 = output.iter().sum();
         assert!(sum > 0.0, "Output should have positive values");

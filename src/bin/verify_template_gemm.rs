@@ -1,9 +1,11 @@
 // Verify templated GEMM kernels from llama.cpp
 // Run: cargo run --release --bin verify_template_gemm
 
-use infer_train::quant::types::{BlockQ2K, BlockQ3K, BlockQ4K, BlockQ5K, BlockQ6K};
-use infer_train::quant::vec_dot::gpu::metal::MetalContext;
 use half::f16;
+use infer_train::quant::types::{
+    BlockQ2K, BlockQ3K, BlockQ4K, BlockQ5K, BlockQ6K,
+};
+use infer_train::quant::vec_dot::gpu::metal::MetalContext;
 
 fn generate_q4_k_weights(m: usize, k: usize) -> Vec<BlockQ4K> {
     let nb = k / 256;
@@ -45,37 +47,50 @@ fn main() {
     let input = generate_f32_input(k * n);
 
     println!("Testing Q4_K templated GEMM (M={}, N={}, K={})", m, n, k);
-    println!("Weights: {} blocks ({} bytes), Input: {} elements", weights.len(), weights.len() * std::mem::size_of::<BlockQ4K>(), input.len());
+    println!(
+        "Weights: {} blocks ({} bytes), Input: {} elements",
+        weights.len(),
+        weights.len() * std::mem::size_of::<BlockQ4K>(),
+        input.len()
+    );
 
     // Check input layout
     println!("\nInput matrix layout check:");
     println!("  Element 0: {:.4}", input[0]);
-    println!("  Element K: {:.4} (expect column 1 start if column-major)", input[k]);
-    println!("  Element K+1: {:.4}", input[k+1]);
+    println!(
+        "  Element K: {:.4} (expect column 1 start if column-major)",
+        input[k]
+    );
+    println!("  Element K+1: {:.4}", input[k + 1]);
 
     // Test templated kernel
     println!("\n1. Testing templated kernel...");
-    let template_result = match ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input) {
-        Ok(result) => {
-            println!("   Result size: {} values", result.len());
-            println!("   Sample values: {:.4}, {:.4}, {:.4}, {:.4}",
-                     result[0], result[100], result[1000], result[10000]);
-            println!("   ✓ Templated kernel executed successfully");
-            Some(result)
-        }
-        Err(e) => {
-            println!("   ✗ Templated kernel failed: {}", e);
-            None
-        }
-    };
+    let template_result =
+        match ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input) {
+            Ok(result) => {
+                println!("   Result size: {} values", result.len());
+                println!(
+                    "   Sample values: {:.4}, {:.4}, {:.4}, {:.4}",
+                    result[0], result[100], result[1000], result[10000]
+                );
+                println!("   ✓ Templated kernel executed successfully");
+                Some(result)
+            }
+            Err(e) => {
+                println!("   ✗ Templated kernel failed: {}", e);
+                None
+            }
+        };
 
     // Test hand-written kernel for comparison
     println!("\n2. Testing hand-written kernel...");
     let hand_result = match ctx.gemm_q4_k_f32(m, n, k, &weights, &input) {
         Ok(result) => {
             println!("   Result size: {} values", result.len());
-            println!("   Sample values: {:.4}, {:.4}, {:.4}, {:.4}",
-                     result[0], result[100], result[1000], result[10000]);
+            println!(
+                "   Sample values: {:.4}, {:.4}, {:.4}, {:.4}",
+                result[0], result[100], result[1000], result[10000]
+            );
             println!("   ✓ Hand-written kernel executed successfully");
             Some(result)
         }
@@ -89,10 +104,15 @@ fn main() {
     if let (Some(t), Some(h)) = (&template_result, &hand_result) {
         println!("\n3. Result comparison:");
         let ratio = t[0] / h[0];
-        println!("   Ratio of first values: {:.4} / {:.4} = {:.4}", t[0], h[0], ratio);
+        println!(
+            "   Ratio of first values: {:.4} / {:.4} = {:.4}",
+            t[0], h[0], ratio
+        );
 
         // Check if ratio is consistent
-        let ratios: Vec<f64> = t.iter().zip(h.iter())
+        let ratios: Vec<f64> = t
+            .iter()
+            .zip(h.iter())
             .filter(|(_, hv)| hv.abs() > 0.001)
             .take(100)
             .map(|(tv, hv)| *tv as f64 / *hv as f64)
@@ -128,11 +148,20 @@ fn main() {
     println!("\n┌──────────────────┬──────────┬──────────┐");
     println!("│ Kernel           │ Time (µs)│ GFLOPS   │");
     println!("├──────────────────┼──────────┼──────────┤");
-    println!("│ Templated        │ {:8.2} │ {:8.2} │", templated_time, templated_gflops);
-    println!("│ Hand-written     │ {:8.2} │ {:8.2} │", handwritten_time, handwritten_gflops);
+    println!(
+        "│ Templated        │ {:8.2} │ {:8.2} │",
+        templated_time, templated_gflops
+    );
+    println!(
+        "│ Hand-written     │ {:8.2} │ {:8.2} │",
+        handwritten_time, handwritten_gflops
+    );
     println!("└──────────────────┴──────────┴──────────┘");
 
-    println!("\nTemplated is {:.2}x {}", templated_time / handwritten_time,
-             if templated_time < handwritten_time { "FASTER" } else { "SLOWER" });
+    println!(
+        "\nTemplated is {:.2}x {}",
+        templated_time / handwritten_time,
+        if templated_time < handwritten_time { "FASTER" } else { "SLOWER" }
+    );
     println!("llama.cpp baseline: ~220 GFLOPS");
 }

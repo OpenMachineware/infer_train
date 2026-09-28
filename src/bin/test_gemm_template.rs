@@ -22,12 +22,23 @@ fn main() {
                 Ok(kernel) => {
                     println!("✓ Q4_K kernel function found");
 
-                    match device.new_compute_pipeline_state_with_function(&kernel) {
+                    match device
+                        .new_compute_pipeline_state_with_function(&kernel)
+                    {
                         Ok(pipeline) => {
                             println!("✓ Q4_K pipeline created successfully");
-                            println!("  Max threadgroup size: {:?}", pipeline.max_total_threads_per_threadgroup());
-                            println!("  Thread execution width: {}", pipeline.thread_execution_width());
-                            println!("  Static threadgroup memory length: {} bytes", pipeline.static_threadgroup_memory_length());
+                            println!(
+                                "  Max threadgroup size: {:?}",
+                                pipeline.max_total_threads_per_threadgroup()
+                            );
+                            println!(
+                                "  Thread execution width: {}",
+                                pipeline.thread_execution_width()
+                            );
+                            println!(
+                                "  Static threadgroup memory length: {} bytes",
+                                pipeline.static_threadgroup_memory_length()
+                            );
 
                             // Create a small test
                             test_q4_k_gemm(&device, &pipeline);
@@ -81,8 +92,8 @@ fn test_q4_k_gemm(device: &Device, pipeline: &metal::ComputePipelineState) {
         weights[offset + 2] = 0x00;
         weights[offset + 3] = 0x00;
         // Set scales to encode value 1 (scales[0] = 1, scales[1] = 0)
-        weights[offset + 4] = 1;  // scale for first 32 values
-        weights[offset + 5] = 0;  // min for first 32 values
+        weights[offset + 4] = 1; // scale for first 32 values
+        weights[offset + 5] = 0; // min for first 32 values
         // ... rest of scales
         // Set qs to encode 1.0: 4-bit value 1 in low nibble, 4-bit value 1 in high nibble
         for j in 0..128 {
@@ -115,31 +126,31 @@ fn test_q4_k_gemm(device: &Device, pipeline: &metal::ComputePipelineState) {
     // Create argument buffer - EXACT match to llama.cpp's ggml_metal_kargs_mul_mm
     #[repr(C)]
     struct Args {
-        ne00: i32,  // K
-        ne02: i32,  // batch (1 for simple case)
-        nb01: u64,  // row stride for A (bytes between rows)
-        nb02: u64,  // batch stride A
-        nb03: u64,  // batch3 stride A
-        ne12: i32,  // batch for B
-        nb10: u64,  // element stride for B (bytes between elements)
-        nb11: u64,  // row stride for B (bytes between rows)
-        nb12: u64,  // batch stride B
-        nb13: u64,  // batch3 stride B
-        ne0: i32,   // M (output rows)
-        ne1: i32,   // N (output cols)
-        r2: i16,    // broadcast ratio
-        r3: i16,    // broadcast ratio
+        ne00: i32, // K
+        ne02: i32, // batch (1 for simple case)
+        nb01: u64, // row stride for A (bytes between rows)
+        nb02: u64, // batch stride A
+        nb03: u64, // batch3 stride A
+        ne12: i32, // batch for B
+        nb10: u64, // element stride for B (bytes between elements)
+        nb11: u64, // row stride for B (bytes between rows)
+        nb12: u64, // batch stride B
+        nb13: u64, // batch3 stride B
+        ne0: i32,  // M (output rows)
+        ne1: i32,  // N (output cols)
+        r2: i16,   // broadcast ratio
+        r3: i16,   // broadcast ratio
     }
 
     let args = Args {
         ne00: k as i32,
         ne02: 1,
-        nb01: (k / 256 * 144) as u64,  // Each row of A has k/256 blocks, each block is 144 bytes
+        nb01: (k / 256 * 144) as u64, // Each row of A has k/256 blocks, each block is 144 bytes
         nb02: 0,
         nb03: 0,
         ne12: 1,
-        nb10: 2,  // FP16 = 2 bytes per element
-        nb11: (k * 2) as u64,  // Each row has k elements, each is 2 bytes
+        nb10: 2,              // FP16 = 2 bytes per element
+        nb11: (k * 2) as u64, // Each row has k elements, each is 2 bytes
         nb12: 0,
         nb13: 0,
         ne0: m as i32,
@@ -174,11 +185,8 @@ fn test_q4_k_gemm(device: &Device, pipeline: &metal::ComputePipelineState) {
     // Calculate grid and threadgroup sizes
     // Threadgroup: 64x32 output tiles
     // Need: ceil(M/64) x ceil(N/32) threadgroups
-    let grid_size = MTLSize::new(
-        ((n + 31) / 32) as u64,
-        ((m + 63) / 64) as u64,
-        1,
-    );
+    let grid_size =
+        MTLSize::new(((n + 31) / 32) as u64, ((m + 63) / 64) as u64, 1);
 
     // Threadgroup size: 128 threads (like llama.cpp)
     let threadgroup_size = MTLSize::new(128, 1, 1);

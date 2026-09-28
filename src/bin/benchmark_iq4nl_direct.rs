@@ -1,6 +1,6 @@
 // 直接测量，排除框架开销
-use std::time::Instant;
 use infer_train::quant::kv_cache::{BlockIQ4NL, QK};
+use std::time::Instant;
 
 fn main() {
     let num_heads = 32;
@@ -10,18 +10,41 @@ fn main() {
     let blocks_per_row = head_dim / QK;
     let num_blocks = seq_len * num_heads * blocks_per_row;
 
-    let q: Vec<f32> = (0..num_heads * head_dim).map(|i| (i % 100) as f32 / 100.0).collect();
+    let q: Vec<f32> =
+        (0..num_heads * head_dim).map(|i| (i % 100) as f32 / 100.0).collect();
     let mut output = vec![0.0f32; num_heads * head_dim];
-    let k: Vec<BlockIQ4NL> = (0..num_blocks).map(|_| BlockIQ4NL { d: 0x3C00, qs: [0x88u8; 16] }).collect();
-    let v: Vec<BlockIQ4NL> = (0..num_blocks).map(|_| BlockIQ4NL { d: 0x3C00, qs: [0x88u8; 16] }).collect();
+    let k: Vec<BlockIQ4NL> = (0..num_blocks)
+        .map(|_| BlockIQ4NL { d: 0x3C00, qs: [0x88u8; 16] })
+        .collect();
+    let v: Vec<BlockIQ4NL> = (0..num_blocks)
+        .map(|_| BlockIQ4NL { d: 0x3C00, qs: [0x88u8; 16] })
+        .collect();
 
     unsafe {
         // Warmup
-        infer_train::ops::attention::decode_attention_iq4_nl_neon(&q, &k, &v, &mut output, num_heads, head_dim, seq_len, scale);
+        infer_train::ops::attention::decode_attention_iq4_nl_neon(
+            &q,
+            &k,
+            &v,
+            &mut output,
+            num_heads,
+            head_dim,
+            seq_len,
+            scale,
+        );
 
         let start = Instant::now();
         for _ in 0..20 {
-            infer_train::ops::attention::decode_attention_iq4_nl_neon(&q, &k, &v, &mut output, num_heads, head_dim, seq_len, scale);
+            infer_train::ops::attention::decode_attention_iq4_nl_neon(
+                &q,
+                &k,
+                &v,
+                &mut output,
+                num_heads,
+                head_dim,
+                seq_len,
+                scale,
+            );
         }
         let elapsed = start.elapsed();
         let ns = elapsed.as_nanos() as f64 / 20.0;

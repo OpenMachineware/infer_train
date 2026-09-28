@@ -5,8 +5,13 @@
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
 
-use crate::quant::kv_cache::{BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, BlockQ8_1, BlockIQ4NL, QK, KVALUES_IQ4NL, KVALUES_IQ4NL_I8};
-use crate::quant::kv_cache::quant::{quantize_row_q8_0_neon, quantize_row_q8_1};
+use crate::quant::kv_cache::quant::{
+    quantize_row_q8_0_neon, quantize_row_q8_1,
+};
+use crate::quant::kv_cache::{
+    BlockIQ4NL, BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0,
+    BlockQ8_1, KVALUES_IQ4NL, KVALUES_IQ4NL_I8, QK,
+};
 
 // ============================================================================
 // Q8_0 Quantization for Query
@@ -51,37 +56,77 @@ pub unsafe fn bf16_to_fp32_scalar(bits: u16) -> f32 {
 /// Direct transmute - no allocation
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon,dotprod")]
-pub unsafe fn vec_dot_q8_0_q8_0(n: usize, q: &[BlockQ8_0], k: &[BlockQ8_0]) -> f32 {
+pub unsafe fn vec_dot_q8_0_q8_0(
+    n: usize,
+    q: &[BlockQ8_0],
+    k: &[BlockQ8_0],
+) -> f32 {
     // Transmute to types module blocks (same repr(C))
-    let q_types = std::slice::from_raw_parts(q.as_ptr() as *const crate::quant::types::BlockQ8_0, q.len());
-    let k_types = std::slice::from_raw_parts(k.as_ptr() as *const crate::quant::types::BlockQ8_0, k.len());
-    crate::quant::vec_dot::arm::q_0_1::vec_dot_q8_0_q8_0_neon(n, q_types, k_types)
+    let q_types = std::slice::from_raw_parts(
+        q.as_ptr() as *const crate::quant::types::BlockQ8_0,
+        q.len(),
+    );
+    let k_types = std::slice::from_raw_parts(
+        k.as_ptr() as *const crate::quant::types::BlockQ8_0,
+        k.len(),
+    );
+    crate::quant::vec_dot::arm::q_0_1::vec_dot_q8_0_q8_0_neon(
+        n, q_types, k_types,
+    )
 }
 
 /// Q4_0 × Q8_0 fused vec_dot
 /// Direct transmute - no allocation
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon,dotprod")]
-pub unsafe fn vec_dot_q4_0_q8_0(n: usize, q: &[BlockQ8_0], k: &[BlockQ4_0]) -> f32 {
-    let q_types = std::slice::from_raw_parts(q.as_ptr() as *const crate::quant::types::BlockQ8_0, q.len());
-    let k_types = std::slice::from_raw_parts(k.as_ptr() as *const crate::quant::types::BlockQ4_0, k.len());
-    crate::quant::vec_dot::arm::q_0_1::vec_dot_q4_0_q8_0_neon(n, k_types, q_types)
+pub unsafe fn vec_dot_q4_0_q8_0(
+    n: usize,
+    q: &[BlockQ8_0],
+    k: &[BlockQ4_0],
+) -> f32 {
+    let q_types = std::slice::from_raw_parts(
+        q.as_ptr() as *const crate::quant::types::BlockQ8_0,
+        q.len(),
+    );
+    let k_types = std::slice::from_raw_parts(
+        k.as_ptr() as *const crate::quant::types::BlockQ4_0,
+        k.len(),
+    );
+    crate::quant::vec_dot::arm::q_0_1::vec_dot_q4_0_q8_0_neon(
+        n, k_types, q_types,
+    )
 }
 
 /// Q5_0 × Q8_0 fused vec_dot
 /// Direct transmute - no allocation
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon,dotprod")]
-pub unsafe fn vec_dot_q5_0_q8_0(n: usize, q: &[BlockQ8_0], k: &[BlockQ5_0]) -> f32 {
-    let q_types = std::slice::from_raw_parts(q.as_ptr() as *const crate::quant::types::BlockQ8_0, q.len());
-    let k_types = std::slice::from_raw_parts(k.as_ptr() as *const crate::quant::types::BlockQ5_0, k.len());
-    crate::quant::vec_dot::arm::q_0_1::vec_dot_q5_0_q8_0_neon(n, k_types, q_types)
+pub unsafe fn vec_dot_q5_0_q8_0(
+    n: usize,
+    q: &[BlockQ8_0],
+    k: &[BlockQ5_0],
+) -> f32 {
+    let q_types = std::slice::from_raw_parts(
+        q.as_ptr() as *const crate::quant::types::BlockQ8_0,
+        q.len(),
+    );
+    let k_types = std::slice::from_raw_parts(
+        k.as_ptr() as *const crate::quant::types::BlockQ5_0,
+        k.len(),
+    );
+    crate::quant::vec_dot::arm::q_0_1::vec_dot_q5_0_q8_0_neon(
+        n, k_types, q_types,
+    )
 }
 
 /// Q4_1 × Q8_1 fused vec_dot using NEON SDOT
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon,dotprod")]
-pub unsafe fn vec_dot_q4_1_q8_1(n: usize, q: &[BlockQ8_0], k: &[BlockQ4_1]) -> f32 {
+pub unsafe fn vec_dot_q4_1_q8_1(
+    n: usize,
+    q: &[BlockQ8_0],
+    k: &[BlockQ4_1],
+) -> f32 {
     // Note: This expects Q8_1, but we're passing Q8_0
     // Q8_1 has an additional 's' field that Q8_0 doesn't have
     // For now, use the scalar fallback since we don't have proper Q8_1 quantization
@@ -91,7 +136,11 @@ pub unsafe fn vec_dot_q4_1_q8_1(n: usize, q: &[BlockQ8_0], k: &[BlockQ4_1]) -> f
 
 /// Scalar fallback for Q4_1 × Q8_0
 #[cfg(target_arch = "aarch64")]
-unsafe fn scalar_vec_dot_q4_1_q8_0(n: usize, q: &[BlockQ8_0], k: &[BlockQ4_1]) -> f32 {
+unsafe fn scalar_vec_dot_q4_1_q8_0(
+    n: usize,
+    q: &[BlockQ8_0],
+    k: &[BlockQ4_1],
+) -> f32 {
     let nb = n / QK;
     let mut sum = 0.0f32;
 
@@ -124,7 +173,11 @@ unsafe fn scalar_vec_dot_q4_1_q8_0(n: usize, q: &[BlockQ8_0], k: &[BlockQ4_1]) -
 /// Note: This expects Q8_1, but we're passing Q8_0
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon,dotprod")]
-pub unsafe fn vec_dot_q5_1_q8_1(n: usize, q: &[BlockQ8_0], k: &[BlockQ5_1]) -> f32 {
+pub unsafe fn vec_dot_q5_1_q8_1(
+    n: usize,
+    q: &[BlockQ8_0],
+    k: &[BlockQ5_1],
+) -> f32 {
     let nb = n / QK;
     let mut sum = 0.0f32;
 
@@ -165,10 +218,22 @@ pub unsafe fn vec_dot_q5_1_q8_1(n: usize, q: &[BlockQ8_0], k: &[BlockQ5_1]) -> f
 /// Direct transmute to types module blocks (same repr(C))
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon,dotprod")]
-pub unsafe fn vec_dot_iq4_nl_q8_0(n: usize, q: &[BlockQ8_0], k: &[BlockIQ4NL]) -> f32 {
-    let q_types = std::slice::from_raw_parts(q.as_ptr() as *const crate::quant::types::BlockQ8_0, q.len());
-    let k_types = std::slice::from_raw_parts(k.as_ptr() as *const crate::quant::types::BlockIQ4NL, k.len());
-    crate::quant::vec_dot::arm::iq::vec_dot_iq4_nl_q8_0_neon(n, k_types, q_types)
+pub unsafe fn vec_dot_iq4_nl_q8_0(
+    n: usize,
+    q: &[BlockQ8_0],
+    k: &[BlockIQ4NL],
+) -> f32 {
+    let q_types = std::slice::from_raw_parts(
+        q.as_ptr() as *const crate::quant::types::BlockQ8_0,
+        q.len(),
+    );
+    let k_types = std::slice::from_raw_parts(
+        k.as_ptr() as *const crate::quant::types::BlockIQ4NL,
+        k.len(),
+    );
+    crate::quant::vec_dot::arm::iq::vec_dot_iq4_nl_q8_0_neon(
+        n, k_types, q_types,
+    )
 }
 
 // ============================================================================
@@ -180,7 +245,12 @@ pub unsafe fn vec_dot_iq4_nl_q8_0(n: usize, q: &[BlockQ8_0], k: &[BlockIQ4NL]) -
 /// Optimized: uses NEON for i8->f32 conversion and FMA
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-pub unsafe fn vec_mad_f32_q8_0_neon(y: &mut [f32], v: &[BlockQ8_0], weight: f32, n: usize) {
+pub unsafe fn vec_mad_f32_q8_0_neon(
+    y: &mut [f32],
+    v: &[BlockQ8_0],
+    weight: f32,
+    n: usize,
+) {
     let nb = n / QK;
 
     for b in 0..nb {
@@ -218,7 +288,12 @@ pub unsafe fn vec_mad_f32_q8_0_neon(y: &mut [f32], v: &[BlockQ8_0], weight: f32,
 /// Optimized: scalar dequant + NEON FMA (simple and fast)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-pub unsafe fn vec_mad_f32_q4_0_neon(y: &mut [f32], v: &[BlockQ4_0], weight: f32, n: usize) {
+pub unsafe fn vec_mad_f32_q4_0_neon(
+    y: &mut [f32],
+    v: &[BlockQ4_0],
+    weight: f32,
+    n: usize,
+) {
     let nb = n / QK;
 
     for b in 0..nb {
@@ -250,7 +325,12 @@ pub unsafe fn vec_mad_f32_q4_0_neon(y: &mut [f32], v: &[BlockQ4_0], weight: f32,
 /// Optimized: scalar dequant + NEON accumulation (matches llama.cpp approach)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-pub unsafe fn vec_mad_f32_q4_1_neon(y: &mut [f32], v: &[BlockQ4_1], weight: f32, n: usize) {
+pub unsafe fn vec_mad_f32_q4_1_neon(
+    y: &mut [f32],
+    v: &[BlockQ4_1],
+    weight: f32,
+    n: usize,
+) {
     let nb = n / QK;
 
     for b in 0..nb {
@@ -305,7 +385,12 @@ static TABLE_B2B_1_Q5_0: [u64; 256] = {
 /// Optimized: use lookup table for qh bit expansion (matches llama.cpp exactly)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-pub unsafe fn vec_mad_f32_q5_0_neon(y: &mut [f32], v: &[BlockQ5_0], weight: f32, n: usize) {
+pub unsafe fn vec_mad_f32_q5_0_neon(
+    y: &mut [f32],
+    v: &[BlockQ5_0],
+    weight: f32,
+    n: usize,
+) {
     let nb = n / QK;
     let m4b = vdupq_n_u8(0x0F);
     let v16 = vdupq_n_s8(16);
@@ -327,7 +412,11 @@ pub unsafe fn vec_mad_f32_q5_0_neon(y: &mut [f32], v: &[BlockQ5_0], weight: f32,
 
         // Extract 5th bit via lookup table (use memcpy like llama.cpp)
         let mut qh: u32 = 0;
-        std::ptr::copy_nonoverlapping(block.qh.as_ptr(), &mut qh as *mut u32 as *mut u8, 4);
+        std::ptr::copy_nonoverlapping(
+            block.qh.as_ptr(),
+            &mut qh as *mut u32 as *mut u8,
+            4,
+        );
 
         let tmp: [u64; 4] = [
             *table_ptr.add(((qh >> 0) & 0xFF) as usize),
@@ -380,14 +469,70 @@ pub unsafe fn vec_mad_f32_q5_0_neon(y: &mut [f32], v: &[BlockQ5_0], weight: f32,
         let vh_3_f32 = vmulq_f32(vcvtq_f32_s32(vh_3_i32), scale_vec);
 
         // Load y and accumulate: y += weight * v
-        vst1q_f32(y.as_mut_ptr().add(base + 0), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 0)), vl_0_f32, weight_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 4), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 4)), vl_1_f32, weight_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 8), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 8)), vl_2_f32, weight_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 12), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 12)), vl_3_f32, weight_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 16), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 16)), vh_0_f32, weight_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 20), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 20)), vh_1_f32, weight_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 24), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 24)), vh_2_f32, weight_vec));
-        vst1q_f32(y.as_mut_ptr().add(base + 28), vmlaq_f32(vld1q_f32(y.as_ptr().add(base + 28)), vh_3_f32, weight_vec));
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 0),
+            vmlaq_f32(
+                vld1q_f32(y.as_ptr().add(base + 0)),
+                vl_0_f32,
+                weight_vec,
+            ),
+        );
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 4),
+            vmlaq_f32(
+                vld1q_f32(y.as_ptr().add(base + 4)),
+                vl_1_f32,
+                weight_vec,
+            ),
+        );
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 8),
+            vmlaq_f32(
+                vld1q_f32(y.as_ptr().add(base + 8)),
+                vl_2_f32,
+                weight_vec,
+            ),
+        );
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 12),
+            vmlaq_f32(
+                vld1q_f32(y.as_ptr().add(base + 12)),
+                vl_3_f32,
+                weight_vec,
+            ),
+        );
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 16),
+            vmlaq_f32(
+                vld1q_f32(y.as_ptr().add(base + 16)),
+                vh_0_f32,
+                weight_vec,
+            ),
+        );
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 20),
+            vmlaq_f32(
+                vld1q_f32(y.as_ptr().add(base + 20)),
+                vh_1_f32,
+                weight_vec,
+            ),
+        );
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 24),
+            vmlaq_f32(
+                vld1q_f32(y.as_ptr().add(base + 24)),
+                vh_2_f32,
+                weight_vec,
+            ),
+        );
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 28),
+            vmlaq_f32(
+                vld1q_f32(y.as_ptr().add(base + 28)),
+                vh_3_f32,
+                weight_vec,
+            ),
+        );
     }
 }
 
@@ -395,7 +540,12 @@ pub unsafe fn vec_mad_f32_q5_0_neon(y: &mut [f32], v: &[BlockQ5_0], weight: f32,
 /// Optimized: NEON for parallel unpack + accumulation (matches llama.cpp approach)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-pub unsafe fn vec_mad_f32_q5_1_neon(y: &mut [f32], v: &[BlockQ5_1], weight: f32, n: usize) {
+pub unsafe fn vec_mad_f32_q5_1_neon(
+    y: &mut [f32],
+    v: &[BlockQ5_1],
+    weight: f32,
+    n: usize,
+) {
     let nb = n / QK;
 
     let table_ptr = TABLE_B2B_1_Q5_0.as_ptr();
@@ -421,7 +571,11 @@ pub unsafe fn vec_mad_f32_q5_1_neon(y: &mut [f32], v: &[BlockQ5_1], weight: f32,
 
         // Extract 5th bit via lookup table
         let mut qh: u32 = 0;
-        std::ptr::copy_nonoverlapping(block.qh.as_ptr(), &mut qh as *mut u32 as *mut u8, 4);
+        std::ptr::copy_nonoverlapping(
+            block.qh.as_ptr(),
+            &mut qh as *mut u32 as *mut u8,
+            4,
+        );
 
         let tmp: [u64; 4] = [
             *table_ptr.add(((qh >> 0) & 0xFF) as usize),
@@ -435,7 +589,7 @@ pub unsafe fn vec_mad_f32_q5_1_neon(y: &mut [f32], v: &[BlockQ5_1], weight: f32,
 
         // Q5_1: value = scale * q + min, where q is 0-31
         // q = nibble + bit*16, no bias subtraction needed (unlike Q5_0)
-        let vl_i8 = vaddq_s8(qsl, qhl);  // nibble + bit*16
+        let vl_i8 = vaddq_s8(qsl, qhl); // nibble + bit*16
         let vh_i8 = vaddq_s8(qsh, qhh);
 
         // Convert i8 -> i16 -> i32 -> f32
@@ -471,14 +625,38 @@ pub unsafe fn vec_mad_f32_q5_1_neon(y: &mut [f32], v: &[BlockQ5_1], weight: f32,
         let vh_3 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vh_3_i32), ws_vec);
 
         // Accumulate: y += value
-        vst1q_f32(y.as_mut_ptr().add(base + 0), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 0)), vl_0));
-        vst1q_f32(y.as_mut_ptr().add(base + 4), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 4)), vl_1));
-        vst1q_f32(y.as_mut_ptr().add(base + 8), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 8)), vl_2));
-        vst1q_f32(y.as_mut_ptr().add(base + 12), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 12)), vl_3));
-        vst1q_f32(y.as_mut_ptr().add(base + 16), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 16)), vh_0));
-        vst1q_f32(y.as_mut_ptr().add(base + 20), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 20)), vh_1));
-        vst1q_f32(y.as_mut_ptr().add(base + 24), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 24)), vh_2));
-        vst1q_f32(y.as_mut_ptr().add(base + 28), vaddq_f32(vld1q_f32(y.as_ptr().add(base + 28)), vh_3));
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 0),
+            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 0)), vl_0),
+        );
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 4),
+            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 4)), vl_1),
+        );
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 8),
+            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 8)), vl_2),
+        );
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 12),
+            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 12)), vl_3),
+        );
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 16),
+            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 16)), vh_0),
+        );
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 20),
+            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 20)), vh_1),
+        );
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 24),
+            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 24)), vh_2),
+        );
+        vst1q_f32(
+            y.as_mut_ptr().add(base + 28),
+            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 28)), vh_3),
+        );
     }
 }
 
@@ -486,7 +664,12 @@ pub unsafe fn vec_mad_f32_q5_1_neon(y: &mut [f32], v: &[BlockQ5_1], weight: f32,
 /// Strategy: scalar dequant + NEON FMA (matches llama.cpp approach)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-pub unsafe fn vec_mad_f32_iq4_nl_neon(y: &mut [f32], v: &[BlockIQ4NL], weight: f32, n: usize) {
+pub unsafe fn vec_mad_f32_iq4_nl_neon(
+    y: &mut [f32],
+    v: &[BlockIQ4NL],
+    weight: f32,
+    n: usize,
+) {
     let nb = n / QK;
 
     for b in 0..nb {
@@ -512,7 +695,10 @@ pub unsafe fn vec_mad_f32_iq4_nl_neon(y: &mut [f32], v: &[BlockIQ4NL], weight: f
         for i in (0..QK).step_by(4) {
             let y_vec = vld1q_f32(y.as_ptr().add(base + i));
             let v_vec = vld1q_f32(vals.as_ptr().add(i));
-            vst1q_f32(y.as_mut_ptr().add(base + i), vfmaq_f32(y_vec, v_vec, ws_vec));
+            vst1q_f32(
+                y.as_mut_ptr().add(base + i),
+                vfmaq_f32(y_vec, v_vec, ws_vec),
+            );
         }
     }
 }

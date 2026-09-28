@@ -1,7 +1,7 @@
 // 详细验证正确性
+use half::f16;
 use infer_train::quant::types::BlockQ4K;
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use half::f16;
 
 fn main() {
     let ctx = MetalContext::new().unwrap();
@@ -20,15 +20,15 @@ fn main() {
     // 简化：设置所有scale为1，min为0
     let mut scales = [0u8; 12];
     for i in 0..6 {
-        scales[i] = 1;     // scale
-        scales[i+6] = 0;   // min
+        scales[i] = 1; // scale
+        scales[i + 6] = 0; // min
     }
 
     let weights = vec![BlockQ4K {
         d: f16::from_f32(1.0).to_bits(),
         dmin: f16::from_f32(0.0).to_bits(),
         scales,
-        qs: [15u8; 128],  // 每个4-bit值=15
+        qs: [15u8; 128], // 每个4-bit值=15
     }];
 
     let input = vec![1.0f32; k * n];
@@ -36,7 +36,8 @@ fn main() {
     let result_hw = ctx.gemm_q4_k_f32(m, n, k, &weights, &input).unwrap();
     println!("Hand-written: {:?}", result_hw);
 
-    let result_tp = ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input).unwrap();
+    let result_tp =
+        ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input).unwrap();
     println!("Templated: {:?}", result_tp);
 
     // 预期：d=1, scale=1, q=15, min=0
@@ -52,24 +53,27 @@ fn main() {
     let k = 256;
     let n = 2;
 
-    let weights: Vec<BlockQ4K> = (0..m).map(|i| {
-        let mut scales = [0u8; 12];
-        for j in 0..6 {
-            scales[j] = ((i+1) * 2) as u8;  // scale varies by row
-            scales[j+6] = 0;
-        }
-        BlockQ4K {
-            d: f16::from_f32(1.0).to_bits(),
-            dmin: f16::from_f32(0.0).to_bits(),
-            scales,
-            qs: [((i+1) * 10) as u8; 128],
-        }
-    }).collect();
+    let weights: Vec<BlockQ4K> = (0..m)
+        .map(|i| {
+            let mut scales = [0u8; 12];
+            for j in 0..6 {
+                scales[j] = ((i + 1) * 2) as u8; // scale varies by row
+                scales[j + 6] = 0;
+            }
+            BlockQ4K {
+                d: f16::from_f32(1.0).to_bits(),
+                dmin: f16::from_f32(0.0).to_bits(),
+                scales,
+                qs: [((i + 1) * 10) as u8; 128],
+            }
+        })
+        .collect();
 
     let input: Vec<f32> = (0..(k * n)).map(|i| (i % 10) as f32 * 0.1).collect();
 
     let result_hw = ctx.gemm_q4_k_f32(m, n, k, &weights, &input).unwrap();
-    let result_tp = ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input).unwrap();
+    let result_tp =
+        ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input).unwrap();
 
     println!("Hand-written:");
     for i in 0..m {

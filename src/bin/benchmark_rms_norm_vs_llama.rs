@@ -47,14 +47,18 @@ fn main() {
     // Test different batch sizes
     let batch_sizes = [1, 4, 16, 64, 256];
 
-    println!("{:<10} {:<15} {:<15} {:<10}", "Batch", "NEON (us)", "Scalar (us)", "Speedup");
+    println!(
+        "{:<10} {:<15} {:<15} {:<10}",
+        "Batch", "NEON (us)", "Scalar (us)", "Speedup"
+    );
     println!("{}", "-".repeat(50));
 
     for batch in batch_sizes {
         let x: Vec<f32> = (0..batch * hidden_dim)
             .map(|i| (i % 100) as f32 * 0.01 - 0.5)
             .collect();
-        let w: Vec<f32> = (0..hidden_dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
+        let w: Vec<f32> =
+            (0..hidden_dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
 
         // Warmup and benchmark NEON
         let mut dst_neon = vec![0.0f32; batch * hidden_dim];
@@ -83,7 +87,8 @@ fn main() {
         for _ in 0..iterations {
             rms_norm_scalar_llama_cpp(&x, &w, &mut dst_scalar, hidden_dim, eps);
         }
-        let scalar_time = start.elapsed().as_micros() as f64 / iterations as f64;
+        let scalar_time =
+            start.elapsed().as_micros() as f64 / iterations as f64;
 
         let speedup = scalar_time / neon_time;
 
@@ -103,8 +108,14 @@ fn main() {
             }
         }
         if max_diff > 1e-6 {
-            println!("  WARNING: max_diff = {:.9} at idx {}", max_diff, max_idx);
-            println!("  dst_neon[{}] = {:.9}, dst_scalar[{}] = {:.9}", max_idx, dst_neon[max_idx], max_idx, dst_scalar[max_idx]);
+            println!(
+                "  WARNING: max_diff = {:.9} at idx {}",
+                max_diff, max_idx
+            );
+            println!(
+                "  dst_neon[{}] = {:.9}, dst_scalar[{}] = {:.9}",
+                max_idx, dst_neon[max_idx], max_idx, dst_scalar[max_idx]
+            );
         }
     }
 
@@ -112,12 +123,17 @@ fn main() {
     println!("\n=== Hidden Dimension Scaling ===\n");
     let dims = [512, 1024, 2048, 4096, 8192];
 
-    println!("{:<10} {:<15} {:<15} {:<10}", "Dim", "NEON (us)", "Scalar (us)", "Speedup");
+    println!(
+        "{:<10} {:<15} {:<15} {:<10}",
+        "Dim", "NEON (us)", "Scalar (us)", "Speedup"
+    );
     println!("{}", "-".repeat(50));
 
     for dim in dims {
-        let x: Vec<f32> = (0..dim).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
-        let w: Vec<f32> = (0..dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
+        let x: Vec<f32> =
+            (0..dim).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
+        let w: Vec<f32> =
+            (0..dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
         let mut dst_neon = vec![0.0f32; dim];
         let mut dst_scalar = vec![0.0f32; dim];
 
@@ -145,7 +161,8 @@ fn main() {
         for _ in 0..iterations {
             rms_norm_scalar_llama_cpp(&x, &w, &mut dst_scalar, dim, eps);
         }
-        let scalar_time = start.elapsed().as_micros() as f64 / iterations as f64;
+        let scalar_time =
+            start.elapsed().as_micros() as f64 / iterations as f64;
 
         let speedup = scalar_time / neon_time;
 

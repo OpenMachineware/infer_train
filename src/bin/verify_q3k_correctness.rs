@@ -1,9 +1,9 @@
 // Verify Q3_K GEMM kernel correctness
 // Run: cargo run --release --bin verify_q3k_correctness
 
+use half::f16;
 use infer_train::quant::types::BlockQ3K;
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use half::f16;
 
 fn generate_q3_k_weights(m: usize, k: usize) -> Vec<BlockQ3K> {
     let nb = k / 256;
@@ -32,7 +32,11 @@ fn generate_q3_k_weights(m: usize, k: usize) -> Vec<BlockQ3K> {
     weights
 }
 
-fn reference_q3_k_vec_dot(k: usize, weights: &[BlockQ3K], input: &[f32]) -> f32 {
+fn reference_q3_k_vec_dot(
+    k: usize,
+    weights: &[BlockQ3K],
+    input: &[f32],
+) -> f32 {
     let nb = k / 256;
     let mut total_sum = 0.0f32;
 
@@ -111,9 +115,11 @@ fn main() {
     let k = 256;
 
     let weights = generate_q3_k_weights(m, k);
-    let input: Vec<f32> = (0..(k * n)).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
+    let input: Vec<f32> =
+        (0..(k * n)).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
 
-    let gpu_result = ctx.gemm_q3_k_f32(m, n, k, &weights, &input).expect("GPU failed");
+    let gpu_result =
+        ctx.gemm_q3_k_f32(m, n, k, &weights, &input).expect("GPU failed");
 
     // Reference calculation
     let mut ref_result = vec![0.0f32; m * n];
@@ -137,9 +143,11 @@ fn main() {
     let k2 = 1024;
 
     let weights2 = generate_q3_k_weights(m2, k2);
-    let input2: Vec<f32> = (0..(k2 * n2)).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
+    let input2: Vec<f32> =
+        (0..(k2 * n2)).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
 
-    let gpu_result2 = ctx.gemm_q3_k_f32(m2, n2, k2, &weights2, &input2).expect("GPU failed");
+    let gpu_result2 =
+        ctx.gemm_q3_k_f32(m2, n2, k2, &weights2, &input2).expect("GPU failed");
 
     println!("GPU result[0..4]: {:?}", &gpu_result2[0..4]);
 
@@ -150,10 +158,12 @@ fn main() {
     let k3 = 4096;
 
     let weights3 = generate_q3_k_weights(m3, k3);
-    let input3: Vec<f32> = (0..(k3 * n3)).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
+    let input3: Vec<f32> =
+        (0..(k3 * n3)).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
 
     let start = std::time::Instant::now();
-    let gpu_result3 = ctx.gemm_q3_k_f32(m3, n3, k3, &weights3, &input3).expect("GPU failed");
+    let gpu_result3 =
+        ctx.gemm_q3_k_f32(m3, n3, k3, &weights3, &input3).expect("GPU failed");
     let elapsed = start.elapsed().as_micros() as f64;
 
     let ops = 2.0 * m3 as f64 * n3 as f64 * k3 as f64;

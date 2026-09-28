@@ -1,7 +1,7 @@
 // Test the fixed templated GEMM kernel
+use half::f16;
 use infer_train::quant::types::BlockQ4K;
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use half::f16;
 
 fn generate_q4_k_weights(m: usize, k: usize) -> Vec<BlockQ4K> {
     let nb = k / 256;
@@ -44,8 +44,10 @@ fn main() {
         Ok(result) => {
             println!("✓ Kernel executed successfully");
             println!("  Result size: {} values", result.len());
-            println!("  Sample values: {:.4}, {:.4}, {:.4}, {:.4}",
-                     result[0], result[100], result[1000], result[5000]);
+            println!(
+                "  Sample values: {:.4}, {:.4}, {:.4}, {:.4}",
+                result[0], result[100], result[1000], result[5000]
+            );
 
             // Check for NaN or infinity
             let has_nan = result.iter().any(|&x| x.is_nan());
@@ -74,7 +76,8 @@ fn main() {
     let n = 128;
 
     let weights = generate_q4_k_weights(m, k);
-    let input: Vec<f32> = (0..(k * n)).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
+    let input: Vec<f32> =
+        (0..(k * n)).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
 
     println!("Testing larger matrix (M={}, K={}, N={})", m, k, n);
 
@@ -84,10 +87,13 @@ fn main() {
             println!("  Result size: {} values", result.len());
 
             let start = std::time::Instant::now();
-            let _ = ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input).unwrap();
+            let _ =
+                ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input).unwrap();
             let elapsed = start.elapsed();
 
-            let gflops = (2.0 * m as f64 * k as f64 * n as f64) / elapsed.as_secs_f64() / 1e9;
+            let gflops = (2.0 * m as f64 * k as f64 * n as f64)
+                / elapsed.as_secs_f64()
+                / 1e9;
             println!("  Time: {:?}", elapsed);
             println!("  GFLOPS: {:.2}", gflops);
 

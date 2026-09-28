@@ -1,7 +1,9 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{
+    BenchmarkId, Criterion, black_box, criterion_group, criterion_main,
+};
+use half::f16;
 use infer_train::quant::types::BlockQ4_0;
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use half::f16;
 
 // Data generation - MUST match test_llama_metal_mv.cpp exactly
 fn generate_q4_0_weights(m: usize, k: usize) -> Vec<BlockQ4_0> {
@@ -36,9 +38,15 @@ fn bench_mv_q4_0_gpu(c: &mut Criterion) {
         let weights = generate_q4_0_weights(m, k);
         let input = generate_f32_input(k);
 
-        group.bench_with_input(BenchmarkId::new("rust_metal", format!("{}x{}", m, k)), &m, |b, _| {
-            b.iter(|| black_box(ctx.mv_q4_0_f32(m, k, &weights, &input).unwrap()));
-        });
+        group.bench_with_input(
+            BenchmarkId::new("rust_metal", format!("{}x{}", m, k)),
+            &m,
+            |b, _| {
+                b.iter(|| {
+                    black_box(ctx.mv_q4_0_f32(m, k, &weights, &input).unwrap())
+                });
+            },
+        );
     }
 
     group.finish();

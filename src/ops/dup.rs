@@ -11,16 +11,24 @@ pub trait FloatType: Copy + Clone {
 
 impl FloatType for f32 {
     #[inline(always)]
-    fn to_f32(self) -> f32 { self }
+    fn to_f32(self) -> f32 {
+        self
+    }
     #[inline(always)]
-    fn from_f32(v: f32) -> Self { v }
+    fn from_f32(v: f32) -> Self {
+        v
+    }
 }
 
 impl FloatType for f16 {
     #[inline(always)]
-    fn to_f32(self) -> f32 { self.to_f32() }
+    fn to_f32(self) -> f32 {
+        self.to_f32()
+    }
     #[inline(always)]
-    fn from_f32(v: f32) -> Self { f16::from_f32(v) }
+    fn from_f32(v: f32) -> Self {
+        f16::from_f32(v)
+    }
 }
 
 /// Copy same type (memcpy)
@@ -160,7 +168,8 @@ mod tests {
 
     #[test]
     fn test_dup_f16_f32() {
-        let src: Vec<f16> = (0..16).map(|i| f16::from_f32(i as f32 * 0.1)).collect();
+        let src: Vec<f16> =
+            (0..16).map(|i| f16::from_f32(i as f32 * 0.1)).collect();
         let mut dst = vec![0.0f32; 16];
 
         dup_f16_to_f32(&src, &mut dst);

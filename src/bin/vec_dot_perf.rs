@@ -1,7 +1,7 @@
 // Test vec_dot performance directly
-use infer_train::quant::vec_dot::arm::*;
-use infer_train::quant::types::*;
 use half::f16;
+use infer_train::quant::types::*;
+use infer_train::quant::vec_dot::arm::*;
 use std::time::Instant;
 
 fn generate_q8_k_input(k: usize) -> Vec<BlockQ8K> {
@@ -16,11 +16,7 @@ fn generate_q8_k_input(k: usize) -> Vec<BlockQ8K> {
             for j in 0..16 {
                 bsums[j] = ((i * 23 + j * 7) % 256) as i16;
             }
-            BlockQ8K {
-                d: 0.01 + (i % 10) as f32 * 0.001,
-                qs,
-                bsums,
-            }
+            BlockQ8K { d: 0.01 + (i % 10) as f32 * 0.001, qs, bsums }
         })
         .collect()
 }
@@ -55,7 +51,12 @@ fn main() {
         let weights = generate_q4_k_weights(1, k);
 
         // Check slice sizes
-        println!("x: {} blocks, weights: {} blocks, expected nb: {}", x.len(), weights.len(), nb);
+        println!(
+            "x: {} blocks, weights: {} blocks, expected nb: {}",
+            x.len(),
+            weights.len(),
+            nb
+        );
 
         // Test vec_dot directly
         let start = Instant::now();

@@ -25,7 +25,8 @@ fn bench_metal_q4_k_scaling() {
             }
             x_blocks.push(BlockQ4K {
                 d: half::f16::from_f32(0.5 + (i % 10) as f32 * 0.1).to_bits(),
-                dmin: half::f16::from_f32(0.1 + (i % 5) as f32 * 0.05).to_bits(),
+                dmin: half::f16::from_f32(0.1 + (i % 5) as f32 * 0.05)
+                    .to_bits(),
                 scales,
                 qs,
             });
@@ -43,7 +44,8 @@ fn bench_metal_q4_k_scaling() {
         let start = std::time::Instant::now();
 
         for _ in 0..n_iter {
-            let _ = ctx.mv_q4_k_f32(m, k, &x_blocks, &input).expect("GPU failed");
+            let _ =
+                ctx.mv_q4_k_f32(m, k, &x_blocks, &input).expect("GPU failed");
         }
 
         let elapsed = start.elapsed();
@@ -82,7 +84,8 @@ fn bench_metal_q5_k_scaling() {
             }
             x_blocks.push(BlockQ5K {
                 d: half::f16::from_f32(0.5 + (i % 10) as f32 * 0.1).to_bits(),
-                dmin: half::f16::from_f32(0.1 + (i % 5) as f32 * 0.05).to_bits(),
+                dmin: half::f16::from_f32(0.1 + (i % 5) as f32 * 0.05)
+                    .to_bits(),
                 scales,
                 qh,
                 qs,
@@ -101,7 +104,8 @@ fn bench_metal_q5_k_scaling() {
         let start = std::time::Instant::now();
 
         for _ in 0..n_iter {
-            let _ = ctx.mv_q5_k_f32(m, k, &x_blocks, &input).expect("GPU failed");
+            let _ =
+                ctx.mv_q5_k_f32(m, k, &x_blocks, &input).expect("GPU failed");
         }
 
         let elapsed = start.elapsed();

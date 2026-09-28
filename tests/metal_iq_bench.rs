@@ -6,7 +6,7 @@ fn bench_metal_iq4_nl_scaling() {
     let ctx = MetalContext::new().expect("Failed to create Metal context");
 
     let k = 4096;
-    let nb = k / 32;  // QK4_NL = 32
+    let nb = k / 32; // QK4_NL = 32
 
     for &m in &[64, 128, 256, 512, 1024, 2048, 4096, 8192] {
         let mut x_blocks = Vec::with_capacity(m * nb);
@@ -33,7 +33,8 @@ fn bench_metal_iq4_nl_scaling() {
         let start = std::time::Instant::now();
 
         for _ in 0..n_iter {
-            let _ = ctx.mv_iq4_nl_f32(m, k, &x_blocks, &input).expect("GPU failed");
+            let _ =
+                ctx.mv_iq4_nl_f32(m, k, &x_blocks, &input).expect("GPU failed");
         }
 
         let elapsed = start.elapsed();

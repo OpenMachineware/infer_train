@@ -1,7 +1,7 @@
 // Fair comparison: Our IQ/TQ GPU kernels vs llama.cpp
 // Run: cargo run --release --bin compare_iq_tq_gpu
 
-use metal::{Device, MTLSize, CompileOptions};
+use metal::{CompileOptions, Device, MTLSize};
 use std::process::Command;
 
 fn main() {
@@ -45,13 +45,16 @@ fn main() {
     println!("├─────────┼──────────┼──────────┼─────────┤");
 
     for (name, our_gflops) in &our_results {
-        let llama_gflops = llama_cpp_baselines.iter()
+        let llama_gflops = llama_cpp_baselines
+            .iter()
             .find(|(n, _)| n == name)
             .map(|(_, g)| *g)
             .unwrap_or(0.0);
 
-        println!("│ {:7} │ {:8.2} │ {:8.2} │ GPU vs CPU│",
-            name, our_gflops, llama_gflops);
+        println!(
+            "│ {:7} │ {:8.2} │ {:8.2} │ GPU vs CPU│",
+            name, our_gflops, llama_gflops
+        );
     }
 
     println!("└─────────┴──────────┴──────────┴─────────┘");
@@ -71,12 +74,23 @@ fn warmup_gpu(device: &Device, queue: &metal::CommandQueue) {
     let nb = (k + 255) / 256;
     let ws = m * nb * 144;
 
-    let weights = device.new_buffer(ws as u64, metal::MTLResourceOptions::StorageModeShared);
-    let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
-    let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
+    let weights = device
+        .new_buffer(ws as u64, metal::MTLResourceOptions::StorageModeShared);
+    let input = device.new_buffer(
+        (k * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let output = device.new_buffer(
+        (m * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
 
     #[repr(C)]
-    struct Args { ne00: u32, ne01: u32, nb01: u64 }
+    struct Args {
+        ne00: u32,
+        ne01: u32,
+        nb01: u64,
+    }
     let args = Args { ne00: k as u32, ne01: m as u32, nb01: (nb * 144) as u64 };
     let args_buf = device.new_buffer_with_data(
         &args as *const Args as *const std::ffi::c_void,
@@ -102,7 +116,10 @@ fn warmup_gpu(device: &Device, queue: &metal::CommandQueue) {
     }
 }
 
-fn benchmark_our_implementation(device: &Device, queue: &metal::CommandQueue) -> Vec<(&'static str, f64)> {
+fn benchmark_our_implementation(
+    device: &Device,
+    queue: &metal::CommandQueue,
+) -> Vec<(&'static str, f64)> {
     let formats = [
         ("IQ4_NL", 32, "kernel_mul_mv_iq4_nl_f32", 16),
         ("IQ4_XS", 64, "kernel_mul_mv_iq4_xs_f32", 68),
@@ -120,7 +137,15 @@ fn benchmark_our_implementation(device: &Device, queue: &metal::CommandQueue) ->
     let mut results = Vec::new();
 
     for (name, block_size, kernel_name, bytes_per_block) in formats.iter() {
-        let gflops = match benchmark_format(device, queue, 4096, 4096, *block_size, *bytes_per_block, kernel_name) {
+        let gflops = match benchmark_format(
+            device,
+            queue,
+            4096,
+            4096,
+            *block_size,
+            *bytes_per_block,
+            kernel_name,
+        ) {
             Ok(g) => g,
             Err(_) => continue,
         };
@@ -142,7 +167,8 @@ fn benchmark_format(
 ) -> Result<f64, String> {
     let shader = include_str!("../../shaders/mv_iq_tq.metal");
     let iq_grid_tables = include_str!("../../shaders/iq_grid_tables.h");
-    let combined = shader.replace("#include \"iq_grid_tables.h\"", iq_grid_tables);
+    let combined =
+        shader.replace("#include \"iq_grid_tables.h\"", iq_grid_tables);
 
     let opts = CompileOptions::new();
     opts.set_fast_math_enabled(true);
@@ -153,13 +179,30 @@ fn benchmark_format(
     let num_blocks = k / block_size;
     let weights_size = m * num_blocks * bytes_per_block;
 
-    let weights = device.new_buffer(weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
-    let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
-    let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
+    let weights = device.new_buffer(
+        weights_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let input = device.new_buffer(
+        (k * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let output = device.new_buffer(
+        (m * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
 
     #[repr(C)]
-    struct Args { ne00: u32, ne01: u32, nb01: u64 }
-    let args = Args { ne00: k as u32, ne01: m as u32, nb01: (num_blocks * bytes_per_block) as u64 };
+    struct Args {
+        ne00: u32,
+        ne01: u32,
+        nb01: u64,
+    }
+    let args = Args {
+        ne00: k as u32,
+        ne01: m as u32,
+        nb01: (num_blocks * bytes_per_block) as u64,
+    };
     let args_buf = device.new_buffer_with_data(
         &args as *const Args as *const std::ffi::c_void,
         std::mem::size_of::<Args>() as u64,

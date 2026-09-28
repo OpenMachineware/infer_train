@@ -1,7 +1,11 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use infer_train::quant::types::{BlockQ2K, BlockQ3K, BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8_0};
-use infer_train::quant::vec_dot::gpu::metal::MetalContext;
+use criterion::{
+    BenchmarkId, Criterion, black_box, criterion_group, criterion_main,
+};
 use half::f16;
+use infer_train::quant::types::{
+    BlockQ2K, BlockQ3K, BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8_0,
+};
+use infer_train::quant::vec_dot::gpu::metal::MetalContext;
 use std::time::Instant;
 
 fn generate_q2_k_weights(m: usize, k: usize) -> Vec<BlockQ2K> {
@@ -163,8 +167,10 @@ fn bench_gemm_all_formats(c: &mut Criterion) {
     let mut group = c.benchmark_group("gemm_comparison");
 
     let k_sizes: Vec<usize> = vec![256, 512, 1024, 2048, 4096, 8192, 16384];
-    let m_sizes: Vec<usize> = vec![1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
-    let n_sizes: Vec<usize> = vec![1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
+    let m_sizes: Vec<usize> =
+        vec![1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
+    let n_sizes: Vec<usize> =
+        vec![1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
 
     // Test MV (M=1, various K sizes)
     println!("\n=== MV Performance (Decode Path) ===");
@@ -173,7 +179,8 @@ fn bench_gemm_all_formats(c: &mut Criterion) {
         let input = generate_f32_input(*k);
 
         let start = Instant::now();
-        let result = ctx.mv_q4_k_f32(1, *k, &weights, &input).expect("GPU failed");
+        let result =
+            ctx.mv_q4_k_f32(1, *k, &weights, &input).expect("GPU failed");
         let elapsed = start.elapsed().as_micros() as f64;
 
         let gflops = calculate_gflops(1, 1, *k, elapsed);
@@ -183,7 +190,9 @@ fn bench_gemm_all_formats(c: &mut Criterion) {
             BenchmarkId::new("mv_q4_k", format!("K={}", k)),
             &k,
             |b, _| {
-                b.iter(|| black_box(ctx.mv_q4_k_f32(1, *k, &weights, &input).unwrap()));
+                b.iter(|| {
+                    black_box(ctx.mv_q4_k_f32(1, *k, &weights, &input).unwrap())
+                });
             },
         );
     }
@@ -197,17 +206,27 @@ fn bench_gemm_all_formats(c: &mut Criterion) {
                 let input = generate_f32_input(*k * *n);
 
                 let start = Instant::now();
-                let result = ctx.gemm_q4_k_f32(*m, *n, *k, &weights, &input).expect("GPU failed");
+                let result = ctx
+                    .gemm_q4_k_f32(*m, *n, *k, &weights, &input)
+                    .expect("GPU failed");
                 let elapsed = start.elapsed().as_micros() as f64;
 
                 let gflops = calculate_gflops(*m, *n, *k, elapsed);
-                println!("Q4_K GEMM M={} N={} K={}: {:.2} µs ({:.2} GFLOPS)", m, n, k, elapsed, gflops);
+                println!(
+                    "Q4_K GEMM M={} N={} K={}: {:.2} µs ({:.2} GFLOPS)",
+                    m, n, k, elapsed, gflops
+                );
 
                 group.bench_with_input(
                     BenchmarkId::new("gemm_q4_k", format!("{}x{}x{}", m, n, k)),
                     &(m, n, k),
                     |b, _| {
-                        b.iter(|| black_box(ctx.gemm_q4_k_f32(*m, *n, *k, &weights, &input).unwrap()));
+                        b.iter(|| {
+                            black_box(
+                                ctx.gemm_q4_k_f32(*m, *n, *k, &weights, &input)
+                                    .unwrap(),
+                            )
+                        });
                     },
                 );
             }
@@ -234,35 +253,45 @@ fn bench_gemm_all_formats(c: &mut Criterion) {
                 let weights = generate_q2_k_weights(m, k);
                 let input = generate_f32_input(k * n);
                 let start = Instant::now();
-                let _ = ctx.gemm_q2_k_f32(m, n, k, &weights, &input).expect("GPU failed");
+                let _ = ctx
+                    .gemm_q2_k_f32(m, n, k, &weights, &input)
+                    .expect("GPU failed");
                 start.elapsed().as_micros() as f64
             }
             "Q3_K" => {
                 let weights = generate_q3_k_weights(m, k);
                 let input = generate_f32_input(k * n);
                 let start = Instant::now();
-                let _ = ctx.gemm_q3_k_f32(m, n, k, &weights, &input).expect("GPU failed");
+                let _ = ctx
+                    .gemm_q3_k_f32(m, n, k, &weights, &input)
+                    .expect("GPU failed");
                 start.elapsed().as_micros() as f64
             }
             "Q4_K" => {
                 let weights = generate_q4_k_weights(m, k);
                 let input = generate_f32_input(k * n);
                 let start = Instant::now();
-                let _ = ctx.gemm_q4_k_f32(m, n, k, &weights, &input).expect("GPU failed");
+                let _ = ctx
+                    .gemm_q4_k_f32(m, n, k, &weights, &input)
+                    .expect("GPU failed");
                 start.elapsed().as_micros() as f64
             }
             "Q5_K" => {
                 let weights = generate_q5_k_weights(m, k);
                 let input = generate_f32_input(k * n);
                 let start = Instant::now();
-                let _ = ctx.gemm_q5_k_f32(m, n, k, &weights, &input).expect("GPU failed");
+                let _ = ctx
+                    .gemm_q5_k_f32(m, n, k, &weights, &input)
+                    .expect("GPU failed");
                 start.elapsed().as_micros() as f64
             }
             "Q6_K" => {
                 let weights = generate_q6_k_weights(m, k);
                 let input = generate_f32_input(k * n);
                 let start = Instant::now();
-                let _ = ctx.gemm_q6_k_f32(m, n, k, &weights, &input).expect("GPU failed");
+                let _ = ctx
+                    .gemm_q6_k_f32(m, n, k, &weights, &input)
+                    .expect("GPU failed");
                 start.elapsed().as_micros() as f64
             }
             _ => 0.0,
@@ -282,11 +311,15 @@ fn bench_gemm_all_formats(c: &mut Criterion) {
         let input = generate_f32_input(*k * n);
 
         let start = Instant::now();
-        let _ = ctx.gemm_q4_k_f32(m, n, *k, &weights, &input).expect("GPU failed");
+        let _ =
+            ctx.gemm_q4_k_f32(m, n, *k, &weights, &input).expect("GPU failed");
         let elapsed = start.elapsed().as_micros() as f64;
 
         let gflops = calculate_gflops(m, n, *k, elapsed);
-        println!("Q4_K GEMM M={} N={} K={}: {:.2} µs ({:.2} GFLOPS)", m, n, k, elapsed, gflops);
+        println!(
+            "Q4_K GEMM M={} N={} K={}: {:.2} µs ({:.2} GFLOPS)",
+            m, n, k, elapsed, gflops
+        );
     }
 
     group.finish();
@@ -309,7 +342,8 @@ fn bench_mv_all_formats(c: &mut Criterion) {
             let weights = generate_q4_k_weights(*m, k);
             let input = generate_f32_input(k);
             let start = Instant::now();
-            let _ = ctx.mv_q4_k_f32(*m, k, &weights, &input).expect("GPU failed");
+            let _ =
+                ctx.mv_q4_k_f32(*m, k, &weights, &input).expect("GPU failed");
             let elapsed = start.elapsed().as_micros() as f64;
             let gflops = calculate_gflops(*m, 1, k, elapsed);
             println!("Q4_K: {:.2} µs ({:.2} GFLOPS)", elapsed, gflops);
@@ -320,7 +354,8 @@ fn bench_mv_all_formats(c: &mut Criterion) {
             let weights = generate_q2_k_weights(*m, k);
             let input = generate_f32_input(k);
             let start = Instant::now();
-            let _ = ctx.mv_q2_k_f32(*m, k, &weights, &input).expect("GPU failed");
+            let _ =
+                ctx.mv_q2_k_f32(*m, k, &weights, &input).expect("GPU failed");
             let elapsed = start.elapsed().as_micros() as f64;
             let gflops = calculate_gflops(*m, 1, k, elapsed);
             println!("Q2_K: {:.2} µs ({:.2} GFLOPS)", elapsed, gflops);
@@ -331,7 +366,8 @@ fn bench_mv_all_formats(c: &mut Criterion) {
             let weights = generate_q3_k_weights(*m, k);
             let input = generate_f32_input(k);
             let start = Instant::now();
-            let _ = ctx.mv_q3_k_f32(*m, k, &weights, &input).expect("GPU failed");
+            let _ =
+                ctx.mv_q3_k_f32(*m, k, &weights, &input).expect("GPU failed");
             let elapsed = start.elapsed().as_micros() as f64;
             let gflops = calculate_gflops(*m, 1, k, elapsed);
             println!("Q3_K: {:.2} µs ({:.2} GFLOPS)", elapsed, gflops);
@@ -342,7 +378,8 @@ fn bench_mv_all_formats(c: &mut Criterion) {
             let weights = generate_q5_k_weights(*m, k);
             let input = generate_f32_input(k);
             let start = Instant::now();
-            let _ = ctx.mv_q5_k_f32(*m, k, &weights, &input).expect("GPU failed");
+            let _ =
+                ctx.mv_q5_k_f32(*m, k, &weights, &input).expect("GPU failed");
             let elapsed = start.elapsed().as_micros() as f64;
             let gflops = calculate_gflops(*m, 1, k, elapsed);
             println!("Q5_K: {:.2} µs ({:.2} GFLOPS)", elapsed, gflops);
@@ -353,7 +390,8 @@ fn bench_mv_all_formats(c: &mut Criterion) {
             let weights = generate_q6_k_weights(*m, k);
             let input = generate_f32_input(k);
             let start = Instant::now();
-            let _ = ctx.mv_q6_k_f32(*m, k, &weights, &input).expect("GPU failed");
+            let _ =
+                ctx.mv_q6_k_f32(*m, k, &weights, &input).expect("GPU failed");
             let elapsed = start.elapsed().as_micros() as f64;
             let gflops = calculate_gflops(*m, 1, k, elapsed);
             println!("Q6_K: {:.2} µs ({:.2} GFLOPS)", elapsed, gflops);

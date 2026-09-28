@@ -1,8 +1,8 @@
 // Benchmark RMSNorm: Metal vs CPU NEON vs llama.cpp scalar
 // Run: cargo run --release --bin benchmark_rms_norm_metal
 
-use infer_train::ops::rms_norm::rms_norm_f32;
 use infer_train::ops::gpu::metal::RmsNormMetalContext;
+use infer_train::ops::rms_norm::rms_norm_f32;
 use std::time::Instant;
 
 /// llama.cpp scalar RMSNorm (from ggml-cpu/ops.cpp)
@@ -51,15 +51,18 @@ fn main() {
     // Test different batch sizes
     let batch_sizes = [1, 4, 16, 64, 256];
 
-    println!("{:<10} {:<15} {:<15} {:<15} {:<10} {:<10} {:<10}",
-             "Batch", "Metal (us)", "NEON (us)", "Scalar (us)", "M/N", "M/S", "N/S");
+    println!(
+        "{:<10} {:<15} {:<15} {:<15} {:<10} {:<10} {:<10}",
+        "Batch", "Metal (us)", "NEON (us)", "Scalar (us)", "M/N", "M/S", "N/S"
+    );
     println!("{}", "-".repeat(95));
 
     for batch in batch_sizes {
         let x: Vec<f32> = (0..batch * hidden_dim)
             .map(|i| (i % 100) as f32 * 0.01 - 0.5)
             .collect();
-        let w: Vec<f32> = (0..hidden_dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
+        let w: Vec<f32> =
+            (0..hidden_dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
 
         let mut dst_neon = vec![0.0f32; batch * hidden_dim];
         let mut dst_scalar = vec![0.0f32; batch * hidden_dim];
@@ -96,7 +99,8 @@ fn main() {
         for _ in 0..iterations {
             rms_norm_scalar_llama_cpp(&x, &w, &mut dst_scalar, hidden_dim, eps);
         }
-        let scalar_time = start.elapsed().as_micros() as f64 / iterations as f64;
+        let scalar_time =
+            start.elapsed().as_micros() as f64 / iterations as f64;
 
         let metal_neon = neon_time / metal_time;
         let metal_scalar = scalar_time / metal_time;
@@ -104,7 +108,13 @@ fn main() {
 
         println!(
             "{:<10} {:<15.2} {:<15.2} {:<15.2} {:<10.2}x {:<10.2}x {:<10.2}x",
-            batch, metal_time, neon_time, scalar_time, metal_neon, metal_scalar, neon_scalar
+            batch,
+            metal_time,
+            neon_time,
+            scalar_time,
+            metal_neon,
+            metal_scalar,
+            neon_scalar
         );
 
         // Verify correctness
@@ -123,13 +133,17 @@ fn main() {
     println!("\n=== Hidden Dimension Scaling ===\n");
     let dims = [512, 1024, 2048, 4096, 8192];
 
-    println!("{:<10} {:<15} {:<15} {:<15} {:<10} {:<10}",
-             "Dim", "Metal (us)", "NEON (us)", "Scalar (us)", "M/N", "M/S");
+    println!(
+        "{:<10} {:<15} {:<15} {:<15} {:<10} {:<10}",
+        "Dim", "Metal (us)", "NEON (us)", "Scalar (us)", "M/N", "M/S"
+    );
     println!("{}", "-".repeat(75));
 
     for dim in dims {
-        let x: Vec<f32> = (0..dim).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
-        let w: Vec<f32> = (0..dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
+        let x: Vec<f32> =
+            (0..dim).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
+        let w: Vec<f32> =
+            (0..dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
         let mut dst_neon = vec![0.0f32; dim];
         let mut dst_scalar = vec![0.0f32; dim];
 
@@ -165,7 +179,8 @@ fn main() {
         for _ in 0..iterations {
             rms_norm_scalar_llama_cpp(&x, &w, &mut dst_scalar, dim, eps);
         }
-        let scalar_time = start.elapsed().as_micros() as f64 / iterations as f64;
+        let scalar_time =
+            start.elapsed().as_micros() as f64 / iterations as f64;
 
         let metal_neon = neon_time / metal_time;
         let metal_scalar = scalar_time / metal_time;

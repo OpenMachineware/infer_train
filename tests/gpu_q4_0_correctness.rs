@@ -1,8 +1,8 @@
 #[cfg(target_arch = "aarch64")]
 mod tests {
+    use half::f16;
     use infer_train::quant::types::BlockQ4_0;
     use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-    use half::f16;
 
     fn generate_q4_0_weights(m: usize, k: usize) -> Vec<BlockQ4_0> {
         let nb = k / 32;
@@ -35,7 +35,8 @@ mod tests {
         let weights = generate_q4_0_weights(m, k);
         let input = generate_f32_input(k);
 
-        let gpu_result = ctx.mv_q4_0_f32(m, k, &weights, &input).expect("GPU kernel failed");
+        let gpu_result =
+            ctx.mv_q4_0_f32(m, k, &weights, &input).expect("GPU kernel failed");
 
         println!("Q4_0 GPU result for M={}, K={}", m, k);
         for i in 0..m {
@@ -44,7 +45,12 @@ mod tests {
 
         // Check all rows have values
         for i in 0..m {
-            assert!(gpu_result[i].is_finite(), "GPU result[{}] is not finite: {}", i, gpu_result[i]);
+            assert!(
+                gpu_result[i].is_finite(),
+                "GPU result[{}] is not finite: {}",
+                i,
+                gpu_result[i]
+            );
             assert!(gpu_result[i] != 0.0, "GPU result[{}] is zero", i);
         }
     }

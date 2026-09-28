@@ -1,7 +1,7 @@
 // Test TQ2_0 Metal MV kernel
-use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use infer_train::quant::types::BlockTQ2_0;
 use half::f16;
+use infer_train::quant::types::BlockTQ2_0;
+use infer_train::quant::vec_dot::gpu::metal::MetalContext;
 
 fn generate_tq2_0_weights(m: usize, k: usize) -> Vec<BlockTQ2_0> {
     let nb = k / 256;
@@ -48,5 +48,8 @@ fn main() {
     let avg_us = elapsed.as_micros() as f64 / n_iter as f64;
 
     println!("TQ2_0 Metal MV {}x{}: {:.2} µs/iter", m, k, avg_us);
-    println!("GFLOPS: {:.2}", (2.0 * m as f64 * k as f64) / (avg_us * 1e-6) / 1e9);
+    println!(
+        "GFLOPS: {:.2}",
+        (2.0 * m as f64 * k as f64) / (avg_us * 1e-6) / 1e9
+    );
 }

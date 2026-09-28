@@ -1,8 +1,11 @@
 // Benchmark all K-quant formats against llama.cpp
 // Run: cargo run --release --bin benchmark_all_formats
 
-use metal::{Device, MTLSize, CompileOptions, FunctionDescriptor, FunctionConstantValues, MTLDataType};
 use half::f16;
+use metal::{
+    CompileOptions, Device, FunctionConstantValues, FunctionDescriptor,
+    MTLDataType, MTLSize,
+};
 
 fn main() {
     println!("=== All K-Quant Formats GPU Performance ===\n");
@@ -19,7 +22,8 @@ fn main() {
     // Compile shader
     let shader_source = include_str!("../../shaders/mul_mm_standalone.metal");
     let compile_options = CompileOptions::new();
-    let library = device.new_library_with_source(shader_source, &compile_options)
+    let library = device
+        .new_library_with_source(shader_source, &compile_options)
         .expect("Failed to compile shader");
 
     // Create function constants
@@ -29,17 +33,35 @@ fn main() {
 
     unsafe {
         constant_values.set_constant_value_at_index(
-            &false_val as *const _ as *const std::ffi::c_void, MTLDataType::Bool, 0);
+            &false_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Bool,
+            0,
+        );
         constant_values.set_constant_value_at_index(
-            &false_val as *const _ as *const std::ffi::c_void, MTLDataType::Bool, 1);
+            &false_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Bool,
+            1,
+        );
         constant_values.set_constant_value_at_index(
-            &one_val as *const _ as *const std::ffi::c_void, MTLDataType::Short, 2);
+            &one_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Short,
+            2,
+        );
         constant_values.set_constant_value_at_index(
-            &one_val as *const _ as *const std::ffi::c_void, MTLDataType::Short, 3);
+            &one_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Short,
+            3,
+        );
         constant_values.set_constant_value_at_index(
-            &one_val as *const _ as *const std::ffi::c_void, MTLDataType::Short, 4);
+            &one_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Short,
+            4,
+        );
         constant_values.set_constant_value_at_index(
-            &one_val as *const _ as *const std::ffi::c_void, MTLDataType::Short, 5);
+            &one_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Short,
+            5,
+        );
     }
 
     // Test all formats
@@ -68,21 +90,35 @@ fn main() {
             }
         };
 
-        let pipeline = device.new_compute_pipeline_state_with_function(&function)
+        let pipeline = device
+            .new_compute_pipeline_state_with_function(&function)
             .expect("Failed to create pipeline");
 
         // Create test buffers (using Q4_K format for all, simplified)
         let weights_buffer = create_weights_buffer(&device, m, k, name);
         let input_buffer = create_input_buffer(&device, k, n);
         let output_buffer = device.new_buffer(
-            (m * n * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
+            (m * n * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
 
         // Args
         #[repr(C)]
         struct GemmArgs {
-            ne00: i32, ne02: i32, nb01: u64, nb02: u64, nb03: u64,
-            ne12: i32, nb10: u64, nb11: u64, nb12: u64, nb13: u64,
-            ne0: i32, ne1: i32, r2: i16, r3: i16,
+            ne00: i32,
+            ne02: i32,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            r2: i16,
+            r3: i16,
         }
 
         let block_size = match *name {
@@ -95,9 +131,20 @@ fn main() {
         };
 
         let args = GemmArgs {
-            ne00: k as i32, ne02: 1, nb01: (k/256 * block_size) as u64, nb02: 0, nb03: 0,
-            ne12: 1, nb10: 2, nb11: (k * 2) as u64, nb12: 0, nb13: 0,
-            ne0: m as i32, ne1: n as i32, r2: 1, r3: 1,
+            ne00: k as i32,
+            ne02: 1,
+            nb01: (k / 256 * block_size) as u64,
+            nb02: 0,
+            nb03: 0,
+            ne12: 1,
+            nb10: 2,
+            nb11: (k * 2) as u64,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: n as i32,
+            r2: 1,
+            r3: 1,
         };
         let args_buffer = device.new_buffer_with_data(
             &args as *const GemmArgs as *const std::ffi::c_void,
@@ -107,14 +154,28 @@ fn main() {
 
         // Extended warmup (10 iterations for GPU frequency stability)
         for _ in 0..10 {
-            run_gemm(&queue, &pipeline, &args_buffer, &weights_buffer, &input_buffer, &output_buffer);
+            run_gemm(
+                &queue,
+                &pipeline,
+                &args_buffer,
+                &weights_buffer,
+                &input_buffer,
+                &output_buffer,
+            );
         }
 
         // Benchmark
         let n_iter = 15;
         let start = std::time::Instant::now();
         for _ in 0..n_iter {
-            run_gemm(&queue, &pipeline, &args_buffer, &weights_buffer, &input_buffer, &output_buffer);
+            run_gemm(
+                &queue,
+                &pipeline,
+                &args_buffer,
+                &weights_buffer,
+                &input_buffer,
+                &output_buffer,
+            );
         }
         let time = start.elapsed().as_micros() as f64 / n_iter as f64;
 
@@ -123,7 +184,10 @@ fn main() {
 
         // Check coverage
         let output = unsafe {
-            std::slice::from_raw_parts(output_buffer.contents() as *const f32, m * n)
+            std::slice::from_raw_parts(
+                output_buffer.contents() as *const f32,
+                m * n,
+            )
         };
         let coverage = output.iter().filter(|&&x| x != 0.0).count();
 
@@ -139,14 +203,24 @@ fn main() {
 
         let ratio = gflops / llama_gflops * 100.0;
 
-        println!("│ {:6} │ {:8.2} │ {:7.1}%  │ {:7.1}%  │",
-            name, gflops, ratio, coverage as f64 / (m*n) as f64 * 100.0);
+        println!(
+            "│ {:6} │ {:8.2} │ {:7.1}%  │ {:7.1}%  │",
+            name,
+            gflops,
+            ratio,
+            coverage as f64 / (m * n) as f64 * 100.0
+        );
     }
 
     println!("└────────┴──────────┴───────────┴───────────┘");
 }
 
-fn create_weights_buffer(device: &Device, m: usize, k: usize, format: &str) -> metal::Buffer {
+fn create_weights_buffer(
+    device: &Device,
+    m: usize,
+    k: usize,
+    format: &str,
+) -> metal::Buffer {
     let n_blocks = m * k / 256;
     let block_size = match format {
         "Q2_K" => 144,
@@ -156,7 +230,9 @@ fn create_weights_buffer(device: &Device, m: usize, k: usize, format: &str) -> m
         "Q6_K" => 210,
         _ => 144,
     };
-    let data: Vec<u8> = (0..n_blocks * block_size).map(|i| ((i * 17 + 13) % 256) as u8).collect();
+    let data: Vec<u8> = (0..n_blocks * block_size)
+        .map(|i| ((i * 17 + 13) % 256) as u8)
+        .collect();
     device.new_buffer_with_data(
         data.as_ptr() as *const std::ffi::c_void,
         (data.len()) as u64,

@@ -1,9 +1,11 @@
 // Verify GPU kernels against llama.cpp baselines
 // Run: cargo run --release --bin verify_gpu_kernels
 
-use infer_train::quant::types::{BlockQ2K, BlockQ3K, BlockQ4K, BlockQ5K, BlockQ6K};
-use infer_train::quant::vec_dot::gpu::metal::MetalContext;
 use half::f16;
+use infer_train::quant::types::{
+    BlockQ2K, BlockQ3K, BlockQ4K, BlockQ5K, BlockQ6K,
+};
+use infer_train::quant::vec_dot::gpu::metal::MetalContext;
 use std::time::{Duration, Instant};
 
 fn generate_q2_k_weights(m: usize, k: usize) -> Vec<BlockQ2K> {
@@ -155,9 +157,15 @@ where
 fn main() {
     let ctx = MetalContext::new().expect("Failed to create Metal context");
 
-    println!("\n╔══════════════════════════════════════════════════════════════╗");
-    println!("║         GPU Kernel Verification vs llama.cpp Baseline        ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    println!(
+        "\n╔══════════════════════════════════════════════════════════════╗"
+    );
+    println!(
+        "║         GPU Kernel Verification vs llama.cpp Baseline        ║"
+    );
+    println!(
+        "╚══════════════════════════════════════════════════════════════╝\n"
+    );
 
     // MV Performance (Decode Path) - K=4096
     println!("┌─────────────────────────────────────────────────────────────┐");
@@ -170,12 +178,8 @@ fn main() {
     let m_sizes = [256, 1024, 2048, 8192];
 
     // llama.cpp baseline from memory/rust-metal-mv-progress.md
-    let llama_mv_q4k: [(usize, f64); 4] = [
-        (256, 358.0),
-        (1024, 368.0),
-        (2048, 411.0),
-        (8192, 638.0),
-    ];
+    let llama_mv_q4k: [(usize, f64); 4] =
+        [(256, 358.0), (1024, 368.0), (2048, 411.0), (8192, 638.0)];
 
     for (idx, m) in m_sizes.iter().enumerate() {
         let weights = generate_q4_k_weights(*m, k);
@@ -186,9 +190,12 @@ fn main() {
 
         // Benchmark
         let iterations = 20;
-        let total_time = benchmark_iterations(|| {
-            let _ = ctx.mv_q4_k_f32(*m, k, &weights, &input).unwrap();
-        }, iterations);
+        let total_time = benchmark_iterations(
+            || {
+                let _ = ctx.mv_q4_k_f32(*m, k, &weights, &input).unwrap();
+            },
+            iterations,
+        );
         let our_time = total_time.as_micros() as f64 / iterations as f64;
 
         let llama_time = llama_mv_q4k[idx].1;
@@ -196,10 +203,14 @@ fn main() {
         let gflops = calculate_gflops(*m, 1, k, our_time);
         let status = if ratio >= 1.0 { "✓ PASS" } else { "✗ FAIL" };
 
-        println!("│ {:5} │ {:8.2} │ {:8.2} │ {:8.2}x │ {:8.2} │ {} │",
-                 m, our_time, llama_time, ratio, gflops, status);
+        println!(
+            "│ {:5} │ {:8.2} │ {:8.2} │ {:8.2}x │ {:8.2} │ {} │",
+            m, our_time, llama_time, ratio, gflops, status
+        );
     }
-    println!("└───────┴──────────┴──────────┴──────────┴──────────┴─────────┘\n");
+    println!(
+        "└───────┴──────────┴──────────┴──────────┴──────────┴─────────┘\n"
+    );
 
     // GEMM Performance (Batch Inference) - M=4096, K=4096
     println!("┌─────────────────────────────────────────────────────────────┐");
@@ -220,24 +231,33 @@ fn main() {
 
         // Benchmark
         let iterations = 10;
-        let total_time = benchmark_iterations(|| {
-            let _ = ctx.gemm_q4_k_f32(m, *n, k, &weights, &input).unwrap();
-        }, iterations);
+        let total_time = benchmark_iterations(
+            || {
+                let _ = ctx.gemm_q4_k_f32(m, *n, k, &weights, &input).unwrap();
+            },
+            iterations,
+        );
         let our_time = total_time.as_micros() as f64 / iterations as f64;
 
         // Estimate llama.cpp time (based on ~200-260 GFLOPS for large N)
         let llama_gflops = 220.0; // Average from memory
         let llama_ops = 2.0 * m as f64 * *n as f64 * k as f64;
-        let llama_time = llama_ops / llama_gflops / 1_000_000_000.0 * 1_000_000.0;
+        let llama_time =
+            llama_ops / llama_gflops / 1_000_000_000.0 * 1_000_000.0;
 
         let gflops = calculate_gflops(m, *n, k, our_time);
         let ratio = llama_time / our_time;
-        let status = if gflops >= llama_gflops * 0.95 { "✓ PASS" } else { "✗ FAIL" };
+        let status =
+            if gflops >= llama_gflops * 0.95 { "✓ PASS" } else { "✗ FAIL" };
 
-        println!("│ {:5} │ {:8.2} │ {:8.2} │ {:8.2}x │ {:8.2} │ {} │",
-                 n, our_time, llama_time, ratio, gflops, status);
+        println!(
+            "│ {:5} │ {:8.2} │ {:8.2} │ {:8.2}x │ {:8.2} │ {} │",
+            n, our_time, llama_time, ratio, gflops, status
+        );
     }
-    println!("└───────┴──────────┴──────────┴──────────┴──────────┴─────────┘\n");
+    println!(
+        "└───────┴──────────┴──────────┴──────────┴──────────┴─────────┘\n"
+    );
 
     // All K-Quant Formats
     println!("┌─────────────────────────────────────────────────────────────┐");
@@ -265,45 +285,70 @@ fn main() {
             "Q2_K" => {
                 let weights = generate_q2_k_weights(m, k);
                 let _ = ctx.gemm_q2_k_f32(m, n, k, &weights, &input).unwrap();
-                let total = benchmark_iterations(|| {
-                    let _ = ctx.gemm_q2_k_f32(m, n, k, &weights, &input).unwrap();
-                }, 10);
+                let total = benchmark_iterations(
+                    || {
+                        let _ = ctx
+                            .gemm_q2_k_f32(m, n, k, &weights, &input)
+                            .unwrap();
+                    },
+                    10,
+                );
                 let t = total.as_micros() as f64 / 10.0;
                 (t, calculate_gflops(m, n, k, t))
             }
             "Q3_K" => {
                 let weights = generate_q3_k_weights(m, k);
                 let _ = ctx.gemm_q3_k_f32(m, n, k, &weights, &input).unwrap();
-                let total = benchmark_iterations(|| {
-                    let _ = ctx.gemm_q3_k_f32(m, n, k, &weights, &input).unwrap();
-                }, 10);
+                let total = benchmark_iterations(
+                    || {
+                        let _ = ctx
+                            .gemm_q3_k_f32(m, n, k, &weights, &input)
+                            .unwrap();
+                    },
+                    10,
+                );
                 let t = total.as_micros() as f64 / 10.0;
                 (t, calculate_gflops(m, n, k, t))
             }
             "Q4_K" => {
                 let weights = generate_q4_k_weights(m, k);
                 let _ = ctx.gemm_q4_k_f32(m, n, k, &weights, &input).unwrap();
-                let total = benchmark_iterations(|| {
-                    let _ = ctx.gemm_q4_k_f32(m, n, k, &weights, &input).unwrap();
-                }, 10);
+                let total = benchmark_iterations(
+                    || {
+                        let _ = ctx
+                            .gemm_q4_k_f32(m, n, k, &weights, &input)
+                            .unwrap();
+                    },
+                    10,
+                );
                 let t = total.as_micros() as f64 / 10.0;
                 (t, calculate_gflops(m, n, k, t))
             }
             "Q5_K" => {
                 let weights = generate_q5_k_weights(m, k);
                 let _ = ctx.gemm_q5_k_f32(m, n, k, &weights, &input).unwrap();
-                let total = benchmark_iterations(|| {
-                    let _ = ctx.gemm_q5_k_f32(m, n, k, &weights, &input).unwrap();
-                }, 10);
+                let total = benchmark_iterations(
+                    || {
+                        let _ = ctx
+                            .gemm_q5_k_f32(m, n, k, &weights, &input)
+                            .unwrap();
+                    },
+                    10,
+                );
                 let t = total.as_micros() as f64 / 10.0;
                 (t, calculate_gflops(m, n, k, t))
             }
             "Q6_K" => {
                 let weights = generate_q6_k_weights(m, k);
                 let _ = ctx.gemm_q6_k_f32(m, n, k, &weights, &input).unwrap();
-                let total = benchmark_iterations(|| {
-                    let _ = ctx.gemm_q6_k_f32(m, n, k, &weights, &input).unwrap();
-                }, 10);
+                let total = benchmark_iterations(
+                    || {
+                        let _ = ctx
+                            .gemm_q6_k_f32(m, n, k, &weights, &input)
+                            .unwrap();
+                    },
+                    10,
+                );
                 let t = total.as_micros() as f64 / 10.0;
                 (t, calculate_gflops(m, n, k, t))
             }
@@ -313,10 +358,14 @@ fn main() {
         let ratio = gflops / llama_gflops_baseline;
         let status = if ratio >= 0.95 { "✓ PASS" } else { "✗ FAIL" };
 
-        println!("│ {:6} │ {:8.2} │ {:8.2} │ {:8.2} │ {:8.2}x │ {} │",
-                 format_name, our_time, gflops, llama_gflops_baseline, ratio, status);
+        println!(
+            "│ {:6} │ {:8.2} │ {:8.2} │ {:8.2} │ {:8.2}x │ {} │",
+            format_name, our_time, gflops, llama_gflops_baseline, ratio, status
+        );
     }
-    println!("└────────┴──────────┴──────────┴──────────┴──────────┴────────┘\n");
+    println!(
+        "└────────┴──────────┴──────────┴──────────┴──────────┴────────┘\n"
+    );
 
     // Small K Performance
     println!("┌─────────────────────────────────────────────────────────────┐");
@@ -333,11 +382,18 @@ fn main() {
         let weights = generate_q4_k_weights(m_small, *k_small);
         let input = generate_f32_input(*k_small * n_small);
 
-        let _ = ctx.gemm_q4_k_f32(m_small, n_small, *k_small, &weights, &input).unwrap();
+        let _ = ctx
+            .gemm_q4_k_f32(m_small, n_small, *k_small, &weights, &input)
+            .unwrap();
 
-        let total = benchmark_iterations(|| {
-            let _ = ctx.gemm_q4_k_f32(m_small, n_small, *k_small, &weights, &input).unwrap();
-        }, 20);
+        let total = benchmark_iterations(
+            || {
+                let _ = ctx
+                    .gemm_q4_k_f32(m_small, n_small, *k_small, &weights, &input)
+                    .unwrap();
+            },
+            20,
+        );
         let our_time = total.as_micros() as f64 / 20.0;
         let gflops = calculate_gflops(m_small, n_small, *k_small, our_time);
 
@@ -346,10 +402,14 @@ fn main() {
         let ratio = gflops / expected_gflops;
         let status = if ratio >= 0.5 { "✓ PASS" } else { "✗ FAIL" };
 
-        println!("│ {:6} │ {:8.2} │ {:8.2} │ {:8.2} │ {:8.2}x │ {} │",
-                 k_small, our_time, gflops, expected_gflops, ratio, status);
+        println!(
+            "│ {:6} │ {:8.2} │ {:8.2} │ {:8.2} │ {:8.2}x │ {} │",
+            k_small, our_time, gflops, expected_gflops, ratio, status
+        );
     }
-    println!("└────────┴──────────┴──────────┴──────────┴──────────┴────────┘\n");
+    println!(
+        "└────────┴──────────┴──────────┴──────────┴──────────┴────────┘\n"
+    );
 
     println!("Verification complete.\n");
 }

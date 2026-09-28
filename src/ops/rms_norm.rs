@@ -64,7 +64,7 @@ pub unsafe fn rms_norm_f32(
 /// RMSNorm with FP16 input and FP32 output
 #[target_feature(enable = "neon")]
 pub unsafe fn rms_norm_fp16_to_f32(
-    x: &[u16],  // FP16 bits
+    x: &[u16], // FP16 bits
     w: &[f32],
     dst: &mut [f32],
     hidden_dim: usize,
@@ -145,8 +145,10 @@ mod tests {
         let eps = 1e-5;
 
         // Create test data
-        let x: Vec<f32> = (0..n_rows * hidden_dim).map(|i| i as f32 * 0.1).collect();
-        let w: Vec<f32> = (0..hidden_dim).map(|i| 1.0 + i as f32 * 0.01).collect();
+        let x: Vec<f32> =
+            (0..n_rows * hidden_dim).map(|i| i as f32 * 0.1).collect();
+        let w: Vec<f32> =
+            (0..hidden_dim).map(|i| 1.0 + i as f32 * 0.01).collect();
         let mut dst = vec![0.0f32; n_rows * hidden_dim];
 
         unsafe {

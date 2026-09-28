@@ -1,15 +1,15 @@
 use std::arch::aarch64::*;
 
 // Constants for exp approximation (from llama.cpp)
-const EXP_R: f32 = 12582912.0;  // 0x1.8p23f
-const EXP_C1: f32 = 1.442695;   // 0x1.715476p+0f
-const EXP_C2: f32 = 0.4434359;  // 0x1.62e4p-1f - 0x1.7f7d1cp-20f
+const EXP_R: f32 = 12582912.0; // 0x1.8p23f
+const EXP_C1: f32 = 1.442695; // 0x1.715476p+0f
+const EXP_C2: f32 = 0.4434359; // 0x1.62e4p-1f - 0x1.7f7d1cp-20f
 const EXP_C3: f32 = 1.0;
-const EXP_POLY_0: f32 = 0.9999998;  // 0x1.ffffecp-1f
-const EXP_POLY_1: f32 = 0.4999905;  // 0x1.fffdb6p-2f
-const EXP_POLY_2: f32 = 0.1666656;  // 0x1.555e66p-3f
-const EXP_POLY_3: f32 = 0.0418799;  // 0x1.573e2ep-5f
-const EXP_POLY_4: f32 = 0.0083356;  // 0x1.0e4020p-7f
+const EXP_POLY_0: f32 = 0.9999998; // 0x1.ffffecp-1f
+const EXP_POLY_1: f32 = 0.4999905; // 0x1.fffdb6p-2f
+const EXP_POLY_2: f32 = 0.1666656; // 0x1.555e66p-3f
+const EXP_POLY_3: f32 = 0.0418799; // 0x1.573e2ep-5f
+const EXP_POLY_4: f32 = 0.0083356; // 0x1.0e4020p-7f
 
 /// Vectorized exp function for NEON
 /// Adapted from ARM optimized routine
@@ -134,10 +134,20 @@ mod tests {
 
         // Verify values are finite and in reasonable range
         for i in 0..x.len() {
-            assert!(dst[i].is_finite(), "silu({}) = {} is not finite", x[i], dst[i]);
+            assert!(
+                dst[i].is_finite(),
+                "silu({}) = {} is not finite",
+                x[i],
+                dst[i]
+            );
             // SILU should be close to 0 near 0
             if x[i].abs() < 0.1 {
-                assert!(dst[i].abs() < 0.1, "silu({}) = {} too large near 0", x[i], dst[i]);
+                assert!(
+                    dst[i].abs() < 0.1,
+                    "silu({}) = {} too large near 0",
+                    x[i],
+                    dst[i]
+                );
             }
         }
     }

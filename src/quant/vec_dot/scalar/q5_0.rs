@@ -7,7 +7,8 @@ pub fn vec_dot_q5_0_q8_0(n: usize, x: &[BlockQ5_0], y: &[BlockQ8_0]) -> f32 {
     let mut sum = 0.0f32;
 
     for i in 0..nb {
-        let d = f16::from_bits(x[i].d).to_f32() * f16::from_bits(y[i].d).to_f32();
+        let d =
+            f16::from_bits(x[i].d).to_f32() * f16::from_bits(y[i].d).to_f32();
 
         // Unpack 5-bit values
         let mut isum = 0i32;
@@ -17,7 +18,8 @@ pub fn vec_dot_q5_0_q8_0(n: usize, x: &[BlockQ5_0], y: &[BlockQ8_0]) -> f32 {
             let qh_bit = (x[i].qh[qh_idx as usize] >> (j % 8)) & 1;
 
             // Combine: 5-bit = high_bit << 4 | low_4bits
-            let v0 = (((x[i].qs[j] & 0x0F) as i32) | ((qh_bit as i32) << 4)) - 16;
+            let v0 =
+                (((x[i].qs[j] & 0x0F) as i32) | ((qh_bit as i32) << 4)) - 16;
             let v1 = (((x[i].qs[j] >> 4) as i32) | ((qh_bit as i32) << 4)) - 16;
 
             isum += v0 * y[i].qs[j * 2] as i32;

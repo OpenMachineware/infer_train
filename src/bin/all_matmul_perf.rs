@@ -2,10 +2,10 @@
 // llama.cpp vec_dot baseline from previous tests:
 // Q4_K: 82 GFLOPS, Q2_K: 67 GFLOPS, Q3_K: 50 GFLOPS, Q5_K: 70 GFLOPS
 // Q6_K: 85 GFLOPS
+use half::f16;
 use infer_train::quant::matmul::*;
 use infer_train::quant::types::*;
 use infer_train::quant::vec_dot::arm::*;
-use half::f16;
 use std::time::Instant;
 
 fn generate_q8_k_input(k: usize) -> Vec<BlockQ8K> {
@@ -20,11 +20,7 @@ fn generate_q8_k_input(k: usize) -> Vec<BlockQ8K> {
             for j in 0..16 {
                 bsums[j] = ((i * 23 + j * 7) % 256) as i16;
             }
-            BlockQ8K {
-                d: 0.01 + (i % 10) as f32 * 0.001,
-                qs,
-                bsums,
-            }
+            BlockQ8K { d: 0.01 + (i % 10) as f32 * 0.001, qs, bsums }
         })
         .collect()
 }
@@ -207,13 +203,13 @@ fn generate_q5_0_weights(m: usize, k: usize) -> Vec<BlockQ5_0> {
 
 // Baseline GFLOPS from llama.cpp vec_dot benchmarks
 const LLAMACPP_BASELINE: &[(f64, f64)] = &[
-    (82.0, 82.0),   // Q4_K
-    (67.0, 67.0),   // Q2_K
-    (50.0, 50.0),   // Q3_K
-    (70.0, 70.0),   // Q5_K
-    (85.0, 85.0),   // Q6_K
-    (0.0, 0.0),     // Q4_0 (placeholder)
-    (0.0, 0.0),     // Q5_0 (placeholder)
+    (82.0, 82.0), // Q4_K
+    (67.0, 67.0), // Q2_K
+    (50.0, 50.0), // Q3_K
+    (70.0, 70.0), // Q5_K
+    (85.0, 85.0), // Q6_K
+    (0.0, 0.0),   // Q4_0 (placeholder)
+    (0.0, 0.0),   // Q5_0 (placeholder)
 ];
 
 fn main() {
@@ -221,11 +217,21 @@ fn main() {
         let k = 4096;
         let m_large = 4096;
 
-        println!("┌────────────────────────────────────────────────────────────────┐");
-        println!("│       Rust Matmul Performance vs llama.cpp (K=4096)           │");
-        println!("├────────────────────────────────────────────────────────────────┤");
-        println!("│  Format  │ M=1 GFLOPS │ M=4096 GFLOPS │ vs baseline │ Status  │");
-        println!("├────────────────────────────────────────────────────────────────┤");
+        println!(
+            "┌────────────────────────────────────────────────────────────────┐"
+        );
+        println!(
+            "│       Rust Matmul Performance vs llama.cpp (K=4096)           │"
+        );
+        println!(
+            "├────────────────────────────────────────────────────────────────┤"
+        );
+        println!(
+            "│  Format  │ M=1 GFLOPS │ M=4096 GFLOPS │ vs baseline │ Status  │"
+        );
+        println!(
+            "├────────────────────────────────────────────────────────────────┤"
+        );
 
         // Test Q4_K (optimized)
         {
@@ -238,7 +244,9 @@ fn main() {
             for _ in 0..10000 {
                 matmul_q4_k_q8_k(&weights_m1, &x, &mut dst, k, 1);
             }
-            let m1_gflops = 2.0 * 1.0 * (k as f64) * 10000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let m1_gflops = 2.0 * 1.0 * (k as f64) * 10000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
 
             // M=4096 test
             let weights_m4096 = generate_q4_k_weights(m_large, k);
@@ -246,14 +254,26 @@ fn main() {
 
             let start = Instant::now();
             for _ in 0..100 {
-                matmul_q4_k_q8_k(&weights_m4096, &x, &mut dst_m4096, k, m_large);
+                matmul_q4_k_q8_k(
+                    &weights_m4096,
+                    &x,
+                    &mut dst_m4096,
+                    k,
+                    m_large,
+                );
             }
             let m4096_gflops = 2.0 * (m_large as f64) * (k as f64) * 100.0
                 / start.elapsed().as_secs_f64()
                 / 1e9;
 
             let ratio = (m1_gflops + m4096_gflops) / 2.0 / 82.0;
-            let status = if ratio >= 1.0 { "✓" } else if ratio >= 0.9 { "≈" } else { "✗" };
+            let status = if ratio >= 1.0 {
+                "✓"
+            } else if ratio >= 0.9 {
+                "≈"
+            } else {
+                "✗"
+            };
             println!(
                 "│  Q4_K    │ {:10.1} │ {:13.1} │    {:5.0}%    │   {}     │",
                 m1_gflops,
@@ -274,7 +294,9 @@ fn main() {
             for _ in 0..10000 {
                 matmul_q2_k_q8_k(&weights_m1, &x, &mut dst, k, 1);
             }
-            let m1_gflops = 2.0 * 1.0 * (k as f64) * 10000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let m1_gflops = 2.0 * 1.0 * (k as f64) * 10000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
 
             // M=4096 test
             let weights_m4096 = generate_q2_k_weights(m_large, k);
@@ -282,14 +304,26 @@ fn main() {
 
             let start = Instant::now();
             for _ in 0..100 {
-                matmul_q2_k_q8_k(&weights_m4096, &x, &mut dst_m4096, k, m_large);
+                matmul_q2_k_q8_k(
+                    &weights_m4096,
+                    &x,
+                    &mut dst_m4096,
+                    k,
+                    m_large,
+                );
             }
             let m4096_gflops = 2.0 * (m_large as f64) * (k as f64) * 100.0
                 / start.elapsed().as_secs_f64()
                 / 1e9;
 
             let ratio = (m1_gflops + m4096_gflops) / 2.0 / 67.0;
-            let status = if ratio >= 1.0 { "✓" } else if ratio >= 0.9 { "≈" } else { "✗" };
+            let status = if ratio >= 1.0 {
+                "✓"
+            } else if ratio >= 0.9 {
+                "≈"
+            } else {
+                "✗"
+            };
             println!(
                 "│  Q2_K    │ {:10.1} │ {:13.1} │    {:5.0}%    │   {}     │",
                 m1_gflops,
@@ -310,7 +344,9 @@ fn main() {
             for _ in 0..10000 {
                 matmul_q3_k_q8_k(&weights_m1, &x, &mut dst, k, 1);
             }
-            let m1_gflops = 2.0 * 1.0 * (k as f64) * 10000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let m1_gflops = 2.0 * 1.0 * (k as f64) * 10000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
 
             // M=4096 test
             let weights_m4096 = generate_q3_k_weights(m_large, k);
@@ -318,14 +354,26 @@ fn main() {
 
             let start = Instant::now();
             for _ in 0..100 {
-                matmul_q3_k_q8_k(&weights_m4096, &x, &mut dst_m4096, k, m_large);
+                matmul_q3_k_q8_k(
+                    &weights_m4096,
+                    &x,
+                    &mut dst_m4096,
+                    k,
+                    m_large,
+                );
             }
             let m4096_gflops = 2.0 * (m_large as f64) * (k as f64) * 100.0
                 / start.elapsed().as_secs_f64()
                 / 1e9;
 
             let ratio = (m1_gflops + m4096_gflops) / 2.0 / 50.0;
-            let status = if ratio >= 1.0 { "✓" } else if ratio >= 0.9 { "≈" } else { "✗" };
+            let status = if ratio >= 1.0 {
+                "✓"
+            } else if ratio >= 0.9 {
+                "≈"
+            } else {
+                "✗"
+            };
             println!(
                 "│  Q3_K    │ {:10.1} │ {:13.1} │    {:5.0}%    │   {}     │",
                 m1_gflops,
@@ -346,7 +394,9 @@ fn main() {
             for _ in 0..10000 {
                 matmul_q5_k_q8_k(&weights_m1, &x, &mut dst, k, 1);
             }
-            let m1_gflops = 2.0 * 1.0 * (k as f64) * 10000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let m1_gflops = 2.0 * 1.0 * (k as f64) * 10000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
 
             // M=4096 test
             let weights_m4096 = generate_q5_k_weights(m_large, k);
@@ -354,14 +404,26 @@ fn main() {
 
             let start = Instant::now();
             for _ in 0..100 {
-                matmul_q5_k_q8_k(&weights_m4096, &x, &mut dst_m4096, k, m_large);
+                matmul_q5_k_q8_k(
+                    &weights_m4096,
+                    &x,
+                    &mut dst_m4096,
+                    k,
+                    m_large,
+                );
             }
             let m4096_gflops = 2.0 * (m_large as f64) * (k as f64) * 100.0
                 / start.elapsed().as_secs_f64()
                 / 1e9;
 
             let ratio = (m1_gflops + m4096_gflops) / 2.0 / 70.0;
-            let status = if ratio >= 1.0 { "✓" } else if ratio >= 0.9 { "≈" } else { "✗" };
+            let status = if ratio >= 1.0 {
+                "✓"
+            } else if ratio >= 0.9 {
+                "≈"
+            } else {
+                "✗"
+            };
             println!(
                 "│  Q5_K    │ {:10.1} │ {:13.1} │    {:5.0}%    │   {}     │",
                 m1_gflops,
@@ -382,7 +444,9 @@ fn main() {
             for _ in 0..10000 {
                 matmul_q6_k_q8_k(&weights_m1, &x, &mut dst, k, 1);
             }
-            let m1_gflops = 2.0 * 1.0 * (k as f64) * 10000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let m1_gflops = 2.0 * 1.0 * (k as f64) * 10000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
 
             // M=4096 test
             let weights_m4096 = generate_q6_k_weights(m_large, k);
@@ -390,14 +454,26 @@ fn main() {
 
             let start = Instant::now();
             for _ in 0..100 {
-                matmul_q6_k_q8_k(&weights_m4096, &x, &mut dst_m4096, k, m_large);
+                matmul_q6_k_q8_k(
+                    &weights_m4096,
+                    &x,
+                    &mut dst_m4096,
+                    k,
+                    m_large,
+                );
             }
             let m4096_gflops = 2.0 * (m_large as f64) * (k as f64) * 100.0
                 / start.elapsed().as_secs_f64()
                 / 1e9;
 
             let ratio = (m1_gflops + m4096_gflops) / 2.0 / 85.0;
-            let status = if ratio >= 1.0 { "✓" } else if ratio >= 0.9 { "≈" } else { "✗" };
+            let status = if ratio >= 1.0 {
+                "✓"
+            } else if ratio >= 0.9 {
+                "≈"
+            } else {
+                "✗"
+            };
             println!(
                 "│  Q6_K    │ {:10.1} │ {:13.1} │    {:5.0}%    │   {}     │",
                 m1_gflops,
@@ -418,7 +494,9 @@ fn main() {
             for _ in 0..10000 {
                 matmul_q4_0_q8_0(&weights_m1, &x, &mut dst, k, 1);
             }
-            let m1_gflops = 2.0 * 1.0 * (k as f64) * 10000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let m1_gflops = 2.0 * 1.0 * (k as f64) * 10000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
 
             // M=4096 test
             let weights_m4096 = generate_q4_0_weights(m_large, k);
@@ -426,7 +504,13 @@ fn main() {
 
             let start = Instant::now();
             for _ in 0..100 {
-                matmul_q4_0_q8_0(&weights_m4096, &x, &mut dst_m4096, k, m_large);
+                matmul_q4_0_q8_0(
+                    &weights_m4096,
+                    &x,
+                    &mut dst_m4096,
+                    k,
+                    m_large,
+                );
             }
             let m4096_gflops = 2.0 * (m_large as f64) * (k as f64) * 100.0
                 / start.elapsed().as_secs_f64()
@@ -449,7 +533,9 @@ fn main() {
             for _ in 0..10000 {
                 matmul_q5_0_q8_0(&weights_m1, &x, &mut dst, k, 1);
             }
-            let m1_gflops = 2.0 * 1.0 * (k as f64) * 10000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let m1_gflops = 2.0 * 1.0 * (k as f64) * 10000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
 
             // M=4096 test
             let weights_m4096 = generate_q5_0_weights(m_large, k);
@@ -457,7 +543,13 @@ fn main() {
 
             let start = Instant::now();
             for _ in 0..100 {
-                matmul_q5_0_q8_0(&weights_m4096, &x, &mut dst_m4096, k, m_large);
+                matmul_q5_0_q8_0(
+                    &weights_m4096,
+                    &x,
+                    &mut dst_m4096,
+                    k,
+                    m_large,
+                );
             }
             let m4096_gflops = 2.0 * (m_large as f64) * (k as f64) * 100.0
                 / start.elapsed().as_secs_f64()
@@ -469,7 +561,9 @@ fn main() {
             );
         }
 
-        println!("└────────────────────────────────────────────────────────────────┘");
+        println!(
+            "└────────────────────────────────────────────────────────────────┘"
+        );
         println!("\n说明:");
         println!("  - M=1 GFLOPS: decode性能（单行matmul）");
         println!("  - M=4096 GFLOPS: batch性能（4096行matmul）");

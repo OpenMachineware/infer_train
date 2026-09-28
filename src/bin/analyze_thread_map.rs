@@ -1,12 +1,15 @@
 // 分析线程到输出位置的映射
 fn main() {
-    let nl0 = 2;  // NK/16 = 32/16
-    let nl1 = 4;  // NK/8 = 32/8
+    let nl0 = 2; // NK/16 = 32/16
+    let nl1 = 4; // NK/8 = 32/8
     let nr0 = 64; // 期望的行数
     let nr1 = 32; // 期望的列数
 
     println!("Thread mapping (tiitg -> (lr0, lr1, il0)):");
-    println!("tiitg | lr0 = tiitg/{} | lr1 = tiitg/{} | il0 = tiitg%{}", nl0, nl1, nl0);
+    println!(
+        "tiitg | lr0 = tiitg/{} | lr1 = tiitg/{} | il0 = tiitg%{}",
+        nl0, nl1, nl0
+    );
     println!("------|----------------|----------------|-------------");
 
     for tiitg in [0, 1, 2, 3, 4, 5, 6, 7, 8, 16, 32, 64, 127].iter() {
@@ -17,8 +20,8 @@ fn main() {
     }
 
     println!("\n问题分析:");
-    println!("  - lr0范围: 0..{} (需要{}行)", 127/nl0, nr0);
-    println!("  - lr1范围: 0..{} (需要{}列)", 127/nl1, nr1);
+    println!("  - lr0范围: 0..{} (需要{}行)", 127 / nl0, nr0);
+    println!("  - lr1范围: 0..{} (需要{}列)", 127 / nl1, nr1);
 
     println!("\n关键问题:");
     println!("  lr0和lr1同时从tiitg计算，覆盖的是对角线！");

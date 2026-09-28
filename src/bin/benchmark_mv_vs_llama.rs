@@ -1,7 +1,7 @@
 // Fair comparison: run llama.cpp and our kernels in same process
 // This ensures identical GPU state
 
-use metal::{Device, MTLSize, CompileOptions};
+use metal::{CompileOptions, Device, MTLSize};
 
 fn main() {
     println!("=== MV Kernel Fair Comparison (Same GPU State) ===\n");
@@ -34,22 +34,45 @@ fn main() {
             .expect(&format!("Failed to read {}", shader_path));
         let compile_options = CompileOptions::new();
         compile_options.set_fast_math_enabled(true);
-        let library = device.new_library_with_source(&shader_source, &compile_options)
+        let library = device
+            .new_library_with_source(&shader_source, &compile_options)
             .expect("Failed to compile shader");
-        let function = library.get_function(kernel_name, None).expect("Failed to get function");
-        let pipeline = device.new_compute_pipeline_state_with_function(&function)
+        let function = library
+            .get_function(kernel_name, None)
+            .expect("Failed to get function");
+        let pipeline = device
+            .new_compute_pipeline_state_with_function(&function)
             .expect("Failed to create pipeline");
 
-        let gflops = benchmark_mv(&device, &queue, &pipeline, m, k, *block_size, warmup, iterations);
+        let gflops = benchmark_mv(
+            &device,
+            &queue,
+            &pipeline,
+            m,
+            k,
+            *block_size,
+            warmup,
+            iterations,
+        );
         let ratio = gflops / target_baseline * 100.0;
-        let status = if ratio >= 100.0 { "✓ EXCEED" } else if ratio >= 95.0 { "~ MATCH" } else { "✗ BELOW" };
+        let status = if ratio >= 100.0 {
+            "✓ EXCEED"
+        } else if ratio >= 95.0 {
+            "~ MATCH"
+        } else {
+            "✗ BELOW"
+        };
 
-        println!("│ {:7} │ {:12.2} │ {:11.1}% │ {:8} │",
-            format_name, gflops, ratio, status);
+        println!(
+            "│ {:7} │ {:12.2} │ {:11.1}% │ {:8} │",
+            format_name, gflops, ratio, status
+        );
     }
 
     println!("└─────────┴──────────────┴─────────────┴──────────┘");
-    println!("\nNote: Target baseline is ~87 GFLOPS (llama.cpp average for M=K=4096)");
+    println!(
+        "\nNote: Target baseline is ~87 GFLOPS (llama.cpp average for M=K=4096)"
+    );
 }
 
 fn benchmark_mv(
@@ -67,9 +90,18 @@ fn benchmark_mv(
     let input_size = k * 4;
     let output_size = m * 4;
 
-    let weights_buffer = device.new_buffer(weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
-    let input_buffer = device.new_buffer(input_size as u64, metal::MTLResourceOptions::StorageModeShared);
-    let output_buffer = device.new_buffer(output_size as u64, metal::MTLResourceOptions::StorageModeShared);
+    let weights_buffer = device.new_buffer(
+        weights_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let input_buffer = device.new_buffer(
+        input_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let output_buffer = device.new_buffer(
+        output_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
 
     #[repr(C)]
     struct MvArgs {

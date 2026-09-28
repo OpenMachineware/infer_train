@@ -1,18 +1,18 @@
 // Benchmark CPU Attention vs llama.cpp
 // Tests all 9 KV cache formats across multiple sizes
 
-use std::process::Command;
 use std::fs;
+use std::process::Command;
 
 fn main() {
     println!("=== CPU Attention Performance vs llama.cpp ===\n");
 
     // Test configurations
     let configs = [
-        (32, 128, 128),   // Small decode: 32 heads, 128 head_dim, 128 seq_len
-        (32, 128, 512),   // Medium decode: 32 heads, 128 head_dim, 512 seq_len
-        (32, 128, 1024),  // Large decode: 32 heads, 128 head_dim, 1024 seq_len
-        (32, 128, 2048),  // Very large decode: 32 heads, 128 head_dim, 2048 seq_len
+        (32, 128, 128), // Small decode: 32 heads, 128 head_dim, 128 seq_len
+        (32, 128, 512), // Medium decode: 32 heads, 128 head_dim, 512 seq_len
+        (32, 128, 1024), // Large decode: 32 heads, 128 head_dim, 1024 seq_len
+        (32, 128, 2048), // Very large decode: 32 heads, 128 head_dim, 2048 seq_len
     ];
 
     // Formats to test
@@ -26,12 +26,15 @@ fn main() {
 
         for &(num_heads, head_dim, seq_len) in &configs {
             // Run our implementation
-            let gflops = run_attention_benchmark(*format, num_heads, head_dim, seq_len);
+            let gflops =
+                run_attention_benchmark(*format, num_heads, head_dim, seq_len);
             results.push(format!("{:.2}", gflops));
         }
 
-        println!("{:7} | {:>7} | {:>7} | {:>8} | {:>8}",
-            format, results[0], results[1], results[2], results[3]);
+        println!(
+            "{:7} | {:>7} | {:>7} | {:>8} | {:>8}",
+            format, results[0], results[1], results[2], results[3]
+        );
     }
 
     // Run llama.cpp comparison
@@ -41,7 +44,10 @@ fn main() {
     let llama_dir = "llama.cpp-0.5.0";
     if !Path::new(&format!("{}/build/bin/llama-bench", llama_dir)).exists() {
         println!("llama.cpp not built, skipping comparison");
-        println!("To build: cd {} && mkdir -p build && cd build && cmake .. && make -j", llama_dir);
+        println!(
+            "To build: cd {} && mkdir -p build && cd build && cmake .. && make -j",
+            llama_dir
+        );
         return;
     }
 
@@ -51,21 +57,39 @@ fn main() {
     for format in &formats {
         let our_gflops = run_attention_benchmark(*format, 32, 128, 512);
         let llama_gflops = run_llama_cpp_attention(*format, 32, 128, 512);
-        let ratio = if llama_gflops > 0.0 { our_gflops / llama_gflops * 100.0 } else { 0.0 };
+        let ratio = if llama_gflops > 0.0 {
+            our_gflops / llama_gflops * 100.0
+        } else {
+            0.0
+        };
 
-        println!("{:7} | {:>10.2} | {:>15.2} | {:>5.1}%",
-            format, our_gflops, llama_gflops, ratio);
+        println!(
+            "{:7} | {:>10.2} | {:>15.2} | {:>5.1}%",
+            format, our_gflops, llama_gflops, ratio
+        );
     }
 }
 
 use std::path::Path;
 
-fn run_attention_benchmark(format: &str, num_heads: usize, head_dim: usize, seq_len: usize) -> f64 {
+fn run_attention_benchmark(
+    format: &str,
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+) -> f64 {
     // Build and run our Rust benchmark
     let output = Command::new("cargo")
         .args(&[
-            "run", "--release", "--bin", "benchmark_attention_single",
-            "--", format, &num_heads.to_string(), &head_dim.to_string(), &seq_len.to_string()
+            "run",
+            "--release",
+            "--bin",
+            "benchmark_attention_single",
+            "--",
+            format,
+            &num_heads.to_string(),
+            &head_dim.to_string(),
+            &seq_len.to_string(),
         ])
         .output()
         .ok();
@@ -90,7 +114,12 @@ fn run_attention_benchmark(format: &str, num_heads: usize, head_dim: usize, seq_
     0.0
 }
 
-fn run_llama_cpp_attention(format: &str, num_heads: usize, head_dim: usize, seq_len: usize) -> f64 {
+fn run_llama_cpp_attention(
+    format: &str,
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+) -> f64 {
     // This would require implementing a custom benchmark in llama.cpp
     // For now, return 0 to indicate it needs to be run manually
     // The actual benchmark would use ggml_compute_forward_flash_attn_ext

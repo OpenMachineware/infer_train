@@ -6,7 +6,10 @@ const NUM_ITER: usize = 1000;
 const HEAD_DIM: usize = 128;
 
 #[target_feature(enable = "neon")]
-unsafe fn vec_dot_with_target_feature(q_ptr: *const u16, k_ptr: *const u16) -> f32 {
+unsafe fn vec_dot_with_target_feature(
+    q_ptr: *const u16,
+    k_ptr: *const u16,
+) -> f32 {
     let mut score: f32 = 0.0;
     asm!(
         "movi v0.2d, #0",
@@ -81,7 +84,10 @@ fn main() {
             let _ = vec_dot_with_target_feature(q_ptr, k_ptr);
         }
         let elapsed = start.elapsed();
-        println!("With #[target_feature]: {} ns/iter", elapsed.as_nanos() as u64 / NUM_ITER as u64);
+        println!(
+            "With #[target_feature]: {} ns/iter",
+            elapsed.as_nanos() as u64 / NUM_ITER as u64
+        );
 
         // Test 2: With #[inline(always)] function
         let start = Instant::now();
@@ -89,7 +95,10 @@ fn main() {
             let _ = vec_dot_inline(q_ptr, k_ptr);
         }
         let elapsed = start.elapsed();
-        println!("With #[inline(always)]: {} ns/iter", elapsed.as_nanos() as u64 / NUM_ITER as u64);
+        println!(
+            "With #[inline(always)]: {} ns/iter",
+            elapsed.as_nanos() as u64 / NUM_ITER as u64
+        );
 
         // Test 3: Direct inline assembly
         let start = Instant::now();
@@ -108,6 +117,9 @@ fn main() {
             );
         }
         let elapsed = start.elapsed();
-        println!("Direct inline asm: {} ns/iter", elapsed.as_nanos() as u64 / NUM_ITER as u64);
+        println!(
+            "Direct inline asm: {} ns/iter",
+            elapsed.as_nanos() as u64 / NUM_ITER as u64
+        );
     }
 }

@@ -87,8 +87,12 @@ where
 
 /// Scalar binary operation with broadcasting (src1 broadcast across src0)
 #[inline]
-pub fn binary_broadcast_scalar<S0, S1, D, OP>(src0: &[S0], src1: &[S1], dst: &mut [D], ne10: usize)
-where
+pub fn binary_broadcast_scalar<S0, S1, D, OP>(
+    src0: &[S0],
+    src1: &[S1],
+    dst: &mut [D],
+    ne10: usize,
+) where
     S0: FloatType,
     S1: FloatType,
     D: FloatType,
@@ -101,7 +105,8 @@ where
         let offset = r * ne10;
         for i in 0..ne10 {
             let idx = offset + i;
-            dst[idx] = D::from_f32(OP::op(src0[idx].to_f32(), src1[i].to_f32()));
+            dst[idx] =
+                D::from_f32(OP::op(src0[idx].to_f32(), src1[i].to_f32()));
         }
     }
 }
@@ -121,27 +126,39 @@ mod vdsp {
     #[link(name = "Accelerate", kind = "framework")]
     unsafe extern "C" {
         fn vDSP_vadd(
-            a: *const f32, ia: vDSP_Stride,
-            b: *const f32, ib: vDSP_Stride,
-            c: *mut f32, ic: vDSP_Stride,
+            a: *const f32,
+            ia: vDSP_Stride,
+            b: *const f32,
+            ib: vDSP_Stride,
+            c: *mut f32,
+            ic: vDSP_Stride,
             n: vDSP_Length,
         );
         fn vDSP_vsub(
-            a: *const f32, ia: vDSP_Stride,
-            b: *const f32, ib: vDSP_Stride,
-            c: *mut f32, ic: vDSP_Stride,
+            a: *const f32,
+            ia: vDSP_Stride,
+            b: *const f32,
+            ib: vDSP_Stride,
+            c: *mut f32,
+            ic: vDSP_Stride,
             n: vDSP_Length,
         );
         fn vDSP_vmul(
-            a: *const f32, ia: vDSP_Stride,
-            b: *const f32, ib: vDSP_Stride,
-            c: *mut f32, ic: vDSP_Stride,
+            a: *const f32,
+            ia: vDSP_Stride,
+            b: *const f32,
+            ib: vDSP_Stride,
+            c: *mut f32,
+            ic: vDSP_Stride,
             n: vDSP_Length,
         );
         fn vDSP_vdiv(
-            a: *const f32, ia: vDSP_Stride,
-            b: *const f32, ib: vDSP_Stride,
-            c: *mut f32, ic: vDSP_Stride,
+            a: *const f32,
+            ia: vDSP_Stride,
+            b: *const f32,
+            ib: vDSP_Stride,
+            c: *mut f32,
+            ic: vDSP_Stride,
             n: vDSP_Length,
         );
     }
@@ -149,7 +166,15 @@ mod vdsp {
     pub fn add_f32(src0: &[f32], src1: &[f32], dst: &mut [f32]) {
         let n = dst.len().min(src0.len()).min(src1.len());
         unsafe {
-            vDSP_vadd(src0.as_ptr(), 1, src1.as_ptr(), 1, dst.as_mut_ptr(), 1, n as vDSP_Length);
+            vDSP_vadd(
+                src0.as_ptr(),
+                1,
+                src1.as_ptr(),
+                1,
+                dst.as_mut_ptr(),
+                1,
+                n as vDSP_Length,
+            );
         }
         // Handle any remainder (vDSP processes all n elements)
     }
@@ -158,27 +183,51 @@ mod vdsp {
         let n = dst.len().min(src0.len()).min(src1.len());
         unsafe {
             // vDSP_vsub(a, b) = a - b, so we pass src0 as b, src1 as a to get src0 - src1
-            vDSP_vsub(src1.as_ptr(), 1, src0.as_ptr(), 1, dst.as_mut_ptr(), 1, n as vDSP_Length);
+            vDSP_vsub(
+                src1.as_ptr(),
+                1,
+                src0.as_ptr(),
+                1,
+                dst.as_mut_ptr(),
+                1,
+                n as vDSP_Length,
+            );
         }
     }
 
     pub fn mul_f32(src0: &[f32], src1: &[f32], dst: &mut [f32]) {
         let n = dst.len().min(src0.len()).min(src1.len());
         unsafe {
-            vDSP_vmul(src0.as_ptr(), 1, src1.as_ptr(), 1, dst.as_mut_ptr(), 1, n as vDSP_Length);
+            vDSP_vmul(
+                src0.as_ptr(),
+                1,
+                src1.as_ptr(),
+                1,
+                dst.as_mut_ptr(),
+                1,
+                n as vDSP_Length,
+            );
         }
     }
 
     pub fn div_f32(src0: &[f32], src1: &[f32], dst: &mut [f32]) {
         let n = dst.len().min(src0.len()).min(src1.len());
         unsafe {
-            vDSP_vdiv(src1.as_ptr(), 1, src0.as_ptr(), 1, dst.as_mut_ptr(), 1, n as vDSP_Length);
+            vDSP_vdiv(
+                src1.as_ptr(),
+                1,
+                src0.as_ptr(),
+                1,
+                dst.as_mut_ptr(),
+                1,
+                n as vDSP_Length,
+            );
         }
     }
 }
 
 #[cfg(target_os = "macos")]
-pub use vdsp::{add_f32, sub_f32, mul_f32, div_f32};
+pub use vdsp::{add_f32, div_f32, mul_f32, sub_f32};
 
 // ============================================================================
 // Non-macOS: Use NEON on aarch64
@@ -269,7 +318,7 @@ mod neon_f32 {
 }
 
 #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
-pub use neon_f32::{add_f32, sub_f32, mul_f32, div_f32};
+pub use neon_f32::{add_f32, div_f32, mul_f32, sub_f32};
 
 // ============================================================================
 // Fallback scalar implementations
@@ -409,7 +458,8 @@ mod tests {
     #[test]
     fn test_add_f16() {
         let src0: Vec<f16> = (0..16).map(|i| f16::from_f32(i as f32)).collect();
-        let src1: Vec<f16> = (0..16).map(|i| f16::from_f32((i * 2) as f32)).collect();
+        let src1: Vec<f16> =
+            (0..16).map(|i| f16::from_f32((i * 2) as f32)).collect();
         let mut dst = vec![f16::ZERO; 16];
 
         add_f16(&src0, &src1, &mut dst);

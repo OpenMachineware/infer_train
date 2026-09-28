@@ -1,9 +1,9 @@
 // GPU GEMM llama.cpp Comparison Test
 // Compare our Metal kernels with llama.cpp's implementation
 
-use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use infer_train::quant::types::*;
 use half::f16;
+use infer_train::quant::types::*;
+use infer_train::quant::vec_dot::gpu::metal::MetalContext;
 use std::time::Instant;
 
 fn generate_f32_input(n: usize, k: usize) -> Vec<f32> {
@@ -12,18 +12,24 @@ fn generate_f32_input(n: usize, k: usize) -> Vec<f32> {
 
 fn generate_q4_k_weights(m: usize, k: usize) -> Vec<BlockQ4K> {
     let nb = k / 256;
-    (0..m * nb).map(|i| {
-        let mut qs = [0u8; 128];
-        let mut scales = [0u8; 12];
-        for j in 0..128 { qs[j] = ((i * 17 + j * 13) % 256) as u8; }
-        for j in 0..12 { scales[j] = ((i * 23 + j * 7) % 256) as u8; }
-        BlockQ4K {
-            d: f16::from_f32(0.5 + (i % 10) as f32 * 0.1).to_bits(),
-            dmin: f16::from_f32(0.1).to_bits(),
-            scales,
-            qs,
-        }
-    }).collect()
+    (0..m * nb)
+        .map(|i| {
+            let mut qs = [0u8; 128];
+            let mut scales = [0u8; 12];
+            for j in 0..128 {
+                qs[j] = ((i * 17 + j * 13) % 256) as u8;
+            }
+            for j in 0..12 {
+                scales[j] = ((i * 23 + j * 7) % 256) as u8;
+            }
+            BlockQ4K {
+                d: f16::from_f32(0.5 + (i % 10) as f32 * 0.1).to_bits(),
+                dmin: f16::from_f32(0.1).to_bits(),
+                scales,
+                qs,
+            }
+        })
+        .collect()
 }
 
 fn main() {
@@ -34,7 +40,8 @@ fn main() {
     println!("Our kernel: Direct K-quant processing without dequantization");
     println!();
 
-    let metal_ctx = MetalContext::new().expect("Failed to create Metal context");
+    let metal_ctx =
+        MetalContext::new().expect("Failed to create Metal context");
     let m = 4096;
 
     println!("Testing Q4_K GEMM across K dimensions (M={}, N=16)", m);
@@ -42,7 +49,9 @@ fn main() {
     println!("K\tGFLOPS\tNotes");
 
     for k in [256, 512, 1024, 2048, 4096].iter() {
-        if k % 256 != 0 { continue; }
+        if k % 256 != 0 {
+            continue;
+        }
 
         let nb = k / 256;
         let weights = generate_q4_k_weights(m, *k);
@@ -58,7 +67,11 @@ fn main() {
         let flops = 2.0 * m as f64 * 16.0 * *k as f64;
         let gflops = flops / elapsed / 1000.0;
 
-        let path = if nb <= 4 { "Small K (per-thread output)" } else { "Large K (block parallel)" };
+        let path = if nb <= 4 {
+            "Small K (per-thread output)"
+        } else {
+            "Large K (block parallel)"
+        };
 
         println!("{}\t{:.0}\t{}", k, gflops, path);
     }

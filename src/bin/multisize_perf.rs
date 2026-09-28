@@ -21,11 +21,7 @@ fn generate_q8_k(k: usize) -> Vec<BlockQ8K> {
             }
             bsums[i] = sum as i16;
         }
-        blocks.push(BlockQ8K {
-            d: 1.0,
-            qs,
-            bsums,
-        });
+        blocks.push(BlockQ8K { d: 1.0, qs, bsums });
     }
     blocks
 }
@@ -159,10 +155,7 @@ fn generate_iq3_xxs(k: usize) -> Vec<BlockIQ3XXS> {
     let mut blocks = Vec::with_capacity(nb);
     for b in 0..nb {
         let qs = [((b % 256) as u8); 96];
-        blocks.push(BlockIQ3XXS {
-            d: half::f16::from_f32(1.0).to_bits(),
-            qs,
-        });
+        blocks.push(BlockIQ3XXS { d: half::f16::from_f32(1.0).to_bits(), qs });
     }
     blocks
 }
@@ -172,10 +165,7 @@ fn generate_iq2_xxs(k: usize) -> Vec<BlockIQ2XXS> {
     let mut blocks = Vec::with_capacity(nb);
     for b in 0..nb {
         let qs = [((b % 256) as u16); 32];
-        blocks.push(BlockIQ2XXS {
-            d: half::f16::from_f32(1.0).to_bits(),
-            qs,
-        });
+        blocks.push(BlockIQ2XXS { d: half::f16::from_f32(1.0).to_bits(), qs });
     }
     blocks
 }
@@ -185,10 +175,7 @@ fn generate_tq2_0(k: usize) -> Vec<BlockTQ2_0> {
     let mut blocks = Vec::with_capacity(nb);
     for b in 0..nb {
         let qs = [((b % 256) as u8); 64];
-        blocks.push(BlockTQ2_0 {
-            d: half::f16::from_f32(1.0).to_bits(),
-            qs,
-        });
+        blocks.push(BlockTQ2_0 { d: half::f16::from_f32(1.0).to_bits(), qs });
     }
     blocks
 }
@@ -203,10 +190,18 @@ fn main() {
 
     // K-quant formats
     println!("K-Quant Formats:");
-    println!("─────────────────────────────────────────────────────────────────────────────────────");
-    println!("│ Format  │ K=256  │ K=512  │ K=1024 │ K=2048 │ K=4096 │ Avg    │ MaxDev │");
-    println!("│         │ GFLOPS │ GFLOPS │ GFLOPS │ GFLOPS │ GFLOPS │ GFLOPS │   %    │");
-    println!("─────────────────────────────────────────────────────────────────────────────────────");
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "│ Format  │ K=256  │ K=512  │ K=1024 │ K=2048 │ K=4096 │ Avg    │ MaxDev │"
+    );
+    println!(
+        "│         │ GFLOPS │ GFLOPS │ GFLOPS │ GFLOPS │ GFLOPS │ GFLOPS │   %    │"
+    );
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────"
+    );
 
     // Q2_K
     {
@@ -227,11 +222,20 @@ fn main() {
             avg_gflops += gflops;
         }
         avg_gflops /= k_values.len() as f64;
-        let max_dev = gflops_values.iter()
+        let max_dev = gflops_values
+            .iter()
             .map(|&g| ((g - avg_gflops).abs() / avg_gflops) * 100.0)
             .fold(0.0, f64::max);
-        println!("│ Q2_K    │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
-            gflops_values[0], gflops_values[1], gflops_values[2], gflops_values[3], gflops_values[4], avg_gflops, max_dev);
+        println!(
+            "│ Q2_K    │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
+            gflops_values[0],
+            gflops_values[1],
+            gflops_values[2],
+            gflops_values[3],
+            gflops_values[4],
+            avg_gflops,
+            max_dev
+        );
     }
 
     // Q3_K
@@ -253,11 +257,20 @@ fn main() {
             avg_gflops += gflops;
         }
         avg_gflops /= k_values.len() as f64;
-        let max_dev = gflops_values.iter()
+        let max_dev = gflops_values
+            .iter()
             .map(|&g| ((g - avg_gflops).abs() / avg_gflops) * 100.0)
             .fold(0.0, f64::max);
-        println!("│ Q3_K    │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
-            gflops_values[0], gflops_values[1], gflops_values[2], gflops_values[3], gflops_values[4], avg_gflops, max_dev);
+        println!(
+            "│ Q3_K    │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
+            gflops_values[0],
+            gflops_values[1],
+            gflops_values[2],
+            gflops_values[3],
+            gflops_values[4],
+            avg_gflops,
+            max_dev
+        );
     }
 
     // Q4_K
@@ -279,11 +292,20 @@ fn main() {
             avg_gflops += gflops;
         }
         avg_gflops /= k_values.len() as f64;
-        let max_dev = gflops_values.iter()
+        let max_dev = gflops_values
+            .iter()
             .map(|&g| ((g - avg_gflops).abs() / avg_gflops) * 100.0)
             .fold(0.0, f64::max);
-        println!("│ Q4_K    │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
-            gflops_values[0], gflops_values[1], gflops_values[2], gflops_values[3], gflops_values[4], avg_gflops, max_dev);
+        println!(
+            "│ Q4_K    │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
+            gflops_values[0],
+            gflops_values[1],
+            gflops_values[2],
+            gflops_values[3],
+            gflops_values[4],
+            avg_gflops,
+            max_dev
+        );
     }
 
     // Q5_K
@@ -305,11 +327,20 @@ fn main() {
             avg_gflops += gflops;
         }
         avg_gflops /= k_values.len() as f64;
-        let max_dev = gflops_values.iter()
+        let max_dev = gflops_values
+            .iter()
             .map(|&g| ((g - avg_gflops).abs() / avg_gflops) * 100.0)
             .fold(0.0, f64::max);
-        println!("│ Q5_K    │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
-            gflops_values[0], gflops_values[1], gflops_values[2], gflops_values[3], gflops_values[4], avg_gflops, max_dev);
+        println!(
+            "│ Q5_K    │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
+            gflops_values[0],
+            gflops_values[1],
+            gflops_values[2],
+            gflops_values[3],
+            gflops_values[4],
+            avg_gflops,
+            max_dev
+        );
     }
 
     // Q6_K
@@ -331,19 +362,32 @@ fn main() {
             avg_gflops += gflops;
         }
         avg_gflops /= k_values.len() as f64;
-        let max_dev = gflops_values.iter()
+        let max_dev = gflops_values
+            .iter()
             .map(|&g| ((g - avg_gflops).abs() / avg_gflops) * 100.0)
             .fold(0.0, f64::max);
-        println!("│ Q6_K    │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
-            gflops_values[0], gflops_values[1], gflops_values[2], gflops_values[3], gflops_values[4], avg_gflops, max_dev);
+        println!(
+            "│ Q6_K    │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
+            gflops_values[0],
+            gflops_values[1],
+            gflops_values[2],
+            gflops_values[3],
+            gflops_values[4],
+            avg_gflops,
+            max_dev
+        );
     }
 
-    println!("─────────────────────────────────────────────────────────────────────────────────────");
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────"
+    );
     println!();
 
     // IQ/TQ formats
     println!("IQ/TQ Formats:");
-    println!("─────────────────────────────────────────────────────────────────────────────────────");
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────"
+    );
 
     // IQ4_XS
     {
@@ -364,11 +408,20 @@ fn main() {
             avg_gflops += gflops;
         }
         avg_gflops /= k_values.len() as f64;
-        let max_dev = gflops_values.iter()
+        let max_dev = gflops_values
+            .iter()
             .map(|&g| ((g - avg_gflops).abs() / avg_gflops) * 100.0)
             .fold(0.0, f64::max);
-        println!("│ IQ4_XS  │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
-            gflops_values[0], gflops_values[1], gflops_values[2], gflops_values[3], gflops_values[4], avg_gflops, max_dev);
+        println!(
+            "│ IQ4_XS  │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
+            gflops_values[0],
+            gflops_values[1],
+            gflops_values[2],
+            gflops_values[3],
+            gflops_values[4],
+            avg_gflops,
+            max_dev
+        );
     }
 
     // IQ3_XXS
@@ -390,11 +443,20 @@ fn main() {
             avg_gflops += gflops;
         }
         avg_gflops /= k_values.len() as f64;
-        let max_dev = gflops_values.iter()
+        let max_dev = gflops_values
+            .iter()
             .map(|&g| ((g - avg_gflops).abs() / avg_gflops) * 100.0)
             .fold(0.0, f64::max);
-        println!("│ IQ3_XXS │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
-            gflops_values[0], gflops_values[1], gflops_values[2], gflops_values[3], gflops_values[4], avg_gflops, max_dev);
+        println!(
+            "│ IQ3_XXS │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
+            gflops_values[0],
+            gflops_values[1],
+            gflops_values[2],
+            gflops_values[3],
+            gflops_values[4],
+            avg_gflops,
+            max_dev
+        );
     }
 
     // IQ2_XXS
@@ -416,11 +478,20 @@ fn main() {
             avg_gflops += gflops;
         }
         avg_gflops /= k_values.len() as f64;
-        let max_dev = gflops_values.iter()
+        let max_dev = gflops_values
+            .iter()
             .map(|&g| ((g - avg_gflops).abs() / avg_gflops) * 100.0)
             .fold(0.0, f64::max);
-        println!("│ IQ2_XXS │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
-            gflops_values[0], gflops_values[1], gflops_values[2], gflops_values[3], gflops_values[4], avg_gflops, max_dev);
+        println!(
+            "│ IQ2_XXS │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
+            gflops_values[0],
+            gflops_values[1],
+            gflops_values[2],
+            gflops_values[3],
+            gflops_values[4],
+            avg_gflops,
+            max_dev
+        );
     }
 
     // TQ2_0
@@ -442,12 +513,23 @@ fn main() {
             avg_gflops += gflops;
         }
         avg_gflops /= k_values.len() as f64;
-        let max_dev = gflops_values.iter()
+        let max_dev = gflops_values
+            .iter()
             .map(|&g| ((g - avg_gflops).abs() / avg_gflops) * 100.0)
             .fold(0.0, f64::max);
-        println!("│ TQ2_0   │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
-            gflops_values[0], gflops_values[1], gflops_values[2], gflops_values[3], gflops_values[4], avg_gflops, max_dev);
+        println!(
+            "│ TQ2_0   │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:6.1} │ {:5.1} │ {:4.1}% │",
+            gflops_values[0],
+            gflops_values[1],
+            gflops_values[2],
+            gflops_values[3],
+            gflops_values[4],
+            avg_gflops,
+            max_dev
+        );
     }
 
-    println!("─────────────────────────────────────────────────────────────────────────────────────");
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────"
+    );
 }

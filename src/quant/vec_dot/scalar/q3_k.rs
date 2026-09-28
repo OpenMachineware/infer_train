@@ -24,7 +24,9 @@ pub fn vec_dot_q3_k_q8_k(n: usize, x: &[BlockQ3K], y: &[BlockQ8K]) -> f32 {
 
                 for shift in [0u8, 2, 4, 6] {
                     let low2 = ((q3_byte >> shift) & 0x03) as i32;
-                    let high1 = ((hmask_byte >> (j % 2 * 8 + k * 2 + (shift / 2) as usize)) & 1) as i32;
+                    let high1 = ((hmask_byte
+                        >> (j % 2 * 8 + k * 2 + (shift / 2) as usize))
+                        & 1) as i32;
                     let q3_val = low2 | (high1 << 2);
 
                     let q8_idx = j * 16 + k * 4 + (shift / 2) as usize;

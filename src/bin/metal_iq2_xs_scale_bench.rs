@@ -1,17 +1,23 @@
 // IQ2_XS multi-size benchmark
-use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use infer_train::quant::types::*;
 use half::f16;
+use infer_train::quant::types::*;
+use infer_train::quant::vec_dot::gpu::metal::MetalContext;
 
 fn generate_iq2_xs_weights(m: usize, k: usize) -> Vec<BlockIQ2XS> {
     let nb = k / 256;
-    (0..m * nb).map(|i| {
-        let mut qs = [0u16; 32];
-        let mut scales = [0u8; 8];
-        for j in 0..32 { qs[j] = ((i * 17 + j * 13) % 65536) as u16; }
-        for j in 0..8 { scales[j] = ((i * 23 + j * 7) % 256) as u8; }
-        BlockIQ2XS { d: f16::from_f32(1.0).to_bits(), qs, scales }
-    }).collect()
+    (0..m * nb)
+        .map(|i| {
+            let mut qs = [0u16; 32];
+            let mut scales = [0u8; 8];
+            for j in 0..32 {
+                qs[j] = ((i * 17 + j * 13) % 65536) as u16;
+            }
+            for j in 0..8 {
+                scales[j] = ((i * 23 + j * 7) % 256) as u8;
+            }
+            BlockIQ2XS { d: f16::from_f32(1.0).to_bits(), qs, scales }
+        })
+        .collect()
 }
 
 fn generate_f32_input(k: usize) -> Vec<f32> {
@@ -41,7 +47,8 @@ fn main() {
         // Benchmark
         let start = std::time::Instant::now();
         for _ in 0..n_iter {
-            let _ = ctx.mv_iq2_xs_f32(m, k, &weights, &input).expect("GPU failed");
+            let _ =
+                ctx.mv_iq2_xs_f32(m, k, &weights, &input).expect("GPU failed");
         }
         let elapsed = start.elapsed();
         let avg_us = elapsed.as_micros() as f64 / n_iter as f64;

@@ -1,7 +1,7 @@
 // GPU warmup + stable benchmark
 // Run: cargo run --release --bin benchmark_mv_stable
 
-use metal::{Device, MTLSize, CompileOptions};
+use metal::{CompileOptions, Device, MTLSize};
 
 fn main() {
     println!("=== GPU预热 + 稳定性能测试 ===\n");
@@ -14,9 +14,12 @@ fn main() {
     let warmup_shader = include_str!("../../shaders/mv_q4_k.metal");
     let warmup_options = CompileOptions::new();
     warmup_options.set_fast_math_enabled(true);
-    let warmup_lib = device.new_library_with_source(warmup_shader, &warmup_options).unwrap();
-    let warmup_fn = warmup_lib.get_function("kernel_mul_mv_q4_K_f32", None).unwrap();
-    let warmup_pipe = device.new_compute_pipeline_state_with_function(&warmup_fn).unwrap();
+    let warmup_lib =
+        device.new_library_with_source(warmup_shader, &warmup_options).unwrap();
+    let warmup_fn =
+        warmup_lib.get_function("kernel_mul_mv_q4_K_f32", None).unwrap();
+    let warmup_pipe =
+        device.new_compute_pipeline_state_with_function(&warmup_fn).unwrap();
 
     // 大量预热迭代
     let m = 4096usize;
@@ -25,13 +28,30 @@ fn main() {
     let num_blocks = (k + 255) / 256;
     let weights_size = m * num_blocks * block_size;
 
-    let weights = device.new_buffer(weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
-    let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
-    let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
+    let weights = device.new_buffer(
+        weights_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let input = device.new_buffer(
+        (k * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let output = device.new_buffer(
+        (m * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
 
     #[repr(C)]
-    struct Args { ne00: u32, ne01: u32, nb01: u64 }
-    let args = Args { ne00: k as u32, ne01: m as u32, nb01: (num_blocks * block_size) as u64 };
+    struct Args {
+        ne00: u32,
+        ne01: u32,
+        nb01: u64,
+    }
+    let args = Args {
+        ne00: k as u32,
+        ne01: m as u32,
+        nb01: (num_blocks * block_size) as u64,
+    };
     let args_buf = device.new_buffer_with_data(
         &args as *const Args as *const std::ffi::c_void,
         std::mem::size_of::<Args>() as u64,
@@ -83,13 +103,23 @@ fn main() {
         opts.set_fast_math_enabled(true);
         let lib = device.new_library_with_source(&src, &opts).unwrap();
         let func = lib.get_function(kernel, None).unwrap();
-        let pipe = device.new_compute_pipeline_state_with_function(&func).unwrap();
+        let pipe =
+            device.new_compute_pipeline_state_with_function(&func).unwrap();
 
         let gflops = benchmark(&device, &queue, &pipe, m, k, *bs);
         let ratio = gflops / 87.0 * 100.0;
-        let status = if ratio >= 100.0 { "✓ EXCEED" } else if ratio >= 95.0 { "~ MATCH" } else { "✗ BELOW" };
+        let status = if ratio >= 100.0 {
+            "✓ EXCEED"
+        } else if ratio >= 95.0 {
+            "~ MATCH"
+        } else {
+            "✗ BELOW"
+        };
 
-        println!("│ {:7} │ {:8.2} │ {:7.1}% │ {:8} │", name, gflops, ratio, status);
+        println!(
+            "│ {:7} │ {:8.2} │ {:7.1}% │ {:8} │",
+            name, gflops, ratio, status
+        );
     }
 
     println!("└─────────┴──────────┴──────────┴──────────┘");
@@ -106,12 +136,23 @@ fn benchmark(
     let nb = (k + 255) / 256;
     let ws = m * nb * bs;
 
-    let weights = device.new_buffer(ws as u64, metal::MTLResourceOptions::StorageModeShared);
-    let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
-    let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
+    let weights = device
+        .new_buffer(ws as u64, metal::MTLResourceOptions::StorageModeShared);
+    let input = device.new_buffer(
+        (k * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let output = device.new_buffer(
+        (m * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
 
     #[repr(C)]
-    struct Args { ne00: u32, ne01: u32, nb01: u64 }
+    struct Args {
+        ne00: u32,
+        ne01: u32,
+        nb01: u64,
+    }
     let args = Args { ne00: k as u32, ne01: m as u32, nb01: (nb * bs) as u64 };
     let args_buf = device.new_buffer_with_data(
         &args as *const Args as *const std::ffi::c_void,

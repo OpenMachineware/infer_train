@@ -10,7 +10,11 @@ const ITERATIONS: usize = 100000;
 type vreg = int32x4_t;
 
 #[inline(always)]
-unsafe fn vdotq_s32_manual(acc: int32x4_t, a: int8x16_t, b: int8x16_t) -> int32x4_t {
+unsafe fn vdotq_s32_manual(
+    acc: int32x4_t,
+    a: int8x16_t,
+    b: int8x16_t,
+) -> int32x4_t {
     use std::arch::asm;
     let mut result = acc;
     asm!(
@@ -96,7 +100,9 @@ fn main() {
     let t0 = Instant::now();
     for _ in 0..ITERATIONS {
         unsafe {
-            let _ = infer_train::quant::vec_dot::arm::vec_dot_q4_k_q8_k_neon(k, &y, &x);
+            let _ = infer_train::quant::vec_dot::arm::vec_dot_q4_k_q8_k_neon(
+                k, &y, &x,
+            );
         }
     }
     let baseline_ns = t0.elapsed().as_nanos();
@@ -121,7 +127,10 @@ fn main() {
         unsafe {
             for i in 0..nb {
                 let y_i = x.get_unchecked(i);
-                let q8sums = vpaddq_s16(vld1q_s16(y_i.bsums.as_ptr()), vld1q_s16(y_i.bsums.as_ptr().add(8)));
+                let q8sums = vpaddq_s16(
+                    vld1q_s16(y_i.bsums.as_ptr()),
+                    vld1q_s16(y_i.bsums.as_ptr().add(8)),
+                );
                 std::hint::black_box(q8sums);
             }
         }
@@ -140,7 +149,11 @@ fn main() {
 
                 // Decode scales (matching llama.cpp)
                 let mut utmp = [0u32; 4];
-                std::ptr::copy_nonoverlapping(x_i.scales.as_ptr(), utmp.as_mut_ptr() as *mut u8, 12);
+                std::ptr::copy_nonoverlapping(
+                    x_i.scales.as_ptr(),
+                    utmp.as_mut_ptr() as *mut u8,
+                    12,
+                );
 
                 const KMASK1: u32 = 0x3f3f3f3f;
                 const KMASK2: u32 = 0x0f0f0f0f;
@@ -163,13 +176,21 @@ fn main() {
 
                     let q4l_0 = vreinterpretq_s8_u8(vandq_u8(q4bits.0, m4b));
                     let q4l_1 = vreinterpretq_s8_u8(vandq_u8(q4bits.1, m4b));
-                    let p1 = vdotq_s32_manual(vdotq_s32_manual(vzero, q4l_0, q8bytes.0), q4l_1, q8bytes.1);
+                    let p1 = vdotq_s32_manual(
+                        vdotq_s32_manual(vzero, q4l_0, q8bytes.0),
+                        q4l_1,
+                        q8bytes.1,
+                    );
                     sumi1 += vaddvq_s32(p1) * *sc as i32;
 
                     let q8bytes_1 = vld1q_s8_x2(q8.add(32));
                     let q4h_0 = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.0, 4));
                     let q4h_1 = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.1, 4));
-                    let p2 = vdotq_s32_manual(vdotq_s32_manual(vzero, q4h_0, q8bytes_1.0), q4h_1, q8bytes_1.1);
+                    let p2 = vdotq_s32_manual(
+                        vdotq_s32_manual(vzero, q4h_0, q8bytes_1.0),
+                        q4h_1,
+                        q8bytes_1.1,
+                    );
                     sumi2 += vaddvq_s32(p2) * *sc.add(1) as i32;
 
                     q4 = q4.add(32);
@@ -187,19 +208,33 @@ fn main() {
     println!("K = {} (nb = {})", k, nb);
     println!("Iterations: {}", ITERATIONS);
     println!();
-    println!("Step                      | Total (ns) | Per block (ns) | Percent");
-    println!("--------------------------+------------+----------------+--------");
-    println!("Full kernel               | {:10} | {:14.1} | 100.0%", baseline_ns, total_per_iter / nb as f64);
-    println!("  Scale decode            | {:10} | {:14.1} | {:5.1}%",
+    println!(
+        "Step                      | Total (ns) | Per block (ns) | Percent"
+    );
+    println!(
+        "--------------------------+------------+----------------+--------"
+    );
+    println!(
+        "Full kernel               | {:10} | {:14.1} | 100.0%",
+        baseline_ns,
+        total_per_iter / nb as f64
+    );
+    println!(
+        "  Scale decode            | {:10} | {:14.1} | {:5.1}%",
         scale_decode_ns,
         scale_decode_ns as f64 / ITERATIONS as f64 / nb as f64,
-        scale_decode_ns as f64 / baseline_ns as f64 * 100.0);
-    println!("  Min calculation         | {:10} | {:14.1} | {:5.1}%",
+        scale_decode_ns as f64 / baseline_ns as f64 * 100.0
+    );
+    println!(
+        "  Min calculation         | {:10} | {:14.1} | {:5.1}%",
         min_calc_ns,
         min_calc_ns as f64 / ITERATIONS as f64 / nb as f64,
-        min_calc_ns as f64 / baseline_ns as f64 * 100.0);
-    println!("  Inner loop (load+dot)   | {:10} | {:14.1} | {:5.1}%",
+        min_calc_ns as f64 / baseline_ns as f64 * 100.0
+    );
+    println!(
+        "  Inner loop (load+dot)   | {:10} | {:14.1} | {:5.1}%",
         inner_loop_ns,
         inner_loop_ns as f64 / ITERATIONS as f64 / nb as f64,
-        inner_loop_ns as f64 / baseline_ns as f64 * 100.0);
+        inner_loop_ns as f64 / baseline_ns as f64 * 100.0
+    );
 }

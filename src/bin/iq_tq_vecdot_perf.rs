@@ -1,7 +1,7 @@
 // Benchmark all IQ/TQ vec_dot formats
-use infer_train::quant::vec_dot::arm::*;
-use infer_train::quant::types::*;
 use half::f16;
+use infer_train::quant::types::*;
+use infer_train::quant::vec_dot::arm::*;
 use std::time::Instant;
 
 fn generate_q8_k_input(k: usize) -> Vec<BlockQ8K> {
@@ -16,11 +16,7 @@ fn generate_q8_k_input(k: usize) -> Vec<BlockQ8K> {
             for j in 0..16 {
                 bsums[j] = ((i * 23 + j * 7) % 256) as i16;
             }
-            BlockQ8K {
-                d: 0.01 + (i % 10) as f32 * 0.001,
-                qs,
-                bsums,
-            }
+            BlockQ8K { d: 0.01 + (i % 10) as f32 * 0.001, qs, bsums }
         })
         .collect()
 }
@@ -292,7 +288,9 @@ fn main() {
             for _ in 0..100000 {
                 let _ = vec_dot_iq4_xs_q8_k_neon(k, &weights, &x_q8k);
             }
-            let gflops = 2.0 * (k as f64) * 100000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let gflops = 2.0 * (k as f64) * 100000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
             println!("│  IQ4_XS   │  {:6.1}  │  256 (Q8_K)       │", gflops);
         }
 
@@ -306,7 +304,9 @@ fn main() {
             for _ in 0..100000 {
                 let _ = vec_dot_iq4_nl_q8_0_neon(k, &weights, &x_q80);
             }
-            let gflops = 2.0 * (k as f64) * 100000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let gflops = 2.0 * (k as f64) * 100000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
             println!("│  IQ4_NL   │  {:6.1}  │   32 (Q8_0)       │", gflops);
         }
 
@@ -320,7 +320,9 @@ fn main() {
             for _ in 0..100000 {
                 let _ = vec_dot_iq3_xxs_q8_k_neon(k, &weights, &x_q8k);
             }
-            let gflops = 2.0 * (k as f64) * 100000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let gflops = 2.0 * (k as f64) * 100000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
             println!("│  IQ3_XXS  │  {:6.1}  │  256 (Q8_K)       │", gflops);
         }
 
@@ -334,7 +336,9 @@ fn main() {
             for _ in 0..100000 {
                 let _ = vec_dot_iq3_s_q8_k_neon(k, &weights, &x_q8k);
             }
-            let gflops = 2.0 * (k as f64) * 100000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let gflops = 2.0 * (k as f64) * 100000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
             println!("│  IQ3_S    │  {:6.1}  │  256 (Q8_K)       │", gflops);
         }
 
@@ -348,7 +352,9 @@ fn main() {
             for _ in 0..100000 {
                 let _ = vec_dot_iq2_xxs_q8_k_neon(k, &weights, &x_q8k);
             }
-            let gflops = 2.0 * (k as f64) * 100000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let gflops = 2.0 * (k as f64) * 100000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
             println!("│  IQ2_XXS  │  {:6.1}  │  256 (Q8_K)       │", gflops);
         }
 
@@ -362,7 +368,9 @@ fn main() {
             for _ in 0..100000 {
                 let _ = vec_dot_iq2_xs_q8_k_neon(k, &weights, &x_q8k);
             }
-            let gflops = 2.0 * (k as f64) * 100000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let gflops = 2.0 * (k as f64) * 100000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
             println!("│  IQ2_XS   │  {:6.1}  │  256 (Q8_K)       │", gflops);
         }
 
@@ -376,7 +384,9 @@ fn main() {
             for _ in 0..100000 {
                 let _ = vec_dot_iq2_s_q8_k_neon(k, &weights, &x_q8k);
             }
-            let gflops = 2.0 * (k as f64) * 100000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let gflops = 2.0 * (k as f64) * 100000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
             println!("│  IQ2_S    │  {:6.1}  │  256 (Q8_K)       │", gflops);
         }
 
@@ -390,7 +400,9 @@ fn main() {
             for _ in 0..100000 {
                 let _ = vec_dot_iq1_s_q8_k_neon(k, &weights, &x_q8k);
             }
-            let gflops = 2.0 * (k as f64) * 100000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let gflops = 2.0 * (k as f64) * 100000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
             println!("│  IQ1_S    │  {:6.1}  │  256 (Q8_K)       │", gflops);
         }
 
@@ -404,7 +416,9 @@ fn main() {
             for _ in 0..100000 {
                 let _ = vec_dot_iq1_m_q8_k_neon(k, &weights, &x_q8k);
             }
-            let gflops = 2.0 * (k as f64) * 100000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let gflops = 2.0 * (k as f64) * 100000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
             println!("│  IQ1_M    │  {:6.1}  │  256 (Q8_K)       │", gflops);
         }
 
@@ -418,7 +432,9 @@ fn main() {
             for _ in 0..100000 {
                 let _ = vec_dot_tq2_0_q8_k_neon(k, &weights, &x_q8k);
             }
-            let gflops = 2.0 * (k as f64) * 100000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let gflops = 2.0 * (k as f64) * 100000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
             println!("│  TQ2_0    │  {:6.1}  │  256 (Q8_K)       │", gflops);
         }
 
@@ -432,7 +448,9 @@ fn main() {
             for _ in 0..100000 {
                 let _ = vec_dot_tq1_0_q8_k_neon(k, &weights, &x_q8k);
             }
-            let gflops = 2.0 * (k as f64) * 100000.0 / start.elapsed().as_secs_f64() / 1e9;
+            let gflops = 2.0 * (k as f64) * 100000.0
+                / start.elapsed().as_secs_f64()
+                / 1e9;
             println!("│  TQ1_0    │  {:6.1}  │  256 (Q8_K)       │", gflops);
         }
 

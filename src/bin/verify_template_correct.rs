@@ -1,9 +1,9 @@
 // Verify template kernel correctness
 // Run: cargo run --release --bin verify_template_correct
 
+use half::f16;
 use infer_train::quant::types::BlockQ4K;
 use metal::{Device, MTLSize};
-use half::f16;
 
 fn main() {
     println!("=== Template Kernel Correctness Verification ===\n");
@@ -18,19 +18,25 @@ fn main() {
     println!("M={}, K={}, N={}\n", m, k, n);
 
     // Create weights with known pattern
-    let weights: Vec<BlockQ4K> = (0..m * k / 256).map(|i| {
-        let mut scales = [0u8; 12];
-        let mut qs = [0u8; 128];
-        // Use simple pattern: all scales = 1.0, all qs = 8
-        for j in 0..12 { scales[j] = 64; } // Scale = 1.0 in Q4_K encoding
-        for j in 0..128 { qs[j] = (8 + (i % 8)) as u8; }
-        BlockQ4K {
-            d: f16::from_f32(1.0).to_bits(),
-            dmin: f16::from_f32(0.0).to_bits(),
-            scales,
-            qs,
-        }
-    }).collect();
+    let weights: Vec<BlockQ4K> = (0..m * k / 256)
+        .map(|i| {
+            let mut scales = [0u8; 12];
+            let mut qs = [0u8; 128];
+            // Use simple pattern: all scales = 1.0, all qs = 8
+            for j in 0..12 {
+                scales[j] = 64;
+            } // Scale = 1.0 in Q4_K encoding
+            for j in 0..128 {
+                qs[j] = (8 + (i % 8)) as u8;
+            }
+            BlockQ4K {
+                d: f16::from_f32(1.0).to_bits(),
+                dmin: f16::from_f32(0.0).to_bits(),
+                scales,
+                qs,
+            }
+        })
+        .collect();
 
     // Create input with simple pattern
     let input_f16: Vec<u16> = (0..k * n)
@@ -58,28 +64,51 @@ fn main() {
     // Compile template kernel
     let shader_source = include_str!("../../shaders/mul_mm_standalone.metal");
     let compile_options = metal::CompileOptions::new();
-    let library = device.new_library_with_source(shader_source, &compile_options)
+    let library = device
+        .new_library_with_source(shader_source, &compile_options)
         .expect("Failed to compile shader");
-    let kernel = library.get_function("kernel_mul_mm_q4_K_f32", None)
+    let kernel = library
+        .get_function("kernel_mul_mm_q4_K_f32", None)
         .expect("Failed to get kernel");
-    let pipeline = device.new_compute_pipeline_state_with_function(&kernel)
+    let pipeline = device
+        .new_compute_pipeline_state_with_function(&kernel)
         .expect("Failed to create pipeline");
 
     // Args
     #[repr(C)]
     struct GemmArgs {
-        ne00: i32, ne02: i32, nb01: u64, nb02: u64, nb03: u64,
-        ne12: i32, nb10: u64, nb11: u64, nb12: u64, nb13: u64,
-        ne0: i32, ne1: i32, r2: i16, r3: i16,
+        ne00: i32,
+        ne02: i32,
+        nb01: u64,
+        nb02: u64,
+        nb03: u64,
+        ne12: i32,
+        nb10: u64,
+        nb11: u64,
+        nb12: u64,
+        nb13: u64,
+        ne0: i32,
+        ne1: i32,
+        r2: i16,
+        r3: i16,
     }
 
     let nb = k / 256;
     let args = GemmArgs {
-        ne00: k as i32, ne02: 1,
+        ne00: k as i32,
+        ne02: 1,
         nb01: (nb * std::mem::size_of::<BlockQ4K>()) as u64,
-        nb02: 0, nb03: 0,
-        ne12: 1, nb10: 2, nb11: (k * 2) as u64, nb12: 0, nb13: 0,
-        ne0: m as i32, ne1: n as i32, r2: 1, r3: 1,
+        nb02: 0,
+        nb03: 0,
+        ne12: 1,
+        nb10: 2,
+        nb11: (k * 2) as u64,
+        nb12: 0,
+        nb13: 0,
+        ne0: m as i32,
+        ne1: n as i32,
+        r2: 1,
+        r3: 1,
     };
 
     let args_buffer = device.new_buffer_with_data(
@@ -108,7 +137,10 @@ fn main() {
 
     // Check output
     let output = unsafe {
-        std::slice::from_raw_parts(output_buffer.contents() as *const f32, m * n)
+        std::slice::from_raw_parts(
+            output_buffer.contents() as *const f32,
+            m * n,
+        )
     };
 
     let non_zero_count = output.iter().filter(|&&x| x != 0.0).count();
@@ -118,8 +150,17 @@ fn main() {
     let sum: f64 = output.iter().map(|&x| x as f64).sum();
 
     println!("Output statistics:");
-    println!("  Non-zero values: {} / {} ({:.1}%)", non_zero_count, m * n, 100.0 * non_zero_count as f64 / (m * n) as f64);
-    println!("  Zero values: {} ({:.1}%)", zero_count, 100.0 * zero_count as f64 / (m * n) as f64);
+    println!(
+        "  Non-zero values: {} / {} ({:.1}%)",
+        non_zero_count,
+        m * n,
+        100.0 * non_zero_count as f64 / (m * n) as f64
+    );
+    println!(
+        "  Zero values: {} ({:.1}%)",
+        zero_count,
+        100.0 * zero_count as f64 / (m * n) as f64
+    );
     println!("  Min: {:.6}", min_val);
     println!("  Max: {:.6}", max_val);
     println!("  Sum: {:.2}", sum);
@@ -141,6 +182,9 @@ fn main() {
     for col in 0..4 {
         let row = col * 32;
         let idx = row + col * m;
-        println!("  output[{},{}] = output[{}] = {:.6}", row, col, idx, output[idx]);
+        println!(
+            "  output[{},{}] = output[{}] = {:.6}",
+            row, col, idx, output[idx]
+        );
     }
 }

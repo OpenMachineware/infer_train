@@ -17,7 +17,8 @@ fn main() {
         .map(|i| (i % 100) as f32 * 0.01 - 0.5)
         .collect();
 
-    let w: Vec<f32> = (0..hidden_dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
+    let w: Vec<f32> =
+        (0..hidden_dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
 
     let mut dst = vec![0.0f32; n_rows * hidden_dim];
 
@@ -56,8 +57,10 @@ fn main() {
     let dims = [512, 1024, 2048, 4096, 8192];
 
     for dim in dims {
-        let x: Vec<f32> = (0..dim).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
-        let w: Vec<f32> = (0..dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
+        let x: Vec<f32> =
+            (0..dim).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
+        let w: Vec<f32> =
+            (0..dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
         let mut dst = vec![0.0f32; dim];
 
         // Warmup
@@ -80,10 +83,7 @@ fn main() {
         let gflops = total_ops / elapsed.as_secs_f64() / 1e9;
         let time_us = elapsed.as_micros() as f64 / iterations as f64;
 
-        println!(
-            "dim={:5}: {:.2} us, {:.2} GFLOPS",
-            dim, time_us, gflops
-        );
+        println!("dim={:5}: {:.2} us, {:.2} GFLOPS", dim, time_us, gflops);
     }
 
     // Test batch processing
@@ -92,10 +92,10 @@ fn main() {
     let dim = 4096;
 
     for batch in batch_sizes {
-        let x: Vec<f32> = (0..batch * dim)
-            .map(|i| (i % 100) as f32 * 0.01 - 0.5)
-            .collect();
-        let w: Vec<f32> = (0..dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
+        let x: Vec<f32> =
+            (0..batch * dim).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
+        let w: Vec<f32> =
+            (0..dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
         let mut dst = vec![0.0f32; batch * dim];
 
         // Warmup
@@ -121,7 +121,10 @@ fn main() {
 
         println!(
             "batch={:3}: {:.2} us total, {:.2} us/row, {:.2} GFLOPS",
-            batch, time_us, time_us / batch as f64, gflops
+            batch,
+            time_us,
+            time_us / batch as f64,
+            gflops
         );
     }
 }

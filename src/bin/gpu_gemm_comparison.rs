@@ -1,9 +1,9 @@
 // GPU GEMM Performance Comparison: Rust vs llama.cpp
 // Test all K sizes from 256 to 4096
 
-use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use infer_train::quant::types::*;
 use half::f16;
+use infer_train::quant::types::*;
+use infer_train::quant::vec_dot::gpu::metal::MetalContext;
 use std::time::Instant;
 
 fn generate_f32_input(n: usize, k: usize) -> Vec<f32> {
@@ -16,8 +16,12 @@ fn generate_q4_k_weights(m: usize, k: usize) -> Vec<BlockQ4K> {
         .map(|i| {
             let mut qs = [0u8; 128];
             let mut scales = [0u8; 12];
-            for j in 0..128 { qs[j] = ((i * 17 + j * 13) % 256) as u8; }
-            for j in 0..12 { scales[j] = ((i * 23 + j * 7) % 256) as u8; }
+            for j in 0..128 {
+                qs[j] = ((i * 17 + j * 13) % 256) as u8;
+            }
+            for j in 0..12 {
+                scales[j] = ((i * 23 + j * 7) % 256) as u8;
+            }
             BlockQ4K {
                 d: f16::from_f32(0.5 + (i % 10) as f32 * 0.1).to_bits(),
                 dmin: f16::from_f32(0.1).to_bits(),
@@ -34,8 +38,12 @@ fn generate_q2_k_weights(m: usize, k: usize) -> Vec<BlockQ2K> {
         .map(|i| {
             let mut qs = [0u8; 64];
             let mut scales = [0u8; 16];
-            for j in 0..64 { qs[j] = ((i * 17 + j * 13) % 256) as u8; }
-            for j in 0..16 { scales[j] = ((i * 23 + j * 7) % 256) as u8; }
+            for j in 0..64 {
+                qs[j] = ((i * 17 + j * 13) % 256) as u8;
+            }
+            for j in 0..16 {
+                scales[j] = ((i * 23 + j * 7) % 256) as u8;
+            }
             BlockQ2K {
                 d: f16::from_f32(0.5).to_bits(),
                 dmin: f16::from_f32(0.1).to_bits(),
@@ -53,38 +61,60 @@ fn generate_q6_k_weights(m: usize, k: usize) -> Vec<BlockQ6K> {
             let mut ql = [0u8; 128];
             let mut qh = [0u8; 64];
             let mut scales = [0i8; 16];
-            for j in 0..128 { ql[j] = ((i * 17 + j * 13) % 256) as u8; }
-            for j in 0..64 { qh[j] = ((i * 19 + j * 11) % 256) as u8; }
-            for j in 0..16 { scales[j] = ((i * 23 + j * 7) % 128) as i8 - 64; }
+            for j in 0..128 {
+                ql[j] = ((i * 17 + j * 13) % 256) as u8;
+            }
+            for j in 0..64 {
+                qh[j] = ((i * 19 + j * 11) % 256) as u8;
+            }
+            for j in 0..16 {
+                scales[j] = ((i * 23 + j * 7) % 128) as i8 - 64;
+            }
             BlockQ6K { ql, qh, scales, d: f16::from_f32(0.5).to_bits() }
         })
         .collect()
 }
 
 fn main() {
-    let metal_ctx = MetalContext::new().expect("Failed to create Metal context");
+    let metal_ctx =
+        MetalContext::new().expect("Failed to create Metal context");
 
     // Test sizes: K from 256 to 4096
     let k_sizes: Vec<usize> = vec![256, 512, 1024, 2048, 4096];
-    let m = 1024;  // Fixed M for comparison
-    let n = 16;    // Batch size
+    let m = 1024; // Fixed M for comparison
+    let n = 16; // Batch size
 
-    println!("┌────────────────────────────────────────────────────────────────────────────┐");
-    println!("│        GPU GEMM Performance: Rust Metal vs llama.cpp Baseline            │");
-    println!("├────────────────────────────────────────────────────────────────────────────┤");
-    println!("│ Format │ K    │ Rust GFLOPS │ llama.cpp* │ Ratio │ Status                │");
-    println!("├────────────────────────────────────────────────────────────────────────────┤");
+    println!(
+        "┌────────────────────────────────────────────────────────────────────────────┐"
+    );
+    println!(
+        "│        GPU GEMM Performance: Rust Metal vs llama.cpp Baseline            │"
+    );
+    println!(
+        "├────────────────────────────────────────────────────────────────────────────┤"
+    );
+    println!(
+        "│ Format │ K    │ Rust GFLOPS │ llama.cpp* │ Ratio │ Status                │"
+    );
+    println!(
+        "├────────────────────────────────────────────────────────────────────────────┤"
+    );
 
     // Baseline from llama.cpp MV kernels (already tested)
     // These are MV GFLOPS for K=4096, multiply by batch efficiency for GEMM estimate
     let llama_cpp_baseline: std::collections::HashMap<&str, f64> = [
-        ("Q4_K", 150.0),  // llama.cpp MV ~150 GFLOPS for large K
+        ("Q4_K", 150.0), // llama.cpp MV ~150 GFLOPS for large K
         ("Q2_K", 170.0),
         ("Q6_K", 150.0),
-    ].iter().cloned().collect();
+    ]
+    .iter()
+    .cloned()
+    .collect();
 
     for k in &k_sizes {
-        println!("│        │──────│─────────────│────────────│───────│                       │");
+        println!(
+            "│        │──────│─────────────│────────────│───────│                       │"
+        );
 
         // Test Q4_K
         let weights = generate_q4_k_weights(m, *k);
@@ -102,10 +132,18 @@ fn main() {
 
         let baseline = llama_cpp_baseline.get("Q4_K").unwrap_or(&150.0);
         let ratio = rust_gflops / baseline * 100.0;
-        let status = if ratio >= 100.0 { "✓ EXCEEDS" } else if ratio >= 90.0 { "≈ CLOSE" } else { "✗ BELOW" };
+        let status = if ratio >= 100.0 {
+            "✓ EXCEEDS"
+        } else if ratio >= 90.0 {
+            "≈ CLOSE"
+        } else {
+            "✗ BELOW"
+        };
 
-        println!("│ Q4_K   │ {:4} │ {:11.1} │ {:10.1} │ {:5.0}% │ {}              │",
-                 k, rust_gflops, baseline, ratio, status);
+        println!(
+            "│ Q4_K   │ {:4} │ {:11.1} │ {:10.1} │ {:5.0}% │ {}              │",
+            k, rust_gflops, baseline, ratio, status
+        );
 
         // Test Q2_K
         let weights = generate_q2_k_weights(m, *k);
@@ -119,10 +157,18 @@ fn main() {
 
         let baseline = llama_cpp_baseline.get("Q2_K").unwrap_or(&170.0);
         let ratio = rust_gflops / baseline * 100.0;
-        let status = if ratio >= 100.0 { "✓ EXCEEDS" } else if ratio >= 90.0 { "≈ CLOSE" } else { "✗ BELOW" };
+        let status = if ratio >= 100.0 {
+            "✓ EXCEEDS"
+        } else if ratio >= 90.0 {
+            "≈ CLOSE"
+        } else {
+            "✗ BELOW"
+        };
 
-        println!("│ Q2_K   │ {:4} │ {:11.1} │ {:10.1} │ {:5.0}% │ {}              │",
-                 k, rust_gflops, baseline, ratio, status);
+        println!(
+            "│ Q2_K   │ {:4} │ {:11.1} │ {:10.1} │ {:5.0}% │ {}              │",
+            k, rust_gflops, baseline, ratio, status
+        );
 
         // Test Q6_K
         let weights = generate_q6_k_weights(m, *k);
@@ -136,13 +182,23 @@ fn main() {
 
         let baseline = llama_cpp_baseline.get("Q6_K").unwrap_or(&150.0);
         let ratio = rust_gflops / baseline * 100.0;
-        let status = if ratio >= 100.0 { "✓ EXCEEDS" } else if ratio >= 90.0 { "≈ CLOSE" } else { "✗ BELOW" };
+        let status = if ratio >= 100.0 {
+            "✓ EXCEEDS"
+        } else if ratio >= 90.0 {
+            "≈ CLOSE"
+        } else {
+            "✗ BELOW"
+        };
 
-        println!("│ Q6_K   │ {:4} │ {:11.1} │ {:10.1} │ {:5.0}% │ {}              │",
-                 k, rust_gflops, baseline, ratio, status);
+        println!(
+            "│ Q6_K   │ {:4} │ {:11.1} │ {:10.1} │ {:5.0}% │ {}              │",
+            k, rust_gflops, baseline, ratio, status
+        );
     }
 
-    println!("└────────────────────────────────────────────────────────────────────────────┘");
+    println!(
+        "└────────────────────────────────────────────────────────────────────────────┘"
+    );
     println!("\n说明:");
     println!("  - K: 输入向量维度");
     println!("  - llama.cpp*: 基于已测试的MV性能估算（K=4096数据）");

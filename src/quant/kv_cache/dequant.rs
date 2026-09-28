@@ -250,9 +250,9 @@ pub fn dequantize_row_q5_0(x: &[BlockQ5_0], y: &mut [f32]) {
 
         // Reconstruct qh as 32-bit value
         let qh = block.qh[0] as u32
-              | ((block.qh[1] as u32) << 8)
-              | ((block.qh[2] as u32) << 16)
-              | ((block.qh[3] as u32) << 24);
+            | ((block.qh[1] as u32) << 8)
+            | ((block.qh[2] as u32) << 16)
+            | ((block.qh[3] as u32) << 24);
 
         // llama.cpp layout: low nibbles go to positions 0-15, high nibbles to 16-31
         for j in 0..QK / 2 {
@@ -286,9 +286,9 @@ pub fn dequantize_row_q5_1(x: &[BlockQ5_1], y: &mut [f32]) {
         let m = fp16_to_fp32(x[i].m);
 
         let qh = x[i].qh[0] as u32
-              | ((x[i].qh[1] as u32) << 8)
-              | ((x[i].qh[2] as u32) << 16)
-              | ((x[i].qh[3] as u32) << 24);
+            | ((x[i].qh[1] as u32) << 8)
+            | ((x[i].qh[2] as u32) << 16)
+            | ((x[i].qh[3] as u32) << 24);
 
         for j in 0..QK / 2 {
             let xh0 = ((qh >> j) & 1) << 4;
@@ -346,15 +346,23 @@ pub fn dequantize_row_iq4_nl_neon(x: &[BlockIQ4NL], y: &mut [f32]) {
                 let idx1 = vshr_n_u8(qs, 4);
 
                 // Unrolled lookup and scale
-                y[i * QK + byte_idx + 0] = KVALUES_IQ4NL[vget_lane_u8(idx0, 0) as usize] * d;
-                y[i * QK + byte_idx + 1] = KVALUES_IQ4NL[vget_lane_u8(idx0, 1) as usize] * d;
-                y[i * QK + byte_idx + 2] = KVALUES_IQ4NL[vget_lane_u8(idx0, 2) as usize] * d;
-                y[i * QK + byte_idx + 3] = KVALUES_IQ4NL[vget_lane_u8(idx0, 3) as usize] * d;
+                y[i * QK + byte_idx + 0] =
+                    KVALUES_IQ4NL[vget_lane_u8(idx0, 0) as usize] * d;
+                y[i * QK + byte_idx + 1] =
+                    KVALUES_IQ4NL[vget_lane_u8(idx0, 1) as usize] * d;
+                y[i * QK + byte_idx + 2] =
+                    KVALUES_IQ4NL[vget_lane_u8(idx0, 2) as usize] * d;
+                y[i * QK + byte_idx + 3] =
+                    KVALUES_IQ4NL[vget_lane_u8(idx0, 3) as usize] * d;
 
-                y[i * QK + byte_idx + QK / 2 + 0] = KVALUES_IQ4NL[vget_lane_u8(idx1, 0) as usize] * d;
-                y[i * QK + byte_idx + QK / 2 + 1] = KVALUES_IQ4NL[vget_lane_u8(idx1, 1) as usize] * d;
-                y[i * QK + byte_idx + QK / 2 + 2] = KVALUES_IQ4NL[vget_lane_u8(idx1, 2) as usize] * d;
-                y[i * QK + byte_idx + QK / 2 + 3] = KVALUES_IQ4NL[vget_lane_u8(idx1, 3) as usize] * d;
+                y[i * QK + byte_idx + QK / 2 + 0] =
+                    KVALUES_IQ4NL[vget_lane_u8(idx1, 0) as usize] * d;
+                y[i * QK + byte_idx + QK / 2 + 1] =
+                    KVALUES_IQ4NL[vget_lane_u8(idx1, 1) as usize] * d;
+                y[i * QK + byte_idx + QK / 2 + 2] =
+                    KVALUES_IQ4NL[vget_lane_u8(idx1, 2) as usize] * d;
+                y[i * QK + byte_idx + QK / 2 + 3] =
+                    KVALUES_IQ4NL[vget_lane_u8(idx1, 3) as usize] * d;
             }
         }
     }

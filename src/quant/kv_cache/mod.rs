@@ -1,11 +1,11 @@
 // KV Cache Quantization
 // Supports: F16, BF16, Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, IQ4_NL
 
-pub mod quant;
 pub mod dequant;
+pub mod quant;
 
-pub use quant::*;
 pub use dequant::*;
+pub use quant::*;
 
 // Block size for Qn_0/Qn_1 formats
 pub const QK: usize = 32;
@@ -15,8 +15,8 @@ pub const QK: usize = 32;
 #[derive(Clone, Copy, Debug)]
 #[repr(C, packed)]
 pub struct BlockQ8_0 {
-    pub d: u16,        // FP16 scale
-    pub qs: [i8; QK],  // 32 int8 quantized values
+    pub d: u16,       // FP16 scale
+    pub qs: [i8; QK], // 32 int8 quantized values
 }
 
 /// Q8_1 block: 32 int8 values + FP16 scale + FP16 sum
@@ -25,9 +25,9 @@ pub struct BlockQ8_0 {
 #[derive(Clone, Copy, Debug)]
 #[repr(C, packed)]
 pub struct BlockQ8_1 {
-    pub d: u16,        // FP16 scale
-    pub s: u16,        // FP16 sum of quantized values
-    pub qs: [i8; QK],  // 32 int8 quantized values
+    pub d: u16,       // FP16 scale
+    pub s: u16,       // FP16 sum of quantized values
+    pub qs: [i8; QK], // 32 int8 quantized values
 }
 
 /// Q4_0 block: 16 nibbles + 1 FP16 scale
@@ -81,12 +81,10 @@ pub struct BlockIQ4NL {
 
 /// IQ4_NL lookup table (from llama.cpp)
 pub const KVALUES_IQ4NL: [f32; 16] = [
-    -127.0, -104.0, -83.0, -65.0, -49.0, -35.0, -22.0, -10.0,
-    1.0, 13.0, 25.0, 38.0, 53.0, 69.0, 89.0, 113.0
+    -127.0, -104.0, -83.0, -65.0, -49.0, -35.0, -22.0, -10.0, 1.0, 13.0, 25.0,
+    38.0, 53.0, 69.0, 89.0, 113.0,
 ];
 
 /// IQ4_NL lookup table as int8 (for NEON TBL instruction)
-pub const KVALUES_IQ4NL_I8: [i8; 16] = [
-    -127, -104, -83, -65, -49, -35, -22, -10,
-    1, 13, 25, 38, 53, 69, 89, 113
-];
+pub const KVALUES_IQ4NL_I8: [i8; 16] =
+    [-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113];

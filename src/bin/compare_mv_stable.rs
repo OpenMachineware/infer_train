@@ -1,7 +1,7 @@
 // Fair comparison: our kernels vs llama.cpp in same session
 // Uses llama.cpp's test-kquant-metal binary for baseline
 
-use metal::{Device, MTLSize, CompileOptions};
+use metal::{CompileOptions, Device, MTLSize};
 
 fn main() {
     println!("=== 公平对比: 同GPU状态下的性能 ===\n");
@@ -28,7 +28,8 @@ fn main() {
     println!("{}", llama_stdout);
 
     // 解析llama.cpp结果
-    let mut llama_results: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    let mut llama_results: std::collections::HashMap<String, f64> =
+        std::collections::HashMap::new();
     for line in llama_stdout.lines() {
         // Format: │ Q4_K     │    99.33 │   337.8 │
         if line.contains("│ Q") {
@@ -64,15 +65,24 @@ fn main() {
         opts.set_fast_math_enabled(true);
         let lib = device.new_library_with_source(&src, &opts).unwrap();
         let func = lib.get_function(kernel, None).unwrap();
-        let pipe = device.new_compute_pipeline_state_with_function(&func).unwrap();
+        let pipe =
+            device.new_compute_pipeline_state_with_function(&func).unwrap();
 
         let our_gflops = benchmark(&device, &queue, &pipe, 4096, 4096, *bs);
         let llama_gflops = llama_results.get(*name).copied().unwrap_or(87.0);
         let ratio = our_gflops / llama_gflops * 100.0;
-        let status = if ratio >= 100.0 { "✓ EXCEED" } else if ratio >= 95.0 { "~ MATCH" } else { "✗ BELOW" };
+        let status = if ratio >= 100.0 {
+            "✓ EXCEED"
+        } else if ratio >= 95.0 {
+            "~ MATCH"
+        } else {
+            "✗ BELOW"
+        };
 
-        println!("│ {:7} │ {:8.2} │ {:8.2} │ {:7.1}% │ {:8} │",
-            name, our_gflops, llama_gflops, ratio, status);
+        println!(
+            "│ {:7} │ {:8.2} │ {:8.2} │ {:7.1}% │ {:8} │",
+            name, our_gflops, llama_gflops, ratio, status
+        );
     }
 
     println!("└─────────┴──────────┴──────────┴──────────┴──────────┘");
@@ -91,12 +101,23 @@ fn warmup_gpu(device: &Device, queue: &metal::CommandQueue) {
     let nb = (k + 255) / 256;
     let ws = m * nb * 144;
 
-    let weights = device.new_buffer(ws as u64, metal::MTLResourceOptions::StorageModeShared);
-    let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
-    let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
+    let weights = device
+        .new_buffer(ws as u64, metal::MTLResourceOptions::StorageModeShared);
+    let input = device.new_buffer(
+        (k * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let output = device.new_buffer(
+        (m * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
 
     #[repr(C)]
-    struct Args { ne00: u32, ne01: u32, nb01: u64 }
+    struct Args {
+        ne00: u32,
+        ne01: u32,
+        nb01: u64,
+    }
     let args = Args { ne00: k as u32, ne01: m as u32, nb01: (nb * 144) as u64 };
     let args_buf = device.new_buffer_with_data(
         &args as *const Args as *const std::ffi::c_void,
@@ -133,12 +154,23 @@ fn benchmark(
     let nb = (k + 255) / 256;
     let ws = m * nb * bs;
 
-    let weights = device.new_buffer(ws as u64, metal::MTLResourceOptions::StorageModeShared);
-    let input = device.new_buffer((k * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
-    let output = device.new_buffer((m * 4) as u64, metal::MTLResourceOptions::StorageModeShared);
+    let weights = device
+        .new_buffer(ws as u64, metal::MTLResourceOptions::StorageModeShared);
+    let input = device.new_buffer(
+        (k * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let output = device.new_buffer(
+        (m * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
 
     #[repr(C)]
-    struct Args { ne00: u32, ne01: u32, nb01: u64 }
+    struct Args {
+        ne00: u32,
+        ne01: u32,
+        nb01: u64,
+    }
     let args = Args { ne00: k as u32, ne01: m as u32, nb01: (nb * bs) as u64 };
     let args_buf = device.new_buffer_with_data(
         &args as *const Args as *const std::ffi::c_void,

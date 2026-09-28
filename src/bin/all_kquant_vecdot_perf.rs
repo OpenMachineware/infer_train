@@ -1,7 +1,7 @@
 // Comprehensive Rust K-quant vec_dot benchmark
-use infer_train::quant::vec_dot::arm::*;
-use infer_train::quant::types::*;
 use half::f16;
+use infer_train::quant::types::*;
+use infer_train::quant::vec_dot::arm::*;
 use std::time::Instant;
 
 fn generate_q8_k_input(k: usize) -> Vec<BlockQ8K> {
@@ -16,11 +16,7 @@ fn generate_q8_k_input(k: usize) -> Vec<BlockQ8K> {
             for j in 0..16 {
                 bsums[j] = ((i * 23 + j * 7) % 256) as i16;
             }
-            BlockQ8K {
-                d: 0.01 + (i % 10) as f32 * 0.001,
-                qs,
-                bsums,
-            }
+            BlockQ8K { d: 0.01 + (i % 10) as f32 * 0.001, qs, bsums }
         })
         .collect()
 }
@@ -152,11 +148,17 @@ fn main() {
     unsafe {
         let k_values = [256, 1024, 4096];
 
-        println!("┌──────────────────────────────────────────────────────────┐");
+        println!(
+            "┌──────────────────────────────────────────────────────────┐"
+        );
         println!("│       Rust K-quant vec_dot Performance                  │");
-        println!("├──────────────────────────────────────────────────────────┤");
+        println!(
+            "├──────────────────────────────────────────────────────────┤"
+        );
         println!("│  Format │ K=256  │ K=1024 │ K=4096 │ Avg   │ Stability  │");
-        println!("├──────────────────────────────────────────────────────────┤");
+        println!(
+            "├──────────────────────────────────────────────────────────┤"
+        );
 
         // Q2_K
         {
@@ -176,7 +178,8 @@ fn main() {
                     let _ = vec_dot_q2_k_q8_k_neon(k, &weights[0..nb], &x);
                 }
                 let elapsed = start.elapsed().as_secs_f64();
-                let gflops = 2.0 * (k as f64) * (iterations as f64) / elapsed / 1e9;
+                let gflops =
+                    2.0 * (k as f64) * (iterations as f64) / elapsed / 1e9;
                 results.push(gflops);
             }
 
@@ -210,7 +213,8 @@ fn main() {
                     let _ = vec_dot_q3_k_q8_k_neon(k, &weights[0..nb], &x);
                 }
                 let elapsed = start.elapsed().as_secs_f64();
-                let gflops = 2.0 * (k as f64) * (iterations as f64) / elapsed / 1e9;
+                let gflops =
+                    2.0 * (k as f64) * (iterations as f64) / elapsed / 1e9;
                 results.push(gflops);
             }
 
@@ -244,7 +248,8 @@ fn main() {
                     let _ = vec_dot_q4_k_q8_k_neon(k, &weights[0..nb], &x);
                 }
                 let elapsed = start.elapsed().as_secs_f64();
-                let gflops = 2.0 * (k as f64) * (iterations as f64) / elapsed / 1e9;
+                let gflops =
+                    2.0 * (k as f64) * (iterations as f64) / elapsed / 1e9;
                 results.push(gflops);
             }
 
@@ -278,7 +283,8 @@ fn main() {
                     let _ = vec_dot_q5_k_q8_k_neon(k, &weights[0..nb], &x);
                 }
                 let elapsed = start.elapsed().as_secs_f64();
-                let gflops = 2.0 * (k as f64) * (iterations as f64) / elapsed / 1e9;
+                let gflops =
+                    2.0 * (k as f64) * (iterations as f64) / elapsed / 1e9;
                 results.push(gflops);
             }
 
@@ -312,7 +318,8 @@ fn main() {
                     let _ = vec_dot_q6_k_q8_k_neon(k, &weights[0..nb], &x);
                 }
                 let elapsed = start.elapsed().as_secs_f64();
-                let gflops = 2.0 * (k as f64) * (iterations as f64) / elapsed / 1e9;
+                let gflops =
+                    2.0 * (k as f64) * (iterations as f64) / elapsed / 1e9;
                 results.push(gflops);
             }
 
@@ -328,6 +335,8 @@ fn main() {
             );
         }
 
-        println!("└──────────────────────────────────────────────────────────┘");
+        println!(
+            "└──────────────────────────────────────────────────────────┘"
+        );
     }
 }

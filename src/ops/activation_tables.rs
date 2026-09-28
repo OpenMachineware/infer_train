@@ -103,7 +103,8 @@ mod tests {
 
     #[test]
     fn test_gelu_table() {
-        let test_values: Vec<f32> = vec![-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+        let test_values: Vec<f32> =
+            vec![-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
         let mut dst = vec![0.0f32; test_values.len()];
 
         gelu_f32_table(&test_values, &mut dst);
@@ -115,7 +116,8 @@ mod tests {
 
     #[test]
     fn test_gelu_quick_table() {
-        let test_values: Vec<f32> = vec![-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+        let test_values: Vec<f32> =
+            vec![-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
         let mut dst = vec![0.0f32; test_values.len()];
 
         gelu_quick_f32_table(&test_values, &mut dst);

@@ -1,15 +1,18 @@
 // Instrument F16 attention to find bottleneck
-use std::time::Instant;
 use std::arch::aarch64::*;
+use std::time::Instant;
 
 const NUM_ITER: usize = 1000;
 const HEAD_DIM: usize = 128;
 
 fn main() {
     let q_f32: Vec<f32> = vec![0.5; HEAD_DIM];
-    let q_f16: Vec<u16> = (0..HEAD_DIM).map(|_| half::f16::from_f32(0.5).to_bits()).collect();
-    let k_f16: Vec<u16> = (0..HEAD_DIM).map(|_| half::f16::from_f32(0.3).to_bits()).collect();
-    let v_f16: Vec<u16> = (0..HEAD_DIM).map(|_| half::f16::from_f32(0.4).to_bits()).collect();
+    let q_f16: Vec<u16> =
+        (0..HEAD_DIM).map(|_| half::f16::from_f32(0.5).to_bits()).collect();
+    let k_f16: Vec<u16> =
+        (0..HEAD_DIM).map(|_| half::f16::from_f32(0.3).to_bits()).collect();
+    let v_f16: Vec<u16> =
+        (0..HEAD_DIM).map(|_| half::f16::from_f32(0.4).to_bits()).collect();
 
     unsafe {
         // Test 1: FP16 dot product
@@ -19,7 +22,11 @@ fn main() {
             let _score = vec_dot_f16_test(&q_f16, &k_f16, HEAD_DIM);
             total_dot += start.elapsed().as_nanos() as u64;
         }
-        println!("FP16 vec_dot: {} ns/iter (head_dim={})", total_dot / NUM_ITER as u64, HEAD_DIM);
+        println!(
+            "FP16 vec_dot: {} ns/iter (head_dim={})",
+            total_dot / NUM_ITER as u64,
+            HEAD_DIM
+        );
 
         // Test 2: FP16 vec_mad
         let mut vkq = v_f16.clone();
@@ -50,7 +57,10 @@ fn main() {
                 let q1 = vld1q_f32(q_f32.as_ptr().add(d + 4));
                 let q_f16_low = vcvt_f16_f32(q0);
                 let q_f16_vec = vcvt_high_f16_f32(q_f16_low, q1);
-                vst1q_u16(q_f16_out.as_mut_ptr().add(d), vreinterpretq_u16_f16(q_f16_vec));
+                vst1q_u16(
+                    q_f16_out.as_mut_ptr().add(d),
+                    vreinterpretq_u16_f16(q_f16_vec),
+                );
             }
             total_conv += start.elapsed().as_nanos() as u64;
         }
@@ -153,7 +163,11 @@ use std::arch::asm;
 
 #[target_feature(enable = "neon")]
 #[inline]
-unsafe fn vfmaq_f16_asm(a: float16x8_t, b: float16x8_t, c: float16x8_t) -> float16x8_t {
+unsafe fn vfmaq_f16_asm(
+    a: float16x8_t,
+    b: float16x8_t,
+    c: float16x8_t,
+) -> float16x8_t {
     let result: float16x8_t;
     asm!(
         "fmla {0:v}.8h, {1:v}.8h, {2:v}.8h",

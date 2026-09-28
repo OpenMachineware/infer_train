@@ -107,16 +107,31 @@ unsafe fn ggml_v_expf(x: float32x4_t) -> float32x4_t {
     let r = vdupq_n_f32(12582912.0);
     let z = vfmaq_f32(r, x, vdupq_n_f32(1.4426950408889634));
     let n = vsubq_f32(z, r);
-    let b = vfmsq_f32(vfmsq_f32(x, n, vdupq_n_f32(0.6931381225585938)), n, vdupq_n_f32(1.908214e-10));
+    let b = vfmsq_f32(
+        vfmsq_f32(x, n, vdupq_n_f32(0.6931381225585938)),
+        n,
+        vdupq_n_f32(1.908214e-10),
+    );
     let e = vshlq_n_u32(vreinterpretq_u32_f32(z), 23);
-    let k = vreinterpretq_f32_u32(vaddq_u32(e, vreinterpretq_u32_f32(vdupq_n_f32(1.0f32))));
+    let k = vreinterpretq_f32_u32(vaddq_u32(
+        e,
+        vreinterpretq_u32_f32(vdupq_n_f32(1.0f32)),
+    ));
     let c = vcagtq_f32(n, vdupq_n_f32(126.0f32));
     let u = vmulq_f32(b, b);
     let j = vfmaq_f32(
         vmulq_f32(vdupq_n_f32(0.9999990463256836), b),
         vfmaq_f32(
-            vfmaq_f32(vdupq_n_f32(0.4999985098838806), vdupq_n_f32(0.1666666169166565), b),
-            vfmaq_f32(vdupq_n_f32(0.04166661170125008), vdupq_n_f32(0.008333338060230017), b),
+            vfmaq_f32(
+                vdupq_n_f32(0.4999985098838806),
+                vdupq_n_f32(0.1666666169166565),
+                b,
+            ),
+            vfmaq_f32(
+                vdupq_n_f32(0.04166661170125008),
+                vdupq_n_f32(0.008333338060230017),
+                b,
+            ),
             u,
         ),
         u,
@@ -142,11 +157,15 @@ fn main() {
     let iterations = 10000;
 
     println!("Note: Both use NEON SIMD with same exp approximation\n");
-    println!("{:<10} {:>15} {:>15} {:>10}", "Size", "Ours (ns)", "llama (ns)", "Perf");
+    println!(
+        "{:<10} {:>15} {:>15} {:>10}",
+        "Size", "Ours (ns)", "llama (ns)", "Perf"
+    );
     println!("{}", "-".repeat(55));
 
     // Warmup CPU
-    let warmup_x: Vec<f32> = (0..1024).map(|i| (i as f32 % 100.0) / 10.0).collect();
+    let warmup_x: Vec<f32> =
+        (0..1024).map(|i| (i as f32 % 100.0) / 10.0).collect();
     let mut warmup_y = vec![0.0f32; 1024];
     for _ in 0..1000 {
         let _ = softmax_f32_dispatch(&warmup_x, &mut warmup_y);
@@ -154,7 +173,8 @@ fn main() {
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     for size in &sizes {
-        let x: Vec<f32> = (0..*size).map(|i| ((i % 100) as f32) / 10.0).collect();
+        let x: Vec<f32> =
+            (0..*size).map(|i| ((i % 100) as f32) / 10.0).collect();
         let mut y_ours = vec![0.0f32; *size];
         let mut y_llama = vec![0.0f32; *size];
 
@@ -175,7 +195,13 @@ fn main() {
             let t_llama = start.elapsed().as_nanos() as f64 / iterations as f64;
 
             let ratio = t_llama / t_ours;
-            println!("{:<10} {:>15.2} {:>15.2} {:>10.1}%", size, t_ours, t_llama, ratio * 100.0);
+            println!(
+                "{:<10} {:>15.2} {:>15.2} {:>10.1}%",
+                size,
+                t_ours,
+                t_llama,
+                ratio * 100.0
+            );
         }
 
         #[cfg(not(target_arch = "aarch64"))]
@@ -185,7 +211,10 @@ fn main() {
                 let _ = softmax_scalar(&x, &mut y_llama);
             }
             let t_llama = start.elapsed().as_nanos() as f64 / iterations as f64;
-            println!("{:<10} {:>15.2} {:>15.2} (scalar)", size, t_ours, t_llama);
+            println!(
+                "{:<10} {:>15.2} {:>15.2} (scalar)",
+                size, t_ours, t_llama
+            );
         }
     }
 

@@ -53,7 +53,11 @@ unsafe fn vexpq_f32(x: float32x4_t) -> float32x4_t {
     let x2 = vmulq_f32(y, y);
     let x3 = vmulq_f32(x2, y);
 
-    let t = vmlaq_f32(vmlaq_f32(vmlaq_f32(p1, y, p2), x2, p3), x3, vdupq_n_f32(0.041666666666666664));
+    let t = vmlaq_f32(
+        vmlaq_f32(vmlaq_f32(p1, y, p2), x2, p3),
+        x3,
+        vdupq_n_f32(0.041666666666666664),
+    );
 
     vreinterpretq_f32_s32(vmulq_s32(vreinterpretq_s32_f32(t), imm))
 }
@@ -164,8 +168,12 @@ fn main() {
     let iterations = [10000, 5000, 2000, 1000, 500, 200, 100, 50];
 
     println!("=== F32: NEON vs Scalar ===\n");
-    println!("Size     | GELU NEON | GELU Scalar | Speedup | GELU-Q NEON | GELU-Q Scalar | Speedup | SILU NEON | SILU Scalar | Speedup");
-    println!("---------|-----------|-------------|---------|-------------|---------------|---------|-----------|-------------|--------");
+    println!(
+        "Size     | GELU NEON | GELU Scalar | Speedup | GELU-Q NEON | GELU-Q Scalar | Speedup | SILU NEON | SILU Scalar | Speedup"
+    );
+    println!(
+        "---------|-----------|-------------|---------|-------------|---------------|---------|-----------|-------------|--------"
+    );
 
     for (i, &n) in sizes.iter().enumerate() {
         let iters = iterations[i];
@@ -174,59 +182,120 @@ fn main() {
         let mut dst = vec![0.0f32; n];
 
         // GELU
-        for _ in 0..10 { unsafe { gelu_neon_f32(&x, &mut dst); } }
+        for _ in 0..10 {
+            unsafe {
+                gelu_neon_f32(&x, &mut dst);
+            }
+        }
         let start = Instant::now();
-        for _ in 0..iters { unsafe { gelu_neon_f32(&x, &mut dst); } }
-        let neon_gelu = (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
+        for _ in 0..iters {
+            unsafe {
+                gelu_neon_f32(&x, &mut dst);
+            }
+        }
+        let neon_gelu =
+            (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
 
-        for _ in 0..10 { gelu_scalar_f32(&x, &mut dst); }
+        for _ in 0..10 {
+            gelu_scalar_f32(&x, &mut dst);
+        }
         let start = Instant::now();
-        for _ in 0..iters { gelu_scalar_f32(&x, &mut dst); }
-        let scalar_gelu = (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
+        for _ in 0..iters {
+            gelu_scalar_f32(&x, &mut dst);
+        }
+        let scalar_gelu =
+            (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
 
         // GELU-Quick
-        for _ in 0..10 { unsafe { gelu_quick_neon_f32(&x, &mut dst); } }
+        for _ in 0..10 {
+            unsafe {
+                gelu_quick_neon_f32(&x, &mut dst);
+            }
+        }
         let start = Instant::now();
-        for _ in 0..iters { unsafe { gelu_quick_neon_f32(&x, &mut dst); } }
-        let neon_gelu_q = (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
+        for _ in 0..iters {
+            unsafe {
+                gelu_quick_neon_f32(&x, &mut dst);
+            }
+        }
+        let neon_gelu_q =
+            (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
 
-        for _ in 0..10 { gelu_quick_scalar_f32(&x, &mut dst); }
+        for _ in 0..10 {
+            gelu_quick_scalar_f32(&x, &mut dst);
+        }
         let start = Instant::now();
-        for _ in 0..iters { gelu_quick_scalar_f32(&x, &mut dst); }
-        let scalar_gelu_q = (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
+        for _ in 0..iters {
+            gelu_quick_scalar_f32(&x, &mut dst);
+        }
+        let scalar_gelu_q =
+            (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
 
         // SILU
-        for _ in 0..10 { unsafe { silu_neon_f32(&x, &mut dst); } }
+        for _ in 0..10 {
+            unsafe {
+                silu_neon_f32(&x, &mut dst);
+            }
+        }
         let start = Instant::now();
-        for _ in 0..iters { unsafe { silu_neon_f32(&x, &mut dst); } }
-        let neon_silu = (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
+        for _ in 0..iters {
+            unsafe {
+                silu_neon_f32(&x, &mut dst);
+            }
+        }
+        let neon_silu =
+            (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
 
-        for _ in 0..10 { silu_scalar_f32(&x, &mut dst); }
+        for _ in 0..10 {
+            silu_scalar_f32(&x, &mut dst);
+        }
         let start = Instant::now();
-        for _ in 0..iters { silu_scalar_f32(&x, &mut dst); }
-        let scalar_silu = (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
+        for _ in 0..iters {
+            silu_scalar_f32(&x, &mut dst);
+        }
+        let scalar_silu =
+            (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
 
-        println!("{:8} | {:9.2} | {:11.2} | {:5.2}x | {:11.2} | {:13.2} | {:5.2}x | {:9.2} | {:11.2} | {:5.2}x",
-            n, neon_gelu, scalar_gelu, scalar_gelu / neon_gelu,
-            neon_gelu_q, scalar_gelu_q, scalar_gelu_q / neon_gelu_q,
-            neon_silu, scalar_silu, scalar_silu / neon_silu);
+        println!(
+            "{:8} | {:9.2} | {:11.2} | {:5.2}x | {:11.2} | {:13.2} | {:5.2}x | {:9.2} | {:11.2} | {:5.2}x",
+            n,
+            neon_gelu,
+            scalar_gelu,
+            scalar_gelu / neon_gelu,
+            neon_gelu_q,
+            scalar_gelu_q,
+            scalar_gelu_q / neon_gelu_q,
+            neon_silu,
+            scalar_silu,
+            scalar_silu / neon_silu
+        );
     }
 
     println!("\n=== F16: Table Lookup vs Scalar ===\n");
-    println!("Size     | GELU Table | GELU Scalar | Speedup | GELU-Q Table | GELU-Q Scalar | Speedup | SILU Scalar");
-    println!("---------|------------|-------------|---------|--------------|---------------|---------|------------");
+    println!(
+        "Size     | GELU Table | GELU Scalar | Speedup | GELU-Q Table | GELU-Q Scalar | Speedup | SILU Scalar"
+    );
+    println!(
+        "---------|------------|-------------|---------|--------------|---------------|---------|------------"
+    );
 
     for (i, &n) in sizes.iter().enumerate() {
         let iters = iterations[i];
 
-        let x_f16: Vec<f16> = (0..n).map(|j| f16::from_f32((j % 20) as f32 - 10.0)).collect();
+        let x_f16: Vec<f16> =
+            (0..n).map(|j| f16::from_f32((j % 20) as f32 - 10.0)).collect();
         let mut dst_f16 = vec![f16::ZERO; n];
 
         // GELU Table
-        for _ in 0..10 { gelu_f16_table(&x_f16, &mut dst_f16); }
+        for _ in 0..10 {
+            gelu_f16_table(&x_f16, &mut dst_f16);
+        }
         let start = Instant::now();
-        for _ in 0..iters { gelu_f16_table(&x_f16, &mut dst_f16); }
-        let table_gelu = (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
+        for _ in 0..iters {
+            gelu_f16_table(&x_f16, &mut dst_f16);
+        }
+        let table_gelu =
+            (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
 
         // GELU Scalar
         for _ in 0..10 {
@@ -246,39 +315,60 @@ fn main() {
                 dst_f16[j] = f16::from_f32(0.5 * v * (1.0 + tanh_arg.tanh()));
             }
         }
-        let scalar_gelu_f16 = (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
+        let scalar_gelu_f16 =
+            (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
 
         // GELU-Quick Table
-        for _ in 0..10 { gelu_quick_f16_table(&x_f16, &mut dst_f16); }
+        for _ in 0..10 {
+            gelu_quick_f16_table(&x_f16, &mut dst_f16);
+        }
         let start = Instant::now();
-        for _ in 0..iters { gelu_quick_f16_table(&x_f16, &mut dst_f16); }
-        let table_gelu_q = (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
+        for _ in 0..iters {
+            gelu_quick_f16_table(&x_f16, &mut dst_f16);
+        }
+        let table_gelu_q =
+            (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
 
         // GELU-Quick Scalar
         for _ in 0..10 {
             for j in 0..n {
                 let v = x_f16[j].to_f32();
-                dst_f16[j] = f16::from_f32(v / (1.0 + (GELU_QUICK_COEF * v).exp()));
+                dst_f16[j] =
+                    f16::from_f32(v / (1.0 + (GELU_QUICK_COEF * v).exp()));
             }
         }
         let start = Instant::now();
         for _ in 0..iters {
             for j in 0..n {
                 let v = x_f16[j].to_f32();
-                dst_f16[j] = f16::from_f32(v / (1.0 + (GELU_QUICK_COEF * v).exp()));
+                dst_f16[j] =
+                    f16::from_f32(v / (1.0 + (GELU_QUICK_COEF * v).exp()));
             }
         }
-        let scalar_gelu_q_f16 = (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
+        let scalar_gelu_q_f16 =
+            (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
 
         // SILU (no table)
-        for _ in 0..10 { silu_scalar_f16(&x_f16, &mut dst_f16); }
+        for _ in 0..10 {
+            silu_scalar_f16(&x_f16, &mut dst_f16);
+        }
         let start = Instant::now();
-        for _ in 0..iters { silu_scalar_f16(&x_f16, &mut dst_f16); }
-        let scalar_silu_f16 = (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
+        for _ in 0..iters {
+            silu_scalar_f16(&x_f16, &mut dst_f16);
+        }
+        let scalar_silu_f16 =
+            (start.elapsed().as_secs_f64() / iters as f64) * 1_000_000.0;
 
-        println!("{:8} | {:10.2} | {:11.2} | {:5.2}x | {:12.2} | {:13.2} | {:5.2}x | {:10.2}",
-            n, table_gelu, scalar_gelu_f16, scalar_gelu_f16 / table_gelu,
-            table_gelu_q, scalar_gelu_q_f16, scalar_gelu_q_f16 / table_gelu_q,
-            scalar_silu_f16);
+        println!(
+            "{:8} | {:10.2} | {:11.2} | {:5.2}x | {:12.2} | {:13.2} | {:5.2}x | {:10.2}",
+            n,
+            table_gelu,
+            scalar_gelu_f16,
+            scalar_gelu_f16 / table_gelu,
+            table_gelu_q,
+            scalar_gelu_q_f16,
+            scalar_gelu_q_f16 / table_gelu_q,
+            scalar_silu_f16
+        );
     }
 }

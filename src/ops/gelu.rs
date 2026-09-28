@@ -85,7 +85,7 @@ pub unsafe fn gelu_quick_f32(x: &[f32], dst: &mut [f32]) {
 
     let one = vdupq_n_f32(1.0);
     let zero = vdupq_n_f32(0.0);
-    let quick_coef = vdupq_n_f32(-GELU_QUICK_COEF);  // -1.702
+    let quick_coef = vdupq_n_f32(-GELU_QUICK_COEF); // -1.702
 
     for i in 0..chunks {
         let vx = vld1q_f32(x.as_ptr().add(i * 4));
@@ -119,10 +119,20 @@ mod tests {
 
         // Verify values are finite and in reasonable range
         for i in 0..x.len() {
-            assert!(dst[i].is_finite(), "gelu({}) = {} is not finite", x[i], dst[i]);
+            assert!(
+                dst[i].is_finite(),
+                "gelu({}) = {} is not finite",
+                x[i],
+                dst[i]
+            );
             // GELU should be close to 0 near 0, and grow with x
             if x[i].abs() > 0.1 {
-                assert!(dst[i].abs() < x[i].abs() * 2.0, "gelu({}) = {} too large", x[i], dst[i]);
+                assert!(
+                    dst[i].abs() < x[i].abs() * 2.0,
+                    "gelu({}) = {} too large",
+                    x[i],
+                    dst[i]
+                );
             }
         }
     }
@@ -138,7 +148,12 @@ mod tests {
 
         // Verify values are finite and in reasonable range
         for i in 0..x.len() {
-            assert!(dst[i].is_finite(), "gelu_quick({}) = {} is not finite", x[i], dst[i]);
+            assert!(
+                dst[i].is_finite(),
+                "gelu_quick({}) = {} is not finite",
+                x[i],
+                dst[i]
+            );
         }
     }
 }

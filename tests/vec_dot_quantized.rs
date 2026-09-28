@@ -1,8 +1,10 @@
-use infer_train::quant::types::{BlockQ4_0, BlockQ4_1, BlockQ8_0, BlockQ8_1, QK4_0};
-use infer_train::quant::vec_dot::scalar::q4_0::vec_dot_q4_0_q8_0;
-use infer_train::quant::vec_dot::scalar::q8_0::vec_dot_q8_0_q8_0;
-use infer_train::quant::vec_dot::scalar::q4_1::vec_dot_q4_1_q8_1;
 use half::f16;
+use infer_train::quant::types::{
+    BlockQ4_0, BlockQ4_1, BlockQ8_0, BlockQ8_1, QK4_0,
+};
+use infer_train::quant::vec_dot::scalar::q4_0::vec_dot_q4_0_q8_0;
+use infer_train::quant::vec_dot::scalar::q4_1::vec_dot_q4_1_q8_1;
+use infer_train::quant::vec_dot::scalar::q8_0::vec_dot_q8_0_q8_0;
 
 fn create_test_block_q4_0(values: &[i8]) -> BlockQ4_0 {
     assert_eq!(values.len(), QK4_0);
@@ -15,19 +17,13 @@ fn create_test_block_q4_0(values: &[i8]) -> BlockQ4_0 {
         qs[i] = lo | (hi << 4);
     }
 
-    BlockQ4_0 {
-        d: f16::from_f32(d).to_bits(),
-        qs,
-    }
+    BlockQ4_0 { d: f16::from_f32(d).to_bits(), qs }
 }
 
 fn create_test_block_q8_0(values: &[i8]) -> BlockQ8_0 {
     assert_eq!(values.len(), QK4_0);
     let d = 1.0f32;
-    BlockQ8_0 {
-        d: f16::from_f32(d).to_bits(),
-        qs: values.try_into().unwrap(),
-    }
+    BlockQ8_0 { d: f16::from_f32(d).to_bits(), qs: values.try_into().unwrap() }
 }
 
 fn create_test_block_q4_1(values: &[i8], min: f32) -> BlockQ4_1 {
@@ -59,8 +55,11 @@ fn create_test_block_q8_1(values: &[i8], sum: f32) -> BlockQ8_1 {
 #[test]
 fn test_vec_dot_q4_0_q8_0() {
     // Test simple case
-    let q4_values: Vec<i8> = (0..32).map(|i| if i < 16 { i as i8 - 8 } else { (31 - i) as i8 - 8 }).collect();
-    let q8_values: Vec<i8> = (0..32).map(|i| if i % 2 == 0 { 1 } else { -1 }).collect();
+    let q4_values: Vec<i8> = (0..32)
+        .map(|i| if i < 16 { i as i8 - 8 } else { (31 - i) as i8 - 8 })
+        .collect();
+    let q8_values: Vec<i8> =
+        (0..32).map(|i| if i % 2 == 0 { 1 } else { -1 }).collect();
 
     let x = vec![create_test_block_q4_0(&q4_values)];
     let y = vec![create_test_block_q8_0(&q8_values)];
@@ -68,12 +67,18 @@ fn test_vec_dot_q4_0_q8_0() {
     let result = vec_dot_q4_0_q8_0(QK4_0, &x, &y);
 
     // Compute expected result manually
-    let expected: f32 = q4_values.iter().zip(q8_values.iter())
+    let expected: f32 = q4_values
+        .iter()
+        .zip(q8_values.iter())
         .map(|(&a, &b)| a as f32 * b as f32)
         .sum();
 
-    assert!((result - expected).abs() < 0.001,
-        "Q4_0 × Q8_0: expected {}, got {}", expected, result);
+    assert!(
+        (result - expected).abs() < 0.001,
+        "Q4_0 × Q8_0: expected {}, got {}",
+        expected,
+        result
+    );
 }
 
 #[test]
@@ -86,19 +91,26 @@ fn test_vec_dot_q8_0_q8_0() {
 
     let result = vec_dot_q8_0_q8_0(QK4_0, &x, &y);
 
-    let expected: f32 = a_values.iter().zip(b_values.iter())
+    let expected: f32 = a_values
+        .iter()
+        .zip(b_values.iter())
         .map(|(&a, &b)| a as f32 * b as f32)
         .sum();
 
-    assert!((result - expected).abs() < 0.001,
-        "Q8_0 × Q8_0: expected {}, got {}", expected, result);
+    assert!(
+        (result - expected).abs() < 0.001,
+        "Q8_0 × Q8_0: expected {}, got {}",
+        expected,
+        result
+    );
 }
 
 #[test]
 fn test_vec_dot_q4_1_q8_1() {
     // Q4_1: values 0-15, min = 0, so no offset
     let q4_values: Vec<i8> = (0..32).map(|i| (i % 16) as i8).collect();
-    let q8_values: Vec<i8> = (0..32).map(|i| if i % 2 == 0 { 1 } else { 2 }).collect();
+    let q8_values: Vec<i8> =
+        (0..32).map(|i| if i % 2 == 0 { 1 } else { 2 }).collect();
     let q8_sum: f32 = q8_values.iter().map(|&v| v as f32).sum();
 
     let x = vec![create_test_block_q4_1(&q4_values, 0.0)];
@@ -107,10 +119,16 @@ fn test_vec_dot_q4_1_q8_1() {
     let result = vec_dot_q4_1_q8_1(QK4_0, &x, &y);
 
     // Expected: sum of q4 * q8
-    let expected: f32 = q4_values.iter().zip(q8_values.iter())
+    let expected: f32 = q4_values
+        .iter()
+        .zip(q8_values.iter())
         .map(|(&a, &b)| a as f32 * b as f32)
         .sum();
 
-    assert!((result - expected).abs() < 0.01,
-        "Q4_1 × Q8_1: expected {}, got {}", expected, result);
+    assert!(
+        (result - expected).abs() < 0.01,
+        "Q4_1 × Q8_1: expected {}, got {}",
+        expected,
+        result
+    );
 }

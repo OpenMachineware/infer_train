@@ -1,7 +1,7 @@
 // Benchmark IQ4_NL Metal kernel across multiple sizes
-use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use infer_train::quant::types::*;
 use half::f16;
+use infer_train::quant::types::*;
+use infer_train::quant::vec_dot::gpu::metal::MetalContext;
 
 fn generate_f32_input(k: usize) -> Vec<f32> {
     (0..k).map(|i| (i % 10) as f32 * 0.1).collect()
@@ -9,13 +9,18 @@ fn generate_f32_input(k: usize) -> Vec<f32> {
 
 fn generate_iq4_nl_weights(m: usize, k: usize) -> Vec<BlockIQ4NL> {
     let nb = k / 32;
-    (0..m * nb).map(|i| {
-        let mut qs = [0u8; 16];
-        for j in 0..16 {
-            qs[j] = ((i * 17 + j * 13) % 256) as u8;
-        }
-        BlockIQ4NL { d: f16::from_f32(0.5 + (i % 10) as f32 * 0.1).to_bits(), qs }
-    }).collect()
+    (0..m * nb)
+        .map(|i| {
+            let mut qs = [0u8; 16];
+            for j in 0..16 {
+                qs[j] = ((i * 17 + j * 13) % 256) as u8;
+            }
+            BlockIQ4NL {
+                d: f16::from_f32(0.5 + (i % 10) as f32 * 0.1).to_bits(),
+                qs,
+            }
+        })
+        .collect()
 }
 
 fn main() {
@@ -37,7 +42,8 @@ fn main() {
 
         let start = std::time::Instant::now();
         for _ in 0..n_iter {
-            let _ = ctx.mv_iq4_nl_f32(m, k, &weights, &input).expect("GPU failed");
+            let _ =
+                ctx.mv_iq4_nl_f32(m, k, &weights, &input).expect("GPU failed");
         }
         let elapsed = start.elapsed();
         let avg_us = elapsed.as_micros() as f64 / n_iter as f64;

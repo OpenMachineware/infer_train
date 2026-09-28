@@ -6,7 +6,11 @@ use super::fp::fp16_to_fp32;
 
 /// Manual vdotq_s32 implementation using native SDOT instruction
 #[target_feature(enable = "neon,dotprod")]
-unsafe fn vdotq_s32_manual(acc: int32x4_t, a: int8x16_t, b: int8x16_t) -> int32x4_t {
+unsafe fn vdotq_s32_manual(
+    acc: int32x4_t,
+    a: int8x16_t,
+    b: int8x16_t,
+) -> int32x4_t {
     use std::arch::asm;
 
     let mut result = acc;
@@ -22,7 +26,11 @@ unsafe fn vdotq_s32_manual(acc: int32x4_t, a: int8x16_t, b: int8x16_t) -> int32x
 
 /// TQ2_0 × Q8_K vector dot product (NEON implementation)
 #[target_feature(enable = "neon,dotprod")]
-pub unsafe fn vec_dot_tq2_0_q8_k_neon(n: usize, x: &[BlockTQ2_0], y: &[BlockQ8K]) -> f32 {
+pub unsafe fn vec_dot_tq2_0_q8_k_neon(
+    n: usize,
+    x: &[BlockTQ2_0],
+    y: &[BlockQ8K],
+) -> f32 {
     let nb = n / QK_K;
     let m3 = vdupq_n_u8(3);
 
@@ -87,11 +95,16 @@ pub unsafe fn vec_dot_tq2_0_q8_k_neon(n: usize, x: &[BlockTQ2_0], y: &[BlockQ8K]
 
 /// TQ1_0 × Q8_K vector dot product (NEON implementation)
 #[target_feature(enable = "neon,dotprod")]
-pub unsafe fn vec_dot_tq1_0_q8_k_neon(n: usize, x: &[BlockTQ1_0], y: &[BlockQ8K]) -> f32 {
+pub unsafe fn vec_dot_tq1_0_q8_k_neon(
+    n: usize,
+    x: &[BlockTQ1_0],
+    y: &[BlockQ8K],
+) -> f32 {
     let nb = n / QK_K;
 
     // Shift table for the last 16 elements
-    static K_SHIFT: [u8; 16] = [1, 1, 1, 1, 3, 3, 3, 3, 9, 9, 9, 9, 27, 27, 27, 27];
+    static K_SHIFT: [u8; 16] =
+        [1, 1, 1, 1, 3, 3, 3, 3, 9, 9, 9, 9, 27, 27, 27, 27];
     let shift = vld1q_u8(K_SHIFT.as_ptr());
 
     let mut sumf = 0.0f32;
@@ -122,16 +135,46 @@ pub unsafe fn vec_dot_tq1_0_q8_k_neon(n: usize, x: &[BlockTQ1_0], y: &[BlockQ8K]
 
             // Divide by 64 (shift right 6) to get the top 2 bits
             // This is equivalent to: (qx * 3 / 2 + qx / 2) >> 6 = round(qx * 1.5) >> 6
-            let sqx0 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx0, vshrq_n_u8(qx0, 1)), 6));
-            let sqx1 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx1, vshrq_n_u8(qx1, 1)), 6));
-            let sqx2 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx2, vshrq_n_u8(qx2, 1)), 6));
-            let sqx3 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx3, vshrq_n_u8(qx3, 1)), 6));
-            let sqx4 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx4, vshrq_n_u8(qx4, 1)), 6));
-            let sqx5 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx5, vshrq_n_u8(qx5, 1)), 6));
-            let sqx6 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx6, vshrq_n_u8(qx6, 1)), 6));
-            let sqx7 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx7, vshrq_n_u8(qx7, 1)), 6));
-            let sqx8 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx8, vshrq_n_u8(qx8, 1)), 6));
-            let sqx9 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx9, vshrq_n_u8(qx9, 1)), 6));
+            let sqx0 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx0, vshrq_n_u8(qx0, 1)),
+                6,
+            ));
+            let sqx1 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx1, vshrq_n_u8(qx1, 1)),
+                6,
+            ));
+            let sqx2 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx2, vshrq_n_u8(qx2, 1)),
+                6,
+            ));
+            let sqx3 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx3, vshrq_n_u8(qx3, 1)),
+                6,
+            ));
+            let sqx4 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx4, vshrq_n_u8(qx4, 1)),
+                6,
+            ));
+            let sqx5 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx5, vshrq_n_u8(qx5, 1)),
+                6,
+            ));
+            let sqx6 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx6, vshrq_n_u8(qx6, 1)),
+                6,
+            ));
+            let sqx7 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx7, vshrq_n_u8(qx7, 1)),
+                6,
+            ));
+            let sqx8 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx8, vshrq_n_u8(qx8, 1)),
+                6,
+            ));
+            let sqx9 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx9, vshrq_n_u8(qx9, 1)),
+                6,
+            ));
 
             // Load Q8 values
             let qy0 = vld1q_s8(q8.add(0));
@@ -170,15 +213,34 @@ pub unsafe fn vec_dot_tq1_0_q8_k_neon(n: usize, x: &[BlockTQ1_0], y: &[BlockQ8K]
 
             // Load high bits
             let qh_val = std::ptr::read_unaligned(qh as *const u32);
-            let qx5 = vmulq_u8(vreinterpretq_u8_u32(vdupq_n_u32(qh_val)), shift);
+            let qx5 =
+                vmulq_u8(vreinterpretq_u8_u32(vdupq_n_u32(qh_val)), shift);
 
             // Extract trits
-            let sqx0 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx0, vshrq_n_u8(qx0, 1)), 6));
-            let sqx1 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx1, vshrq_n_u8(qx1, 1)), 6));
-            let sqx2 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx2, vshrq_n_u8(qx2, 1)), 6));
-            let sqx3 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx3, vshrq_n_u8(qx3, 1)), 6));
-            let sqx4 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx4, vshrq_n_u8(qx4, 1)), 6));
-            let sqx5 = vreinterpretq_s8_u8(vshrq_n_u8(vhaddq_u8(qx5, vshrq_n_u8(qx5, 1)), 6));
+            let sqx0 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx0, vshrq_n_u8(qx0, 1)),
+                6,
+            ));
+            let sqx1 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx1, vshrq_n_u8(qx1, 1)),
+                6,
+            ));
+            let sqx2 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx2, vshrq_n_u8(qx2, 1)),
+                6,
+            ));
+            let sqx3 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx3, vshrq_n_u8(qx3, 1)),
+                6,
+            ));
+            let sqx4 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx4, vshrq_n_u8(qx4, 1)),
+                6,
+            ));
+            let sqx5 = vreinterpretq_s8_u8(vshrq_n_u8(
+                vhaddq_u8(qx5, vshrq_n_u8(qx5, 1)),
+                6,
+            ));
 
             // Load Q8 values
             let qy0 = vld1q_s8(q8.add(160));

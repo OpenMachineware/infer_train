@@ -16,11 +16,13 @@ pub fn vec_dot_q6_k_q8_k(n: usize, x: &[BlockQ6K], y: &[BlockQ8K]) -> f32 {
             for k in 0..8 {
                 // Combine lower 4 bits and upper 2 bits
                 let lower4 = x[i].ql[j * 8 + k] as i32;
-                let upper2 = (x[i].qh[j * 4 + k / 2] >> (4 * (k % 2))) as i32 & 0x03;
+                let upper2 =
+                    (x[i].qh[j * 4 + k / 2] >> (4 * (k % 2))) as i32 & 0x03;
                 let v = lower4 | (upper2 << 4);
 
                 isum += v * y[i].qs[j * 16 + k] as i32 * x[i].scales[j] as i32;
-                isum += v * y[i].qs[j * 16 + k + 8] as i32 * x[i].scales[j] as i32;
+                isum +=
+                    v * y[i].qs[j * 16 + k + 8] as i32 * x[i].scales[j] as i32;
             }
         }
 

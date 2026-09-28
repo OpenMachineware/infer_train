@@ -1,7 +1,10 @@
 // Benchmark with correct kernel dispatch: MV for decode, GEMM for batch
 // Run: cargo run --release --bin benchmark_dispatched
 
-use metal::{Device, MTLSize, CompileOptions, FunctionDescriptor, FunctionConstantValues, MTLDataType};
+use metal::{
+    CompileOptions, Device, FunctionConstantValues, FunctionDescriptor,
+    MTLDataType, MTLSize,
+};
 
 fn main() {
     println!("=== K-Quant Performance with Kernel Dispatch ===\n");
@@ -13,14 +16,16 @@ fn main() {
     let mv_shader = include_str!("../../shaders/mv_q4_k.metal");
     let mv_compile_options = CompileOptions::new();
     mv_compile_options.set_fast_math_enabled(true);
-    let mv_library = device.new_library_with_source(mv_shader, &mv_compile_options)
+    let mv_library = device
+        .new_library_with_source(mv_shader, &mv_compile_options)
         .expect("Failed to compile MV shader");
 
     // Compile GEMM template shader with fast math enabled
     let gemm_shader = include_str!("../../shaders/mul_mm_standalone.metal");
     let gemm_compile_options = CompileOptions::new();
     gemm_compile_options.set_fast_math_enabled(true);
-    let gemm_library = device.new_library_with_source(gemm_shader, &gemm_compile_options)
+    let gemm_library = device
+        .new_library_with_source(gemm_shader, &gemm_compile_options)
         .expect("Failed to compile GEMM shader");
 
     // Test scenarios
@@ -34,35 +39,68 @@ fn main() {
         ("XL batch", 4096, 128, 4096, "gemm"),
     ];
 
-    let formats = [
-        ("Q4_K", 144, "kernel_mul_mm_q4_K_f32", "kernel_mul_mv_q4_K_f32"),
-    ];
+    let formats =
+        [("Q4_K", 144, "kernel_mul_mm_q4_K_f32", "kernel_mul_mv_q4_K_f32")];
 
-    println!("┌──────────────┬───────┬──────┬──────┬─────────────┬──────────┬──────────┐");
-    println!("│ Scenario     │   M   │   N  │   K  │ Kernel      │ GFLOPS   │ vs llama │");
-    println!("├──────────────┼───────┼──────┼──────┼─────────────┼──────────┼──────────┤");
+    println!(
+        "┌──────────────┬───────┬──────┬──────┬─────────────┬──────────┬──────────┐"
+    );
+    println!(
+        "│ Scenario     │   M   │   N  │   K  │ Kernel      │ GFLOPS   │ vs llama │"
+    );
+    println!(
+        "├──────────────┼───────┼──────┼──────┼─────────────┼──────────┼──────────┤"
+    );
 
     for (format_name, block_size, gemm_kernel, mv_kernel) in formats.iter() {
         println!("│ {}", format_name);
 
         for (scenario_name, m, n, k, kernel_type) in scenarios.iter() {
             let gflops = if *kernel_type == "mv" {
-                benchmark_mv(&device, &queue, &mv_library, *m, *n, *k, *block_size, mv_kernel)
+                benchmark_mv(
+                    &device,
+                    &queue,
+                    &mv_library,
+                    *m,
+                    *n,
+                    *k,
+                    *block_size,
+                    mv_kernel,
+                )
             } else {
-                benchmark_gemm(&device, &queue, &gemm_library, *m, *n, *k, *block_size, gemm_kernel)
+                benchmark_gemm(
+                    &device,
+                    &queue,
+                    &gemm_library,
+                    *m,
+                    *n,
+                    *k,
+                    *block_size,
+                    gemm_kernel,
+                )
             };
 
-            let llama_baseline = estimate_llama_baseline(*m, *n, *k, *kernel_type);
+            let llama_baseline =
+                estimate_llama_baseline(*m, *n, *k, *kernel_type);
             let ratio = gflops / llama_baseline * 100.0;
 
-            println!("│ {:12} │ {:5} │ {:4} │ {:4} │ {:10} │ {:8.2} │ {:7.1}% │",
-                scenario_name, m, n, k, kernel_type, gflops, ratio);
+            println!(
+                "│ {:12} │ {:5} │ {:4} │ {:4} │ {:10} │ {:8.2} │ {:7.1}% │",
+                scenario_name, m, n, k, kernel_type, gflops, ratio
+            );
         }
     }
-    println!("└──────────────┴───────┴──────┴──────┴─────────────┴──────────┴──────────┘");
+    println!(
+        "└──────────────┴───────┴──────┴──────┴─────────────┴──────────┴──────────┘"
+    );
 }
 
-fn estimate_llama_baseline(m: usize, n: usize, k: usize, kernel_type: &str) -> f64 {
+fn estimate_llama_baseline(
+    m: usize,
+    n: usize,
+    k: usize,
+    kernel_type: &str,
+) -> f64 {
     if kernel_type == "mv" {
         // MV baseline from llama.cpp
         87.0 // Q4_K baseline
@@ -89,8 +127,11 @@ fn benchmark_mv(
     block_size: usize,
     kernel_name: &str,
 ) -> f64 {
-    let function = library.get_function(kernel_name, None).expect("Failed to get function");
-    let pipeline = device.new_compute_pipeline_state_with_function(&function)
+    let function = library
+        .get_function(kernel_name, None)
+        .expect("Failed to get function");
+    let pipeline = device
+        .new_compute_pipeline_state_with_function(&function)
         .expect("Failed to create pipeline");
 
     // Allocate buffers
@@ -99,16 +140,25 @@ fn benchmark_mv(
     let input_size = k * 4; // FP32
     let output_size = m * 4; // FP32
 
-    let weights_buffer = device.new_buffer(weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
-    let input_buffer = device.new_buffer(input_size as u64, metal::MTLResourceOptions::StorageModeShared);
-    let output_buffer = device.new_buffer(output_size as u64, metal::MTLResourceOptions::StorageModeShared);
+    let weights_buffer = device.new_buffer(
+        weights_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let input_buffer = device.new_buffer(
+        input_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let output_buffer = device.new_buffer(
+        output_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
 
     // Args for MV kernel
     #[repr(C)]
     struct MvArgs {
-        ne00: u32,  // K
-        ne01: u32,  // M
-        nb01: u64,  // Row stride
+        ne00: u32, // K
+        ne01: u32, // M
+        nb01: u64, // Row stride
     }
 
     let args = MvArgs {
@@ -190,17 +240,35 @@ fn benchmark_gemm(
 
     unsafe {
         constant_values.set_constant_value_at_index(
-            &false_val as *const _ as *const std::ffi::c_void, MTLDataType::Bool, 0);
+            &false_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Bool,
+            0,
+        );
         constant_values.set_constant_value_at_index(
-            &bc_out_val as *const _ as *const std::ffi::c_void, MTLDataType::Bool, 1);
+            &bc_out_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Bool,
+            1,
+        );
         constant_values.set_constant_value_at_index(
-            &one_val as *const _ as *const std::ffi::c_void, MTLDataType::Short, 2);
+            &one_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Short,
+            2,
+        );
         constant_values.set_constant_value_at_index(
-            &one_val as *const _ as *const std::ffi::c_void, MTLDataType::Short, 3);
+            &one_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Short,
+            3,
+        );
         constant_values.set_constant_value_at_index(
-            &one_val as *const _ as *const std::ffi::c_void, MTLDataType::Short, 4);
+            &one_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Short,
+            4,
+        );
         constant_values.set_constant_value_at_index(
-            &one_val as *const _ as *const std::ffi::c_void, MTLDataType::Short, 5);
+            &one_val as *const _ as *const std::ffi::c_void,
+            MTLDataType::Short,
+            5,
+        );
     }
 
     let descriptor = FunctionDescriptor::new();
@@ -212,7 +280,8 @@ fn benchmark_gemm(
         Err(_) => return 0.0,
     };
 
-    let pipeline = device.new_compute_pipeline_state_with_function(&function)
+    let pipeline = device
+        .new_compute_pipeline_state_with_function(&function)
         .expect("Failed to create pipeline");
 
     // Allocate buffers
@@ -221,22 +290,53 @@ fn benchmark_gemm(
     let input_size = n * k * 2; // FP16
     let output_size = m * n * 4; // FP32
 
-    let weights_buffer = device.new_buffer(weights_size as u64, metal::MTLResourceOptions::StorageModeShared);
-    let input_buffer = device.new_buffer(input_size as u64, metal::MTLResourceOptions::StorageModeShared);
-    let output_buffer = device.new_buffer(output_size as u64, metal::MTLResourceOptions::StorageModeShared);
+    let weights_buffer = device.new_buffer(
+        weights_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let input_buffer = device.new_buffer(
+        input_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let output_buffer = device.new_buffer(
+        output_size as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
 
     // Args
     #[repr(C)]
     struct GemmArgs {
-        ne00: i32, ne02: i32, nb01: u64, nb02: u64, nb03: u64,
-        ne12: i32, nb10: u64, nb11: u64, nb12: u64, nb13: u64,
-        ne0: i32, ne1: i32, r2: i16, r3: i16,
+        ne00: i32,
+        ne02: i32,
+        nb01: u64,
+        nb02: u64,
+        nb03: u64,
+        ne12: i32,
+        nb10: u64,
+        nb11: u64,
+        nb12: u64,
+        nb13: u64,
+        ne0: i32,
+        ne1: i32,
+        r2: i16,
+        r3: i16,
     }
 
     let args = GemmArgs {
-        ne00: k as i32, ne02: 1, nb01: (num_blocks_k * block_size) as u64, nb02: 0, nb03: 0,
-        ne12: 1, nb10: 2, nb11: (k * 2) as u64, nb12: 0, nb13: 0,
-        ne0: m as i32, ne1: n as i32, r2: 1, r3: 1,
+        ne00: k as i32,
+        ne02: 1,
+        nb01: (num_blocks_k * block_size) as u64,
+        nb02: 0,
+        nb03: 0,
+        ne12: 1,
+        nb10: 2,
+        nb11: (k * 2) as u64,
+        nb12: 0,
+        nb13: 0,
+        ne0: m as i32,
+        ne1: n as i32,
+        r2: 1,
+        r3: 1,
     };
     let args_buffer = device.new_buffer_with_data(
         &args as *const GemmArgs as *const std::ffi::c_void,

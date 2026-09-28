@@ -13,21 +13,28 @@ type vDSP_Length = c_uint;
 #[link(name = "Accelerate", kind = "framework")]
 unsafe extern "C" {
     fn vDSP_vadd(
-        a: *const f32, ia: vDSP_Stride,
-        b: *const f32, ib: vDSP_Stride,
-        c: *mut f32, ic: vDSP_Stride,
+        a: *const f32,
+        ia: vDSP_Stride,
+        b: *const f32,
+        ib: vDSP_Stride,
+        c: *mut f32,
+        ic: vDSP_Stride,
         n: vDSP_Length,
     );
     fn vDSP_vsmul(
-        a: *const f32, ia: vDSP_Stride,
+        a: *const f32,
+        ia: vDSP_Stride,
         b: *const f32,
-        c: *mut f32, ic: vDSP_Stride,
+        c: *mut f32,
+        ic: vDSP_Stride,
         n: vDSP_Length,
     );
     fn vDSP_vsadd(
-        a: *const f32, ia: vDSP_Stride,
+        a: *const f32,
+        ia: vDSP_Stride,
         b: *const f32,
-        c: *mut f32, ic: vDSP_Stride,
+        c: *mut f32,
+        ic: vDSP_Stride,
         n: vDSP_Length,
     );
 }
@@ -37,7 +44,14 @@ unsafe extern "C" {
 pub fn scale_f32(src: &[f32], dst: &mut [f32], scale: f32) {
     let n = dst.len().min(src.len());
     unsafe {
-        vDSP_vsmul(src.as_ptr(), 1, &scale, dst.as_mut_ptr(), 1, n as vDSP_Length);
+        vDSP_vsmul(
+            src.as_ptr(),
+            1,
+            &scale,
+            dst.as_mut_ptr(),
+            1,
+            n as vDSP_Length,
+        );
     }
 }
 
@@ -51,17 +65,41 @@ pub fn scale_f32(src: &[f32], dst: &mut [f32], scale: f32) {
 
 /// Scale with bias: dst = src * scale + bias
 #[cfg(target_os = "macos")]
-pub fn scale_f32_with_bias(src: &[f32], dst: &mut [f32], scale: f32, bias: f32) {
+pub fn scale_f32_with_bias(
+    src: &[f32],
+    dst: &mut [f32],
+    scale: f32,
+    bias: f32,
+) {
     let n = dst.len().min(src.len());
     unsafe {
         // vDSP_vsmul then vDSP_vsadd
-        vDSP_vsmul(src.as_ptr(), 1, &scale, dst.as_mut_ptr(), 1, n as vDSP_Length);
-        vDSP_vsadd(dst.as_mut_ptr(), 1, &bias, dst.as_mut_ptr(), 1, n as vDSP_Length);
+        vDSP_vsmul(
+            src.as_ptr(),
+            1,
+            &scale,
+            dst.as_mut_ptr(),
+            1,
+            n as vDSP_Length,
+        );
+        vDSP_vsadd(
+            dst.as_mut_ptr(),
+            1,
+            &bias,
+            dst.as_mut_ptr(),
+            1,
+            n as vDSP_Length,
+        );
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn scale_f32_with_bias(src: &[f32], dst: &mut [f32], scale: f32, bias: f32) {
+pub fn scale_f32_with_bias(
+    src: &[f32],
+    dst: &mut [f32],
+    scale: f32,
+    bias: f32,
+) {
     let n = dst.len().min(src.len());
     for i in 0..n {
         dst[i] = src[i] * scale + bias;
@@ -73,7 +111,14 @@ pub fn scale_f32_with_bias(src: &[f32], dst: &mut [f32], scale: f32, bias: f32) 
 pub fn add1_f32(src: &[f32], dst: &mut [f32], value: f32) {
     let n = dst.len().min(src.len());
     unsafe {
-        vDSP_vsadd(src.as_ptr(), 1, &value, dst.as_mut_ptr(), 1, n as vDSP_Length);
+        vDSP_vsadd(
+            src.as_ptr(),
+            1,
+            &value,
+            dst.as_mut_ptr(),
+            1,
+            n as vDSP_Length,
+        );
     }
 }
 

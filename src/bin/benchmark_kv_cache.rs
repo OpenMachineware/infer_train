@@ -13,10 +13,14 @@ fn main() {
     }
 
     let sizes = [1024, 4096, 16384, 65536];
-    let runs = 20;  // Increased for stability
+    let runs = 20; // Increased for stability
 
-    println!("Format | Size  | Our Quant | llama Quant | Our Dequant | llama Dequant | Ratio");
-    println!("-------+-------+-----------+-------------+-------------+---------------+-------");
+    println!(
+        "Format | Size  | Our Quant | llama Quant | Our Dequant | llama Dequant | Ratio"
+    );
+    println!(
+        "-------+-------+-----------+-------------+-------------+---------------+-------"
+    );
 
     for &size in &sizes {
         // F16
@@ -90,15 +94,28 @@ fn benchmark_f16(size: usize, runs: usize) {
     let llama_dequant_time = start.elapsed().as_secs_f64() / runs as f64;
     let llama_dequant_gbps = (size * 2) as f64 / llama_dequant_time / 1e9;
 
-    let quant_match = output_f16.iter().zip(output_f16_llama.iter()).all(|(a, b)| a == b);
-    let dequant_match = output_f32.iter().zip(output_f32_llama.iter()).all(|(a, b)| (a - b).abs() < 1e-5);
+    let quant_match =
+        output_f16.iter().zip(output_f16_llama.iter()).all(|(a, b)| a == b);
+    let dequant_match = output_f32
+        .iter()
+        .zip(output_f32_llama.iter())
+        .all(|(a, b)| (a - b).abs() < 1e-5);
 
     let quant_ratio = our_quant_gbps / llama_quant_gbps * 100.0;
     let dequant_ratio = our_dequant_gbps / llama_dequant_gbps * 100.0;
 
-    println!("F16    | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
-        size, our_quant_gbps, llama_quant_gbps, our_dequant_gbps, llama_dequant_gbps,
-        quant_ratio, dequant_ratio, quant_match, dequant_match);
+    println!(
+        "F16    | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
+        size,
+        our_quant_gbps,
+        llama_quant_gbps,
+        our_dequant_gbps,
+        llama_dequant_gbps,
+        quant_ratio,
+        dequant_ratio,
+        quant_match,
+        dequant_match
+    );
 }
 
 fn benchmark_bf16(size: usize, runs: usize) {
@@ -143,17 +160,29 @@ fn benchmark_bf16(size: usize, runs: usize) {
     let llama_dequant_time = start.elapsed().as_secs_f64() / runs as f64;
     let llama_dequant_gbps = (size * 2) as f64 / llama_dequant_time / 1e9;
 
-    let quant_match = output_bf16.iter().zip(output_bf16_llama.iter()).all(|(a, b)| a == b);
-    let dequant_match = output_f32.iter().zip(output_f32_llama.iter()).all(|(a, b)| (a - b).abs() < 1e-5);
+    let quant_match =
+        output_bf16.iter().zip(output_bf16_llama.iter()).all(|(a, b)| a == b);
+    let dequant_match = output_f32
+        .iter()
+        .zip(output_f32_llama.iter())
+        .all(|(a, b)| (a - b).abs() < 1e-5);
 
     let quant_ratio = our_quant_gbps / llama_quant_gbps * 100.0;
     let dequant_ratio = our_dequant_gbps / llama_dequant_gbps * 100.0;
 
-    println!("BF16   | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
-        size, our_quant_gbps, llama_quant_gbps, our_dequant_gbps, llama_dequant_gbps,
-        quant_ratio, dequant_ratio, quant_match, dequant_match);
+    println!(
+        "BF16   | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
+        size,
+        our_quant_gbps,
+        llama_quant_gbps,
+        our_dequant_gbps,
+        llama_dequant_gbps,
+        quant_ratio,
+        dequant_ratio,
+        quant_match,
+        dequant_match
+    );
 }
-
 
 fn benchmark_q8_0(size: usize, runs: usize) {
     assert!(size % QK == 0);
@@ -181,9 +210,10 @@ fn benchmark_q8_0(size: usize, runs: usize) {
     let llama_quant_gbps = (size * 4) as f64 / llama_quant_time / 1e9;
 
     // Verify quantization correctness
-    let quant_match = output_q8.iter().zip(output_q8_llama.iter()).all(|(a, b)| {
-        a.d == b.d && a.qs == b.qs
-    });
+    let quant_match = output_q8
+        .iter()
+        .zip(output_q8_llama.iter())
+        .all(|(a, b)| a.d == b.d && a.qs == b.qs);
 
     // Use same quantized data for both
     let q8_data = &output_q8;
@@ -208,27 +238,39 @@ fn benchmark_q8_0(size: usize, runs: usize) {
     let llama_dequant_time = start.elapsed().as_secs_f64() / runs as f64;
     let llama_dequant_gbps = (size * 4) as f64 / llama_dequant_time / 1e9;
 
-    let quant_match = output_q8.iter().zip(output_q8_llama.iter()).all(|(a, b)| {
-        a.d == b.d && a.qs == b.qs
-    });
-    let dequant_match = output_f32.iter().zip(output_f32_llama.iter()).all(|(a, b)| {
-        (a - b).abs() < 1e-5
-    });
+    let quant_match = output_q8
+        .iter()
+        .zip(output_q8_llama.iter())
+        .all(|(a, b)| a.d == b.d && a.qs == b.qs);
+    let dequant_match = output_f32
+        .iter()
+        .zip(output_f32_llama.iter())
+        .all(|(a, b)| (a - b).abs() < 1e-5);
 
     let quant_ratio = our_quant_gbps / llama_quant_gbps * 100.0;
     let dequant_ratio = our_dequant_gbps / llama_dequant_gbps * 100.0;
 
     // Verify dequantization correctness
-    let dequant_match = output_f32.iter().zip(output_f32_llama.iter()).all(|(a, b)| {
-        (a - b).abs() < 1e-5
-    });
+    let dequant_match = output_f32
+        .iter()
+        .zip(output_f32_llama.iter())
+        .all(|(a, b)| (a - b).abs() < 1e-5);
 
     let quant_ratio = our_quant_gbps / llama_quant_gbps * 100.0;
     let dequant_ratio = our_dequant_gbps / llama_dequant_gbps * 100.0;
 
-    println!("Q8_0   | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
-        size, our_quant_gbps, llama_quant_gbps, our_dequant_gbps, llama_dequant_gbps,
-        quant_ratio, dequant_ratio, quant_match, dequant_match);
+    println!(
+        "Q8_0   | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
+        size,
+        our_quant_gbps,
+        llama_quant_gbps,
+        our_dequant_gbps,
+        llama_dequant_gbps,
+        quant_ratio,
+        dequant_ratio,
+        quant_match,
+        dequant_match
+    );
 }
 
 fn benchmark_q4_0(size: usize, runs: usize) {
@@ -273,19 +315,30 @@ fn benchmark_q4_0(size: usize, runs: usize) {
     let llama_dequant_time = start.elapsed().as_secs_f64() / runs as f64;
     let llama_dequant_gbps = (size * 4) as f64 / llama_dequant_time / 1e9;
 
-    let quant_match = output_q4.iter().zip(output_q4_llama.iter()).all(|(a, b)| {
-        a.d == b.d && a.qs == b.qs
-    });
-    let dequant_match = output_f32.iter().zip(output_f32_llama.iter()).all(|(a, b)| {
-        (a - b).abs() < 1e-5
-    });
+    let quant_match = output_q4
+        .iter()
+        .zip(output_q4_llama.iter())
+        .all(|(a, b)| a.d == b.d && a.qs == b.qs);
+    let dequant_match = output_f32
+        .iter()
+        .zip(output_f32_llama.iter())
+        .all(|(a, b)| (a - b).abs() < 1e-5);
 
     let quant_ratio = our_quant_gbps / llama_quant_gbps * 100.0;
     let dequant_ratio = our_dequant_gbps / llama_dequant_gbps * 100.0;
 
-    println!("Q4_0   | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
-        size, our_quant_gbps, llama_quant_gbps, our_dequant_gbps, llama_dequant_gbps,
-        quant_ratio, dequant_ratio, quant_match, dequant_match);
+    println!(
+        "Q4_0   | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
+        size,
+        our_quant_gbps,
+        llama_quant_gbps,
+        our_dequant_gbps,
+        llama_dequant_gbps,
+        quant_ratio,
+        dequant_ratio,
+        quant_match,
+        dequant_match
+    );
 }
 
 fn benchmark_q4_1(size: usize, runs: usize) {
@@ -303,7 +356,8 @@ fn benchmark_q4_1(size: usize, runs: usize) {
     let our_quant_time = start.elapsed().as_secs_f64() / runs as f64;
     let our_quant_gbps = (size * 4) as f64 / our_quant_time / 1e9;
 
-    let mut output_q4_llama = vec![BlockQ4_1 { d: 0, m: 0, qs: [0u8; QK / 2] }; nb];
+    let mut output_q4_llama =
+        vec![BlockQ4_1 { d: 0, m: 0, qs: [0u8; QK / 2] }; nb];
     let start = Instant::now();
     for _ in 0..runs {
         quantize_row_q4_1_llama(&input, &mut output_q4_llama);
@@ -327,19 +381,30 @@ fn benchmark_q4_1(size: usize, runs: usize) {
     let llama_dequant_gbps = (size * 4) as f64 / llama_dequant_time / 1e9;
 
     // Verify correctness
-    let quant_match = output_q4.iter().zip(output_q4_llama.iter()).all(|(a, b)| {
-        a.d == b.d && a.m == b.m && a.qs == b.qs
-    });
-    let dequant_match = output_f32.iter().zip(output_f32_llama.iter()).all(|(a, b)| {
-        (a - b).abs() < 1e-5
-    });
+    let quant_match = output_q4
+        .iter()
+        .zip(output_q4_llama.iter())
+        .all(|(a, b)| a.d == b.d && a.m == b.m && a.qs == b.qs);
+    let dequant_match = output_f32
+        .iter()
+        .zip(output_f32_llama.iter())
+        .all(|(a, b)| (a - b).abs() < 1e-5);
 
     let quant_ratio = our_quant_gbps / llama_quant_gbps * 100.0;
     let dequant_ratio = our_dequant_gbps / llama_dequant_gbps * 100.0;
 
-    println!("Q4_1   | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
-        size, our_quant_gbps, llama_quant_gbps, our_dequant_gbps, llama_dequant_gbps,
-        quant_ratio, dequant_ratio, quant_match, dequant_match);
+    println!(
+        "Q4_1   | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
+        size,
+        our_quant_gbps,
+        llama_quant_gbps,
+        our_dequant_gbps,
+        llama_dequant_gbps,
+        quant_ratio,
+        dequant_ratio,
+        quant_match,
+        dequant_match
+    );
 }
 
 fn benchmark_q5_0(size: usize, runs: usize) {
@@ -347,7 +412,8 @@ fn benchmark_q5_0(size: usize, runs: usize) {
     let nb = size / QK;
 
     let input: Vec<f32> = (0..size).map(|i| (i as f32 * 0.1).sin()).collect();
-    let mut output_q5 = vec![BlockQ5_0 { d: 0, qh: [0u8; 4], qs: [0u8; QK / 2] }; nb];
+    let mut output_q5 =
+        vec![BlockQ5_0 { d: 0, qh: [0u8; 4], qs: [0u8; QK / 2] }; nb];
     let mut output_f32 = vec![0.0f32; size];
 
     let start = Instant::now();
@@ -357,7 +423,8 @@ fn benchmark_q5_0(size: usize, runs: usize) {
     let our_quant_time = start.elapsed().as_secs_f64() / runs as f64;
     let our_quant_gbps = (size * 4) as f64 / our_quant_time / 1e9;
 
-    let mut output_q5_llama = vec![BlockQ5_0 { d: 0, qh: [0u8; 4], qs: [0u8; QK / 2] }; nb];
+    let mut output_q5_llama =
+        vec![BlockQ5_0 { d: 0, qh: [0u8; 4], qs: [0u8; QK / 2] }; nb];
     let start = Instant::now();
     for _ in 0..runs {
         quantize_row_q5_0_llama(&input, &mut output_q5_llama);
@@ -380,19 +447,30 @@ fn benchmark_q5_0(size: usize, runs: usize) {
     let llama_dequant_time = start.elapsed().as_secs_f64() / runs as f64;
     let llama_dequant_gbps = (size * 4) as f64 / llama_dequant_time / 1e9;
 
-    let quant_match = output_q5.iter().zip(output_q5_llama.iter()).all(|(a, b)| {
-        a.d == b.d && a.qh == b.qh && a.qs == b.qs
-    });
-    let dequant_match = output_f32.iter().zip(output_f32_llama.iter()).all(|(a, b)| {
-        (a - b).abs() < 1e-5
-    });
+    let quant_match = output_q5
+        .iter()
+        .zip(output_q5_llama.iter())
+        .all(|(a, b)| a.d == b.d && a.qh == b.qh && a.qs == b.qs);
+    let dequant_match = output_f32
+        .iter()
+        .zip(output_f32_llama.iter())
+        .all(|(a, b)| (a - b).abs() < 1e-5);
 
     let quant_ratio = our_quant_gbps / llama_quant_gbps * 100.0;
     let dequant_ratio = our_dequant_gbps / llama_dequant_gbps * 100.0;
 
-    println!("Q5_0   | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
-        size, our_quant_gbps, llama_quant_gbps, our_dequant_gbps, llama_dequant_gbps,
-        quant_ratio, dequant_ratio, quant_match, dequant_match);
+    println!(
+        "Q5_0   | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
+        size,
+        our_quant_gbps,
+        llama_quant_gbps,
+        our_dequant_gbps,
+        llama_dequant_gbps,
+        quant_ratio,
+        dequant_ratio,
+        quant_match,
+        dequant_match
+    );
 }
 
 fn benchmark_q5_1(size: usize, runs: usize) {
@@ -400,7 +478,8 @@ fn benchmark_q5_1(size: usize, runs: usize) {
     let nb = size / QK;
 
     let input: Vec<f32> = (0..size).map(|i| (i as f32 * 0.1).sin()).collect();
-    let mut output_q5 = vec![BlockQ5_1 { d: 0, m: 0, qh: [0u8; 4], qs: [0u8; QK / 2] }; nb];
+    let mut output_q5 =
+        vec![BlockQ5_1 { d: 0, m: 0, qh: [0u8; 4], qs: [0u8; QK / 2] }; nb];
     let mut output_f32 = vec![0.0f32; size];
 
     // Use NEON version on aarch64
@@ -414,7 +493,8 @@ fn benchmark_q5_1(size: usize, runs: usize) {
     let our_quant_time = start.elapsed().as_secs_f64() / runs as f64;
     let our_quant_gbps = (size * 4) as f64 / our_quant_time / 1e9;
 
-    let mut output_q5_llama = vec![BlockQ5_1 { d: 0, m: 0, qh: [0u8; 4], qs: [0u8; QK / 2] }; nb];
+    let mut output_q5_llama =
+        vec![BlockQ5_1 { d: 0, m: 0, qh: [0u8; 4], qs: [0u8; QK / 2] }; nb];
     let start = Instant::now();
     for _ in 0..runs {
         quantize_row_q5_1_llama(&input, &mut output_q5_llama);
@@ -437,19 +517,30 @@ fn benchmark_q5_1(size: usize, runs: usize) {
     let llama_dequant_time = start.elapsed().as_secs_f64() / runs as f64;
     let llama_dequant_gbps = (size * 4) as f64 / llama_dequant_time / 1e9;
 
-    let quant_match = output_q5.iter().zip(output_q5_llama.iter()).all(|(a, b)| {
-        a.d == b.d && a.m == b.m && a.qh == b.qh && a.qs == b.qs
-    });
-    let dequant_match = output_f32.iter().zip(output_f32_llama.iter()).all(|(a, b)| {
-        (a - b).abs() < 1e-5
-    });
+    let quant_match = output_q5
+        .iter()
+        .zip(output_q5_llama.iter())
+        .all(|(a, b)| a.d == b.d && a.m == b.m && a.qh == b.qh && a.qs == b.qs);
+    let dequant_match = output_f32
+        .iter()
+        .zip(output_f32_llama.iter())
+        .all(|(a, b)| (a - b).abs() < 1e-5);
 
     let quant_ratio = our_quant_gbps / llama_quant_gbps * 100.0;
     let dequant_ratio = our_dequant_gbps / llama_dequant_gbps * 100.0;
 
-    println!("Q5_1   | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
-        size, our_quant_gbps, llama_quant_gbps, our_dequant_gbps, llama_dequant_gbps,
-        quant_ratio, dequant_ratio, quant_match, dequant_match);
+    println!(
+        "Q5_1   | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
+        size,
+        our_quant_gbps,
+        llama_quant_gbps,
+        our_dequant_gbps,
+        llama_dequant_gbps,
+        quant_ratio,
+        dequant_ratio,
+        quant_match,
+        dequant_match
+    );
 }
 
 fn benchmark_iq4_nl(size: usize, runs: usize) {
@@ -490,22 +581,33 @@ fn benchmark_iq4_nl(size: usize, runs: usize) {
     let llama_dequant_time = start.elapsed().as_secs_f64() / runs as f64;
     let llama_dequant_gbps = (size * 4) as f64 / llama_dequant_time / 1e9;
 
-    let quant_match = output_iq4.iter().zip(output_iq4_llama.iter()).all(|(a, b)| {
-        // IQ4_NL quantization may have small differences in scale/indices
-        // but dequantization should produce similar results
-        let scale_diff = (fp16_to_fp32(a.d) - fp16_to_fp32(b.d)).abs();
-        scale_diff < 0.1 * fp16_to_fp32(b.d).abs().max(1e-6)  // 10% tolerance
-    });
-    let dequant_match = output_f32.iter().zip(output_f32_llama.iter()).all(|(a, b)| {
-        (a - b).abs() < 1.0  // IQ4_NL is less precise
-    });
+    let quant_match =
+        output_iq4.iter().zip(output_iq4_llama.iter()).all(|(a, b)| {
+            // IQ4_NL quantization may have small differences in scale/indices
+            // but dequantization should produce similar results
+            let scale_diff = (fp16_to_fp32(a.d) - fp16_to_fp32(b.d)).abs();
+            scale_diff < 0.1 * fp16_to_fp32(b.d).abs().max(1e-6) // 10% tolerance
+        });
+    let dequant_match =
+        output_f32.iter().zip(output_f32_llama.iter()).all(|(a, b)| {
+            (a - b).abs() < 1.0 // IQ4_NL is less precise
+        });
 
     let quant_ratio = our_quant_gbps / llama_quant_gbps * 100.0;
     let dequant_ratio = our_dequant_gbps / llama_dequant_gbps * 100.0;
 
-    println!("IQ4_NL | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
-        size, our_quant_gbps, llama_quant_gbps, our_dequant_gbps, llama_dequant_gbps,
-        quant_ratio, dequant_ratio, quant_match, dequant_match);
+    println!(
+        "IQ4_NL | {:5} | {:7.1} GB | {:9.1} GB | {:9.1} GB | {:11.1} GB | {:4.0}%/{:4.0}% | Q:{} D:{}",
+        size,
+        our_quant_gbps,
+        llama_quant_gbps,
+        our_dequant_gbps,
+        llama_dequant_gbps,
+        quant_ratio,
+        dequant_ratio,
+        quant_match,
+        dequant_match
+    );
 }
 
 // ============================================================================
@@ -605,7 +707,8 @@ fn quantize_row_q4_1_llama(x: &[f32], y: &mut [BlockQ4_1]) {
 
         for j in 0..(QK / 2) {
             let v0 = ((x[i * QK + j] - min) * id).round().clamp(0.0, 15.0);
-            let v1 = ((x[i * QK + j + QK / 2] - min) * id).round().clamp(0.0, 15.0);
+            let v1 =
+                ((x[i * QK + j + QK / 2] - min) * id).round().clamp(0.0, 15.0);
             block.qs[j] = (v0 as u8) | ((v1 as u8) << 4);
         }
     }
@@ -652,8 +755,12 @@ fn quantize_row_q5_0_llama(x: &[f32], y: &mut [BlockQ5_0]) {
 
             block.qs[j] = (v0 & 0x0F) as u8 | ((v1 & 0x0F) << 4) as u8;
 
-            if v0 & 0x10 != 0 { qh |= 1 << j; }
-            if v1 & 0x10 != 0 { qh |= 1 << (j + 16); }
+            if v0 & 0x10 != 0 {
+                qh |= 1 << j;
+            }
+            if v1 & 0x10 != 0 {
+                qh |= 1 << (j + 16);
+            }
         }
 
         block.qh[0] = (qh & 0xFF) as u8;
@@ -669,9 +776,9 @@ fn dequantize_row_q5_0_llama(x: &[BlockQ5_0], y: &mut [f32]) {
         let d = fp16_to_fp32(x[i].d);
 
         let qh = x[i].qh[0] as u32
-               | ((x[i].qh[1] as u32) << 8)
-               | ((x[i].qh[2] as u32) << 16)
-               | ((x[i].qh[3] as u32) << 24);
+            | ((x[i].qh[1] as u32) << 8)
+            | ((x[i].qh[2] as u32) << 16)
+            | ((x[i].qh[3] as u32) << 24);
 
         for j in 0..(QK / 2) {
             let xh0 = ((qh >> j) & 1) << 4;
@@ -706,15 +813,20 @@ fn quantize_row_q5_1_llama(x: &[f32], y: &mut [BlockQ5_1]) {
         let mut qh = 0u32;
         for j in 0..(QK / 2) {
             let v0 = ((x[i * QK + j] - min) * id).round().clamp(0.0, 31.0);
-            let v1 = ((x[i * QK + j + QK / 2] - min) * id).round().clamp(0.0, 31.0);
+            let v1 =
+                ((x[i * QK + j + QK / 2] - min) * id).round().clamp(0.0, 31.0);
 
             let q0 = v0 as u32;
             let q1 = v1 as u32;
 
             block.qs[j] = (q0 & 0x0F) as u8 | ((q1 & 0x0F) << 4) as u8;
 
-            if q0 & 0x10 != 0 { qh |= 1 << j; }
-            if q1 & 0x10 != 0 { qh |= 1 << (j + 16); }
+            if q0 & 0x10 != 0 {
+                qh |= 1 << j;
+            }
+            if q1 & 0x10 != 0 {
+                qh |= 1 << (j + 16);
+            }
         }
 
         block.qh[0] = (qh & 0xFF) as u8;
@@ -731,9 +843,9 @@ fn dequantize_row_q5_1_llama(x: &[BlockQ5_1], y: &mut [f32]) {
         let m = fp16_to_fp32(x[i].m);
 
         let qh = x[i].qh[0] as u32
-               | ((x[i].qh[1] as u32) << 8)
-               | ((x[i].qh[2] as u32) << 16)
-               | ((x[i].qh[3] as u32) << 24);
+            | ((x[i].qh[1] as u32) << 8)
+            | ((x[i].qh[2] as u32) << 16)
+            | ((x[i].qh[3] as u32) << 24);
 
         for j in 0..(QK / 2) {
             let xh0 = ((qh >> j) & 1) << 4;
@@ -785,7 +897,7 @@ fn quantize_row_iq4_nl_llama(x: &[f32], y: &mut [BlockIQ4NL]) {
             let al = id * x[i * QK + j];
             let l = best_index_iq4nl_llama(al);
             let q = KVALUES_IQ4NL[l];
-            let w = x[i * QK + j] * x[i * QK + j];  // weight = x^2
+            let w = x[i * QK + j] * x[i * QK + j]; // weight = x^2
             sumqx += w * q * x[i * QK + j];
             sumq2 += w * q * q;
         }
@@ -804,7 +916,8 @@ fn quantize_row_iq4_nl_llama(x: &[f32], y: &mut [BlockIQ4NL]) {
 
         // Pack: low nibbles from indices[0..15], high nibbles from indices[16..31]
         for j in 0..QK / 2 {
-            y[i].qs[j] = (indices[j] & 0x0F) | ((indices[j + QK / 2] & 0x0F) << 4);
+            y[i].qs[j] =
+                (indices[j] & 0x0F) | ((indices[j + QK / 2] & 0x0F) << 4);
         }
     }
 }
@@ -829,11 +942,7 @@ fn best_index_iq4nl_llama(x: f32) -> usize {
         }
     }
 
-    if x - KVALUES_IQ4NL[lo] < KVALUES_IQ4NL[hi] - x {
-        lo
-    } else {
-        hi
-    }
+    if x - KVALUES_IQ4NL[lo] < KVALUES_IQ4NL[hi] - x { lo } else { hi }
 }
 
 fn dequantize_row_iq4_nl_llama(x: &[BlockIQ4NL], y: &mut [f32]) {

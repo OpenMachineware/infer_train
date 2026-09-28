@@ -4,7 +4,14 @@
 use infer_train::ops::gpu::metal::{FlashAttnMetalContext, KvFormat};
 use std::time::Instant;
 
-fn cpu_attention_reference(q: &[f32], k: &[f32], v: &[f32], n_heads: usize, head_dim: usize, seq_len: usize) -> Vec<f32> {
+fn cpu_attention_reference(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    n_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+) -> Vec<f32> {
     let scale = 1.0 / (head_dim as f32).sqrt();
     let mut output = vec![0.0f32; n_heads * head_dim];
 
@@ -69,7 +76,9 @@ fn main() {
 
     // Create simple test data with correct layout
     // Q layout: [n_heads, head_dim] - each head has one query
-    let q: Vec<f32> = (0..n_heads * head_dim).map(|i| 0.5 + 0.01 * (i as f32 % 100.0)).collect();
+    let q: Vec<f32> = (0..n_heads * head_dim)
+        .map(|i| 0.5 + 0.01 * (i as f32 % 100.0))
+        .collect();
 
     // K layout for the kernel: [n_heads, seq_len, head_dim]
     // The kernel accesses K[h, s, d] at offset h*nb12 + s*nb11 + d
@@ -88,20 +97,37 @@ fn main() {
     }
 
     // Convert to F16
-    let k_f16: Vec<u16> = k.iter().map(|&x| half::f16::from_f32(x).to_bits()).collect();
-    let v_f16: Vec<u16> = v.iter().map(|&x| half::f16::from_f32(x).to_bits()).collect();
+    let k_f16: Vec<u16> =
+        k.iter().map(|&x| half::f16::from_f32(x).to_bits()).collect();
+    let v_f16: Vec<u16> =
+        v.iter().map(|&x| half::f16::from_f32(x).to_bits()).collect();
 
     // CPU reference
     println!("Computing CPU reference...");
-    let cpu_output = cpu_attention_reference(&q, &k, &v, n_heads, head_dim, seq_len);
+    let cpu_output =
+        cpu_attention_reference(&q, &k, &v, n_heads, head_dim, seq_len);
     println!("CPU output sample: {:?}", &cpu_output[0..4]);
 
     // GPU test
     println!("\nRunning GPU attention...");
-    let k_bytes = unsafe { std::slice::from_raw_parts(k_f16.as_ptr() as *const u8, k_f16.len() * 2) };
-    let v_bytes = unsafe { std::slice::from_raw_parts(v_f16.as_ptr() as *const u8, v_f16.len() * 2) };
+    let k_bytes = unsafe {
+        std::slice::from_raw_parts(k_f16.as_ptr() as *const u8, k_f16.len() * 2)
+    };
+    let v_bytes = unsafe {
+        std::slice::from_raw_parts(v_f16.as_ptr() as *const u8, v_f16.len() * 2)
+    };
 
-    match ctx.flash_attn_decode(&q, k_bytes, v_bytes, None, n_heads as u32, n_heads as u32, head_dim as u32, seq_len as u32, KvFormat::F16) {
+    match ctx.flash_attn_decode(
+        &q,
+        k_bytes,
+        v_bytes,
+        None,
+        n_heads as u32,
+        n_heads as u32,
+        head_dim as u32,
+        seq_len as u32,
+        KvFormat::F16,
+    ) {
         Ok(gpu_output) => {
             println!("GPU output sample: {:?}", &gpu_output[0..4]);
 

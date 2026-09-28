@@ -1,8 +1,8 @@
 use bytemuck::{Pod, Zeroable};
 
-pub const QK4_0: usize = 32;  // Block size for Q4_0
-pub const QK8_0: usize = 32;  // Block size for Q8_0
-pub const QK_K: usize = 256;  // Block size for K-quant
+pub const QK4_0: usize = 32; // Block size for Q4_0
+pub const QK8_0: usize = 32; // Block size for Q8_0
+pub const QK_K: usize = 256; // Block size for K-quant
 
 // ===== Basic quantization formats =====
 
@@ -11,8 +11,8 @@ pub const QK_K: usize = 256;  // Block size for K-quant
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockQ4_0 {
-    pub d: u16,        // FP16 scale
-    pub qs: [u8; 16],  // 4-bit quants (32 elements packed into 16 bytes)
+    pub d: u16,       // FP16 scale
+    pub qs: [u8; 16], // 4-bit quants (32 elements packed into 16 bytes)
 }
 
 /// Q4_1 block: 4-bit quantization with scale and min
@@ -20,9 +20,9 @@ pub struct BlockQ4_0 {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockQ4_1 {
-    pub d: u16,        // FP16 scale
-    pub m: u16,        // FP16 min
-    pub qs: [u8; 16],  // 4-bit quants
+    pub d: u16,       // FP16 scale
+    pub m: u16,       // FP16 min
+    pub qs: [u8; 16], // 4-bit quants
 }
 
 /// Q5_0 block: 5-bit quantization with scale
@@ -30,9 +30,9 @@ pub struct BlockQ4_1 {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockQ5_0 {
-    pub d: u16,         // FP16 scale
-    pub qh: [u8; 4],    // High bit for 32 elements
-    pub qs: [u8; 16],   // Low 4 bits
+    pub d: u16,       // FP16 scale
+    pub qh: [u8; 4],  // High bit for 32 elements
+    pub qs: [u8; 16], // Low 4 bits
 }
 
 /// Q5_1 block: 5-bit quantization with scale and min
@@ -40,10 +40,10 @@ pub struct BlockQ5_0 {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockQ5_1 {
-    pub d: u16,         // FP16 scale
-    pub m: u16,         // FP16 min
-    pub qh: [u8; 4],    // High bit for 32 elements
-    pub qs: [u8; 16],   // Low 4 bits
+    pub d: u16,       // FP16 scale
+    pub m: u16,       // FP16 min
+    pub qh: [u8; 4],  // High bit for 32 elements
+    pub qs: [u8; 16], // Low 4 bits
 }
 
 /// Q8_0 block: 8-bit quantization with scale
@@ -51,8 +51,8 @@ pub struct BlockQ5_1 {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockQ8_0 {
-    pub d: u16,         // FP16 scale
-    pub qs: [i8; 32],   // 8-bit quants
+    pub d: u16,       // FP16 scale
+    pub qs: [i8; 32], // 8-bit quants
 }
 
 /// Q8_1 block: 8-bit quantization with scale and sum
@@ -60,9 +60,9 @@ pub struct BlockQ8_0 {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockQ8_1 {
-    pub d: u16,         // FP16 scale
-    pub s: u16,         // FP16 sum
-    pub qs: [i8; 32],   // 8-bit quants
+    pub d: u16,       // FP16 scale
+    pub s: u16,       // FP16 sum
+    pub qs: [i8; 32], // 8-bit quants
 }
 
 // ===== K-quant formats =====
@@ -72,10 +72,10 @@ pub struct BlockQ8_1 {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockQ2K {
-    pub scales: [u8; 16],  // Scales and mins (4 bits each)
-    pub qs: [u8; 64],      // 2-bit quants
-    pub d: u16,            // Super-block scale
-    pub dmin: u16,         // Super-block min scale
+    pub scales: [u8; 16], // Scales and mins (4 bits each)
+    pub qs: [u8; 64],     // 2-bit quants
+    pub d: u16,           // Super-block scale
+    pub dmin: u16,        // Super-block min scale
 }
 
 /// Q3_K block: 3-bit quantization
@@ -83,10 +83,10 @@ pub struct BlockQ2K {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockQ3K {
-    pub hmask: [u8; 32],   // High bit mask
-    pub qs: [u8; 64],      // Low 2 bits
-    pub scales: [u8; 12],  // Scales
-    pub d: u16,            // Super-block scale
+    pub hmask: [u8; 32],  // High bit mask
+    pub qs: [u8; 64],     // Low 2 bits
+    pub scales: [u8; 12], // Scales
+    pub d: u16,           // Super-block scale
 }
 
 /// Q4_K block: 4-bit quantization with scale and min
@@ -94,10 +94,10 @@ pub struct BlockQ3K {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockQ4K {
-    pub d: u16,            // Super-block scale
-    pub dmin: u16,         // Super-block min scale
-    pub scales: [u8; 12],  // Scales and mins
-    pub qs: [u8; 128],     // 4-bit quants
+    pub d: u16,           // Super-block scale
+    pub dmin: u16,        // Super-block min scale
+    pub scales: [u8; 12], // Scales and mins
+    pub qs: [u8; 128],    // 4-bit quants
 }
 
 /// Q5_K block: 5-bit quantization with scale and min
@@ -105,11 +105,11 @@ pub struct BlockQ4K {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockQ5K {
-    pub d: u16,            // Super-block scale
-    pub dmin: u16,         // Super-block min scale
-    pub scales: [u8; 12],  // Scales and mins
-    pub qh: [u8; 32],      // High bit
-    pub qs: [u8; 128],     // Low 4 bits
+    pub d: u16,           // Super-block scale
+    pub dmin: u16,        // Super-block min scale
+    pub scales: [u8; 12], // Scales and mins
+    pub qh: [u8; 32],     // High bit
+    pub qs: [u8; 128],    // Low 4 bits
 }
 
 /// Q6_K block: 6-bit quantization
@@ -117,10 +117,10 @@ pub struct BlockQ5K {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockQ6K {
-    pub ql: [u8; 128],     // Lower 4 bits
-    pub qh: [u8; 64],      // Upper 2 bits
-    pub scales: [i8; 16],  // Scales
-    pub d: u16,            // Super-block scale
+    pub ql: [u8; 128],    // Lower 4 bits
+    pub qh: [u8; 64],     // Upper 2 bits
+    pub scales: [i8; 16], // Scales
+    pub d: u16,           // Super-block scale
 }
 
 /// Q8_K block: 8-bit intermediate quantization
@@ -128,9 +128,9 @@ pub struct BlockQ6K {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockQ8K {
-    pub d: f32,            // Scale
-    pub qs: [i8; 256],     // 8-bit quants
-    pub bsums: [i16; 16],  // Block sums
+    pub d: f32,           // Scale
+    pub qs: [i8; 256],    // 8-bit quants
+    pub bsums: [i16; 16], // Block sums
 }
 
 // ===== IQ formats =====
@@ -140,9 +140,9 @@ pub struct BlockQ8K {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockIQ1S {
-    pub d: u16,          // FP16 scale
-    pub qs: [u8; 32],    // Grid indices (QK_K/8 = 256/8 = 32)
-    pub qh: [u16; 8],    // High bits (QK_K/32 = 256/32 = 8)
+    pub d: u16,       // FP16 scale
+    pub qs: [u8; 32], // Grid indices (QK_K/8 = 256/8 = 32)
+    pub qh: [u16; 8], // High bits (QK_K/32 = 256/32 = 8)
 }
 
 /// IQ1_M block: 1.75 bpw
@@ -150,9 +150,9 @@ pub struct BlockIQ1S {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockIQ1M {
-    pub qs: [u8; 32],     // Grid indices, low 8 bits
-    pub qh: [u8; 16],     // Grid indices, high 3 bits + grid shift bit
-    pub scales: [u8; 8],  // 3-bit block scales
+    pub qs: [u8; 32],    // Grid indices, low 8 bits
+    pub qh: [u8; 16],    // Grid indices, high 3 bits + grid shift bit
+    pub scales: [u8; 8], // 3-bit block scales
 }
 
 /// IQ2_XXS block: 2.0625 bpw
@@ -169,8 +169,8 @@ pub struct BlockIQ2XXS {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockIQ2XS {
-    pub d: u16,        // FP16 scale
-    pub qs: [u16; 32], // QK_K/8 = 256/8 = 32
+    pub d: u16,          // FP16 scale
+    pub qs: [u16; 32],   // QK_K/8 = 256/8 = 32
     pub scales: [u8; 8], // QK_K/32 = 256/32 = 8
 }
 
@@ -179,9 +179,9 @@ pub struct BlockIQ2XS {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockIQ2S {
-    pub d: u16,         // FP16 scale
-    pub qs: [u8; 64],   // QK_K/4 = 256/4 = 64
-    pub qh: [u8; 8],    // QK_K/32 = 256/32 = 8
+    pub d: u16,          // FP16 scale
+    pub qs: [u8; 64],    // QK_K/4 = 256/4 = 64
+    pub qh: [u8; 8],     // QK_K/32 = 256/32 = 8
     pub scales: [u8; 8], // QK_K/32 = 256/32 = 8
 }
 
@@ -199,9 +199,9 @@ pub struct BlockIQ3XXS {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockIQ3S {
-    pub d: u16,         // FP16 scale
-    pub qs: [u8; 64],   // QK_K/4 = 256/4 = 64
-    pub qh: [u8; 8],    // QK_K/32 = 256/32 = 8
+    pub d: u16,          // FP16 scale
+    pub qs: [u8; 64],    // QK_K/4 = 256/4 = 64
+    pub qh: [u8; 8],     // QK_K/32 = 256/32 = 8
     pub signs: [u8; 32], // QK_K/8 = 256/8 = 32
     pub scales: [u8; 4], // QK_K/64 = 256/64 = 4
 }
@@ -220,10 +220,10 @@ pub struct BlockIQ4NL {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct BlockIQ4XS {
-    pub d: u16,         // FP16 scale
-    pub scales_h: u16,  // High bits of scales
+    pub d: u16,            // FP16 scale
+    pub scales_h: u16,     // High bits of scales
     pub scales_l: [u8; 4], // QK_K/64 = 256/64 = 4
-    pub qs: [u8; 128],  // QK_K/2 = 256/2 = 128
+    pub qs: [u8; 128],     // QK_K/2 = 256/2 = 128
 }
 
 // ===== TQ formats =====
@@ -265,7 +265,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<BlockQ5K>(), 176);
         assert_eq!(std::mem::size_of::<BlockQ6K>(), 210);
         assert_eq!(std::mem::size_of::<BlockQ8K>(), 292);
-        assert_eq!(std::mem::size_of::<BlockIQ1S>(), 50);  // 2 + 32 + 16
+        assert_eq!(std::mem::size_of::<BlockIQ1S>(), 50); // 2 + 32 + 16
         assert_eq!(std::mem::size_of::<BlockIQ1M>(), 56);
         assert_eq!(std::mem::size_of::<BlockIQ2XXS>(), 66);
         assert_eq!(std::mem::size_of::<BlockIQ2XS>(), 74);

@@ -1,11 +1,17 @@
 // Test Q5_0 and Q5_1 vec_dot correctness
-use infer_train::quant::types::{BlockQ5_0, BlockQ5_1, BlockQ8_0, BlockQ8_1, QK4_0};
-use infer_train::quant::vec_dot::arm::{vec_dot_q5_0_q8_0_neon, vec_dot_q5_1_q8_1_neon};
 use half::f16;
+use infer_train::quant::types::{
+    BlockQ5_0, BlockQ5_1, BlockQ8_0, BlockQ8_1, QK4_0,
+};
+use infer_train::quant::vec_dot::arm::{
+    vec_dot_q5_0_q8_0_neon, vec_dot_q5_1_q8_1_neon,
+};
 
 fn main() {
     unsafe {
-        println!("Testing Q5_1 correctness (fixed version with TABLE_B2B_0 + vorrq_s8)");
+        println!(
+            "Testing Q5_1 correctness (fixed version with TABLE_B2B_0 + vorrq_s8)"
+        );
 
         // Q5_1: 5-bit unsigned, range 0-31
         // value = low4bit | (high_bit << 4)
@@ -39,7 +45,10 @@ fn main() {
         // Value = 0 | 16 = 16
         // All other elements: high bit = 0, value = 0
         // So sum = 16 + 0 + 0 + ... = 16
-        println!("Q5_1 test 1: result = {}, expected ~16 (element 0 = 16, rest = 0)", result);
+        println!(
+            "Q5_1 test 1: result = {}, expected ~16 (element 0 = 16, rest = 0)",
+            result
+        );
 
         // Test with value 17 (binary 10001)
         x.qh[0] = 0b00000001; // bit 0 = 1
@@ -50,7 +59,10 @@ fn main() {
         // Element 16: high nibble of qs[0] = 0, bit 16 of qh = 0 → value = 0
 
         let result2 = vec_dot_q5_1_q8_1_neon(QK4_0, &[x.clone()], &[y.clone()]);
-        println!("Q5_1 test 2: result = {}, expected ~17 (element 0 = 17, rest = 0)", result2);
+        println!(
+            "Q5_1 test 2: result = {}, expected ~17 (element 0 = 17, rest = 0)",
+            result2
+        );
 
         println!("\nTesting Q5_0 correctness");
         // Q5_0: 5-bit signed, range -16 to 15
@@ -62,10 +74,8 @@ fn main() {
             qs: [0u8; 16],
         };
 
-        let mut y0 = BlockQ8_0 {
-            d: f16::from_f32(1.0).to_bits(),
-            qs: [1i8; 32],
-        };
+        let mut y0 =
+            BlockQ8_0 { d: f16::from_f32(1.0).to_bits(), qs: [1i8; 32] };
 
         // Test with all bits = 1 (should give low4bit - 0 = low4bit)
         x0.qh = [0xFF, 0xFF, 0xFF, 0xFF]; // all 32 bits = 1
@@ -73,8 +83,12 @@ fn main() {
         // Element 0: bit = 1, low4bit = 8, result = 8 - 0 = 8
         // Element 16: bit = 1, high nibble = 8, result = 8 - 0 = 8
 
-        let result3 = vec_dot_q5_0_q8_0_neon(QK4_0, &[x0.clone()], &[y0.clone()]);
-        println!("Q5_0 test 1: result = {}, all bits=1, low nibbles=8", result3);
+        let result3 =
+            vec_dot_q5_0_q8_0_neon(QK4_0, &[x0.clone()], &[y0.clone()]);
+        println!(
+            "Q5_0 test 1: result = {}, all bits=1, low nibbles=8",
+            result3
+        );
         // Expected: each element = 8, 32 elements, sum = 256
 
         // Test with all bits = 0 (should give low4bit - 16)
@@ -83,8 +97,12 @@ fn main() {
         // Element 0: bit = 0, low4bit = 0, result = 0 - 16 = -16
         // Element 16: bit = 0, high nibble = 0, result = 0 - 16 = -16
 
-        let result4 = vec_dot_q5_0_q8_0_neon(QK4_0, &[x0.clone()], &[y0.clone()]);
-        println!("Q5_0 test 2: result = {}, all bits=0, low nibbles=0", result4);
+        let result4 =
+            vec_dot_q5_0_q8_0_neon(QK4_0, &[x0.clone()], &[y0.clone()]);
+        println!(
+            "Q5_0 test 2: result = {}, all bits=0, low nibbles=0",
+            result4
+        );
         // Expected: each element = -16, 32 elements, sum = -512
     }
 }

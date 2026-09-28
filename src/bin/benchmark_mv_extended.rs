@@ -1,5 +1,5 @@
 // Extended MV kernel benchmark for stable frequency
-use metal::{Device, MTLSize, CompileOptions, MTLResourceOptions};
+use metal::{CompileOptions, Device, MTLResourceOptions, MTLSize};
 use std::time::{Duration, Instant};
 
 fn main() {
@@ -9,11 +9,15 @@ fn main() {
     let queue = device.new_command_queue();
 
     let mv_shader = include_str!("../../shaders/mv_q4_k.metal");
-    let library = device.new_library_with_source(mv_shader, &CompileOptions::new())
+    let library = device
+        .new_library_with_source(mv_shader, &CompileOptions::new())
         .expect("Failed to compile MV shader");
 
-    let function = library.get_function("kernel_mul_mv_q4_K_f32", None).expect("Failed to get function");
-    let pipeline = device.new_compute_pipeline_state_with_function(&function)
+    let function = library
+        .get_function("kernel_mul_mv_q4_K_f32", None)
+        .expect("Failed to get function");
+    let pipeline = device
+        .new_compute_pipeline_state_with_function(&function)
         .expect("Failed to create pipeline");
 
     let m = 4096;
@@ -25,14 +29,25 @@ fn main() {
     let input_size = k * 4;
     let output_size = m * 4;
 
-    let weights_buffer = device.new_buffer(weights_size as u64, MTLResourceOptions::StorageModeShared);
-    let input_buffer = device.new_buffer(input_size as u64, MTLResourceOptions::StorageModeShared);
-    let output_buffer = device.new_buffer(output_size as u64, MTLResourceOptions::StorageModeShared);
+    let weights_buffer = device
+        .new_buffer(weights_size as u64, MTLResourceOptions::StorageModeShared);
+    let input_buffer = device
+        .new_buffer(input_size as u64, MTLResourceOptions::StorageModeShared);
+    let output_buffer = device
+        .new_buffer(output_size as u64, MTLResourceOptions::StorageModeShared);
 
     #[repr(C)]
-    struct MvArgs { ne00: u32, ne01: u32, nb01: u64 }
+    struct MvArgs {
+        ne00: u32,
+        ne01: u32,
+        nb01: u64,
+    }
 
-    let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01: (num_blocks_k * block_size) as u64 };
+    let args = MvArgs {
+        ne00: k as u32,
+        ne01: m as u32,
+        nb01: (num_blocks_k * block_size) as u64,
+    };
     let args_buffer = device.new_buffer_with_data(
         &args as *const MvArgs as *const std::ffi::c_void,
         std::mem::size_of::<MvArgs>() as u64,
@@ -42,7 +57,8 @@ fn main() {
     let nr0 = 2;
     let nsg = 2;
     let rows_per_tg = nr0 * nsg;
-    let grid_size = MTLSize::new(((m + rows_per_tg - 1) / rows_per_tg) as u64, 1, 1);
+    let grid_size =
+        MTLSize::new(((m + rows_per_tg - 1) / rows_per_tg) as u64, 1, 1);
     let threadgroup_size = MTLSize::new(32, nsg as u64, 1);
 
     // Extended warmup - 100 iterations over several seconds

@@ -1,8 +1,10 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{
+    BenchmarkId, Criterion, black_box, criterion_group, criterion_main,
+};
+use half::f16;
 use infer_train::quant::types::{BlockIQ4NL, BlockQ8_0};
 use infer_train::quant::vec_dot::arm::vec_dot_iq4_nl_q8_0_neon;
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use half::f16;
 
 fn generate_iq4_nl_weights(m: usize, k: usize) -> Vec<BlockIQ4NL> {
     let nb = k / 32;
@@ -37,7 +39,12 @@ fn generate_q8_0_input(k: usize) -> Vec<BlockQ8_0> {
     input
 }
 
-fn mv_cpu(m: usize, k: usize, weights: &[BlockIQ4NL], input: &[BlockQ8_0]) -> Vec<f32> {
+fn mv_cpu(
+    m: usize,
+    k: usize,
+    weights: &[BlockIQ4NL],
+    input: &[BlockQ8_0],
+) -> Vec<f32> {
     let nb = k / 32;
     let mut output = Vec::with_capacity(m);
 
@@ -60,26 +67,49 @@ fn bench_mv_gpu(c: &mut Criterion) {
 
         // Verify correctness first
         let cpu_result = mv_cpu(m, k, &weights, &input);
-        let gpu_result = ctx.mv_iq4_nl_q8_0(m, k, &weights, &input).expect("GPU failed");
+        let gpu_result =
+            ctx.mv_iq4_nl_q8_0(m, k, &weights, &input).expect("GPU failed");
 
-        let max_diff = cpu_result.iter()
+        let max_diff = cpu_result
+            .iter()
             .zip(gpu_result.iter())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
 
         println!("MV {}x{} correctness: max_diff = {}", m, k, max_diff);
 
-        group.bench_with_input(BenchmarkId::new("cpu_neon", format!("{}x{}", m, k)), &m, |b, _| {
-            b.iter(|| black_box(mv_cpu(m, k, &weights, &input)));
-        });
+        group.bench_with_input(
+            BenchmarkId::new("cpu_neon", format!("{}x{}", m, k)),
+            &m,
+            |b, _| {
+                b.iter(|| black_box(mv_cpu(m, k, &weights, &input)));
+            },
+        );
 
-        group.bench_with_input(BenchmarkId::new("gpu_metal", format!("{}x{}", m, k)), &m, |b, _| {
-            b.iter(|| black_box(ctx.mv_iq4_nl_q8_0(m, k, &weights, &input).unwrap()));
-        });
+        group.bench_with_input(
+            BenchmarkId::new("gpu_metal", format!("{}x{}", m, k)),
+            &m,
+            |b, _| {
+                b.iter(|| {
+                    black_box(
+                        ctx.mv_iq4_nl_q8_0(m, k, &weights, &input).unwrap(),
+                    )
+                });
+            },
+        );
 
-        group.bench_with_input(BenchmarkId::new("gpu_simd", format!("{}x{}", m, k)), &m, |b, _| {
-            b.iter(|| black_box(ctx.mv_iq4_nl_q8_0_simd(m, k, &weights, &input).unwrap()));
-        });
+        group.bench_with_input(
+            BenchmarkId::new("gpu_simd", format!("{}x{}", m, k)),
+            &m,
+            |b, _| {
+                b.iter(|| {
+                    black_box(
+                        ctx.mv_iq4_nl_q8_0_simd(m, k, &weights, &input)
+                            .unwrap(),
+                    )
+                });
+            },
+        );
     }
 
     group.finish();

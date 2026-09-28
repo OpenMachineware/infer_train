@@ -14,7 +14,8 @@ pub fn vec_dot_q5_k_q8_k(n: usize, x: &[BlockQ5K], y: &[BlockQ8K]) -> f32 {
         let scales: [u8; 8] = [0; 8];
         let mins: [u8; 8] = [0; 8];
 
-        let min_sum: i32 = (0..8).map(|j| mins[j] as i32 * y[i].bsums[j] as i32).sum();
+        let min_sum: i32 =
+            (0..8).map(|j| mins[j] as i32 * y[i].bsums[j] as i32).sum();
 
         let mut isum = 0i32;
 

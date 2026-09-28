@@ -1,9 +1,12 @@
 // Benchmark optimized kernel with hardcoded constants
 // Run: cargo run --release --bin benchmark_optimized
 
-use infer_train::quant::types::BlockQ4K;
-use metal::{Device, MTLSize, CompileOptions, FunctionDescriptor, FunctionConstantValues, MTLDataType};
 use half::f16;
+use infer_train::quant::types::BlockQ4K;
+use metal::{
+    CompileOptions, Device, FunctionConstantValues, FunctionDescriptor,
+    MTLDataType, MTLSize,
+};
 
 fn main() {
     println!("=== Optimized GEMM with Hardcoded Constants ===\n");
@@ -18,18 +21,24 @@ fn main() {
     println!("M={}, K={}, N={}\n", m, k, n);
 
     // Create weights
-    let weights: Vec<BlockQ4K> = (0..m * k / 256).map(|i| {
-        let mut scales = [0u8; 12];
-        let mut qs = [0u8; 128];
-        for j in 0..12 { scales[j] = ((i * 17 + j + 13) % 256) as u8; }
-        for j in 0..128 { qs[j] = ((i * 17 + j + 13) % 256) as u8; }
-        BlockQ4K {
-            d: f16::from_f32(1.0).to_bits(),
-            dmin: f16::from_f32(0.0).to_bits(),
-            scales,
-            qs,
-        }
-    }).collect();
+    let weights: Vec<BlockQ4K> = (0..m * k / 256)
+        .map(|i| {
+            let mut scales = [0u8; 12];
+            let mut qs = [0u8; 128];
+            for j in 0..12 {
+                scales[j] = ((i * 17 + j + 13) % 256) as u8;
+            }
+            for j in 0..128 {
+                qs[j] = ((i * 17 + j + 13) % 256) as u8;
+            }
+            BlockQ4K {
+                d: f16::from_f32(1.0).to_bits(),
+                dmin: f16::from_f32(0.0).to_bits(),
+                scales,
+                qs,
+            }
+        })
+        .collect();
 
     // Create input
     let input_f16: Vec<u16> = (0..k * n)
@@ -59,12 +68,15 @@ fn main() {
     let orig_shader = include_str!("../../shaders/mul_mm_standalone.metal");
     let compile_options = CompileOptions::new();
 
-    let opt_library = device.new_library_with_source(opt_shader, &compile_options)
+    let opt_library = device
+        .new_library_with_source(opt_shader, &compile_options)
         .expect("Failed to compile optimized shader");
-    let orig_library = device.new_library_with_source(orig_shader, &compile_options)
+    let orig_library = device
+        .new_library_with_source(orig_shader, &compile_options)
         .expect("Failed to compile original shader");
 
-    let opt_kernel = opt_library.get_function("kernel_mul_mm_q4_K_opt", None)
+    let opt_kernel = opt_library
+        .get_function("kernel_mul_mm_q4_K_opt", None)
         .expect("Failed to get optimized kernel");
 
     // For original kernel with function constants, we need to specialize it
@@ -76,32 +88,32 @@ fn main() {
         constant_values.set_constant_value_at_index(
             &false_val as *const _ as *const std::ffi::c_void,
             MTLDataType::Bool,
-            0
+            0,
         );
         constant_values.set_constant_value_at_index(
             &false_val as *const _ as *const std::ffi::c_void,
             MTLDataType::Bool,
-            1
+            1,
         );
         constant_values.set_constant_value_at_index(
             &one_val as *const _ as *const std::ffi::c_void,
             MTLDataType::Short,
-            2
+            2,
         );
         constant_values.set_constant_value_at_index(
             &one_val as *const _ as *const std::ffi::c_void,
             MTLDataType::Short,
-            3
+            3,
         );
         constant_values.set_constant_value_at_index(
             &one_val as *const _ as *const std::ffi::c_void,
             MTLDataType::Short,
-            4
+            4,
         );
         constant_values.set_constant_value_at_index(
             &one_val as *const _ as *const std::ffi::c_void,
             MTLDataType::Short,
-            5
+            5,
         );
     }
 
@@ -109,32 +121,61 @@ fn main() {
     descriptor.set_name("kernel_mul_mm_q4_K_f32");
     descriptor.set_constant_values(&constant_values);
 
-    let orig_kernel = orig_library.new_function_with_descriptor(&descriptor)
+    let orig_kernel = orig_library
+        .new_function_with_descriptor(&descriptor)
         .expect("Failed to create specialized original kernel");
 
-    let opt_pipeline = device.new_compute_pipeline_state_with_function(&opt_kernel)
+    let opt_pipeline = device
+        .new_compute_pipeline_state_with_function(&opt_kernel)
         .expect("Failed to create optimized pipeline");
-    let orig_pipeline = device.new_compute_pipeline_state_with_function(&orig_kernel)
+    let orig_pipeline = device
+        .new_compute_pipeline_state_with_function(&orig_kernel)
         .expect("Failed to create original pipeline");
 
-    println!("Optimized pipeline max threads: {}", opt_pipeline.max_total_threads_per_threadgroup());
-    println!("Original pipeline max threads: {}\n", orig_pipeline.max_total_threads_per_threadgroup());
+    println!(
+        "Optimized pipeline max threads: {}",
+        opt_pipeline.max_total_threads_per_threadgroup()
+    );
+    println!(
+        "Original pipeline max threads: {}\n",
+        orig_pipeline.max_total_threads_per_threadgroup()
+    );
 
     // Args
     #[repr(C)]
     struct GemmArgs {
-        ne00: i32, ne02: i32, nb01: u64, nb02: u64, nb03: u64,
-        ne12: i32, nb10: u64, nb11: u64, nb12: u64, nb13: u64,
-        ne0: i32, ne1: i32, r2: i16, r3: i16,
+        ne00: i32,
+        ne02: i32,
+        nb01: u64,
+        nb02: u64,
+        nb03: u64,
+        ne12: i32,
+        nb10: u64,
+        nb11: u64,
+        nb12: u64,
+        nb13: u64,
+        ne0: i32,
+        ne1: i32,
+        r2: i16,
+        r3: i16,
     }
 
     let nb = k / 256;
     let args = GemmArgs {
-        ne00: k as i32, ne02: 1,
+        ne00: k as i32,
+        ne02: 1,
         nb01: (nb * std::mem::size_of::<BlockQ4K>()) as u64,
-        nb02: 0, nb03: 0,
-        ne12: 1, nb10: 2, nb11: (k * 2) as u64, nb12: 0, nb13: 0,
-        ne0: m as i32, ne1: n as i32, r2: 1, r3: 1,
+        nb02: 0,
+        nb03: 0,
+        ne12: 1,
+        nb10: 2,
+        nb11: (k * 2) as u64,
+        nb12: 0,
+        nb13: 0,
+        ne0: m as i32,
+        ne1: n as i32,
+        r2: 1,
+        r3: 1,
     };
 
     let args_buffer = device.new_buffer_with_data(
@@ -145,35 +186,91 @@ fn main() {
 
     // Warmup
     for _ in 0..2 {
-        run_gemm(&queue, &opt_pipeline, &args_buffer, &weights_buffer, &input_buffer, &output_buffer);
-        run_gemm(&queue, &orig_pipeline, &args_buffer, &weights_buffer, &input_buffer, &output_buffer);
+        run_gemm(
+            &queue,
+            &opt_pipeline,
+            &args_buffer,
+            &weights_buffer,
+            &input_buffer,
+            &output_buffer,
+        );
+        run_gemm(
+            &queue,
+            &orig_pipeline,
+            &args_buffer,
+            &weights_buffer,
+            &input_buffer,
+            &output_buffer,
+        );
     }
 
     // Benchmark
     let n_iter = 10;
 
-    let opt_time = benchmark(&queue, &opt_pipeline, &args_buffer, &weights_buffer, &input_buffer, &output_buffer, n_iter);
-    let orig_time = benchmark(&queue, &orig_pipeline, &args_buffer, &weights_buffer, &input_buffer, &output_buffer, n_iter);
+    let opt_time = benchmark(
+        &queue,
+        &opt_pipeline,
+        &args_buffer,
+        &weights_buffer,
+        &input_buffer,
+        &output_buffer,
+        n_iter,
+    );
+    let orig_time = benchmark(
+        &queue,
+        &orig_pipeline,
+        &args_buffer,
+        &weights_buffer,
+        &input_buffer,
+        &output_buffer,
+        n_iter,
+    );
 
     let flops = 2.0 * m as f64 * n as f64 * k as f64;
     let opt_gflops = flops / (opt_time * 1e-6) / 1e9;
     let orig_gflops = flops / (orig_time * 1e-6) / 1e9;
 
-    println!("┌──────────────────────────┬────────────┬──────────┬───────────┐");
-    println!("│ Kernel                   │ Time (µs)  │ GFLOPS   │ vs llama  │");
-    println!("├──────────────────────────┼────────────┼──────────┼───────────┤");
-    println!("│ Optimized (hardcoded)    │ {:10.2} │ {:8.2} │ {:8.1}% │", opt_time, opt_gflops, opt_gflops / 3552.0 * 100.0);
-    println!("│ Original (FC)            │ {:10.2} │ {:8.2} │ {:8.1}% │", orig_time, orig_gflops, orig_gflops / 3552.0 * 100.0);
-    println!("└──────────────────────────┴────────────┴──────────┴───────────┘");
+    println!(
+        "┌──────────────────────────┬────────────┬──────────┬───────────┐"
+    );
+    println!(
+        "│ Kernel                   │ Time (µs)  │ GFLOPS   │ vs llama  │"
+    );
+    println!(
+        "├──────────────────────────┼────────────┼──────────┼───────────┤"
+    );
+    println!(
+        "│ Optimized (hardcoded)    │ {:10.2} │ {:8.2} │ {:8.1}% │",
+        opt_time,
+        opt_gflops,
+        opt_gflops / 3552.0 * 100.0
+    );
+    println!(
+        "│ Original (FC)            │ {:10.2} │ {:8.2} │ {:8.1}% │",
+        orig_time,
+        orig_gflops,
+        orig_gflops / 3552.0 * 100.0
+    );
+    println!(
+        "└──────────────────────────┴────────────┴──────────┴───────────┘"
+    );
     println!();
     println!("llama.cpp Q4_K: ~3552 GFLOPS");
 
     // Verify output
     let output = unsafe {
-        std::slice::from_raw_parts(output_buffer.contents() as *const f32, m * n)
+        std::slice::from_raw_parts(
+            output_buffer.contents() as *const f32,
+            m * n,
+        )
     };
     let non_zero = output.iter().filter(|&&x| x != 0.0).count();
-    println!("\nOutput coverage: {} / {} ({:.1}%)", non_zero, m * n, 100.0 * non_zero as f64 / (m * n) as f64);
+    println!(
+        "\nOutput coverage: {} / {} ({:.1}%)",
+        non_zero,
+        m * n,
+        100.0 * non_zero as f64 / (m * n) as f64
+    );
 }
 
 fn benchmark(

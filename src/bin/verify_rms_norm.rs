@@ -15,7 +15,8 @@ fn main() {
         .map(|i| ((i % 100) as f32 * 0.01 - 0.5))
         .collect();
 
-    let w: Vec<f32> = (0..hidden_dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
+    let w: Vec<f32> =
+        (0..hidden_dim).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
 
     let mut dst = vec![0.0f32; n_rows * hidden_dim];
 
@@ -67,7 +68,10 @@ fn main() {
     if max_error < tolerance {
         println!("\n✓ PASS: Max error {} < tolerance {}", max_error, tolerance);
     } else {
-        println!("\n✗ FAIL: Max error {} >= tolerance {}", max_error, tolerance);
+        println!(
+            "\n✗ FAIL: Max error {} >= tolerance {}",
+            max_error, tolerance
+        );
     }
 
     // Test multiple rows

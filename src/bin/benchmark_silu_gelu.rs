@@ -73,7 +73,12 @@ fn gelu_quick_scalar(x: &[f32], dst: &mut [f32]) {
     }
 }
 
-fn benchmark<F: Fn(&[f32], &mut [f32])>(name: &str, f: F, x: &[f32], iterations: usize) -> f64 {
+fn benchmark<F: Fn(&[f32], &mut [f32])>(
+    name: &str,
+    f: F,
+    x: &[f32],
+    iterations: usize,
+) -> f64 {
     let mut dst = vec![0.0f32; x.len()];
 
     // Warmup
@@ -98,45 +103,70 @@ fn main() {
 
     // Generate test data
     println!("SiLU Performance:");
-    println!("{:8} | {:12} | {:12} | {:8}", "Size", "NEON (μs)", "Scalar (μs)", "Speedup");
+    println!(
+        "{:8} | {:12} | {:12} | {:8}",
+        "Size", "NEON (μs)", "Scalar (μs)", "Speedup"
+    );
     println!("{}", "-".repeat(50));
 
     for &size in &sizes {
-        let x: Vec<f32> = (0..size).map(|i| ((i as f32 - size as f32 / 2.0) * 0.01).sin()).collect();
+        let x: Vec<f32> = (0..size)
+            .map(|i| ((i as f32 - size as f32 / 2.0) * 0.01).sin())
+            .collect();
 
         let t_neon = benchmark("NEON", silu_neon, &x, iterations) * 1e6;
         let t_scalar = benchmark("Scalar", silu_scalar, &x, iterations) * 1e6;
         let speedup = t_scalar / t_neon;
 
-        println!("{:8} | {:12.2} | {:12.2} | {:8.2}x", size, t_neon, t_scalar, speedup);
+        println!(
+            "{:8} | {:12.2} | {:12.2} | {:8.2}x",
+            size, t_neon, t_scalar, speedup
+        );
     }
 
     println!("\nGELU Performance:");
-    println!("{:8} | {:12} | {:12} | {:8}", "Size", "NEON (μs)", "Scalar (μs)", "Speedup");
+    println!(
+        "{:8} | {:12} | {:12} | {:8}",
+        "Size", "NEON (μs)", "Scalar (μs)", "Speedup"
+    );
     println!("{}", "-".repeat(50));
 
     for &size in &sizes {
-        let x: Vec<f32> = (0..size).map(|i| ((i as f32 - size as f32 / 2.0) * 0.01).sin()).collect();
+        let x: Vec<f32> = (0..size)
+            .map(|i| ((i as f32 - size as f32 / 2.0) * 0.01).sin())
+            .collect();
 
         let t_neon = benchmark("NEON", gelu_neon, &x, iterations) * 1e6;
         let t_scalar = benchmark("Scalar", gelu_scalar, &x, iterations) * 1e6;
         let speedup = t_scalar / t_neon;
 
-        println!("{:8} | {:12.2} | {:12.2} | {:8.2}x", size, t_neon, t_scalar, speedup);
+        println!(
+            "{:8} | {:12.2} | {:12.2} | {:8.2}x",
+            size, t_neon, t_scalar, speedup
+        );
     }
 
     println!("\nGELU-Quick Performance:");
-    println!("{:8} | {:12} | {:12} | {:8}", "Size", "NEON (μs)", "Scalar (μs)", "Speedup");
+    println!(
+        "{:8} | {:12} | {:12} | {:8}",
+        "Size", "NEON (μs)", "Scalar (μs)", "Speedup"
+    );
     println!("{}", "-".repeat(50));
 
     for &size in &sizes {
-        let x: Vec<f32> = (0..size).map(|i| ((i as f32 - size as f32 / 2.0) * 0.01).sin()).collect();
+        let x: Vec<f32> = (0..size)
+            .map(|i| ((i as f32 - size as f32 / 2.0) * 0.01).sin())
+            .collect();
 
         let t_neon = benchmark("NEON", gelu_quick_neon, &x, iterations) * 1e6;
-        let t_scalar = benchmark("Scalar", gelu_quick_scalar, &x, iterations) * 1e6;
+        let t_scalar =
+            benchmark("Scalar", gelu_quick_scalar, &x, iterations) * 1e6;
         let speedup = t_scalar / t_neon;
 
-        println!("{:8} | {:12.2} | {:12.2} | {:8.2}x", size, t_neon, t_scalar, speedup);
+        println!(
+            "{:8} | {:12.2} | {:12.2} | {:8.2}x",
+            size, t_neon, t_scalar, speedup
+        );
     }
 
     // Correctness check
@@ -172,7 +202,10 @@ fn main() {
     for i in 0..test_data.len() {
         let diff = (dst_neon[i] - dst_scalar[i]).abs();
         max_diff = max_diff.max(diff);
-        println!("  x={}: NEON={}, Scalar={}, diff={}", test_data[i], dst_neon[i], dst_scalar[i], diff);
+        println!(
+            "  x={}: NEON={}, Scalar={}, diff={}",
+            test_data[i], dst_neon[i], dst_scalar[i], diff
+        );
     }
     println!("GELU-Quick max diff: {}", max_diff);
 }

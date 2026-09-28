@@ -1,9 +1,9 @@
 // Comprehensive GPU MV vs llama.cpp verification
 // Test all formats across all K sizes
 
-use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use infer_train::quant::types::*;
 use half::f16;
+use infer_train::quant::types::*;
+use infer_train::quant::vec_dot::gpu::metal::MetalContext;
 use std::time::Instant;
 
 fn generate_f32_vector(k: usize) -> Vec<f32> {
@@ -12,34 +12,45 @@ fn generate_f32_vector(k: usize) -> Vec<f32> {
 
 fn generate_q4_0_weights(m: usize, k: usize) -> Vec<BlockQ4_0> {
     let nb = k / 32;
-    (0..m * nb).map(|i| {
-        let mut qs = [0u8; 16];
-        for j in 0..16 { qs[j] = ((i * 17 + j * 13) % 256) as u8; }
-        BlockQ4_0 {
-            d: f16::from_f32(0.5 + (i % 10) as f32 * 0.1).to_bits(),
-            qs,
-        }
-    }).collect()
+    (0..m * nb)
+        .map(|i| {
+            let mut qs = [0u8; 16];
+            for j in 0..16 {
+                qs[j] = ((i * 17 + j * 13) % 256) as u8;
+            }
+            BlockQ4_0 {
+                d: f16::from_f32(0.5 + (i % 10) as f32 * 0.1).to_bits(),
+                qs,
+            }
+        })
+        .collect()
 }
 
 fn generate_q4_k_weights(m: usize, k: usize) -> Vec<BlockQ4K> {
     let nb = k / 256;
-    (0..m * nb).map(|i| {
-        let mut qs = [0u8; 128];
-        let mut scales = [0u8; 12];
-        for j in 0..128 { qs[j] = ((i * 17 + j * 13) % 256) as u8; }
-        for j in 0..12 { scales[j] = ((i * 23 + j * 7) % 256) as u8; }
-        BlockQ4K {
-            d: f16::from_f32(0.5).to_bits(),
-            dmin: f16::from_f32(0.1).to_bits(),
-            scales,
-            qs,
-        }
-    }).collect()
+    (0..m * nb)
+        .map(|i| {
+            let mut qs = [0u8; 128];
+            let mut scales = [0u8; 12];
+            for j in 0..128 {
+                qs[j] = ((i * 17 + j * 13) % 256) as u8;
+            }
+            for j in 0..12 {
+                scales[j] = ((i * 23 + j * 7) % 256) as u8;
+            }
+            BlockQ4K {
+                d: f16::from_f32(0.5).to_bits(),
+                dmin: f16::from_f32(0.1).to_bits(),
+                scales,
+                qs,
+            }
+        })
+        .collect()
 }
 
 fn main() {
-    let metal_ctx = MetalContext::new().expect("Failed to create Metal context");
+    let metal_ctx =
+        MetalContext::new().expect("Failed to create Metal context");
 
     println!("GPU MV Performance - All Formats, All K Sizes");
     println!("================================================\n");
@@ -52,7 +63,9 @@ fn main() {
     println!("K\\M\t256\t1024\t4096");
 
     for k in k_sizes.iter() {
-        if k % 32 != 0 { continue; }
+        if k % 32 != 0 {
+            continue;
+        }
         print!("{}\t", k);
 
         for m in m_sizes.iter() {
@@ -77,7 +90,9 @@ fn main() {
     println!("K\\M\t256\t1024\t4096");
 
     for k in k_sizes.iter() {
-        if k % 256 != 0 { continue; }
+        if k % 256 != 0 {
+            continue;
+        }
         print!("{}\t", k);
 
         for m in m_sizes.iter() {

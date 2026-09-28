@@ -8,8 +8,10 @@ pub fn vec_dot_q4_1_q8_1(n: usize, x: &[BlockQ4_1], y: &[BlockQ8_1]) -> f32 {
     let mut sum = 0.0f32;
 
     for i in 0..nb {
-        let d = f16::from_bits(x[i].d).to_f32() * f16::from_bits(y[i].d).to_f32();
-        let m = f16::from_bits(x[i].m).to_f32() * f16::from_bits(y[i].s).to_f32();
+        let d =
+            f16::from_bits(x[i].d).to_f32() * f16::from_bits(y[i].d).to_f32();
+        let m =
+            f16::from_bits(x[i].m).to_f32() * f16::from_bits(y[i].s).to_f32();
 
         let mut isum = 0i32;
         for j in 0..16 {

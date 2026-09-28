@@ -133,7 +133,10 @@ unsafe fn neon_exp(x: float32x4_t) -> float32x4_t {
 
     // Compute 2^n
     let e = vshlq_n_u32(vreinterpretq_u32_f32(z), 23);
-    let k = vreinterpretq_f32_u32(vaddq_u32(e, vreinterpretq_u32_f32(vdupq_n_f32(1.0f32))));
+    let k = vreinterpretq_f32_u32(vaddq_u32(
+        e,
+        vreinterpretq_u32_f32(vdupq_n_f32(1.0f32)),
+    ));
 
     // Check for overflow/underflow
     let c = vcagtq_f32(n, vdupq_n_f32(126.0f32));
@@ -144,8 +147,16 @@ unsafe fn neon_exp(x: float32x4_t) -> float32x4_t {
     let j = vfmaq_f32(
         vmulq_f32(vdupq_n_f32(0.9999990463256836), b),
         vfmaq_f32(
-            vfmaq_f32(vdupq_n_f32(0.4999985098838806), vdupq_n_f32(0.1666666169166565), b),
-            vfmaq_f32(vdupq_n_f32(0.04166661170125008), vdupq_n_f32(0.008333338060230017), b),
+            vfmaq_f32(
+                vdupq_n_f32(0.4999985098838806),
+                vdupq_n_f32(0.1666666169166565),
+                b,
+            ),
+            vfmaq_f32(
+                vdupq_n_f32(0.04166661170125008),
+                vdupq_n_f32(0.008333338060230017),
+                b,
+            ),
             u,
         ),
         u,
@@ -217,7 +228,13 @@ mod tests {
 
         // Verify NEON matches scalar
         for i in 0..4 {
-            assert!((y_scalar[i] - y_neon[i]).abs() < 1e-4, "Mismatch at {}: {} vs {}", i, y_scalar[i], y_neon[i]);
+            assert!(
+                (y_scalar[i] - y_neon[i]).abs() < 1e-4,
+                "Mismatch at {}: {} vs {}",
+                i,
+                y_scalar[i],
+                y_neon[i]
+            );
         }
     }
 
