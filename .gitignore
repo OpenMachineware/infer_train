@@ -17,3 +17,33 @@ vllm-0.29.0/
 
 # Benchmark tools (llama.cpp binaries)
 .llama-cpp-tools/
+
+# Native C/C++ build artifacts
+*.o
+*.a
+*.dylib
+*.s
+native/benchmark_memory
+native/exact_llama_test
+native/f16_bench_direct
+native/f16_bench_fair
+native/hybrid_test
+native/identical_test
+native/instrumented_comparison
+native/llama_attention_bench
+native/loop_test
+native/mad_benchmark
+native/memory_access_test
+native/our_attention_bench
+native/simple_profile
+native/timing_test
+
+# Root directory test binaries
+bench_attention_llama
+test_20_iter
+test_c_timing
+test_data_pattern
+test_llama_all_k
+test_llama_metal_q4_k
+test_minimal_ffi
+test_rust_ffi
