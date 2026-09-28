@@ -212,7 +212,24 @@ const LLAMACPP_BASELINE: &[(f64, f64)] = &[
     (0.0, 0.0),   // Q5_0 (placeholder)
 ];
 
+/// Warm up CPU to stabilize frequency
+fn warmup(iterations: usize) {
+    let mut sum = 0.0f64;
+    for i in 0..iterations {
+        sum = sum.sqrt() + i as f64;
+    }
+    // Prevent compiler from optimizing away
+    if sum < 0.0 {
+        println!("This should never print");
+    }
+}
+
 fn main() {
+    // Warm up CPU to stabilize frequency
+    eprintln!("Warming up CPU...");
+    warmup(50_000_000);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
     unsafe {
         let k = 4096;
         let m_large = 4096;
