@@ -47,3 +47,6 @@ test_llama_all_k
 test_llama_metal_q4_k
 test_minimal_ffi
 test_rust_ffi
+
+# Root directory test/debug Rust files (should be in src/bin/)
+/test_*.rs
