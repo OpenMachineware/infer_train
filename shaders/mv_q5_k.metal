@@ -3,8 +3,8 @@ using namespace metal;
 
 #define QK_K 256
 #define N_SIMDWIDTH 32
-#define N_R0_Q5_K 2   // Rows per SIMD group (llama.cpp: N_R0_Q5_K)
-#define N_SG_Q5_K 2   // SIMD groups per threadgroup (llama.cpp: N_SG_Q5_K)
+#define N_R0_Q5_K 1   // Rows per SIMD group (llama.cpp: N_R0_Q5_K = 1)
+#define N_SG_Q5_K 2   // SIMD groups per threadgroup (llama.cpp: N_SG_Q5_K = 2)
 
 // Loop unroll pragma matching llama.cpp
 #define FOR_UNROLL(x) _Pragma("clang loop unroll(full)") for (x)

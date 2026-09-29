@@ -1,15 +1,17 @@
+// Q4_K x F32 Matrix-Vector kernel - exact copy from llama.cpp
+// Based on: llama.cpp-0.5.0/ggml/src/ggml-metal/kernels/mul_mv.metal
+// Hardcoded function constants for single-batch case:
+//   NSG = 2, ne12 = 1, r2 = 1, r3 = 1
+
 #include <metal_stdlib>
 using namespace metal;
 
 #define QK_K 256
-#define N_SIMDWIDTH 32
-#define N_R0_Q4_K 2   // Rows per SIMD group (llama.cpp: N_R0_Q4_K)
-#define N_SG_Q4_K 2   // SIMD groups per threadgroup (llama.cpp: N_SG_Q4_K)
 
 // Loop unroll pragma matching llama.cpp
 #define FOR_UNROLL(x) _Pragma("clang loop unroll(full)") for (x)
 
-// Q4_K block structure matching Rust BlockQ4K
+// Block structure matching llama.cpp
 struct block_q4_K {
     half d;            // Super-block scale for quantized scales
     half dmin;         // Super-block scale for quantized mins
@@ -17,25 +19,45 @@ struct block_q4_K {
     uint8_t qs[QK_K/2]; // 4-bit quants
 };
 
-// Q4_K x F32 MV kernel matching llama.cpp exactly
-// Args structure to match llama.cpp
+// Args structure matching llama.cpp's ggml_metal_kargs_mul_mv
 struct mv_args {
-    uint32_t ne00;  // K dimension
-    uint32_t ne01;  // M dimension (rows)
-    uint64_t nb01;  // Byte stride for rows in src0
+    int32_t ne00;  // K dimension
+    int32_t ne01;  // M dimension (rows)
+    uint64_t nb00;
+    uint64_t nb01; // Byte stride for rows in src0
+    uint64_t nb02;
+    uint64_t nb03;
+    int32_t ne10;
+    int32_t ne11;
+    int32_t ne12;
+    uint64_t nb10;
+    uint64_t nb11;
+    uint64_t nb12;
+    uint64_t nb13;
+    int32_t ne0;   // = ne01 for MV
+    int32_t ne1;   // = 1 for single-batch MV
+    int32_t nr0;   // N_R0 value (template parameter)
+    int16_t r2;    // = 1 for single batch
+    int16_t r3;    // = 1 for single batch
 };
 
-kernel void kernel_mul_mv_q4_K_f32(
-    device const char * src0 [[buffer(0)]],
-    device const float * src1 [[buffer(1)]],
-    device float * dst [[buffer(2)]],
-    constant mv_args & args [[buffer(3)]],
-    uint3 tgpig [[threadgroup_position_in_grid]],
-    ushort tiisg [[thread_index_in_simdgroup]],
-    ushort sgitg [[simdgroup_index_in_threadgroup]])
-{
-    const short NSG = N_SG_Q4_K;
-    const short NR0 = N_R0_Q4_K;
+// Hardcoded function constants for our use case
+#define FC_mul_mv_nsg  2
+#define FC_mul_mv_ne12 1
+#define FC_mul_mv_r2   1
+#define FC_mul_mv_r3   1
+
+// Template implementation from llama.cpp
+template<int nr0>
+void kernel_mul_mv_q4_K_f32_impl(
+        mv_args args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        uint3  tgpig,
+        ushort tiisg,
+        ushort sgitg) {
+    const short NSG = FC_mul_mv_nsg;
 
     constexpr uint16_t kmask1 = 0x3f3f;
     constexpr uint16_t kmask2 = 0x0f0f;
@@ -48,18 +70,27 @@ kernel void kernel_mul_mv_q4_K_f32(
 
     const int nb = args.ne00/QK_K;
 
-    const int first_row = (tgpig.x * NSG + sgitg) * NR0;
+    const int r0 = tgpig.x;
+    const int r1 = tgpig.y;
+    const int im = tgpig.z;
 
-    if (first_row >= args.ne01) return;
+    const int first_row = (r0 * NSG + sgitg) * nr0;
 
-    device const block_q4_K * x = (device const block_q4_K *) (src0 + first_row * args.nb01);
+    const uint i12 = im%FC_mul_mv_ne12;
+    const uint i13 = im/FC_mul_mv_ne12;
+
+    const uint64_t offset0 = first_row*args.nb01 + (i12/FC_mul_mv_r2)*args.nb02 + (i13/FC_mul_mv_r3)*args.nb03;
+    const uint64_t offset1 =        r1*args.nb11 + (i12        )*args.nb12 + (i13        )*args.nb13;
+
+    device const block_q4_K * x = (device const block_q4_K *) (src0 + offset0);
+    device const float      * y = (device const float      *) (src1 + offset1);
 
     float yl[16];
     float yh[16];
 
-    float sumf[NR0]={0.f};
+    float sumf[nr0]={0.f};
 
-    device const float * y4 = src1 + ix * QK_K + 64 * iq + 8 * ir;
+    device const float * y4 = y + ix * QK_K + 64 * iq + 8 * ir;
 
     uint16_t sc16[4];
     thread const uint8_t * sc8 = (thread const uint8_t *)sc16;
@@ -78,7 +109,7 @@ kernel void kernel_mul_mv_q4_K_f32(
         device const uint16_t * q1 = (device const uint16_t *)x[ib].qs + 16 * iq + 4 * ir;
         device const half     * dh = &x[ib].d;
 
-        for (short row = 0; row < NR0; row++) {
+        for (short row = 0; row < nr0; row++) {
             sc16[0] = sc[0] & kmask1;
             sc16[1] = sc[2] & kmask1;
             sc16[2] = ((sc[4] >> 0) & kmask2) | ((sc[0] & kmask3) >> 2);
@@ -114,12 +145,25 @@ kernel void kernel_mul_mv_q4_K_f32(
         y4 += 4 * QK_K;
     }
 
-    device float * dst_f32 = dst + first_row;
+    device float * dst_f32 = (device float *) dst + (int64_t)im*args.ne0*args.ne1 + (int64_t)r1*args.ne0;
 
-    for (int row = 0; row < NR0 && first_row + row < args.ne01; ++row) {
+    for (int row = 0; row < nr0 && first_row + row < args.ne0; ++row) {
         float sum_all = simd_sum(sumf[row]);
         if (tiisg == 0) {
-            dst_f32[row] = sum_all;
+            dst_f32[first_row + row] = sum_all;
         }
     }
+}
+
+// N_R0_Q4_K = 2 from llama.cpp
+kernel void kernel_mul_mv_q4_K_f32(
+        constant mv_args & args [[buffer(3)]],
+        device const char * src0 [[buffer(0)]],
+        device const char * src1 [[buffer(1)]],
+        device       char * dst [[buffer(2)]],
+        uint3  tgpig [[threadgroup_position_in_grid]],
+        ushort tiisg [[thread_index_in_simdgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]]) {
+
+    kernel_mul_mv_q4_K_f32_impl<2>(args, src0, src1, dst, tgpig, tiisg, sgitg);
 }

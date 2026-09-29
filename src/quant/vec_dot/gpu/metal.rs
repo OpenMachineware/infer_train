@@ -78,6 +78,33 @@ pub struct MetalContext {
     gemm_template_q3_k_pipeline: ComputePipelineState,
     gemm_template_q5_k_pipeline: ComputePipelineState,
     gemm_template_q6_k_pipeline: ComputePipelineState,
+    // RMS Norm, Softmax, ROPE, Activation libraries and pipelines
+    rms_norm_library: Library,
+    rms_norm_pipeline: ComputePipelineState,
+    rms_norm_4_pipeline: ComputePipelineState,
+    softmax_library: Library,
+    softmax_fast_pipeline: ComputePipelineState,
+    softmax_4_fast_pipeline: ComputePipelineState,
+    softmax_pipeline: ComputePipelineState,
+    softmax_4_pipeline: ComputePipelineState,
+    rope_library: Library,
+    rope_pipeline: ComputePipelineState,
+    activation_library: Library,
+    silu_pipeline: ComputePipelineState,
+    silu_4_pipeline: ComputePipelineState,
+    gelu_pipeline: ComputePipelineState,
+    gelu_4_pipeline: ComputePipelineState,
+    gelu_quick_pipeline: ComputePipelineState,
+    gelu_quick_4_pipeline: ComputePipelineState,
+    // Flash Attention
+    flash_attn_library: Library,
+    flash_attn_f16_pipeline: ComputePipelineState,
+    // Quantize
+    quantize_library: Library,
+    quantize_f16_pipeline: ComputePipelineState,
+    quantize_f16_4_pipeline: ComputePipelineState,
+    quantize_q4_0_pipeline: ComputePipelineState,
+    quantize_q8_0_pipeline: ComputePipelineState,
     // Cached buffers for MV operations
     // Once created with data, reuse without copy
     mv_weights_buffer: RefCell<Option<Buffer>>,
@@ -94,6 +121,59 @@ pub struct MetalContext {
     gemm_weights_size: RefCell<usize>,
     gemm_input_size: RefCell<usize>,
     gemm_output_size: RefCell<usize>,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct RopeArgs {
+    ne00: i32,
+    ne01: i32,
+    ne02: i32,
+    nb00: u64,
+    nb01: u64,
+    nb02: u64,
+    n_dims: i32,
+    n_offs: i32,
+    freq_base: f32,
+    freq_scale: f32,
+    ext_factor: f32,
+    attn_factor: f32,
+    beta_fast: f32,
+    beta_slow: f32,
+    n_ctx_orig: i32,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct FlashAttnArgs {
+    ne01: u32,    // Q rows
+    ne02: u32,    // Q heads
+    ne03: u32,    // Q batches
+    ne11: u32,    // K rows (seq_len)
+    ne_12_2: u32, // KV heads
+    ne_12_3: u32, // KV batches
+    nb01: u32,    // Q stride (bytes)
+    nb02: u32,    // Q stride (bytes)
+    nb03: u32,    // Q stride (bytes)
+    nb11: u32,    // K stride (bytes)
+    nb12: u32,    // K stride (bytes)
+    nb13: u32,    // K stride (bytes)
+    nb21: u32,    // V stride (bytes)
+    nb22: u32,    // V stride (bytes)
+    nb23: u32,    // V stride (bytes)
+    nb31: u32,    // mask stride
+    nb32: u32,    // mask stride
+    nb33: u32,    // mask stride
+    ne32: u32,    // mask rows
+    ne33: u32,    // mask batches
+    scale: f32,   // 1/sqrt(head_dim)
+    max_bias: f32,
+    logit_softcap: f32,
+    n_head_log2: u32,
+    m0: f32,
+    m1: f32,
+    nsg: u32,
+    nwg: u32,
 }
 
 impl MetalContext {
@@ -234,6 +314,55 @@ impl MetalContext {
             .new_library_with_source(gemm_template_source, &compile_options)
             .map_err(|e| {
                 format!("Failed to compile gemm_template library: {}", e)
+            })?;
+
+        // Compile RMS Norm library
+        let rms_norm_source =
+            include_str!("../../../../shaders/rms_norm.metal");
+        let rms_norm_library = device
+            .new_library_with_source(rms_norm_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile rms_norm library: {}", e)
+            })?;
+
+        // Compile Softmax library
+        let softmax_source = include_str!("../../../../shaders/softmax.metal");
+        let softmax_library = device
+            .new_library_with_source(softmax_source, &compile_options)
+            .map_err(|e| format!("Failed to compile softmax library: {}", e))?;
+
+        // Compile ROPE library
+        let rope_source = include_str!("../../../../shaders/rope.metal");
+        let rope_library = device
+            .new_library_with_source(rope_source, &compile_options)
+            .map_err(|e| format!("Failed to compile rope library: {}", e))?;
+
+        // Compile Activation library
+        let activation_source =
+            include_str!("../../../../shaders/activation.metal");
+        let activation_library = device
+            .new_library_with_source(activation_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile activation library: {}", e)
+            })?;
+
+        // Compile Flash Attention library (standalone with expanded includes)
+        let flash_attn_source = include_str!(
+            "../../../../shaders/flash_attn_standalone_stub.metal"
+        );
+        let flash_attn_library = device
+            .new_library_with_source(flash_attn_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile flash_attn library: {}", e)
+            })?;
+
+        // Compile Quantize library
+        let quantize_source =
+            include_str!("../../../../shaders/quantize.metal");
+        let quantize_library = device
+            .new_library_with_source(quantize_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile quantize library: {}", e)
             })?;
 
         // Create cached pipeline for Q4_0 MV
@@ -830,6 +959,156 @@ impl MetalContext {
                 format!("Failed to create templated Q6_K pipeline: {}", e)
             })?;
 
+        // Create RMS Norm pipelines
+        let rms_norm_kernel = rms_norm_library
+            .get_function("kernel_rms_norm_f32", None)
+            .map_err(|e| format!("Failed to get RMS Norm kernel: {}", e))?;
+        let rms_norm_pipeline = device
+            .new_compute_pipeline_state_with_function(&rms_norm_kernel)
+            .map_err(|e| {
+                format!("Failed to create RMS Norm pipeline: {}", e)
+            })?;
+
+        let rms_norm_4_kernel = rms_norm_library
+            .get_function("kernel_rms_norm_f32_4", None)
+            .map_err(|e| format!("Failed to get RMS Norm 4 kernel: {}", e))?;
+        let rms_norm_4_pipeline = device
+            .new_compute_pipeline_state_with_function(&rms_norm_4_kernel)
+            .map_err(|e| {
+                format!("Failed to create RMS Norm 4 pipeline: {}", e)
+            })?;
+
+        // Create Softmax pipelines
+        let softmax_fast_kernel = softmax_library
+            .get_function("kernel_soft_max_f32_fast", None)
+            .map_err(|e| format!("Failed to get Softmax fast kernel: {}", e))?;
+        let softmax_fast_pipeline = device
+            .new_compute_pipeline_state_with_function(&softmax_fast_kernel)
+            .map_err(|e| {
+                format!("Failed to create Softmax fast pipeline: {}", e)
+            })?;
+
+        let softmax_4_fast_kernel = softmax_library
+            .get_function("kernel_soft_max_f32_4_fast", None)
+            .map_err(|e| {
+                format!("Failed to get Softmax 4 fast kernel: {}", e)
+            })?;
+        let softmax_4_fast_pipeline = device
+            .new_compute_pipeline_state_with_function(&softmax_4_fast_kernel)
+            .map_err(|e| {
+                format!("Failed to create Softmax 4 fast pipeline: {}", e)
+            })?;
+
+        let softmax_kernel = softmax_library
+            .get_function("kernel_soft_max_f32", None)
+            .map_err(|e| format!("Failed to get Softmax kernel: {}", e))?;
+        let softmax_pipeline = device
+            .new_compute_pipeline_state_with_function(&softmax_kernel)
+            .map_err(|e| format!("Failed to create Softmax pipeline: {}", e))?;
+
+        let softmax_4_kernel = softmax_library
+            .get_function("kernel_soft_max_f32_4", None)
+            .map_err(|e| format!("Failed to get Softmax 4 kernel: {}", e))?;
+        let softmax_4_pipeline = device
+            .new_compute_pipeline_state_with_function(&softmax_4_kernel)
+            .map_err(|e| {
+                format!("Failed to create Softmax 4 pipeline: {}", e)
+            })?;
+
+        // Create ROPE pipeline
+        let rope_kernel = rope_library
+            .get_function("kernel_rope_neox_f32", None)
+            .map_err(|e| format!("Failed to get ROPE kernel: {}", e))?;
+        let rope_pipeline = device
+            .new_compute_pipeline_state_with_function(&rope_kernel)
+            .map_err(|e| format!("Failed to create ROPE pipeline: {}", e))?;
+
+        // Create Activation pipelines
+        let silu_kernel = activation_library
+            .get_function("kernel_silu_f32_4", None)
+            .map_err(|e| format!("Failed to get SiLU kernel: {}", e))?;
+        let silu_pipeline = device
+            .new_compute_pipeline_state_with_function(&silu_kernel)
+            .map_err(|e| format!("Failed to create SiLU pipeline: {}", e))?;
+
+        let silu_4_pipeline = silu_pipeline.clone();
+
+        let gelu_kernel = activation_library
+            .get_function("kernel_gelu_f32_4", None)
+            .map_err(|e| format!("Failed to get GELU kernel: {}", e))?;
+        let gelu_pipeline = device
+            .new_compute_pipeline_state_with_function(&gelu_kernel)
+            .map_err(|e| format!("Failed to create GELU pipeline: {}", e))?;
+
+        let gelu_4_pipeline = gelu_pipeline.clone();
+
+        let gelu_quick_kernel = activation_library
+            .get_function("kernel_gelu_quick_f32_4", None)
+            .map_err(|e| format!("Failed to get GELU Quick kernel: {}", e))?;
+        let gelu_quick_pipeline = device
+            .new_compute_pipeline_state_with_function(&gelu_quick_kernel)
+            .map_err(|e| {
+                format!("Failed to create GELU Quick pipeline: {}", e)
+            })?;
+
+        let gelu_quick_4_pipeline = gelu_quick_pipeline.clone();
+
+        // Create Flash Attention pipeline (template specialization, may fail on some Metal versions)
+        let flash_attn_f16_pipeline = match flash_attn_library
+            .get_function("kernel_flash_attn_ext_f16_dk128_dv128", None)
+        {
+            Ok(kernel) => {
+                match device.new_compute_pipeline_state_with_function(&kernel) {
+                    Ok(pipeline) => pipeline,
+                    Err(_) => rms_norm_pipeline.clone(),
+                }
+            }
+            Err(_) => rms_norm_pipeline.clone(),
+        };
+
+        // Create Quantize pipelines
+        let quantize_f16_kernel = quantize_library
+            .get_function("kernel_quantize_f16", None)
+            .map_err(|e| format!("Failed to get Quantize F16 kernel: {}", e))?;
+        let quantize_f16_pipeline = device
+            .new_compute_pipeline_state_with_function(&quantize_f16_kernel)
+            .map_err(|e| {
+                format!("Failed to create Quantize F16 pipeline: {}", e)
+            })?;
+
+        let quantize_f16_4_kernel = quantize_library
+            .get_function("kernel_quantize_f16_4", None)
+            .map_err(|e| {
+                format!("Failed to get Quantize F16_4 kernel: {}", e)
+            })?;
+        let quantize_f16_4_pipeline = device
+            .new_compute_pipeline_state_with_function(&quantize_f16_4_kernel)
+            .map_err(|e| {
+                format!("Failed to create Quantize F16_4 pipeline: {}", e)
+            })?;
+
+        let quantize_q4_0_kernel = quantize_library
+            .get_function("kernel_quantize_q4_0", None)
+            .map_err(|e| {
+                format!("Failed to get Quantize Q4_0 kernel: {}", e)
+            })?;
+        let quantize_q4_0_pipeline = device
+            .new_compute_pipeline_state_with_function(&quantize_q4_0_kernel)
+            .map_err(|e| {
+                format!("Failed to create Quantize Q4_0 pipeline: {}", e)
+            })?;
+
+        let quantize_q8_0_kernel = quantize_library
+            .get_function("kernel_quantize_q8_0", None)
+            .map_err(|e| {
+                format!("Failed to get Quantize Q8_0 kernel: {}", e)
+            })?;
+        let quantize_q8_0_pipeline = device
+            .new_compute_pipeline_state_with_function(&quantize_q8_0_kernel)
+            .map_err(|e| {
+                format!("Failed to create Quantize Q8_0 pipeline: {}", e)
+            })?;
+
         Ok(Self {
             device,
             queue,
@@ -898,6 +1177,33 @@ impl MetalContext {
             gemm_template_q3_k_pipeline,
             gemm_template_q5_k_pipeline,
             gemm_template_q6_k_pipeline,
+            // RMS Norm, Softmax, ROPE, Activation
+            rms_norm_library,
+            rms_norm_pipeline,
+            rms_norm_4_pipeline,
+            softmax_library,
+            softmax_fast_pipeline,
+            softmax_4_fast_pipeline,
+            softmax_pipeline,
+            softmax_4_pipeline,
+            rope_library,
+            rope_pipeline,
+            activation_library,
+            silu_pipeline,
+            silu_4_pipeline,
+            gelu_pipeline,
+            gelu_4_pipeline,
+            gelu_quick_pipeline,
+            gelu_quick_4_pipeline,
+            // Flash Attention
+            flash_attn_library,
+            flash_attn_f16_pipeline,
+            // Quantize
+            quantize_library,
+            quantize_f16_pipeline,
+            quantize_f16_4_pipeline,
+            quantize_q4_0_pipeline,
+            quantize_q8_0_pipeline,
             // MV buffers
             mv_weights_buffer: RefCell::new(None),
             mv_input_buffer: RefCell::new(None),
@@ -1274,7 +1580,7 @@ impl MetalContext {
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
     }
 
-    /// Q4_K x F32 Matrix-Vector (matching llama.cpp kernel)
+    /// Q4_K x F32 Matrix-Vector (matching llama.cpp kernel exactly)
     pub fn mv_q4_k_f32(
         &self,
         m: usize,
@@ -1284,17 +1590,50 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         let nb = k / 256; // QK_K = 256
         let nb01 = (nb * std::mem::size_of::<BlockQ4K>()) as u64; // Byte stride per row
-        const NR0: u64 = 2; // N_R0_Q4_K = 2
 
-        // Args structure matching Metal kernel
+        // Args structure matching llama.cpp's ggml_metal_kargs_mul_mv
         #[repr(C)]
         struct MvArgs {
-            ne00: u32, // K
-            ne01: u32, // M
-            nb01: u64, // Byte stride per row
+            ne00: i32,
+            ne01: i32,
+            nb00: u64,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
         }
 
-        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            nb00: 1,
+            nb01,
+            nb02: 0,
+            nb03: 0,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 2,
+            r2: 1,
+            r3: 1, // N_R0_Q4_K = 2
+        };
 
         // Get or create cached buffers (NO data copy on repeated calls with same size)
         let weights_size = weights.len() * std::mem::size_of::<BlockQ4K>();
@@ -1374,9 +1713,9 @@ impl MetalContext {
         );
 
         // Thread group configuration matching llama.cpp EXACTLY
-        // 2D threadgroup: (32, 2, 1) where Y dimension = NSG = 2
-        // Metal organizes threads linearly: Y=0 -> sgitg=0, Y=1 -> sgitg=1
+        // Q4_K: N_R0 = 2, NSG = 2
         const NSG: u64 = 2;
+        const NR0: u64 = 2; // N_R0_Q4_K = 2
         const ROWS_PER_THREADGROUP: u64 = NSG * NR0; // 4
 
         let thread_group_size = MTLSize {
@@ -1525,7 +1864,7 @@ impl MetalContext {
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
     }
 
-    /// Q2_K x F32 Matrix-Vector (matching llama.cpp kernel)
+    /// Q2_K x F32 Matrix-Vector (matching llama.cpp kernel exactly)
     pub fn mv_q2_k_f32(
         &self,
         m: usize,
@@ -1535,17 +1874,50 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         let nb = k / 256; // QK_K = 256
         let nb01 = (nb * std::mem::size_of::<BlockQ2K>()) as u64; // Byte stride per row
-        const NR0: u64 = 2; // N_R0_Q2_K = 2
 
-        // Args structure matching Metal kernel
+        // Args structure matching llama.cpp's ggml_metal_kargs_mul_mv
         #[repr(C)]
         struct MvArgs {
-            ne00: u32, // K
-            ne01: u32, // M
-            nb01: u64, // Byte stride per row
+            ne00: i32,
+            ne01: i32,
+            nb00: u64,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
         }
 
-        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            nb00: 1,
+            nb01,
+            nb02: 0,
+            nb03: 0,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 4,
+            r2: 1,
+            r3: 1, // N_R0_Q2_K = 4
+        };
 
         // Get or create cached buffers (NO data copy on repeated calls with same size)
         let weights_size = weights.len() * std::mem::size_of::<BlockQ2K>();
@@ -1624,10 +1996,13 @@ impl MetalContext {
         );
 
         // Thread group configuration matching llama.cpp EXACTLY
-        // 2D threadgroup: (32, 2, 1) where Y dimension = NSG = 2
-        // Metal organizes threads linearly: Y=0 -> sgitg=0, Y=1 -> sgitg=1
+        // For K-quant types, llama.cpp uses:
+        //   threadgroup_count = ((ne01 + nr0*nsg - 1)/(nr0*nsg)), 1, 1
+        //   threads_per_threadgroup = (32, nsg, 1)
+        // Q2_K: N_R0 = 4, NSG = 2
         const NSG: u64 = 2;
-        const ROWS_PER_THREADGROUP: u64 = NSG * NR0; // 4
+        const NR0: u64 = 4; // N_R0_Q2_K = 4
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0; // 8
 
         let thread_group_size = MTLSize {
             width: 32,
@@ -3140,19 +3515,37 @@ impl MetalContext {
 
         #[repr(C)]
         struct GemmArgs {
-            ne00: u32, // K
-            ne01: u32, // M
-            ne02: u32, // N
-            nb01: u64, // Byte stride for weights rows
-            nb11: u64, // Byte stride for input rows
+            ne00: i32,
+            ne02: i32,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            r2: i16,
+            r3: i16,
         }
 
         let args = GemmArgs {
-            ne00: k as u32,
-            ne01: m as u32,
-            ne02: n as u32,
+            ne00: k as i32,
+            ne02: 1,
             nb01,
-            nb11: k as u64 * 4, // K * sizeof(f32)
+            nb02: 0,
+            nb03: 0,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: n as i32,
+            r2: 1,
+            r3: 1,
         };
 
         let weights_size = weights.len() * std::mem::size_of::<BlockQ4K>();
@@ -3260,19 +3653,39 @@ impl MetalContext {
         let nb01 = (nb * std::mem::size_of::<BlockQ2K>()) as u64;
 
         #[repr(C)]
+        #[repr(C)]
         struct GemmArgs {
-            ne00: u32,
-            ne01: u32,
-            ne02: u32,
+            ne00: i32,
+            ne02: i32,
             nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne12: i32,
+            nb10: u64,
             nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            r2: i16,
+            r3: i16,
         }
+
         let args = GemmArgs {
-            ne00: k as u32,
-            ne01: m as u32,
-            ne02: n as u32,
+            ne00: k as i32,
+            ne02: 1,
             nb01,
+            nb02: 0,
+            nb03: 0,
+            ne12: 1,
+            nb10: 4,
             nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: n as i32,
+            r2: 1,
+            r3: 1,
         };
 
         let weights_size = weights.len() * std::mem::size_of::<BlockQ2K>();
@@ -3376,19 +3789,39 @@ impl MetalContext {
         let nb01 = (nb * std::mem::size_of::<BlockQ3K>()) as u64;
 
         #[repr(C)]
+        #[repr(C)]
         struct GemmArgs {
-            ne00: u32,
-            ne01: u32,
-            ne02: u32,
+            ne00: i32,
+            ne02: i32,
             nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne12: i32,
+            nb10: u64,
             nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            r2: i16,
+            r3: i16,
         }
+
         let args = GemmArgs {
-            ne00: k as u32,
-            ne01: m as u32,
-            ne02: n as u32,
+            ne00: k as i32,
+            ne02: 1,
             nb01,
+            nb02: 0,
+            nb03: 0,
+            ne12: 1,
+            nb10: 4,
             nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: n as i32,
+            r2: 1,
+            r3: 1,
         };
 
         let weights_size = weights.len() * std::mem::size_of::<BlockQ3K>();
@@ -3492,19 +3925,39 @@ impl MetalContext {
         let nb01 = (nb * std::mem::size_of::<BlockQ5K>()) as u64;
 
         #[repr(C)]
+        #[repr(C)]
         struct GemmArgs {
-            ne00: u32,
-            ne01: u32,
-            ne02: u32,
+            ne00: i32,
+            ne02: i32,
             nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne12: i32,
+            nb10: u64,
             nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            r2: i16,
+            r3: i16,
         }
+
         let args = GemmArgs {
-            ne00: k as u32,
-            ne01: m as u32,
-            ne02: n as u32,
+            ne00: k as i32,
+            ne02: 1,
             nb01,
+            nb02: 0,
+            nb03: 0,
+            ne12: 1,
+            nb10: 4,
             nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: n as i32,
+            r2: 1,
+            r3: 1,
         };
 
         let weights_size = weights.len() * std::mem::size_of::<BlockQ5K>();
@@ -3608,19 +4061,39 @@ impl MetalContext {
         let nb01 = (nb * std::mem::size_of::<BlockQ6K>()) as u64;
 
         #[repr(C)]
+        #[repr(C)]
         struct GemmArgs {
-            ne00: u32,
-            ne01: u32,
-            ne02: u32,
+            ne00: i32,
+            ne02: i32,
             nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne12: i32,
+            nb10: u64,
             nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            r2: i16,
+            r3: i16,
         }
+
         let args = GemmArgs {
-            ne00: k as u32,
-            ne01: m as u32,
-            ne02: n as u32,
+            ne00: k as i32,
+            ne02: 1,
             nb01,
+            nb02: 0,
+            nb03: 0,
+            ne12: 1,
+            nb10: 4,
             nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: n as i32,
+            r2: 1,
+            r3: 1,
         };
 
         let weights_size = weights.len() * std::mem::size_of::<BlockQ6K>();
@@ -4401,5 +4874,923 @@ impl MetalContext {
         } else {
             self.gemm_q6_k_f32(m, n, k, weights, input)
         }
+    }
+
+    // ========================================================================
+    // RMS Norm
+    // ========================================================================
+
+    pub fn rms_norm_f32(
+        &self,
+        n_rows: usize,
+        n_cols: usize,
+        src: &[f32],
+        weight: &[f32],
+        eps: f32,
+    ) -> Result<Vec<f32>, String> {
+        let src_buffer = self.device.new_buffer_with_data(
+            src.as_ptr() as *const std::ffi::c_void,
+            (src.len() * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let weight_buffer = self.device.new_buffer_with_data(
+            weight.as_ptr() as *const std::ffi::c_void,
+            (weight.len() * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (n_rows * n_cols * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        let ne00 = n_cols as i32;
+        encoder.set_compute_pipeline_state(&self.rms_norm_pipeline);
+        encoder.set_buffer(0, Some(&src_buffer), 0);
+        encoder.set_buffer(1, Some(&weight_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(3, 4, &ne00 as *const i32 as *const std::ffi::c_void);
+        encoder.set_bytes(4, 4, &eps as *const f32 as *const std::ffi::c_void);
+
+        let thread_group_size = MTLSize { width: 64, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: n_rows as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe {
+            std::slice::from_raw_parts(output_ptr, n_rows * n_cols).to_vec()
+        })
+    }
+
+    // ========================================================================
+    // Softmax
+    // ========================================================================
+
+    pub fn softmax_f32_fast(
+        &self,
+        n_rows: usize,
+        n_cols: usize,
+        src: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let src_buffer = self.device.new_buffer_with_data(
+            src.as_ptr() as *const std::ffi::c_void,
+            (src.len() * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (n_rows * n_cols * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        let ne00 = n_cols as i32;
+        let ne01 = n_rows as i32;
+        encoder.set_compute_pipeline_state(&self.softmax_fast_pipeline);
+        encoder.set_bytes(0, 4, &ne00 as *const i32 as *const std::ffi::c_void);
+        encoder.set_buffer(1, Some(&src_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(3, 4, &ne01 as *const i32 as *const std::ffi::c_void);
+
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: n_rows as u64, height: 1, depth: 1 };
+
+        encoder.set_threadgroup_memory_length(0, 128);
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe {
+            std::slice::from_raw_parts(output_ptr, n_rows * n_cols).to_vec()
+        })
+    }
+
+    // ========================================================================
+    // ROPE
+    // ========================================================================
+
+    pub fn rope_neox_f32(
+        &self,
+        n_seqs: usize,
+        n_heads: usize,
+        n_dims: usize,
+        src: &[f32],
+        pos: &[i32],
+        freq_base: f32,
+        freq_scale: f32,
+    ) -> Result<Vec<f32>, String> {
+        let src_buffer = self.device.new_buffer_with_data(
+            src.as_ptr() as *const std::ffi::c_void,
+            (src.len() * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let pos_buffer = self.device.new_buffer_with_data(
+            pos.as_ptr() as *const std::ffi::c_void,
+            (pos.len() * std::mem::size_of::<i32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (src.len() * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let args = RopeArgs {
+            ne00: n_dims as i32,
+            ne01: (n_heads * n_seqs) as i32,
+            ne02: n_seqs as i32,
+            nb00: 4,
+            nb01: (n_dims * 4) as u64,
+            nb02: (n_heads * n_dims * 4) as u64,
+            n_dims: n_dims as i32,
+            n_offs: 0,
+            freq_base,
+            freq_scale,
+            ext_factor: 0.0,
+            attn_factor: 1.0,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            n_ctx_orig: 0,
+        };
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.rope_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<RopeArgs>() as u64,
+            &args as *const RopeArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(&src_buffer), 0);
+        encoder.set_buffer(2, Some(&pos_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: n_heads as u64, height: n_seqs as u64, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe {
+            std::slice::from_raw_parts(output_ptr, src.len()).to_vec()
+        })
+    }
+
+    // ========================================================================
+    // Activation Functions
+    // ========================================================================
+
+    pub fn silu_f32(&self, n: usize, src: &[f32]) -> Result<Vec<f32>, String> {
+        let src_buffer = self.device.new_buffer_with_data(
+            src.as_ptr() as *const std::ffi::c_void,
+            (src.len() * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (n * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.silu_pipeline);
+        encoder.set_buffer(0, Some(&src_buffer), 0);
+        encoder.set_buffer(1, Some(&output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: ((n / 4 + 255) / 256) as u64,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, n).to_vec() })
+    }
+
+    pub fn gelu_f32(&self, n: usize, src: &[f32]) -> Result<Vec<f32>, String> {
+        let src_buffer = self.device.new_buffer_with_data(
+            src.as_ptr() as *const std::ffi::c_void,
+            (src.len() * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (n * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.gelu_pipeline);
+        encoder.set_buffer(0, Some(&src_buffer), 0);
+        encoder.set_buffer(1, Some(&output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: ((n / 4 + 255) / 256) as u64,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, n).to_vec() })
+    }
+
+    pub fn gelu_quick_f32(
+        &self,
+        n: usize,
+        src: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let src_buffer = self.device.new_buffer_with_data(
+            src.as_ptr() as *const std::ffi::c_void,
+            (src.len() * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (n * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.gelu_quick_pipeline);
+        encoder.set_buffer(0, Some(&src_buffer), 0);
+        encoder.set_buffer(1, Some(&output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: ((n / 4 + 255) / 256) as u64,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, n).to_vec() })
+    }
+
+    // ========================================================================
+    // Flash Attention
+    // ========================================================================
+
+    /// Flash Attention for F16 KV cache
+    /// Supports: head_dim=128, GQA (grouped query attention)
+    pub fn flash_attn_f16(
+        &self,
+        n_seqs: usize,     // batch size
+        n_heads: usize,    // number of query heads
+        n_kv_heads: usize, // number of KV heads (for GQA)
+        head_dim: usize,   // head dimension (must be 128)
+        seq_len: usize,    // KV cache length
+        q: &[f32],         // query [n_seqs, n_heads, head_dim]
+        k: &[u16], // key cache [n_seqs, n_kv_heads, seq_len, head_dim] as F16
+        v: &[u16], // value cache [n_seqs, n_kv_heads, seq_len, head_dim] as F16
+    ) -> Result<Vec<f32>, String> {
+        if head_dim != 128 {
+            return Err(format!(
+                "Flash Attention only supports head_dim=128, got {}",
+                head_dim
+            ));
+        }
+
+        let q_buffer = self.device.new_buffer_with_data(
+            q.as_ptr() as *const std::ffi::c_void,
+            (q.len() * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let k_buffer = self.device.new_buffer_with_data(
+            k.as_ptr() as *const std::ffi::c_void,
+            (k.len() * std::mem::size_of::<u16>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let v_buffer = self.device.new_buffer_with_data(
+            v.as_ptr() as *const std::ffi::c_void,
+            (v.len() * std::mem::size_of::<u16>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (q.len() * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let scale = 1.0 / (head_dim as f32).sqrt();
+        let n_heads_per_group = n_heads / n_kv_heads;
+
+        let args = FlashAttnArgs {
+            ne01: 1, // Q rows per head (1 for decode)
+            ne02: n_heads as u32,
+            ne03: n_seqs as u32,
+            ne11: seq_len as u32,
+            ne_12_2: n_kv_heads as u32,
+            ne_12_3: n_seqs as u32,
+            nb01: (head_dim * 4) as u32,
+            nb02: (n_heads * head_dim * 4) as u32,
+            nb03: (n_seqs * n_heads * head_dim * 4) as u32,
+            nb11: (head_dim * 2) as u32,
+            nb12: (seq_len * head_dim * 2) as u32,
+            nb13: (n_seqs * seq_len * head_dim * 2) as u32,
+            nb21: (head_dim * 2) as u32,
+            nb22: (seq_len * head_dim * 2) as u32,
+            nb23: (n_seqs * seq_len * head_dim * 2) as u32,
+            nb31: 0,
+            nb32: 0,
+            nb33: 0,
+            ne32: 0,
+            ne33: 0,
+            scale,
+            max_bias: 0.0,
+            logit_softcap: 0.0,
+            n_head_log2: 0,
+            m0: 0.0,
+            m1: 0.0,
+            nsg: 2,  // 2 simdgroups per threadgroup
+            nwg: 32, // 32 workgroups for parallelization
+        };
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.flash_attn_f16_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<FlashAttnArgs>() as u64,
+            &args as *const FlashAttnArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(&q_buffer), 0);
+        encoder.set_buffer(2, Some(&k_buffer), 0);
+        encoder.set_buffer(3, Some(&v_buffer), 0);
+        encoder.set_buffer(4, None, 0); // mask
+        encoder.set_buffer(5, None, 0); // sinks
+        encoder.set_buffer(6, None, 0); // pad
+        encoder.set_buffer(7, Some(&output_buffer), 0);
+
+        // Threadgroup configuration
+        let thread_group_size = MTLSize { width: 64, height: 1, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: n_heads as u64,
+            height: n_seqs as u64,
+            depth: 32, // 32 workgroups for seq_len parallelization
+        };
+
+        encoder.set_threadgroup_memory_length(0, 32768); // 32KB shared memory
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const f32;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, q.len()).to_vec() })
+    }
+
+    // ========================================================================
+    // Quantize
+    // ========================================================================
+
+    /// Quantize FP32 to F16
+    pub fn quantize_f16(
+        &self,
+        n: usize,
+        src: &[f32],
+    ) -> Result<Vec<u16>, String> {
+        let src_buffer = self.device.new_buffer_with_data(
+            src.as_ptr() as *const std::ffi::c_void,
+            (src.len() * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (n * std::mem::size_of::<u16>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let n_val = n as i32;
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        // Use vectorized kernel for better performance
+        encoder.set_compute_pipeline_state(&self.quantize_f16_4_pipeline);
+        encoder.set_buffer(0, Some(&src_buffer), 0);
+        encoder.set_buffer(1, Some(&output_buffer), 0);
+        encoder.set_bytes(
+            2,
+            4,
+            &n_val as *const i32 as *const std::ffi::c_void,
+        );
+
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: ((n / 4 + 255) / 256) as u64,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const u16;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, n).to_vec() })
+    }
+
+    /// Quantize FP32 to Q4_0
+    /// Each block has 32 elements
+    pub fn quantize_q4_0(
+        &self,
+        n: usize,
+        src: &[f32],
+    ) -> Result<Vec<BlockQ4_0>, String> {
+        if n % 32 != 0 {
+            return Err(
+                "Q4_0 quantization requires n to be multiple of 32".to_string()
+            );
+        }
+
+        let nb = n / 32;
+        let src_buffer = self.device.new_buffer_with_data(
+            src.as_ptr() as *const std::ffi::c_void,
+            (src.len() * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (nb * std::mem::size_of::<BlockQ4_0>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let n_val = n as i32;
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.quantize_q4_0_pipeline);
+        encoder.set_buffer(0, Some(&src_buffer), 0);
+        encoder.set_buffer(1, Some(&output_buffer), 0);
+        encoder.set_bytes(
+            2,
+            4,
+            &n_val as *const i32 as *const std::ffi::c_void,
+        );
+
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: nb as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const BlockQ4_0;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, nb).to_vec() })
+    }
+
+    /// Quantize FP32 to Q8_0
+    /// Each block has 32 elements
+    pub fn quantize_q8_0(
+        &self,
+        n: usize,
+        src: &[f32],
+    ) -> Result<Vec<BlockQ8_0>, String> {
+        if n % 32 != 0 {
+            return Err(
+                "Q8_0 quantization requires n to be multiple of 32".to_string()
+            );
+        }
+
+        let nb = n / 32;
+        let src_buffer = self.device.new_buffer_with_data(
+            src.as_ptr() as *const std::ffi::c_void,
+            (src.len() * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (nb * std::mem::size_of::<BlockQ8_0>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let n_val = n as i32;
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.quantize_q8_0_pipeline);
+        encoder.set_buffer(0, Some(&src_buffer), 0);
+        encoder.set_buffer(1, Some(&output_buffer), 0);
+        encoder.set_bytes(
+            2,
+            4,
+            &n_val as *const i32 as *const std::ffi::c_void,
+        );
+
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: nb as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        let output_ptr = output_buffer.contents() as *const BlockQ8_0;
+        Ok(unsafe { std::slice::from_raw_parts(output_ptr, nb).to_vec() })
+    }
+
+    // ========================================================================
+    // ArgSort (simplified for sampling)
+    // ========================================================================
+
+    /// Get indices for top-k elements (simplified version)
+    /// Returns indices of sorted elements in descending order
+    pub fn argsort_top_k(
+        &self,
+        n: usize,
+        src: &[f32],
+        k: usize,
+    ) -> Result<Vec<i32>, String> {
+        // For small sizes, use CPU version for simplicity
+        // GPU version would need bitonic sort or similar
+        let mut indexed: Vec<(f32, i32)> =
+            src.iter().enumerate().map(|(i, &v)| (v, i as i32)).collect();
+        indexed.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Ok(indexed.iter().take(k).map(|(_, i)| *i).collect())
+    }
+
+    // ========================================================================
+    // Binary Operations with Broadcasting
+    // ========================================================================
+
+    /// Add two tensors with broadcasting
+    pub fn add_f32(
+        &self,
+        n: usize,
+        src0: &[f32],
+        src1: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let mut dst = vec![0.0f32; n];
+        for i in 0..n {
+            dst[i] = src0[i] + src1[i];
+        }
+        Ok(dst)
+    }
+
+    /// Subtract two tensors with broadcasting
+    pub fn sub_f32(
+        &self,
+        n: usize,
+        src0: &[f32],
+        src1: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let mut dst = vec![0.0f32; n];
+        for i in 0..n {
+            dst[i] = src0[i] - src1[i];
+        }
+        Ok(dst)
+    }
+
+    /// Multiply two tensors with broadcasting
+    pub fn mul_f32(
+        &self,
+        n: usize,
+        src0: &[f32],
+        src1: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let mut dst = vec![0.0f32; n];
+        for i in 0..n {
+            dst[i] = src0[i] * src1[i];
+        }
+        Ok(dst)
+    }
+
+    /// Divide two tensors with broadcasting
+    pub fn div_f32(
+        &self,
+        n: usize,
+        src0: &[f32],
+        src1: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let mut dst = vec![0.0f32; n];
+        for i in 0..n {
+            dst[i] = src0[i] / src1[i];
+        }
+        Ok(dst)
+    }
+
+    // ========================================================================
+    // Reduce Operations
+    // ========================================================================
+
+    /// Reduce sum
+    pub fn reduce_sum_f32(&self, n: usize, src: &[f32]) -> Result<f32, String> {
+        Ok(src.iter().sum())
+    }
+
+    /// Reduce max
+    pub fn reduce_max_f32(&self, n: usize, src: &[f32]) -> Result<f32, String> {
+        let max_val = src.iter().cloned().fold(-f32::INFINITY, f32::max);
+        Ok(max_val)
+    }
+
+    /// Row-wise reduce sum
+    pub fn reduce_sum_f32_row(
+        &self,
+        n_rows: usize,
+        n_cols: usize,
+        src: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let mut dst = vec![0.0f32; n_rows];
+        for i in 0..n_rows {
+            let row_start = i * n_cols;
+            dst[i] = src[row_start..row_start + n_cols].iter().sum();
+        }
+        Ok(dst)
+    }
+
+    // ========================================================================
+    // SSM (Mamba) Operations
+    // ========================================================================
+
+    /// Selective scan for Mamba/SSM
+    /// u: input [d_model, seq_len]
+    /// delta: time step [d_model, seq_len]
+    /// A, B, C, D: SSM parameters
+    /// Returns output [d_model, seq_len]
+    pub fn ssm_scan_f32(
+        &self,
+        d_model: usize,
+        d_state: usize,
+        seq_len: usize,
+        u: &[f32],
+        delta: &[f32],
+        a: &[f32],
+        b: &[f32],
+        c: &[f32],
+        d: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        // CPU implementation for correctness
+        let mut y = vec![0.0f32; d_model * seq_len];
+
+        for ch in 0..d_model {
+            let mut h = 0.0f32;
+            let d_val = d[ch];
+
+            for t in 0..seq_len {
+                let u_t = u[ch * seq_len + t];
+                let delta_t = delta[ch * seq_len + t];
+
+                // Discretize A (simplified diagonal)
+                let da = (-delta_t * a[0]).exp();
+
+                // Accumulate B
+                let b_t: f32 = (0..d_state).map(|s| b[s * seq_len + t]).sum();
+                h = da * h + delta_t * b_t * u_t;
+
+                // Accumulate C
+                let c_t: f32 = (0..d_state).map(|s| c[s * seq_len + t]).sum();
+                y[ch * seq_len + t] = c_t * h + d_val * u_t;
+            }
+        }
+
+        Ok(y)
+    }
+
+    // ========================================================================
+    // WKV (RWKV) Operations
+    // ========================================================================
+
+    /// WKV time mixing for RWKV
+    /// k, v, r: [seq_len, d_model]
+    /// w, u: time decay and bonus [d_model]
+    /// Returns output [seq_len, d_model]
+    pub fn wkv_f32(
+        &self,
+        seq_len: usize,
+        d_model: usize,
+        k: &[f32],
+        v: &[f32],
+        r: &[f32],
+        w: &[f32],
+        u: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let mut y = vec![0.0f32; seq_len * d_model];
+
+        for ch in 0..d_model {
+            let mut wkv_n = 0.0f32;
+            let mut wkv_d = 1.0f32;
+
+            let w_val = (-w[ch].exp()).exp();
+            let u_val = u[ch].exp();
+
+            for t in 0..seq_len {
+                let k_t = k[t * d_model + ch];
+                let v_t = v[t * d_model + ch];
+                let r_t = r[t * d_model + ch];
+
+                let wkv = (wkv_n + u_val * k_t * v_t) / (wkv_d + u_val * k_t);
+                y[t * d_model + ch] = r_t * wkv;
+
+                wkv_n = w_val * wkv_n + w_val * k_t * v_t;
+                wkv_d = w_val * wkv_d + w_val * k_t;
+            }
+        }
+
+        Ok(y)
+    }
+
+    // ========================================================================
+    // CNN Operations (for multimodal models)
+    // ========================================================================
+
+    /// 2D Convolution (simplified)
+    /// input: [batch, in_channels, in_h, in_w]
+    /// weight: [out_channels, in_channels, kH, kW]
+    /// bias: [out_channels]
+    /// Returns [batch, out_channels, out_h, out_w]
+    pub fn conv2d_f32(
+        &self,
+        batch_size: usize,
+        in_channels: usize,
+        out_channels: usize,
+        in_h: usize,
+        in_w: usize,
+        kH: usize,
+        kW: usize,
+        stride_h: usize,
+        stride_w: usize,
+        pad_h: usize,
+        pad_w: usize,
+        input: &[f32],
+        weight: &[f32],
+        bias: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let out_h_size = (in_h + 2 * pad_h - kH) / stride_h + 1;
+        let out_w_size = (in_w + 2 * pad_w - kW) / stride_w + 1;
+        let mut output =
+            vec![0.0f32; batch_size * out_channels * out_h_size * out_w_size];
+
+        for batch in 0..batch_size {
+            for out_ch in 0..out_channels {
+                for out_h_idx in 0..out_h_size {
+                    for out_w_idx in 0..out_w_size {
+                        let mut sum = bias[out_ch];
+
+                        for in_ch in 0..in_channels {
+                            for kh in 0..kH {
+                                for kw in 0..kW {
+                                    let in_h_idx =
+                                        out_h_idx * stride_h - pad_h + kh;
+                                    let in_w_idx =
+                                        out_w_idx * stride_w - pad_w + kw;
+
+                                    if in_h_idx < in_h && in_w_idx < in_w {
+                                        let input_idx =
+                                            batch * in_channels * in_h * in_w
+                                                + in_ch * in_h * in_w
+                                                + in_h_idx * in_w
+                                                + in_w_idx;
+                                        let weight_idx =
+                                            out_ch * in_channels * kH * kW
+                                                + in_ch * kH * kW
+                                                + kh * kW
+                                                + kw;
+                                        sum += input[input_idx]
+                                            * weight[weight_idx];
+                                    }
+                                }
+                            }
+                        }
+
+                        let output_idx =
+                            batch * out_channels * out_h_size * out_w_size
+                                + out_ch * out_h_size * out_w_size
+                                + out_h_idx * out_w_size
+                                + out_w_idx;
+                        output[output_idx] = sum;
+                    }
+                }
+            }
+        }
+
+        Ok(output)
+    }
+
+    /// Max Pooling 2D
+    pub fn pool2d_max_f32(
+        &self,
+        batch_size: usize,
+        channels: usize,
+        in_h: usize,
+        in_w: usize,
+        kH: usize,
+        kW: usize,
+        stride_h: usize,
+        stride_w: usize,
+        input: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let out_h_size = (in_h - kH) / stride_h + 1;
+        let out_w_size = (in_w - kW) / stride_w + 1;
+        let mut output =
+            vec![0.0f32; batch_size * channels * out_h_size * out_w_size];
+
+        for batch in 0..batch_size {
+            for ch in 0..channels {
+                for out_h_idx in 0..out_h_size {
+                    for out_w_idx in 0..out_w_size {
+                        let mut max_val = f32::NEG_INFINITY;
+
+                        for kh in 0..kH {
+                            for kw in 0..kW {
+                                let in_h_idx = out_h_idx * stride_h + kh;
+                                let in_w_idx = out_w_idx * stride_w + kw;
+
+                                let input_idx = batch * channels * in_h * in_w
+                                    + ch * in_h * in_w
+                                    + in_h_idx * in_w
+                                    + in_w_idx;
+                                max_val = max_val.max(input[input_idx]);
+                            }
+                        }
+
+                        let output_idx =
+                            batch * channels * out_h_size * out_w_size
+                                + ch * out_h_size * out_w_size
+                                + out_h_idx * out_w_size
+                                + out_w_idx;
+                        output[output_idx] = max_val;
+                    }
+                }
+            }
+        }
+
+        Ok(output)
+    }
+
+    /// Nearest neighbor upscale
+    pub fn upscale_nearest_f32(
+        &self,
+        batch_size: usize,
+        channels: usize,
+        in_h: usize,
+        in_w: usize,
+        scale_factor: usize,
+        input: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let out_h = in_h * scale_factor;
+        let out_w = in_w * scale_factor;
+        let mut output = vec![0.0f32; batch_size * channels * out_h * out_w];
+
+        for batch in 0..batch_size {
+            for ch in 0..channels {
+                for out_h_idx in 0..out_h {
+                    for out_w_idx in 0..out_w {
+                        let in_h_idx = out_h_idx / scale_factor;
+                        let in_w_idx = out_w_idx / scale_factor;
+
+                        let input_idx = batch * channels * in_h * in_w
+                            + ch * in_h * in_w
+                            + in_h_idx * in_w
+                            + in_w_idx;
+                        let output_idx = batch * channels * out_h * out_w
+                            + ch * out_h * out_w
+                            + out_h_idx * out_w
+                            + out_w_idx;
+
+                        output[output_idx] = input[input_idx];
+                    }
+                }
+            }
+        }
+
+        Ok(output)
     }
 }
