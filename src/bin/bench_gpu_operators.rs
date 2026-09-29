@@ -298,7 +298,8 @@ fn generate_q4k_blocks(nb: usize, seed: usize) -> Vec<BlockQ4K> {
 
 // Benchmarks
 fn bench_mv_q2k(ctx: &MetalContext, m: usize, k: usize) -> f64 {
-    let weights = generate_q2k_blocks(m, 42);
+    let nb = m * (k / 256); // Total blocks: rows * blocks_per_row
+    let weights = generate_q2k_blocks(nb, 42);
     let input: Vec<f32> = (0..k).map(|i| ((i % 10) as f32) * 0.1).collect();
     for _ in 0..3 {
         let _ = ctx.mv_q2_k_f32(m, k, &weights, &input);
@@ -311,7 +312,8 @@ fn bench_mv_q2k(ctx: &MetalContext, m: usize, k: usize) -> f64 {
 }
 
 fn bench_mv_q3k(ctx: &MetalContext, m: usize, k: usize) -> f64 {
-    let weights = generate_q3k_blocks(m, 42);
+    let nb = m * (k / 256); // Total blocks: rows * blocks_per_row
+    let weights = generate_q3k_blocks(nb, 42);
     let input: Vec<f32> = (0..k).map(|i| ((i % 10) as f32) * 0.1).collect();
     for _ in 0..3 {
         let _ = ctx.mv_q3_k_f32(m, k, &weights, &input);
@@ -324,7 +326,8 @@ fn bench_mv_q3k(ctx: &MetalContext, m: usize, k: usize) -> f64 {
 }
 
 fn bench_mv_q4k(ctx: &MetalContext, m: usize, k: usize) -> f64 {
-    let weights = generate_q4k_blocks(m, 42);
+    let nb = m * (k / 256); // Total blocks: rows * blocks_per_row
+    let weights = generate_q4k_blocks(nb, 42);
     let input: Vec<f32> = (0..k).map(|i| ((i % 10) as f32) * 0.1).collect();
     for _ in 0..3 {
         let _ = ctx.mv_q4_k_f32(m, k, &weights, &input);
@@ -337,7 +340,8 @@ fn bench_mv_q4k(ctx: &MetalContext, m: usize, k: usize) -> f64 {
 }
 
 fn bench_gemm_q2k(ctx: &MetalContext, m: usize, k: usize, batch: usize) -> f64 {
-    let weights = generate_q2k_blocks(m, 42);
+    let nb = m * (k / 256); // Total blocks: rows * blocks_per_row
+    let weights = generate_q2k_blocks(nb, 42);
     let input: Vec<f32> =
         (0..k * batch).map(|i| ((i % 10) as f32) * 0.1).collect();
     for _ in 0..3 {
@@ -353,7 +357,8 @@ fn bench_gemm_q2k(ctx: &MetalContext, m: usize, k: usize, batch: usize) -> f64 {
 }
 
 fn bench_gemm_q3k(ctx: &MetalContext, m: usize, k: usize, batch: usize) -> f64 {
-    let weights = generate_q3k_blocks(m, 42);
+    let nb = m * (k / 256); // Total blocks: rows * blocks_per_row
+    let weights = generate_q3k_blocks(nb, 42);
     let input: Vec<f32> =
         (0..k * batch).map(|i| ((i % 10) as f32) * 0.1).collect();
     for _ in 0..3 {
@@ -369,7 +374,8 @@ fn bench_gemm_q3k(ctx: &MetalContext, m: usize, k: usize, batch: usize) -> f64 {
 }
 
 fn bench_gemm_q4k(ctx: &MetalContext, m: usize, k: usize, batch: usize) -> f64 {
-    let weights = generate_q4k_blocks(m, 42);
+    let nb = m * (k / 256); // Total blocks: rows * blocks_per_row
+    let weights = generate_q4k_blocks(nb, 42);
     let input: Vec<f32> =
         (0..k * batch).map(|i| ((i % 10) as f32) * 0.1).collect();
     for _ in 0..3 {
