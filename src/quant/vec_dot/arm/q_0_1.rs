@@ -44,14 +44,17 @@ pub unsafe fn vec_dot_q4_0_q8_0_neon(
     let m4b = vdupq_n_u8(0x0F);
     let s8b = vdupq_n_s8(0x8);
 
-    // Process 2 blocks at a time
+    // Process 2 blocks at a time - use unchecked access to eliminate bounds checks
     let chunks = nb / 2;
+    let x_ptr = x.as_ptr();
+    let y_ptr = y.as_ptr();
+
     for i in 0..chunks {
         let ib = i * 2;
-        let x0 = &x[ib];
-        let x1 = &x[ib + 1];
-        let y0 = &y[ib];
-        let y1 = &y[ib + 1];
+        let x0 = &*x_ptr.add(ib);
+        let x1 = &*x_ptr.add(ib + 1);
+        let y0 = &*y_ptr.add(ib);
+        let y1 = &*y_ptr.add(ib + 1);
 
         // Load 4-bit quants
         let v0_0 = vld1q_u8(x0.qs.as_ptr());
@@ -87,20 +90,23 @@ pub unsafe fn vec_dot_q4_0_q8_0_neon(
             v1_1h,
         );
 
-        // Multiply by scales
+        // Multiply by scales - use FMLA (fused multiply-add)
         let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d);
         let d1 = fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d);
 
-        sumv0 = vmlaq_n_f32(sumv0, vcvtq_f32_s32(p_0), d0);
-        sumv1 = vmlaq_n_f32(sumv1, vcvtq_f32_s32(p_1), d1);
+        // Convert to f32 and use vfmaq_n_f32 for fused multiply-add
+        let p_0_f32 = vcvtq_f32_s32(p_0);
+        let p_1_f32 = vcvtq_f32_s32(p_1);
+        sumv0 = vfmaq_n_f32(sumv0, p_0_f32, d0);
+        sumv1 = vfmaq_n_f32(sumv1, p_1_f32, d1);
     }
 
     let mut sumf = vaddvq_f32(sumv0) + vaddvq_f32(sumv1);
 
-    // Handle remainder blocks
+    // Handle remainder blocks - use pointer arithmetic
     for ib in (chunks * 2)..nb {
-        let x_b = &x[ib];
-        let y_b = &y[ib];
+        let x_b = &*x_ptr.add(ib);
+        let y_b = &*y_ptr.add(ib);
         let d = fp16_to_fp32(x_b.d) * fp16_to_fp32(y_b.d);
 
         let mut sumi0 = 0i32;
@@ -131,14 +137,17 @@ pub unsafe fn vec_dot_q8_0_q8_0_neon(
     let mut sumv0 = vdupq_n_f32(0.0);
     let mut sumv1 = vdupq_n_f32(0.0);
 
-    // Process 2 blocks at a time
+    // Process 2 blocks at a time - use unchecked access
     let chunks = nb / 2;
+    let x_ptr = x.as_ptr();
+    let y_ptr = y.as_ptr();
+
     for i in 0..chunks {
         let ib = i * 2;
-        let x0 = &x[ib];
-        let x1 = &x[ib + 1];
-        let y0 = &y[ib];
-        let y1 = &y[ib + 1];
+        let x0 = &*x_ptr.add(ib);
+        let x1 = &*x_ptr.add(ib + 1);
+        let y0 = &*y_ptr.add(ib);
+        let y1 = &*y_ptr.add(ib + 1);
 
         // Load Q8 values
         let x0_l = vld1q_s8(x0.qs.as_ptr());
@@ -163,12 +172,14 @@ pub unsafe fn vec_dot_q8_0_q8_0_neon(
             y1_h,
         );
 
-        // Multiply by scales
+        // Multiply by scales - use FMLA
         let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d);
         let d1 = fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d);
 
-        sumv0 = vmlaq_n_f32(sumv0, vcvtq_f32_s32(p_0), d0);
-        sumv1 = vmlaq_n_f32(sumv1, vcvtq_f32_s32(p_1), d1);
+        let p_0_f32 = vcvtq_f32_s32(p_0);
+        let p_1_f32 = vcvtq_f32_s32(p_1);
+        sumv0 = vfmaq_n_f32(sumv0, p_0_f32, d0);
+        sumv1 = vfmaq_n_f32(sumv1, p_1_f32, d1);
     }
 
     let mut sumf = vaddvq_f32(sumv0) + vaddvq_f32(sumv1);
@@ -206,14 +217,17 @@ pub unsafe fn vec_dot_q4_1_q8_1_neon(
 
     let m4b = vdupq_n_u8(0x0F);
 
-    // Process 2 blocks at a time
+    // Process 2 blocks at a time - use unchecked access
     let chunks = nb / 2;
+    let x_ptr = x.as_ptr();
+    let y_ptr = y.as_ptr();
+
     for i in 0..chunks {
         let ib = i * 2;
-        let x0 = &x[ib];
-        let x1 = &x[ib + 1];
-        let y0 = &y[ib];
-        let y1 = &y[ib + 1];
+        let x0 = &*x_ptr.add(ib);
+        let x1 = &*x_ptr.add(ib + 1);
+        let y0 = &*y_ptr.add(ib);
+        let y1 = &*y_ptr.add(ib + 1);
 
         // Add min * sum term
         let m0 = fp16_to_fp32(x0.m) * fp16_to_fp32(y0.s);
@@ -248,12 +262,14 @@ pub unsafe fn vec_dot_q4_1_q8_1_neon(
             v1_1h,
         );
 
-        // Multiply by scales
+        // Multiply by scales - use FMLA
         let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d);
         let d1 = fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d);
 
-        sumv0 = vmlaq_n_f32(sumv0, vcvtq_f32_s32(p_0), d0);
-        sumv1 = vmlaq_n_f32(sumv1, vcvtq_f32_s32(p_1), d1);
+        let p_0_f32 = vcvtq_f32_s32(p_0);
+        let p_1_f32 = vcvtq_f32_s32(p_1);
+        sumv0 = vfmaq_n_f32(sumv0, p_0_f32, d0);
+        sumv1 = vfmaq_n_f32(sumv1, p_1_f32, d1);
     }
 
     let mut sumf = vaddvq_f32(sumv0) + vaddvq_f32(sumv1) + summs;
@@ -345,12 +361,14 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(
 
     // Process 2 blocks at a time
     let chunks = nb / 2;
+    let x_ptr = x.as_ptr();
+    let y_ptr = y.as_ptr();
     for i in 0..chunks {
         let ib = i * 2;
-        let x0 = &x[ib];
-        let x1 = &x[ib + 1];
-        let y0 = &y[ib];
-        let y1 = &y[ib + 1];
+        let x0 = &*x_ptr.add(ib);
+        let x1 = &*x_ptr.add(ib + 1);
+        let y0 = &*y_ptr.add(ib);
+        let y1 = &*y_ptr.add(ib + 1);
 
         // Load 4-bit quants
         let v0_0 = vld1q_u8(x0.qs.as_ptr());
@@ -413,16 +431,18 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(
         let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d);
         let d1 = fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d);
 
-        sumv0 = vmlaq_n_f32(sumv0, vcvtq_f32_s32(p_0), d0);
-        sumv1 = vmlaq_n_f32(sumv1, vcvtq_f32_s32(p_1), d1);
+        let p_0_f32 = vcvtq_f32_s32(p_0);
+        let p_1_f32 = vcvtq_f32_s32(p_1);
+        sumv0 = vfmaq_n_f32(sumv0, p_0_f32, d0);
+        sumv1 = vfmaq_n_f32(sumv1, p_1_f32, d1);
     }
 
     let mut sumf = vaddvq_f32(sumv0) + vaddvq_f32(sumv1);
 
     // Handle remainder blocks
     for ib in (chunks * 2)..nb {
-        let x_b = &x[ib];
-        let y_b = &y[ib];
+        let x_b = &*x_ptr.add(ib);
+        let y_b = &*y_ptr.add(ib);
         let d = fp16_to_fp32(x_b.d) * fp16_to_fp32(y_b.d);
 
         let qh = u32::from_le_bytes(x_b.qh);
@@ -463,12 +483,14 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(
 
     // Process 2 blocks at a time
     let chunks = nb / 2;
+    let x_ptr = x.as_ptr();
+    let y_ptr = y.as_ptr();
     for i in 0..chunks {
         let ib = i * 2;
-        let x0 = &x[ib];
-        let x1 = &x[ib + 1];
-        let y0 = &y[ib];
-        let y1 = &y[ib + 1];
+        let x0 = &*x_ptr.add(ib);
+        let x1 = &*x_ptr.add(ib + 1);
+        let y0 = &*y_ptr.add(ib);
+        let y1 = &*y_ptr.add(ib + 1);
 
         // Add min * sum term
         let m0 = fp16_to_fp32(x0.m) * fp16_to_fp32(y0.s);
@@ -535,16 +557,18 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(
         let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d);
         let d1 = fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d);
 
-        sumv0 = vmlaq_n_f32(sumv0, vcvtq_f32_s32(p_0), d0);
-        sumv1 = vmlaq_n_f32(sumv1, vcvtq_f32_s32(p_1), d1);
+        let p_0_f32 = vcvtq_f32_s32(p_0);
+        let p_1_f32 = vcvtq_f32_s32(p_1);
+        sumv0 = vfmaq_n_f32(sumv0, p_0_f32, d0);
+        sumv1 = vfmaq_n_f32(sumv1, p_1_f32, d1);
     }
 
     let mut sumf = vaddvq_f32(sumv0) + vaddvq_f32(sumv1) + summs;
 
     // Handle remainder blocks
     for ib in (chunks * 2)..nb {
-        let x_b = &x[ib];
-        let y_b = &y[ib];
+        let x_b = &*x_ptr.add(ib);
+        let y_b = &*y_ptr.add(ib);
         let d = fp16_to_fp32(x_b.d) * fp16_to_fp32(y_b.d);
         let m = fp16_to_fp32(x_b.m) * fp16_to_fp32(y_b.s);
 
