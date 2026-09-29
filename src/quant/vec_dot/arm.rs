@@ -1,5 +1,6 @@
 pub mod fp;
 pub mod iq;
+pub mod iq_v2;
 pub mod k_quant;
 pub mod q_0_1;
 pub mod tq;
@@ -18,6 +19,8 @@ pub use iq::{
     vec_dot_iq3_s_q8_k_neon, vec_dot_iq3_xxs_q8_k_neon,
     vec_dot_iq4_nl_q8_0_neon, vec_dot_iq4_xs_q8_k_neon,
 };
+
+pub use iq_v2::vec_dot_iq3_xxs_q8_k_neon_v2;
 
 pub use k_quant::{
     vec_dot_q2_k_q8_k_neon, vec_dot_q3_k_q8_k_neon, vec_dot_q4_k_q8_k_neon,

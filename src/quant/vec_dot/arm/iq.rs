@@ -17,6 +17,20 @@ static KVALUES_IQ4NL: [i8; 16] =
 
 const QK4_NL: usize = 32;
 
+/// Helper to create uint32x4_t from 4 scalar values (matches llama.cpp ggml_vld1q_u32)
+#[target_feature(enable = "neon")]
+pub(crate) unsafe fn vld1q_u32_from_scalars(
+    w: u32,
+    x: u32,
+    y: u32,
+    z: u32,
+) -> uint32x4_t {
+    vcombine_u32(
+        vreinterpret_u32_u64(vcreate_u64((w as u64) | ((x as u64) << 32))),
+        vreinterpret_u32_u64(vcreate_u64((y as u64) | ((z as u64) << 32))),
+    )
+}
+
 /// Manual vdotq_s32 implementation using native SDOT instruction
 #[target_feature(enable = "neon,dotprod")]
 unsafe fn vdotq_s32_manual(
@@ -52,15 +66,21 @@ pub unsafe fn vec_dot_iq4_nl_q8_0_neon(
     let values = vld1q_s8(crate::quant::kv_cache::KVALUES_IQ4NL_I8.as_ptr());
 
     let mut sum = 0.0f32;
-    let mut ib = 0;
+
+    // Use pointers to match llama.cpp's load pattern
+    let mut x_ptr = x.as_ptr();
+    let mut y_ptr = y.as_ptr();
+    let x_end = x_ptr.add(nb);
 
     // Process 2 blocks at a time
-    while ib + 1 < nb {
-        let q4bits_0 = vld1q_u8(x[ib].qs.as_ptr());
-        let q4bits_1 = vld1q_u8(x[ib + 1].qs.as_ptr());
+    while x_ptr.add(2) <= x_end {
+        // Load Q4 bits - match llama.cpp's load pattern
+        let q4bits_0 = vld1q_u8((*x_ptr).qs.as_ptr());
+        let q4bits_1 = vld1q_u8((*x_ptr.add(1)).qs.as_ptr());
 
-        let q8b_0 = vld1q_s8_x2(y[ib].qs.as_ptr());
-        let q8b_1 = vld1q_s8_x2(y[ib + 1].qs.as_ptr());
+        // Load Q8 values
+        let q8b_0 = vld1q_s8_x2((*y_ptr).qs.as_ptr());
+        let q8b_1 = vld1q_s8_x2((*y_ptr.add(1)).qs.as_ptr());
 
         // Lookup 4-bit values using TBL instruction
         let q4b_0 = vqtbl1q_s8(values, vandq_u8(q4bits_0, m4b));
@@ -79,27 +99,32 @@ pub unsafe fn vec_dot_iq4_nl_q8_0_neon(
             q8b_1.1,
         );
 
-        sum += fp16_to_fp32(x[ib].d)
-            * fp16_to_fp32(y[ib].d)
-            * vaddvq_s32(prod_0) as f32;
-        sum += fp16_to_fp32(x[ib + 1].d)
-            * fp16_to_fp32(y[ib + 1].d)
-            * vaddvq_s32(prod_1) as f32;
+        // Load FP16 scales AFTER dot products - match llama.cpp's schedule
+        let d0 = fp16_to_fp32((*x_ptr).d) * fp16_to_fp32((*y_ptr).d);
+        let d1 =
+            fp16_to_fp32((*x_ptr.add(1)).d) * fp16_to_fp32((*y_ptr.add(1)).d);
 
-        ib += 2;
+        sum += d0 * vaddvq_s32(prod_0) as f32;
+        sum += d1 * vaddvq_s32(prod_1) as f32;
+
+        x_ptr = x_ptr.add(2);
+        y_ptr = y_ptr.add(2);
     }
 
     // Handle remainder
-    for i in ib..nb {
-        let d = fp16_to_fp32(x[i].d) * fp16_to_fp32(y[i].d);
+    while x_ptr < x_end {
+        let d = fp16_to_fp32((*x_ptr).d) * fp16_to_fp32((*y_ptr).d);
         let mut sumi = 0i32;
         for j in 0..16 {
-            sumi += y[i].qs[j] as i32
-                * KVALUES_IQ4NL[(x[i].qs[j] & 0x0F) as usize] as i32;
-            sumi += y[i].qs[j + 16] as i32
-                * KVALUES_IQ4NL[(x[i].qs[j] >> 4) as usize] as i32;
+            sumi += (*y_ptr).qs[j] as i32
+                * KVALUES_IQ4NL[((*x_ptr).qs[j] & 0x0F) as usize] as i32;
+            sumi += (*y_ptr).qs[j + 16] as i32
+                * KVALUES_IQ4NL[((*x_ptr).qs[j] >> 4) as usize] as i32;
         }
         sum += d * sumi as f32;
+
+        x_ptr = x_ptr.add(1);
+        y_ptr = y_ptr.add(1);
     }
 
     sum
@@ -113,108 +138,105 @@ pub unsafe fn vec_dot_iq3_xxs_q8_k_neon(
     y: &[BlockQ8K],
 ) -> f32 {
     let nb = n / QK_K;
-    let vzero = vdupq_n_s32(0);
-
     let mut sum = 0.0f32;
+    let signs64 = KEVEN_SIGNS_Q2XS.as_ptr() as *const i8;
+    let grid = IQ3XXS_GRID.as_ptr();
+    let half = 0.5f32;
+    let zero = vdupq_n_s32(0);
 
     for i in 0..nb {
         let d = fp16_to_fp32(x[i].d) * y[i].d;
-        let q3 = x[i].qs.as_ptr();
-        let gas = q3.add(QK_K / 4); // Signs and scales start after grid indices
-        let q8 = y[i].qs.as_ptr();
+        let mut q3 = x[i].qs.as_ptr();
+        let mut gas = q3.add(QK_K / 4);
+        let mut q8 = y[i].qs.as_ptr();
 
         let mut sumf1 = 0.0f32;
         let mut sumf2 = 0.0f32;
 
-        // Process 2 blocks of 32 elements at a time (64 elements per iteration)
-        for ib32 in (0..QK_K / 32).step_by(2) {
-            // Load Q8 values
-            let q8b = vld1q_s8_x4(q8.add(ib32 * 32));
-            let q8b2 = vld1q_s8_x4(q8.add((ib32 + 1) * 32));
+        for _ in 0..4 {
+            // Q8 load
+            let q8b = vld1q_s8_x4(q8);
+            q8 = q8.add(64);
 
-            // Load signs/scales (2 uint32_t per 32-element block)
-            let aux32_0 =
-                std::ptr::read_unaligned(gas.add(ib32 * 4) as *const u32);
-            let aux32_1 =
-                std::ptr::read_unaligned(gas.add((ib32 + 1) * 4) as *const u32);
+            // aux32 load
+            let aux32_0 = *(gas as *const u32);
+            let aux32_1 = *(gas.add(4) as *const u32);
+            gas = gas.add(8);
 
-            // Load grid indices (16 indices per 32-element block)
-            let q3_ptr = q3.add(ib32 * 16);
-            let grid_vals_0: [u32; 4] = [
-                IQ3XXS_GRID[*q3_ptr.add(0) as usize],
-                IQ3XXS_GRID[*q3_ptr.add(1) as usize],
-                IQ3XXS_GRID[*q3_ptr.add(2) as usize],
-                IQ3XXS_GRID[*q3_ptr.add(3) as usize],
-            ];
-            let grid_vals_1: [u32; 4] = [
-                IQ3XXS_GRID[*q3_ptr.add(4) as usize],
-                IQ3XXS_GRID[*q3_ptr.add(5) as usize],
-                IQ3XXS_GRID[*q3_ptr.add(6) as usize],
-                IQ3XXS_GRID[*q3_ptr.add(7) as usize],
-            ];
-            let grid_vals_2: [u32; 4] = [
-                IQ3XXS_GRID[*q3_ptr.add(8) as usize],
-                IQ3XXS_GRID[*q3_ptr.add(9) as usize],
-                IQ3XXS_GRID[*q3_ptr.add(10) as usize],
-                IQ3XXS_GRID[*q3_ptr.add(11) as usize],
-            ];
-            let grid_vals_3: [u32; 4] = [
-                IQ3XXS_GRID[*q3_ptr.add(12) as usize],
-                IQ3XXS_GRID[*q3_ptr.add(13) as usize],
-                IQ3XXS_GRID[*q3_ptr.add(14) as usize],
-                IQ3XXS_GRID[*q3_ptr.add(15) as usize],
-            ];
-            let aux32x4_0 = vld1q_u32(grid_vals_0.as_ptr());
-            let aux32x4_1 = vld1q_u32(grid_vals_1.as_ptr());
-            let aux32x4_2 = vld1q_u32(grid_vals_2.as_ptr());
-            let aux32x4_3 = vld1q_u32(grid_vals_3.as_ptr());
-
-            // Load signs from keven_signs_q2xs (8 bytes per sign index)
-            let signs64 = KEVEN_SIGNS_Q2XS.as_ptr() as *const i8;
-            let q3s_0 = vcombine_s8(
-                vld1_s8(signs64.add(((aux32_0 >> 0) & 127) as usize * 8)),
-                vld1_s8(signs64.add(((aux32_0 >> 7) & 127) as usize * 8)),
+            // Grid lookup - direct pointer arithmetic
+            let v0 = vld1q_u32_from_scalars(
+                *grid.add(*q3.add(0) as usize),
+                *grid.add(*q3.add(1) as usize),
+                *grid.add(*q3.add(2) as usize),
+                *grid.add(*q3.add(3) as usize),
             );
-            let q3s_1 = vcombine_s8(
-                vld1_s8(signs64.add(((aux32_0 >> 14) & 127) as usize * 8)),
-                vld1_s8(signs64.add(((aux32_0 >> 21) & 127) as usize * 8)),
+            let v1 = vld1q_u32_from_scalars(
+                *grid.add(*q3.add(4) as usize),
+                *grid.add(*q3.add(5) as usize),
+                *grid.add(*q3.add(6) as usize),
+                *grid.add(*q3.add(7) as usize),
             );
-            let q3s_2 = vcombine_s8(
-                vld1_s8(signs64.add(((aux32_1 >> 0) & 127) as usize * 8)),
-                vld1_s8(signs64.add(((aux32_1 >> 7) & 127) as usize * 8)),
+            let v2 = vld1q_u32_from_scalars(
+                *grid.add(*q3.add(8) as usize),
+                *grid.add(*q3.add(9) as usize),
+                *grid.add(*q3.add(10) as usize),
+                *grid.add(*q3.add(11) as usize),
             );
-            let q3s_3 = vcombine_s8(
-                vld1_s8(signs64.add(((aux32_1 >> 14) & 127) as usize * 8)),
-                vld1_s8(signs64.add(((aux32_1 >> 21) & 127) as usize * 8)),
+            let v3 = vld1q_u32_from_scalars(
+                *grid.add(*q3.add(12) as usize),
+                *grid.add(*q3.add(13) as usize),
+                *grid.add(*q3.add(14) as usize),
+                *grid.add(*q3.add(15) as usize),
+            );
+            q3 = q3.add(16);
+
+            // Sign application
+            let q3s_0 = vmulq_s8(
+                vcombine_s8(
+                    vld1_s8(signs64.add(((aux32_0 >> 0) & 127) as usize * 8)),
+                    vld1_s8(signs64.add(((aux32_0 >> 7) & 127) as usize * 8)),
+                ),
+                vreinterpretq_s8_u32(v0),
+            );
+            let q3s_1 = vmulq_s8(
+                vcombine_s8(
+                    vld1_s8(signs64.add(((aux32_0 >> 14) & 127) as usize * 8)),
+                    vld1_s8(signs64.add(((aux32_0 >> 21) & 127) as usize * 8)),
+                ),
+                vreinterpretq_s8_u32(v1),
+            );
+            let q3s_2 = vmulq_s8(
+                vcombine_s8(
+                    vld1_s8(signs64.add(((aux32_1 >> 0) & 127) as usize * 8)),
+                    vld1_s8(signs64.add(((aux32_1 >> 7) & 127) as usize * 8)),
+                ),
+                vreinterpretq_s8_u32(v2),
+            );
+            let q3s_3 = vmulq_s8(
+                vcombine_s8(
+                    vld1_s8(signs64.add(((aux32_1 >> 14) & 127) as usize * 8)),
+                    vld1_s8(signs64.add(((aux32_1 >> 21) & 127) as usize * 8)),
+                ),
+                vreinterpretq_s8_u32(v3),
             );
 
-            // Apply signs to grid values
-            let q3s_0 = vmulq_s8(q3s_0, vreinterpretq_s8_u32(aux32x4_0));
-            let q3s_1 = vmulq_s8(q3s_1, vreinterpretq_s8_u32(aux32x4_1));
-            let q3s_2 = vmulq_s8(q3s_2, vreinterpretq_s8_u32(aux32x4_2));
-            let q3s_3 = vmulq_s8(q3s_3, vreinterpretq_s8_u32(aux32x4_3));
-
-            // Dot product with Q8 values
+            // Dot products
             let p1 = vdotq_s32_manual(
-                vdotq_s32_manual(vzero, q3s_0, q8b.0),
+                vdotq_s32_manual(zero, q3s_0, q8b.0),
                 q3s_1,
                 q8b.1,
             );
             let p2 = vdotq_s32_manual(
-                vdotq_s32_manual(vzero, q3s_2, q8b2.0),
+                vdotq_s32_manual(zero, q3s_2, q8b.2),
                 q3s_3,
-                q8b2.1,
+                q8b.3,
             );
 
-            // Apply scale: 0.5 + (aux32 >> 28)
-            let scale1 = 0.5f32 + ((aux32_0 >> 28) as f32);
-            let scale2 = 0.5f32 + ((aux32_1 >> 28) as f32);
-
-            sumf1 += vaddvq_s32(p1) as f32 * scale1;
-            sumf2 += vaddvq_s32(p2) as f32 * scale2;
+            sumf1 += vaddvq_s32(p1) as f32 * (half + (aux32_0 >> 28) as f32);
+            sumf2 += vaddvq_s32(p2) as f32 * (half + (aux32_1 >> 28) as f32);
         }
 
-        sum += d * (sumf1 + sumf2) * 0.5;
+        sum += d * (sumf1 + sumf2) * half;
     }
 
     sum
@@ -543,13 +565,13 @@ pub unsafe fn vec_dot_iq1_m_q8_k_neon(
     let mask = vdupq_n_s32(0x7);
     let mone = vdupq_n_s32(1);
 
-    // Delta vectors for handling sign combinations
-    let deltas: int8x16x4_t = int8x16x4_t(
+    // Delta vectors stored on stack for indexed access
+    let deltas: [int8x16_t; 4] = [
         vcombine_s8(vdup_n_s8(1), vdup_n_s8(1)),
         vcombine_s8(vdup_n_s8(-1), vdup_n_s8(1)),
         vcombine_s8(vdup_n_s8(1), vdup_n_s8(-1)),
         vcombine_s8(vdup_n_s8(-1), vdup_n_s8(-1)),
-    );
+    ];
 
     let mut sumf = 0.0f32;
 
@@ -588,7 +610,7 @@ pub unsafe fn vec_dot_iq1_m_q8_k_neon(
                 [*qh.add(0), *qh.add(1), *qh.add(2), *qh.add(3)];
             qh = qh.add(4);
 
-            // Compute grid indices
+            // Compute grid indices - match llama.cpp's inline computation
             let idx: [usize; 8] = [
                 (qs_vals[0] as usize)
                     | (((qh_vals[0] as u32) << 8) & 0x700) as usize,
@@ -626,8 +648,23 @@ pub unsafe fn vec_dot_iq1_m_q8_k_neon(
                 vld1_s8(IQ1S_GRID[idx[7]].to_le_bytes().as_ptr() as *const i8),
             );
 
-            // Load Q8 values
-            let q8b = vld1q_s8_x4(q8.add(ib * 32));
+            // Load Q8 values with ld1.16b and post-increment
+            use std::arch::asm;
+            let mut v22: int8x16_t;
+            let mut v23: int8x16_t;
+            let mut v24: int8x16_t;
+            let mut v25: int8x16_t;
+            let mut q8_ptr = q8.add(ib * 32);
+            asm!(
+                "ld1 {{v22.16b - v25.16b}}, [{ptr}], #64",
+                ptr = inout(reg) q8_ptr,
+                out("v22") v22,
+                out("v23") v23,
+                out("v24") v24,
+                out("v25") v25,
+                options(pure, nomem, preserves_flags)
+            );
+            let q8b = int8x16x4_t(v22, v23, v24, v25);
 
             // Dot product
             let p1 = vpaddq_s32(
@@ -648,14 +685,20 @@ pub unsafe fn vec_dot_iq1_m_q8_k_neon(
             let aux32 = ((qh32 >> 3) & 0x01010101) | ((qh32 >> 6) & 0x02020202);
             let aux8 = aux32.to_le_bytes();
 
-            // Delta dot products using aux8 indices
+            // Load delta vectors using indexed memory access (match llama.cpp)
+            let delta_0 = *deltas.as_ptr().add(aux8[0] as usize);
+            let delta_1 = *deltas.as_ptr().add(aux8[1] as usize);
+            let delta_2 = *deltas.as_ptr().add(aux8[2] as usize);
+            let delta_3 = *deltas.as_ptr().add(aux8[3] as usize);
+
+            // Delta dot products
             let p3 = vpaddq_s32(
-                vdotq_s32_manual(vzero, get_delta(&deltas, aux8[0]), q8b.0),
-                vdotq_s32_manual(vzero, get_delta(&deltas, aux8[1]), q8b.1),
+                vdotq_s32_manual(vzero, delta_0, q8b.0),
+                vdotq_s32_manual(vzero, delta_1, q8b.1),
             );
             let p4 = vpaddq_s32(
-                vdotq_s32_manual(vzero, get_delta(&deltas, aux8[2]), q8b.2),
-                vdotq_s32_manual(vzero, get_delta(&deltas, aux8[3]), q8b.3),
+                vdotq_s32_manual(vzero, delta_2, q8b.2),
+                vdotq_s32_manual(vzero, delta_3, q8b.3),
             );
             let p34 = vpaddq_s32(p3, p4);
 
