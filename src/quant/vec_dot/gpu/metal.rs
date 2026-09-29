@@ -4,9 +4,11 @@ use crate::quant::types::{
     BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8_0, BlockTQ1_0, BlockTQ2_0,
 };
 use metal::{
-    Buffer, CommandQueue, ComputePipelineState, Device, Library, MTLSize,
+    Buffer, CommandQueue, ComputePipelineState, Device, FunctionConstantValues,
+    Library, MTLDataType, MTLSize, NSUInteger,
 };
 use std::cell::RefCell;
+use std::os::raw::c_void;
 
 pub struct MetalContext {
     device: Device,
@@ -14,13 +16,9 @@ pub struct MetalContext {
     vec_dot_library: Library,
     mv_library: Library,
     mv_simd_library: Library,
-    mv_q4_0_library: Library,
-    mv_q4_k_library: Library,
-    mv_q5_k_library: Library,
-    mv_q2_k_library: Library,
-    mv_q6_k_library: Library,
-    mv_q3_k_library: Library,
     mv_iq_tq_library: Library,
+    // Templated MV library from llama.cpp (all K-quant formats)
+    mul_mv_template_library: Library,
     // GEMM libraries
     gemm_q4_k_library: Library,
     gemm_q2_k_library: Library,
@@ -176,6 +174,64 @@ struct FlashAttnArgs {
     nwg: u32,
 }
 
+/// Function constant indices for MV kernels (from llama.cpp)
+const FC_MUL_MV_NSG: NSUInteger = 600;
+const FC_MUL_MV_NXPSG: NSUInteger = 601;
+const FC_MUL_MV_NE12: NSUInteger = 602;
+const FC_MUL_MV_R2: NSUInteger = 603;
+const FC_MUL_MV_R3: NSUInteger = 604;
+const FC_MUL_MV_SPLIT: NSUInteger = 605;
+
+/// Create function constants for MV kernel specialization
+/// nsg: number of simdgroups per threadgroup (typically 2 for decode)
+/// ne12: batch dimension of src1 (typically 1 for single vector)
+/// r2: ne12 / ne02 (typically 1)
+/// r3: ne13 / ne03 (typically 1)
+fn create_mv_function_constants(
+    nsg: i16,
+    ne12: i16,
+    r2: i16,
+    r3: i16,
+) -> FunctionConstantValues {
+    let cv = FunctionConstantValues::new();
+
+    unsafe {
+        // Set NSG (number of simdgroups)
+        let nsg_ptr: *const c_void = &nsg as *const i16 as *const c_void;
+        cv.set_constant_value_at_index(
+            nsg_ptr,
+            MTLDataType::Short,
+            FC_MUL_MV_NSG,
+        );
+
+        // Set NE12
+        let ne12_ptr: *const c_void = &ne12 as *const i16 as *const c_void;
+        cv.set_constant_value_at_index(
+            ne12_ptr,
+            MTLDataType::Short,
+            FC_MUL_MV_NE12,
+        );
+
+        // Set R2
+        let r2_ptr: *const c_void = &r2 as *const i16 as *const c_void;
+        cv.set_constant_value_at_index(
+            r2_ptr,
+            MTLDataType::Short,
+            FC_MUL_MV_R2,
+        );
+
+        // Set R3
+        let r3_ptr: *const c_void = &r3 as *const i16 as *const c_void;
+        cv.set_constant_value_at_index(
+            r3_ptr,
+            MTLDataType::Short,
+            FC_MUL_MV_R3,
+        );
+    }
+
+    cv
+}
+
 impl MetalContext {
     pub fn new() -> Result<Self, String> {
         let device = Device::system_default().ok_or("No Metal device found")?;
@@ -204,36 +260,7 @@ impl MetalContext {
             .new_library_with_source(mv_simd_source, &compile_options)
             .map_err(|e| format!("Failed to compile mv_simd library: {}", e))?;
 
-        let mv_q4_0_source = include_str!("../../../../shaders/mv_q4_0.metal");
-        let mv_q4_0_library = device
-            .new_library_with_source(mv_q4_0_source, &compile_options)
-            .map_err(|e| format!("Failed to compile mv_q4_0 library: {}", e))?;
-
-        let mv_q4_k_source = include_str!("../../../../shaders/mv_q4_k.metal");
-        let mv_q4_k_library = device
-            .new_library_with_source(mv_q4_k_source, &compile_options)
-            .map_err(|e| format!("Failed to compile mv_q4_k library: {}", e))?;
-
-        let mv_q5_k_source = include_str!("../../../../shaders/mv_q5_k.metal");
-        let mv_q5_k_library = device
-            .new_library_with_source(mv_q5_k_source, &compile_options)
-            .map_err(|e| format!("Failed to compile mv_q5_k library: {}", e))?;
-
-        let mv_q2_k_source = include_str!("../../../../shaders/mv_q2_k.metal");
-        let mv_q2_k_library = device
-            .new_library_with_source(mv_q2_k_source, &compile_options)
-            .map_err(|e| format!("Failed to compile mv_q2_k library: {}", e))?;
-
-        let mv_q6_k_source = include_str!("../../../../shaders/mv_q6_k.metal");
-        let mv_q6_k_library = device
-            .new_library_with_source(mv_q6_k_source, &compile_options)
-            .map_err(|e| format!("Failed to compile mv_q6_k library: {}", e))?;
-
-        let mv_q3_k_source = include_str!("../../../../shaders/mv_q3_k.metal");
-        let mv_q3_k_library = device
-            .new_library_with_source(mv_q3_k_source, &compile_options)
-            .map_err(|e| format!("Failed to compile mv_q3_k library: {}", e))?;
-
+        // Compile IQ/TQ MV library (includes all IQ formats)
         let mv_iq_tq_source =
             include_str!("../../../../shaders/mv_iq_tq.metal");
         let iq_grid_tables =
@@ -244,6 +271,15 @@ impl MetalContext {
             .new_library_with_source(&mv_iq_tq_combined, &compile_options)
             .map_err(|e| {
                 format!("Failed to compile mv_iq_tq library: {}", e)
+            })?;
+
+        // Compile templated MV library from llama.cpp (all K-quant formats in one file)
+        let mul_mv_template_source =
+            include_str!("../../../../shaders/mul_mv_template.metal");
+        let mul_mv_template_library = device
+            .new_library_with_source(mul_mv_template_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile mul_mv_template library: {}", e)
             })?;
 
         // Compile GEMM libraries
@@ -365,49 +401,66 @@ impl MetalContext {
                 format!("Failed to compile quantize library: {}", e)
             })?;
 
-        // Create cached pipeline for Q4_0 MV
-        let mv_q4_0_kernel = mv_q4_0_library
-            .get_function("kernel_mul_mv_q4_0_f32", None)
+        // Create cached pipeline for Q4_0 MV (from template)
+        // Q4_0 kernel also requires function constants
+        let mv_q4_0_kernel = mul_mv_template_library
+            .get_function(
+                "kernel_mul_mv_q4_0_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get Q4_0 kernel: {}", e))?;
         let mv_q4_0_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_q4_0_kernel)
             .map_err(|e| format!("Failed to create Q4_0 pipeline: {}", e))?;
 
-        // Create cached pipeline for Q4_K MV
-        let mv_q4_k_kernel = mv_q4_k_library
-            .get_function("kernel_mul_mv_q4_K_f32", None)
+        // Create cached pipelines for K-quant MV (all from template)
+        // Use default specialization: nsg=2, ne12=1, r2=1, r3=1 (single-batch decode)
+
+        let mv_q4_k_kernel = mul_mv_template_library
+            .get_function(
+                "kernel_mul_mv_q4_K_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get Q4_K kernel: {}", e))?;
         let mv_q4_k_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_q4_k_kernel)
             .map_err(|e| format!("Failed to create Q4_K pipeline: {}", e))?;
 
-        // Create cached pipeline for Q5_K MV
-        let mv_q5_k_kernel = mv_q5_k_library
-            .get_function("kernel_mul_mv_q5_K_f32", None)
+        let mv_q5_k_kernel = mul_mv_template_library
+            .get_function(
+                "kernel_mul_mv_q5_K_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get Q5_K kernel: {}", e))?;
         let mv_q5_k_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_q5_k_kernel)
             .map_err(|e| format!("Failed to create Q5_K pipeline: {}", e))?;
 
-        // Create cached pipeline for Q2_K MV
-        let mv_q2_k_kernel = mv_q2_k_library
-            .get_function("kernel_mul_mv_q2_K_f32", None)
+        let mv_q2_k_kernel = mul_mv_template_library
+            .get_function(
+                "kernel_mul_mv_q2_K_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get Q2_K kernel: {}", e))?;
         let mv_q2_k_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_q2_k_kernel)
             .map_err(|e| format!("Failed to create Q2_K pipeline: {}", e))?;
 
-        // Create cached pipeline for Q6_K MV
-        let mv_q6_k_kernel = mv_q6_k_library
-            .get_function("kernel_mul_mv_q6_K_f32", None)
+        let mv_q6_k_kernel = mul_mv_template_library
+            .get_function(
+                "kernel_mul_mv_q6_K_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get Q6_K kernel: {}", e))?;
         let mv_q6_k_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_q6_k_kernel)
             .map_err(|e| format!("Failed to create Q6_K pipeline: {}", e))?;
 
-        // Create cached pipeline for Q3_K MV
-        let mv_q3_k_kernel = mv_q3_k_library
-            .get_function("kernel_mul_mv_q3_K_f32", None)
+        let mv_q3_k_kernel = mul_mv_template_library
+            .get_function(
+                "kernel_mul_mv_q3_K_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get Q3_K kernel: {}", e))?;
         let mv_q3_k_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_q3_k_kernel)
@@ -1115,13 +1168,9 @@ impl MetalContext {
             vec_dot_library,
             mv_library,
             mv_simd_library,
-            mv_q4_0_library,
-            mv_q4_k_library,
-            mv_q5_k_library,
-            mv_q2_k_library,
-            mv_q6_k_library,
-            mv_q3_k_library,
             mv_iq_tq_library,
+            // Templated MV library
+            mul_mv_template_library,
             // GEMM libraries
             gemm_q4_k_library,
             gemm_q2_k_library,
@@ -1464,17 +1513,52 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         let nb = k / 32;
         let nb01 = (nb * std::mem::size_of::<BlockQ4_0>()) as u64; // Byte stride per row
-        const NR0: u64 = 4;
 
-        // Args structure matching Metal kernel
+        // Args structure matching llama.cpp's ggml_metal_kargs_mul_mv
         #[repr(C)]
         struct MvArgs {
-            ne00: u32, // K
-            ne01: u32, // M
-            nb01: u64, // Byte stride per row
+            ne00: i32,
+            ne01: i32,
+            ne02: i32,
+            nb00: u64,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
         }
 
-        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            ne02: 1,
+            nb00: 1,
+            nb01,
+            nb02: 0,
+            nb03: 0,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 4,
+            r2: 1,
+            r3: 1, // N_R0_Q4_0 = 4
+        };
 
         // Get or create cached buffers (NO data copy on repeated calls with same size)
         let weights_size = weights.len() * std::mem::size_of::<BlockQ4_0>();
@@ -1544,19 +1628,24 @@ impl MetalContext {
         let encoder = command_buffer.new_compute_command_encoder();
 
         encoder.set_compute_pipeline_state(&self.mv_q4_0_pipeline);
-        encoder.set_buffer(0, Some(&weights_buffer), 0);
-        encoder.set_buffer(1, Some(&input_buffer), 0);
-        encoder.set_buffer(2, Some(&output_buffer), 0);
+        // Template kernel signature: (args, src0, src1, dst)
+        // Index 0: args struct
+        // Index 1: src0 (weights)
+        // Index 2: src1 (input)
+        // Index 3: dst (output)
         encoder.set_bytes(
-            3,
+            0,
             std::mem::size_of::<MvArgs>() as u64,
             &args as *const MvArgs as *const std::ffi::c_void,
         );
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_buffer(2, Some(&input_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
 
         // Thread group configuration matching llama.cpp EXACTLY
-        // 2D threadgroup: (32, 2, 1) where Y dimension = NSG = 2
-        // Metal organizes threads linearly: Y=0 -> sgitg=0, Y=1 -> sgitg=1
+        // Q4_0: N_R0 = 4, NSG = 2
         const NSG: u64 = 2;
+        const NR0: u64 = 4; // N_R0_Q4_0 = 4
         const ROWS_PER_THREADGROUP: u64 = NSG * NR0; // 8
 
         let thread_group_size = MTLSize {
@@ -1596,6 +1685,7 @@ impl MetalContext {
         struct MvArgs {
             ne00: i32,
             ne01: i32,
+            ne02: i32,
             nb00: u64,
             nb01: u64,
             nb02: u64,
@@ -1617,6 +1707,7 @@ impl MetalContext {
         let args = MvArgs {
             ne00: k as i32,
             ne01: m as i32,
+            ne02: 1,
             nb00: 1,
             nb01,
             nb02: 0,
@@ -1703,14 +1794,19 @@ impl MetalContext {
         let encoder = command_buffer.new_compute_command_encoder();
 
         encoder.set_compute_pipeline_state(&self.mv_q4_k_pipeline);
-        encoder.set_buffer(0, Some(&weights_buffer), 0);
-        encoder.set_buffer(1, Some(&input_buffer), 0);
-        encoder.set_buffer(2, Some(&output_buffer), 0);
+        // Template kernel signature: (args, src0, src1, dst)
+        // Index 0: args struct
+        // Index 1: src0 (weights)
+        // Index 2: src1 (input)
+        // Index 3: dst (output)
         encoder.set_bytes(
-            3,
+            0,
             std::mem::size_of::<MvArgs>() as u64,
             &args as *const MvArgs as *const std::ffi::c_void,
         );
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_buffer(2, Some(&input_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
 
         // Thread group configuration matching llama.cpp EXACTLY
         // Q4_K: N_R0 = 2, NSG = 2
@@ -1739,7 +1835,7 @@ impl MetalContext {
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
     }
 
-    /// Q5_K x F32 Matrix-Vector (matching llama.cpp kernel)
+    /// Q5_K x F32 Matrix-Vector (matching llama.cpp kernel exactly)
     pub fn mv_q5_k_f32(
         &self,
         m: usize,
@@ -1749,17 +1845,52 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         let nb = k / 256; // QK_K = 256
         let nb01 = (nb * std::mem::size_of::<BlockQ5K>()) as u64; // Byte stride per row
-        const NR0: u64 = 2; // N_R0_Q5_K = 2
 
-        // Args structure matching Metal kernel
+        // Args structure matching llama.cpp's ggml_metal_kargs_mul_mv
         #[repr(C)]
         struct MvArgs {
-            ne00: u32, // K
-            ne01: u32, // M
-            nb01: u64, // Byte stride per row
+            ne00: i32,
+            ne01: i32,
+            ne02: i32,
+            nb00: u64,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
         }
 
-        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            ne02: 1,
+            nb00: 1,
+            nb01,
+            nb02: 0,
+            nb03: 0,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 1,
+            r2: 1,
+            r3: 1, // N_R0_Q5_K = 1
+        };
 
         // Get or create cached buffers (NO data copy on repeated calls with same size)
         let weights_size = weights.len() * std::mem::size_of::<BlockQ5K>();
@@ -1828,20 +1959,25 @@ impl MetalContext {
         let encoder = command_buffer.new_compute_command_encoder();
 
         encoder.set_compute_pipeline_state(&self.mv_q5_k_pipeline);
-        encoder.set_buffer(0, Some(&weights_buffer), 0);
-        encoder.set_buffer(1, Some(&input_buffer), 0);
-        encoder.set_buffer(2, Some(&output_buffer), 0);
+        // Template kernel signature: (args, src0, src1, dst)
+        // Index 0: args struct
+        // Index 1: src0 (weights)
+        // Index 2: src1 (input)
+        // Index 3: dst (output)
         encoder.set_bytes(
-            3,
+            0,
             std::mem::size_of::<MvArgs>() as u64,
             &args as *const MvArgs as *const std::ffi::c_void,
         );
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_buffer(2, Some(&input_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
 
         // Thread group configuration matching llama.cpp EXACTLY
-        // 2D threadgroup: (32, 2, 1) where Y dimension = NSG = 2
-        // Metal organizes threads linearly: Y=0 -> sgitg=0, Y=1 -> sgitg=1
+        // Q5_K: N_R0 = 1, NSG = 2
         const NSG: u64 = 2;
-        const ROWS_PER_THREADGROUP: u64 = NSG * NR0; // 4
+        const NR0: u64 = 1; // N_R0_Q5_K = 1
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0; // 2
 
         let thread_group_size = MTLSize {
             width: 32,
@@ -1986,14 +2122,19 @@ impl MetalContext {
         let encoder = command_buffer.new_compute_command_encoder();
 
         encoder.set_compute_pipeline_state(&self.mv_q2_k_pipeline);
-        encoder.set_buffer(0, Some(&weights_buffer), 0);
-        encoder.set_buffer(1, Some(&input_buffer), 0);
-        encoder.set_buffer(2, Some(&output_buffer), 0);
+        // Template kernel signature: (args, src0, src1, dst)
+        // Index 0: args struct
+        // Index 1: src0 (weights)
+        // Index 2: src1 (input)
+        // Index 3: dst (output)
         encoder.set_bytes(
-            3,
+            0,
             std::mem::size_of::<MvArgs>() as u64,
             &args as *const MvArgs as *const std::ffi::c_void,
         );
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_buffer(2, Some(&input_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
 
         // Thread group configuration matching llama.cpp EXACTLY
         // For K-quant types, llama.cpp uses:
@@ -2035,16 +2176,52 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         let nb = k / 256; // QK_K = 256
         let nb01 = (nb * std::mem::size_of::<BlockQ6K>()) as u64; // Byte stride per row
-        const NR0: u64 = 2; // N_R0_Q6_K = 2
 
+        // Args structure matching llama.cpp's ggml_metal_kargs_mul_mv
         #[repr(C)]
         struct MvArgs {
-            ne00: u32,
-            ne01: u32,
+            ne00: i32,
+            ne01: i32,
+            ne02: i32,
+            nb00: u64,
             nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
         }
 
-        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            ne02: 1,
+            nb00: 1,
+            nb01,
+            nb02: 0,
+            nb03: 0,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 2,
+            r2: 1,
+            r3: 1, // N_R0_Q6_K = 2
+        };
 
         let weights_size = weights.len() * std::mem::size_of::<BlockQ6K>();
         let input_size = input.len() * std::mem::size_of::<f32>();
@@ -2107,17 +2284,25 @@ impl MetalContext {
         let encoder = command_buffer.new_compute_command_encoder();
 
         encoder.set_compute_pipeline_state(&self.mv_q6_k_pipeline);
-        encoder.set_buffer(0, Some(&weights_buffer), 0);
-        encoder.set_buffer(1, Some(&input_buffer), 0);
-        encoder.set_buffer(2, Some(&output_buffer), 0);
+        // Template kernel signature: (args, src0, src1, dst)
+        // Index 0: args struct
+        // Index 1: src0 (weights)
+        // Index 2: src1 (input)
+        // Index 3: dst (output)
         encoder.set_bytes(
-            3,
+            0,
             std::mem::size_of::<MvArgs>() as u64,
             &args as *const MvArgs as *const std::ffi::c_void,
         );
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_buffer(2, Some(&input_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
 
+        // Thread group configuration matching llama.cpp EXACTLY
+        // Q6_K: N_R0 = 2, NSG = 2
         const NSG: u64 = 2;
-        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
+        const NR0: u64 = 2; // N_R0_Q6_K = 2
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0; // 4
 
         let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
         let thread_group_count = MTLSize {
@@ -2146,16 +2331,52 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ3K>()) as u64;
-        const NR0: u64 = 2;
 
+        // Args structure matching llama.cpp's ggml_metal_kargs_mul_mv
         #[repr(C)]
         struct MvArgs {
-            ne00: u32,
-            ne01: u32,
+            ne00: i32,
+            ne01: i32,
+            ne02: i32,
+            nb00: u64,
             nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
         }
 
-        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            ne02: 1,
+            nb00: 1,
+            nb01,
+            nb02: 0,
+            nb03: 0,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 2,
+            r2: 1,
+            r3: 1, // N_R0_Q3_K = 2
+        };
 
         let weights_size = weights.len() * std::mem::size_of::<BlockQ3K>();
         let input_size = input.len() * std::mem::size_of::<f32>();
@@ -2218,17 +2439,25 @@ impl MetalContext {
         let encoder = command_buffer.new_compute_command_encoder();
 
         encoder.set_compute_pipeline_state(&self.mv_q3_k_pipeline);
-        encoder.set_buffer(0, Some(&weights_buffer), 0);
-        encoder.set_buffer(1, Some(&input_buffer), 0);
-        encoder.set_buffer(2, Some(&output_buffer), 0);
+        // Template kernel signature: (args, src0, src1, dst)
+        // Index 0: args struct
+        // Index 1: src0 (weights)
+        // Index 2: src1 (input)
+        // Index 3: dst (output)
         encoder.set_bytes(
-            3,
+            0,
             std::mem::size_of::<MvArgs>() as u64,
             &args as *const MvArgs as *const std::ffi::c_void,
         );
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_buffer(2, Some(&input_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
 
+        // Thread group configuration matching llama.cpp EXACTLY
+        // Q3_K: N_R0 = 2, NSG = 2
         const NSG: u64 = 2;
-        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
+        const NR0: u64 = 2; // N_R0_Q3_K = 2
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0; // 4
 
         let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
         let thread_group_count = MTLSize {

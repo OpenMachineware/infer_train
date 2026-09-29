@@ -179,10 +179,10 @@ pub unsafe fn vec_dot_q4_k_q8_k_neon(
         );
         let min_sum = vaddvq_s32(prod);
 
-        // Get scales - load all 8 scales at once to avoid pointer arithmetic in loop
-        let sc = std::slice::from_raw_parts(utmp.as_ptr() as *const u8, 8);
+        // Get scales from utmp
+        let scales = utmp.as_ptr() as *const u8;
 
-        // Process 256 elements
+        // Process 256 elements - matching llama.cpp pointer update pattern
         let mut q4 = x_i.qs.as_ptr();
         let mut q8 = y_i.qs.as_ptr();
 
@@ -190,32 +190,37 @@ pub unsafe fn vec_dot_q4_k_q8_k_neon(
         let mut sumi2 = 0i32;
 
         for j in 0..4 {
+            // Load and immediately advance pointers (llama.cpp pattern)
             let q4bits = vld1q_u8_x2(q4);
-            let q8bytes = vld1q_s8_x2(q8);
+            q4 = q4.add(32);
 
             let q4l_0 = vreinterpretq_s8_u8(vandq_u8(q4bits.0, m4b));
             let q4l_1 = vreinterpretq_s8_u8(vandq_u8(q4bits.1, m4b));
+
+            // First q8 load for low nibbles
+            let q8bytes = vld1q_s8_x2(q8);
+            q8 = q8.add(32);
 
             let p1 = vdotq_s32_manual(
                 vdotq_s32_manual(vzero, q4l_0, q8bytes.0),
                 q4l_1,
                 q8bytes.1,
             );
-            sumi1 += vaddvq_s32(p1) * sc[j * 2] as i32;
+            sumi1 += vaddvq_s32(p1) * *scales.add(j * 2) as i32;
 
-            let q8bytes_1 = vld1q_s8_x2(q8.add(32));
+            // Second q8 load for high nibbles
+            let q8bytes = vld1q_s8_x2(q8);
+            q8 = q8.add(32);
+
             let q4h_0 = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.0, 4));
             let q4h_1 = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.1, 4));
 
             let p2 = vdotq_s32_manual(
-                vdotq_s32_manual(vzero, q4h_0, q8bytes_1.0),
+                vdotq_s32_manual(vzero, q4h_0, q8bytes.0),
                 q4h_1,
-                q8bytes_1.1,
+                q8bytes.1,
             );
-            sumi2 += vaddvq_s32(p2) * sc[j * 2 + 1] as i32;
-
-            q4 = q4.add(32);
-            q8 = q8.add(64);
+            sumi2 += vaddvq_s32(p2) * *scales.add(j * 2 + 1) as i32;
         }
 
         sum -= dmin * min_sum as f32;

@@ -107,19 +107,13 @@ unsafe fn vec_dot_f16_test(q: &[u16], k: &[u16], n: usize) -> f32 {
     vaddvq_f32(vaddq_f32(sum_f32_0, sum_f32_1))
 }
 
-/// Load pair of float16x8_t using ldp instruction
+/// Load pair of float16x8_t
 #[target_feature(enable = "neon")]
 #[inline]
 unsafe fn load_pair_f16(ptr: *const float16x8_t) -> (float16x8_t, float16x8_t) {
-    let v0: float16x8_t;
-    let v1: float16x8_t;
-    asm!(
-        "ldp {0:v}, {1:v}, [{2}]",
-        out(vreg) v0,
-        out(vreg) v1,
-        in(reg) ptr,
-        options(pure, nomem, nostack, preserves_flags)
-    );
+    // Use vld1q for simplicity - ldp with vector registers has strict ordering requirements
+    let v0 = vld1q_f16(ptr as *const f16);
+    let v1 = vld1q_f16(ptr.add(1) as *const f16);
     (v0, v1)
 }
 
