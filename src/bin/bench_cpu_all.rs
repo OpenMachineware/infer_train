@@ -483,7 +483,7 @@ fn main() {
             "IQ3_XXS",
             n_k,
             llama_vec_dot_iq3_xxs_q8_K,
-            vec_dot_iq3_xxs_q8_k_neon_v2,
+            vec_dot_iq3_xxs_q8_k_neon,
             generate_iq3_xxs_blocks(16),
             y_k
         );
