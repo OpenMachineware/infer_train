@@ -90,13 +90,12 @@ pub unsafe fn vec_dot_q4_0_q8_0_neon(
             v1_1h,
         );
 
-        // Multiply by scales - use FMLA (fused multiply-add)
-        let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d);
+        // Convert to f32 - interleave with FP16 scale conversion to avoid FP port contention
+        // Match llama.cpp pipeline: scvtf p0 -> fcvt scales -> scvtf p1 -> fmla
+        let p_0_f32 = vcvtq_f32_s32(p_0); // First scvtf
+        let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d); // Interleave: FP16 conversion
+        let p_1_f32 = vcvtq_f32_s32(p_1); // Second scvtf (separated by FP16 work)
         let d1 = fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d);
-
-        // Convert to f32 and use vfmaq_n_f32 for fused multiply-add
-        let p_0_f32 = vcvtq_f32_s32(p_0);
-        let p_1_f32 = vcvtq_f32_s32(p_1);
         sumv0 = vfmaq_n_f32(sumv0, p_0_f32, d0);
         sumv1 = vfmaq_n_f32(sumv1, p_1_f32, d1);
     }
@@ -262,12 +261,11 @@ pub unsafe fn vec_dot_q4_1_q8_1_neon(
             v1_1h,
         );
 
-        // Multiply by scales - use FMLA
-        let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d);
+        // Q4_1: Interleave scvtf with FP16 scale conversion to avoid FP port contention
+        let p_0_f32 = vcvtq_f32_s32(p_0); // First scvtf
+        let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d); // Interleave
+        let p_1_f32 = vcvtq_f32_s32(p_1); // Second scvtf (separated)
         let d1 = fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d);
-
-        let p_0_f32 = vcvtq_f32_s32(p_0);
-        let p_1_f32 = vcvtq_f32_s32(p_1);
         sumv0 = vfmaq_n_f32(sumv0, p_0_f32, d0);
         sumv1 = vfmaq_n_f32(sumv1, p_1_f32, d1);
     }
@@ -354,7 +352,6 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(
 ) -> f32 {
     let nb = n / QK4_0;
     let m4b = vdupq_n_u8(0x0F);
-    let vzero = vdupq_n_s32(0);
 
     let mut sumv0 = vdupq_n_f32(0.0);
     let mut sumv1 = vdupq_n_f32(0.0);
@@ -370,21 +367,11 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(
         let y0 = &*y_ptr.add(ib);
         let y1 = &*y_ptr.add(ib + 1);
 
-        // Load 4-bit quants
-        let v0_0 = vld1q_u8(x0.qs.as_ptr());
-        let v0_1 = vld1q_u8(x1.qs.as_ptr());
-
-        // Unpack 4-bit to 8-bit
-        let v0_0l = vreinterpretq_s8_u8(vandq_u8(v0_0, m4b));
-        let v0_0h = vreinterpretq_s8_u8(vshrq_n_u8(v0_0, 4));
-        let v0_1l = vreinterpretq_s8_u8(vandq_u8(v0_1, m4b));
-        let v0_1h = vreinterpretq_s8_u8(vshrq_n_u8(v0_1, 4));
-
-        // Extract 5th bit from qh (4 bytes = 32 bits for 32 elements)
+        // Extract 5th bit FIRST (hide memory latency) - match llama.cpp order
         let qh0 = u32::from_le_bytes(x0.qh);
         let qh1 = u32::from_le_bytes(x1.qh);
 
-        // Use lookup table to expand bits (unsafe for no bounds check)
+        // Use lookup table to expand bits
         let table_ptr = TABLE_B2B_1.as_ptr();
         let tmp0: [u64; 4] = [
             *table_ptr.add(((qh0 >> 0) & 0xFF) as usize),
@@ -405,6 +392,16 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(
         let qhl1 = vld1q_s8(tmp1.as_ptr() as *const i8);
         let qhh1 = vld1q_s8(tmp1.as_ptr().add(2) as *const i8);
 
+        // Load 4-bit quants AFTER table lookups (match llama.cpp order)
+        let v0_0 = vld1q_u8(x0.qs.as_ptr());
+        let v0_1 = vld1q_u8(x1.qs.as_ptr());
+
+        // Unpack 4-bit to 8-bit
+        let v0_0l = vreinterpretq_s8_u8(vandq_u8(v0_0, m4b));
+        let v0_0h = vreinterpretq_s8_u8(vshrq_n_u8(v0_0, 4));
+        let v0_1l = vreinterpretq_s8_u8(vandq_u8(v0_1, m4b));
+        let v0_1h = vreinterpretq_s8_u8(vshrq_n_u8(v0_1, 4));
+
         // Add high bit and sub 16: result = low4bit - high_bit_expanded
         let v0_0lf = vsubq_s8(v0_0l, qhl0);
         let v0_0hf = vsubq_s8(v0_0h, qhh0);
@@ -417,24 +414,27 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(
         let v1_1l = vld1q_s8(y1.qs.as_ptr());
         let v1_1h = vld1q_s8(y1.qs.as_ptr().add(16));
 
-        // Dot product
+        // Dot product - match llama.cpp: vaddq_s32(vdotq, vdotq) for ILP
         let p_0 = vaddq_s32(
-            vdotq_s32_manual(vzero, v0_0lf, v1_0l),
-            vdotq_s32_manual(vzero, v0_0hf, v1_0h),
+            vdotq_s32_manual(vdupq_n_s32(0), v0_0lf, v1_0l),
+            vdotq_s32_manual(vdupq_n_s32(0), v0_0hf, v1_0h),
         );
         let p_1 = vaddq_s32(
-            vdotq_s32_manual(vzero, v0_1lf, v1_1l),
-            vdotq_s32_manual(vzero, v0_1hf, v1_1h),
+            vdotq_s32_manual(vdupq_n_s32(0), v0_1lf, v1_1l),
+            vdotq_s32_manual(vdupq_n_s32(0), v0_1hf, v1_1h),
         );
 
-        // Multiply by scales
-        let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d);
-        let d1 = fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d);
-
-        let p_0_f32 = vcvtq_f32_s32(p_0);
-        let p_1_f32 = vcvtq_f32_s32(p_1);
-        sumv0 = vfmaq_n_f32(sumv0, p_0_f32, d0);
-        sumv1 = vfmaq_n_f32(sumv1, p_1_f32, d1);
+        // Match llama.cpp exactly: compute scale inline in FMLA
+        sumv0 = vfmaq_n_f32(
+            sumv0,
+            vcvtq_f32_s32(p_0),
+            fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d),
+        );
+        sumv1 = vfmaq_n_f32(
+            sumv1,
+            vcvtq_f32_s32(p_1),
+            fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d),
+        );
     }
 
     let mut sumf = vaddvq_f32(sumv0) + vaddvq_f32(sumv1);
@@ -475,11 +475,11 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(
 ) -> f32 {
     let nb = n / QK4_0;
     let m4b = vdupq_n_u8(0x0F);
-    let vzero = vdupq_n_s32(0);
 
     let mut sumv0 = vdupq_n_f32(0.0);
     let mut sumv1 = vdupq_n_f32(0.0);
-    let mut summs = 0.0f32;
+    let mut summs0 = 0.0f32;
+    let mut summs1 = 0.0f32;
 
     // Process 2 blocks at a time
     let chunks = nb / 2;
@@ -492,22 +492,11 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(
         let y0 = &*y_ptr.add(ib);
         let y1 = &*y_ptr.add(ib + 1);
 
-        // Add min * sum term
-        let m0 = fp16_to_fp32(x0.m) * fp16_to_fp32(y0.s);
-        let m1 = fp16_to_fp32(x1.m) * fp16_to_fp32(y1.s);
-        summs += m0 + m1;
+        // Add min * sum term - use separate accumulators like llama.cpp
+        summs0 += fp16_to_fp32(x0.m) * fp16_to_fp32(y0.s);
+        summs1 += fp16_to_fp32(x1.m) * fp16_to_fp32(y1.s);
 
-        // Load 4-bit quants
-        let v0_0 = vld1q_u8(x0.qs.as_ptr());
-        let v0_1 = vld1q_u8(x1.qs.as_ptr());
-
-        // Unpack 4-bit to 8-bit (no bias for Q5_1)
-        let v0_0l = vreinterpretq_s8_u8(vandq_u8(v0_0, m4b));
-        let v0_0h = vreinterpretq_s8_u8(vshrq_n_u8(v0_0, 4));
-        let v0_1l = vreinterpretq_s8_u8(vandq_u8(v0_1, m4b));
-        let v0_1h = vreinterpretq_s8_u8(vshrq_n_u8(v0_1, 4));
-
-        // Extract 5th bit
+        // Extract 5th bit FIRST (hide memory latency) - match llama.cpp order
         let qh0 = u32::from_le_bytes(x0.qh);
         let qh1 = u32::from_le_bytes(x1.qh);
 
@@ -531,6 +520,16 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(
         let qhl1 = vld1q_s8(tmp1.as_ptr() as *const i8);
         let qhh1 = vld1q_s8(tmp1.as_ptr().add(2) as *const i8);
 
+        // Load 4-bit quants AFTER table lookups (match llama.cpp order)
+        let v0_0 = vld1q_u8(x0.qs.as_ptr());
+        let v0_1 = vld1q_u8(x1.qs.as_ptr());
+
+        // Unpack 4-bit to 8-bit (no bias for Q5_1)
+        let v0_0l = vreinterpretq_s8_u8(vandq_u8(v0_0, m4b));
+        let v0_0h = vreinterpretq_s8_u8(vshrq_n_u8(v0_0, 4));
+        let v0_1l = vreinterpretq_s8_u8(vandq_u8(v0_1, m4b));
+        let v0_1h = vreinterpretq_s8_u8(vshrq_n_u8(v0_1, 4));
+
         // OR high bit (for Q5_1, we OR the bit into the 4-bit value)
         let v0_0lf = vorrq_s8(v0_0l, qhl0);
         let v0_0hf = vorrq_s8(v0_0h, qhh0);
@@ -543,27 +542,30 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(
         let v1_1l = vld1q_s8(y1.qs.as_ptr());
         let v1_1h = vld1q_s8(y1.qs.as_ptr().add(16));
 
-        // Dot product
+        // Dot product - match llama.cpp: vaddq_s32(vdotq, vdotq) for ILP
         let p_0 = vaddq_s32(
-            vdotq_s32_manual(vzero, v0_0lf, v1_0l),
-            vdotq_s32_manual(vzero, v0_0hf, v1_0h),
+            vdotq_s32_manual(vdupq_n_s32(0), v0_0lf, v1_0l),
+            vdotq_s32_manual(vdupq_n_s32(0), v0_0hf, v1_0h),
         );
         let p_1 = vaddq_s32(
-            vdotq_s32_manual(vzero, v0_1lf, v1_1l),
-            vdotq_s32_manual(vzero, v0_1hf, v1_1h),
+            vdotq_s32_manual(vdupq_n_s32(0), v0_1lf, v1_1l),
+            vdotq_s32_manual(vdupq_n_s32(0), v0_1hf, v1_1h),
         );
 
-        // Multiply by scales
-        let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d);
-        let d1 = fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d);
-
-        let p_0_f32 = vcvtq_f32_s32(p_0);
-        let p_1_f32 = vcvtq_f32_s32(p_1);
-        sumv0 = vfmaq_n_f32(sumv0, p_0_f32, d0);
-        sumv1 = vfmaq_n_f32(sumv1, p_1_f32, d1);
+        // Match llama.cpp exactly: compute scale inline in FMLA
+        sumv0 = vfmaq_n_f32(
+            sumv0,
+            vcvtq_f32_s32(p_0),
+            fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d),
+        );
+        sumv1 = vfmaq_n_f32(
+            sumv1,
+            vcvtq_f32_s32(p_1),
+            fp16_to_fp32(x1.d) * fp16_to_fp32(y1.d),
+        );
     }
 
-    let mut sumf = vaddvq_f32(sumv0) + vaddvq_f32(sumv1) + summs;
+    let mut sumf = vaddvq_f32(sumv0) + vaddvq_f32(sumv1) + summs0 + summs1;
 
     // Handle remainder blocks
     for ib in (chunks * 2)..nb {
