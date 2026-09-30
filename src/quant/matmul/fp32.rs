@@ -168,6 +168,7 @@ pub unsafe fn sgemm_optimized(
 }
 
 /// Optimized block computation using SIMD accumulators
+/// Key: hoist boundary checks OUT of K-loop
 #[target_feature(enable = "neon")]
 #[inline(never)]
 unsafe fn gemm_bloc_optimized(
@@ -181,81 +182,123 @@ unsafe fn gemm_bloc_optimized(
     j0: usize,
     j1: usize,
 ) {
-    let rm = i1 - i0;
-    let rn = j1 - j0;
+    // Pre-compute A row pointers (hoist boundary checks out of K-loop)
+    // This is the critical optimization - C++ does this implicitly
+    let a0 = if i0 + 0 < i1 {
+        a.as_ptr().add((i0 + 0) * k)
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
+    let a1 = if i0 + 1 < i1 {
+        a.as_ptr().add((i0 + 1) * k)
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
+    let a2 = if i0 + 2 < i1 {
+        a.as_ptr().add((i0 + 2) * k)
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
+    let a3 = if i0 + 3 < i1 {
+        a.as_ptr().add((i0 + 3) * k)
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
 
-    // SIMD accumulators: one per (row, col) pair
-    // For RM=4, RN=3: we need 12 accumulators (12 float32x4_t)
-    // This fits in 16 registers
-    let mut cv: [[float32x4_t; 4]; 3] = [
-        [
-            vdupq_n_f32(0.0),
-            vdupq_n_f32(0.0),
-            vdupq_n_f32(0.0),
-            vdupq_n_f32(0.0),
-        ],
-        [
-            vdupq_n_f32(0.0),
-            vdupq_n_f32(0.0),
-            vdupq_n_f32(0.0),
-            vdupq_n_f32(0.0),
-        ],
-        [
-            vdupq_n_f32(0.0),
-            vdupq_n_f32(0.0),
-            vdupq_n_f32(0.0),
-            vdupq_n_f32(0.0),
-        ],
+    // Pre-compute valid row mask
+    let row_mask = [i0 + 0 < i1, i0 + 1 < i1, i0 + 2 < i1, i0 + 3 < i1];
+
+    // Pre-compute B column pointers
+    let b0 = b.as_ptr().add(j0 * k);
+    let b1 = if j0 + 1 < j1 {
+        b.as_ptr().add((j0 + 1) * k)
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
+    let b2 = if j0 + 2 < j1 {
+        b.as_ptr().add((j0 + 2) * k)
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
+
+    let col_mask = [
+        true,        // j0 always valid
+        j0 + 1 < j1, // j1 valid?
+        j0 + 2 < j1, // j2 valid?
     ];
 
-    // Main loop: process k in steps of 4
+    // Initialize accumulators - use fixed 3x4 layout matching llama.cpp
+    let mut cv0 = [
+        vdupq_n_f32(0.0),
+        vdupq_n_f32(0.0),
+        vdupq_n_f32(0.0),
+        vdupq_n_f32(0.0),
+    ]; // col 0
+    let mut cv1 = [
+        vdupq_n_f32(0.0),
+        vdupq_n_f32(0.0),
+        vdupq_n_f32(0.0),
+        vdupq_n_f32(0.0),
+    ]; // col 1
+    let mut cv2 = [
+        vdupq_n_f32(0.0),
+        vdupq_n_f32(0.0),
+        vdupq_n_f32(0.0),
+        vdupq_n_f32(0.0),
+    ]; // col 2
+
+    // Main K-loop: NO boundary checks inside
     let k4 = k - k % 4;
     for l in (0..k4).step_by(4) {
-        // Load 4 rows from A (reuse across columns)
-        let av: [float32x4_t; 4] = [
-            if i0 + 0 < i1 {
-                vld1q_f32(a.as_ptr().add((i0 + 0) * k + l))
-            } else {
-                vdupq_n_f32(0.0)
-            },
-            if i0 + 1 < i1 {
-                vld1q_f32(a.as_ptr().add((i0 + 1) * k + l))
-            } else {
-                vdupq_n_f32(0.0)
-            },
-            if i0 + 2 < i1 {
-                vld1q_f32(a.as_ptr().add((i0 + 2) * k + l))
-            } else {
-                vdupq_n_f32(0.0)
-            },
-            if i0 + 3 < i1 {
-                vld1q_f32(a.as_ptr().add((i0 + 3) * k + l))
-            } else {
-                vdupq_n_f32(0.0)
-            },
+        // Load from A (may load garbage for invalid rows, but won't be used)
+        let av = [
+            vld1q_f32(a0.add(l)),
+            vld1q_f32(a1.add(l)),
+            vld1q_f32(a2.add(l)),
+            vld1q_f32(a3.add(l)),
         ];
 
-        // For each column, load B and do FMLA to all rows
-        for j in 0..rn {
-            let bv = vld1q_f32(b.as_ptr().add((j0 + j) * k + l));
-            cv[j][0] = vfmaq_f32(cv[j][0], av[0], bv);
-            cv[j][1] = vfmaq_f32(cv[j][1], av[1], bv);
-            cv[j][2] = vfmaq_f32(cv[j][2], av[2], bv);
-            cv[j][3] = vfmaq_f32(cv[j][3], av[3], bv);
+        // Load from B and FMLA - fixed 3 columns
+        // Only accumulate to valid positions
+        if col_mask[0] {
+            let bv = vld1q_f32(b0.add(l));
+            cv0[0] = vfmaq_f32(cv0[0], av[0], bv);
+            cv0[1] = vfmaq_f32(cv0[1], av[1], bv);
+            cv0[2] = vfmaq_f32(cv0[2], av[2], bv);
+            cv0[3] = vfmaq_f32(cv0[3], av[3], bv);
+        }
+        if col_mask[1] {
+            let bv = vld1q_f32(b1.add(l));
+            cv1[0] = vfmaq_f32(cv1[0], av[0], bv);
+            cv1[1] = vfmaq_f32(cv1[1], av[1], bv);
+            cv1[2] = vfmaq_f32(cv1[2], av[2], bv);
+            cv1[3] = vfmaq_f32(cv1[3], av[3], bv);
+        }
+        if col_mask[2] {
+            let bv = vld1q_f32(b2.add(l));
+            cv2[0] = vfmaq_f32(cv2[0], av[0], bv);
+            cv2[1] = vfmaq_f32(cv2[1], av[1], bv);
+            cv2[2] = vfmaq_f32(cv2[2], av[2], bv);
+            cv2[3] = vfmaq_f32(cv2[3], av[3], bv);
         }
     }
 
-    // Horizontal sum and store
-    for j in 0..rn {
-        for i in 0..rm {
-            let sum = vaddvq_f32(cv[j][i]);
-
-            // Handle remaining k
+    // Horizontal sum and store - only for valid rows/cols
+    let a_ptrs = [a0, a1, a2, a3];
+    let cvs = [cv0, cv1, cv2];
+    for j in 0..3 {
+        if !col_mask[j] {
+            continue;
+        }
+        for i in 0..4 {
+            if !row_mask[i] {
+                continue;
+            }
+            let sum = vaddvq_f32(cvs[j][i]);
             let mut tail = 0.0f32;
             for l in k4..k {
-                tail += a[(i0 + i) * k + l] * b[(j0 + j) * k + l];
+                tail += *a_ptrs[i].add(l) * *b.as_ptr().add((j0 + j) * k + l);
             }
-
             c[(j0 + j) * ldc + (i0 + i)] = sum + tail;
         }
     }
