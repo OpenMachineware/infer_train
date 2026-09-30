@@ -45,10 +45,12 @@ pub fn set_rows_f32(
 pub fn add_id_f32(src: &[f32], n_cols: usize, ids: &[i32], dst: &mut [f32]) {
     for (row, &id) in ids.iter().enumerate() {
         let dst_row = id as usize;
-        let src_offset = row * n_cols;
-        let dst_offset = dst_row * n_cols;
-        for i in 0..n_cols {
-            dst[dst_offset + i] += src[src_offset + i];
+        let src_row = &src[row * n_cols..][..n_cols];
+        let dst_row_slice = &mut dst[dst_row * n_cols..][..n_cols];
+
+        // Use zip iterator for potential vectorization
+        for (d, s) in dst_row_slice.iter_mut().zip(src_row.iter()) {
+            *d += s;
         }
     }
 }
@@ -61,7 +63,7 @@ pub fn add_id_f32(src: &[f32], n_cols: usize, ids: &[i32], dst: &mut [f32]) {
 /// output: [n_tokens, n_out] output vectors
 pub fn mul_mat_id_f32(
     weights: &[f32],
-    n_experts: usize,
+    _n_experts: usize,
     n_out: usize,
     n_in: usize,
     expert_ids: &[i32],
@@ -70,24 +72,67 @@ pub fn mul_mat_id_f32(
 ) {
     let expert_size = n_out * n_in;
 
-    for (token_idx, &expert_id) in expert_ids.iter().enumerate() {
-        let expert = expert_id as usize;
-        let w_offset = expert * expert_size;
-        let w = &weights[w_offset..w_offset + expert_size];
+    unsafe {
+        use std::arch::aarch64::*;
 
-        let x_offset = token_idx * n_in;
-        let x = &input[x_offset..x_offset + n_in];
+        for (token_idx, &expert_id) in expert_ids.iter().enumerate() {
+            let expert = expert_id as usize;
+            let w_offset = expert * expert_size;
+            let w = weights.as_ptr().add(w_offset);
 
-        let y_offset = token_idx * n_out;
-        let y = &mut output[y_offset..y_offset + n_out];
+            let x_offset = token_idx * n_in;
+            let x = input.as_ptr().add(x_offset);
 
-        // GEMV: y = W^T * x
-        for i in 0..n_out {
-            let mut sum = 0.0f32;
-            for j in 0..n_in {
-                sum += w[i * n_in + j] * x[j];
+            let y_offset = token_idx * n_out;
+            let y = output.as_mut_ptr().add(y_offset);
+
+            // GEMV: y = W^T * x (each row of W dot x)
+            for i in 0..n_out {
+                let row = w.add(i * n_in);
+
+                // NEON dot product
+                let mut sum_vec = vdupq_n_f32(0.0);
+                let mut j = 0;
+
+                // Process 16 elements at a time (4 x float32x4_t)
+                while j + 16 <= n_in {
+                    let v0 = vld1q_f32(row.add(j));
+                    let v1 = vld1q_f32(row.add(j + 4));
+                    let v2 = vld1q_f32(row.add(j + 8));
+                    let v3 = vld1q_f32(row.add(j + 12));
+
+                    let x0 = vld1q_f32(x.add(j));
+                    let x1 = vld1q_f32(x.add(j + 4));
+                    let x2 = vld1q_f32(x.add(j + 8));
+                    let x3 = vld1q_f32(x.add(j + 12));
+
+                    sum_vec = vmlaq_f32(sum_vec, v0, x0);
+                    sum_vec = vmlaq_f32(sum_vec, v1, x1);
+                    sum_vec = vmlaq_f32(sum_vec, v2, x2);
+                    sum_vec = vmlaq_f32(sum_vec, v3, x3);
+
+                    j += 16;
+                }
+
+                // Process 4 elements at a time
+                while j + 4 <= n_in {
+                    let v = vld1q_f32(row.add(j));
+                    let xv = vld1q_f32(x.add(j));
+                    sum_vec = vmlaq_f32(sum_vec, v, xv);
+                    j += 4;
+                }
+
+                // Horizontal sum
+                let mut sum = vaddvq_f32(sum_vec);
+
+                // Tail
+                while j < n_in {
+                    sum += *row.add(j) * *x.add(j);
+                    j += 1;
+                }
+
+                *y.add(i) = sum;
             }
-            y[i] = sum;
         }
     }
 }
