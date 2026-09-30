@@ -81,6 +81,7 @@ unsafe fn vdupq_n_f16_zero() -> float16x8_t {
 }
 
 /// F16 GEMM block computation using inline assembly
+/// Key: hoist boundary checks OUT of K-loop (same as FP32 optimization)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
@@ -95,68 +96,82 @@ unsafe fn hgemm_bloc(
     j0: usize,
     j1: usize,
 ) {
-    let rm = i1 - i0;
-    let rn = j1 - j0;
+    // Pre-compute A row pointers (hoist boundary checks out of K-loop)
+    let a0 = a.as_ptr().add((i0 + 0) * k) as *const u16;
+    let a1 = if i0 + 1 < i1 {
+        a.as_ptr().add((i0 + 1) * k) as *const u16
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
+    let a2 = if i0 + 2 < i1 {
+        a.as_ptr().add((i0 + 2) * k) as *const u16
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
+    let a3 = if i0 + 3 < i1 {
+        a.as_ptr().add((i0 + 3) * k) as *const u16
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
+
+    let row_mask = [i0 + 0 < i1, i0 + 1 < i1, i0 + 2 < i1, i0 + 3 < i1];
+
+    // Pre-compute B column pointers
+    let b0 = b.as_ptr().add(j0 * k) as *const u16;
+    let b1 = if j0 + 1 < j1 {
+        b.as_ptr().add((j0 + 1) * k) as *const u16
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
+    let col_mask = [true, j0 + 1 < j1];
 
     // SIMD accumulators in F16
     let zero = vdupq_n_f16_zero();
-    let mut cv: [[float16x8_t; 4]; 2] =
-        [[zero, zero, zero, zero], [zero, zero, zero, zero]];
+    let mut cv0 = [zero, zero, zero, zero];
+    let mut cv1 = [zero, zero, zero, zero];
 
-    // Main loop: process k in steps of 8
+    // Main K-loop: NO boundary checks inside
     let k8 = k - k % 8;
     for l in (0..k8).step_by(8) {
-        // Load 4 rows from A (half::f16 is stored as u16)
+        // Load 4 rows from A
         let av: [float16x8_t; 4] = [
-            if i0 + 0 < i1 {
-                vreinterpretq_f16_u16(vld1q_u16(
-                    a.as_ptr().add((i0 + 0) * k + l) as *const u16,
-                ))
-            } else {
-                zero
-            },
-            if i0 + 1 < i1 {
-                vreinterpretq_f16_u16(vld1q_u16(
-                    a.as_ptr().add((i0 + 1) * k + l) as *const u16,
-                ))
-            } else {
-                zero
-            },
-            if i0 + 2 < i1 {
-                vreinterpretq_f16_u16(vld1q_u16(
-                    a.as_ptr().add((i0 + 2) * k + l) as *const u16,
-                ))
-            } else {
-                zero
-            },
-            if i0 + 3 < i1 {
-                vreinterpretq_f16_u16(vld1q_u16(
-                    a.as_ptr().add((i0 + 3) * k + l) as *const u16,
-                ))
-            } else {
-                zero
-            },
+            vreinterpretq_f16_u16(vld1q_u16(a0.add(l))),
+            vreinterpretq_f16_u16(vld1q_u16(a1.add(l))),
+            vreinterpretq_f16_u16(vld1q_u16(a2.add(l))),
+            vreinterpretq_f16_u16(vld1q_u16(a3.add(l))),
         ];
 
-        // For each column, load B and do FMLA
-        for j in 0..rn {
-            let bv = vreinterpretq_f16_u16(vld1q_u16(
-                b.as_ptr().add((j0 + j) * k + l) as *const u16,
-            ));
-            cv[j][0] = vfmaq_f16_asm(cv[j][0], av[0], bv);
-            cv[j][1] = vfmaq_f16_asm(cv[j][1], av[1], bv);
-            cv[j][2] = vfmaq_f16_asm(cv[j][2], av[2], bv);
-            cv[j][3] = vfmaq_f16_asm(cv[j][3], av[3], bv);
+        // Load B and do FMLA for each column
+        if col_mask[0] {
+            let bv = vreinterpretq_f16_u16(vld1q_u16(b0.add(l)));
+            cv0[0] = vfmaq_f16_asm(cv0[0], av[0], bv);
+            cv0[1] = vfmaq_f16_asm(cv0[1], av[1], bv);
+            cv0[2] = vfmaq_f16_asm(cv0[2], av[2], bv);
+            cv0[3] = vfmaq_f16_asm(cv0[3], av[3], bv);
+        }
+        if col_mask[1] {
+            let bv = vreinterpretq_f16_u16(vld1q_u16(b1.add(l)));
+            cv1[0] = vfmaq_f16_asm(cv1[0], av[0], bv);
+            cv1[1] = vfmaq_f16_asm(cv1[1], av[1], bv);
+            cv1[2] = vfmaq_f16_asm(cv1[2], av[2], bv);
+            cv1[3] = vfmaq_f16_asm(cv1[3], av[3], bv);
         }
     }
 
     // Convert accumulators to F32 and store
-    for j in 0..rn {
-        for i in 0..rm {
-            // Convert F16 accumulator to F32 and sum
-            let sum = vaddvq_f16_asm(cv[j][i]);
+    let a_ptrs = [a0, a1, a2, a3];
+    let b_ptrs = [b0, b1];
+    let cvs = [cv0, cv1];
+    for j in 0..2 {
+        if !col_mask[j] {
+            continue;
+        }
+        for i in 0..4 {
+            if !row_mask[i] {
+                continue;
+            }
+            let sum = vaddvq_f16_asm(cvs[j][i]);
 
-            // Handle remaining k
             let mut tail = 0.0f32;
             for l in k8..k {
                 tail +=
@@ -229,6 +244,7 @@ pub unsafe fn hgemm_f32b(
 }
 
 /// F16 × F32 GEMM block
+/// Key: hoist boundary checks OUT of K-loop (same as FP32 optimization)
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
@@ -243,65 +259,94 @@ unsafe fn hgemm_f32b_bloc(
     j0: usize,
     j1: usize,
 ) {
-    let rm = i1 - i0;
-    let rn = j1 - j0;
+    // Pre-compute A row pointers (hoist boundary checks out of K-loop)
+    let a0 = a.as_ptr().add((i0 + 0) * k) as *const u16;
+    let a1 = if i0 + 1 < i1 {
+        a.as_ptr().add((i0 + 1) * k) as *const u16
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
+    let a2 = if i0 + 2 < i1 {
+        a.as_ptr().add((i0 + 2) * k) as *const u16
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
+    let a3 = if i0 + 3 < i1 {
+        a.as_ptr().add((i0 + 3) * k) as *const u16
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
+
+    let row_mask = [i0 + 0 < i1, i0 + 1 < i1, i0 + 2 < i1, i0 + 3 < i1];
+
+    // Pre-compute B column pointers
+    let b0 = b.as_ptr().add(j0 * k);
+    let b1 = if j0 + 1 < j1 {
+        b.as_ptr().add((j0 + 1) * k)
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
+    let b2 = if j0 + 2 < j1 {
+        b.as_ptr().add((j0 + 2) * k)
+    } else {
+        std::ptr::NonNull::dangling().as_ptr()
+    };
+    let col_mask = [true, j0 + 1 < j1, j0 + 2 < j1];
 
     // Accumulators in F32
     let zero = vdupq_n_f32(0.0);
-    let mut cv: [[float32x4_t; 4]; 3] = [
-        [zero, zero, zero, zero],
-        [zero, zero, zero, zero],
-        [zero, zero, zero, zero],
-    ];
+    let mut cv0 = [zero, zero, zero, zero];
+    let mut cv1 = [zero, zero, zero, zero];
+    let mut cv2 = [zero, zero, zero, zero];
 
+    // Main K-loop: NO boundary checks inside
     let k4 = k - k % 4;
     for l in (0..k4).step_by(4) {
-        // Load F16 from A and convert to F32 (half::f16 is stored as u16)
+        // Load F16 from A and convert to F32
         let av: [float32x4_t; 4] = [
-            if i0 + 0 < i1 {
-                vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(
-                    a.as_ptr().add((i0 + 0) * k + l) as *const u16,
-                )))
-            } else {
-                zero
-            },
-            if i0 + 1 < i1 {
-                vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(
-                    a.as_ptr().add((i0 + 1) * k + l) as *const u16,
-                )))
-            } else {
-                zero
-            },
-            if i0 + 2 < i1 {
-                vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(
-                    a.as_ptr().add((i0 + 2) * k + l) as *const u16,
-                )))
-            } else {
-                zero
-            },
-            if i0 + 3 < i1 {
-                vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(
-                    a.as_ptr().add((i0 + 3) * k + l) as *const u16,
-                )))
-            } else {
-                zero
-            },
+            vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(a0.add(l)))),
+            vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(a1.add(l)))),
+            vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(a2.add(l)))),
+            vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(a3.add(l)))),
         ];
 
         // Load F32 from B and do FMLA
-        for j in 0..rn {
-            let bv = vld1q_f32(b.as_ptr().add((j0 + j) * k + l));
-            cv[j][0] = vfmaq_f32(cv[j][0], av[0], bv);
-            cv[j][1] = vfmaq_f32(cv[j][1], av[1], bv);
-            cv[j][2] = vfmaq_f32(cv[j][2], av[2], bv);
-            cv[j][3] = vfmaq_f32(cv[j][3], av[3], bv);
+        if col_mask[0] {
+            let bv = vld1q_f32(b0.add(l));
+            cv0[0] = vfmaq_f32(cv0[0], av[0], bv);
+            cv0[1] = vfmaq_f32(cv0[1], av[1], bv);
+            cv0[2] = vfmaq_f32(cv0[2], av[2], bv);
+            cv0[3] = vfmaq_f32(cv0[3], av[3], bv);
+        }
+        if col_mask[1] {
+            let bv = vld1q_f32(b1.add(l));
+            cv1[0] = vfmaq_f32(cv1[0], av[0], bv);
+            cv1[1] = vfmaq_f32(cv1[1], av[1], bv);
+            cv1[2] = vfmaq_f32(cv1[2], av[2], bv);
+            cv1[3] = vfmaq_f32(cv1[3], av[3], bv);
+        }
+        if col_mask[2] {
+            let bv = vld1q_f32(b2.add(l));
+            cv2[0] = vfmaq_f32(cv2[0], av[0], bv);
+            cv2[1] = vfmaq_f32(cv2[1], av[1], bv);
+            cv2[2] = vfmaq_f32(cv2[2], av[2], bv);
+            cv2[3] = vfmaq_f32(cv2[3], av[3], bv);
         }
     }
 
     // Horizontal sum and store
-    for j in 0..rn {
-        for i in 0..rm {
-            let sum = vaddvq_f32(cv[j][i]);
+    let a_ptrs = [a0, a1, a2, a3];
+    let b_ptrs = [b0, b1, b2];
+    let cvs = [cv0, cv1, cv2];
+    for j in 0..3 {
+        if !col_mask[j] {
+            continue;
+        }
+        for i in 0..4 {
+            if !row_mask[i] {
+                continue;
+            }
+            let sum = vaddvq_f32(cvs[j][i]);
 
             let mut tail = 0.0f32;
             for l in k4..k {
