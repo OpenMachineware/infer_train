@@ -33,7 +33,7 @@ pub(crate) unsafe fn vld1q_u32_from_scalars(
 
 /// Manual vdotq_s32 implementation using native SDOT instruction
 #[target_feature(enable = "neon,dotprod")]
-unsafe fn vdotq_s32_manual(
+pub(crate) unsafe fn vdotq_s32_manual(
     acc: int32x4_t,
     a: int8x16_t,
     b: int8x16_t,
