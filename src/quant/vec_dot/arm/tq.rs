@@ -25,6 +25,7 @@ unsafe fn vdotq_s32_manual(
 }
 
 /// TQ2_0 × Q8_K vector dot product (NEON implementation)
+/// Match llama.cpp's algorithm exactly: individual vld1q_s8 loads, single loop structure
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_tq2_0_q8_k_neon(
     n: usize,
@@ -43,22 +44,31 @@ pub unsafe fn vec_dot_tq2_0_q8_k_neon(
         let mut sumi0 = vdupq_n_s32(0);
         let mut sumi1 = vdupq_n_s32(0);
 
-        // Process 64 bytes (256 elements, 2 bits each, 4 elements per byte)
+        // Process 64 bytes of Q2 in two iterations (j=0 and j=32)
+        // Match llama.cpp's loop structure exactly
         for j in (0..64).step_by(32) {
             let qx0 = vld1q_u8(q2.add(j));
             let qx1 = vld1q_u8(q2.add(j + 16));
 
-            // Extract 2-bit values by shifting and masking
+            // Shift and mask - match llama.cpp's order
+            let qx2 = vshrq_n_u8(qx0, 2);
+            let qx3 = vshrq_n_u8(qx1, 2);
+            let qx4 = vshrq_n_u8(qx0, 4);
+            let qx5 = vshrq_n_u8(qx1, 4);
+            let qx6 = vshrq_n_u8(qx0, 6);
+            let qx7 = vshrq_n_u8(qx1, 6);
+
             let sqx0 = vreinterpretq_s8_u8(vandq_u8(qx0, m3));
             let sqx1 = vreinterpretq_s8_u8(vandq_u8(qx1, m3));
-            let sqx2 = vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(qx0, 2), m3));
-            let sqx3 = vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(qx1, 2), m3));
-            let sqx4 = vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(qx0, 4), m3));
-            let sqx5 = vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(qx1, 4), m3));
-            let sqx6 = vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(qx0, 6), m3));
-            let sqx7 = vreinterpretq_s8_u8(vandq_u8(vshrq_n_u8(qx1, 6), m3));
+            let sqx2 = vreinterpretq_s8_u8(vandq_u8(qx2, m3));
+            let sqx3 = vreinterpretq_s8_u8(vandq_u8(qx3, m3));
+            let sqx4 = vreinterpretq_s8_u8(vandq_u8(qx4, m3));
+            let sqx5 = vreinterpretq_s8_u8(vandq_u8(qx5, m3));
+            let sqx6 = vreinterpretq_s8_u8(vandq_u8(qx6, m3));
+            let sqx7 = vreinterpretq_s8_u8(vandq_u8(qx7, m3));
 
-            // Load Q8 values
+            // Load Q8 values - match llama.cpp's individual loads
+            // Offset: j*4 + offset
             let qy0 = vld1q_s8(q8.add(j * 4));
             let qy1 = vld1q_s8(q8.add(j * 4 + 16));
             let qy2 = vld1q_s8(q8.add(j * 4 + 32));
@@ -68,7 +78,7 @@ pub unsafe fn vec_dot_tq2_0_q8_k_neon(
             let qy6 = vld1q_s8(q8.add(j * 4 + 96));
             let qy7 = vld1q_s8(q8.add(j * 4 + 112));
 
-            // Dot products - accumulate in two registers for better ILP
+            // Dot products - dual accumulators for ILP
             sumi0 = vdotq_s32_manual(sumi0, sqx0, qy0);
             sumi1 = vdotq_s32_manual(sumi1, sqx1, qy1);
             sumi0 = vdotq_s32_manual(sumi0, sqx2, qy2);
