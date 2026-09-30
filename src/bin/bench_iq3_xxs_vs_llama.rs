@@ -1,8 +1,8 @@
-// Direct comparison: Rust v2 vs llama.cpp for IQ3_XXS
+// Direct comparison: Rust vs llama.cpp for IQ3_XXS
 // Uses the same methodology as bench_cpu_operators
 
 use infer_train::quant::types::{BlockIQ3XXS, BlockQ8K, QK_K};
-use infer_train::quant::vec_dot::arm::vec_dot_iq3_xxs_q8_k_neon_v7;
+use infer_train::quant::vec_dot::arm::vec_dot_iq3_xxs_q8_k_neon;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::time::Instant;
 
@@ -92,7 +92,7 @@ fn main() {
     // Warmup for Rust v7
     for _ in 0..warmup {
         unsafe {
-            let result = vec_dot_iq3_xxs_q8_k_neon_v7(n, x, y);
+            let result = vec_dot_iq3_xxs_q8_k_neon(n, x, y);
             std::hint::black_box(result);
         }
     }
@@ -102,7 +102,7 @@ fn main() {
     for _ in 0..iterations {
         let start = Instant::now();
         unsafe {
-            let result = vec_dot_iq3_xxs_q8_k_neon_v7(n, x, y);
+            let result = vec_dot_iq3_xxs_q8_k_neon(n, x, y);
             std::hint::black_box(result);
         }
         rust_times.push(start.elapsed().as_nanos() as f64);
