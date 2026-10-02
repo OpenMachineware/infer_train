@@ -35,8 +35,8 @@ typedef struct {
     half  d;
     half  dmin;
     uint8_t scales[12];
-    uint8_t qs[128];
-    uint8_t qh[64];
+    uint8_t qh[32];  // QK_K/8 = 256/8 = 32 (NOT 64!)
+    uint8_t qs[128]; // QK_K/2 = 256/2 = 128
 } block_q5_K;
 
 typedef struct {
