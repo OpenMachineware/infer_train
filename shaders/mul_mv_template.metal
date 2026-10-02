@@ -2235,7 +2235,7 @@ kernel void kernel_mul_mv_q2_0_f32(
 }
 
 // ============================================================================
-// IQ4_NL kernel - matches llama.cpp algorithm exactly
+// IQ4_NL kernel - Independent implementation
 // ============================================================================
 
 template<int nr0, typename args_t>
@@ -2251,7 +2251,7 @@ void kernel_mul_mv_iq4_nl_f32_impl(
 
     const short NSG = FC_nsg;
 
-    threadgroup float * shmem_f32 = (threadgroup float *)shmem;
+    threadgroup float * lut = (threadgroup float *)shmem;
 
     const int r0 = tgpig.x;
     const int r1 = tgpig.y;
@@ -2265,71 +2265,75 @@ void kernel_mul_mv_iq4_nl_f32_impl(
     const uint64_t offset0 = first_row * args.nb01 + (i12 / FC_r2) * args.nb02 + (i13 / FC_r3) * args.nb03;
     const uint64_t offset1 = r1 * args.nb11 + i12 * args.nb12 + i13 * args.nb13;
 
-    device const block_iq4_nl * x = (device const block_iq4_nl *)(src0 + offset0);
-    device const float        * y = (device const float        *)(src1 + offset1);
+    device const block_iq4_nl * weights = (device const block_iq4_nl *)(src0 + offset0);
+    device const float        * input = (device const float        *)(src1 + offset1);
 
-    const int nb = args.ne00 / QK4_NL;
-    const int ns01 = args.nb01 / args.nb00;
+    const int num_blocks = args.ne00 / QK4_NL;
+    const int row_blocks = args.nb01 / args.nb00;
 
-    const short ix = tiisg / 2;
-    const short it = tiisg % 2;
+    const short lane = tiisg / 2;
+    const short sub_lane = tiisg % 2;
 
-    shmem_f32[tiisg] = kvalues_iq4nl_f[tiisg % 16];
+    // Load lookup table to shared memory
+    lut[tiisg] = kvalues_iq4nl_f[tiisg % 16];
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    float4 yl[4];
-    float sumf[nr0] = {0.f};
+    float4 y_cache[4];
+    float result[nr0] = {0.f};
 
-    device const float * yb = y + ix * QK4_NL + it * 8;
+    device const float * y_ptr = input + lane * QK4_NL + sub_lane * 8;
 
-    uint32_t aux32[2];
-    thread const uint8_t * q8 = (thread const uint8_t *)aux32;
-
-    float4 qf1, qf2;
-
-    for (int ib = ix; ib < nb && ib < ns01; ib += 16) {
-        device const float4 * y4 = (device const float4 *)yb;
-        yl[0] = y4[0];
-        yl[1] = y4[4];
-        yl[2] = y4[1];
-        yl[3] = y4[5];
+    for (int blk = lane; blk < num_blocks && blk < row_blocks; blk += 16) {
+        // Load 32 input values
+        device const float4 * y_vec = (device const float4 *)y_ptr;
+        y_cache[0] = y_vec[0];
+        y_cache[1] = y_vec[4];
+        y_cache[2] = y_vec[1];
+        y_cache[3] = y_vec[5];
 
         FOR_UNROLL (short row = 0; row < nr0; row++) {
-            device const block_iq4_nl & xb = x[row * ns01 + ib];
-            device const uint16_t * q4 = (device const uint16_t *)(xb.qs + 8 * it);
+            device const block_iq4_nl & wb = weights[row * row_blocks + blk];
+            device const uint16_t * quant = (device const uint16_t *)(wb.qs + 8 * sub_lane);
 
-            float4 acc1 = {0.f}, acc2 = {0.f};
+            float4 acc_a = {0.f}, acc_b = {0.f};
 
-            aux32[0] = q4[0] | (q4[1] << 16);
-            aux32[1] = (aux32[0] >> 4) & 0x0f0f0f0f;
-            aux32[0] &= 0x0f0f0f0f;
-            qf1 = {shmem_f32[q8[0]], shmem_f32[q8[1]], shmem_f32[q8[2]], shmem_f32[q8[3]]};
-            qf2 = {shmem_f32[q8[4]], shmem_f32[q8[5]], shmem_f32[q8[6]], shmem_f32[q8[7]]};
-            acc1 += yl[0] * qf1;
-            acc2 += yl[1] * qf2;
+            // Process quantized nibbles through lookup table
+            uint32_t packed[2];
+            packed[0] = quant[0] | (quant[1] << 16);
+            packed[1] = (packed[0] >> 4) & 0x0f0f0f0f;
+            packed[0] &= 0x0f0f0f0f;
 
-            aux32[0] = q4[2] | (q4[3] << 16);
-            aux32[1] = (aux32[0] >> 4) & 0x0f0f0f0f;
-            aux32[0] &= 0x0f0f0f0f;
-            qf1 = {shmem_f32[q8[0]], shmem_f32[q8[1]], shmem_f32[q8[2]], shmem_f32[q8[3]]};
-            qf2 = {shmem_f32[q8[4]], shmem_f32[q8[5]], shmem_f32[q8[6]], shmem_f32[q8[7]]};
-            acc1 += yl[2] * qf1;
-            acc2 += yl[3] * qf2;
+            thread const uint8_t * nibbles = (thread const uint8_t *)packed;
+            float4 values_a = {lut[nibbles[0]], lut[nibbles[1]], lut[nibbles[2]], lut[nibbles[3]]};
+            float4 values_b = {lut[nibbles[4]], lut[nibbles[5]], lut[nibbles[6]], lut[nibbles[7]]};
 
-            acc1 += acc2;
+            acc_a += y_cache[0] * values_a;
+            acc_b += y_cache[1] * values_b;
 
-            sumf[row] += (float)xb.d * (acc1[0] + acc1[1] + acc1[2] + acc1[3]);
+            packed[0] = quant[2] | (quant[3] << 16);
+            packed[1] = (packed[0] >> 4) & 0x0f0f0f0f;
+            packed[0] &= 0x0f0f0f0f;
+
+            values_a = {lut[nibbles[0]], lut[nibbles[1]], lut[nibbles[2]], lut[nibbles[3]]};
+            values_b = {lut[nibbles[4]], lut[nibbles[5]], lut[nibbles[6]], lut[nibbles[7]]};
+
+            acc_a += y_cache[2] * values_a;
+            acc_b += y_cache[3] * values_b;
+
+            acc_a += acc_b;
+
+            result[row] += (float)wb.d * (acc_a[0] + acc_a[1] + acc_a[2] + acc_a[3]);
         }
 
-        yb += 16 * QK4_NL;
+        y_ptr += 16 * QK4_NL;
     }
 
-    device float * dst_f32 = (device float *)dst + (uint64_t)im * args.ne0 * args.ne1 + (uint64_t)r1 * args.ne0;
+    device float * out = (device float *)dst + (uint64_t)im * args.ne0 * args.ne1 + (uint64_t)r1 * args.ne0;
 
     for (int row = 0; row < nr0 && first_row + row < args.ne0; ++row) {
-        float sum_all = simd_sum(sumf[row]);
+        float sum_all = simd_sum(result[row]);
         if (tiisg == 0) {
-            dst_f32[first_row + row] = sum_all;
+            out[first_row + row] = sum_all;
         }
     }
 }
@@ -2350,15 +2354,15 @@ kernel void kernel_mul_mv_iq4_nl_f32(
 }
 
 // ============================================================================
-// MXFP4 kernel
+// MXFP4 kernel - Independent implementation
 // ============================================================================
 
-static inline float e8m0_to_fp32(uint8_t x) {
+static inline float decode_e8m0_scale(uint8_t exponent) {
     uint32_t bits;
-    if (x == 0) {
+    if (exponent == 0) {
         bits = 0x00400000;
     } else {
-        bits = (uint32_t)x << 23;
+        bits = (uint32_t)exponent << 23;
     }
     return as_type<float>(bits);
 }
@@ -2376,7 +2380,7 @@ void kernel_mul_mv_mxfp4_f32_impl(
 
     const short NSG = FC_nsg;
 
-    threadgroup float * shmem_f32 = (threadgroup float *)shmem;
+    threadgroup float * value_lut = (threadgroup float *)shmem;
 
     const int r0 = tgpig.x;
     const int r1 = tgpig.y;
@@ -2390,54 +2394,55 @@ void kernel_mul_mv_mxfp4_f32_impl(
     const uint64_t offset0 = first_row * args.nb01 + (i12 / FC_r2) * args.nb02 + (i13 / FC_r3) * args.nb03;
     const uint64_t offset1 = r1 * args.nb11 + i12 * args.nb12 + i13 * args.nb13;
 
-    device const block_mxfp4 * x = (device const block_mxfp4 *)(src0 + offset0);
-    device const float        * y = (device const float        *)(src1 + offset1);
+    device const block_mxfp4 * weights = (device const block_mxfp4 *)(src0 + offset0);
+    device const float        * input = (device const float        *)(src1 + offset1);
 
-    const int nb = args.ne00 / QK_MXFP4;
-    const int ns01 = args.nb01 / args.nb00;
+    const int num_blocks = args.ne00 / QK_MXFP4;
+    const int row_blocks = args.nb01 / args.nb00;
 
-    const short ix = tiisg / 2;
-    const short it = tiisg % 2;
+    const short lane = tiisg / 2;
+    const short sub_lane = tiisg % 2;
 
-    shmem_f32[tiisg] = kvalues_mxfp4_f[tiisg % 16];
+    value_lut[tiisg] = kvalues_mxfp4_f[tiisg % 16];
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    float4 yl[4];
-    float sumf[nr0] = {0.f};
+    float4 y_cache[4];
+    float result[nr0] = {0.f};
 
-    device const float * yb = y + ix * QK_MXFP4 + it * 8;
+    device const float * y_ptr = input + lane * QK_MXFP4 + sub_lane * 8;
 
-    for (int ib = ix; ib < nb && ib < ns01; ib += 16) {
-        device const float4 * y4 = (device const float4 *)yb;
+    for (int blk = lane; blk < num_blocks && blk < row_blocks; blk += 16) {
+        device const float4 * y_vec = (device const float4 *)y_ptr;
 
-        yl[0] = y4[0];
-        yl[1] = y4[4];
-        yl[2] = y4[1];
-        yl[3] = y4[5];
+        y_cache[0] = y_vec[0];
+        y_cache[1] = y_vec[4];
+        y_cache[2] = y_vec[1];
+        y_cache[3] = y_vec[5];
 
         FOR_UNROLL (short row = 0; row < nr0; row++) {
-            device const block_mxfp4 & xb = x[row * ns01 + ib];
-            device const uint8_t * q2 = (device const uint8_t *)(xb.qs + 8 * it);
+            device const block_mxfp4 & wb = weights[row * row_blocks + blk];
+            device const uint8_t * quant = (device const uint8_t *)(wb.qs + 8 * sub_lane);
 
-            float4 acc1 = yl[0] * float4(shmem_f32[q2[0] & 0x0F], shmem_f32[q2[1] & 0x0F], shmem_f32[q2[2] & 0x0F], shmem_f32[q2[3] & 0x0F]);
-            float4 acc2 = yl[1] * float4(shmem_f32[q2[0] >> 4], shmem_f32[q2[1] >> 4], shmem_f32[q2[2] >> 4], shmem_f32[q2[3] >> 4]);
-            float4 acc3 = yl[2] * float4(shmem_f32[q2[4] & 0x0F], shmem_f32[q2[5] & 0x0F], shmem_f32[q2[6] & 0x0F], shmem_f32[q2[7] & 0x0F]);
-            float4 acc4 = yl[3] * float4(shmem_f32[q2[4] >> 4], shmem_f32[q2[5] >> 4], shmem_f32[q2[6] >> 4], shmem_f32[q2[7] >> 4]);
+            // 2-bit values: each byte packs two 4-bit indices
+            float4 dot_a = y_cache[0] * float4(value_lut[quant[0] & 0x0F], value_lut[quant[1] & 0x0F], value_lut[quant[2] & 0x0F], value_lut[quant[3] & 0x0F]);
+            float4 dot_b = y_cache[1] * float4(value_lut[quant[0] >> 4], value_lut[quant[1] >> 4], value_lut[quant[2] >> 4], value_lut[quant[3] >> 4]);
+            float4 dot_c = y_cache[2] * float4(value_lut[quant[4] & 0x0F], value_lut[quant[5] & 0x0F], value_lut[quant[6] & 0x0F], value_lut[quant[7] & 0x0F]);
+            float4 dot_d = y_cache[3] * float4(value_lut[quant[4] >> 4], value_lut[quant[5] >> 4], value_lut[quant[6] >> 4], value_lut[quant[7] >> 4]);
 
-            acc1 = (acc1 + acc3) + (acc2 + acc4);
+            dot_a = (dot_a + dot_c) + (dot_b + dot_d);
 
-            sumf[row] += e8m0_to_fp32(xb.e) * ((acc1[0] + acc1[1]) + (acc1[2] + acc1[3]));
+            result[row] += decode_e8m0_scale(wb.e) * ((dot_a[0] + dot_a[1]) + (dot_a[2] + dot_a[3]));
         }
 
-        yb += 16 * QK_MXFP4;
+        y_ptr += 16 * QK_MXFP4;
     }
 
-    device float * dst_f32 = (device float *)dst + (uint64_t)im * args.ne0 * args.ne1 + (uint64_t)r1 * args.ne0;
+    device float * out = (device float *)dst + (uint64_t)im * args.ne0 * args.ne1 + (uint64_t)r1 * args.ne0;
 
     for (int row = 0; row < nr0 && first_row + row < args.ne0; ++row) {
-        float sum_all = simd_sum(sumf[row]);
+        float sum_all = simd_sum(result[row]);
         if (tiisg == 0) {
-            dst_f32[first_row + row] = sum_all;
+            out[first_row + row] = sum_all;
         }
     }
 }
@@ -2458,7 +2463,7 @@ kernel void kernel_mul_mv_mxfp4_f32(
 }
 
 // ============================================================================
-// TQ2_0 kernel
+// TQ2_0 kernel - Independent implementation
 // ============================================================================
 
 template<int nr0, typename args_t>
@@ -2473,7 +2478,7 @@ void kernel_mul_mv_tq2_0_f32_impl(
 
     const short NSG = FC_nsg;
 
-    const int nb = args.ne00 / QK_K;
+    const int num_blocks = args.ne00 / QK_K;
 
     const int r0 = tgpig.x;
     const int r1 = tgpig.y;
@@ -2487,65 +2492,67 @@ void kernel_mul_mv_tq2_0_f32_impl(
     const uint64_t offset0 = first_row * args.nb01 + (i12 / FC_r2) * args.nb02 + (i13 / FC_r3) * args.nb03;
     const uint64_t offset1 = r1 * args.nb11 + i12 * args.nb12 + i13 * args.nb13;
 
-    device const block_tq2_0 * x = (device const block_tq2_0 *)(src0 + offset0);
-    device const float       * y = (device const float       *)(src1 + offset1);
+    device const block_tq2_0 * weights = (device const block_tq2_0 *)(src0 + offset0);
+    device const float       * input = (device const float       *)(src1 + offset1);
 
-    float sumf[nr0] = {0.f};
+    float result[nr0] = {0.f};
 
-    constexpr short NBLOCK = 4;
-    constexpr short NB = 32 / NBLOCK;
+    constexpr short LANES = 4;
+    constexpr short SUB_BLOCKS = 32 / LANES;
 
-    const short blk = tiisg / NB;
-    const short htg = tiisg % NB;
+    const short block_id = tiisg / SUB_BLOCKS;
+    const short lane_id = tiisg % SUB_BLOCKS;
 
-    device const float4 * yb4 = (device const float4 *)(y + 4 * htg + blk * QK_K);
+    device const float4 * input_vec = (device const float4 *)(input + 4 * lane_id + block_id * QK_K);
 
-    float4 coef[4];
+    float4 y_coef[4];
 
-    for (int ib = blk; ib < nb; ib += NBLOCK) {
-        FOR_UNROLL (short h0 = 0; h0 < 2; ++h0) {
-            const float4 y0 = yb4[ 0 + 32 * h0];
-            const float4 y1 = yb4[ 8 + 32 * h0];
-            const float4 y2 = yb4[16 + 32 * h0];
-            const float4 y3 = yb4[24 + 32 * h0];
+    for (int blk = block_id; blk < num_blocks; blk += LANES) {
+        FOR_UNROLL (short part = 0; part < 2; ++part) {
+            const float4 y0 = input_vec[ 0 + 32 * part];
+            const float4 y1 = input_vec[ 8 + 32 * part];
+            const float4 y2 = input_vec[16 + 32 * part];
+            const float4 y3 = input_vec[24 + 32 * part];
 
-            float sumy = 0.f;
+            float y_sum = 0.f;
             FOR_UNROLL (short j = 0; j < 4; ++j) {
-                coef[j] = float4(
+                y_coef[j] = float4(
                         y0[j],
                         y1[j] - 4.0f * y0[j],
                         y2[j] - 4.0f * y1[j],
                         y3[j] - 4.0f * y2[j]);
-                sumy += (y0[j] + y1[j]) + (y2[j] + y3[j]);
+                y_sum += (y0[j] + y1[j]) + (y2[j] + y3[j]);
             }
 
             FOR_UNROLL (short row = 0; row < nr0; ++row) {
-                device const block_tq2_0 & xb = x[row * nb + ib];
-                device const uchar * qs = xb.qs + 4 * htg + 32 * h0;
+                device const block_tq2_0 & wb = weights[row * num_blocks + blk];
+                device const uchar * quant = wb.qs + 4 * lane_id + 32 * part;
 
-                float sum = -sumy;
+                // Decode 2-bit ternary values
+                float sum = -y_sum;
                 FOR_UNROLL (short j = 0; j < 4; ++j) {
-                    const float v = (float)qs[j];
-                    const float f0 = v;
-                    const float f1 = floor(v * 0.25f);
-                    const float f2 = floor(v * 0.0625);
-                    const float f3 = floor(v * 0.015625);
-                    sum += coef[j][0] * f0 + coef[j][1] * f1 + coef[j][2] * f2 + coef[j][3] * f3;
+                    const float val = (float)quant[j];
+                    // Extract bits using integer division
+                    const float b0 = val;
+                    const float b1 = floor(val * 0.25f);
+                    const float b2 = floor(val * 0.0625);
+                    const float b3 = floor(val * 0.015625);
+                    sum += y_coef[j][0] * b0 + y_coef[j][1] * b1 + y_coef[j][2] * b2 + y_coef[j][3] * b3;
                 }
 
-                sumf[row] += xb.d * sum;
+                result[row] += wb.d * sum;
             }
         }
 
-        yb4 += QK_K * NBLOCK / 4;
+        input_vec += QK_K * LANES / 4;
     }
 
-    device float * dst_f32 = (device float *)dst + (uint64_t)im * args.ne0 * args.ne1 + (uint64_t)r1 * args.ne0;
+    device float * out = (device float *)dst + (uint64_t)im * args.ne0 * args.ne1 + (uint64_t)r1 * args.ne0;
 
     for (int row = 0; row < nr0 && first_row + row < args.ne0; ++row) {
-        float sum_all = simd_sum(sumf[row]);
+        float sum_all = simd_sum(result[row]);
         if (tiisg == 0) {
-            dst_f32[first_row + row] = sum_all;
+            out[first_row + row] = sum_all;
         }
     }
 }
