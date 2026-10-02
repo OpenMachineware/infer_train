@@ -123,7 +123,7 @@ fn main() {
         let start = Instant::now();
         let iterations = if *k <= 512 { 100 } else { 20 };
         for _ in 0..iterations {
-            let _ = metal_ctx.gemm_q4_k_f32(m, n, *k, &weights, &input);
+            let _ = metal_ctx.matmul_q4_k_f32(m, n, *k, &weights, &input);
         }
         let elapsed = start.elapsed();
         let avg_time = elapsed.as_micros() as f64 / iterations as f64;
@@ -149,7 +149,7 @@ fn main() {
         let weights = generate_q2_k_weights(m, *k);
         let start = Instant::now();
         for _ in 0..iterations {
-            let _ = metal_ctx.gemm_q2_k_f32(m, n, *k, &weights, &input);
+            let _ = metal_ctx.matmul_q2_k_f32(m, n, *k, &weights, &input);
         }
         let elapsed = start.elapsed();
         let avg_time = elapsed.as_micros() as f64 / iterations as f64;
@@ -174,7 +174,7 @@ fn main() {
         let weights = generate_q6_k_weights(m, *k);
         let start = Instant::now();
         for _ in 0..iterations {
-            let _ = metal_ctx.gemm_q6_k_f32(m, n, *k, &weights, &input);
+            let _ = metal_ctx.matmul_q6_k_f32(m, n, *k, &weights, &input);
         }
         let elapsed = start.elapsed();
         let avg_time = elapsed.as_micros() as f64 / iterations as f64;

@@ -137,7 +137,7 @@ constant short FC_mul_mv_r3 [[function_constant(FC_MUL_MV + 4)]];
 
 const LLAMA_Q4_0_KERNEL: &str = r#"
 template<int nr0, typename args_t>
-void kernel_mul_mv_q4_0_f32_impl(args_t args, device const char * src0, device const char * src1,
+void kernel_gemm_q4_0_f32_impl(args_t args, device const char * src0, device const char * src1,
     device char * dst, uint3 tgpig, ushort tiisg, ushort sgitg) {
     const short NSG = FC_mul_mv_nsg;
     const int nb = args.ne00/QK4_0;
@@ -170,17 +170,17 @@ void kernel_mul_mv_q4_0_f32_impl(args_t args, device const char * src0, device c
         if (tiisg == 0) { dst_f32[first_row + row] = sum_all; }
     }
 }
-[[host_name("kernel_mul_mv_q4_0_f32")]]
-kernel void kernel_mul_mv_q4_0_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
+[[host_name("kernel_gemm_q4_0_f32")]]
+kernel void kernel_gemm_q4_0_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
     device const char * src1, device char * dst, uint3 tgpig[[threadgroup_position_in_grid]],
     ushort tiisg[[thread_index_in_simdgroup]], ushort sgitg[[simdgroup_index_in_threadgroup]]) {
-    kernel_mul_mv_q4_0_f32_impl<4, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, tgpig, tiisg, sgitg);
+    kernel_gemm_q4_0_f32_impl<4, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, tgpig, tiisg, sgitg);
 }
 "#;
 
 const LLAMA_Q8_0_KERNEL: &str = r#"
 template<int nr0, typename args_t>
-void kernel_mul_mv_q8_0_f32_impl(args_t args, device const char * src0, device const char * src1,
+void kernel_gemm_q8_0_f32_impl(args_t args, device const char * src0, device const char * src1,
     device char * dst, uint3 tgpig, ushort tiisg, ushort sgitg) {
     const short NSG = FC_mul_mv_nsg;
     const int nb = args.ne00/QK8_0;
@@ -212,11 +212,11 @@ void kernel_mul_mv_q8_0_f32_impl(args_t args, device const char * src0, device c
         if (tiisg == 0) { dst_f32[first_row + row] = sum_all; }
     }
 }
-[[host_name("kernel_mul_mv_q8_0_f32")]]
-kernel void kernel_mul_mv_q8_0_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
+[[host_name("kernel_gemm_q8_0_f32")]]
+kernel void kernel_gemm_q8_0_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
     device const char * src1, device char * dst, uint3 tgpig[[threadgroup_position_in_grid]],
     ushort tiisg[[thread_index_in_simdgroup]], ushort sgitg[[simdgroup_index_in_threadgroup]]) {
-    kernel_mul_mv_q8_0_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, tgpig, tiisg, sgitg);
+    kernel_gemm_q8_0_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, tgpig, tiisg, sgitg);
 }
 "#;
 
@@ -245,8 +245,7 @@ fn main() {
     let shader_dir =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
     let my_source =
-        std::fs::read_to_string(shader_dir.join("mul_mv_template.metal"))
-            .unwrap();
+        std::fs::read_to_string(shader_dir.join("gemm.metal")).unwrap();
     let my_lib = device
         .new_library_with_source(&my_source, &compile_options)
         .expect("Failed to compile self-written");
@@ -306,11 +305,11 @@ fn main() {
     // Compilation check for remaining formats
     println!("\n=== Compilation Check ===");
     let test_formats = [
-        ("Q4_1", "kernel_mul_mv_q4_1_f32"),
-        ("Q5_0", "kernel_mul_mv_q5_0_f32"),
-        ("Q5_1", "kernel_mul_mv_q5_1_f32"),
-        ("Q1_0", "kernel_mul_mv_q1_0_f32"),
-        ("Q2_0", "kernel_mul_mv_q2_0_f32"),
+        ("Q4_1", "kernel_gemm_q4_1_f32"),
+        ("Q5_0", "kernel_gemm_q5_0_f32"),
+        ("Q5_1", "kernel_gemm_q5_1_f32"),
+        ("Q1_0", "kernel_gemm_q1_0_f32"),
+        ("Q2_0", "kernel_gemm_q2_0_f32"),
     ];
 
     for (name, kernel_name) in test_formats {
@@ -374,7 +373,7 @@ fn test_format<T: Copy>(
         r3: 1,
     };
 
-    let kernel_name = format!("kernel_mul_mv_{}_f32", name.to_lowercase());
+    let kernel_name = format!("kernel_gemm_{}_f32", name.to_lowercase());
     let llama_kernel = llama_lib
         .get_function(&kernel_name, Some(cv.clone()))
         .unwrap_or_else(|_| panic!("Failed to get llama.cpp {} kernel", name));

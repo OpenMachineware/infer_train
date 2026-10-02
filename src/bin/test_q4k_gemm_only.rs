@@ -32,7 +32,7 @@ fn main() {
     let mut times = Vec::new();
     for _ in 0..10 {
         let start = Instant::now();
-        let _ = ctx.gemm_q4_k_f32(m, n, k, &weights, &input).unwrap();
+        let _ = ctx.matmul_q4_k_f32(m, n, k, &weights, &input).unwrap();
         times.push(start.elapsed().as_nanos() as f64);
     }
 

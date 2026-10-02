@@ -20,7 +20,8 @@ fn main() {
 
         let input = vec![1.0f32; k * n];
 
-        let result_hw = ctx.gemm_q4_k_f32(*m, *n, k, &weights, &input).unwrap();
+        let result_hw =
+            ctx.matmul_q4_k_f32(*m, *n, k, &weights, &input).unwrap();
         let result_tp =
             ctx.gemm_template_q4_k_f32(*m, *n, k, &weights, &input).unwrap();
 

@@ -129,7 +129,7 @@ impl TestContext {
         // Create pipeline with function constants
         let cv = create_function_constants(2, 1, 1, 1); // nsg=2, ne12=1, r2=1, r3=1
         let kernel = library
-            .get_function("kernel_mul_mv_q4_K_f32", Some(cv))
+            .get_function("kernel_gemm_q4_K_f32", Some(cv))
             .expect("Failed to get kernel");
         let pipeline = device
             .new_compute_pipeline_state_with_function(&kernel)

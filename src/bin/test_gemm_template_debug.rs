@@ -57,8 +57,8 @@ fn main() {
         .gemm_template_q4_k_f32(m, n, k, &weights, &input)
         .expect("Templated GEMM failed");
     let result_handwritten = ctx
-        .gemm_q4_k_f32(m, n, k, &weights, &input)
-        .expect("Hand-written GEMM failed");
+        .matmul_q4_k_f32(m, n, k, &weights, &input)
+        .expect("Matmul GEMM failed");
 
     println!("\nResults (first row):");
     for j in 0..n.min(5) {
@@ -89,8 +89,8 @@ fn main() {
         .gemm_template_q4_k_f32(m, n, k, &weights, &input)
         .expect("Templated GEMM failed");
     let result_handwritten = ctx
-        .gemm_q4_k_f32(m, n, k, &weights, &input)
-        .expect("Hand-written GEMM failed");
+        .matmul_q4_k_f32(m, n, k, &weights, &input)
+        .expect("Matmul GEMM failed");
 
     println!("Expected: 1 * 1 * 15 * 256 = 3840");
     println!("Results (first row, first 5 cols):");

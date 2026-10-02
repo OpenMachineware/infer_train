@@ -179,7 +179,7 @@ typedef struct {
 
 // Q2_K kernel (lines 1238-1343 from mul_mv.metal)
 template<int nr0, typename args_t>
-void kernel_mul_mv_q2_K_f32_impl(
+void kernel_gemm_q2_K_f32_impl(
         args_t args,
         device const char * src0,
         device const char * src1,
@@ -275,7 +275,7 @@ void kernel_mul_mv_q2_K_f32_impl(
 
 // Q3_K kernel (lines 1346-1507 from mul_mv.metal)
 template<int nr0, typename args_t>
-void kernel_mul_mv_q3_K_f32_impl(
+void kernel_gemm_q3_K_f32_impl(
         args_t args,
         device const char * src0,
         device const char * src1,
@@ -419,7 +419,7 @@ void kernel_mul_mv_q3_K_f32_impl(
 
 // Q4_K kernel (lines 1510-1667 from mul_mv.metal)
 template<int nr0, typename args_t>
-void kernel_mul_mv_q4_K_f32_impl(
+void kernel_gemm_q4_K_f32_impl(
         args_t args,
         device const char * src0,
         device const char * src1,
@@ -528,7 +528,7 @@ void kernel_mul_mv_q4_K_f32_impl(
 
 // Q5_K kernel (lines 1668-1759 from mul_mv.metal)
 template<int nr0, typename args_t>
-void kernel_mul_mv_q5_K_f32_impl(
+void kernel_gemm_q5_K_f32_impl(
         args_t args,
         device const char * src0,
         device const char * src1,
@@ -648,7 +648,7 @@ void kernel_mul_mv_q5_K_f32_impl(
 
 // Q6_K kernel (lines 1762-1867 from mul_mv.metal)
 template<int nr0, typename args_t>
-void kernel_mul_mv_q6_K_f32_impl(
+void kernel_gemm_q6_K_f32_impl(
         args_t args,
         device const char * src0,
         device const char * src1,
@@ -743,8 +743,8 @@ void kernel_mul_mv_q6_K_f32_impl(
 }}
 
 // Entry points
-[[host_name("kernel_mul_mv_q2_K_f32")]]
-kernel void kernel_mul_mv_q2_K_f32(
+[[host_name("kernel_gemm_q2_K_f32")]]
+kernel void kernel_gemm_q2_K_f32(
         constant ggml_metal_kargs_mul_mv & args,
         device const char * src0,
         device const char * src1,
@@ -752,11 +752,11 @@ kernel void kernel_mul_mv_q2_K_f32(
         uint3  tgpig[[threadgroup_position_in_grid]],
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {{
-    kernel_mul_mv_q2_K_f32_impl<N_R0_Q2_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+    kernel_gemm_q2_K_f32_impl<N_R0_Q2_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }}
 
-[[host_name("kernel_mul_mv_q3_K_f32")]]
-kernel void kernel_mul_mv_q3_K_f32(
+[[host_name("kernel_gemm_q3_K_f32")]]
+kernel void kernel_gemm_q3_K_f32(
         constant ggml_metal_kargs_mul_mv & args,
         device const char * src0,
         device const char * src1,
@@ -764,11 +764,11 @@ kernel void kernel_mul_mv_q3_K_f32(
         uint3  tgpig[[threadgroup_position_in_grid]],
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {{
-    kernel_mul_mv_q3_K_f32_impl<N_R0_Q3_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+    kernel_gemm_q3_K_f32_impl<N_R0_Q3_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }}
 
-[[host_name("kernel_mul_mv_q4_K_f32")]]
-kernel void kernel_mul_mv_q4_K_f32(
+[[host_name("kernel_gemm_q4_K_f32")]]
+kernel void kernel_gemm_q4_K_f32(
         constant ggml_metal_kargs_mul_mv & args,
         device const char * src0,
         device const char * src1,
@@ -776,11 +776,11 @@ kernel void kernel_mul_mv_q4_K_f32(
         uint3  tgpig[[threadgroup_position_in_grid]],
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {{
-    kernel_mul_mv_q4_K_f32_impl<N_R0_Q4_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+    kernel_gemm_q4_K_f32_impl<N_R0_Q4_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }}
 
-[[host_name("kernel_mul_mv_q5_K_f32")]]
-kernel void kernel_mul_mv_q5_K_f32(
+[[host_name("kernel_gemm_q5_K_f32")]]
+kernel void kernel_gemm_q5_K_f32(
         constant ggml_metal_kargs_mul_mv & args,
         device const char * src0,
         device const char * src1,
@@ -788,11 +788,11 @@ kernel void kernel_mul_mv_q5_K_f32(
         uint3  tgpig[[threadgroup_position_in_grid]],
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {{
-    kernel_mul_mv_q5_K_f32_impl<N_R0_Q5_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+    kernel_gemm_q5_K_f32_impl<N_R0_Q5_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }}
 
-[[host_name("kernel_mul_mv_q6_K_f32")]]
-kernel void kernel_mul_mv_q6_K_f32(
+[[host_name("kernel_gemm_q6_K_f32")]]
+kernel void kernel_gemm_q6_K_f32(
         constant ggml_metal_kargs_mul_mv & args,
         device const char * src0,
         device const char * src1,
@@ -800,7 +800,7 @@ kernel void kernel_mul_mv_q6_K_f32(
         uint3  tgpig[[threadgroup_position_in_grid]],
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {{
-    kernel_mul_mv_q6_K_f32_impl<N_R0_Q6_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+    kernel_gemm_q6_K_f32_impl<N_R0_Q6_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }}
 "#
     );
@@ -820,7 +820,7 @@ kernel void kernel_mul_mv_q6_K_f32(
     };
 
     // Load self-written template shader
-    let my_source = include_str!("../../shaders/mul_mv_template.metal");
+    let my_source = include_str!("../../shaders/gemm.metal");
     let my_lib =
         match device.new_library_with_source(my_source, &compile_options) {
             Ok(lib) => {
@@ -840,31 +840,31 @@ kernel void kernel_mul_mv_q6_K_f32(
         (
             "Q2_K",
             llama_lib
-                .get_function("kernel_mul_mv_q2_K_f32", Some(cv.clone()))
+                .get_function("kernel_gemm_q2_K_f32", Some(cv.clone()))
                 .unwrap(),
         ),
         (
             "Q3_K",
             llama_lib
-                .get_function("kernel_mul_mv_q3_K_f32", Some(cv.clone()))
+                .get_function("kernel_gemm_q3_K_f32", Some(cv.clone()))
                 .unwrap(),
         ),
         (
             "Q4_K",
             llama_lib
-                .get_function("kernel_mul_mv_q4_K_f32", Some(cv.clone()))
+                .get_function("kernel_gemm_q4_K_f32", Some(cv.clone()))
                 .unwrap(),
         ),
         (
             "Q5_K",
             llama_lib
-                .get_function("kernel_mul_mv_q5_K_f32", Some(cv.clone()))
+                .get_function("kernel_gemm_q5_K_f32", Some(cv.clone()))
                 .unwrap(),
         ),
         (
             "Q6_K",
             llama_lib
-                .get_function("kernel_mul_mv_q6_K_f32", Some(cv.clone()))
+                .get_function("kernel_gemm_q6_K_f32", Some(cv.clone()))
                 .unwrap(),
         ),
     ]
@@ -879,31 +879,31 @@ kernel void kernel_mul_mv_q6_K_f32(
         (
             "Q2_K",
             my_lib
-                .get_function("kernel_mul_mv_q2_K_f32", Some(cv.clone()))
+                .get_function("kernel_gemm_q2_K_f32", Some(cv.clone()))
                 .unwrap(),
         ),
         (
             "Q3_K",
             my_lib
-                .get_function("kernel_mul_mv_q3_K_f32", Some(cv.clone()))
+                .get_function("kernel_gemm_q3_K_f32", Some(cv.clone()))
                 .unwrap(),
         ),
         (
             "Q4_K",
             my_lib
-                .get_function("kernel_mul_mv_q4_K_f32", Some(cv.clone()))
+                .get_function("kernel_gemm_q4_K_f32", Some(cv.clone()))
                 .unwrap(),
         ),
         (
             "Q5_K",
             my_lib
-                .get_function("kernel_mul_mv_q5_K_f32", Some(cv.clone()))
+                .get_function("kernel_gemm_q5_K_f32", Some(cv.clone()))
                 .unwrap(),
         ),
         (
             "Q6_K",
             my_lib
-                .get_function("kernel_mul_mv_q6_K_f32", Some(cv.clone()))
+                .get_function("kernel_gemm_q6_K_f32", Some(cv.clone()))
                 .unwrap(),
         ),
     ]

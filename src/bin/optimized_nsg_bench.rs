@@ -74,7 +74,7 @@ fn benchmark_pipeline(
     k: usize,
 ) -> f64 {
     let cv = create_function_constants(nsg, 1, 1, 1);
-    let kernel_name = format!("kernel_mul_mv_{}_f32", name);
+    let kernel_name = format!("kernel_gemm_{}_f32", name);
     let func = lib.get_function(&kernel_name, Some(cv)).unwrap();
     let pipeline =
         device.new_compute_pipeline_state_with_function(&func).unwrap();
@@ -178,7 +178,7 @@ fn main() {
     let device = Device::system_default().expect("No Metal device");
     let queue = device.new_command_queue();
 
-    let shader = include_str!("../../shaders/mul_mv_template.metal");
+    let shader = include_str!("../../shaders/gemm.metal");
     let lib =
         device.new_library_with_source(shader, &CompileOptions::new()).unwrap();
 

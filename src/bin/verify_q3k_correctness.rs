@@ -119,7 +119,7 @@ fn main() {
         (0..(k * n)).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
 
     let gpu_result =
-        ctx.gemm_q3_k_f32(m, n, k, &weights, &input).expect("GPU failed");
+        ctx.matmul_q3_k_f32(m, n, k, &weights, &input).expect("GPU failed");
 
     // Reference calculation
     let mut ref_result = vec![0.0f32; m * n];
@@ -146,8 +146,9 @@ fn main() {
     let input2: Vec<f32> =
         (0..(k2 * n2)).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
 
-    let gpu_result2 =
-        ctx.gemm_q3_k_f32(m2, n2, k2, &weights2, &input2).expect("GPU failed");
+    let gpu_result2 = ctx
+        .matmul_q3_k_f32(m2, n2, k2, &weights2, &input2)
+        .expect("GPU failed");
 
     println!("GPU result[0..4]: {:?}", &gpu_result2[0..4]);
 
@@ -162,8 +163,9 @@ fn main() {
         (0..(k3 * n3)).map(|i| 1.0 + (i % 10) as f32 * 0.1).collect();
 
     let start = std::time::Instant::now();
-    let gpu_result3 =
-        ctx.gemm_q3_k_f32(m3, n3, k3, &weights3, &input3).expect("GPU failed");
+    let gpu_result3 = ctx
+        .matmul_q3_k_f32(m3, n3, k3, &weights3, &input3)
+        .expect("GPU failed");
     let elapsed = start.elapsed().as_micros() as f64;
 
     let ops = 2.0 * m3 as f64 * n3 as f64 * k3 as f64;

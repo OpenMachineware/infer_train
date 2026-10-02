@@ -83,20 +83,72 @@ fn expand_includes(
     visited: &mut Vec<String>,
 ) -> String {
     let mut result = String::new();
+    let mut skip_embed_block = false;
+    let mut skip_endif_count = 0;
+
     for line in source.lines() {
+        // Handle embed library block
+        if line.contains("GGML_METAL_EMBED_LIBRARY") {
+            skip_embed_block = true;
+            skip_endif_count = 1;
+            result.push_str("// Skipping embed block\n");
+            continue;
+        }
+        if skip_embed_block {
+            if line.starts_with("#if") {
+                skip_endif_count += 1;
+            } else if line.starts_with("#endif") {
+                skip_endif_count -= 1;
+                if skip_endif_count == 0 {
+                    skip_embed_block = false;
+                }
+            }
+            continue;
+        }
+
         if line.starts_with("#include \"") {
             let start = line.find('"').unwrap() + 1;
             let end = line.rfind('"').unwrap();
             let filename = &line[start..end];
             if !visited.contains(&filename.to_string()) {
                 visited.push(filename.to_string());
-                let include_path = base_dir.join(filename);
-                if let Ok(content) = std::fs::read_to_string(&include_path) {
-                    result.push_str(&expand_includes(
-                        &content.replace("#pragma once", "// #pragma once"),
-                        base_dir,
-                        visited,
-                    ));
+                // Search in multiple directories (ggml-common.h is 2 levels up from kernels)
+                let search_paths = vec![
+                    base_dir.join(filename),
+                    base_dir.parent().unwrap().join(filename),
+                    base_dir.parent().unwrap().parent().unwrap().join(filename),
+                    base_dir
+                        .parent()
+                        .unwrap()
+                        .parent()
+                        .unwrap()
+                        .parent()
+                        .unwrap()
+                        .join(filename),
+                ];
+                let mut found = false;
+                for include_path in &search_paths {
+                    if let Ok(content) = std::fs::read_to_string(include_path) {
+                        // Use the directory of the included file as the new base
+                        let new_base = include_path.parent().unwrap();
+                        result.push_str(&expand_includes(
+                            &content.replace("#pragma once", "// #pragma once"),
+                            new_base,
+                            visited,
+                        ));
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    // If file not found, keep the include line commented
+                    result.push_str("// #include \"");
+                    result.push_str(filename);
+                    result.push_str("\" // NOT FOUND in ");
+                    for p in &search_paths {
+                        result.push_str(&format!("{:?}, ", p));
+                    }
+                    result.push('\n');
                 }
             }
         } else {
@@ -131,8 +183,7 @@ fn main() {
     let shader_dir =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
     let my_source =
-        std::fs::read_to_string(shader_dir.join("mul_mv_template.metal"))
-            .unwrap();
+        std::fs::read_to_string(shader_dir.join("gemm.metal")).unwrap();
     let my_lib =
         device.new_library_with_source(&my_source, &compile_options).unwrap();
 
@@ -149,7 +200,7 @@ fn main() {
             m, k, alternating_runs, iterations_per_run
         );
 
-        let kernel_name = format!("kernel_mul_mv_{}_f32", name.to_lowercase());
+        let kernel_name = format!("kernel_gemm_{}_f32", name.to_lowercase());
         let qk = 256;
         let nb = k / qk;
         let nb01 = (block_size * nb) as u64;

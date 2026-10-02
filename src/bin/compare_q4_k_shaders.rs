@@ -157,7 +157,7 @@ constant short FC_mul_mv_r2    [[function_constant(FC_MUL_MV + 3)]];
 constant short FC_mul_mv_r3    [[function_constant(FC_MUL_MV + 4)]];
 
 template<int nr0, typename args_t>
-void kernel_mul_mv_q4_K_f32_impl(
+void kernel_gemm_q4_K_f32_impl(
         args_t args,
         device const char * src0,
         device const char * src1,
@@ -264,8 +264,8 @@ void kernel_mul_mv_q4_K_f32_impl(
     }
 }
 
-[[host_name("kernel_mul_mv_q4_K_f32")]]
-kernel void kernel_mul_mv_q4_K_f32(
+[[host_name("kernel_gemm_q4_K_f32")]]
+kernel void kernel_gemm_q4_K_f32(
         constant ggml_metal_kargs_mul_mv & args,
         device const char * src0,
         device const char * src1,
@@ -274,7 +274,7 @@ kernel void kernel_mul_mv_q4_K_f32(
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {
 
-    kernel_mul_mv_q4_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+    kernel_gemm_q4_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }
 "#;
 
@@ -309,14 +309,14 @@ kernel void kernel_mul_mv_q4_K_f32(
     let cv = create_function_constants(2, 1, 1, 1);
 
     let llama_kernel = llama_lib
-        .get_function("kernel_mul_mv_q4_K_f32", Some(cv.clone()))
+        .get_function("kernel_gemm_q4_K_f32", Some(cv.clone()))
         .expect("Failed to get llama.cpp kernel");
     let llama_pipeline = device
         .new_compute_pipeline_state_with_function(&llama_kernel)
         .expect("Failed to create llama.cpp pipeline");
 
     let my_kernel = my_lib
-        .get_function("kernel_mul_mv_q4_K_f32", Some(cv))
+        .get_function("kernel_gemm_q4_K_f32", Some(cv))
         .expect("Failed to get self-written kernel");
     let my_pipeline = device
         .new_compute_pipeline_state_with_function(&my_kernel)

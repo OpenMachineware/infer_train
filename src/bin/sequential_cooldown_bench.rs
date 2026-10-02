@@ -89,7 +89,7 @@ fn run_sequential_benchmark(
     let my_lib =
         device.new_library_with_source(my_shader, &compile_options).unwrap();
 
-    let kernel_name = format!("kernel_mul_mv_{}_f32", info.name);
+    let kernel_name = format!("kernel_gemm_{}_f32", info.name);
     let llama_func =
         llama_lib.get_function(&kernel_name, Some(cv.clone())).unwrap();
     let my_func = my_lib.get_function(&kernel_name, Some(cv)).unwrap();
@@ -251,7 +251,7 @@ fn main() {
     );
     println!("{}", "-".repeat(45));
 
-    let common = include_str!("../../shaders/mul_mv_template.metal");
+    let common = include_str!("../../shaders/gemm.metal");
 
     let k_quants: Vec<KQuantInfo> = vec![
         KQuantInfo { name: "q2_K", nsg: 2, nr0: 2, block_size: 84 },

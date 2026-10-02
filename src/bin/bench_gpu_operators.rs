@@ -345,11 +345,11 @@ fn bench_gemm_q2k(ctx: &MetalContext, m: usize, k: usize, batch: usize) -> f64 {
     let input: Vec<f32> =
         (0..k * batch).map(|i| ((i % 10) as f32) * 0.1).collect();
     for _ in 0..3 {
-        let _ = ctx.gemm_q2_k_f32(m, batch, k, &weights, &input);
+        let _ = ctx.matmul_q2_k_f32(m, batch, k, &weights, &input);
     }
     let start = Instant::now();
     for _ in 0..10 {
-        let _ = black_box(ctx.gemm_q2_k_f32(m, batch, k, &weights, &input));
+        let _ = black_box(ctx.matmul_q2_k_f32(m, batch, k, &weights, &input));
     }
     2.0 * m as f64 * k as f64 * batch as f64 * 10.0
         / start.elapsed().as_secs_f64()
@@ -362,11 +362,11 @@ fn bench_gemm_q3k(ctx: &MetalContext, m: usize, k: usize, batch: usize) -> f64 {
     let input: Vec<f32> =
         (0..k * batch).map(|i| ((i % 10) as f32) * 0.1).collect();
     for _ in 0..3 {
-        let _ = ctx.gemm_q3_k_f32(m, batch, k, &weights, &input);
+        let _ = ctx.matmul_q3_k_f32(m, batch, k, &weights, &input);
     }
     let start = Instant::now();
     for _ in 0..10 {
-        let _ = black_box(ctx.gemm_q3_k_f32(m, batch, k, &weights, &input));
+        let _ = black_box(ctx.matmul_q3_k_f32(m, batch, k, &weights, &input));
     }
     2.0 * m as f64 * k as f64 * batch as f64 * 10.0
         / start.elapsed().as_secs_f64()
@@ -379,11 +379,11 @@ fn bench_gemm_q4k(ctx: &MetalContext, m: usize, k: usize, batch: usize) -> f64 {
     let input: Vec<f32> =
         (0..k * batch).map(|i| ((i % 10) as f32) * 0.1).collect();
     for _ in 0..3 {
-        let _ = ctx.gemm_q4_k_f32(m, batch, k, &weights, &input);
+        let _ = ctx.matmul_q4_k_f32(m, batch, k, &weights, &input);
     }
     let start = Instant::now();
     for _ in 0..10 {
-        let _ = black_box(ctx.gemm_q4_k_f32(m, batch, k, &weights, &input));
+        let _ = black_box(ctx.matmul_q4_k_f32(m, batch, k, &weights, &input));
     }
     2.0 * m as f64 * k as f64 * batch as f64 * 10.0
         / start.elapsed().as_secs_f64()

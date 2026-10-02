@@ -69,8 +69,8 @@ fn main() {
     println!("CPU result: {:?}", cpu_result);
 
     // GPU结果
-    let result_hw = ctx.gemm_q4_k_f32(m, n, k, &weights, &input).unwrap();
-    println!("GPU hand-written: {:?}", result_hw);
+    let result_hw = ctx.matmul_q4_k_f32(m, n, k, &weights, &input).unwrap();
+    println!("GPU matmul: {:?}", result_hw);
 
     let result_tp =
         ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input).unwrap();

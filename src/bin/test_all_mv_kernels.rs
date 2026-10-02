@@ -146,29 +146,29 @@ struct KernelInfo {
 
 const KERNELS: &[(&str, usize, usize)] = &[
     // (kernel_name, elements_per_block, block_struct_size)
-    ("kernel_mul_mv_q4_K_f32", 256, 144),
-    ("kernel_mul_mv_q2_K_f32", 256, 164),
-    ("kernel_mul_mv_q3_K_f32", 256, 110),
-    ("kernel_mul_mv_q5_K_f32", 256, 208),
-    ("kernel_mul_mv_q6_K_f32", 256, 212),
-    ("kernel_mul_mv_q4_0_f32", 32, 18),
-    ("kernel_mul_mv_q4_1_f32", 32, 20),
-    ("kernel_mul_mv_q8_0_f32", 32, 34),
-    ("kernel_mul_mv_q5_0_f32", 32, 22),
-    ("kernel_mul_mv_q5_1_f32", 32, 24),
-    ("kernel_mul_mv_q1_0_f32", 32, 6),
-    ("kernel_mul_mv_q2_0_f32", 32, 18),
-    ("kernel_mul_mv_iq4_nl_f32", 32, 18),
-    ("kernel_mul_mv_mxfp4_f32", 32, 18),
-    ("kernel_mul_mv_tq2_0_f32", 32, 18),
-    ("kernel_mul_mv_iq1_s_f32", 256, 164),
-    ("kernel_mul_mv_iq1_m_f32", 256, 164),
-    ("kernel_mul_mv_iq2_xxs_f32", 256, 164),
-    ("kernel_mul_mv_iq2_xs_f32", 256, 164),
-    ("kernel_mul_mv_iq2_s_f32", 256, 164),
-    ("kernel_mul_mv_iq3_xxs_f32", 256, 164),
-    ("kernel_mul_mv_iq3_s_f32", 256, 164),
-    ("kernel_mul_mv_iq4_xs_f32", 256, 164),
+    ("kernel_gemm_q4_K_f32", 256, 144),
+    ("kernel_gemm_q2_K_f32", 256, 164),
+    ("kernel_gemm_q3_K_f32", 256, 110),
+    ("kernel_gemm_q5_K_f32", 256, 208),
+    ("kernel_gemm_q6_K_f32", 256, 212),
+    ("kernel_gemm_q4_0_f32", 32, 18),
+    ("kernel_gemm_q4_1_f32", 32, 20),
+    ("kernel_gemm_q8_0_f32", 32, 34),
+    ("kernel_gemm_q5_0_f32", 32, 22),
+    ("kernel_gemm_q5_1_f32", 32, 24),
+    ("kernel_gemm_q1_0_f32", 32, 6),
+    ("kernel_gemm_q2_0_f32", 32, 18),
+    ("kernel_gemm_iq4_nl_f32", 32, 18),
+    ("kernel_gemm_mxfp4_f32", 32, 18),
+    ("kernel_gemm_tq2_0_f32", 32, 18),
+    ("kernel_gemm_iq1_s_f32", 256, 164),
+    ("kernel_gemm_iq1_m_f32", 256, 164),
+    ("kernel_gemm_iq2_xxs_f32", 256, 164),
+    ("kernel_gemm_iq2_xs_f32", 256, 164),
+    ("kernel_gemm_iq2_s_f32", 256, 164),
+    ("kernel_gemm_iq3_xxs_f32", 256, 164),
+    ("kernel_gemm_iq3_s_f32", 256, 164),
+    ("kernel_gemm_iq4_xs_f32", 256, 164),
 ];
 
 fn expand_includes(
@@ -228,9 +228,8 @@ fn main() {
 
     let shader_dir =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
-    let source =
-        std::fs::read_to_string(shader_dir.join("mul_mv_template.metal"))
-            .expect("Failed to read template");
+    let source = std::fs::read_to_string(shader_dir.join("gemm.metal"))
+        .expect("Failed to read template");
 
     let mut visited = Vec::new();
     let expanded = expand_includes(&source, &shader_dir, &mut visited);

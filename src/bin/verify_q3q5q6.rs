@@ -304,8 +304,7 @@ fn main() {
     let shader_dir =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
     let source =
-        std::fs::read_to_string(shader_dir.join("mul_mv_template.metal"))
-            .unwrap();
+        std::fs::read_to_string(shader_dir.join("gemm.metal")).unwrap();
     let compile_options = CompileOptions::new();
     let lib = device
         .new_library_with_source(&source, &compile_options)

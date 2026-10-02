@@ -116,7 +116,7 @@ constant short FC_mul_mv_r2 [[function_constant(FC_MUL_MV + 3)]];
 constant short FC_mul_mv_r3 [[function_constant(FC_MUL_MV + 4)]];
 
 template<int nr0, typename args_t>
-void kernel_mul_mv_q3_K_f32_impl(args_t args, device const char * src0, device const char * src1,
+void kernel_gemm_q3_K_f32_impl(args_t args, device const char * src0, device const char * src1,
     device char * dst, threadgroup char *, uint3 tgpig, ushort tiisg, ushort sgitg) {
     const short NSG = FC_mul_mv_nsg;
     const short ix = tiisg/4; const short ir = tiisg%4;
@@ -170,11 +170,11 @@ void kernel_mul_mv_q3_K_f32_impl(args_t args, device const char * src0, device c
         if (tiisg == 0) dst_f32[first_row + row] = sum_all;
     }
 }
-[[host_name("kernel_mul_mv_q3_K_f32")]]
-kernel void kernel_mul_mv_q3_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
+[[host_name("kernel_gemm_q3_K_f32")]]
+kernel void kernel_gemm_q3_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
     device const char * src1, device char * dst, uint3 tgpig[[threadgroup_position_in_grid]],
     ushort tiisg[[thread_index_in_simdgroup]], ushort sgitg[[simdgroup_index_in_threadgroup]]) {
-    kernel_mul_mv_q3_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+    kernel_gemm_q3_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }
 "#;
 
@@ -191,9 +191,8 @@ fn main() {
         .expect("Failed to compile llama.cpp kernel");
     let shader_dir =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
-    let my_source =
-        std::fs::read_to_string(shader_dir.join("mul_mv_template.metal"))
-            .expect("Failed to read template");
+    let my_source = std::fs::read_to_string(shader_dir.join("gemm.metal"))
+        .expect("Failed to read template");
     let my_lib = device
         .new_library_with_source(&my_source, &compile_options)
         .expect("Failed to compile template");
@@ -219,11 +218,10 @@ fn main() {
 
     let cv = create_cv();
     let llama_kernel = llama_lib
-        .get_function("kernel_mul_mv_q3_K_f32", Some(cv.clone()))
+        .get_function("kernel_gemm_q3_K_f32", Some(cv.clone()))
         .unwrap();
-    let my_kernel = my_lib
-        .get_function("kernel_mul_mv_q3_K_f32", Some(cv.clone()))
-        .unwrap();
+    let my_kernel =
+        my_lib.get_function("kernel_gemm_q3_K_f32", Some(cv.clone())).unwrap();
 
     let llama_pipeline =
         device.new_compute_pipeline_state_with_function(&llama_kernel).unwrap();

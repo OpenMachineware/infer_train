@@ -23,7 +23,7 @@ fn main() {
     // 正确：K*N个输入
     let input = vec![1.0f32; k * n];
 
-    let result_hw = ctx.gemm_q4_k_f32(m, n, k, &weights, &input).unwrap();
+    let result_hw = ctx.matmul_q4_k_f32(m, n, k, &weights, &input).unwrap();
     println!("Hand-written result: {:?}", result_hw);
 
     let result_tp =
@@ -48,7 +48,7 @@ fn main() {
 
     let input: Vec<f32> = (0..(k * n)).map(|i| (i % 10) as f32).collect();
 
-    let result_hw = ctx.gemm_q4_k_f32(m, n, k, &weights, &input).unwrap();
+    let result_hw = ctx.matmul_q4_k_f32(m, n, k, &weights, &input).unwrap();
     let result_tp =
         ctx.gemm_template_q4_k_f32(m, n, k, &weights, &input).unwrap();
 

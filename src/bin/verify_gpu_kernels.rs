@@ -227,13 +227,14 @@ fn main() {
         let input = generate_f32_input(k * *n);
 
         // Warmup
-        let _ = ctx.gemm_q4_k_f32(m, *n, k, &weights, &input).unwrap();
+        let _ = ctx.matmul_q4_k_f32(m, *n, k, &weights, &input).unwrap();
 
         // Benchmark
         let iterations = 10;
         let total_time = benchmark_iterations(
             || {
-                let _ = ctx.gemm_q4_k_f32(m, *n, k, &weights, &input).unwrap();
+                let _ =
+                    ctx.matmul_q4_k_f32(m, *n, k, &weights, &input).unwrap();
             },
             iterations,
         );
@@ -284,11 +285,11 @@ fn main() {
         let (our_time, gflops) = match *format_name {
             "Q2_K" => {
                 let weights = generate_q2_k_weights(m, k);
-                let _ = ctx.gemm_q2_k_f32(m, n, k, &weights, &input).unwrap();
+                let _ = ctx.matmul_q2_k_f32(m, n, k, &weights, &input).unwrap();
                 let total = benchmark_iterations(
                     || {
                         let _ = ctx
-                            .gemm_q2_k_f32(m, n, k, &weights, &input)
+                            .matmul_q2_k_f32(m, n, k, &weights, &input)
                             .unwrap();
                     },
                     10,
@@ -298,11 +299,11 @@ fn main() {
             }
             "Q3_K" => {
                 let weights = generate_q3_k_weights(m, k);
-                let _ = ctx.gemm_q3_k_f32(m, n, k, &weights, &input).unwrap();
+                let _ = ctx.matmul_q3_k_f32(m, n, k, &weights, &input).unwrap();
                 let total = benchmark_iterations(
                     || {
                         let _ = ctx
-                            .gemm_q3_k_f32(m, n, k, &weights, &input)
+                            .matmul_q3_k_f32(m, n, k, &weights, &input)
                             .unwrap();
                     },
                     10,
@@ -312,11 +313,11 @@ fn main() {
             }
             "Q4_K" => {
                 let weights = generate_q4_k_weights(m, k);
-                let _ = ctx.gemm_q4_k_f32(m, n, k, &weights, &input).unwrap();
+                let _ = ctx.matmul_q4_k_f32(m, n, k, &weights, &input).unwrap();
                 let total = benchmark_iterations(
                     || {
                         let _ = ctx
-                            .gemm_q4_k_f32(m, n, k, &weights, &input)
+                            .matmul_q4_k_f32(m, n, k, &weights, &input)
                             .unwrap();
                     },
                     10,
@@ -326,11 +327,11 @@ fn main() {
             }
             "Q5_K" => {
                 let weights = generate_q5_k_weights(m, k);
-                let _ = ctx.gemm_q5_k_f32(m, n, k, &weights, &input).unwrap();
+                let _ = ctx.matmul_q5_k_f32(m, n, k, &weights, &input).unwrap();
                 let total = benchmark_iterations(
                     || {
                         let _ = ctx
-                            .gemm_q5_k_f32(m, n, k, &weights, &input)
+                            .matmul_q5_k_f32(m, n, k, &weights, &input)
                             .unwrap();
                     },
                     10,
@@ -340,11 +341,11 @@ fn main() {
             }
             "Q6_K" => {
                 let weights = generate_q6_k_weights(m, k);
-                let _ = ctx.gemm_q6_k_f32(m, n, k, &weights, &input).unwrap();
+                let _ = ctx.matmul_q6_k_f32(m, n, k, &weights, &input).unwrap();
                 let total = benchmark_iterations(
                     || {
                         let _ = ctx
-                            .gemm_q6_k_f32(m, n, k, &weights, &input)
+                            .matmul_q6_k_f32(m, n, k, &weights, &input)
                             .unwrap();
                     },
                     10,

@@ -122,7 +122,7 @@ typedef struct {
 } block_q3_K;
 
 template<int nr0, typename args_t>
-void kernel_mul_mv_q3_K_f32_impl(
+void kernel_gemm_q3_K_f32_impl(
         args_t args,
         device const char * src0,
         device const char * src1,
@@ -264,8 +264,8 @@ void kernel_mul_mv_q3_K_f32_impl(
     }
 }
 
-[[host_name("kernel_mul_mv_q3_K_f32")]]
-kernel void kernel_mul_mv_q3_K_f32(
+[[host_name("kernel_gemm_q3_K_f32")]]
+kernel void kernel_gemm_q3_K_f32(
         constant ggml_metal_kargs_mul_mv & args,
         device const char * src0,
         device const char * src1,
@@ -274,12 +274,12 @@ kernel void kernel_mul_mv_q3_K_f32(
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {
 
-    kernel_mul_mv_q3_K_f32_impl<N_R0_Q3_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+    kernel_gemm_q3_K_f32_impl<N_R0_Q3_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }
 "#;
 
     // Self-written template
-    let self_shader = include_str!("../../shaders/mul_mv_template.metal");
+    let self_shader = include_str!("../../shaders/gemm.metal");
 
     let llama_lib = device
         .new_library_with_source(llama_shader, &options)
@@ -290,10 +290,10 @@ kernel void kernel_mul_mv_q3_K_f32(
 
     let cv = create_cv();
     let llama_kernel = llama_lib
-        .get_function("kernel_mul_mv_q3_K_f32", Some(cv.clone()))
+        .get_function("kernel_gemm_q3_K_f32", Some(cv.clone()))
         .expect("llama kernel failed");
     let self_kernel = self_lib
-        .get_function("kernel_mul_mv_q3_K_f32", Some(cv.clone()))
+        .get_function("kernel_gemm_q3_K_f32", Some(cv.clone()))
         .expect("self kernel failed");
 
     let llama_pipeline = device

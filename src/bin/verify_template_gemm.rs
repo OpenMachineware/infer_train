@@ -84,7 +84,7 @@ fn main() {
 
     // Test hand-written kernel for comparison
     println!("\n2. Testing hand-written kernel...");
-    let hand_result = match ctx.gemm_q4_k_f32(m, n, k, &weights, &input) {
+    let hand_result = match ctx.matmul_q4_k_f32(m, n, k, &weights, &input) {
         Ok(result) => {
             println!("   Result size: {} values", result.len());
             println!(
@@ -137,7 +137,7 @@ fn main() {
     // Hand-written
     let start = std::time::Instant::now();
     for _ in 0..10 {
-        let _ = ctx.gemm_q4_k_f32(m, n, k, &weights, &input).unwrap();
+        let _ = ctx.matmul_q4_k_f32(m, n, k, &weights, &input).unwrap();
     }
     let handwritten_time = start.elapsed().as_micros() as f64 / 10.0;
 

@@ -77,7 +77,7 @@ fn run_benchmark(
     k: usize,
 ) -> f64 {
     let cv = create_function_constants(info.nsg, 1, 1, 1);
-    let kernel_name = format!("kernel_mul_mv_{}_f32", info.name);
+    let kernel_name = format!("kernel_gemm_{}_f32", info.name);
     let func = match lib.get_function(&kernel_name, Some(cv)) {
         Ok(f) => f,
         Err(_) => {
@@ -187,10 +187,17 @@ fn main() {
     let device = Device::system_default().expect("No Metal device");
     let queue = device.new_command_queue();
 
-    // Compile template
-    let shader = include_str!("../../shaders/mul_mv_template.metal");
+    // Compile template with includes
+    let shader_base = include_str!("../../shaders/gemm.metal");
+    let ggml_common = include_str!("../../shaders/ggml-common.h");
+    // Define GGML_COMMON_IMPL_METAL before including ggml-common.h
+    let ggml_common_with_metal =
+        "#define GGML_COMMON_IMPL_METAL\n".to_string() + ggml_common;
+    let shader = shader_base
+        .replace("#include \"ggml-common.h\"", &ggml_common_with_metal);
+
     let compile_options = CompileOptions::new();
-    let lib = match device.new_library_with_source(shader, &compile_options) {
+    let lib = match device.new_library_with_source(&shader, &compile_options) {
         Ok(l) => l,
         Err(e) => {
             println!("Shader compilation failed: {}", e);

@@ -86,13 +86,13 @@ fn run_benchmark(
         .expect("Self-written compilation failed");
 
     let llama_func = llama_lib
-        .get_function(&format!("kernel_mul_mv_{}_f32", name), Some(cv.clone()))
+        .get_function(&format!("kernel_gemm_{}_f32", name), Some(cv.clone()))
         .unwrap();
     let llama_pipeline =
         device.new_compute_pipeline_state_with_function(&llama_func).unwrap();
 
     let my_func = my_lib
-        .get_function(&format!("kernel_mul_mv_{}_f32", name), Some(cv))
+        .get_function(&format!("kernel_gemm_{}_f32", name), Some(cv))
         .unwrap();
     let my_pipeline =
         device.new_compute_pipeline_state_with_function(&my_func).unwrap();
@@ -295,7 +295,7 @@ typedef struct {
 typedef struct {{ half d; half dmin; uint8_t scales[12]; uint8_t qs[128]; }} block_q4_K;
 
 template<int nr0, typename args_t>
-void kernel_mul_mv_q4_K_f32_impl(args_t args, device const char * src0, device const char * src1, device char * dst, threadgroup char * shmem, uint3 tgpig, ushort tiisg, ushort sgitg) {{
+void kernel_gemm_q4_K_f32_impl(args_t args, device const char * src0, device const char * src1, device char * dst, threadgroup char * shmem, uint3 tgpig, ushort tiisg, ushort sgitg) {{
     const short NSG = FC_mul_mv_nsg;
     constexpr uint16_t kmask1 = 0x3f3f, kmask2 = 0x0f0f, kmask3 = 0xc0c0;
     const int nb = args.ne00 / QK_K;
@@ -329,9 +329,9 @@ void kernel_mul_mv_q4_K_f32_impl(args_t args, device const char * src0, device c
     device float * dst_f32 = (device float *)dst + (uint64_t)im * args.ne0 * args.ne1 + (uint64_t)r1 * args.ne0;
     for (int row = 0; row < nr0 && first_row + row < args.ne0; ++row) {{ float sum_all = simd_sum(sumf[row]); if (tiisg == 0) {{ dst_f32[first_row + row] = sum_all; }} }}
 }}
-[[host_name("kernel_mul_mv_q4_K_f32")]]
-kernel void kernel_mul_mv_q4_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0, device const char * src1, device char * dst, uint3 tgpig[[threadgroup_position_in_grid]], ushort tiisg[[thread_index_in_simdgroup]], ushort sgitg[[simdgroup_index_in_threadgroup]]) {{
-    kernel_mul_mv_q4_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+[[host_name("kernel_gemm_q4_K_f32")]]
+kernel void kernel_gemm_q4_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0, device const char * src1, device char * dst, uint3 tgpig[[threadgroup_position_in_grid]], ushort tiisg[[thread_index_in_simdgroup]], ushort sgitg[[simdgroup_index_in_threadgroup]]) {{
+    kernel_gemm_q4_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }}
 "#,
         common_defs
@@ -352,7 +352,7 @@ kernel void kernel_mul_mv_q4_K_f32(constant ggml_metal_kargs_mul_mv & args, devi
     );
 
     // Q6_K benchmark (same shader, just different name)
-    let q6k_shader = include_str!("../../shaders/mul_mv_template.metal");
+    let q6k_shader = include_str!("../../shaders/gemm.metal");
 
     // Extract just the Q6_K kernel from the template for the self-written version
     // For now, use the fair_q6k_bench result

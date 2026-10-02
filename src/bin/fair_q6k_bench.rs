@@ -111,7 +111,7 @@ typedef struct {
 } block_q6_K;
 
 template<int nr0, typename args_t>
-void kernel_mul_mv_q6_K_f32_impl(
+void kernel_gemm_q6_K_f32_impl(
         args_t args,
         device const char * src0,
         device const char * src1,
@@ -205,8 +205,8 @@ void kernel_mul_mv_q6_K_f32_impl(
     }
 }
 
-[[host_name("kernel_mul_mv_q6_K_f32")]]
-kernel void kernel_mul_mv_q6_K_f32(
+[[host_name("kernel_gemm_q6_K_f32")]]
+kernel void kernel_gemm_q6_K_f32(
         constant ggml_metal_kargs_mul_mv & args,
         device const char * src0,
         device const char * src1,
@@ -215,11 +215,11 @@ kernel void kernel_mul_mv_q6_K_f32(
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {
 
-    kernel_mul_mv_q6_K_f32_impl<N_R0_Q6_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+    kernel_gemm_q6_K_f32_impl<N_R0_Q6_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }
 "#;
 
-    // Self-written Q6_K kernel (from mul_mv_template.metal)
+    // Self-written Q6_K kernel (from gemm.metal)
     let my_shader = r#"
 #include <metal_stdlib>
 using namespace metal;
@@ -249,7 +249,7 @@ typedef struct {
 } block_q6_K;
 
 template<int nr0, typename args_t>
-void kernel_mul_mv_q6_K_f32_impl(
+void kernel_gemm_q6_K_f32_impl(
         args_t args,
         device const char * src0,
         device const char * src1,
@@ -344,8 +344,8 @@ void kernel_mul_mv_q6_K_f32_impl(
     }
 }
 
-[[host_name("kernel_mul_mv_q6_K_f32")]]
-kernel void kernel_mul_mv_q6_K_f32(
+[[host_name("kernel_gemm_q6_K_f32")]]
+kernel void kernel_gemm_q6_K_f32(
         constant ggml_metal_kargs_mul_mv & args,
         device const char * src0,
         device const char * src1,
@@ -354,7 +354,7 @@ kernel void kernel_mul_mv_q6_K_f32(
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {
 
-    kernel_mul_mv_q6_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(
+    kernel_gemm_q6_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(
         args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }
 "#;
@@ -373,13 +373,13 @@ kernel void kernel_mul_mv_q6_K_f32(
     let cv = create_function_constants(2, 1, 1, 1);
 
     let llama_func = llama_lib
-        .get_function("kernel_mul_mv_q6_K_f32", Some(cv.clone()))
+        .get_function("kernel_gemm_q6_K_f32", Some(cv.clone()))
         .unwrap();
     let llama_pipeline =
         device.new_compute_pipeline_state_with_function(&llama_func).unwrap();
 
     let my_func =
-        my_lib.get_function("kernel_mul_mv_q6_K_f32", Some(cv)).unwrap();
+        my_lib.get_function("kernel_gemm_q6_K_f32", Some(cv)).unwrap();
     let my_pipeline =
         device.new_compute_pipeline_state_with_function(&my_func).unwrap();
 

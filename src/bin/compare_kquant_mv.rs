@@ -231,9 +231,8 @@ fn main() {
     // Compile self-written template
     let shader_dir =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
-    let my_source =
-        std::fs::read_to_string(shader_dir.join("mul_mv_template.metal"))
-            .expect("Failed to read");
+    let my_source = std::fs::read_to_string(shader_dir.join("gemm.metal"))
+        .expect("Failed to read");
     let mut visited = Vec::new();
     let my_shader = expand_includes(&my_source, &shader_dir, &mut visited);
 
@@ -298,7 +297,7 @@ fn main() {
 
     let cv = create_function_constants(2, 1, 1, 1);
     let my_kernel = my_lib
-        .get_function("kernel_mul_mv_q4_K_f32", Some(cv.clone()))
+        .get_function("kernel_gemm_q4_K_f32", Some(cv.clone()))
         .expect("Failed to get Q4_K kernel");
     let my_pipeline = device
         .new_compute_pipeline_state_with_function(&my_kernel)
@@ -369,7 +368,7 @@ fn main() {
     );
 
     let my_kernel = my_lib
-        .get_function("kernel_mul_mv_q2_K_f32", Some(cv.clone()))
+        .get_function("kernel_gemm_q2_K_f32", Some(cv.clone()))
         .expect("Failed to get Q2_K kernel");
     let my_pipeline = device
         .new_compute_pipeline_state_with_function(&my_kernel)

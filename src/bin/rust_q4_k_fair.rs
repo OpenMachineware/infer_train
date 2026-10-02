@@ -110,7 +110,7 @@ fn main() {
     // STEP 3: Load kernel
     let t5 = Instant::now();
     let shader = std::fs::read_to_string(
-        "/Users/jia/Desktop/infer_train/shaders/mul_mv_template.metal",
+        "/Users/jia/Desktop/infer_train/shaders/gemm.metal",
     )
     .unwrap();
     let compile_options = CompileOptions::new();
@@ -120,7 +120,7 @@ fn main() {
         device.new_library_with_source(&shader, &compile_options).unwrap();
     let cv = create_function_constants(2, 1, 1, 1);
     let kernel =
-        library.get_function("kernel_mul_mv_q4_K_f32", Some(cv)).unwrap();
+        library.get_function("kernel_gemm_q4_K_f32", Some(cv)).unwrap();
     let pipeline =
         device.new_compute_pipeline_state_with_function(&kernel).unwrap();
     let t6 = Instant::now();

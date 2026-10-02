@@ -61,7 +61,7 @@ fn main() {
         let start = Instant::now();
         let iterations = 10;
         for _ in 0..iterations {
-            let _ = metal_ctx.gemm_q4_k_f32(m, 16, *k, &weights, &input);
+            let _ = metal_ctx.matmul_q4_k_f32(m, 16, *k, &weights, &input);
         }
         let elapsed = start.elapsed().as_micros() as f64 / iterations as f64;
         let flops = 2.0 * m as f64 * 16.0 * *k as f64;

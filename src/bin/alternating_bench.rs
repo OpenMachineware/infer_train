@@ -88,7 +88,7 @@ fn run_alternating_benchmark(
     let my_lib =
         device.new_library_with_source(my_shader, &compile_options).unwrap();
 
-    let kernel_name = format!("kernel_mul_mv_{}_f32", info.name);
+    let kernel_name = format!("kernel_gemm_{}_f32", info.name);
     let llama_func =
         llama_lib.get_function(&kernel_name, Some(cv.clone())).unwrap();
     let my_func = my_lib.get_function(&kernel_name, Some(cv)).unwrap();
@@ -238,7 +238,7 @@ fn main() {
     let llama_shader =
         std::fs::read_to_string("/tmp/combined_llama.metal").unwrap();
     let my_shader = std::fs::read_to_string(
-        "/Users/jia/Desktop/infer_train/shaders/mul_mv_template.metal",
+        "/Users/jia/Desktop/infer_train/shaders/gemm.metal",
     )
     .unwrap();
 

@@ -78,7 +78,7 @@ fn main() {
 
     // Load self-written template
     let shader_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("shaders/mul_mv_template.metal");
+        .join("shaders/gemm.metal");
     let source =
         std::fs::read_to_string(&shader_path).expect("Failed to read shader");
     let library = device
@@ -88,7 +88,7 @@ fn main() {
     // Create pipeline with function constants
     let cv = create_cv();
     let kernel = library
-        .get_function("kernel_mul_mv_q3_K_f32", Some(cv))
+        .get_function("kernel_gemm_q3_K_f32", Some(cv))
         .expect("Failed to get kernel");
     let pipeline = device
         .new_compute_pipeline_state_with_function(&kernel)

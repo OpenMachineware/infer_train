@@ -76,8 +76,7 @@ fn main() {
     let shader_dir =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
     let my_source =
-        std::fs::read_to_string(shader_dir.join("mul_mv_template.metal"))
-            .unwrap();
+        std::fs::read_to_string(shader_dir.join("gemm.metal")).unwrap();
     let my_lib =
         device.new_library_with_source(&my_source, &compile_options).unwrap();
 
@@ -116,7 +115,7 @@ fn main() {
     );
 
     for (name, block_size) in formats {
-        let kernel_name = format!("kernel_mul_mv_{}_f32", name);
+        let kernel_name = format!("kernel_gemm_{}_f32", name);
         let nb = k / 256;
         let nb01 = (block_size * nb) as u64;
 

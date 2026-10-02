@@ -1,7 +1,8 @@
 use crate::quant::types::{
     BlockIQ1M, BlockIQ1S, BlockIQ2S, BlockIQ2XS, BlockIQ2XXS, BlockIQ3S,
-    BlockIQ3XXS, BlockIQ4NL, BlockIQ4XS, BlockQ2K, BlockQ3K, BlockQ4_0,
-    BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8_0, BlockTQ1_0, BlockTQ2_0,
+    BlockIQ3XXS, BlockIQ4NL, BlockIQ4XS, BlockMXFP4, BlockQ1_0, BlockQ2_0,
+    BlockQ2K, BlockQ3K, BlockQ4_0, BlockQ4_1, BlockQ4K, BlockQ5_0, BlockQ5_1,
+    BlockQ5K, BlockQ6K, BlockQ8_0, BlockTQ1_0, BlockTQ2_0,
 };
 use metal::{
     Buffer, CommandQueue, ComputePipelineState, Device, FunctionConstantValues,
@@ -18,19 +19,18 @@ pub struct MetalContext {
     mv_simd_library: Library,
     mv_iq_tq_library: Library,
     // Templated MV library from llama.cpp (all K-quant formats)
-    mul_mv_template_library: Library,
-    // GEMM libraries
-    gemm_q4_k_library: Library,
-    gemm_q2_k_library: Library,
-    gemm_q3_k_library: Library,
-    gemm_q5_k_library: Library,
-    gemm_q6_k_library: Library,
-    gemm_iq_tq_library: Library,
-    gemm_iq2_iq3_library: Library,
+    gemm_library: Library,
     // Templated GEMM library from llama.cpp
     gemm_template_library: Library,
-    // Cached MV pipelines
+    // Cached MV pipelines - Standard Q
+    mv_q1_0_pipeline: ComputePipelineState,
+    mv_q2_0_pipeline: ComputePipelineState,
     mv_q4_0_pipeline: ComputePipelineState,
+    mv_q4_1_pipeline: ComputePipelineState,
+    mv_q5_0_pipeline: ComputePipelineState,
+    mv_q5_1_pipeline: ComputePipelineState,
+    mv_q8_0_pipeline: ComputePipelineState,
+    // Cached MV pipelines - K-quant
     mv_q4_k_pipeline: ComputePipelineState,
     mv_q5_k_pipeline: ComputePipelineState,
     mv_q2_k_pipeline: ComputePipelineState,
@@ -47,29 +47,14 @@ pub struct MetalContext {
     mv_iq2_s_pipeline: ComputePipelineState,
     mv_iq3_xxs_pipeline: ComputePipelineState,
     mv_iq3_s_pipeline: ComputePipelineState,
+    // MXFP
+    mv_mxfp4_pipeline: ComputePipelineState,
     // Split=1 pipelines for large K sizes
     mv_iq2_xxs_split1_pipeline: ComputePipelineState,
     mv_iq2_xs_split1_pipeline: ComputePipelineState,
     mv_iq2_s_split1_pipeline: ComputePipelineState,
     mv_iq3_xxs_split1_pipeline: ComputePipelineState,
     mv_iq3_s_split1_pipeline: ComputePipelineState,
-    // GEMM pipelines
-    gemm_q4_k_pipeline: ComputePipelineState,
-    gemm_q2_k_pipeline: ComputePipelineState,
-    gemm_q3_k_pipeline: ComputePipelineState,
-    gemm_q5_k_pipeline: ComputePipelineState,
-    gemm_q6_k_pipeline: ComputePipelineState,
-    gemm_iq4_nl_pipeline: ComputePipelineState,
-    gemm_iq4_xs_pipeline: ComputePipelineState,
-    gemm_iq1_s_pipeline: ComputePipelineState,
-    gemm_iq1_m_pipeline: ComputePipelineState,
-    gemm_iq2_xxs_pipeline: ComputePipelineState,
-    gemm_iq2_xs_pipeline: ComputePipelineState,
-    gemm_iq2_s_pipeline: ComputePipelineState,
-    gemm_iq3_xxs_pipeline: ComputePipelineState,
-    gemm_iq3_s_pipeline: ComputePipelineState,
-    gemm_tq2_0_pipeline: ComputePipelineState,
-    gemm_tq1_0_pipeline: ComputePipelineState,
     // Templated GEMM pipelines (from llama.cpp)
     gemm_template_q4_k_pipeline: ComputePipelineState,
     gemm_template_q2_k_pipeline: ComputePipelineState,
@@ -274,74 +259,26 @@ impl MetalContext {
             })?;
 
         // Compile templated MV library from llama.cpp (all K-quant formats in one file)
-        let mul_mv_template_source =
-            include_str!("../../../../shaders/mul_mv_template.metal");
-        let mul_mv_template_library = device
-            .new_library_with_source(mul_mv_template_source, &compile_options)
-            .map_err(|e| {
-                format!("Failed to compile mul_mv_template library: {}", e)
-            })?;
-
-        // Compile GEMM libraries
-        let gemm_q4_k_source =
-            include_str!("../../../../shaders/gemm_q4_k.metal");
-        let gemm_q4_k_library = device
-            .new_library_with_source(gemm_q4_k_source, &compile_options)
-            .map_err(|e| {
-                format!("Failed to compile gemm_q4_k library: {}", e)
-            })?;
-
-        let gemm_q2_k_source =
-            include_str!("../../../../shaders/gemm_q2_k.metal");
-        let gemm_q2_k_library = device
-            .new_library_with_source(gemm_q2_k_source, &compile_options)
-            .map_err(|e| {
-                format!("Failed to compile gemm_q2_k library: {}", e)
-            })?;
-
-        let gemm_q3_k_source =
-            include_str!("../../../../shaders/gemm_q3_k.metal");
-        let gemm_q3_k_library = device
-            .new_library_with_source(gemm_q3_k_source, &compile_options)
-            .map_err(|e| {
-                format!("Failed to compile gemm_q3_k library: {}", e)
-            })?;
-
-        let gemm_q5_k_source =
-            include_str!("../../../../shaders/gemm_q5_k.metal");
-        let gemm_q5_k_library = device
-            .new_library_with_source(gemm_q5_k_source, &compile_options)
-            .map_err(|e| {
-                format!("Failed to compile gemm_q5_k library: {}", e)
-            })?;
-
-        let gemm_q6_k_source =
-            include_str!("../../../../shaders/gemm_q6_k.metal");
-        let gemm_q6_k_library = device
-            .new_library_with_source(gemm_q6_k_source, &compile_options)
-            .map_err(|e| {
-                format!("Failed to compile gemm_q6_k library: {}", e)
-            })?;
-
-        let gemm_iq_tq_source =
-            include_str!("../../../../shaders/gemm_iq_tq.metal");
-        let gemm_iq_tq_combined = gemm_iq_tq_source
-            .replace("#include \"iq_grid_tables.h\"", iq_grid_tables);
-        let gemm_iq_tq_library = device
-            .new_library_with_source(&gemm_iq_tq_combined, &compile_options)
-            .map_err(|e| {
-                format!("Failed to compile gemm_iq_tq library: {}", e)
-            })?;
-
-        let gemm_iq2_iq3_source =
-            include_str!("../../../../shaders/gemm_iq2_iq3.metal");
-        let gemm_iq2_iq3_combined = gemm_iq2_iq3_source
-            .replace("#include \"iq_grid_tables.h\"", iq_grid_tables);
-        let gemm_iq2_iq3_library = device
-            .new_library_with_source(&gemm_iq2_iq3_combined, &compile_options)
-            .map_err(|e| {
-                format!("Failed to compile gemm_iq2_iq3 library: {}", e)
-            })?;
+        let gemm_source = include_str!("../../../../shaders/gemm.metal");
+        // Add kmask_iq2xs and ksigns_iq2xs tables needed by IQ kernels
+        let iq_extra_tables = r#"
+constexpr constant static uint8_t kmask_iq2xs[8] = {1, 2, 4, 8, 16, 32, 64, 128};
+constexpr constant static int8_t ksigns_iq2xs[128] = {
+     1,  1,  1,  1,  1,  1,  1,  1, -1,  1,  1,  1,  1,  1,  1, -1,
+     1, -1,  1,  1,  1,  1,  1, -1, -1, -1,  1,  1,  1,  1,  1,  1,
+     1,  1, -1,  1,  1,  1,  1, -1, -1,  1, -1,  1,  1,  1,  1,  1,
+     1, -1, -1,  1,  1,  1,  1,  1, -1, -1, -1,  1,  1,  1,  1, -1,
+     1,  1,  1, -1,  1,  1,  1, -1, -1,  1,  1, -1,  1,  1,  1,  1,
+     1, -1,  1, -1,  1,  1,  1,  1, -1, -1,  1, -1,  1,  1,  1, -1,
+     1,  1, -1, -1,  1,  1,  1,  1, -1,  1, -1, -1,  1,  1,  1, -1,
+     1, -1, -1, -1,  1,  1,  1, -1, -1, -1, -1, -1,  1,  1,  1,  1,
+};
+"#;
+        let gemm_combined =
+            format!("{}\n{}\n{}", iq_extra_tables, iq_grid_tables, gemm_source);
+        let gemm_library = device
+            .new_library_with_source(&gemm_combined, &compile_options)
+            .map_err(|e| format!("Failed to compile gemm library: {}", e))?;
 
         // Compile templated GEMM library (self-contained, no C++ headers)
         let gemm_template_source =
@@ -403,9 +340,9 @@ impl MetalContext {
 
         // Create cached pipeline for Q4_0 MV (from template)
         // Q4_0 kernel also requires function constants
-        let mv_q4_0_kernel = mul_mv_template_library
+        let mv_q4_0_kernel = gemm_library
             .get_function(
-                "kernel_mul_mv_q4_0_f32",
+                "kernel_gemm_q4_0_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q4_0 kernel: {}", e))?;
@@ -413,12 +350,73 @@ impl MetalContext {
             .new_compute_pipeline_state_with_function(&mv_q4_0_kernel)
             .map_err(|e| format!("Failed to create Q4_0 pipeline: {}", e))?;
 
+        // Standard Q kernels (from gemm.metal)
+        let mv_q1_0_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_q1_0_f32",
+                Some(create_mv_function_constants(8, 1, 1, 1)),
+            )
+            .map_err(|e| format!("Failed to get Q1_0 kernel: {}", e))?;
+        let mv_q1_0_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_q1_0_kernel)
+            .map_err(|e| format!("Failed to create Q1_0 pipeline: {}", e))?;
+
+        let mv_q2_0_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_q2_0_f32",
+                Some(create_mv_function_constants(8, 1, 1, 1)),
+            )
+            .map_err(|e| format!("Failed to get Q2_0 kernel: {}", e))?;
+        let mv_q2_0_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_q2_0_kernel)
+            .map_err(|e| format!("Failed to create Q2_0 pipeline: {}", e))?;
+
+        let mv_q4_1_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_q4_1_f32",
+                Some(create_mv_function_constants(4, 1, 1, 1)),
+            )
+            .map_err(|e| format!("Failed to get Q4_1 kernel: {}", e))?;
+        let mv_q4_1_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_q4_1_kernel)
+            .map_err(|e| format!("Failed to create Q4_1 pipeline: {}", e))?;
+
+        let mv_q5_0_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_q5_0_f32",
+                Some(create_mv_function_constants(4, 1, 1, 1)),
+            )
+            .map_err(|e| format!("Failed to get Q5_0 kernel: {}", e))?;
+        let mv_q5_0_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_q5_0_kernel)
+            .map_err(|e| format!("Failed to create Q5_0 pipeline: {}", e))?;
+
+        let mv_q5_1_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_q5_1_f32",
+                Some(create_mv_function_constants(4, 1, 1, 1)),
+            )
+            .map_err(|e| format!("Failed to get Q5_1 kernel: {}", e))?;
+        let mv_q5_1_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_q5_1_kernel)
+            .map_err(|e| format!("Failed to create Q5_1 pipeline: {}", e))?;
+
+        let mv_q8_0_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_q8_0_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
+            .map_err(|e| format!("Failed to get Q8_0 kernel: {}", e))?;
+        let mv_q8_0_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_q8_0_kernel)
+            .map_err(|e| format!("Failed to create Q8_0 pipeline: {}", e))?;
+
         // Create cached pipelines for K-quant MV (all from template)
         // Use default specialization: nsg=2, ne12=1, r2=1, r3=1 (single-batch decode)
 
-        let mv_q4_k_kernel = mul_mv_template_library
+        let mv_q4_k_kernel = gemm_library
             .get_function(
-                "kernel_mul_mv_q4_K_f32",
+                "kernel_gemm_q4_K_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q4_K kernel: {}", e))?;
@@ -426,9 +424,9 @@ impl MetalContext {
             .new_compute_pipeline_state_with_function(&mv_q4_k_kernel)
             .map_err(|e| format!("Failed to create Q4_K pipeline: {}", e))?;
 
-        let mv_q5_k_kernel = mul_mv_template_library
+        let mv_q5_k_kernel = gemm_library
             .get_function(
-                "kernel_mul_mv_q5_K_f32",
+                "kernel_gemm_q5_K_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q5_K kernel: {}", e))?;
@@ -436,9 +434,9 @@ impl MetalContext {
             .new_compute_pipeline_state_with_function(&mv_q5_k_kernel)
             .map_err(|e| format!("Failed to create Q5_K pipeline: {}", e))?;
 
-        let mv_q2_k_kernel = mul_mv_template_library
+        let mv_q2_k_kernel = gemm_library
             .get_function(
-                "kernel_mul_mv_q2_K_f32",
+                "kernel_gemm_q2_K_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q2_K kernel: {}", e))?;
@@ -446,9 +444,9 @@ impl MetalContext {
             .new_compute_pipeline_state_with_function(&mv_q2_k_kernel)
             .map_err(|e| format!("Failed to create Q2_K pipeline: {}", e))?;
 
-        let mv_q6_k_kernel = mul_mv_template_library
+        let mv_q6_k_kernel = gemm_library
             .get_function(
-                "kernel_mul_mv_q6_K_f32",
+                "kernel_gemm_q6_K_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q6_K kernel: {}", e))?;
@@ -456,9 +454,9 @@ impl MetalContext {
             .new_compute_pipeline_state_with_function(&mv_q6_k_kernel)
             .map_err(|e| format!("Failed to create Q6_K pipeline: {}", e))?;
 
-        let mv_q3_k_kernel = mul_mv_template_library
+        let mv_q3_k_kernel = gemm_library
             .get_function(
-                "kernel_mul_mv_q3_K_f32",
+                "kernel_gemm_q3_K_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q3_K kernel: {}", e))?;
@@ -467,54 +465,75 @@ impl MetalContext {
             .map_err(|e| format!("Failed to create Q3_K pipeline: {}", e))?;
 
         // Create cached pipeline for IQ4_NL MV
-        let mv_iq4_nl_kernel = mv_iq_tq_library
-            .get_function("kernel_mul_mv_iq4_nl_f32", None)
+        let mv_iq4_nl_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_iq4_nl_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get IQ4_NL kernel: {}", e))?;
         let mv_iq4_nl_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_iq4_nl_kernel)
             .map_err(|e| format!("Failed to create IQ4_NL pipeline: {}", e))?;
 
         // Create cached pipeline for TQ2_0 MV
-        let mv_tq2_0_kernel = mv_iq_tq_library
-            .get_function("kernel_mul_mv_tq2_0_f32", None)
+        let mv_tq2_0_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_tq2_0_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get TQ2_0 kernel: {}", e))?;
         let mv_tq2_0_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_tq2_0_kernel)
             .map_err(|e| format!("Failed to create TQ2_0 pipeline: {}", e))?;
 
         // Create cached pipeline for IQ4_XS MV
-        let mv_iq4_xs_kernel = mv_iq_tq_library
-            .get_function("kernel_mul_mv_iq4_xs_f32", None)
+        let mv_iq4_xs_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_iq4_xs_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get IQ4_XS kernel: {}", e))?;
         let mv_iq4_xs_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_iq4_xs_kernel)
             .map_err(|e| format!("Failed to create IQ4_XS pipeline: {}", e))?;
 
         // Create cached pipeline for TQ1_0 MV
-        let mv_tq1_0_kernel = mv_iq_tq_library
-            .get_function("kernel_mul_mv_tq1_0_f32", None)
+        let mv_tq1_0_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_tq1_0_f32",
+                Some(create_mv_function_constants(4, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get TQ1_0 kernel: {}", e))?;
         let mv_tq1_0_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_tq1_0_kernel)
             .map_err(|e| format!("Failed to create TQ1_0 pipeline: {}", e))?;
 
         // Create pipelines for IQ series
-        let mv_iq1_s_kernel = mv_iq_tq_library
-            .get_function("kernel_mul_mv_iq1_s_f32", None)
+        let mv_iq1_s_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_iq1_s_f32",
+                Some(create_mv_function_constants(4, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get IQ1_S kernel: {}", e))?;
         let mv_iq1_s_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_iq1_s_kernel)
             .map_err(|e| format!("Failed to create IQ1_S pipeline: {}", e))?;
 
-        let mv_iq1_m_kernel = mv_iq_tq_library
-            .get_function("kernel_mul_mv_iq1_m_f32", None)
+        let mv_iq1_m_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_iq1_m_f32",
+                Some(create_mv_function_constants(4, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get IQ1_M kernel: {}", e))?;
         let mv_iq1_m_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_iq1_m_kernel)
             .map_err(|e| format!("Failed to create IQ1_M pipeline: {}", e))?;
 
-        let mv_iq2_xxs_kernel = mv_iq_tq_library
-            .get_function("kernel_mul_mv_iq2_xxs_f32", None)
+        let mv_iq2_xxs_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_iq2_xxs_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get IQ2_XXS kernel: {}", e))?;
         let mv_iq2_xxs_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_iq2_xxs_kernel)
@@ -531,8 +550,11 @@ impl MetalContext {
                 format!("Failed to create IQ2_XXS split1 pipeline: {}", e)
             })?;
 
-        let mv_iq2_xs_kernel = mv_iq_tq_library
-            .get_function("kernel_mul_mv_iq2_xs_f32", None)
+        let mv_iq2_xs_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_iq2_xs_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get IQ2_XS kernel: {}", e))?;
         let mv_iq2_xs_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_iq2_xs_kernel)
@@ -565,8 +587,11 @@ impl MetalContext {
                 format!("Failed to create IQ2_S split1 pipeline: {}", e)
             })?;
 
-        let mv_iq3_xxs_kernel = mv_iq_tq_library
-            .get_function("kernel_mul_mv_iq3_xxs_f32", None)
+        let mv_iq3_xxs_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_iq3_xxs_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get IQ3_XXS kernel: {}", e))?;
         let mv_iq3_xxs_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_iq3_xxs_kernel)
@@ -583,8 +608,11 @@ impl MetalContext {
                 format!("Failed to create IQ3_XXS split1 pipeline: {}", e)
             })?;
 
-        let mv_iq3_s_kernel = mv_iq_tq_library
-            .get_function("kernel_mul_mv_iq3_s_f32", None)
+        let mv_iq3_s_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_iq3_s_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
             .map_err(|e| format!("Failed to get IQ3_S kernel: {}", e))?;
         let mv_iq3_s_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_iq3_s_kernel)
@@ -599,150 +627,16 @@ impl MetalContext {
                 format!("Failed to create IQ3_S split1 pipeline: {}", e)
             })?;
 
-        // Create GEMM pipelines
-        let gemm_q4_k_kernel = gemm_q4_k_library
-            .get_function("kernel_gemm_q4_k_f32", None)
-            .map_err(|e| format!("Failed to get GEMM Q4_K kernel: {}", e))?;
-        let gemm_q4_k_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_q4_k_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM Q4_K pipeline: {}", e)
-            })?;
-
-        let gemm_q2_k_kernel = gemm_q2_k_library
-            .get_function("kernel_gemm_q2_k_f32", None)
-            .map_err(|e| format!("Failed to get GEMM Q2_K kernel: {}", e))?;
-        let gemm_q2_k_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_q2_k_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM Q2_K pipeline: {}", e)
-            })?;
-
-        let gemm_q3_k_kernel = gemm_q3_k_library
-            .get_function("kernel_gemm_q3_k_f32", None)
-            .map_err(|e| format!("Failed to get GEMM Q3_K kernel: {}", e))?;
-        let gemm_q3_k_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_q3_k_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM Q3_K pipeline: {}", e)
-            })?;
-
-        let gemm_q5_k_kernel = gemm_q5_k_library
-            .get_function("kernel_gemm_q5_k_f32", None)
-            .map_err(|e| format!("Failed to get GEMM Q5_K kernel: {}", e))?;
-        let gemm_q5_k_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_q5_k_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM Q5_K pipeline: {}", e)
-            })?;
-
-        let gemm_q6_k_kernel = gemm_q6_k_library
-            .get_function("kernel_gemm_q6_k_f32", None)
-            .map_err(|e| format!("Failed to get GEMM Q6_K kernel: {}", e))?;
-        let gemm_q6_k_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_q6_k_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM Q6_K pipeline: {}", e)
-            })?;
-
-        let gemm_iq4_nl_kernel = gemm_iq_tq_library
-            .get_function("kernel_gemm_iq4_nl_f32", None)
-            .map_err(|e| format!("Failed to get GEMM IQ4_NL kernel: {}", e))?;
-        let gemm_iq4_nl_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_iq4_nl_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM IQ4_NL pipeline: {}", e)
-            })?;
-
-        let gemm_iq4_xs_kernel = gemm_iq_tq_library
-            .get_function("kernel_gemm_iq4_xs_f32", None)
-            .map_err(|e| format!("Failed to get GEMM IQ4_XS kernel: {}", e))?;
-        let gemm_iq4_xs_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_iq4_xs_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM IQ4_XS pipeline: {}", e)
-            })?;
-
-        let gemm_iq1_s_kernel = gemm_iq_tq_library
-            .get_function("kernel_gemm_iq1_s_f32", None)
-            .map_err(|e| format!("Failed to get GEMM IQ1_S kernel: {}", e))?;
-        let gemm_iq1_s_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_iq1_s_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM IQ1_S pipeline: {}", e)
-            })?;
-
-        let gemm_iq1_m_kernel = gemm_iq_tq_library
-            .get_function("kernel_gemm_iq1_m_f32", None)
-            .map_err(|e| format!("Failed to get GEMM IQ1_M kernel: {}", e))?;
-        let gemm_iq1_m_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_iq1_m_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM IQ1_M pipeline: {}", e)
-            })?;
-
-        let gemm_iq2_xxs_kernel = gemm_iq2_iq3_library
-            .get_function("kernel_gemm_iq2_xxs_f32", None)
-            .map_err(|e| format!("Failed to get GEMM IQ2_XXS kernel: {}", e))?;
-        let gemm_iq2_xxs_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_iq2_xxs_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM IQ2_XXS pipeline: {}", e)
-            })?;
-
-        let gemm_iq2_xs_kernel = gemm_iq2_iq3_library
-            .get_function("kernel_gemm_iq2_xs_f32", None)
-            .map_err(|e| format!("Failed to get GEMM IQ2_XS kernel: {}", e))?;
-        let gemm_iq2_xs_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_iq2_xs_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM IQ2_XS pipeline: {}", e)
-            })?;
-
-        let gemm_iq2_s_kernel = gemm_iq2_iq3_library
-            .get_function("kernel_gemm_iq2_s_f32", None)
-            .map_err(|e| format!("Failed to get GEMM IQ2_S kernel: {}", e))?;
-        let gemm_iq2_s_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_iq2_s_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM IQ2_S pipeline: {}", e)
-            })?;
-
-        let gemm_iq3_xxs_kernel = gemm_iq2_iq3_library
-            .get_function("kernel_gemm_iq3_xxs_f32", None)
-            .map_err(|e| format!("Failed to get GEMM IQ3_XXS kernel: {}", e))?;
-        let gemm_iq3_xxs_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_iq3_xxs_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM IQ3_XXS pipeline: {}", e)
-            })?;
-
-        let gemm_iq3_s_kernel = gemm_iq2_iq3_library
-            .get_function("kernel_gemm_iq3_s_f32", None)
-            .map_err(|e| format!("Failed to get GEMM IQ3_S kernel: {}", e))?;
-        let gemm_iq3_s_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_iq3_s_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM IQ3_S pipeline: {}", e)
-            })?;
-
-        let gemm_tq2_0_kernel = gemm_iq_tq_library
-            .get_function("kernel_gemm_tq2_0_f32", None)
-            .map_err(|e| format!("Failed to get GEMM TQ2_0 kernel: {}", e))?;
-        let gemm_tq2_0_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_tq2_0_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM TQ2_0 pipeline: {}", e)
-            })?;
-
-        let gemm_tq1_0_kernel = gemm_iq2_iq3_library
-            .get_function("kernel_gemm_tq1_0_f32", None)
-            .map_err(|e| format!("Failed to get GEMM TQ1_0 kernel: {}", e))?;
-        let gemm_tq1_0_pipeline = device
-            .new_compute_pipeline_state_with_function(&gemm_tq1_0_kernel)
-            .map_err(|e| {
-                format!("Failed to create GEMM TQ1_0 pipeline: {}", e)
-            })?;
+        // MXFP4 kernel
+        let mv_mxfp4_kernel = gemm_library
+            .get_function(
+                "kernel_gemm_mxfp4_f32",
+                Some(create_mv_function_constants(2, 1, 1, 1)),
+            )
+            .map_err(|e| format!("Failed to get MXFP4 kernel: {}", e))?;
+        let mv_mxfp4_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_mxfp4_kernel)
+            .map_err(|e| format!("Failed to create MXFP4 pipeline: {}", e))?;
 
         // Create templated GEMM pipelines (from llama.cpp)
         // Requires function constant specialization
@@ -1170,18 +1064,17 @@ impl MetalContext {
             mv_simd_library,
             mv_iq_tq_library,
             // Templated MV library
-            mul_mv_template_library,
-            // GEMM libraries
-            gemm_q4_k_library,
-            gemm_q2_k_library,
-            gemm_q3_k_library,
-            gemm_q5_k_library,
-            gemm_q6_k_library,
-            gemm_iq_tq_library,
-            gemm_iq2_iq3_library,
+            gemm_library,
             gemm_template_library,
-            // MV pipelines
+            // MV pipelines - Standard Q
+            mv_q1_0_pipeline,
+            mv_q2_0_pipeline,
             mv_q4_0_pipeline,
+            mv_q4_1_pipeline,
+            mv_q5_0_pipeline,
+            mv_q5_1_pipeline,
+            mv_q8_0_pipeline,
+            // MV pipelines - K-quant
             mv_q4_k_pipeline,
             mv_q5_k_pipeline,
             mv_q2_k_pipeline,
@@ -1203,23 +1096,8 @@ impl MetalContext {
             mv_iq2_s_split1_pipeline,
             mv_iq3_xxs_split1_pipeline,
             mv_iq3_s_split1_pipeline,
-            // GEMM pipelines
-            gemm_q4_k_pipeline,
-            gemm_q2_k_pipeline,
-            gemm_q3_k_pipeline,
-            gemm_q5_k_pipeline,
-            gemm_q6_k_pipeline,
-            gemm_iq4_nl_pipeline,
-            gemm_iq4_xs_pipeline,
-            gemm_iq1_s_pipeline,
-            gemm_iq1_m_pipeline,
-            gemm_iq2_xxs_pipeline,
-            gemm_iq2_xs_pipeline,
-            gemm_iq2_s_pipeline,
-            gemm_iq3_xxs_pipeline,
-            gemm_iq3_s_pipeline,
-            gemm_tq2_0_pipeline,
-            gemm_tq1_0_pipeline,
+            // MXFP
+            mv_mxfp4_pipeline,
             // Templated GEMM pipelines
             gemm_template_q4_k_pipeline,
             gemm_template_q2_k_pipeline,
@@ -1667,6 +1545,594 @@ impl MetalContext {
 
         let output_ptr = output_buffer.contents() as *const f32;
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
+    }
+
+    /// Q1_0 x F32 Matrix-Vector
+    pub fn mv_q1_0_f32(
+        &self,
+        m: usize,
+        k: usize,
+        weights: &[BlockQ1_0],
+        input: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let nb = k / 32;
+        let nb01 = (nb * std::mem::size_of::<BlockQ1_0>()) as u64;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: i32,
+            ne01: i32,
+            ne02: i32,
+            nb00: u64,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
+        }
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            ne02: 1,
+            nb00: std::mem::size_of::<BlockQ1_0>() as u64,
+            nb01,
+            nb02: nb01,
+            nb03: nb01,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 8,
+            r2: 1,
+            r3: 1,
+        };
+
+        let weights_buffer = self.device.new_buffer_with_data(
+            weights.as_ptr() as *const std::ffi::c_void,
+            (weights.len() * std::mem::size_of::<BlockQ1_0>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let input_buffer = self.device.new_buffer_with_data(
+            input.as_ptr() as *const std::ffi::c_void,
+            (input.len() * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (m * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.mv_q1_0_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const _ as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_buffer(2, Some(&input_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
+        encoder.dispatch_thread_groups(
+            metal::MTLSize::new(((m + 7) / 8) as u64, 1, 1),
+            metal::MTLSize::new(32, 8, 1),
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(unsafe {
+            std::slice::from_raw_parts(
+                output_buffer.contents() as *const f32,
+                m,
+            )
+            .to_vec()
+        })
+    }
+
+    /// Q2_0 x F32 Matrix-Vector
+    pub fn mv_q2_0_f32(
+        &self,
+        m: usize,
+        k: usize,
+        weights: &[BlockQ2_0],
+        input: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let nb = k / 64;
+        let nb01 = (nb * std::mem::size_of::<BlockQ2_0>()) as u64;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: i32,
+            ne01: i32,
+            ne02: i32,
+            nb00: u64,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
+        }
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            ne02: 1,
+            nb00: std::mem::size_of::<BlockQ2_0>() as u64,
+            nb01,
+            nb02: nb01,
+            nb03: nb01,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 8,
+            r2: 1,
+            r3: 1,
+        };
+
+        let weights_buffer = self.device.new_buffer_with_data(
+            weights.as_ptr() as *const std::ffi::c_void,
+            (weights.len() * std::mem::size_of::<BlockQ2_0>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let input_buffer = self.device.new_buffer_with_data(
+            input.as_ptr() as *const std::ffi::c_void,
+            (input.len() * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (m * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.mv_q2_0_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const _ as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_buffer(2, Some(&input_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
+        encoder.dispatch_thread_groups(
+            metal::MTLSize::new(((m + 7) / 8) as u64, 1, 1),
+            metal::MTLSize::new(32, 8, 1),
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(unsafe {
+            std::slice::from_raw_parts(
+                output_buffer.contents() as *const f32,
+                m,
+            )
+            .to_vec()
+        })
+    }
+
+    /// Q4_1 x F32 Matrix-Vector
+    pub fn mv_q4_1_f32(
+        &self,
+        m: usize,
+        k: usize,
+        weights: &[BlockQ4_1],
+        input: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let nb = k / 32;
+        let nb01 = (nb * std::mem::size_of::<BlockQ4_1>()) as u64;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: i32,
+            ne01: i32,
+            ne02: i32,
+            nb00: u64,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
+        }
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            ne02: 1,
+            nb00: std::mem::size_of::<BlockQ4_1>() as u64,
+            nb01,
+            nb02: nb01,
+            nb03: nb01,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 4,
+            r2: 1,
+            r3: 1,
+        };
+
+        let weights_buffer = self.device.new_buffer_with_data(
+            weights.as_ptr() as *const std::ffi::c_void,
+            (weights.len() * std::mem::size_of::<BlockQ4_1>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let input_buffer = self.device.new_buffer_with_data(
+            input.as_ptr() as *const std::ffi::c_void,
+            (input.len() * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (m * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.mv_q4_1_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const _ as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_buffer(2, Some(&input_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
+        encoder.dispatch_thread_groups(
+            metal::MTLSize::new(((m + 3) / 4) as u64, 1, 1),
+            metal::MTLSize::new(32, 4, 1),
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(unsafe {
+            std::slice::from_raw_parts(
+                output_buffer.contents() as *const f32,
+                m,
+            )
+            .to_vec()
+        })
+    }
+
+    /// Q5_0 x F32 Matrix-Vector
+    pub fn mv_q5_0_f32(
+        &self,
+        m: usize,
+        k: usize,
+        weights: &[BlockQ5_0],
+        input: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let nb = k / 32;
+        let nb01 = (nb * std::mem::size_of::<BlockQ5_0>()) as u64;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: i32,
+            ne01: i32,
+            ne02: i32,
+            nb00: u64,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
+        }
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            ne02: 1,
+            nb00: std::mem::size_of::<BlockQ5_0>() as u64,
+            nb01,
+            nb02: nb01,
+            nb03: nb01,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 4,
+            r2: 1,
+            r3: 1,
+        };
+
+        let weights_buffer = self.device.new_buffer_with_data(
+            weights.as_ptr() as *const std::ffi::c_void,
+            (weights.len() * std::mem::size_of::<BlockQ5_0>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let input_buffer = self.device.new_buffer_with_data(
+            input.as_ptr() as *const std::ffi::c_void,
+            (input.len() * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (m * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.mv_q5_0_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const _ as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_buffer(2, Some(&input_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
+        encoder.dispatch_thread_groups(
+            metal::MTLSize::new(((m + 3) / 4) as u64, 1, 1),
+            metal::MTLSize::new(32, 4, 1),
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(unsafe {
+            std::slice::from_raw_parts(
+                output_buffer.contents() as *const f32,
+                m,
+            )
+            .to_vec()
+        })
+    }
+
+    /// Q5_1 x F32 Matrix-Vector
+    pub fn mv_q5_1_f32(
+        &self,
+        m: usize,
+        k: usize,
+        weights: &[BlockQ5_1],
+        input: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let nb = k / 32;
+        let nb01 = (nb * std::mem::size_of::<BlockQ5_1>()) as u64;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: i32,
+            ne01: i32,
+            ne02: i32,
+            nb00: u64,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
+        }
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            ne02: 1,
+            nb00: std::mem::size_of::<BlockQ5_1>() as u64,
+            nb01,
+            nb02: nb01,
+            nb03: nb01,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 4,
+            r2: 1,
+            r3: 1,
+        };
+
+        let weights_buffer = self.device.new_buffer_with_data(
+            weights.as_ptr() as *const std::ffi::c_void,
+            (weights.len() * std::mem::size_of::<BlockQ5_1>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let input_buffer = self.device.new_buffer_with_data(
+            input.as_ptr() as *const std::ffi::c_void,
+            (input.len() * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (m * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.mv_q5_1_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const _ as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_buffer(2, Some(&input_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
+        encoder.dispatch_thread_groups(
+            metal::MTLSize::new(((m + 3) / 4) as u64, 1, 1),
+            metal::MTLSize::new(32, 4, 1),
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(unsafe {
+            std::slice::from_raw_parts(
+                output_buffer.contents() as *const f32,
+                m,
+            )
+            .to_vec()
+        })
+    }
+
+    /// Q8_0 x F32 Matrix-Vector
+    pub fn mv_q8_0_f32(
+        &self,
+        m: usize,
+        k: usize,
+        weights: &[BlockQ8_0],
+        input: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        let nb = k / 32;
+        let nb01 = (nb * std::mem::size_of::<BlockQ8_0>()) as u64;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: i32,
+            ne01: i32,
+            ne02: i32,
+            nb00: u64,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
+        }
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            ne02: 1,
+            nb00: std::mem::size_of::<BlockQ8_0>() as u64,
+            nb01,
+            nb02: nb01,
+            nb03: nb01,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 2,
+            r2: 1,
+            r3: 1,
+        };
+
+        let weights_buffer = self.device.new_buffer_with_data(
+            weights.as_ptr() as *const std::ffi::c_void,
+            (weights.len() * std::mem::size_of::<BlockQ8_0>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let input_buffer = self.device.new_buffer_with_data(
+            input.as_ptr() as *const std::ffi::c_void,
+            (input.len() * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (m * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.mv_q8_0_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const _ as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_buffer(2, Some(&input_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
+        encoder.dispatch_thread_groups(
+            metal::MTLSize::new(((m + 1) / 2) as u64, 1, 1),
+            metal::MTLSize::new(32, 2, 1),
+        );
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(unsafe {
+            std::slice::from_raw_parts(
+                output_buffer.contents() as *const f32,
+                m,
+            )
+            .to_vec()
+        })
     }
 
     /// Q4_K x F32 Matrix-Vector (matching llama.cpp kernel exactly)
@@ -3727,28 +4193,28 @@ impl MetalContext {
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
     }
 
-    // ===== GEMM (General Matrix-Matrix Multiplication) Methods =====
-    // These handle M×K weights × K×N input → M×N output (batch operations)
-
-    /// Q4_K × F32 GEMM (M rows × N input vectors)
-    pub fn gemm_q4_k_f32(
+    /// MXFP4 x F32 Matrix-Vector
+    pub fn mv_mxfp4_f32(
         &self,
         m: usize,
-        n: usize,
         k: usize,
-        weights: &[BlockQ4K],
+        weights: &[BlockMXFP4],
         input: &[f32],
     ) -> Result<Vec<f32>, String> {
-        let nb = k / 256;
-        let nb01 = (nb * std::mem::size_of::<BlockQ4K>()) as u64;
+        let nb = k / 32;
+        let nb01 = (nb * std::mem::size_of::<BlockMXFP4>()) as u64;
 
         #[repr(C)]
-        struct GemmArgs {
+        struct MvArgs {
             ne00: i32,
+            ne01: i32,
             ne02: i32,
+            nb00: u64,
             nb01: u64,
             nb02: u64,
             nb03: u64,
+            ne10: i32,
+            ne11: i32,
             ne12: i32,
             nb10: u64,
             nb11: u64,
@@ -3756,661 +4222,73 @@ impl MetalContext {
             nb13: u64,
             ne0: i32,
             ne1: i32,
+            nr0: i32,
             r2: i16,
             r3: i16,
         }
-
-        let args = GemmArgs {
+        let args = MvArgs {
             ne00: k as i32,
+            ne01: m as i32,
             ne02: 1,
+            nb00: std::mem::size_of::<BlockMXFP4>() as u64,
             nb01,
-            nb02: 0,
-            nb03: 0,
+            nb02: nb01,
+            nb03: nb01,
+            ne10: k as i32,
+            ne11: 1,
             ne12: 1,
             nb10: 4,
             nb11: k as u64 * 4,
             nb12: 0,
             nb13: 0,
             ne0: m as i32,
-            ne1: n as i32,
+            ne1: 1,
+            nr0: 2,
             r2: 1,
             r3: 1,
         };
 
-        let weights_size = weights.len() * std::mem::size_of::<BlockQ4K>();
-        let input_size = input.len() * std::mem::size_of::<f32>();
-        let output_size = m * n * std::mem::size_of::<f32>();
-
-        let weights_buffer = {
-            let mut buf_cell = self.gemm_weights_buffer.borrow_mut();
-            let mut size_cell = self.gemm_weights_size.borrow_mut();
-            if *size_cell != weights_size {
-                let buf = self.device.new_buffer_with_data(
-                    weights.as_ptr() as *const std::ffi::c_void,
-                    weights_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = weights_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
-
-        let input_buffer = {
-            let mut buf_cell = self.gemm_input_buffer.borrow_mut();
-            let mut size_cell = self.gemm_input_size.borrow_mut();
-            if *size_cell != input_size {
-                let buf = self.device.new_buffer_with_data(
-                    input.as_ptr() as *const std::ffi::c_void,
-                    input_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = input_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
-
-        let output_buffer = {
-            let mut buf_cell = self.gemm_output_buffer.borrow_mut();
-            let mut size_cell = self.gemm_output_size.borrow_mut();
-            if *size_cell != output_size {
-                let buf = self.device.new_buffer(
-                    output_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = output_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
+        let weights_buffer = self.device.new_buffer_with_data(
+            weights.as_ptr() as *const std::ffi::c_void,
+            (weights.len() * std::mem::size_of::<BlockMXFP4>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let input_buffer = self.device.new_buffer_with_data(
+            input.as_ptr() as *const std::ffi::c_void,
+            (input.len() * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            (m * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
 
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&self.gemm_q4_k_pipeline);
-        encoder.set_buffer(0, Some(&weights_buffer), 0);
-        encoder.set_buffer(1, Some(&input_buffer), 0);
-        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_compute_pipeline_state(&self.mv_mxfp4_pipeline);
         encoder.set_bytes(
-            3,
-            std::mem::size_of::<GemmArgs>() as u64,
-            &args as *const GemmArgs as *const std::ffi::c_void,
+            0,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const _ as *const std::ffi::c_void,
         );
-
-        // Dynamic dispatch based on K size for better GPU utilization
-        // Small K (nb <= 4): use NR0=8 rows per threadgroup, NC=4 columns
-        // Large K (nb > 4): use NR0=2 rows per threadgroup, NC=4 columns
-        let (nr0, nc) = if nb <= 4 {
-            (8u64, 4u64) // Small K: more rows per threadgroup
-        } else {
-            (2u64, 4u64) // Large K: use shader's N_COLS_LARGE=4
-        };
-        const NSG: u64 = 2;
-
-        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
-        let thread_group_count = MTLSize {
-            width: (m as u64 + NSG * nr0 - 1) / (NSG * nr0),
-            height: (n as u64 + nc - 1) / nc,
-            depth: 1,
-        };
-
-        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_buffer(2, Some(&input_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
+        encoder.dispatch_thread_groups(
+            metal::MTLSize::new(((m + 1) / 2) as u64, 1, 1),
+            metal::MTLSize::new(32, 2, 1),
+        );
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
-        let output_ptr = output_buffer.contents() as *const f32;
-        Ok(unsafe { std::slice::from_raw_parts(output_ptr, m * n).to_vec() })
-    }
-
-    /// Q2_K × F32 GEMM
-    pub fn gemm_q2_k_f32(
-        &self,
-        m: usize,
-        n: usize,
-        k: usize,
-        weights: &[BlockQ2K],
-        input: &[f32],
-    ) -> Result<Vec<f32>, String> {
-        let nb = k / 256;
-        let nb01 = (nb * std::mem::size_of::<BlockQ2K>()) as u64;
-
-        #[repr(C)]
-        #[repr(C)]
-        struct GemmArgs {
-            ne00: i32,
-            ne02: i32,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne12: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            r2: i16,
-            r3: i16,
-        }
-
-        let args = GemmArgs {
-            ne00: k as i32,
-            ne02: 1,
-            nb01,
-            nb02: 0,
-            nb03: 0,
-            ne12: 1,
-            nb10: 4,
-            nb11: k as u64 * 4,
-            nb12: 0,
-            nb13: 0,
-            ne0: m as i32,
-            ne1: n as i32,
-            r2: 1,
-            r3: 1,
-        };
-
-        let weights_size = weights.len() * std::mem::size_of::<BlockQ2K>();
-        let input_size = input.len() * std::mem::size_of::<f32>();
-        let output_size = m * n * std::mem::size_of::<f32>();
-
-        let weights_buffer = {
-            let mut buf_cell = self.gemm_weights_buffer.borrow_mut();
-            let mut size_cell = self.gemm_weights_size.borrow_mut();
-            if *size_cell != weights_size {
-                let buf = self.device.new_buffer_with_data(
-                    weights.as_ptr() as *const std::ffi::c_void,
-                    weights_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = weights_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
-
-        let input_buffer = {
-            let mut buf_cell = self.gemm_input_buffer.borrow_mut();
-            let mut size_cell = self.gemm_input_size.borrow_mut();
-            if *size_cell != input_size {
-                let buf = self.device.new_buffer_with_data(
-                    input.as_ptr() as *const std::ffi::c_void,
-                    input_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = input_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
-
-        let output_buffer = {
-            let mut buf_cell = self.gemm_output_buffer.borrow_mut();
-            let mut size_cell = self.gemm_output_size.borrow_mut();
-            if *size_cell != output_size {
-                let buf = self.device.new_buffer(
-                    output_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = output_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
-
-        let command_buffer = self.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&self.gemm_q2_k_pipeline);
-        encoder.set_buffer(0, Some(&weights_buffer), 0);
-        encoder.set_buffer(1, Some(&input_buffer), 0);
-        encoder.set_buffer(2, Some(&output_buffer), 0);
-        encoder.set_bytes(
-            3,
-            std::mem::size_of::<GemmArgs>() as u64,
-            &args as *const GemmArgs as *const std::ffi::c_void,
-        );
-
-        // Dynamic dispatch based on K size
-        // Small K (nb <= 4): NR0=8, NC=4
-        // Large K (nb > 4): NR0=2, NC=4
-        let (nr0, nc) = if nb <= 4 { (8u64, 4u64) } else { (2u64, 4u64) };
-        const NSG: u64 = 2;
-
-        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
-        let thread_group_count = MTLSize {
-            width: (m as u64 + NSG * nr0 - 1) / (NSG * nr0),
-            height: (n as u64 + nc - 1) / nc,
-            depth: 1,
-        };
-
-        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
-        encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
-
-        let output_ptr = output_buffer.contents() as *const f32;
-        Ok(unsafe { std::slice::from_raw_parts(output_ptr, m * n).to_vec() })
-    }
-
-    /// Q3_K × F32 GEMM
-    pub fn gemm_q3_k_f32(
-        &self,
-        m: usize,
-        n: usize,
-        k: usize,
-        weights: &[BlockQ3K],
-        input: &[f32],
-    ) -> Result<Vec<f32>, String> {
-        let nb = k / 256;
-        let nb01 = (nb * std::mem::size_of::<BlockQ3K>()) as u64;
-
-        #[repr(C)]
-        #[repr(C)]
-        struct GemmArgs {
-            ne00: i32,
-            ne02: i32,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne12: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            r2: i16,
-            r3: i16,
-        }
-
-        let args = GemmArgs {
-            ne00: k as i32,
-            ne02: 1,
-            nb01,
-            nb02: 0,
-            nb03: 0,
-            ne12: 1,
-            nb10: 4,
-            nb11: k as u64 * 4,
-            nb12: 0,
-            nb13: 0,
-            ne0: m as i32,
-            ne1: n as i32,
-            r2: 1,
-            r3: 1,
-        };
-
-        let weights_size = weights.len() * std::mem::size_of::<BlockQ3K>();
-        let input_size = input.len() * std::mem::size_of::<f32>();
-        let output_size = m * n * std::mem::size_of::<f32>();
-
-        let weights_buffer = {
-            let mut buf_cell = self.gemm_weights_buffer.borrow_mut();
-            let mut size_cell = self.gemm_weights_size.borrow_mut();
-            if *size_cell != weights_size {
-                let buf = self.device.new_buffer_with_data(
-                    weights.as_ptr() as *const std::ffi::c_void,
-                    weights_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = weights_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
-
-        let input_buffer = {
-            let mut buf_cell = self.gemm_input_buffer.borrow_mut();
-            let mut size_cell = self.gemm_input_size.borrow_mut();
-            if *size_cell != input_size {
-                let buf = self.device.new_buffer_with_data(
-                    input.as_ptr() as *const std::ffi::c_void,
-                    input_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = input_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
-
-        let output_buffer = {
-            let mut buf_cell = self.gemm_output_buffer.borrow_mut();
-            let mut size_cell = self.gemm_output_size.borrow_mut();
-            if *size_cell != output_size {
-                let buf = self.device.new_buffer(
-                    output_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = output_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
-
-        let command_buffer = self.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&self.gemm_q3_k_pipeline);
-        encoder.set_buffer(0, Some(&weights_buffer), 0);
-        encoder.set_buffer(1, Some(&input_buffer), 0);
-        encoder.set_buffer(2, Some(&output_buffer), 0);
-        encoder.set_bytes(
-            3,
-            std::mem::size_of::<GemmArgs>() as u64,
-            &args as *const GemmArgs as *const std::ffi::c_void,
-        );
-
-        // Dynamic dispatch based on K size
-        // Small K (nb <= 4): NR0=8, NC=4
-        // Large K (nb > 4): NR0=2, NC=4
-        let (nr0, nc) = if nb <= 4 { (8u64, 4u64) } else { (2u64, 4u64) };
-        const NSG: u64 = 2;
-
-        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
-        let thread_group_count = MTLSize {
-            width: (m as u64 + NSG * nr0 - 1) / (NSG * nr0),
-            height: (n as u64 + nc - 1) / nc,
-            depth: 1,
-        };
-
-        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
-        encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
-
-        let output_ptr = output_buffer.contents() as *const f32;
-        Ok(unsafe { std::slice::from_raw_parts(output_ptr, m * n).to_vec() })
-    }
-
-    /// Q5_K × F32 GEMM
-    pub fn gemm_q5_k_f32(
-        &self,
-        m: usize,
-        n: usize,
-        k: usize,
-        weights: &[BlockQ5K],
-        input: &[f32],
-    ) -> Result<Vec<f32>, String> {
-        let nb = k / 256;
-        let nb01 = (nb * std::mem::size_of::<BlockQ5K>()) as u64;
-
-        #[repr(C)]
-        #[repr(C)]
-        struct GemmArgs {
-            ne00: i32,
-            ne02: i32,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne12: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            r2: i16,
-            r3: i16,
-        }
-
-        let args = GemmArgs {
-            ne00: k as i32,
-            ne02: 1,
-            nb01,
-            nb02: 0,
-            nb03: 0,
-            ne12: 1,
-            nb10: 4,
-            nb11: k as u64 * 4,
-            nb12: 0,
-            nb13: 0,
-            ne0: m as i32,
-            ne1: n as i32,
-            r2: 1,
-            r3: 1,
-        };
-
-        let weights_size = weights.len() * std::mem::size_of::<BlockQ5K>();
-        let input_size = input.len() * std::mem::size_of::<f32>();
-        let output_size = m * n * std::mem::size_of::<f32>();
-
-        let weights_buffer = {
-            let mut buf_cell = self.gemm_weights_buffer.borrow_mut();
-            let mut size_cell = self.gemm_weights_size.borrow_mut();
-            if *size_cell != weights_size {
-                let buf = self.device.new_buffer_with_data(
-                    weights.as_ptr() as *const std::ffi::c_void,
-                    weights_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = weights_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
-
-        let input_buffer = {
-            let mut buf_cell = self.gemm_input_buffer.borrow_mut();
-            let mut size_cell = self.gemm_input_size.borrow_mut();
-            if *size_cell != input_size {
-                let buf = self.device.new_buffer_with_data(
-                    input.as_ptr() as *const std::ffi::c_void,
-                    input_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = input_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
-
-        let output_buffer = {
-            let mut buf_cell = self.gemm_output_buffer.borrow_mut();
-            let mut size_cell = self.gemm_output_size.borrow_mut();
-            if *size_cell != output_size {
-                let buf = self.device.new_buffer(
-                    output_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = output_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
-
-        let command_buffer = self.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&self.gemm_q5_k_pipeline);
-        encoder.set_buffer(0, Some(&weights_buffer), 0);
-        encoder.set_buffer(1, Some(&input_buffer), 0);
-        encoder.set_buffer(2, Some(&output_buffer), 0);
-        encoder.set_bytes(
-            3,
-            std::mem::size_of::<GemmArgs>() as u64,
-            &args as *const GemmArgs as *const std::ffi::c_void,
-        );
-
-        // Dynamic dispatch based on K size
-        // Small K (nb <= 4): NR0=8, NC=4
-        // Large K (nb > 4): NR0=2, NC=4
-        let (nr0, nc) = if nb <= 4 { (8u64, 4u64) } else { (2u64, 4u64) };
-        const NSG: u64 = 2;
-
-        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
-        let thread_group_count = MTLSize {
-            width: (m as u64 + NSG * nr0 - 1) / (NSG * nr0),
-            height: (n as u64 + nc - 1) / nc,
-            depth: 1,
-        };
-
-        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
-        encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
-
-        let output_ptr = output_buffer.contents() as *const f32;
-        Ok(unsafe { std::slice::from_raw_parts(output_ptr, m * n).to_vec() })
-    }
-
-    /// Q6_K × F32 GEMM
-    pub fn gemm_q6_k_f32(
-        &self,
-        m: usize,
-        n: usize,
-        k: usize,
-        weights: &[BlockQ6K],
-        input: &[f32],
-    ) -> Result<Vec<f32>, String> {
-        let nb = k / 256;
-        let nb01 = (nb * std::mem::size_of::<BlockQ6K>()) as u64;
-
-        #[repr(C)]
-        #[repr(C)]
-        struct GemmArgs {
-            ne00: i32,
-            ne02: i32,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne12: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            r2: i16,
-            r3: i16,
-        }
-
-        let args = GemmArgs {
-            ne00: k as i32,
-            ne02: 1,
-            nb01,
-            nb02: 0,
-            nb03: 0,
-            ne12: 1,
-            nb10: 4,
-            nb11: k as u64 * 4,
-            nb12: 0,
-            nb13: 0,
-            ne0: m as i32,
-            ne1: n as i32,
-            r2: 1,
-            r3: 1,
-        };
-
-        let weights_size = weights.len() * std::mem::size_of::<BlockQ6K>();
-        let input_size = input.len() * std::mem::size_of::<f32>();
-        let output_size = m * n * std::mem::size_of::<f32>();
-
-        let weights_buffer = {
-            let mut buf_cell = self.gemm_weights_buffer.borrow_mut();
-            let mut size_cell = self.gemm_weights_size.borrow_mut();
-            if *size_cell != weights_size {
-                let buf = self.device.new_buffer_with_data(
-                    weights.as_ptr() as *const std::ffi::c_void,
-                    weights_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = weights_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
-
-        let input_buffer = {
-            let mut buf_cell = self.gemm_input_buffer.borrow_mut();
-            let mut size_cell = self.gemm_input_size.borrow_mut();
-            if *size_cell != input_size {
-                let buf = self.device.new_buffer_with_data(
-                    input.as_ptr() as *const std::ffi::c_void,
-                    input_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = input_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
-
-        let output_buffer = {
-            let mut buf_cell = self.gemm_output_buffer.borrow_mut();
-            let mut size_cell = self.gemm_output_size.borrow_mut();
-            if *size_cell != output_size {
-                let buf = self.device.new_buffer(
-                    output_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = output_size;
-                buf
-            } else {
-                buf_cell.as_ref().unwrap().clone()
-            }
-        };
-
-        let command_buffer = self.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&self.gemm_q6_k_pipeline);
-        encoder.set_buffer(0, Some(&weights_buffer), 0);
-        encoder.set_buffer(1, Some(&input_buffer), 0);
-        encoder.set_buffer(2, Some(&output_buffer), 0);
-        encoder.set_bytes(
-            3,
-            std::mem::size_of::<GemmArgs>() as u64,
-            &args as *const GemmArgs as *const std::ffi::c_void,
-        );
-
-        // Dynamic dispatch based on K size
-        // Small K (nb <= 4): NR0=8, NC=4
-        // Large K (nb > 4): NR0=2, NC=4
-        let (nr0, nc) = if nb <= 4 { (8u64, 4u64) } else { (2u64, 4u64) };
-        const NSG: u64 = 2;
-
-        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
-        let thread_group_count = MTLSize {
-            width: (m as u64 + NSG * nr0 - 1) / (NSG * nr0),
-            height: (n as u64 + nc - 1) / nc,
-            depth: 1,
-        };
-
-        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
-        encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
-
-        let output_ptr = output_buffer.contents() as *const f32;
-        Ok(unsafe { std::slice::from_raw_parts(output_ptr, m * n).to_vec() })
+        Ok(unsafe {
+            std::slice::from_raw_parts(
+                output_buffer.contents() as *const f32,
+                m,
+            )
+            .to_vec()
+        })
     }
 
     // ===== Templated GEMM Methods (from llama.cpp) =====
@@ -5030,10 +4908,8 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         if n == 1 {
             self.mv_q4_k_f32(m, k, weights, input)
-        } else if n >= 32 {
-            self.gemm_template_q4_k_f32(m, n, k, weights, input)
         } else {
-            self.gemm_q4_k_f32(m, n, k, weights, input)
+            self.gemm_template_q4_k_f32(m, n, k, weights, input)
         }
     }
 
@@ -5047,10 +4923,8 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         if n == 1 {
             self.mv_q2_k_f32(m, k, weights, input)
-        } else if n >= 32 {
-            self.gemm_template_q2_k_f32(m, n, k, weights, input)
         } else {
-            self.gemm_q2_k_f32(m, n, k, weights, input)
+            self.gemm_template_q2_k_f32(m, n, k, weights, input)
         }
     }
 
@@ -5064,10 +4938,8 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         if n == 1 {
             self.mv_q3_k_f32(m, k, weights, input)
-        } else if n >= 32 {
-            self.gemm_template_q3_k_f32(m, n, k, weights, input)
         } else {
-            self.gemm_q3_k_f32(m, n, k, weights, input)
+            self.gemm_template_q3_k_f32(m, n, k, weights, input)
         }
     }
 
@@ -5081,10 +4953,8 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         if n == 1 {
             self.mv_q5_k_f32(m, k, weights, input)
-        } else if n >= 32 {
-            self.gemm_template_q5_k_f32(m, n, k, weights, input)
         } else {
-            self.gemm_q5_k_f32(m, n, k, weights, input)
+            self.gemm_template_q5_k_f32(m, n, k, weights, input)
         }
     }
 
@@ -5098,10 +4968,8 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         if n == 1 {
             self.mv_q6_k_f32(m, k, weights, input)
-        } else if n >= 32 {
-            self.gemm_template_q6_k_f32(m, n, k, weights, input)
         } else {
-            self.gemm_q6_k_f32(m, n, k, weights, input)
+            self.gemm_template_q6_k_f32(m, n, k, weights, input)
         }
     }
 

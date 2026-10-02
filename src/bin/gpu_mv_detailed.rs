@@ -66,7 +66,7 @@ fn main() {
 
     // 2. Library compilation
     let t1 = Instant::now();
-    let source = include_str!("../../shaders/mul_mv_template.metal");
+    let source = include_str!("../../shaders/gemm.metal");
     let compile_options = CompileOptions::new();
     let library = device
         .new_library_with_source(source, &compile_options)
@@ -80,7 +80,7 @@ fn main() {
     let t2 = Instant::now();
     let cv = create_mv_function_constants(2, 1, 1, 1);
     let kernel = library
-        .get_function("kernel_mul_mv_q4_K_f32", Some(cv))
+        .get_function("kernel_gemm_q4_K_f32", Some(cv))
         .expect("Failed to get kernel");
     let pipeline = device
         .new_compute_pipeline_state_with_function(&kernel)

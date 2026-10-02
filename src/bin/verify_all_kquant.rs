@@ -68,8 +68,7 @@ fn main() {
     let shader_dir =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
     let source =
-        std::fs::read_to_string(shader_dir.join("mul_mv_template.metal"))
-            .unwrap();
+        std::fs::read_to_string(shader_dir.join("gemm.metal")).unwrap();
 
     let compile_options = CompileOptions::new();
     let lib = device
@@ -82,7 +81,7 @@ fn main() {
     let kernels = ["q2_K", "q3_K", "q4_K", "q5_K", "q6_K"];
 
     for kernel_name in &kernels {
-        let full_name = format!("kernel_mul_mv_{}_f32", kernel_name);
+        let full_name = format!("kernel_gemm_{}_f32", kernel_name);
         print!("Testing {}...", full_name);
 
         match lib.get_function(&full_name, Some(cv.clone())) {
