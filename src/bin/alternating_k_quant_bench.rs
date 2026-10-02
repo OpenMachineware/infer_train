@@ -85,6 +85,8 @@ fn expand_includes(
     let mut result = String::new();
     let mut skip_embed_block = false;
     let mut skip_endif_count = 0;
+    let mut after_embed_else = false;
+    // Track when we've passed #else in an embed block - need to skip the matching #endif
 
     for line in source.lines() {
         // Handle embed library block
@@ -97,12 +99,25 @@ fn expand_includes(
         if skip_embed_block {
             if line.starts_with("#if") {
                 skip_endif_count += 1;
+            } else if line.starts_with("#else") {
+                // When we hit #else in an embed block, stop skipping
+                // The #else branch contains the actual include we want
+                skip_embed_block = false;
+                after_embed_else = true;
+                result
+                    .push_str("// End of embed block, start of actual code\n");
             } else if line.starts_with("#endif") {
                 skip_endif_count -= 1;
                 if skip_endif_count == 0 {
                     skip_embed_block = false;
                 }
             }
+            continue;
+        }
+        if after_embed_else && line.starts_with("#endif") {
+            // Skip the #endif that closes the embed block
+            after_embed_else = false;
+            result.push_str("// Skipped embed #endif\n");
             continue;
         }
 

@@ -77,14 +77,16 @@ fn run_alternating(
     rounds: usize,
 ) -> (f64, f64, usize, usize) {
     let cv = create_function_constants(info.nsg);
-    let kernel_name = format!("kernel_gemm_{}_f32", info.name);
+    // llama.cpp uses kernel_mul_mv_*, we use kernel_gemm_*
+    let llama_kernel_name = format!("kernel_mul_mv_{}_f32", info.name);
+    let my_kernel_name = format!("kernel_gemm_{}_f32", info.name);
 
     let llama_func =
-        match llama_lib.get_function(&kernel_name, Some(cv.clone())) {
+        match llama_lib.get_function(&llama_kernel_name, Some(cv.clone())) {
             Ok(f) => f,
             Err(_) => return (0.0, 0.0, 0, 0),
         };
-    let my_func = match my_lib.get_function(&kernel_name, Some(cv)) {
+    let my_func = match my_lib.get_function(&my_kernel_name, Some(cv)) {
         Ok(f) => f,
         Err(_) => return (0.0, 0.0, 0, 0),
     };
@@ -266,10 +268,15 @@ fn main() {
     // Load and inline self-written shader
     let my_shader_base = include_str!("../../shaders/gemm.metal");
     let my_ggml_common = include_str!("../../shaders/ggml-common.h");
+
+    // Build complete shader:
+    // 1. Define Metal implementation mode for ggml-common.h
+    // 2. Include ggml-common.h (defines types and all tables including IQ grids)
+    // 3. Include the main shader (replaces #include "ggml-common.h" with empty string)
     let ggml_common_with_metal =
-        "#define GGML_COMMON_IMPL_METAL\n".to_string() + my_ggml_common;
-    let my_shader = my_shader_base
-        .replace("#include \"ggml-common.h\"", &ggml_common_with_metal);
+        format!("#define GGML_COMMON_IMPL_METAL\n{}", my_ggml_common);
+    let my_shader = my_shader_base.replace("#include \"ggml-common.h\"", "");
+    let my_shader = format!("{}\n{}", ggml_common_with_metal, my_shader);
 
     let compile_options = CompileOptions::new();
     let llama_lib = device
@@ -282,9 +289,8 @@ fn main() {
     let k = 4096;
     let rounds = 500;
 
-    // TQ and MXFP formats
+    // TQ and MXFP formats (tq1_0 not in llama.cpp, only test tq2_0 and mxfp4)
     let formats = [
-        FormatInfo { name: "tq1_0", nsg: 4, block_size: 54 },
         FormatInfo { name: "tq2_0", nsg: 4, block_size: 66 },
         FormatInfo { name: "mxfp4", nsg: 2, block_size: 36 },
     ];

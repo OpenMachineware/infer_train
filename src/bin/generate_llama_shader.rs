@@ -26,11 +26,8 @@ fn main() {
         fs::read_to_string(base_dir.join("ggml-metal/kernels/mul_mv.metal"))
             .expect("Failed to read mul_mv.metal");
 
-    // Read IQ grid tables from our project
-    let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let iq_grid_tables =
-        fs::read_to_string(project_dir.join("shaders/iq_grid_tables.h"))
-            .expect("Failed to read iq_grid_tables.h");
+    // Note: We use the grid tables from ggml-common.h (enabled by GGML_COMMON_IMPL_METAL)
+    // rather than our separate iq_grid_tables.h to avoid redefinitions.
 
     // Combine all sources
     let combined = format!(
@@ -40,14 +37,14 @@ fn main() {
 #include <metal_stdlib>
 using namespace metal;
 
-// Block type definitions from ggml-common.h (Metal version)
+// Enable Metal implementation in ggml-common.h
 #define GGML_COMMON_DECL_METAL
+#define GGML_COMMON_IMPL_METAL
+
+// Block type definitions and grid tables from ggml-common.h
 {}
 
 // Common definitions
-{}
-
-// IQ grid tables
 {}
 
 // Dequantize functions (contains block_q_n_dot_y)
@@ -58,7 +55,6 @@ using namespace metal;
 "#,
         extract_metal_blocks(&ggml_common),
         extract_metal_common(&common_h),
-        extract_iq_tables(&iq_grid_tables),
         extract_metal_dequant(&dequantize_h),
         extract_metal_kernels(&mul_mv)
     );
@@ -83,84 +79,150 @@ typedef half2 ggml_half2;
 }
 
 fn extract_metal_blocks(source: &str) -> String {
-    let mut result = String::new();
-
-    result.push_str("using namespace metal;\n");
-    result.push_str("typedef half ggml_half;\n");
-    result.push_str("typedef half2 ggml_half2;\n\n");
-
-    // Extract constants
-    result.push_str("#define QK_K 256\n");
-    result.push_str("#define K_SCALE_SIZE 12\n\n");
-
-    // Extract block structures by searching for them
-    let blocks = vec![
-        ("QK1_0", "128", "block_q1_0"),
-        ("QK2_0", "64", "block_q2_0"),
-        ("QK4_0", "32", "block_q4_0"),
-        ("QK4_1", "32", "block_q4_1"),
-        ("QK5_0", "32", "block_q5_0"),
-        ("QK5_1", "32", "block_q5_1"),
-        ("QK8_0", "32", "block_q8_0"),
-        ("QK_MXFP4", "32", "block_mxfp4"),
-    ];
-
-    for (qk_name, qk_val, _block_name) in &blocks {
-        result.push_str(&format!("#define {} {}\n", qk_name, qk_val));
-    }
-    result.push_str("\n");
-
-    // Standard block definitions (simplified, matching llama.cpp)
-    result.push_str(
-        "typedef struct { ggml_half d; uint8_t qs[QK1_0/8]; } block_q1_0;\n",
-    );
-    result.push_str(
-        "typedef struct { ggml_half d; uint8_t qs[QK2_0/4]; } block_q2_0;\n",
-    );
-    result.push_str(
-        "typedef struct { ggml_half d; uint8_t qs[QK4_0/2]; } block_q4_0;\n",
-    );
-    result.push_str("typedef struct { union { struct { ggml_half d; ggml_half m; }; ggml_half2 dm; }; uint8_t qs[QK4_1/2]; } block_q4_1;\n");
-    result.push_str("typedef struct { ggml_half d; uint8_t qh[4]; uint8_t qs[QK5_0/2]; } block_q5_0;\n");
-    result.push_str("typedef struct { union { struct { ggml_half d; ggml_half m; }; ggml_half2 dm; }; uint8_t qh[4]; uint8_t qs[QK5_1/2]; } block_q5_1;\n");
-    result.push_str(
-        "typedef struct { ggml_half d; int8_t qs[QK8_0]; } block_q8_0;\n",
-    );
-    result.push_str("typedef struct { uint8_t e; uint8_t qs[QK_MXFP4/2]; } block_mxfp4;\n\n");
-
-    // TQ blocks
-    result.push_str("typedef struct { uint8_t qs[(QK_K-4*QK_K/64)/5]; uint8_t qh[QK_K/64]; ggml_half d; } block_tq1_0;\n");
-    result.push_str(
-        "typedef struct { uint8_t qs[QK_K/4]; ggml_half d; } block_tq2_0;\n\n",
-    );
-
-    // K-quant blocks
-    result.push_str("typedef struct { uint8_t scales[QK_K/16]; uint8_t qs[QK_K/4]; union { struct { ggml_half d; ggml_half dmin; }; ggml_half2 dm; }; } block_q2_K;\n");
-    result.push_str("typedef struct { uint8_t hmask[QK_K/8]; uint8_t qs[QK_K/4]; uint8_t scales[12]; ggml_half d; } block_q3_K;\n");
-    result.push_str("typedef struct { union { struct { ggml_half d; ggml_half dmin; }; ggml_half2 dm; }; uint8_t scales[K_SCALE_SIZE]; uint8_t qs[QK_K/2]; } block_q4_K;\n");
-    result.push_str("typedef struct { union { struct { ggml_half d; ggml_half dmin; }; ggml_half2 dm; }; uint8_t scales[K_SCALE_SIZE]; uint8_t qh[QK_K/8]; uint8_t qs[QK_K/2]; } block_q5_K;\n");
-    result.push_str("typedef struct { uint8_t ql[QK_K/2]; uint8_t qh[QK_K/4]; int8_t scales[QK_K/16]; ggml_half d; } block_q6_K;\n\n");
-
-    // IQ blocks
-    result.push_str(
-        "typedef struct { ggml_half d; uint16_t qs[QK_K/8]; } block_iq2_xxs;\n",
-    );
-    result.push_str("typedef struct { ggml_half d; uint16_t qs[QK_K/8]; uint8_t scales[QK_K/32]; } block_iq2_xs;\n");
-    result.push_str("typedef struct { ggml_half d; uint8_t qs[QK_K/4]; uint8_t qh[QK_K/32]; uint8_t scales[QK_K/32]; } block_iq2_s;\n");
-    result.push_str("typedef struct { ggml_half d; uint8_t qs[3*QK_K/8]; } block_iq3_xxs;\n");
-    result.push_str("typedef struct { ggml_half d; uint8_t qs[QK_K/4]; uint8_t qh[QK_K/32]; uint8_t signs[QK_K/8]; uint8_t scales[QK_K/64]; } block_iq3_s;\n");
-    result.push_str("typedef struct { ggml_half d; uint8_t qs[QK_K/8]; uint16_t qh[QK_K/32]; } block_iq1_s;\n");
-    result.push_str("typedef struct { uint8_t qs[QK_K/8]; uint8_t qh[QK_K/16]; uint8_t scales[QK_K/32]; } block_iq1_m;\n");
-    result.push_str(
-        "typedef struct { ggml_half d; uint8_t qs[QK4_0/2]; } block_iq4_nl;\n",
-    );
-    result.push_str("typedef struct { ggml_half d; uint16_t scales_h; uint8_t scales_l[QK_K/64]; uint8_t qs[QK_K/2]; } block_iq4_xs;\n");
-
-    result
+    // Simply return the entire ggml-common.h content
+    // The GGML_COMMON_IMPL_METAL define at the top will enable the Metal parts
+    source.to_string()
 }
 
 fn extract_metal_common(source: &str) -> String {
     let mut result = String::new();
+
+    // Add FC_MUL_MV and related constants from ggml-metal-impl.h
+    result.push_str("// Function constants for MV kernels\n");
+    result.push_str("#define FC_MUL_MV 600\n");
+    result.push_str("#define N_SIMDWIDTH 32\n\n");
+
+    // Add N_R0 and N_SG constants for each format
+    result.push_str("// Rows per simdgroup and simdgroups per threadgroup\n");
+    result.push_str("#define N_R0_Q1_0 8\n");
+    result.push_str("#define N_SG_Q1_0 2\n");
+    result.push_str("#define N_R0_Q2_0 8\n");
+    result.push_str("#define N_SG_Q2_0 2\n");
+    result.push_str("#define N_R0_Q4_0 4\n");
+    result.push_str("#define N_SG_Q4_0 2\n");
+    result.push_str("#define N_R0_Q4_1 4\n");
+    result.push_str("#define N_SG_Q4_1 2\n");
+    result.push_str("#define N_R0_Q5_0 4\n");
+    result.push_str("#define N_SG_Q5_0 2\n");
+    result.push_str("#define N_R0_Q5_1 4\n");
+    result.push_str("#define N_SG_Q5_1 2\n");
+    result.push_str("#define N_R0_Q8_0 2\n");
+    result.push_str("#define N_SG_Q8_0 4\n");
+    result.push_str("#define N_R0_MXFP4 2\n");
+    result.push_str("#define N_SG_MXFP4 2\n");
+    result.push_str("#define N_R0_Q2_K 4\n");
+    result.push_str("#define N_SG_Q2_K 2\n");
+    result.push_str("#define N_R0_Q3_K 2\n");
+    result.push_str("#define N_SG_Q3_K 2\n");
+    result.push_str("#define N_R0_Q4_K 2\n");
+    result.push_str("#define N_SG_Q4_K 2\n");
+    result.push_str("#define N_R0_Q5_K 1\n");
+    result.push_str("#define N_SG_Q5_K 2\n");
+    result.push_str("#define N_R0_Q6_K 2\n");
+    result.push_str("#define N_SG_Q6_K 2\n");
+    result.push_str("#define N_R0_IQ1_S 4\n");
+    result.push_str("#define N_SG_IQ1_S 2\n");
+    result.push_str("#define N_R0_IQ1_S_SPLIT 8\n");
+    result.push_str("#define N_R0_IQ1_M 4\n");
+    result.push_str("#define N_SG_IQ1_M 2\n");
+    result.push_str("#define N_R0_IQ1_M_SPLIT 8\n");
+    result.push_str("#define N_R0_IQ2_XXS 4\n");
+    result.push_str("#define N_SG_IQ2_XXS 2\n");
+    result.push_str("#define N_R0_IQ2_XXS_SPLIT 8\n");
+    result.push_str("#define N_R0_IQ2_XS 4\n");
+    result.push_str("#define N_SG_IQ2_XS 2\n");
+    result.push_str("#define N_R0_IQ2_XS_SPLIT 8\n");
+    result.push_str("#define N_R0_IQ2_S 4\n");
+    result.push_str("#define N_SG_IQ2_S 2\n");
+    result.push_str("#define N_R0_IQ2_S_SPLIT 8\n");
+    result.push_str("#define N_R0_IQ3_XXS 4\n");
+    result.push_str("#define N_SG_IQ3_XXS 2\n");
+    result.push_str("#define N_R0_IQ3_XXS_SPLIT 8\n");
+    result.push_str("#define N_R0_IQ3_S 4\n");
+    result.push_str("#define N_SG_IQ3_S 2\n");
+    result.push_str("#define N_R0_IQ3_S_SPLIT 8\n");
+    result.push_str("#define N_R0_IQ4_NL 2\n");
+    result.push_str("#define N_SG_IQ4_NL 2\n");
+    result.push_str("#define N_R0_IQ4_XS 2\n");
+    result.push_str("#define N_SG_IQ4_XS 2\n");
+    result.push_str("#define N_R0_TQ2_0 4\n");
+    result.push_str("#define N_SG_TQ2_0 2\n\n");
+
+    // Additional QK constants
+    result.push_str("#define QK4_NL 32\n\n");
+
+    // Add argument struct for mul_mv
+    result.push_str("typedef struct {\n");
+    result.push_str("    int32_t  ne00;\n");
+    result.push_str("    int32_t  ne01;\n");
+    result.push_str("    int32_t  ne02;\n");
+    result.push_str("    uint64_t nb00;\n");
+    result.push_str("    uint64_t nb01;\n");
+    result.push_str("    uint64_t nb02;\n");
+    result.push_str("    uint64_t nb03;\n");
+    result.push_str("    int32_t  ne10;\n");
+    result.push_str("    int32_t  ne11;\n");
+    result.push_str("    int32_t  ne12;\n");
+    result.push_str("    uint64_t nb10;\n");
+    result.push_str("    uint64_t nb11;\n");
+    result.push_str("    uint64_t nb12;\n");
+    result.push_str("    uint64_t nb13;\n");
+    result.push_str("    int32_t  ne0;\n");
+    result.push_str("    int32_t  ne1;\n");
+    result.push_str("    int32_t  nr0;\n");
+    result.push_str("    int16_t  r2;\n");
+    result.push_str("    int16_t  r3;\n");
+    result.push_str("} ggml_metal_kargs_mul_mv;\n\n");
+
+    // Add argument struct for mul_mv_ext (for IQ formats)
+    result.push_str("typedef struct {\n");
+    result.push_str("    int32_t  ne00;\n");
+    result.push_str("    int32_t  ne01;\n");
+    result.push_str("    int32_t  ne02;\n");
+    result.push_str("    uint64_t nb00;\n");
+    result.push_str("    uint64_t nb01;\n");
+    result.push_str("    uint64_t nb02;\n");
+    result.push_str("    uint64_t nb03;\n");
+    result.push_str("    int32_t  ne10;\n");
+    result.push_str("    int32_t  ne11;\n");
+    result.push_str("    int32_t  ne12;\n");
+    result.push_str("    uint64_t nb10;\n");
+    result.push_str("    uint64_t nb11;\n");
+    result.push_str("    uint64_t nb12;\n");
+    result.push_str("    uint64_t nb13;\n");
+    result.push_str("    int32_t  ne0;\n");
+    result.push_str("    int32_t  ne1;\n");
+    result.push_str("    int16_t  r2;\n");
+    result.push_str("    int16_t  r3;\n");
+    result.push_str("} ggml_metal_kargs_mul_mv_ext;\n\n");
+
+    // Add argument struct for mul_mv_id (for MoE - not used in this benchmark but needed for compilation)
+    result.push_str("typedef struct {\n");
+    result.push_str("    int32_t  nei0;\n");
+    result.push_str("    int32_t  nei1;\n");
+    result.push_str("    uint64_t nbi1;\n");
+    result.push_str("    int32_t  ne00;\n");
+    result.push_str("    int32_t  ne01;\n");
+    result.push_str("    int32_t  ne02;\n");
+    result.push_str("    uint64_t nb00;\n");
+    result.push_str("    uint64_t nb01;\n");
+    result.push_str("    uint64_t nb02;\n");
+    result.push_str("    int32_t  ne10;\n");
+    result.push_str("    int32_t  ne11;\n");
+    result.push_str("    int32_t  ne12;\n");
+    result.push_str("    int32_t  ne13;\n");
+    result.push_str("    uint64_t nb10;\n");
+    result.push_str("    uint64_t nb11;\n");
+    result.push_str("    uint64_t nb12;\n");
+    result.push_str("    int32_t  ne0;\n");
+    result.push_str("    int32_t  ne1;\n");
+    result.push_str("    uint64_t nb1;\n");
+    result.push_str("    int32_t  nr0;\n");
+    result.push_str("} ggml_metal_kargs_mul_mv_id;\n\n");
+
+    // Add iq1m_scale_t type for IQ1_M (only if not already defined in ggml-common.h)
+    // Note: ggml-common.h already defines this, so we skip it here
+    // result.push_str("typedef union { ggml_half f16; uint16_t u16; } iq1m_scale_t;\n\n");
 
     for line in source.lines() {
         // Skip includes and pragma
