@@ -1082,25 +1082,27 @@ void kernel_mul_mv_q8_0_f32_impl(
 
     float sumf[nr0] = {0.f};
 
-    const short ix = tiisg / 4;
-    const short ir = tiisg % 4;
+    const short ix = tiisg / 8;
+    const short it = tiisg % 8;
+    const short iq = it / 4;
+    const short ir = it % 4;
 
     device const float * yb = y + ix * QK + 8 * ir;
 
-    for (int ib = ix; ib < nb; ib += 8) {
+    for (int ib = ix; ib < nb; ib += 4) {
         for (short row = 0; row < nr0; row++) {
             device const block_q8_0 * b = x + ib + row * nb;
             float d = b->d;
 
             float acc = 0.f;
             for (short i = 0; i < 8; ++i) {
-                acc += yb[i] * b->qs[8 * ir + i] * d;
+                acc += yb[i] * (b->qs[8 * iq + i] - 128.f) * d;
             }
 
             sumf[row] += acc;
         }
 
-        yb += 8 * QK;
+        yb += 4 * QK;
     }
 
     device float * dst_f32 = (device float *)dst + (int64_t)im * args.ne0 * args.ne1 + (int64_t)r1 * args.ne0;
