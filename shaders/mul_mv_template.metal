@@ -148,7 +148,7 @@ typedef struct {
 
 typedef struct {
     half d;
-    uint8_t qs[8];
+    uint8_t qs[16];  // QK4_NL/2 = 32/2 = 16
 } block_iq4_nl;
 
 typedef struct {
@@ -1583,7 +1583,7 @@ kernel void kernel_mul_mv_q2_0_f32(
 }
 
 // ============================================================================
-// IQ4_NL kernel
+// IQ4_NL kernel - matches llama.cpp algorithm exactly
 // ============================================================================
 
 template<int nr0, typename args_t>
@@ -1653,18 +1653,20 @@ void kernel_mul_mv_iq4_nl_f32_impl(
             aux32[0] &= 0x0f0f0f0f;
             qf1 = {shmem_f32[q8[0]], shmem_f32[q8[1]], shmem_f32[q8[2]], shmem_f32[q8[3]]};
             qf2 = {shmem_f32[q8[4]], shmem_f32[q8[5]], shmem_f32[q8[6]], shmem_f32[q8[7]]};
-
-            acc1 = yl[0] * qf1 + yl[1] * qf2;
+            acc1 += yl[0] * qf1;
+            acc2 += yl[1] * qf2;
 
             aux32[0] = q4[2] | (q4[3] << 16);
             aux32[1] = (aux32[0] >> 4) & 0x0f0f0f0f;
             aux32[0] &= 0x0f0f0f0f;
             qf1 = {shmem_f32[q8[0]], shmem_f32[q8[1]], shmem_f32[q8[2]], shmem_f32[q8[3]]};
             qf2 = {shmem_f32[q8[4]], shmem_f32[q8[5]], shmem_f32[q8[6]], shmem_f32[q8[7]]};
+            acc1 += yl[2] * qf1;
+            acc2 += yl[3] * qf2;
 
-            acc2 = yl[2] * qf1 + yl[3] * qf2;
+            acc1 += acc2;
 
-            sumf[row] += (float)xb.d * (acc1[0] + acc1[1] + acc1[2] + acc1[3] + acc2[0] + acc2[1] + acc2[2] + acc2[3]);
+            sumf[row] += (float)xb.d * (acc1[0] + acc1[1] + acc1[2] + acc1[3]);
         }
 
         yb += 16 * QK4_NL;
