@@ -158,9 +158,9 @@ pub unsafe fn vec_dot_iq3_xxs_q8_k_neon(
             let q8b = vld1q_s8_x4(q8);
             q8 = q8.add(64);
 
-            // aux32 load
-            let aux32_0 = *(gas as *const u32);
-            let aux32_1 = *(gas.add(4) as *const u32);
+            // aux32 load (unaligned read from u8 pointer)
+            let aux32_0 = std::ptr::read_unaligned(gas as *const u32);
+            let aux32_1 = std::ptr::read_unaligned(gas.add(4) as *const u32);
             gas = gas.add(8);
 
             // Grid lookup - direct pointer arithmetic
@@ -754,9 +754,13 @@ pub unsafe fn vec_dot_iq2_xxs_q8_k_neon(
             // Load Q8 values (64 bytes for 2 blocks)
             let q8b = vld1q_s8_x4(q8.add(ib32 * 32));
 
-            // Load q2 values (4 u32 for 2 blocks)
-            let aux32: [u32; 4] =
-                [*q2.add(0), *q2.add(1), *q2.add(2), *q2.add(3)];
+            // Load q2 values (4 u32 for 2 blocks) - use unaligned reads
+            let aux32: [u32; 4] = [
+                std::ptr::read_unaligned(q2.add(0)),
+                std::ptr::read_unaligned(q2.add(1)),
+                std::ptr::read_unaligned(q2.add(2)),
+                std::ptr::read_unaligned(q2.add(3)),
+            ];
             q2 = q2.add(4);
 
             let aux8: [u8; 16] = std::mem::transmute(aux32);
