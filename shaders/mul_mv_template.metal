@@ -2936,3 +2936,126 @@ kernel void kernel_mul_mv_iq4_xs_f32(
     kernel_mul_mv_iq4_xs_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(
         args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
 }
+
+// ============================================================================
+// TQ1_0 kernel (Ternary Quantization, 1.6875 bpw)
+// ============================================================================
+
+// TQ1_0 block structure (from ggml-common.h)
+typedef struct {
+    uint8_t qs[48]; // (256 - 16) / 5 = 48 bytes, 5 trits per byte
+    uint8_t qh[4];  // 256 / 64 = 4 bytes, 4 elements per byte
+    half d;
+} block_tq1_0;
+
+// Trit values: -1, 0, 1
+constexpr constant static int8_t tq1_0_trits[3] = {-1, 0, 1};
+
+template<int nr0, typename args_t>
+void kernel_mul_mv_tq1_0_f32_impl(
+        args_t args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        uint3  tgpig,
+        ushort tiisg,
+        ushort sgitg) {
+
+    const short NSG = FC_nsg;
+
+    const int nb = args.ne00 / QK_K;
+
+    const int r0 = tgpig.x;
+    const int r1 = tgpig.y;
+    const int im = tgpig.z;
+
+    const int first_row = (r0 * NSG + sgitg) * nr0;
+
+    const uint i12 = im % FC_ne12;
+    const uint i13 = im / FC_ne12;
+
+    const int nb32 = nb * (QK_K / 32);
+
+    const short ntx = 32;
+    const short nrep = 32 / ntx;
+
+    const short ix = tiisg % ntx;
+    const short irep = tiisg / ntx;
+
+    const short row0 = (nr0 * irep) / nrep;
+    const short row1 = (nr0 * (irep + 1)) / nrep;
+
+    const uint64_t offset0 = (first_row + row0) * args.nb01 + (i12 / FC_r2) * args.nb02 + (i13 / FC_r3) * args.nb03;
+    const uint64_t offset1 = r1 * args.nb11 + i12 * args.nb12 + i13 * args.nb13;
+
+    device const block_tq1_0 * x = (device const block_tq1_0 *)(src0 + offset0);
+    device const float        * y = (device const float        *)(src1 + offset1);
+
+    float yl[32];
+    float sumf[nr0] = {0.f};
+
+    device const float * y4 = y + 32 * ix;
+
+    for (int ib32 = ix; ib32 < nb32; ib32 += ntx) {
+        for (short i = 0; i < 32; ++i) {
+            yl[i] = y4[i];
+        }
+
+        const int ibl = ib32 / (QK_K / 32);
+        const int ib = ib32 % (QK_K / 32);
+
+        device const block_tq1_0 * xr = x + ibl;
+        device const half * dh = &xr->d;
+
+        for (short row = row0; row < row1; row++) {
+            const float d = dh[0];
+
+            // Each block of 32 uses 6 bytes of qs (6 * 5 = 30 trits) plus 2 bits from qh
+            // Simplified: decode each trit directly
+            const int base = ib * 6; // 6 bytes per block of 32
+            float sum = 0;
+
+            // Process 32 elements per block
+            // Each byte holds 5 trits, packed as base-3
+            for (short j = 0; j < 6; ++j) {
+                const uint qbyte = xr->qs[base + j];
+                // Decode 5 trits from each byte
+                uint val = qbyte;
+                for (short t = 0; t < 5 && j * 5 + t < 32; ++t) {
+                    const int trit = val % 3;
+                    sum += yl[j * 5 + t] * tq1_0_trits[trit];
+                    val /= 3;
+                }
+            }
+
+            sumf[row] += d * sum;
+
+            dh += args.nb01 / 2;
+        }
+
+        y4 += 32 * ntx;
+    }
+
+    device float * dst_f32 = (device float *)dst + (uint64_t)im * args.ne0 * args.ne1 + (uint64_t)r1 * args.ne0;
+
+    for (int row = 0; row < nr0 && first_row + row < args.ne0; ++row) {
+        float sum_all = simd_sum(sumf[row]);
+        if (tiisg == 0) {
+            dst_f32[first_row + row] = sum_all;
+        }
+    }
+}
+
+[[host_name("kernel_mul_mv_tq1_0_f32")]]
+kernel void kernel_mul_mv_tq1_0_f32(
+        constant ggml_metal_kargs_mul_mv & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+
+    kernel_mul_mv_tq1_0_f32_impl<4, constant ggml_metal_kargs_mul_mv &>(
+        args, src0, src1, dst, tgpig, tiisg, sgitg);
+}
