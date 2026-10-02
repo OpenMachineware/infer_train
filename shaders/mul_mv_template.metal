@@ -966,7 +966,7 @@ kernel void kernel_mul_mv_q4_0_f32(
 }
 
 // ============================================================================
-// Q4_1 kernel
+// Q4_1 kernel - matches llama.cpp complex template approach
 // ============================================================================
 
 template<int nr0, typename args_t>
@@ -980,56 +980,74 @@ void kernel_mul_mv_q4_1_f32_impl(
         ushort sgitg) {
 
     const short NSG = FC_nsg;
+    constexpr short NW = 32;  // N_SIMDWIDTH
+    constexpr short NQ = 16;
+
     const int nb = args.ne00 / QK;
 
-    const int r0 = tgpig.x;
+    const int r0 = (tgpig.x * NSG + sgitg) * nr0;
     const int r1 = tgpig.y;
     const int im = tgpig.z;
-
-    const int first_row = (r0 * NSG + sgitg) * nr0;
 
     const uint i12 = im % FC_ne12;
     const uint i13 = im / FC_ne12;
 
-    const uint64_t offset0 = first_row * args.nb01 + (i12 / FC_r2) * args.nb02 + (i13 / FC_r3) * args.nb03;
     const uint64_t offset1 = r1 * args.nb11 + i12 * args.nb12 + i13 * args.nb13;
+    device const float * y = (device const float *)(src1 + offset1);
 
-    device const block_q4_1 * x = (device const block_q4_1 *)(src0 + offset0);
-    device const float      * y = (device const float      *)(src1 + offset1);
+    device const block_q4_1 * ax[nr0];
+    FOR_UNROLL (int row = 0; row < nr0; ++row) {
+        const uint64_t offset0 = (r0 + row) * args.nb01 + (i12 / FC_r2) * args.nb02 + (i13 / FC_r3) * args.nb03;
+        ax[row] = (device const block_q4_1 *)((device char *)src0 + offset0);
+    }
 
     float sumf[nr0] = {0.f};
 
-    const short ix = tiisg / 8;
-    const short it = tiisg % 8;
-    const short iq = it / 4;
-    const short ir = it % 4;
+    const short ix = tiisg / (NW / NQ);  // tiisg / 2
+    const short il = (tiisg % (NW / NQ)) * 8;  // (tiisg % 2) * 8
 
-    device const float * yb = y + ix * QK + 8 * ir;
+    const int ib0 = ix;
+    float yl[16];
+    device const float * yb = y + ib0 * QK + il;
 
-    for (int ib = ix; ib < nb; ib += 4) {
-        for (short row = 0; row < nr0; row++) {
-            device const block_q4_1 * b = x + ib + row * nb;
+    for (int ib = ib0; ib < nb; ib += NQ) {
+        float sumy[2] = {0.f, 0.f};
+        FOR_UNROLL (short i = 0; i < 8; i += 2) {
+            sumy[0] += yb[i + 0] + yb[i + 1];
+            yl[i + 0] = yb[i + 0];
+            yl[i + 1] = yb[i + 1] / 256.f;
+            sumy[1] += yb[i + 16] + yb[i + 17];
+            yl[i + 8] = yb[i + 16] / 16.f;
+            yl[i + 9] = yb[i + 17] / 4096.f;
+        }
+
+        FOR_UNROLL (short row = 0; row < nr0; row++) {
+            device const block_q4_1 * b = ax[row] + ib;
             float d = b->d;
             float m = b->m;
 
-            float acc = 0.f;
-            for (short i = 0; i < 8; ++i) {
-                uint8_t q = b->qs[8 * iq + i];
-                acc += yb[i] * ((q & 0x0F) * d + m);
+            device const uint16_t * qs = (device const uint16_t *)b + 2 + il / 2;
+
+            float acc[4] = {0.f, 0.f, 0.f, 0.f};
+            for (int i = 0; i < 8; i += 2) {
+                acc[0] += yl[i + 0] * (qs[i / 2] & 0x000F);
+                acc[1] += yl[i + 1] * (qs[i / 2] & 0x0F00);
+                acc[2] += yl[i + 8] * (qs[i / 2] & 0x00F0);
+                acc[3] += yl[i + 9] * (qs[i / 2] & 0xF000);
             }
 
-            sumf[row] += acc;
+            sumf[row] += d * (acc[0] + acc[1] + acc[2] + acc[3]) + (sumy[0] + sumy[1]) * m;
         }
 
-        yb += 4 * QK;
+        yb += QK * NQ;
     }
 
     device float * dst_f32 = (device float *)dst + (int64_t)im * args.ne0 * args.ne1 + (int64_t)r1 * args.ne0;
 
-    for (int row = 0; row < nr0 && first_row + row < args.ne0; ++row) {
-        float sum_all = simd_sum(sumf[row]);
-        if (tiisg == 0) {
-            dst_f32[first_row + row] = sum_all;
+    for (int row = 0; row < nr0; ++row) {
+        const float tot = simd_sum(sumf[row]);
+        if (tiisg == 0 && r0 + row < args.ne01) {
+            dst_f32[r0 + row] = tot;
         }
     }
 }
@@ -1130,7 +1148,7 @@ kernel void kernel_mul_mv_q8_0_f32(
 }
 
 // ============================================================================
-// Q5_0 kernel
+// Q5_0 kernel - matches llama.cpp complex template approach
 // ============================================================================
 
 template<int nr0, typename args_t>
@@ -1144,70 +1162,74 @@ void kernel_mul_mv_q5_0_f32_impl(
         ushort sgitg) {
 
     const short NSG = FC_nsg;
+    constexpr short NW = 32;  // N_SIMDWIDTH
+    constexpr short NQ = 16;
+
     const int nb = args.ne00 / QK5_0;
 
-    const int r0 = tgpig.x;
+    const int r0 = (tgpig.x * NSG + sgitg) * nr0;
     const int r1 = tgpig.y;
     const int im = tgpig.z;
-
-    const int first_row = (r0 * NSG + sgitg) * nr0;
 
     const uint i12 = im % FC_ne12;
     const uint i13 = im / FC_ne12;
 
-    const uint64_t offset0 = first_row * args.nb01 + (i12 / FC_r2) * args.nb02 + (i13 / FC_r3) * args.nb03;
     const uint64_t offset1 = r1 * args.nb11 + i12 * args.nb12 + i13 * args.nb13;
+    device const float * y = (device const float *)(src1 + offset1);
 
-    device const block_q5_0 * x = (device const block_q5_0 *)(src0 + offset0);
-    device const float      * y = (device const float      *)(src1 + offset1);
+    device const block_q5_0 * ax[nr0];
+    FOR_UNROLL (int row = 0; row < nr0; ++row) {
+        const uint64_t offset0 = (r0 + row) * args.nb01 + (i12 / FC_r2) * args.nb02 + (i13 / FC_r3) * args.nb03;
+        ax[row] = (device const block_q5_0 *)((device char *)src0 + offset0);
+    }
 
     float sumf[nr0] = {0.f};
 
-    const short ix = tiisg / 8;
-    const short it = tiisg % 8;
-    const short il = it * 2;
+    const short ix = tiisg / (NW / NQ);  // tiisg / 2
+    const short il = (tiisg % (NW / NQ)) * 8;  // (tiisg % 2) * 8
 
-    device const float * yb = y + ix * QK5_0 + il;
+    const int ib0 = ix;
+    float yl[16];
+    device const float * yb = y + ib0 * QK5_0 + il;
 
-    for (int ib = ix; ib < nb; ib += 4) {
-        float sumy = 0.f;
-        float yl[16];
-
-        for (short i = 0; i < 16; ++i) {
-            yl[i] = yb[i];
-            sumy += yb[i];
+    for (int ib = ib0; ib < nb; ib += NQ) {
+        float sumy[2] = {0.f, 0.f};
+        FOR_UNROLL (short i = 0; i < 8; i += 2) {
+            sumy[0] += yb[i + 0] + yb[i + 1];
+            yl[i + 0] = yb[i + 0];
+            yl[i + 1] = yb[i + 1] / 256.f;
+            sumy[1] += yb[i + 16] + yb[i + 17];
+            yl[i + 8] = yb[i + 16] / 16.f;
+            yl[i + 9] = yb[i + 17] / 4096.f;
         }
 
-        device const block_q5_0 * qb = x + ib;
-
         FOR_UNROLL (short row = 0; row < nr0; row++) {
-            device const block_q5_0 * b = qb + row * nb;
+            device const block_q5_0 * b = ax[row] + ib;
             float d = b->d;
 
-            device const uint16_t * qs = (device const uint16_t *)b->qs + il / 2;
+            device const uint16_t * qs = (device const uint16_t *)b + 3 + il / 2;
             const uint32_t qh = *(device const uint32_t *)b->qh;
 
             float acc[4] = {0.f, 0.f, 0.f, 0.f};
-
-            FOR_UNROLL (short i = 0; i < 8; i += 2) {
-                acc[0] += yl[i + 0] * ((qs[i / 2] & 0x000F) | ((qh >> (i + 0 + il) << 4) & 0x0010));
+            for (int i = 0; i < 8; i += 2) {
+                acc[0] += yl[i + 0] * ((qs[i / 2] & 0x000F) | ((qh >> (i + 0 + il) << 4) & 0x00010));
                 acc[1] += yl[i + 1] * ((qs[i / 2] & 0x0F00) | ((qh >> (i + 1 + il) << 12) & 0x01000));
-                acc[2] += yl[i + 8] * ((qs[i / 2] & 0x00F0) | ((qh >> (i + 0 + il + 16) << 8) & 0x00100));
-                acc[3] += yl[i + 9] * ((qs[i / 2] & 0xF000) | ((qh >> (i + 1 + il + 16) << 16) & 0x10000));
+                acc[2] += yl[i + 8] * ((qs[i / 2] & 0x00F0) | ((qh >> (i + 0 + il + QK5_0 / 2) << 8) & 0x00100));
+                acc[3] += yl[i + 9] * ((qs[i / 2] & 0xF000) | ((qh >> (i + 1 + il + QK5_0 / 2) << 16) & 0x10000));
             }
 
-            sumf[row] += d * (sumy * -16.f + acc[0] + acc[1] + acc[2] + acc[3]);
+            sumf[row] += d * ((sumy[0] + sumy[1]) * -16.f + acc[0] + acc[1] + acc[2] + acc[3]);
         }
 
-        yb += 4 * QK5_0;
+        yb += QK5_0 * NQ;
     }
 
     device float * dst_f32 = (device float *)dst + (int64_t)im * args.ne0 * args.ne1 + (int64_t)r1 * args.ne0;
 
-    for (int row = 0; row < nr0 && first_row + row < args.ne0; ++row) {
-        float sum_all = simd_sum(sumf[row]);
-        if (tiisg == 0) {
-            dst_f32[first_row + row] = sum_all;
+    for (int row = 0; row < nr0; ++row) {
+        const float tot = simd_sum(sumf[row]);
+        if (tiisg == 0 && r0 + row < args.ne01) {
+            dst_f32[r0 + row] = tot;
         }
     }
 }
@@ -1227,7 +1249,7 @@ kernel void kernel_mul_mv_q5_0_f32(
 }
 
 // ============================================================================
-// Q5_1 kernel
+// Q5_1 kernel - matches llama.cpp complex template approach
 // ============================================================================
 
 template<int nr0, typename args_t>
@@ -1241,71 +1263,75 @@ void kernel_mul_mv_q5_1_f32_impl(
         ushort sgitg) {
 
     const short NSG = FC_nsg;
+    constexpr short NW = 32;  // N_SIMDWIDTH
+    constexpr short NQ = 16;
+
     const int nb = args.ne00 / QK5_1;
 
-    const int r0 = tgpig.x;
+    const int r0 = (tgpig.x * NSG + sgitg) * nr0;
     const int r1 = tgpig.y;
     const int im = tgpig.z;
-
-    const int first_row = (r0 * NSG + sgitg) * nr0;
 
     const uint i12 = im % FC_ne12;
     const uint i13 = im / FC_ne12;
 
-    const uint64_t offset0 = first_row * args.nb01 + (i12 / FC_r2) * args.nb02 + (i13 / FC_r3) * args.nb03;
     const uint64_t offset1 = r1 * args.nb11 + i12 * args.nb12 + i13 * args.nb13;
+    device const float * y = (device const float *)(src1 + offset1);
 
-    device const block_q5_1 * x = (device const block_q5_1 *)(src0 + offset0);
-    device const float      * y = (device const float      *)(src1 + offset1);
+    device const block_q5_1 * ax[nr0];
+    FOR_UNROLL (int row = 0; row < nr0; ++row) {
+        const uint64_t offset0 = (r0 + row) * args.nb01 + (i12 / FC_r2) * args.nb02 + (i13 / FC_r3) * args.nb03;
+        ax[row] = (device const block_q5_1 *)((device char *)src0 + offset0);
+    }
 
     float sumf[nr0] = {0.f};
 
-    const short ix = tiisg / 8;
-    const short it = tiisg % 8;
-    const short il = it * 2;
+    const short ix = tiisg / (NW / NQ);  // tiisg / 2
+    const short il = (tiisg % (NW / NQ)) * 8;  // (tiisg % 2) * 8
 
-    device const float * yb = y + ix * QK5_1 + il;
+    const int ib0 = ix;
+    float yl[16];
+    device const float * yb = y + ib0 * QK5_1 + il;
 
-    for (int ib = ix; ib < nb; ib += 4) {
-        float sumy = 0.f;
-        float yl[16];
-
-        for (short i = 0; i < 16; ++i) {
-            yl[i] = yb[i];
-            sumy += yb[i];
+    for (int ib = ib0; ib < nb; ib += NQ) {
+        float sumy[2] = {0.f, 0.f};
+        FOR_UNROLL (short i = 0; i < 8; i += 2) {
+            sumy[0] += yb[i + 0] + yb[i + 1];
+            yl[i + 0] = yb[i + 0];
+            yl[i + 1] = yb[i + 1] / 256.f;
+            sumy[1] += yb[i + 16] + yb[i + 17];
+            yl[i + 8] = yb[i + 16] / 16.f;
+            yl[i + 9] = yb[i + 17] / 4096.f;
         }
 
-        device const block_q5_1 * qb = x + ib;
-
         FOR_UNROLL (short row = 0; row < nr0; row++) {
-            device const block_q5_1 * b = qb + row * nb;
+            device const block_q5_1 * b = ax[row] + ib;
             float d = b->d;
             float m = b->m;
 
-            device const uint16_t * qs = (device const uint16_t *)b->qs + il / 2;
+            device const uint16_t * qs = (device const uint16_t *)b + 4 + il / 2;
             const uint32_t qh = *(device const uint32_t *)b->qh;
 
             float acc[4] = {0.f, 0.f, 0.f, 0.f};
-
-            FOR_UNROLL (short i = 0; i < 8; i += 2) {
-                acc[0] += yl[i + 0] * ((qs[i / 2] & 0x000F) | ((qh >> (i + 0 + il) << 4) & 0x0010));
+            for (int i = 0; i < 8; i += 2) {
+                acc[0] += yl[i + 0] * ((qs[i / 2] & 0x000F) | ((qh >> (i + 0 + il) << 4) & 0x00010));
                 acc[1] += yl[i + 1] * ((qs[i / 2] & 0x0F00) | ((qh >> (i + 1 + il) << 12) & 0x01000));
-                acc[2] += yl[i + 8] * ((qs[i / 2] & 0x00F0) | ((qh >> (i + 0 + il + 16) << 8) & 0x00100));
-                acc[3] += yl[i + 9] * ((qs[i / 2] & 0xF000) | ((qh >> (i + 1 + il + 16) << 16) & 0x10000));
+                acc[2] += yl[i + 8] * ((qs[i / 2] & 0x00F0) | ((qh >> (i + 0 + il + QK5_1 / 2) << 8) & 0x00100));
+                acc[3] += yl[i + 9] * ((qs[i / 2] & 0xF000) | ((qh >> (i + 1 + il + QK5_1 / 2) << 16) & 0x10000));
             }
 
-            sumf[row] += d * (acc[0] + acc[1] + acc[2] + acc[3]) + sumy * m;
+            sumf[row] += d * (acc[0] + acc[1] + acc[2] + acc[3]) + (sumy[0] + sumy[1]) * m;
         }
 
-        yb += 4 * QK5_1;
+        yb += QK5_1 * NQ;
     }
 
     device float * dst_f32 = (device float *)dst + (int64_t)im * args.ne0 * args.ne1 + (int64_t)r1 * args.ne0;
 
-    for (int row = 0; row < nr0 && first_row + row < args.ne0; ++row) {
-        float sum_all = simd_sum(sumf[row]);
-        if (tiisg == 0) {
-            dst_f32[first_row + row] = sum_all;
+    for (int row = 0; row < nr0; ++row) {
+        const float tot = simd_sum(sumf[row]);
+        if (tiisg == 0 && r0 + row < args.ne01) {
+            dst_f32[r0 + row] = tot;
         }
     }
 }
