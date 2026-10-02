@@ -14,7 +14,7 @@ unsafe fn fp16_to_fp32_fcvt(bits: u16) -> f32 {
 unsafe fn fp16_to_fp32_ucvtf(bits: u16) -> f32 {
     let mut result = 0.0f32;
     std::arch::asm!(
-        "mov {0:h}, {1:w}\n\t"
+        "mov {0:h}, {1:w}",
         "ucvtf {0:s}, {0:s}",
         inout(vreg) result,
         in(reg) bits as u32,

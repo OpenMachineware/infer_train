@@ -65,7 +65,7 @@ fn main() {
         );
 
         // 调用Rust实现
-        let result_rust =
+        let mut result_rust =
             infer_train::quant::vec_dot::arm::vec_dot_q4_k_q8_k_neon(
                 k,
                 std::slice::from_ref(&x),
