@@ -6,6 +6,24 @@ pub const QK_K: usize = 256; // Block size for K-quant
 
 // ===== Basic quantization formats =====
 
+/// Q1_0 block: 1-bit quantization with scale
+/// 32 elements per block, 6 bytes total
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct BlockQ1_0 {
+    pub d: u16,      // FP16 scale
+    pub qs: [u8; 4], // 1-bit quants (32 elements packed into 4 bytes)
+}
+
+/// Q2_0 block: 2-bit quantization with scale
+/// 64 elements per block, 18 bytes total
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct BlockQ2_0 {
+    pub d: u16,       // FP16 scale
+    pub qs: [u8; 16], // 2-bit quants (64 elements packed into 16 bytes)
+}
+
 /// Q4_0 block: 4-bit quantization with scale
 /// 32 elements per block, 18 bytes total
 #[repr(C)]
@@ -224,6 +242,17 @@ pub struct BlockIQ4XS {
     pub scales_h: u16,     // High bits of scales
     pub scales_l: [u8; 4], // QK_K/64 = 256/64 = 4
     pub qs: [u8; 128],     // QK_K/2 = 256/2 = 128
+}
+
+// ===== MXFP formats =====
+
+/// MXFP4 block: E2M1 4-bit floating point with E8M0 scale
+/// 32 elements per block, 17 bytes total
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct BlockMXFP4 {
+    pub e: u8,        // E8M0 scale
+    pub qs: [u8; 16], // 4-bit E2M1 values (32 elements packed into 16 bytes)
 }
 
 // ===== TQ formats =====
