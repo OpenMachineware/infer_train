@@ -1,9 +1,11 @@
 // Alternating benchmark for K-quant MV kernels
 // Eliminates thermal bias by alternating between llama.cpp and self-written
-use half::f16;
 use metal::*;
 use std::ffi::c_void;
 use std::time::Instant;
+
+mod gpu_monitor_util;
+use gpu_monitor_util::{GpuMetrics, get_gpu_stats, print_diff, print_stats};
 
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
@@ -194,28 +196,71 @@ fn main() {
         .new_library_with_source(&llama_source, &compile_options)
         .unwrap();
 
-    // Load self-written template
+    // Load self-written template (inline ggml-common.h with Metal define)
     let shader_dir =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
-    let my_source =
+    let my_base =
         std::fs::read_to_string(shader_dir.join("gemm.metal")).unwrap();
-    let my_lib =
-        device.new_library_with_source(&my_source, &compile_options).unwrap();
+    let ggml_common =
+        std::fs::read_to_string(shader_dir.join("ggml-common.h")).unwrap();
+    let iq_grid_tables =
+        std::fs::read_to_string(shader_dir.join("iq_grid_tables.h")).unwrap();
+
+    // Add extra tables needed by IQ kernels (from metal.rs)
+    let iq_extra_tables = r#"
+constexpr constant static uint8_t kmask_iq2xs[8] = {1, 2, 4, 8, 16, 32, 64, 128};
+constexpr constant static int8_t ksigns_iq2xs[128] = {
+     1,  1,  1,  1,  1,  1,  1,  1, -1,  1,  1,  1,  1,  1,  1, -1,
+     1, -1,  1,  1,  1,  1,  1, -1, -1, -1,  1,  1,  1,  1,  1,  1,
+     1,  1, -1,  1,  1,  1,  1, -1, -1,  1, -1,  1,  1,  1,  1,  1,
+     1, -1, -1,  1,  1,  1,  1,  1, -1, -1, -1,  1,  1,  1,  1, -1,
+     1,  1,  1, -1,  1,  1,  1, -1, -1,  1,  1, -1,  1,  1,  1,  1,
+     1, -1,  1, -1,  1,  1,  1,  1, -1, -1,  1, -1,  1,  1,  1, -1,
+     1,  1, -1, -1,  1,  1,  1,  1, -1,  1, -1, -1,  1,  1,  1, -1,
+     1, -1, -1, -1,  1,  1,  1, -1, -1, -1, -1, -1,  1,  1,  1,  1,
+};
+"#;
+
+    // Define GGML_COMMON_DECL_METAL and inline the full ggml-common.h
+    let ggml_common_metal =
+        format!("#define GGML_COMMON_DECL_METAL\n{}", ggml_common);
+
+    // Combine: ggml-common.h + IQ extra tables + IQ grid tables + gemm.metal
+    let my_source = format!(
+        "{}\n{}\n{}\n{}",
+        ggml_common_metal, iq_extra_tables, iq_grid_tables, my_base
+    );
+    let my_lib = device
+        .new_library_with_source(&my_source, &compile_options)
+        .expect("Failed to compile gemm.metal - check for compilation errors");
+
+    // Get GPU status before benchmark
+    println!("\n=== GPU Status Before Benchmark ===");
+    let gpu_before = get_gpu_stats();
+    if let Some(ref stats) = gpu_before {
+        print_stats("Before:", stats);
+    } else {
+        println!("Could not get GPU stats from IOKit");
+    }
 
     let m = 4096usize;
     let k = 4096usize;
     let alternating_runs = 100;
     let iterations_per_run = 100;
 
-    // Test Q4_K and Q3_K
-    for (name, block_size) in [("Q4_K", 144), ("Q3_K", 110)] {
-        println!("\n=== {} Alternating Benchmark ===", name);
+    // Test K-quant kernels (Q3_K fixed with llama.cpp implementation)
+    for (name, block_size) in [("q3_K", 110), ("q4_K", 144)] {
+        println!("\n=== {} Alternating Benchmark ===", name.to_uppercase());
         println!(
             "M={}, K={}, {} runs x {} iterations",
             m, k, alternating_runs, iterations_per_run
         );
 
-        let kernel_name = format!("kernel_gemm_{}_f32", name.to_lowercase());
+        // Kernel names:
+        // - llama.cpp: kernel_mul_mv_q4_K_f32 (with mul_mv)
+        // - self-written: kernel_gemm_q4_K_f32 (with gemm)
+        let llama_kernel_name = format!("kernel_mul_mv_{}_f32", name);
+        let my_kernel_name = format!("kernel_gemm_{}_f32", name);
         let qk = 256;
         let nb = k / qk;
         let nb01 = (block_size * nb) as u64;
@@ -267,13 +312,19 @@ fn main() {
         let llama_pipeline = device
             .new_compute_pipeline_state_with_function(
                 &llama_lib
-                    .get_function(&kernel_name, Some(cv.clone()))
-                    .unwrap(),
+                    .get_function(&llama_kernel_name, Some(cv.clone()))
+                    .expect(&format!(
+                        "llama.cpp function {} not found",
+                        llama_kernel_name
+                    )),
             )
             .unwrap();
         let my_pipeline = device
             .new_compute_pipeline_state_with_function(
-                &my_lib.get_function(&kernel_name, Some(cv.clone())).unwrap(),
+                &my_lib
+                    .get_function(&my_kernel_name, Some(cv.clone())) // Function constants required
+                    .expect(&format!("Function {} not found in library. Available functions: {:?}",
+                        my_kernel_name, my_lib.function_names())),
             )
             .unwrap();
 
@@ -379,9 +430,24 @@ fn main() {
         let ratio = llama_median / my_median * 100.0;
 
         println!("\nMedian results:");
-        println!("  llama.cpp:   {:.2} us", llama_median);
-        println!("  self-written: {:.2} us", my_median);
-        println!("  Ratio:        {:.1}% of llama.cpp", ratio);
+        println!("  llama.cpp:     {:.2} us", llama_median);
+        println!("  self-written:  {:.2} us", my_median);
+        println!("  Ratio:         {:.1}% of llama.cpp", ratio);
+
+        // Performance/frequency normalization (if GPU freq available)
+        if let Some(ref gpu) = gpu_before {
+            let avg_freq = gpu.gpu_freq_mhz;
+            println!("\n  Normalized Performance (per MHz):");
+            println!(
+                "    llama.cpp:    {:.4} us/MHz",
+                llama_median / avg_freq as f64
+            );
+            println!(
+                "    self-written: {:.4} us/MHz",
+                my_median / avg_freq as f64
+            );
+            println!("    (Eliminates thermal variance)");
+        }
 
         // Check correctness
         let llama_ptr = llama_output.contents() as *const f32;
@@ -403,5 +469,38 @@ fn main() {
             m,
             correct as f32 / m as f32 * 100.0
         );
+    }
+
+    // Get GPU status after benchmark
+    println!("\n=== GPU Status After Benchmark ===");
+    let gpu_after = get_gpu_stats();
+    if let Some(ref stats) = gpu_after {
+        print_stats("After:", stats);
+    }
+
+    // Print changes
+    if let (Some(before), Some(after)) = (&gpu_before, &gpu_after) {
+        let diff = before.diff(after);
+        print_diff(&diff);
+
+        // Interpret thermal state
+        println!("\n--- Thermal Analysis ---");
+        if diff.freq_mhz < -50.0 {
+            println!(
+                "WARNING: GPU frequency dropped {:.0} MHz - thermal throttling detected",
+                diff.freq_mhz
+            );
+        } else if diff.freq_mhz > 50.0 {
+            println!(
+                "GPU frequency increased {:.0} MHz - warming up",
+                diff.freq_mhz
+            );
+        } else {
+            println!(
+                "GPU frequency stable ({:.0} MHz change) - no thermal throttling",
+                diff.freq_mhz
+            );
+        }
+        println!("Temperature change: {:+.1}°C", diff.temp);
     }
 }

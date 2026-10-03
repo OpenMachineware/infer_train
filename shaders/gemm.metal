@@ -5,170 +5,14 @@
 #include <metal_stdlib>
 using namespace metal;
 
+// ggml-common.h content is inlined by Rust code before this source
+// GGML_COMMON_DECL_METAL is defined to enable Metal-specific types
+
 #define QK_K 256
 #define QK 32
 
-// Block sizes for standard quantization
-#define QK1_0 32
-#define QK2_0 64
-#define QK5_0 32
-#define QK5_1 32
-#define QK4_NL 32
-#define QK_MXFP4 32
-
 // Loop unrolling macro
 #define FOR_UNROLL(x) _Pragma("clang loop unroll(full)") for (x)
-
-// ============================================================================
-// Block structures
-// ============================================================================
-
-// K-quant formats
-typedef struct {
-    half  d;
-    half  dmin;
-    uint8_t scales[12];
-    uint8_t qs[128];
-} block_q4_K;
-
-typedef struct {
-    half  d;
-    half  dmin;
-    uint8_t scales[12];
-    uint8_t qh[32];  // QK_K/8 = 256/8 = 32 (NOT 64!)
-    uint8_t qs[128]; // QK_K/2 = 256/2 = 128
-} block_q5_K;
-
-typedef struct {
-    uint8_t scales[16];  // QK_K/16 = 256/16 = 16
-    uint8_t qs[64];      // QK_K/4 = 256/4 = 64
-    half  d;
-    half  dmin;
-} block_q2_K;
-
-typedef struct {
-    uint8_t hmask[32];
-    uint8_t qs[64];
-    uint8_t scales[12];
-    half  d;
-} block_q3_K;
-
-typedef struct {
-    uint8_t ql[128];
-    uint8_t qh[64];
-    int8_t scales[16];
-    half  d;
-} block_q6_K;
-
-// Standard quantization formats
-typedef struct {
-    half d;
-    uint8_t qs[16];
-} block_q4_0;
-
-typedef struct {
-    half d;
-    half m;
-    uint8_t qs[16];
-} block_q4_1;
-
-typedef struct {
-    half d;
-    uint8_t qs[32];
-} block_q8_0;
-
-typedef struct {
-    half d;
-    uint8_t qs[4];
-} block_q1_0;
-
-typedef struct {
-    half d;
-    uint8_t qs[16];
-} block_q2_0;
-
-typedef struct {
-    half d;
-    uint8_t qh[4];
-    uint8_t qs[16];
-} block_q5_0;
-
-typedef struct {
-    half d;
-    half m;
-    uint8_t qh[4];
-    uint8_t qs[16];
-} block_q5_1;
-
-// IQ formats
-typedef struct {
-    half  d;
-    uint8_t  qs[32];
-    uint16_t qh[8];
-} block_iq1_s;
-
-typedef struct {
-    uint8_t  qs[32];
-    uint8_t  qh[16];
-    uint16_t scales[4];
-} block_iq1_m;
-
-typedef struct {
-    half d;
-    uint16_t qs[32];
-} block_iq2_xxs;
-
-typedef struct {
-    half d;
-    uint16_t qs[32];
-    uint8_t scales[8];
-} block_iq2_xs;
-
-typedef struct {
-    half d;
-    uint8_t qs[32];
-    uint8_t qh[8];
-    uint8_t signs[32];
-    uint8_t scales[8];
-} block_iq2_s;
-
-typedef struct {
-    half d;
-    uint8_t qs[32];
-    uint16_t qh[16];
-} block_iq3_xxs;
-
-typedef struct {
-    half d;
-    uint8_t qs[32];
-    uint8_t qh[8];
-    uint8_t signs[16];
-    uint8_t scales[4];
-} block_iq3_s;
-
-typedef struct {
-    half d;
-    uint8_t qs[16];  // QK4_NL/2 = 32/2 = 16
-} block_iq4_nl;
-
-typedef struct {
-    half d;
-    uint8_t qs[32];
-    uint16_t scales_h;
-    uint8_t scales_l[8];
-} block_iq4_xs;
-
-// TQ format
-typedef struct {
-    half d;
-    uint8_t qs[64];
-} block_tq2_0;
-
-// MXFP4 format
-typedef struct {
-    uint8_t e;
-    uint8_t qs[16];
-} block_mxfp4;
 
 // ============================================================================
 // Kernel arguments
@@ -479,7 +323,7 @@ kernel void kernel_gemm_q2_K_f32(
 }
 
 // ============================================================================
-// Q3_K kernel - Original implementation
+// Q3_K kernel - Based on llama.cpp implementation
 // ============================================================================
 
 template<int nr0, typename args_t>
@@ -495,7 +339,7 @@ void kernel_gemm_q3_K_f32_impl(
 
     const short NSG = FC_nsg;
 
-    const int nb = args.ne00 / QK_K;
+    const int nb = args.ne00/QK_K;
 
     const int r0 = tgpig.x;
     const int r1 = tgpig.y;
@@ -503,144 +347,127 @@ void kernel_gemm_q3_K_f32_impl(
 
     const int first_row = (r0 * NSG + sgitg) * nr0;
 
-    const uint i12 = im % FC_ne12;
-    const uint i13 = im / FC_ne12;
+    const uint i12 = im%FC_ne12;
+    const uint i13 = im/FC_ne12;
 
-    const uint64_t offset0 = first_row * args.nb01 + (i12 / FC_r2) * args.nb02 + (i13 / FC_r3) * args.nb03;
-    const uint64_t offset1 = r1 * args.nb11 + i12 * args.nb12 + i13 * args.nb13;
+    const uint64_t offset0 = first_row*args.nb01 + (i12/FC_r2)*args.nb02 + (i13/FC_r3)*args.nb03;
+    const uint64_t offset1 =        r1*args.nb11 + (i12        )*args.nb12 + (i13        )*args.nb13;
 
-    device const block_q3_K * x = (device const block_q3_K *)(src0 + offset0);
-    device const float      * yy = (device const float      *)(src1 + offset1);
+    device const block_q3_K * x = (device const block_q3_K *) (src0 + offset0);
+    device const float     * yy = (device const float      *) (src1 + offset1);
 
-    float cached_y[32];
+    float yl[32];
 
-    // Thread coordinate computation
-    const short tid = tiisg / 4;
-    const short ix = tiisg % 4;
-    const short part = tid / 4;
-    const short lane = 2 * ((tid % 4) / 2);
-    const short half_pos = tid % 2;
-    const short base_pos = 8 * half_pos;
+    const short tid = tiisg/4;
+    const short ix  = tiisg%4;
+    const short ip  = tid/4;          // 0 or 1
+    const short il  = 2*((tid%4)/2);  // 0 or 2
+    const short ir  = tid%2;
+    const short l0  = 8*ir;
 
-    // Pre-computed mask tables for quantization bits
-    const ushort4 h_masks[4] = {
-        {0x0001, 0x0100, 0x0002, 0x0200},
-        {0x0004, 0x0400, 0x0008, 0x0800},
-        {0x0010, 0x1000, 0x0020, 0x2000},
-        {0x0040, 0x4000, 0x0080, 0x8000}
-    };
+    // Possible masks for the high bit
+    const ushort4 mm[4] = {{0x0001, 0x0100, 0x0002, 0x0200},  // ip = 0, il = 0
+                           {0x0004, 0x0400, 0x0008, 0x0800},  // ip = 0, il = 2
+                           {0x0010, 0x1000, 0x0020, 0x2000},  // ip = 1, il = 0
+                           {0x0040, 0x4000, 0x0080, 0x8000}}; // ip = 1, il = 2
 
-    const int4 q_masks[2] = {
-        {0x0003, 0x0300, 0x000c, 0x0c00},
-        {0x0030, 0x3000, 0x00c0, 0xc000}
-    };
+    // Possible masks for the low 2 bits
+    const int4 qm[2] = {{0x0003, 0x0300, 0x000c, 0x0c00}, {0x0030, 0x3000, 0x00c0, 0xc000}};
 
-    const ushort4 active_h_mask = h_masks[2 * part + lane / 2];
+    const ushort4 hm = mm[2*ip + il/2];
 
-    const short scale_shift = 2 * lane;
+    const short shift = 2*il;
 
-    const float bias1 = lane == 0 ? 4.f : 64.f;
-    const float bias2 = 4.f * bias1;
+    const float v1 = il == 0 ? 4.f : 64.f;
+    const float v2 = 4.f * v1;
 
-    const uint16_t scale_shift1 = 4 * part;
-    const uint16_t scale_shift2 = scale_shift1 + lane;
+    const uint16_t s_shift1 = 4*ip;
+    const uint16_t s_shift2 = s_shift1 + il;
 
-    const short quant_offset = 32 * part + base_pos;
-    const short y_base = 128 * part + 32 * lane + base_pos;
+    const short q_offset = 32*ip + l0;
+    const short y_offset = 128*ip + 32*il + l0;
 
-    device const float * y_src = yy + ix * QK_K + y_base;
+    device const float * y1 = yy + ix*QK_K + y_offset;
 
-    uint32_t scales_bits, aux_bits;
-    thread uint16_t * scale_pair = (thread uint16_t *)&scales_bits;
-    thread const int8_t * scale_bytes = (thread const int8_t *)&scales_bits;
+    uint32_t scales32, aux32;
+    thread uint16_t * scales16 = (thread uint16_t *)&scales32;
+    thread const int8_t * scales = (thread const int8_t *)&scales32;
 
-    float part1[nr0] = {0.f};
-    float part2[nr0] = {0.f};
+    float sumf1[nr0] = {0.f};
+    float sumf2[nr0] = {0.f};
 
-    for (int blk = ix; blk < nb; blk += 4) {
-        // Cache y values
-        for (short k = 0; k < 8; ++k) {
-            cached_y[k] = y_src[k];
-            cached_y[k + 8] = y_src[k + 16];
-            cached_y[k + 16] = y_src[k + 32];
-            cached_y[k + 24] = y_src[k + 48];
+    for (int i = ix; i < nb; i += 4) {
+        for (short l = 0; l < 8; ++l) {
+            yl[l+ 0] = y1[l+ 0];
+            yl[l+ 8] = y1[l+16];
+            yl[l+16] = y1[l+32];
+            yl[l+24] = y1[l+48];
         }
 
-        device const uint16_t * quant_data = (device const uint16_t *)(x[blk].qs + quant_offset);
-        device const uint16_t * high_bits = (device const uint16_t *)(x[blk].hmask + base_pos);
-        device const uint16_t * scale_data = (device const uint16_t *)(x[blk].scales);
-        device const half * delta = &x[blk].d;
+        device const uint16_t * q = (device const uint16_t *)(x[i].qs + q_offset);
+        device const uint16_t * h = (device const uint16_t *)(x[i].hmask + l0);
+        device const uint16_t * a = (device const uint16_t *)(x[i].scales);
+        device const half * dh = &x[i].d;
 
         for (short row = 0; row < nr0; ++row) {
-            const float scale = (float)delta[0];
+            const float d_all = (float)dh[0];
 
-            // Decode scales
-            scale_pair[0] = scale_data[4];
-            scale_pair[1] = scale_data[5];
-            aux_bits = ((scales_bits >> scale_shift2) << 4) & 0x30303030;
-            scale_pair[0] = scale_data[lane];
-            scale_pair[1] = scale_data[lane + 1];
-            scales_bits = ((scales_bits >> scale_shift1) & 0x0f0f0f0f) | aux_bits;
+            scales16[0] = a[4];
+            scales16[1] = a[5];
+            aux32 = ((scales32 >> s_shift2) << 4) & 0x30303030;
+            scales16[0] = a[il+0];
+            scales16[1] = a[il+1];
+            scales32 = ((scales32 >> s_shift1) & 0x0f0f0f0f) | aux32;
 
-            // First half processing
-            float dot_a = 0, dot_b = 0, mask_a = 0, dot_c = 0, dot_d = 0, mask_b = 0;
-
-            FOR_UNROLL (short idx = 0; idx < 8; idx += 2) {
-                const int32_t qword = quant_data[idx / 2];
-                dot_a += cached_y[idx] * (qword & q_masks[lane / 2][0]);
-                dot_b += cached_y[idx + 1] * (qword & q_masks[lane / 2][1]);
-                mask_a += ((high_bits[idx / 2] & active_h_mask[0]) ? 0.f : cached_y[idx]) +
-                          ((high_bits[idx / 2] & active_h_mask[1]) ? 0.f : cached_y[idx + 1]);
-                dot_c += cached_y[idx + 16] * (qword & q_masks[lane / 2][2]);
-                dot_d += cached_y[idx + 17] * (qword & q_masks[lane / 2][3]);
-                mask_b += ((high_bits[idx / 2] & active_h_mask[2]) ? 0.f : cached_y[idx + 16]) +
-                          ((high_bits[idx / 2] & active_h_mask[3]) ? 0.f : cached_y[idx + 17]);
+            float s1 = 0, s2 = 0, s3 = 0, s4 = 0, s5 = 0, s6 = 0;
+            for (short l = 0; l < 8; l += 2) {
+                const int32_t qs = q[l/2];
+                s1 += yl[l+0] * (qs & qm[il/2][0]);
+                s2 += yl[l+1] * (qs & qm[il/2][1]);
+                s3 += ((h[l/2] & hm[0]) ? 0.f : yl[l+0]) + ((h[l/2] & hm[1]) ? 0.f : yl[l+1]);
+                s4 += yl[l+16] * (qs & qm[il/2][2]);
+                s5 += yl[l+17] * (qs & qm[il/2][3]);
+                s6 += ((h[l/2] & hm[2]) ? 0.f : yl[l+16]) + ((h[l/2] & hm[3]) ? 0.f : yl[l+17]);
             }
+            float d1 = d_all * (s1 + 1.f/256.f * s2 - s3*v1);
+            float d2 = d_all * (s4 + 1.f/256.f * s5 - s6*v2);
+            sumf1[row] += d1 * (scales[0] - 32);
+            sumf2[row] += d2 * (scales[2] - 32);
 
-            float val1 = scale * (dot_a + dot_b * 0.00390625f - mask_a * bias1);
-            float val2 = scale * (dot_c + dot_d * 0.00390625f - mask_b * bias2);
-            part1[row] += val1 * (scale_bytes[0] - 32);
-            part2[row] += val2 * (scale_bytes[2] - 32);
-
-            // Second half processing
-            dot_a = dot_b = mask_a = dot_c = dot_d = mask_b = 0;
-            FOR_UNROLL (short idx = 0; idx < 8; idx += 2) {
-                const int32_t qword = quant_data[idx / 2 + 8];
-                dot_a += cached_y[idx + 8] * (qword & q_masks[lane / 2][0]);
-                dot_b += cached_y[idx + 9] * (qword & q_masks[lane / 2][1]);
-                mask_a += ((high_bits[idx / 2 + 8] & active_h_mask[0]) ? 0.f : cached_y[idx + 8]) +
-                          ((high_bits[idx / 2 + 8] & active_h_mask[1]) ? 0.f : cached_y[idx + 9]);
-                dot_c += cached_y[idx + 24] * (qword & q_masks[lane / 2][2]);
-                dot_d += cached_y[idx + 25] * (qword & q_masks[lane / 2][3]);
-                mask_b += ((high_bits[idx / 2 + 8] & active_h_mask[2]) ? 0.f : cached_y[idx + 24]) +
-                          ((high_bits[idx / 2 + 8] & active_h_mask[3]) ? 0.f : cached_y[idx + 25]);
+            s1 = s2 = s3 = s4 = s5 = s6 = 0;
+            for (short l = 0; l < 8; l += 2) {
+                const int32_t qs = q[l/2+8];
+                s1 += yl[l+8] * (qs & qm[il/2][0]);
+                s2 += yl[l+9] * (qs & qm[il/2][1]);
+                s3 += ((h[l/2+8] & hm[0]) ? 0.f : yl[l+8]) + ((h[l/2+8] & hm[1]) ? 0.f : yl[l+9]);
+                s4 += yl[l+24] * (qs & qm[il/2][2]);
+                s5 += yl[l+25] * (qs & qm[il/2][3]);
+                s6 += ((h[l/2+8] & hm[2]) ? 0.f : yl[l+24]) + ((h[l/2+8] & hm[3]) ? 0.f : yl[l+25]);
             }
+            d1 = d_all * (s1 + 1.f/256.f * s2 - s3*v1);
+            d2 = d_all * (s4 + 1.f/256.f * s5 - s6*v2);
+            sumf1[row] += d1 * (scales[1] - 32);
+            sumf2[row] += d2 * (scales[3] - 32);
 
-            val1 = scale * (dot_a + dot_b * 0.00390625f - mask_a * bias1);
-            val2 = scale * (dot_c + dot_d * 0.00390625f - mask_b * bias2);
-            part1[row] += val1 * (scale_bytes[1] - 32);
-            part2[row] += val2 * (scale_bytes[3] - 32);
-
-            quant_data += args.nb01 / 2;
-            high_bits += args.nb01 / 2;
-            scale_data += args.nb01 / 2;
-            delta += args.nb01 / 2;
+            q  += args.nb01/2;
+            h  += args.nb01/2;
+            a  += args.nb01/2;
+            dh += args.nb01/2;
         }
 
-        y_src += 4 * QK_K;
+        y1 += 4 * QK_K;
     }
 
-    // Combine results
     for (int row = 0; row < nr0; ++row) {
-        const float total = (part1[row] + 0.25f * part2[row]) / (1 << scale_shift);
-        part1[row] = simd_sum(total);
+        const float sumf = (sumf1[row] + 0.25f * sumf2[row]) / (1 << shift);
+        sumf1[row] = simd_sum(sumf);
     }
 
-    device float * dst_f32 = (device float *)dst + (uint64_t)im * args.ne0 * args.ne1 + (uint64_t)r1 * args.ne0;
+    device float * dst_f32 = (device float *) dst + (uint64_t)im*args.ne0*args.ne1 + (uint64_t)r1*args.ne0;
 
     if (tiisg == 0) {
         for (int row = 0; row < nr0 && first_row + row < args.ne0; ++row) {
-            dst_f32[first_row + row] = part1[row];
+            dst_f32[first_row + row] = sumf1[row];
         }
     }
 }
@@ -2939,13 +2766,6 @@ kernel void kernel_gemm_iq4_xs_f32(
 // ============================================================================
 // TQ1_0 kernel (Ternary Quantization, 1.6875 bpw)
 // ============================================================================
-
-// TQ1_0 block structure (from ggml-common.h)
-typedef struct {
-    uint8_t qs[48]; // (256 - 16) / 5 = 48 bytes, 5 trits per byte
-    uint8_t qh[4];  // 256 / 64 = 4 bytes, 4 elements per byte
-    half d;
-} block_tq1_0;
 
 // Trit values: -1, 0, 1
 constexpr constant static int8_t tq1_0_trits[3] = {-1, 0, 1};

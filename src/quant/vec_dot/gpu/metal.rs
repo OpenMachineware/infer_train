@@ -260,6 +260,10 @@ impl MetalContext {
 
         // Compile templated MV library from llama.cpp (all K-quant formats in one file)
         let gemm_source = include_str!("../../../../shaders/gemm.metal");
+        // Inline ggml-common.h with Metal define
+        let ggml_common = include_str!("../../../../shaders/ggml-common.h");
+        let ggml_common_metal =
+            format!("#define GGML_COMMON_DECL_METAL\n{}", ggml_common);
         // Add kmask_iq2xs and ksigns_iq2xs tables needed by IQ kernels
         let iq_extra_tables = r#"
 constexpr constant static uint8_t kmask_iq2xs[8] = {1, 2, 4, 8, 16, 32, 64, 128};
@@ -274,8 +278,10 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
      1, -1, -1, -1,  1,  1,  1, -1, -1, -1, -1, -1,  1,  1,  1,  1,
 };
 "#;
-        let gemm_combined =
-            format!("{}\n{}\n{}", iq_extra_tables, iq_grid_tables, gemm_source);
+        let gemm_combined = format!(
+            "{}\n{}\n{}\n{}",
+            ggml_common_metal, iq_extra_tables, iq_grid_tables, gemm_source
+        );
         let gemm_library = device
             .new_library_with_source(&gemm_combined, &compile_options)
             .map_err(|e| format!("Failed to compile gemm library: {}", e))?;
