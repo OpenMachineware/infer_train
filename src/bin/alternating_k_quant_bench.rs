@@ -248,8 +248,16 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
     let alternating_runs = 100;
     let iterations_per_run = 100;
 
-    // Test K-quant kernels (Q3_K fixed with llama.cpp implementation)
-    for (name, block_size) in [("q3_K", 110), ("q4_K", 144)] {
+    // Test all K-quant kernels with valid data generation
+    let k_quant_formats = [
+        ("q2_K", 84, 4, "scales:16,qs:64,d:2,dmin:2"), // nr0=4
+        ("q3_K", 110, 2, "hmask:32,qs:64,scales:12,d:2"), // nr0=2
+        ("q4_K", 144, 2, "d:2,dmin:2,scales:12,qs:128"), // nr0=2
+        ("q5_K", 176, 1, "d:2,dmin:2,scales:12,qh:32,qs:128"), // nr0=1
+        ("q6_K", 210, 2, "ql:128,qh:64,scales:16,d:2"), // nr0=2
+    ];
+
+    for (name, block_size, nr0, _layout) in k_quant_formats {
         println!("\n=== {} Alternating Benchmark ===", name.to_uppercase());
         println!(
             "M={}, K={}, {} runs x {} iterations",
@@ -266,24 +274,48 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
         let nb01 = (block_size * nb) as u64;
 
         let weights_size = m * nb * block_size;
-        // Generate valid Q3_K data (avoid NaN/Inf in d field, keep scales in range)
+        // Generate valid data for each format (avoid NaN/Inf, keep scales in range)
         let weights: Vec<u8> = (0..weights_size)
             .map(|i| {
                 let block_idx = i / block_size;
                 let byte_in_block = i % block_size;
 
-                // d field is at bytes 108-109 (last 2 bytes of 110-byte block)
-                if byte_in_block == 108 {
-                    // Low byte of f16 = 1.0 (bit pattern 0x3C00)
-                    0x00
-                } else if byte_in_block == 109 {
-                    // High byte of f16 = 1.0
-                    0x3C
-                } else if (96..108).contains(&byte_in_block) {
-                    // scales field (bytes 96-107): keep in range 1-16
+                // Generate valid data based on format layout:
+                // Q2_K: scales[16], qs[64], d[2], dmin[2] - d/dmin at 84-87
+                // Q2_K: scales[16]+qs[64]=80 bytes, so d at 80, dmin at 82
+                // Q3_K: hmask[32], qs[64], scales[12], d[2] - d at 108-109
+                // Q4_K: d[2], dmin[2], scales[12], qs[128] - d/dmin at 0-3
+                // Q5_K: d[2], dmin[2], scales[12], qh[32], qs[128] - d/dmin at 0-3
+                // Q6_K: ql[128], qh[64], scales[16], d[2] - d at 208-209
+
+                let (d_offset, dmin_offset, scales_start, scales_end) =
+                    match name {
+                        "q2_K" => (80, 82, 0, 16), // FIXED: d at 80 (after scales[16]+qs[64])
+                        "q3_K" => (108, -1, 96, 108), // no dmin for Q3_K
+                        "q4_K" => (0, 2, 4, 16),
+                        "q5_K" => (0, 2, 4, 16),
+                        "q6_K" => (208, -1, 192, 208), // Q6_K scales are i8, at 192-207
+                        _ => panic!("Unknown format"),
+                    };
+
+                // d field: set to 1.0 (valid f16 = 0x3C00)
+                if byte_in_block == d_offset {
+                    0x00 // Low byte of 0x3C00
+                } else if byte_in_block == d_offset + 1 {
+                    0x3C // High byte of 0x3C00
+                } else if dmin_offset >= 0
+                    && byte_in_block == dmin_offset as usize
+                {
+                    0x00 // dmin low byte
+                } else if dmin_offset >= 0
+                    && byte_in_block == dmin_offset as usize + 1
+                {
+                    0x00 // dmin high byte (0.0)
+                } else if (scales_start..scales_end).contains(&byte_in_block) {
+                    // scales: keep in range 1-16
                     ((block_idx + byte_in_block as usize) % 16 + 1) as u8
                 } else {
-                    // hmask and qs: random pattern is fine
+                    // Other fields (qs, qh, hmask, ql): deterministic pattern
                     ((i % 256) as u8)
                 }
             })
@@ -318,7 +350,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
             nb13: 0,
             ne0: m as i32,
             ne1: 1,
-            nr0: 2,
+            nr0: nr0,
             r2: 1,
             r3: 1,
         };
@@ -326,8 +358,15 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
         let cv = create_cv();
         let output_size = m * 4;
         let tg_size = MTLSize { width: 32, height: 2, depth: 1 };
-        let tg_count =
-            MTLSize { width: (m as u64 + 3) / 4, height: 1, depth: 1 };
+        // Threadgroup count formula from llama.cpp ggml-metal-ops.cpp line 2635:
+        // For K-quant types: tg_count = (ne01 + nr0*nsg - 1) / (nr0*nsg)
+        // where nsg=2 (from FC_nsg function constant)
+        let nsg: u64 = 2;
+        let tg_count = MTLSize {
+            width: (m as u64 + nr0 as u64 * nsg - 1) / (nr0 as u64 * nsg),
+            height: 1,
+            depth: 1,
+        };
 
         let llama_pipeline = device
             .new_compute_pipeline_state_with_function(

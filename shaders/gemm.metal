@@ -487,7 +487,7 @@ kernel void kernel_gemm_q3_K_f32(
 }
 
 // ============================================================================
-// Q5_K kernel - Original implementation
+// Q5_K kernel - Based on llama.cpp implementation
 // ============================================================================
 
 template<int nr0, typename args_t>
@@ -503,26 +503,26 @@ void kernel_gemm_q5_K_f32_impl(
 
     const short NSG = FC_nsg;
 
-    // Scale extraction masks
-    constexpr uint16_t SCALE_LO_MASK = 0x3f3f;
-    constexpr uint16_t SCALE_HI_MASK = 0x0f0f;
-    constexpr uint16_t SCALE_CARRY_MASK = 0xc0c0;
+    // Scale extraction masks (from llama.cpp)
+    constexpr uint16_t kmask1 = 0x3f3f;
+    constexpr uint16_t kmask2 = 0x0f0f;
+    constexpr uint16_t kmask3 = 0xc0c0;
 
-    // Thread indexing for Q5_K
-    const short tid = tiisg / 2;
-    const short block_offset = tiisg % 2;
-    const short sub_block = tid / 4;
-    const short lane_pos = tid % 4;
+    // Thread indexing - match llama.cpp exactly
+    const short tid = tiisg/4;
+    const short ix  = tiisg%4;
+    const short iq  = tid/4;
+    const short ir  = tid%4;
 
-    const short pos_base = 8 * lane_pos;
-    const short quant_base = 32 * sub_block + pos_base;
-    const short y_base_off = 64 * sub_block + pos_base;
+    const short l0 = 8*ir;
+    const short q_offset = 32*iq + l0;
+    const short y_offset = 64*iq + l0;
 
     // Bit masks for the 5th bit extraction
-    const uint8_t hbit_low = 1u << (2 * sub_block);
-    const uint8_t hbit_high = hbit_low << 1;
-    const uint8_t hbit_low_upper = hbit_low << 4;
-    const uint8_t hbit_high_upper = hbit_high << 4;
+    const uint8_t hm1 = 1u << (2*iq);
+    const uint8_t hm2 = hm1 << 1;
+    const uint8_t hm3 = hm1 << 4;
+    const uint8_t hm4 = hm2 << 4;
 
     const int nb = args.ne00 / QK_K;
 
@@ -541,95 +541,73 @@ void kernel_gemm_q5_K_f32_impl(
     device const block_q5_K * x = (device const block_q5_K *)(src0 + offset0);
     device const float      * yy = (device const float      *)(src1 + offset1);
 
-    float output[nr0] = {0.f};
+    float sumf[nr0] = {0.f};
 
-    float y_lower[16];
-    float y_upper[16];
+    float yl[16], yh[16];
 
-    uint16_t scale_words[4];
-    thread const uint8_t * scale_bytes = (thread const uint8_t *)scale_words;
+    uint16_t sc16[4];
+    thread const uint8_t * sc8 = (thread const uint8_t *)sc16;
 
-    device const float * y_ptr = yy + block_offset * QK_K + y_base_off;
+    device const float * y1 = yy + ix*QK_K + y_offset;
 
-    for (int blk = block_offset; blk < nb; blk += 4) {
-        device const uint8_t * quant_lo = x[blk].qs + quant_base;
-        device const uint8_t * high_bits = x[blk].qh + pos_base;
-        device const half * delta = &x[blk].d;
-        device const uint16_t * scale_src = (device const uint16_t *)x[blk].scales + sub_block;
+    for (int i = ix; i < nb; i += 4) {
+        device const uint8_t * q1 = x[i].qs + q_offset;
+        device const uint8_t * qh = x[i].qh + l0;
+        device const half * dh = &x[i].d;
+        device const uint16_t * a = (device const uint16_t *)x[i].scales + iq;
 
-        device const float * y_upper_ptr = y_ptr + 128;
-
-        // Load y values and compute sums
-        float4 y_sums = {0.f, 0.f, 0.f, 0.f};
-        for (short k = 0; k < 8; ++k) {
-            y_lower[k] = y_ptr[k];
-            y_sums[0] += y_lower[k];
-            y_lower[k + 8] = y_ptr[k + 32];
-            y_sums[1] += y_lower[k + 8];
-            y_upper[k] = y_upper_ptr[k];
-            y_sums[2] += y_upper[k];
-            y_upper[k + 8] = y_upper_ptr[k + 32];
-            y_sums[3] += y_upper[k + 8];
+        device const float * y2 = y1 + 128;
+        float4 sumy = {0.f, 0.f, 0.f, 0.f};
+        for (short l = 0; l < 8; ++l) {
+            yl[l+0] = y1[l+ 0]; sumy[0] += yl[l+0];
+            yl[l+8] = y1[l+32]; sumy[1] += yl[l+8];
+            yh[l+0] = y2[l+ 0]; sumy[2] += yh[l+0];
+            yh[l+8] = y2[l+32]; sumy[3] += yh[l+8];
         }
 
         for (short row = 0; row < nr0; ++row) {
-            device const uint8_t * quant_hi = quant_lo + 64;
+            device const uint8_t * q2 = q1 + 64;
 
-            // Decode scales
-            scale_words[0] = scale_src[0] & SCALE_LO_MASK;
-            scale_words[1] = scale_src[2] & SCALE_LO_MASK;
-            scale_words[2] = ((scale_src[4] >> 0) & SCALE_HI_MASK) | ((scale_src[0] & SCALE_CARRY_MASK) >> 2);
-            scale_words[3] = ((scale_src[4] >> 4) & SCALE_HI_MASK) | ((scale_src[2] & SCALE_CARRY_MASK) >> 2);
+            sc16[0] = a[0] & kmask1;
+            sc16[1] = a[2] & kmask1;
+            sc16[2] = ((a[4] >> 0) & kmask2) | ((a[0] & kmask3) >> 2);
+            sc16[3] = ((a[4] >> 4) & kmask2) | ((a[2] & kmask3) >> 2);
 
-            // Process 4-bit quantized values with 5th bit from high_bits
-            float4 nibble_sum = {0.f, 0.f, 0.f, 0.f};
-            float4 extra_sum = {0.f, 0.f, 0.f, 0.f};
-
-            FOR_UNROLL (short k = 0; k < 8; ++k) {
-                uint8_t high_byte = high_bits[k];
-
-                // Lower nibbles (4-bit values)
-                nibble_sum[0] += y_lower[k] * (quant_lo[k] & 0x0F);
-                nibble_sum[1] += y_lower[k + 8] * (quant_lo[k] & 0xF0);
-                nibble_sum[2] += y_upper[k] * (quant_hi[k] & 0x0F);
-                nibble_sum[3] += y_upper[k + 8] * (quant_hi[k] & 0xF0);
-
-                // 5th bit contributions (adds 16 when set)
-                extra_sum[0] += (high_byte & hbit_low) ? y_lower[k] : 0.f;
-                extra_sum[1] += (high_byte & hbit_high) ? y_lower[k + 8] : 0.f;
-                extra_sum[2] += (high_byte & hbit_low_upper) ? y_upper[k] : 0.f;
-                extra_sum[3] += (high_byte & hbit_high_upper) ? y_upper[k + 8] : 0.f;
+            float4 acc1 = {0.f};
+            float4 acc2 = {0.f};
+            FOR_UNROLL (short l = 0; l < 8; ++l) {
+                uint8_t h = qh[l];
+                acc1[0] += yl[l+0] * (q1[l] & 0x0F);
+                acc1[1] += yl[l+8] * (q1[l] & 0xF0);
+                acc1[2] += yh[l+0] * (q2[l] & 0x0F);
+                acc1[3] += yh[l+8] * (q2[l] & 0xF0);
+                acc2[0] += h & hm1 ? yl[l+0] : 0.f;
+                acc2[1] += h & hm2 ? yl[l+8] : 0.f;
+                acc2[2] += h & hm3 ? yh[l+0] : 0.f;
+                acc2[3] += h & hm4 ? yh[l+8] : 0.f;
             }
 
-            // Combine nibble and extra bit contributions
-            // nibble_sum[1] and [3] are high nibbles, need /16
-            output[row] += delta[0] * (
-                scale_bytes[0] * (nibble_sum[0] + 16.f * extra_sum[0]) +
-                scale_bytes[1] * (nibble_sum[1] * 0.0625f + 16.f * extra_sum[1]) +
-                scale_bytes[4] * (nibble_sum[2] + 16.f * extra_sum[2]) +
-                scale_bytes[5] * (nibble_sum[3] * 0.0625f + 16.f * extra_sum[3])
-            ) - delta[1] * (
-                y_sums[0] * scale_bytes[2] +
-                y_sums[1] * scale_bytes[3] +
-                y_sums[2] * scale_bytes[6] +
-                y_sums[3] * scale_bytes[7]
-            );
+            sumf[row] += dh[0] * (sc8[0] * (acc1[0]      + 16.f*acc2[0]) +
+                                  sc8[1] * (acc1[1]/16.f + 16.f*acc2[1]) +
+                                  sc8[4] * (acc1[2]      + 16.f*acc2[2]) +
+                                  sc8[5] * (acc1[3]/16.f + 16.f*acc2[3])) -
+                         dh[1] * (sumy[0] * sc8[2] + sumy[1] * sc8[3] + sumy[2] * sc8[6] + sumy[3] * sc8[7]);
 
-            quant_lo += args.nb01;
-            high_bits += args.nb01;
-            delta += args.nb01 / 2;
-            scale_src += args.nb01 / 2;
+            q1 += args.nb01;
+            qh += args.nb01;
+            dh += args.nb01/2;
+            a  += args.nb01/2;
         }
 
-        y_ptr += 4 * QK_K;
+        y1 += 4 * QK_K;
     }
 
-    device float * dst_f32 = (device float *)dst + (int64_t)im * args.ne0 * args.ne1 + (int64_t)r1 * args.ne0;
+    device float * dst_f32 = (device float *)dst + (uint64_t)im * args.ne0 * args.ne1 + (uint64_t)r1 * args.ne0;
 
     for (int row = 0; row < nr0 && first_row + row < args.ne0; ++row) {
-        float sum_all = simd_sum(output[row]);
+        const float tot = simd_sum(sumf[row]);
         if (tiisg == 0) {
-            dst_f32[first_row + row] = sum_all;
+            dst_f32[first_row + row] = tot;
         }
     }
 }

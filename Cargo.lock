@@ -336,6 +336,8 @@ dependencies = [
  "metal",
  "num-traits",
  "rand",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
