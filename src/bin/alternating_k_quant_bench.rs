@@ -266,8 +266,28 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
         let nb01 = (block_size * nb) as u64;
 
         let weights_size = m * nb * block_size;
-        let weights: Vec<u8> =
-            (0..weights_size).map(|i| (i % 256) as u8).collect();
+        // Generate valid Q3_K data (avoid NaN/Inf in d field, keep scales in range)
+        let weights: Vec<u8> = (0..weights_size)
+            .map(|i| {
+                let block_idx = i / block_size;
+                let byte_in_block = i % block_size;
+
+                // d field is at bytes 108-109 (last 2 bytes of 110-byte block)
+                if byte_in_block == 108 {
+                    // Low byte of f16 = 1.0 (bit pattern 0x3C00)
+                    0x00
+                } else if byte_in_block == 109 {
+                    // High byte of f16 = 1.0
+                    0x3C
+                } else if (96..108).contains(&byte_in_block) {
+                    // scales field (bytes 96-107): keep in range 1-16
+                    ((block_idx + byte_in_block as usize) % 16 + 1) as u8
+                } else {
+                    // hmask and qs: random pattern is fine
+                    ((i % 256) as u8)
+                }
+            })
+            .collect();
         let weights_buffer = device.new_buffer_with_data(
             weights.as_ptr() as *const c_void,
             weights_size as u64,
