@@ -47,6 +47,36 @@ struct block_q6_K {
     half d;
 };
 
+// Standard Q block structures (32 elements per block)
+struct block_q4_0 {
+    half d;            // Scale
+    uint8_t qs[16];    // 4-bit quants (32 elements packed)
+};
+
+struct block_q8_0 {
+    half d;            // Scale
+    int8_t qs[32];     // 8-bit quants
+};
+
+struct block_q4_1 {
+    half d;            // Scale
+    half m;            // Min
+    uint8_t qs[16];    // 4-bit quants
+};
+
+struct block_q5_0 {
+    half d;            // Scale
+    uint8_t qh[4];     // High bits for 32 elements
+    uint8_t qs[16];    // Low 4 bits
+};
+
+struct block_q5_1 {
+    half d;            // Scale
+    half m;            // Min
+    uint8_t qh[4];     // High bits
+    uint8_t qs[16];    // Low 4 bits
+};
+
 // Kernel argument structure (matching llama.cpp's ggml_metal_kargs_mul_mm)
 struct ggml_metal_kargs_mul_mm {
     int32_t  ne00;   // K dimension
@@ -204,7 +234,78 @@ void dequantize_q6_K(device const block_q6_K *xb, short il, thread type4x4 & reg
     }
 }
 
-// GEMM kernel template (from llama.cpp)
+// Standard Q dequantize functions
+// Q4_0: 4-bit values with scale, symmetric quantization
+template <typename type4x4>
+void dequantize_q4_0(device const block_q4_0 *xb, short il, thread type4x4 & reg) {
+    const float d = xb->d;
+    device const uint8_t * q = xb->qs + 16 * (il & 1);
+
+    // 4-bit values: 0-15 mapped to -8 to 7
+    for (int i = 0; i < 16; ++i) {
+        uint8_t qval = (il & 1) ? (q[i] >> 4) : (q[i] & 0x0F);
+        reg[i/4][i%4] = d * (qval - 8.f);
+    }
+}
+
+// Q8_0: 8-bit values with scale
+template <typename type4x4>
+void dequantize_q8_0(device const block_q8_0 *xb, short il, thread type4x4 & reg) {
+    const float d = xb->d;
+    device const int8_t * q = xb->qs + 16 * (il & 1);
+
+    for (int i = 0; i < 16; ++i) {
+        reg[i/4][i%4] = d * q[i];
+    }
+}
+
+// Q4_1: 4-bit values with scale and min
+template <typename type4x4>
+void dequantize_q4_1(device const block_q4_1 *xb, short il, thread type4x4 & reg) {
+    const float d = xb->d;
+    const float m = xb->m;
+    device const uint8_t * q = xb->qs + 16 * (il & 1);
+
+    for (int i = 0; i < 16; ++i) {
+        uint8_t qval = (il & 1) ? (q[i] >> 4) : (q[i] & 0x0F);
+        reg[i/4][i%4] = d * qval + m;
+    }
+}
+
+// Q5_0: 5-bit values with scale
+template <typename type4x4>
+void dequantize_q5_0(device const block_q5_0 *xb, short il, thread type4x4 & reg) {
+    const float d = xb->d;
+    device const uint8_t * q = xb->qs + 16 * (il & 1);
+    device const uint8_t * qh = xb->qh;
+
+    // 5-bit: low 4 bits from qs, high 1 bit from qh
+    uint32_t hmask = ((qh[0] | (qh[1] << 8) | (qh[2] << 16) | (qh[3] << 24)) >> (il * 16)) & 0xFFFF;
+
+    for (int i = 0; i < 16; ++i) {
+        uint8_t qval = (il & 1) ? (q[i] >> 4) : (q[i] & 0x0F);
+        uint8_t hbit = (hmask >> i) & 1;
+        // 5-bit: 0-31 mapped to -16 to 15
+        reg[i/4][i%4] = d * ((qval | (hbit << 4)) - 16.f);
+    }
+}
+
+// Q5_1: 5-bit values with scale and min
+template <typename type4x4>
+void dequantize_q5_1(device const block_q5_1 *xb, short il, thread type4x4 & reg) {
+    const float d = xb->d;
+    const float m = xb->m;
+    device const uint8_t * q = xb->qs + 16 * (il & 1);
+    device const uint8_t * qh = xb->qh;
+
+    uint32_t hmask = ((qh[0] | (qh[1] << 8) | (qh[2] << 16) | (qh[3] << 24)) >> (il * 16)) & 0xFFFF;
+
+    for (int i = 0; i < 16; ++i) {
+        uint8_t qval = (il & 1) ? (q[i] >> 4) : (q[i] & 0x0F);
+        uint8_t hbit = (hmask >> i) & 1;
+        reg[i/4][i%4] = d * (qval | (hbit << 4)) + m;
+    }
+}
 template<
     typename S0, typename S0_4x4, typename S0_8x8,
     typename S1, typename S1_2x4, typename S1_8x8,
@@ -385,3 +486,10 @@ template [[host_name("kernel_mul_mm_q3_K_f32")]]    kernel mul_mm_t kernel_mul_m
 template [[host_name("kernel_mul_mm_q4_K_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q4_K,    QK_NL, dequantize_q4_K,    float,  float4x4,  half, half2x4>;
 template [[host_name("kernel_mul_mm_q5_K_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q5_K,    QK_NL, dequantize_q5_K,    float,  float4x4,  half, half2x4>;
 template [[host_name("kernel_mul_mm_q6_K_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q6_K,    QK_NL, dequantize_q6_K,    float,  float4x4,  half, half2x4>;
+
+// Standard Q GEMM kernels
+template [[host_name("kernel_mul_mm_q4_0_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q4_0,    2,     dequantize_q4_0,    float,  float4x4,  half, half2x4>;
+template [[host_name("kernel_mul_mm_q8_0_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q8_0,    2,     dequantize_q8_0,    float,  float4x4,  half, half2x4>;
+template [[host_name("kernel_mul_mm_q4_1_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q4_1,    2,     dequantize_q4_1,    float,  float4x4,  half, half2x4>;
+template [[host_name("kernel_mul_mm_q5_0_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q5_0,    2,     dequantize_q5_0,    float,  float4x4,  half, half2x4>;
+template [[host_name("kernel_mul_mm_q5_1_f32")]]    kernel mul_mm_t kernel_mul_mm<half,   half4x4,   simdgroup_half8x8,   half,   half2x4,   simdgroup_half8x8,   block_q5_1,    2,     dequantize_q5_1,    float,  float4x4,  half, half2x4>;
