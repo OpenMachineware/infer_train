@@ -125,17 +125,24 @@ cargo run --release --bin iq_quantizer -- --format iq2_xxs --blocks 1 --export-r
 - Binary file with quantized blocks
 - Rust source file with embedded test data (via `--export-rust`)
 
-**Capabilities:**
-- IQ4_NL, IQ4_XS: Full quantization (4-bit symmetric)
-- IQ1_M: Simple 1-bit sign encoding
-- Grid-based formats (IQ2/IQ3): Simplified quantization for testing
+**Implementation:**
+- Complete port of llama.cpp's IQ quantization algorithms
+- Grid tables from `ggml-quants.c` (KGRID_2BIT_256, KGRID_2BIT_512, etc.)
+- Runtime map and neighbor table generation
+- Sign extraction with parity constraint
+- Scale optimization (31 iterations for IQ3, 19 for IQ2)
+- Grid lookup with neighbor fallback
 
-**Limitations:**
-- Grid-based formats (IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S) use simplified quantization
-- For proper testing of grid-based formats, use:
-  - Real quantized data from GGUF files
-  - llama.cpp's quantization functions directly
-  - The Python tools with grid table lookup
+**Block sizes:**
+| Format | Block Size (bytes) | Super-block size |
+|--------|-------------------|------------------|
+| IQ2_XXS| 66 | 256 |
+| IQ2_XS | 74 | 256 |
+| IQ2_S  | 82 | 256 |
+| IQ3_XXS| 98 | 256 |
+| IQ3_S  | 110| 256 |
+| IQ4_NL | 18 | 32 |
+| IQ4_XS | 138| 256 |
 
 ## Notes
 
@@ -143,5 +150,5 @@ cargo run --release --bin iq_quantizer -- --format iq2_xxs --blocks 1 --export-r
 - llama.cpp's grids were generated once and are now fixed
 - Use canonical grids for compatibility with existing quantized models
 - New grids would require re-quantization of model weights
-- For correctness testing, IQ4_NL and IQ1_M work with simplified quantization
-- Grid-based IQ formats require proper grid lookup for valid test data
+- The Rust `iq_quantizer` tool now includes full grid-based quantization for all IQ formats
+- Block sizes are verified to match llama.cpp's `block_iq*_s` structures
