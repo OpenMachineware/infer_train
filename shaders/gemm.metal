@@ -2132,7 +2132,7 @@ void kernel_gemm_iq2_xxs_f32_impl(
             const float db = (float)dh[0];
             device const uint8_t * aux8 = (device const uint8_t *)q2;
             const uint32_t aux32 = q2[2] | (q2[3] << 16);
-            const float d = db * (0.5f + (aux32 >> 28)) * 0.25f;
+            const float d = db * (0.5f + (aux32 >> 28));
 
             float sum = 0;
             // Grid lookup with proper sign handling
