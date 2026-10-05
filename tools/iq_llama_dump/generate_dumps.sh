@@ -33,10 +33,10 @@ size_t quantize_${name}(const float * src, void * dst, int64_t nrows, int64_t n_
 
 int main() {
     printf("=== 直接调用 llama.cpp ${name^^} 量化 ===\\n\\n");
-    
+
     // 初始化量化表
     ggml_quantize_init(GGML_TYPE_${name^^});
-    
+
     // 测试数据（一行，256个元素）
     float test_data[QK_K] = {
         0.812570, -0.115481, 0.410859, -0.743249, 0.212563, -0.273812, 0.934245, 0.814190,
@@ -44,15 +44,15 @@ int main() {
         0.567890, -0.234567, 0.890123, -0.456789, 0.123456, -0.789012, 0.345678, -0.567890,
         0.234567, -0.890123, 0.456789, -0.123456, 0.789012, -0.345678, 0.567890, -0.234567,
     };
-    
+
     // 量化权重（全1）
     float quant_weights[QK_K];
     for (int i = 0; i < QK_K; i++) quant_weights[i] = 1.0f;
-    
+
     // 量化
     block_${name} block;
     size_t result = quantize_${name}(test_data, &block, 1, QK_K, quant_weights);
-    
+
     // 输出结果
     printf("Result size: %zu\\n", result);
     printf("Block:\\n");
@@ -60,7 +60,7 @@ int main() {
     printf("  qs[0:8] = ");
     for (int i = 0; i < 8; i++) printf("0x%04x ", block.qs[i]);
     printf("\\n");
-    
+
     return 0;
 }
 EOFILE

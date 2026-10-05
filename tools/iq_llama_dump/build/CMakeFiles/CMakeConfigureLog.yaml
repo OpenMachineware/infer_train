@@ -17,16 +17,16 @@ events:
       - "CMakeLists.txt:2 (project)"
     message: |
       Compiling the C compiler identification source file "CMakeCCompilerId.c" failed.
-      Compiler: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc 
-      Build flags: 
-      Id flags:  
-      
+      Compiler: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc
+      Build flags:
+      Id flags:
+
       The output was:
       1
       ld: library 'System' not found
       cc: error: linker command failed with exit code 1 (use -v to see invocation)
-      
-      
+
+
   -
     kind: "message-v1"
     backtrace:
@@ -36,19 +36,19 @@ events:
       - "CMakeLists.txt:2 (project)"
     message: |
       Compiling the C compiler identification source file "CMakeCCompilerId.c" succeeded.
-      Compiler: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc 
-      Build flags: 
-      Id flags: -c 
-      
+      Compiler: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc
+      Build flags:
+      Id flags: -c
+
       The output was:
       0
-      
-      
+
+
       Compilation of the C compiler identification source "CMakeCCompilerId.c" produced "CMakeCCompilerId.o"
-      
+
       The C compiler identification is AppleClang, found in:
         /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/3.31.10/CompilerIdC/CMakeCCompilerId.o
-      
+
   -
     kind: "try_compile-v1"
     backtrace:
@@ -72,7 +72,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-PBUuSd'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_63d73/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_63d73.dir/build.make CMakeFiles/cmTC_63d73.dir/build
         Building C object CMakeFiles/cmTC_63d73.dir/CMakeCCompilerABI.c.o
@@ -112,7 +112,7 @@ events:
         Framework search paths:
         	/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/System/Library/Frameworks
         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc  -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names  -v -Wl,-v CMakeFiles/cmTC_63d73.dir/CMakeCCompilerABI.c.o -o cmTC_63d73
-        
+
       exitCode: 0
   -
     kind: "message-v1"
@@ -141,8 +141,8 @@ events:
         collapse include dir [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/usr/include] ==> [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/usr/include]
         collapse include dir [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include] ==> [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
         implicit include dirs: [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/21/include;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/usr/include;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
-      
-      
+
+
   -
     kind: "message-v1"
     backtrace:
@@ -218,8 +218,8 @@ events:
         implicit objs: []
         implicit dirs: [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/usr/lib;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/usr/lib/swift]
         implicit fwks: [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/System/Library/Frameworks]
-      
-      
+
+
   -
     kind: "message-v1"
     backtrace:
@@ -243,16 +243,16 @@ events:
       - "/Users/jia/Desktop/infer_train/llama.cpp-0.5.0/CMakeLists.txt:2 (project)"
     message: |
       Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" failed.
-      Compiler: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ 
-      Build flags: 
-      Id flags:  
-      
+      Compiler: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++
+      Build flags:
+      Id flags:
+
       The output was:
       1
       ld: library 'c++' not found
       c++: error: linker command failed with exit code 1 (use -v to see invocation)
-      
-      
+
+
   -
     kind: "message-v1"
     backtrace:
@@ -262,19 +262,19 @@ events:
       - "/Users/jia/Desktop/infer_train/llama.cpp-0.5.0/CMakeLists.txt:2 (project)"
     message: |
       Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
-      Compiler: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ 
-      Build flags: 
-      Id flags: -c 
-      
+      Compiler: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++
+      Build flags:
+      Id flags: -c
+
       The output was:
       0
-      
-      
+
+
       Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "CMakeCXXCompilerId.o"
-      
+
       The CXX compiler identification is AppleClang, found in:
         /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/3.31.10/CompilerIdCXX/CMakeCXXCompilerId.o
-      
+
   -
     kind: "try_compile-v1"
     backtrace:
@@ -299,7 +299,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-E8Mnyx'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_7e0d7/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_7e0d7.dir/build.make CMakeFiles/cmTC_7e0d7.dir/build
         Building CXX object CMakeFiles/cmTC_7e0d7.dir/CMakeCXXCompilerABI.cpp.o
@@ -341,7 +341,7 @@ events:
         Framework search paths:
         	/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/System/Library/Frameworks
         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names  -v -Wl,-v CMakeFiles/cmTC_7e0d7.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_7e0d7
-        
+
       exitCode: 0
   -
     kind: "message-v1"
@@ -372,8 +372,8 @@ events:
         collapse include dir [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/usr/include] ==> [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/usr/include]
         collapse include dir [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include] ==> [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
         implicit include dirs: [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/usr/include/c++/v1;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/21/include;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/usr/include;/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include]
-      
-      
+
+
   -
     kind: "message-v1"
     backtrace:
@@ -452,8 +452,8 @@ events:
         implicit objs: []
         implicit dirs: [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/usr/lib;/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/usr/lib/swift]
         implicit fwks: [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk/System/Library/Frameworks]
-      
-      
+
+
   -
     kind: "message-v1"
     backtrace:
@@ -518,7 +518,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-KbatzW'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_b324e/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_b324e.dir/build.make CMakeFiles/cmTC_b324e.dir/build
         Building C object CMakeFiles/cmTC_b324e.dir/src.c.o
@@ -526,7 +526,7 @@ events:
         Linking C executable cmTC_b324e
         /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E cmake_link_script CMakeFiles/cmTC_b324e.dir/link.txt --verbose=1
         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc  -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/cmTC_b324e.dir/src.c.o -o cmTC_b324e
-        
+
       exitCode: 0
   -
     kind: "try_compile-v1"
@@ -551,7 +551,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-2l6q3G'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_c5d1b/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_c5d1b.dir/build.make CMakeFiles/cmTC_c5d1b.dir/build
         Building C object CMakeFiles/cmTC_c5d1b.dir/OpenMPTryFlag.c.o
@@ -562,7 +562,7 @@ events:
         1 error generated.
         make[1]: *** [CMakeFiles/cmTC_c5d1b.dir/OpenMPTryFlag.c.o] Error 1
         make: *** [cmTC_c5d1b/fast] Error 2
-        
+
       exitCode: 2
   -
     kind: "try_compile-v1"
@@ -587,7 +587,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-ySql6Z'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_6e8c0/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_6e8c0.dir/build.make CMakeFiles/cmTC_6e8c0.dir/build
         Building CXX object CMakeFiles/cmTC_6e8c0.dir/OpenMPTryFlag.cpp.o
@@ -598,7 +598,7 @@ events:
         1 error generated.
         make[1]: *** [CMakeFiles/cmTC_6e8c0.dir/OpenMPTryFlag.cpp.o] Error 1
         make: *** [cmTC_6e8c0/fast] Error 2
-        
+
       exitCode: 2
   -
     kind: "try_compile-v1"
@@ -626,7 +626,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-6ox3QR'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_8e533/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_8e533.dir/build.make CMakeFiles/cmTC_8e533.dir/build
         Building CXX object CMakeFiles/cmTC_8e533.dir/src.cxx.o
@@ -634,7 +634,7 @@ events:
         c++: error: unknown argument: '-mfp16-format=ieee'
         make[1]: *** [CMakeFiles/cmTC_8e533.dir/src.cxx.o] Error 1
         make: *** [cmTC_8e533/fast] Error 2
-        
+
       exitCode: 2
   -
     kind: "try_run-v1"
@@ -662,7 +662,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-F9vgE0'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_e673c/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_e673c.dir/build.make CMakeFiles/cmTC_e673c.dir/build
         Building CXX object CMakeFiles/cmTC_e673c.dir/src.cxx.o
@@ -670,7 +670,7 @@ events:
         Linking CXX executable cmTC_e673c
         /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E cmake_link_script CMakeFiles/cmTC_e673c.dir/link.txt --verbose=1
         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -mcpu=native+dotprod -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/cmTC_e673c.dir/src.cxx.o -o cmTC_e673c
-        
+
       exitCode: 0
     runResult:
       variable: "GGML_MACHINE_SUPPORTS_dotprod_EXITCODE"
@@ -704,7 +704,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-j8FpgB'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_a9d50/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_a9d50.dir/build.make CMakeFiles/cmTC_a9d50.dir/build
         Building CXX object CMakeFiles/cmTC_a9d50.dir/src.cxx.o
@@ -712,7 +712,7 @@ events:
         Linking CXX executable cmTC_a9d50
         /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E cmake_link_script CMakeFiles/cmTC_a9d50.dir/link.txt --verbose=1
         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -mcpu=native+i8mm -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/cmTC_a9d50.dir/src.cxx.o -o cmTC_a9d50
-        
+
       exitCode: 0
     runResult:
       variable: "GGML_MACHINE_SUPPORTS_i8mm_EXITCODE"
@@ -747,7 +747,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-p7rwqy'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_169fe/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_169fe.dir/build.make CMakeFiles/cmTC_169fe.dir/build
         Building CXX object CMakeFiles/cmTC_169fe.dir/src.cxx.o
@@ -755,7 +755,7 @@ events:
         Linking CXX executable cmTC_169fe
         /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E cmake_link_script CMakeFiles/cmTC_169fe.dir/link.txt --verbose=1
         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -mcpu=native+noi8mm -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/cmTC_169fe.dir/src.cxx.o -o cmTC_169fe
-        
+
       exitCode: 0
   -
     kind: "try_run-v1"
@@ -783,7 +783,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-ejg06B'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_cd024/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_cd024.dir/build.make CMakeFiles/cmTC_cd024.dir/build
         Building CXX object CMakeFiles/cmTC_cd024.dir/src.cxx.o
@@ -791,7 +791,7 @@ events:
         Linking CXX executable cmTC_cd024
         /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E cmake_link_script CMakeFiles/cmTC_cd024.dir/link.txt --verbose=1
         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -mcpu=native+sve -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/cmTC_cd024.dir/src.cxx.o -o cmTC_cd024
-        
+
       exitCode: 0
     runResult:
       variable: "GGML_MACHINE_SUPPORTS_sve_EXITCODE"
@@ -826,7 +826,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-A1cFex'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_239d9/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_239d9.dir/build.make CMakeFiles/cmTC_239d9.dir/build
         Building CXX object CMakeFiles/cmTC_239d9.dir/src.cxx.o
@@ -834,7 +834,7 @@ events:
         Linking CXX executable cmTC_239d9
         /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E cmake_link_script CMakeFiles/cmTC_239d9.dir/link.txt --verbose=1
         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -mcpu=native+nosve -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/cmTC_239d9.dir/src.cxx.o -o cmTC_239d9
-        
+
       exitCode: 0
   -
     kind: "try_run-v1"
@@ -862,7 +862,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-E0LRuH'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_b3b4e/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_b3b4e.dir/build.make CMakeFiles/cmTC_b3b4e.dir/build
         Building CXX object CMakeFiles/cmTC_b3b4e.dir/src.cxx.o
@@ -870,7 +870,7 @@ events:
         Linking CXX executable cmTC_b3b4e
         /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E cmake_link_script CMakeFiles/cmTC_b3b4e.dir/link.txt --verbose=1
         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -mcpu=native+sme -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/cmTC_b3b4e.dir/src.cxx.o -o cmTC_b3b4e
-        
+
       exitCode: 0
     runResult:
       variable: "GGML_MACHINE_SUPPORTS_sme_EXITCODE"
@@ -905,7 +905,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-qi10zw'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_4321b/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_4321b.dir/build.make CMakeFiles/cmTC_4321b.dir/build
         Building CXX object CMakeFiles/cmTC_4321b.dir/src.cxx.o
@@ -913,7 +913,7 @@ events:
         Linking CXX executable cmTC_4321b
         /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E cmake_link_script CMakeFiles/cmTC_4321b.dir/link.txt --verbose=1
         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -mcpu=native+nosme -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/cmTC_4321b.dir/src.cxx.o -o cmTC_4321b
-        
+
       exitCode: 0
   -
     kind: "try_compile-v1"
@@ -940,7 +940,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-puJv5m'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_804b7/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_804b7.dir/build.make CMakeFiles/cmTC_804b7.dir/build
         Building CXX object CMakeFiles/cmTC_804b7.dir/src.cxx.o
@@ -948,7 +948,7 @@ events:
         Linking CXX executable cmTC_804b7
         /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E cmake_link_script CMakeFiles/cmTC_804b7.dir/link.txt --verbose=1
         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/cmTC_804b7.dir/src.cxx.o -o cmTC_804b7
-        
+
       exitCode: 0
   -
     kind: "try_compile-v1"
@@ -975,7 +975,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-YMi1DG'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_396c5/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_396c5.dir/build.make CMakeFiles/cmTC_396c5.dir/build
         Building CXX object CMakeFiles/cmTC_396c5.dir/src.cxx.o
@@ -986,7 +986,7 @@ events:
         1 error generated.
         make[1]: *** [CMakeFiles/cmTC_396c5.dir/src.cxx.o] Error 1
         make: *** [cmTC_396c5/fast] Error 2
-        
+
       exitCode: 2
   -
     kind: "try_compile-v1"
@@ -1013,7 +1013,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-xq4fYT'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_babcc/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_babcc.dir/build.make CMakeFiles/cmTC_babcc.dir/build
         Building CXX object CMakeFiles/cmTC_babcc.dir/src.cxx.o
@@ -1024,7 +1024,7 @@ events:
         1 error generated.
         make[1]: *** [CMakeFiles/cmTC_babcc.dir/src.cxx.o] Error 1
         make: *** [cmTC_babcc/fast] Error 2
-        
+
       exitCode: 2
   -
     kind: "try_compile-v1"
@@ -1051,7 +1051,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-8KwYok'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_8cc3c/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_8cc3c.dir/build.make CMakeFiles/cmTC_8cc3c.dir/build
         Building CXX object CMakeFiles/cmTC_8cc3c.dir/src.cxx.o
@@ -1059,7 +1059,7 @@ events:
         Linking CXX executable cmTC_8cc3c
         /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E cmake_link_script CMakeFiles/cmTC_8cc3c.dir/link.txt --verbose=1
         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/cmTC_8cc3c.dir/src.cxx.o -o cmTC_8cc3c
-        
+
       exitCode: 0
   -
     kind: "try_compile-v1"
@@ -1086,7 +1086,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-XXsAHK'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_6dfeb/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_6dfeb.dir/build.make CMakeFiles/cmTC_6dfeb.dir/build
         Building CXX object CMakeFiles/cmTC_6dfeb.dir/src.cxx.o
@@ -1094,7 +1094,7 @@ events:
         Linking CXX executable cmTC_6dfeb
         /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E cmake_link_script CMakeFiles/cmTC_6dfeb.dir/link.txt --verbose=1
         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -U__ARM_FEATURE_MATMUL_INT8 -U__ARM_FEATURE_SVE -U__ARM_FEATURE_SME -mcpu=native+dotprod+noi8mm+nosve+nosme -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/cmTC_6dfeb.dir/src.cxx.o -o cmTC_6dfeb
-        
+
       exitCode: 0
   -
     kind: "try_compile-v1"
@@ -1121,7 +1121,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-EV8IR1'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_e9b3e/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_e9b3e.dir/build.make CMakeFiles/cmTC_e9b3e.dir/build
         Building CXX object CMakeFiles/cmTC_e9b3e.dir/src.cxx.o
@@ -1132,7 +1132,7 @@ events:
         1 error generated.
         make[1]: *** [CMakeFiles/cmTC_e9b3e.dir/src.cxx.o] Error 1
         make: *** [cmTC_e9b3e/fast] Error 2
-        
+
       exitCode: 2
   -
     kind: "try_compile-v1"
@@ -1159,7 +1159,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-PBluT7'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_62f28/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_62f28.dir/build.make CMakeFiles/cmTC_62f28.dir/build
         Building C object CMakeFiles/cmTC_62f28.dir/CheckFunctionExists.c.o
@@ -1167,7 +1167,7 @@ events:
         Linking C executable cmTC_62f28
         /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E cmake_link_script CMakeFiles/cmTC_62f28.dir/link.txt --verbose=1
         /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc  -DCHECK_FUNCTION_EXISTS=dgemm_ -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/cmTC_62f28.dir/CheckFunctionExists.c.o -o cmTC_62f28  -framework Accelerate
-        
+
       exitCode: 0
 ...
 
@@ -1196,7 +1196,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-sVH1yR'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_4249b/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_4249b.dir/build.make CMakeFiles/cmTC_4249b.dir/build
         Building C object CMakeFiles/cmTC_4249b.dir/OpenMPTryFlag.c.o
@@ -1207,7 +1207,7 @@ events:
         1 error generated.
         make[1]: *** [CMakeFiles/cmTC_4249b.dir/OpenMPTryFlag.c.o] Error 1
         make: *** [cmTC_4249b/fast] Error 2
-        
+
       exitCode: 2
   -
     kind: "try_compile-v1"
@@ -1232,7 +1232,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-RMYEwY'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_939ab/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_939ab.dir/build.make CMakeFiles/cmTC_939ab.dir/build
         Building CXX object CMakeFiles/cmTC_939ab.dir/OpenMPTryFlag.cpp.o
@@ -1243,7 +1243,7 @@ events:
         1 error generated.
         make[1]: *** [CMakeFiles/cmTC_939ab.dir/OpenMPTryFlag.cpp.o] Error 1
         make: *** [cmTC_939ab/fast] Error 2
-        
+
       exitCode: 2
 ...
 
@@ -1272,7 +1272,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-sfgojQ'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_eeab8/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_eeab8.dir/build.make CMakeFiles/cmTC_eeab8.dir/build
         Building C object CMakeFiles/cmTC_eeab8.dir/OpenMPTryFlag.c.o
@@ -1283,7 +1283,7 @@ events:
         1 error generated.
         make[1]: *** [CMakeFiles/cmTC_eeab8.dir/OpenMPTryFlag.c.o] Error 1
         make: *** [cmTC_eeab8/fast] Error 2
-        
+
       exitCode: 2
   -
     kind: "try_compile-v1"
@@ -1308,7 +1308,7 @@ events:
       cached: true
       stdout: |
         Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-UNKDgG'
-        
+
         Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_b12a4/fast
         /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_b12a4.dir/build.make CMakeFiles/cmTC_b12a4.dir/build
         Building CXX object CMakeFiles/cmTC_b12a4.dir/OpenMPTryFlag.cpp.o
@@ -1319,6 +1319,82 @@ events:
         1 error generated.
         make[1]: *** [CMakeFiles/cmTC_b12a4.dir/OpenMPTryFlag.cpp.o] Error 1
         make: *** [cmTC_b12a4/fast] Error 2
+
+      exitCode: 2
+...
+
+---
+events:
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/opt/homebrew/lib/python3.11/site-packages/cmake/data/share/cmake-3.31/Modules/FindOpenMP.cmake:252 (try_compile)"
+      - "/opt/homebrew/lib/python3.11/site-packages/cmake/data/share/cmake-3.31/Modules/FindOpenMP.cmake:522 (_OPENMP_GET_FLAGS)"
+      - "/Users/jia/Desktop/infer_train/llama.cpp-0.5.0/ggml/src/CMakeLists.txt:340 (find_package)"
+    description: "Detecting C OpenMP compiler info"
+    directories:
+      source: "/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-lMZDUV"
+      binary: "/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-lMZDUV"
+    cmakeVariables:
+      CMAKE_C_FLAGS: ""
+      CMAKE_C_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/Users/jia/Desktop/infer_train/llama.cpp-0.5.0/cmake/;/Users/jia/Desktop/infer_train/llama.cpp-0.5.0/ggml/cmake/"
+      CMAKE_OSX_ARCHITECTURES: ""
+      CMAKE_OSX_DEPLOYMENT_TARGET: ""
+      CMAKE_OSX_SYSROOT: "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk"
+    buildResult:
+      variable: "OpenMP_COMPILE_RESULT_C_Xclang fopenmp"
+      cached: true
+      stdout: |
+        Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-lMZDUV'
+        
+        Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_6a25e/fast
+        /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_6a25e.dir/build.make CMakeFiles/cmTC_6a25e.dir/build
+        Building C object CMakeFiles/cmTC_6a25e.dir/OpenMPTryFlag.c.o
+        /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc   -Xclang -fopenmp -std=gnu11 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -MD -MT CMakeFiles/cmTC_6a25e.dir/OpenMPTryFlag.c.o -MF CMakeFiles/cmTC_6a25e.dir/OpenMPTryFlag.c.o.d -o CMakeFiles/cmTC_6a25e.dir/OpenMPTryFlag.c.o -c /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-lMZDUV/OpenMPTryFlag.c
+        /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-lMZDUV/OpenMPTryFlag.c:2:10: fatal error: 'omp.h' file not found
+            2 | #include <omp.h>
+              |          ^~~~~~~
+        1 error generated.
+        make[2]: *** [CMakeFiles/cmTC_6a25e.dir/OpenMPTryFlag.c.o] Error 1
+        make[1]: *** [cmTC_6a25e/fast] Error 2
+        
+      exitCode: 2
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/opt/homebrew/lib/python3.11/site-packages/cmake/data/share/cmake-3.31/Modules/FindOpenMP.cmake:252 (try_compile)"
+      - "/opt/homebrew/lib/python3.11/site-packages/cmake/data/share/cmake-3.31/Modules/FindOpenMP.cmake:522 (_OPENMP_GET_FLAGS)"
+      - "/Users/jia/Desktop/infer_train/llama.cpp-0.5.0/ggml/src/CMakeLists.txt:340 (find_package)"
+    description: "Detecting CXX OpenMP compiler info"
+    directories:
+      source: "/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-nGVMiq"
+      binary: "/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-nGVMiq"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: ""
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/Users/jia/Desktop/infer_train/llama.cpp-0.5.0/cmake/;/Users/jia/Desktop/infer_train/llama.cpp-0.5.0/ggml/cmake/"
+      CMAKE_OSX_ARCHITECTURES: ""
+      CMAKE_OSX_DEPLOYMENT_TARGET: ""
+      CMAKE_OSX_SYSROOT: "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk"
+    buildResult:
+      variable: "OpenMP_COMPILE_RESULT_CXX_Xclang fopenmp"
+      cached: true
+      stdout: |
+        Change Dir: '/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-nGVMiq'
+        
+        Run Build Command(s): /opt/homebrew/lib/python3.11/site-packages/cmake/data/bin/cmake -E env VERBOSE=1 /usr/bin/make -f Makefile cmTC_af7ee/fast
+        /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_af7ee.dir/build.make CMakeFiles/cmTC_af7ee.dir/build
+        Building CXX object CMakeFiles/cmTC_af7ee.dir/OpenMPTryFlag.cpp.o
+        /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++   -Xclang -fopenmp -std=gnu++17 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.0.sdk -MD -MT CMakeFiles/cmTC_af7ee.dir/OpenMPTryFlag.cpp.o -MF CMakeFiles/cmTC_af7ee.dir/OpenMPTryFlag.cpp.o.d -o CMakeFiles/cmTC_af7ee.dir/OpenMPTryFlag.cpp.o -c /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-nGVMiq/OpenMPTryFlag.cpp
+        /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/CMakeScratch/TryCompile-nGVMiq/OpenMPTryFlag.cpp:2:10: fatal error: 'omp.h' file not found
+            2 | #include <omp.h>
+              |          ^~~~~~~
+        1 error generated.
+        make[2]: *** [CMakeFiles/cmTC_af7ee.dir/OpenMPTryFlag.cpp.o] Error 1
+        make[1]: *** [cmTC_af7ee/fast] Error 2
         
       exitCode: 2
 ...

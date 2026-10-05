@@ -1,0 +1,11 @@
+/Users/jia/Desktop/infer_train/tools/target/release/deps/anstyle_parse-12a51fd8e90ac579.d: /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/lib.rs /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/params.rs /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/mod.rs /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/definitions.rs /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/table.rs
+
+/Users/jia/Desktop/infer_train/tools/target/release/deps/libanstyle_parse-12a51fd8e90ac579.rlib: /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/lib.rs /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/params.rs /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/mod.rs /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/definitions.rs /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/table.rs
+
+/Users/jia/Desktop/infer_train/tools/target/release/deps/libanstyle_parse-12a51fd8e90ac579.rmeta: /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/lib.rs /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/params.rs /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/mod.rs /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/definitions.rs /Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/table.rs
+
+/Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/lib.rs:
+/Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/params.rs:
+/Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/mod.rs:
+/Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/definitions.rs:
+/Users/jia/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/table.rs:

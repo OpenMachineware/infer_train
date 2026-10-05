@@ -705,6 +705,397 @@ fn find_best_neighbor_iq2(
     }
 }
 
+/// Quantize FP32 to IQ2_S
+pub fn quantize_iq2_s(
+    x: &[f32],
+    quant_weights: Option<&[f32]>,
+) -> Vec<BlockIQ2S> {
+    quantize_iq2_s_impl(x, quant_weights, None)
+}
+
+/// Quantize FP32 to IQ2_S with debug dump
+pub fn quantize_iq2_s_with_dump(
+    x: &[f32],
+    quant_weights: Option<&[f32]>,
+    dump_path: Option<&str>,
+) -> Vec<BlockIQ2S> {
+    quantize_iq2_s_impl(x, quant_weights, dump_path)
+}
+
+fn quantize_iq2_s_impl(
+    x: &[f32],
+    quant_weights: Option<&[f32]>,
+    dump_path: Option<&str>,
+) -> Vec<BlockIQ2S> {
+    assert!(x.len() % QK_K == 0);
+    let nb = x.len() / QK_K;
+    let mut blocks = Vec::with_capacity(nb);
+
+    let mut dump_file = None;
+    if let Some(path) = dump_path {
+        use std::fs::File;
+        use std::io::Write;
+        dump_file =
+            Some(File::create(path).expect("Failed to create dump file"));
+        if let Some(ref mut f) = dump_file {
+            writeln!(f, "=== RUST IQ2_S DUMP ===").ok();
+        }
+    }
+
+    let grid_data = IQ2GridData::new(512, &KGRID_2BIT_512, 2);
+
+    const KMAX_Q_IQ2_S: i32 = 3;
+
+    for ibl in 0..nb {
+        let xbl = &x[ibl * QK_K..(ibl + 1) * QK_K];
+
+        let quant_weights_slice: Vec<f32> = if let Some(qw) = quant_weights {
+            qw[ibl * QK_K..(ibl + 1) * QK_K].to_vec()
+        } else {
+            vec![1.0; QK_K]
+        };
+
+        let mut scales = [0.0f32; QK_K / 16];
+        let mut max_scale = 0.0f32;
+
+        // Compute sigma2 for the block (llama.cpp line 5277-5278)
+        let sumx2: f32 = xbl.iter().map(|v| v * v).sum();
+        let sigma2 = 2.0 * sumx2 / QK_K as f32;
+
+        if ibl == 0 {
+            if let Some(ref mut f) = dump_file {
+                use std::io::Write;
+                writeln!(f, "\n=== Block {} ===", ibl).ok();
+                writeln!(f, "sumx2 = {:.6}, sigma2 = {:.6}", sumx2, sigma2)
+                    .ok();
+            }
+        }
+
+        // Process each sub-block of 16 values
+        for ib in 0..QK_K / 16 {
+            let xb = &xbl[ib * 16..(ib + 1) * 16];
+            let qw = &quant_weights_slice[ib * 16..(ib + 1) * 16];
+
+            let mut weight = [0.0f32; 16];
+            let mut waux = [0.0f32; 16];
+            for i in 0..16 {
+                weight[i] = qw[i] * (sigma2 + xb[i] * xb[i]).sqrt();
+                waux[i] = weight[i].sqrt();
+            }
+
+            if ibl == 0 && ib == 0 {
+                if let Some(ref mut f) = dump_file {
+                    use std::io::Write;
+                    writeln!(f, "\n=== Sub-block {} ===", ib).ok();
+                    write!(f, "weight[0:8]:").ok();
+                    for i in 0..8 {
+                        write!(f, " {:.6}", weight[i]).ok();
+                    }
+                    writeln!(f).ok();
+                    write!(f, "waux[0:8]:").ok();
+                    for i in 0..8 {
+                        write!(f, " {:.6}", waux[i]).ok();
+                    }
+                    writeln!(f).ok();
+                }
+            }
+
+            // Extract signs and absolute values (no parity constraint for IQ2_S)
+            let mut xval = [0.0f32; 16];
+            let mut block_signs = [0u8; 2];
+
+            for k in 0..2 {
+                let mut s = 0u8;
+                for i in 0..8 {
+                    if xb[8 * k + i] >= 0.0 {
+                        xval[8 * k + i] = xb[8 * k + i];
+                    } else {
+                        xval[8 * k + i] = -xb[8 * k + i];
+                        s |= 1 << i;
+                    }
+                }
+                block_signs[k] = s;
+            }
+
+            if ibl == 0 && ib == 0 {
+                if let Some(ref mut f) = dump_file {
+                    use std::io::Write;
+                    writeln!(
+                        f,
+                        "\n=== LLAMA.CPP DUMP ibl={} ib={} ===",
+                        ibl, ib
+                    )
+                    .ok();
+                    write!(f, "xval[0:8]:").ok();
+                    for i in 0..8 {
+                        write!(f, " {:.6}", xval[i]).ok();
+                    }
+                    writeln!(f).ok();
+                    writeln!(
+                        f,
+                        "block_signs: {} {}",
+                        block_signs[0], block_signs[1]
+                    )
+                    .ok();
+                }
+            }
+
+            let max = xval.iter().cloned().fold(0.0f32, f32::max);
+            let mut l = [0i8; 16];
+            if max < GROUP_MAX_EPS_IQ2_S {
+                scales[ib] = 0.0;
+                continue;
+            }
+
+            // Scale optimization loop
+            let mut best = 0.0f32;
+            let mut scale = max / (2 * KMAX_Q_IQ2_S - 1) as f32;
+            let mut is_on_grid = [true; 2];
+
+            for is in -9..=9 {
+                let id =
+                    ((2 * KMAX_Q_IQ2_S - 1) as f32 + is as f32 * 0.1) / max;
+                let this_scale = 1.0 / id;
+                let mut laux = [0i8; 16];
+                let mut is_on_grid_aux = [true; 2];
+
+                for k in 0..2 {
+                    for i in 0..8 {
+                        let lval =
+                            nearest_int(0.5 * (id * xval[8 * k + i] - 1.0));
+                        laux[8 * k + i] = lval.clamp(0, KMAX_Q_IQ2_S - 1) as i8;
+                    }
+                    let mut u: u16 = 0;
+                    for i in 0..8 {
+                        u |= (laux[8 * k + i] as u16) << (2 * i);
+                    }
+                    let grid_index = grid_data.map[u as usize];
+                    if grid_index < 0 {
+                        is_on_grid_aux[k] = false;
+                        let neighbors_idx =
+                            (-grid_data.map[u as usize] - 1) as usize;
+                        let neighbors = &grid_data.neighbors[neighbors_idx..];
+                        find_best_neighbor_iq2(
+                            neighbors,
+                            &grid_data.grid,
+                            &xval[8 * k..8 * (k + 1)],
+                            &waux[8 * k..8 * (k + 1)],
+                            this_scale,
+                            &mut laux[8 * k..8 * (k + 1)],
+                        );
+                    }
+                }
+
+                let sumqx: f32 = (0..16)
+                    .map(|i| weight[i] * xval[i] * (2.0 * laux[i] as f32 + 1.0))
+                    .sum();
+                let sumq2: f32 = (0..16)
+                    .map(|i| weight[i] * (2.0 * laux[i] as f32 + 1.0).powi(2))
+                    .sum();
+
+                if sumq2 > 0.0 && sumqx * sumqx > best * sumq2 {
+                    scale = sumqx / sumq2;
+                    best = scale * sumqx;
+                    l.copy_from_slice(&laux);
+                    is_on_grid.copy_from_slice(&is_on_grid_aux);
+                }
+            }
+
+            // Off-grid refinement
+            let mut n_not_ongrid = 0;
+            for k in 0..2 {
+                if !is_on_grid[k] {
+                    n_not_ongrid += 1;
+                }
+            }
+            if n_not_ongrid > 0 && scale > 0.0 {
+                let id = 1.0 / scale;
+                for k in 0..2 {
+                    if is_on_grid[k] {
+                        continue;
+                    }
+                    let mut u: u16 = 0;
+                    for i in 0..8 {
+                        let lval =
+                            nearest_int(0.5 * (id * xval[8 * k + i] - 1.0))
+                                .clamp(0, KMAX_Q_IQ2_S - 1);
+                        u |= (lval as u16) << (2 * i);
+                        l[8 * k + i] = lval as i8;
+                    }
+                    let grid_index = grid_data.map[u as usize];
+                    if grid_index < 0 {
+                        let neighbors_idx =
+                            (-grid_data.map[u as usize] - 1) as usize;
+                        let neighbors = &grid_data.neighbors[neighbors_idx..];
+                        find_best_neighbor_iq2(
+                            neighbors,
+                            &grid_data.grid,
+                            &xval[8 * k..8 * (k + 1)],
+                            &waux[8 * k..8 * (k + 1)],
+                            scale,
+                            &mut l[8 * k..8 * (k + 1)],
+                        );
+                    }
+                }
+                let sumqx: f32 = (0..16)
+                    .map(|i| weight[i] * xval[i] * (2.0 * l[i] as f32 + 1.0))
+                    .sum();
+                let sumq2: f32 = (0..16)
+                    .map(|i| weight[i] * (2.0 * l[i] as f32 + 1.0).powi(2))
+                    .sum();
+                if sumq2 > 0.0 {
+                    scale = sumqx / sumq2;
+                }
+            }
+
+            // Handle negative scale
+            if scale < 0.0 {
+                scale = -scale;
+                for k in 0..2 {
+                    block_signs[k] = (!block_signs[k]) & 255;
+                }
+            }
+
+            scales[ib] = scale;
+            max_scale = max_scale.max(scale);
+        }
+
+        // Pack final block
+        if max_scale == 0.0 {
+            blocks.push(BlockIQ2S {
+                d: 0,
+                qs: [0; 64],
+                qh: [0; 8],
+                scales: [0; 8],
+            });
+            continue;
+        }
+
+        let d = max_scale / 31.0;
+        let id = 1.0 / d;
+
+        let mut block = BlockIQ2S {
+            d: f16::from_f32(d * 0.9875).to_bits(),
+            qs: [0; 64],
+            qh: [0; 8],
+            scales: {
+                let mut arr = [0u8; 8];
+                for ib in 0..QK_K / 16 {
+                    let lval =
+                        nearest_int(0.5 * (id * scales[ib] - 1.0)).clamp(0, 15);
+                    if ib % 2 == 0 {
+                        arr[ib / 2] = lval as u8;
+                    } else {
+                        arr[ib / 2] |= (lval as u8) << 4;
+                    }
+                }
+                arr
+            },
+        };
+
+        // Now pack grid indices and signs - need to recompute
+        let quant_weights_slice: Vec<f32> = if let Some(qw) = quant_weights {
+            qw[ibl * QK_K..(ibl + 1) * QK_K].to_vec()
+        } else {
+            vec![1.0; QK_K]
+        };
+
+        for ib in 0..QK_K / 16 {
+            let xb = &xbl[ib * 16..(ib + 1) * 16];
+            let qw = &quant_weights_slice[ib * 16..(ib + 1) * 16];
+
+            let mut weight = [0.0f32; 16];
+            let mut waux = [0.0f32; 16];
+            for i in 0..16 {
+                weight[i] = qw[i] * (sigma2 + xb[i] * xb[i]).sqrt();
+                waux[i] = weight[i].sqrt();
+            }
+
+            let mut xval = [0.0f32; 16];
+            let mut block_signs = [0u8; 2];
+
+            for k in 0..2 {
+                let mut s = 0u8;
+                for i in 0..8 {
+                    if xb[8 * k + i] >= 0.0 {
+                        xval[8 * k + i] = xb[8 * k + i];
+                    } else {
+                        xval[8 * k + i] = -xb[8 * k + i];
+                        s |= 1 << i;
+                    }
+                }
+                block_signs[k] = s;
+            }
+
+            let max = xval.iter().cloned().fold(0.0f32, f32::max);
+            if max < GROUP_MAX_EPS_IQ2_S {
+                continue;
+            }
+
+            let mut l = [0i8; 16];
+            let scale = scales[ib];
+            if scale > 0.0 {
+                let id_local = 1.0 / scale;
+                for k in 0..2 {
+                    let mut u: u16 = 0;
+                    for i in 0..8 {
+                        let lval = nearest_int(0.5 * (id_local * xval[8 * k + i] - 1.0))
+                            .clamp(0, KMAX_Q_IQ2_S - 1);
+                        u |= (lval as u16) << (2 * i);
+                        l[8 * k + i] = lval as i8;
+                    }
+                    let grid_index = grid_data.map[u as usize];
+                    if grid_index < 0 {
+                        let neighbors_idx =
+                            (-grid_data.map[u as usize] - 1) as usize;
+                        let neighbors = &grid_data.neighbors[neighbors_idx..];
+                        find_best_neighbor_iq2(
+                            neighbors,
+                            &grid_data.grid,
+                            &xval[8 * k..8 * (k + 1)],
+                            &waux[8 * k..8 * (k + 1)],
+                            scale,
+                            &mut l[8 * k..8 * (k + 1)],
+                        );
+                    }
+                }
+
+                // Handle negative scale
+                let mut final_signs = block_signs;
+                if scale < 0.0 {
+                    for k in 0..2 {
+                        final_signs[k] = (!final_signs[k]) & 255;
+                    }
+                }
+
+                // Pack grid indices and signs
+                for k in 0..2 {
+                    let mut u: u16 = 0;
+                    for i in 0..8 {
+                        u |= (l[8 * k + i] as u16) << (2 * i);
+                    }
+                    let grid_index = grid_data.map[u as usize];
+                    if grid_index < 0 {
+                        panic!(
+                            "Oops: found point {} not on grid: {:?}",
+                            u, &l[8 * k..8 * (k + 1)]
+                        );
+                    }
+                    let i8_idx = 2 * ib + k;
+                    block.qs[i8_idx] = (grid_index as u16 & 255) as u8;
+                    block.qh[i8_idx / 4] |=
+                        ((grid_index as u16 >> 8) as u8) << (2 * (i8_idx % 4));
+                    block.qs[QK_K / 8 + i8_idx] = final_signs[k];
+                }
+            }
+        }
+
+        blocks.push(block);
+    }
+
+    blocks
+}
+
 /// Quantize FP32 to IQ2_XS
 pub fn quantize_iq2_xs(
     x: &[f32],
