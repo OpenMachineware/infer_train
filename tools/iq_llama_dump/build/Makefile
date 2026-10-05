@@ -188,6 +188,19 @@ iq2_s_llama_dump/fast:
 .PHONY : iq2_s_llama_dump/fast
 
 #=============================================================================
+# Target rules for targets named iq3_xxs_llama_dump
+
+# Build rule for target.
+iq3_xxs_llama_dump: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 iq3_xxs_llama_dump
+.PHONY : iq3_xxs_llama_dump
+
+# fast build rule for target.
+iq3_xxs_llama_dump/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_xxs_llama_dump.dir/build.make CMakeFiles/iq3_xxs_llama_dump.dir/build
+.PHONY : iq3_xxs_llama_dump/fast
+
+#=============================================================================
 # Target rules for targets named ggml-base
 
 # Build rule for target.
@@ -326,6 +339,30 @@ iq2_xs_llama_dump.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_xs_llama_dump.dir/build.make CMakeFiles/iq2_xs_llama_dump.dir/iq2_xs_llama_dump.c.s
 .PHONY : iq2_xs_llama_dump.c.s
 
+iq3_xxs_llama_dump.o: iq3_xxs_llama_dump.c.o
+.PHONY : iq3_xxs_llama_dump.o
+
+# target to build an object file
+iq3_xxs_llama_dump.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_xxs_llama_dump.dir/build.make CMakeFiles/iq3_xxs_llama_dump.dir/iq3_xxs_llama_dump.c.o
+.PHONY : iq3_xxs_llama_dump.c.o
+
+iq3_xxs_llama_dump.i: iq3_xxs_llama_dump.c.i
+.PHONY : iq3_xxs_llama_dump.i
+
+# target to preprocess a source file
+iq3_xxs_llama_dump.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_xxs_llama_dump.dir/build.make CMakeFiles/iq3_xxs_llama_dump.dir/iq3_xxs_llama_dump.c.i
+.PHONY : iq3_xxs_llama_dump.c.i
+
+iq3_xxs_llama_dump.s: iq3_xxs_llama_dump.c.s
+.PHONY : iq3_xxs_llama_dump.s
+
+# target to generate assembly for a file
+iq3_xxs_llama_dump.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_xxs_llama_dump.dir/build.make CMakeFiles/iq3_xxs_llama_dump.dir/iq3_xxs_llama_dump.c.s
+.PHONY : iq3_xxs_llama_dump.c.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -345,6 +382,7 @@ help:
 	@echo "... ggml-metal"
 	@echo "... iq2_s_llama_dump"
 	@echo "... iq2_xs_llama_dump"
+	@echo "... iq3_xxs_llama_dump"
 	@echo "... llama"
 	@echo "... vendor-hash"
 	@echo "... iq2_s_llama_dump.o"
@@ -353,6 +391,9 @@ help:
 	@echo "... iq2_xs_llama_dump.o"
 	@echo "... iq2_xs_llama_dump.i"
 	@echo "... iq2_xs_llama_dump.s"
+	@echo "... iq3_xxs_llama_dump.o"
+	@echo "... iq3_xxs_llama_dump.i"
+	@echo "... iq3_xxs_llama_dump.s"
 .PHONY : help
 
 

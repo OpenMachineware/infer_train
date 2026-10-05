@@ -1,5 +1,6 @@
 /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/iq2_xs_llama_dump.dir
 /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/iq2_s_llama_dump.dir
+/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/iq3_xxs_llama_dump.dir
 /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/edit_cache.dir
 /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/rebuild_cache.dir
 /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles/list_install_components.dir

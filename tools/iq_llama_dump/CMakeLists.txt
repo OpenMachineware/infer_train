@@ -26,3 +26,12 @@ target_include_directories(iq2_s_llama_dump PRIVATE
     ${LLAMA_DIR}/ggml/src/ggml-cpu
     ${LLAMA_DIR}/ggml/include
 )
+
+# IQ3_XXS
+add_executable(iq3_xxs_llama_dump iq3_xxs_llama_dump.c)
+target_link_libraries(iq3_xxs_llama_dump PRIVATE ggml)
+target_include_directories(iq3_xxs_llama_dump PRIVATE
+    ${LLAMA_DIR}/ggml/src
+    ${LLAMA_DIR}/ggml/src/ggml-cpu
+    ${LLAMA_DIR}/ggml/include
+)
