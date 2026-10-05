@@ -1,0 +1,8 @@
+[package]
+name = "infer_tools"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+half = "2.4"
+clap = { version = "4", features = ["derive"] }
