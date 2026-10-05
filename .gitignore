@@ -10,7 +10,7 @@ it-cli
 *.gguf
 llama.cpp-0.5.0/
 llvm-project-llvmorg-23.1.0/
-vllm-0.29.0/
+vllm-0.31.0/
 
 # Added by cargo
 /target

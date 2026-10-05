@@ -188,14 +188,10 @@ fn run_alternating_gemm_test(
     // (ratio, llama_us_per_mhz, self_us_per_mhz)
     println!("\n=== {} Alternating GEMM Benchmark ===", name);
 
-    // Load GEMM library (standalone version - self-contained)
-    let llama_lib_source =
-        include_str!("../../shaders/mul_mm_standalone.metal");
-
-    let compile_opts = metal::CompileOptions::new();
+    // Load pre-compiled GEMM library
     let llama_lib = device
-        .new_library_with_source(llama_lib_source, &compile_opts)
-        .expect("Failed to compile GEMM library");
+        .new_library_with_file("shaders/mul_mm_standalone.metallib")
+        .expect("Failed to load pre-compiled GEMM library");
 
     // Create pipelines with function constants
     let cv = metal::FunctionConstantValues::new();

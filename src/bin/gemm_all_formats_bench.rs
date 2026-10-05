@@ -1,632 +1,561 @@
-// Fair performance comparison: All 24 GEMM formats vs llama.cpp
-// Alternating A-B test methodology
+// GEMM benchmark for all quantization formats with N>1 (true GEMM)
+// Tests mul_mm_standalone.metal vs llama.cpp mul_mm_template.metallib
 
 use half::f16;
 use infer_train::quant::types::*;
-use infer_train::quant::vec_dot::gpu::metal::MetalContext;
+use metal::{Device, MTLSize};
 use rand::{Rng, SeedableRng, rngs::StdRng};
+use std::ffi::c_void;
 use std::time::Instant;
 
-fn gen_f32(k: usize, seed: u64) -> Vec<f32> {
+mod gpu_monitor_util;
+use gpu_monitor_util::{get_gpu_stats, print_diff, print_stats};
+
+const QK_K: usize = 256;
+
+fn gen_f16_input(k: usize, n: usize, seed: u64) -> Vec<u16> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..k).map(|_| rng.r#gen::<f32>() * 2.0 - 1.0).collect()
+    (0..k * n)
+        .map(|_| f16::from_f32(rng.r#gen::<f32>() * 2.0 - 1.0).to_bits())
+        .collect()
 }
 
-// K-quant generators
-fn gen_q2_k(m: usize, k: usize, s: u64) -> Vec<BlockQ2K> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
+fn gen_q4_0(m: usize, k: usize, seed: u64) -> Vec<BlockQ4_0> {
+    let nb = k / 32;
+    let mut rng = StdRng::seed_from_u64(seed);
     (0..m * nb)
         .map(|_| {
-            let mut qs = [0u8; 64];
-            let mut sc = [0u8; 16];
-            for i in 0..64 {
-                qs[i] = rng.r#gen::<u8>();
+            let mut qs = [0u8; 16];
+            for j in 0..16 {
+                qs[j] = rng.r#gen::<u8>();
             }
-            for i in 0..16 {
-                sc[i] = rng.r#gen::<u8>() % 16 + 1;
-            }
-            BlockQ2K {
-                d: f16::from_f32(0.5).to_bits(),
-                dmin: f16::from_f32(0.1).to_bits(),
-                scales: sc,
-                qs,
-            }
-        })
-        .collect()
-}
-fn gen_q3_k(m: usize, k: usize, s: u64) -> Vec<BlockQ3K> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 64];
-            let mut hm = [0u8; 32];
-            let mut sc = [0u8; 12];
-            for i in 0..64 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..32 {
-                hm[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..12 {
-                sc[i] = rng.r#gen::<u8>() % 16 + 1;
-            }
-            BlockQ3K {
-                d: f16::from_f32(0.5).to_bits(),
-                hmask: hm,
-                qs,
-                scales: sc,
-            }
-        })
-        .collect()
-}
-fn gen_q4_k(m: usize, k: usize, s: u64) -> Vec<BlockQ4K> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 128];
-            let mut sc = [0u8; 12];
-            for i in 0..128 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..12 {
-                sc[i] = rng.r#gen::<u8>() % 16 + 1;
-            }
-            BlockQ4K {
-                d: f16::from_f32(0.5).to_bits(),
-                dmin: f16::from_f32(0.1).to_bits(),
-                scales: sc,
-                qs,
-            }
-        })
-        .collect()
-}
-fn gen_q5_k(m: usize, k: usize, s: u64) -> Vec<BlockQ5K> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 128];
-            let mut qh = [0u8; 32];
-            let mut sc = [0u8; 12];
-            for i in 0..128 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..32 {
-                qh[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..12 {
-                sc[i] = rng.r#gen::<u8>() % 16 + 1;
-            }
-            BlockQ5K {
-                d: f16::from_f32(0.5).to_bits(),
-                dmin: f16::from_f32(0.1).to_bits(),
-                scales: sc,
-                qh,
-                qs,
-            }
-        })
-        .collect()
-}
-fn gen_q6_k(m: usize, k: usize, s: u64) -> Vec<BlockQ6K> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut ql = [0u8; 128];
-            let mut qh = [0u8; 64];
-            let mut sc = [0i8; 16];
-            for i in 0..128 {
-                ql[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..64 {
-                qh[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..16 {
-                sc[i] = (rng.r#gen::<u8>() % 64) as i8 - 32;
-            }
-            BlockQ6K { ql, qh, scales: sc, d: f16::from_f32(0.5).to_bits() }
+            BlockQ4_0 { d: f16::from_f32(1.0).to_bits(), qs }
         })
         .collect()
 }
 
-// Standard Q generators
-fn gen_q1_0(m: usize, k: usize, s: u64) -> Vec<BlockQ1_0> {
+fn gen_q8_0(m: usize, k: usize, seed: u64) -> Vec<BlockQ8_0> {
     let nb = k / 32;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 4];
-            for i in 0..4 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            BlockQ1_0 { d: f16::from_f32(0.5).to_bits(), qs }
-        })
-        .collect()
-}
-fn gen_q2_0(m: usize, k: usize, s: u64) -> Vec<BlockQ2_0> {
-    let nb = k / 64;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 16];
-            for i in 0..16 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            BlockQ2_0 { d: f16::from_f32(0.5).to_bits(), qs }
-        })
-        .collect()
-}
-fn gen_q4_0(m: usize, k: usize, s: u64) -> Vec<BlockQ4_0> {
-    let nb = k / 32;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 16];
-            for i in 0..16 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            BlockQ4_0 { d: f16::from_f32(0.5).to_bits(), qs }
-        })
-        .collect()
-}
-fn gen_q4_1(m: usize, k: usize, s: u64) -> Vec<BlockQ4_1> {
-    let nb = k / 32;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 16];
-            for i in 0..16 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            BlockQ4_1 {
-                d: f16::from_f32(0.5).to_bits(),
-                m: f16::from_f32(0.1).to_bits(),
-                qs,
-            }
-        })
-        .collect()
-}
-fn gen_q5_0(m: usize, k: usize, s: u64) -> Vec<BlockQ5_0> {
-    let nb = k / 32;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 16];
-            let mut qh = [0u8; 4];
-            for i in 0..16 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..4 {
-                qh[i] = rng.r#gen::<u8>();
-            }
-            BlockQ5_0 { d: f16::from_f32(0.5).to_bits(), qh, qs }
-        })
-        .collect()
-}
-fn gen_q5_1(m: usize, k: usize, s: u64) -> Vec<BlockQ5_1> {
-    let nb = k / 32;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 16];
-            let mut qh = [0u8; 4];
-            for i in 0..16 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..4 {
-                qh[i] = rng.r#gen::<u8>();
-            }
-            BlockQ5_1 {
-                d: f16::from_f32(0.5).to_bits(),
-                m: f16::from_f32(0.1).to_bits(),
-                qh,
-                qs,
-            }
-        })
-        .collect()
-}
-fn gen_q8_0(m: usize, k: usize, s: u64) -> Vec<BlockQ8_0> {
-    let nb = k / 32;
-    let mut rng = StdRng::seed_from_u64(s);
+    let mut rng = StdRng::seed_from_u64(seed);
     (0..m * nb)
         .map(|_| {
             let mut qs = [0i8; 32];
-            for i in 0..32 {
-                qs[i] = rng.r#gen::<u8>() as i8;
+            for j in 0..32 {
+                qs[j] = rng.r#gen::<i8>();
             }
-            BlockQ8_0 { d: f16::from_f32(0.5).to_bits(), qs }
+            BlockQ8_0 { d: f16::from_f32(1.0).to_bits(), qs }
         })
         .collect()
 }
 
-// IQ generators
-fn gen_iq1_s(m: usize, k: usize, s: u64) -> Vec<BlockIQ1S> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 32];
-            let mut qh = [0u16; 8];
-            for i in 0..32 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..8 {
-                qh[i] = rng.r#gen::<u16>();
-            }
-            BlockIQ1S { d: f16::from_f32(0.5).to_bits(), qs, qh }
-        })
-        .collect()
-}
-fn gen_iq1_m(m: usize, k: usize, s: u64) -> Vec<BlockIQ1M> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 32];
-            let mut qh = [0u8; 16];
-            let mut sc = [0u8; 8];
-            for i in 0..32 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..16 {
-                qh[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..8 {
-                sc[i] = rng.r#gen::<u8>();
-            }
-            BlockIQ1M { qs, qh, scales: sc }
-        })
-        .collect()
-}
-fn gen_iq2_xxs(m: usize, k: usize, s: u64) -> Vec<BlockIQ2XXS> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u16; 32];
-            for i in 0..32 {
-                qs[i] = rng.r#gen::<u16>();
-            }
-            BlockIQ2XXS { d: f16::from_f32(0.5).to_bits(), qs }
-        })
-        .collect()
-}
-fn gen_iq2_xs(m: usize, k: usize, s: u64) -> Vec<BlockIQ2XS> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u16; 32];
-            let mut sc = [0u8; 8];
-            for i in 0..32 {
-                qs[i] = rng.r#gen::<u16>();
-            }
-            for i in 0..8 {
-                sc[i] = rng.r#gen::<u8>();
-            }
-            BlockIQ2XS { d: f16::from_f32(0.5).to_bits(), qs, scales: sc }
-        })
-        .collect()
-}
-fn gen_iq2_s(m: usize, k: usize, s: u64) -> Vec<BlockIQ2S> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 64];
-            let mut qh = [0u8; 8];
-            let mut sc = [0u8; 8];
-            for i in 0..64 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..8 {
-                qh[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..8 {
-                sc[i] = rng.r#gen::<u8>();
-            }
-            BlockIQ2S { d: f16::from_f32(0.5).to_bits(), qs, qh, scales: sc }
-        })
-        .collect()
-}
-fn gen_iq3_xxs(m: usize, k: usize, s: u64) -> Vec<BlockIQ3XXS> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 96];
-            for i in 0..96 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            BlockIQ3XXS { d: f16::from_f32(0.5).to_bits(), qs }
-        })
-        .collect()
-}
-fn gen_iq3_s(m: usize, k: usize, s: u64) -> Vec<BlockIQ3S> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 64];
-            let mut qh = [0u8; 8];
-            let mut sg = [0u8; 32];
-            let mut sc = [0u8; 4];
-            for i in 0..64 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..8 {
-                qh[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..32 {
-                sg[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..4 {
-                sc[i] = rng.r#gen::<u8>();
-            }
-            BlockIQ3S {
-                d: f16::from_f32(0.5).to_bits(),
-                qs,
-                qh,
-                signs: sg,
-                scales: sc,
-            }
-        })
-        .collect()
-}
-fn gen_iq4_nl(m: usize, k: usize, s: u64) -> Vec<BlockIQ4NL> {
+fn gen_mxfp4(m: usize, k: usize, seed: u64) -> Vec<BlockMXFP4> {
     let nb = k / 32;
-    let mut rng = StdRng::seed_from_u64(s);
+    let mut rng = StdRng::seed_from_u64(seed);
     (0..m * nb)
         .map(|_| {
             let mut qs = [0u8; 16];
-            for i in 0..16 {
-                qs[i] = rng.r#gen::<u8>();
+            for j in 0..16 {
+                qs[j] = rng.r#gen::<u8>();
             }
-            BlockIQ4NL { d: f16::from_f32(0.5).to_bits(), qs }
-        })
-        .collect()
-}
-fn gen_iq4_xs(m: usize, k: usize, s: u64) -> Vec<BlockIQ4XS> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 128];
-            let mut sc = [0u8; 4];
-            for i in 0..128 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            for i in 0..4 {
-                sc[i] = rng.r#gen::<u8>();
-            }
-            BlockIQ4XS {
-                d: f16::from_f32(0.5).to_bits(),
-                scales_h: rng.r#gen::<u16>(),
-                scales_l: sc,
-                qs,
-            }
+            BlockMXFP4 { e: 140, qs } // E8M0 scale = 1.0
         })
         .collect()
 }
 
-// TQ generators
-fn gen_tq1_0(m: usize, k: usize, s: u64) -> Vec<BlockTQ1_0> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
+fn gen_tq2_0(m: usize, k: usize, seed: u64) -> Vec<BlockTQ2_0> {
+    let nb = k / QK_K;
+    let mut rng = StdRng::seed_from_u64(seed);
+    (0..m * nb)
+        .map(|_| {
+            let mut qs = [0u8; 64];
+            for j in 0..64 {
+                qs[j] = rng.r#gen::<u8>();
+            }
+            BlockTQ2_0 { d: f16::from_f32(1.0).to_bits(), qs }
+        })
+        .collect()
+}
+
+fn gen_tq1_0(m: usize, k: usize, seed: u64) -> Vec<BlockTQ1_0> {
+    let nb = k / QK_K;
+    let mut rng = StdRng::seed_from_u64(seed);
     (0..m * nb)
         .map(|_| {
             let mut qs = [0u8; 48];
             let mut qh = [0u8; 4];
-            for i in 0..48 {
-                qs[i] = rng.r#gen::<u8>();
+            for j in 0..48 {
+                qs[j] = rng.r#gen::<u8>();
             }
-            for i in 0..4 {
-                qh[i] = rng.r#gen::<u8>();
+            for j in 0..4 {
+                qh[j] = rng.r#gen::<u8>();
             }
-            BlockTQ1_0 { qs, qh, d: f16::from_f32(0.5).to_bits() }
-        })
-        .collect()
-}
-fn gen_tq2_0(m: usize, k: usize, s: u64) -> Vec<BlockTQ2_0> {
-    let nb = k / 256;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|_| {
-            let mut qs = [0u8; 64];
-            for i in 0..64 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            BlockTQ2_0 { d: f16::from_f32(0.5).to_bits(), qs }
+            BlockTQ1_0 { d: f16::from_f32(1.0).to_bits(), qs, qh }
         })
         .collect()
 }
 
-// MXFP generator
-fn gen_mxfp4(m: usize, k: usize, s: u64) -> Vec<BlockMXFP4> {
-    let nb = k / 32;
-    let mut rng = StdRng::seed_from_u64(s);
-    (0..m * nb)
-        .map(|i| {
-            let mut qs = [0u8; 16];
-            for i in 0..16 {
-                qs[i] = rng.r#gen::<u8>();
-            }
-            BlockMXFP4 { e: 120 + (i as u8 % 16), qs }
-        })
-        .collect()
+// Parameter structure for llama.cpp mul_mm_template.metal
+#[repr(C)]
+struct GemmArgs {
+    ne00: i32,
+    ne02: i32,
+    nb01: u64,
+    nb02: u64,
+    nb03: u64,
+    ne12: i32,
+    nb10: u64,
+    nb11: u64,
+    nb12: u64,
+    nb13: u64,
+    ne0: i32,
+    ne1: i32,
+    r2: i16,
+    r3: i16,
 }
 
-fn bench_format(
-    _ctx: &MetalContext,
-    _name: &str,
+fn bench_gemm(
+    name: &str,
+    my_kernel: &str,
+    llama_kernel: &str,
+    device: &Device,
+    my_lib: &metal::Library,
+    llama_lib: &metal::Library,
+    weights: &[u8],
+    input_f16: &[u16],
+    args: &GemmArgs,
+    m: usize,
+    n: usize,
     rounds: usize,
-    run_fn: impl Fn() -> Vec<f32>,
-) -> f64 {
+) {
+    let queue = device.new_command_queue();
+
+    // Function constants for mul_mm (FC = 700)
+    const FC_MUL_MM: usize = 700;
+    let cv = metal::FunctionConstantValues::new();
+    let false_val: bool = false;
+    let one_val: i16 = 1;
+    cv.set_constant_value_at_index(
+        &false_val as *const _ as *const c_void,
+        metal::MTLDataType::Bool,
+        FC_MUL_MM as u64,
+    );
+    cv.set_constant_value_at_index(
+        &false_val as *const _ as *const c_void,
+        metal::MTLDataType::Bool,
+        (FC_MUL_MM + 1) as u64,
+    );
+    cv.set_constant_value_at_index(
+        &one_val as *const _ as *const c_void,
+        metal::MTLDataType::Short,
+        (FC_MUL_MM + 2) as u64,
+    );
+    cv.set_constant_value_at_index(
+        &one_val as *const _ as *const c_void,
+        metal::MTLDataType::Short,
+        (FC_MUL_MM + 3) as u64,
+    );
+    cv.set_constant_value_at_index(
+        &one_val as *const _ as *const c_void,
+        metal::MTLDataType::Short,
+        (FC_MUL_MM + 4) as u64,
+    );
+    cv.set_constant_value_at_index(
+        &one_val as *const _ as *const c_void,
+        metal::MTLDataType::Short,
+        (FC_MUL_MM + 5) as u64,
+    );
+
+    let my_fn = my_lib.get_function(my_kernel, Some(cv.clone())).unwrap();
+    let my_pipeline =
+        device.new_compute_pipeline_state_with_function(&my_fn).unwrap();
+
+    let llama_fn = llama_lib.get_function(llama_kernel, Some(cv)).unwrap();
+    let llama_pipeline =
+        device.new_compute_pipeline_state_with_function(&llama_fn).unwrap();
+
+    // Create buffers
+    let weights_buffer = device.new_buffer_with_data(
+        weights.as_ptr() as *const c_void,
+        weights.len() as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+
+    let input_buffer = device.new_buffer_with_data(
+        input_f16.as_ptr() as *const c_void,
+        (input_f16.len() * 2) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+
+    let output_a = device.new_buffer(
+        (m * n * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let output_b = device.new_buffer(
+        (m * n * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+
+    // Threadgroup dispatch for GEMM
+    // NR0 = 64, NR1 = 32 per threadgroup
+    let tg_size = MTLSize::new(128, 1, 1); // 128 threads per threadgroup (4 simdgroups × 32 threads)
+    let tg_count =
+        MTLSize::new(((n + 31) / 32) as u64, ((m + 63) / 64) as u64, 1);
+
     // Warmup
     for _ in 0..5 {
-        let _ = run_fn();
+        {
+            let cmd = queue.new_command_buffer();
+            let enc = cmd.new_compute_command_encoder();
+            enc.set_compute_pipeline_state(&my_pipeline);
+            enc.set_bytes(
+                0,
+                std::mem::size_of::<GemmArgs>() as u64,
+                args as *const _ as *const c_void,
+            );
+            enc.set_buffer(1, Some(&weights_buffer), 0);
+            enc.set_buffer(2, Some(&input_buffer), 0);
+            enc.set_buffer(3, Some(&output_a), 0);
+            enc.set_threadgroup_memory_length(0, 8192);
+            enc.dispatch_thread_groups(tg_count, tg_size);
+            enc.end_encoding();
+            cmd.commit();
+            cmd.wait_until_completed();
+        }
+        {
+            let cmd = queue.new_command_buffer();
+            let enc = cmd.new_compute_command_encoder();
+            enc.set_compute_pipeline_state(&llama_pipeline);
+            enc.set_bytes(
+                0,
+                std::mem::size_of::<GemmArgs>() as u64,
+                args as *const _ as *const c_void,
+            );
+            enc.set_buffer(1, Some(&weights_buffer), 0);
+            enc.set_buffer(2, Some(&input_buffer), 0);
+            enc.set_buffer(3, Some(&output_b), 0);
+            enc.set_threadgroup_memory_length(0, 8192);
+            enc.dispatch_thread_groups(tg_count, tg_size);
+            enc.end_encoding();
+            cmd.commit();
+            cmd.wait_until_completed();
+        }
     }
 
-    // Timed runs (data already generated outside)
-    let start = Instant::now();
-    for _ in 0..rounds {
-        let _ = run_fn();
-    }
-    let elapsed_us = start.elapsed().as_micros() as f64;
+    // Verify correctness
+    {
+        let ptr_a = output_a.contents() as *const f32;
+        let ptr_b = output_b.contents() as *const f32;
+        let slice_a = unsafe { std::slice::from_raw_parts(ptr_a, m * n) };
+        let slice_b = unsafe { std::slice::from_raw_parts(ptr_b, m * n) };
 
-    elapsed_us / rounds as f64 // microseconds per run
+        let non_zero_a: usize = slice_a.iter().filter(|&&x| x != 0.0).count();
+        let non_zero_b: usize = slice_b.iter().filter(|&&x| x != 0.0).count();
+
+        let max_diff = slice_a
+            .iter()
+            .zip(slice_b.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+
+        let sum_a: f64 = slice_a.iter().map(|&x| x as f64).sum();
+        let sum_b: f64 = slice_b.iter().map(|&x| x as f64).sum();
+
+        println!(
+            "  Verification: non_zero(self)={}, non_zero(llama)={}, max_diff={:.2}, sum_self={:.2}, sum_llama={:.2}",
+            non_zero_a, non_zero_b, max_diff, sum_a, sum_b
+        );
+
+        if non_zero_a == 0 || non_zero_b == 0 {
+            println!("  WARNING: One of the kernels produced all zeros!");
+        }
+    }
+
+    // Alternating benchmark: A-B-A-B pattern
+    let mut my_total = 0u64;
+    let mut llama_total = 0u64;
+    let mut my_wins = 0usize;
+
+    for i in 0..rounds {
+        let cmd = queue.new_command_buffer();
+        let enc = cmd.new_compute_command_encoder();
+        enc.set_compute_pipeline_state(&my_pipeline);
+        enc.set_bytes(
+            0,
+            std::mem::size_of::<GemmArgs>() as u64,
+            args as *const _ as *const c_void,
+        );
+        enc.set_buffer(1, Some(&weights_buffer), 0);
+        enc.set_buffer(2, Some(&input_buffer), 0);
+        enc.set_buffer(3, Some(&output_a), 0);
+        enc.set_threadgroup_memory_length(0, 8192);
+        enc.dispatch_thread_groups(tg_count, tg_size);
+        enc.end_encoding();
+        let start = Instant::now();
+        cmd.commit();
+        cmd.wait_until_completed();
+        let us_a = start.elapsed().as_micros() as u64;
+        my_total += us_a;
+
+        let cmd = queue.new_command_buffer();
+        let enc = cmd.new_compute_command_encoder();
+        enc.set_compute_pipeline_state(&llama_pipeline);
+        enc.set_bytes(
+            0,
+            std::mem::size_of::<GemmArgs>() as u64,
+            args as *const _ as *const c_void,
+        );
+        enc.set_buffer(1, Some(&weights_buffer), 0);
+        enc.set_buffer(2, Some(&input_buffer), 0);
+        enc.set_buffer(3, Some(&output_b), 0);
+        enc.set_threadgroup_memory_length(0, 8192);
+        enc.dispatch_thread_groups(tg_count, tg_size);
+        enc.end_encoding();
+        let start = Instant::now();
+        cmd.commit();
+        cmd.wait_until_completed();
+        let us_b = start.elapsed().as_micros() as u64;
+        llama_total += us_b;
+
+        if us_a < us_b {
+            my_wins += 1;
+        }
+
+        if (i + 1) % 10 == 0 {
+            print!(".");
+        }
+    }
+    println!();
+
+    let my_avg = my_total as f64 / rounds as f64;
+    let llama_avg = llama_total as f64 / rounds as f64;
+    let ratio = my_avg / llama_avg * 100.0;
+
+    println!("  {}:", name);
+    println!("    Self:    {:.2} µs", my_avg);
+    println!("    llama.cpp: {:.2} µs", llama_avg);
+    println!("    Ratio:   {:.1}% ({} / {} wins)", ratio, my_wins, rounds);
 }
 
 fn main() {
-    let ctx = MetalContext::new().expect("Metal init failed");
-    let m = 1024;
-    let k = 4096;
-    let rounds = 500;
-    let seed = 42;
-
-    // Pre-generate all data ONCE
-    let input = gen_f32(k, seed);
-    let w_q2_k = gen_q2_k(m, k, seed);
-    let w_q3_k = gen_q3_k(m, k, seed);
-    let w_q4_k = gen_q4_k(m, k, seed);
-    let w_q5_k = gen_q5_k(m, k, seed);
-    let w_q6_k = gen_q6_k(m, k, seed);
-    let w_q1_0 = gen_q1_0(m, k, seed);
-    let w_q4_0 = gen_q4_0(m, k, seed);
-    let w_q4_1 = gen_q4_1(m, k, seed);
-    let w_q5_0 = gen_q5_0(m, k, seed);
-    let w_q5_1 = gen_q5_1(m, k, seed);
-    let w_q8_0 = gen_q8_0(m, k, seed);
-    let w_iq1_s = gen_iq1_s(m, k, seed);
-    let w_iq1_m = gen_iq1_m(m, k, seed);
-    let w_iq2_xxs = gen_iq2_xxs(m, k, seed);
-    let w_iq2_xs = gen_iq2_xs(m, k, seed);
-    let w_iq2_s = gen_iq2_s(m, k, seed);
-    let w_iq3_xxs = gen_iq3_xxs(m, k, seed);
-    let w_iq3_s = gen_iq3_s(m, k, seed);
-    let w_iq4_nl = gen_iq4_nl(m, k, seed);
-    let w_iq4_xs = gen_iq4_xs(m, k, seed);
-    let w_tq1_0 = gen_tq1_0(m, k, seed);
-    let w_tq2_0 = gen_tq2_0(m, k, seed);
-    let w_mxfp4 = gen_mxfp4(m, k, seed);
-
+    println!("=== GEMM All Formats Benchmark (N>1) ===");
     println!(
-        "=== GEMM All Formats Performance (M={}, K={}, {} rounds) ===\n",
-        m, k, rounds
+        "Comparing mul_mm_standalone.metal vs llama.cpp mul_mm_template.metallib"
     );
-    println!("{:12} {:>10} {:>10}", "Format", "us/run", "GFLOPS");
-    println!("{}", "-".repeat(35));
 
-    let flops = 2.0 * m as f64 * k as f64;
+    let device = Device::system_default().expect("No Metal device");
 
-    // K-quant
-    println!("\n## K-quant (5 formats)");
-    let us = bench_format(&ctx, "Q2_K", rounds, || {
-        ctx.mv_q2_k_f32(m, k, &w_q2_k, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "Q2_K", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "Q3_K", rounds, || {
-        ctx.mv_q3_k_f32(m, k, &w_q3_k, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "Q3_K", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "Q4_K", rounds, || {
-        ctx.mv_q4_k_f32(m, k, &w_q4_k, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "Q4_K", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "Q5_K", rounds, || {
-        ctx.mv_q5_k_f32(m, k, &w_q5_k, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "Q5_K", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "Q6_K", rounds, || {
-        ctx.mv_q6_k_f32(m, k, &w_q6_k, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "Q6_K", us, flops / us / 1000.0);
+    let m = 4096usize;
+    let k = 4096usize;
+    let n = 128usize; // True GEMM: N > 1
+    let rounds = 100usize;
+    let seed = 42u64;
 
-    // Standard Q
-    println!("\n## Standard Q (6 formats)");
-    let us = bench_format(&ctx, "Q1_0", rounds, || {
-        ctx.mv_q1_0_f32(m, k, &w_q1_0, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "Q1_0", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "Q4_0", rounds, || {
-        ctx.mv_q4_0_f32(m, k, &w_q4_0, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "Q4_0", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "Q4_1", rounds, || {
-        ctx.mv_q4_1_f32(m, k, &w_q4_1, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "Q4_1", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "Q5_0", rounds, || {
-        ctx.mv_q5_0_f32(m, k, &w_q5_0, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "Q5_0", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "Q5_1", rounds, || {
-        ctx.mv_q5_1_f32(m, k, &w_q5_1, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "Q5_1", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "Q8_0", rounds, || {
-        ctx.mv_q8_0_f32(m, k, &w_q8_0, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "Q8_0", us, flops / us / 1000.0);
+    println!("M={}, K={}, N={}, {} rounds\n", m, k, n, rounds);
 
-    // IQ
-    println!("\n## IQ (9 formats)");
-    let us = bench_format(&ctx, "IQ1_S", rounds, || {
-        ctx.mv_iq1_s_f32(m, k, &w_iq1_s, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "IQ1_S", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "IQ1_M", rounds, || {
-        ctx.mv_iq1_m_f32(m, k, &w_iq1_m, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "IQ1_M", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "IQ2_XXS", rounds, || {
-        ctx.mv_iq2_xxs_f32(m, k, &w_iq2_xxs, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "IQ2_XXS", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "IQ2_XS", rounds, || {
-        ctx.mv_iq2_xs_f32(m, k, &w_iq2_xs, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "IQ2_XS", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "IQ2_S", rounds, || {
-        ctx.mv_iq2_s_f32(m, k, &w_iq2_s, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "IQ2_S", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "IQ3_XXS", rounds, || {
-        ctx.mv_iq3_xxs_f32(m, k, &w_iq3_xxs, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "IQ3_XXS", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "IQ3_S", rounds, || {
-        ctx.mv_iq3_s_f32(m, k, &w_iq3_s, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "IQ3_S", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "IQ4_NL", rounds, || {
-        ctx.mv_iq4_nl_f32(m, k, &w_iq4_nl, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "IQ4_NL", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "IQ4_XS", rounds, || {
-        ctx.mv_iq4_xs_f32(m, k, &w_iq4_xs, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "IQ4_XS", us, flops / us / 1000.0);
+    // GPU status
+    let gpu_before = get_gpu_stats();
+    if let Some(ref g) = gpu_before {
+        print_stats("=== GPU Status ===", g);
+    }
 
-    // TQ + MXFP
-    println!("\n## TQ + MXFP (3 formats)");
-    let us = bench_format(&ctx, "TQ1_0", rounds, || {
-        ctx.mv_tq1_0_f32(m, k, &w_tq1_0, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "TQ1_0", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "TQ2_0", rounds, || {
-        ctx.mv_tq2_0_f32(m, k, &w_tq2_0, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "TQ2_0", us, flops / us / 1000.0);
-    let us = bench_format(&ctx, "MXFP4", rounds, || {
-        ctx.mv_mxfp4_f32(m, k, &w_mxfp4, &input).unwrap()
-    });
-    println!("{:12} {:>10.1} {:>10.1}", "MXFP4", us, flops / us / 1000.0);
+    // Load pre-compiled libraries
+    let my_lib_path =
+        std::path::Path::new("shaders/mul_mm_standalone.metallib");
+    let my_lib = if my_lib_path.exists() {
+        device
+            .new_library_with_file(my_lib_path)
+            .expect("Failed to load mul_mm_standalone.metallib")
+    } else {
+        println!(
+            "WARNING: mul_mm_standalone.metallib not found, skipping self-written tests"
+        );
+        return;
+    };
 
-    println!("\n## Summary");
-    println!("All 24 formats benchmarked");
-    println!("Next: Create alternating comparison with llama.cpp");
+    let llama_lib_path =
+        std::path::Path::new("shaders/mul_mm_template.metallib");
+    let llama_lib = device
+        .new_library_with_file(llama_lib_path)
+        .expect("Failed to load llama.cpp template library");
+
+    // Generate input
+    let input_f16 = gen_f16_input(k, n, seed);
+
+    println!("\n=== Standard Q Formats ===");
+
+    // Helper to create args
+    let make_args = |k: usize,
+                     m: usize,
+                     n: usize,
+                     block_size: usize,
+                     block_bytes: usize|
+     -> GemmArgs {
+        GemmArgs {
+            ne00: k as i32,
+            ne02: 1,
+            nb01: (k / block_size * block_bytes) as u64,
+            nb02: 0,
+            nb03: 0,
+            ne12: 1,
+            nb10: 2,
+            nb11: (k * 2) as u64,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: n as i32,
+            r2: 1,
+            r3: 1,
+        }
+    };
+
+    // Q4_0
+    println!("\n--- Q4_0 ---");
+    let weights = gen_q4_0(m, k, seed);
+    let args = make_args(k, m, n, 32, 18);
+    bench_gemm(
+        "Q4_0",
+        "kernel_mul_mm_q4_0_f32",
+        "kernel_mul_mm_q4_0_f32",
+        &device,
+        &my_lib,
+        &llama_lib,
+        bytemuck::cast_slice(&weights),
+        &input_f16,
+        &args,
+        m,
+        n,
+        rounds,
+    );
+
+    // Q8_0
+    println!("\n--- Q8_0 ---");
+    let weights = gen_q8_0(m, k, seed);
+    let args = make_args(k, m, n, 32, 34);
+    bench_gemm(
+        "Q8_0",
+        "kernel_mul_mm_q8_0_f32",
+        "kernel_mul_mm_q8_0_f32",
+        &device,
+        &my_lib,
+        &llama_lib,
+        bytemuck::cast_slice(&weights),
+        &input_f16,
+        &args,
+        m,
+        n,
+        rounds,
+    );
+
+    println!("\n=== Special Formats ===");
+
+    // MXFP4
+    println!("\n--- MXFP4 ---");
+    let weights = gen_mxfp4(m, k, seed);
+    let args = make_args(k, m, n, 32, 17);
+    bench_gemm(
+        "MXFP4",
+        "kernel_mul_mm_mxfp4_f32",
+        "kernel_mul_mm_mxfp4_f32",
+        &device,
+        &my_lib,
+        &llama_lib,
+        bytemuck::cast_slice(&weights),
+        &input_f16,
+        &args,
+        m,
+        n,
+        rounds,
+    );
+
+    println!("\n=== TQ Formats (GEMM) ===");
+
+    // TQ2_0
+    println!("\n--- TQ2_0 ---");
+    let weights = gen_tq2_0(m, k, seed);
+    let args = make_args(k, m, n, 256, 66);
+    bench_gemm(
+        "TQ2_0",
+        "kernel_mul_mm_tq2_0_f32",
+        "kernel_mul_mm_tq2_0_f32",
+        &device,
+        &my_lib,
+        &llama_lib,
+        bytemuck::cast_slice(&weights),
+        &input_f16,
+        &args,
+        m,
+        n,
+        rounds,
+    );
+
+    // TQ1_0 (llama.cpp doesn't have TQ1_0 GEMM)
+    println!("\n--- TQ1_0 ---");
+    println!(
+        "  Note: llama.cpp does not have TQ1_0 GEMM kernel, only self-written"
+    );
+    let weights = gen_tq1_0(m, k, seed);
+    let args = make_args(k, m, n, 256, 54);
+    // Only test self-written kernel
+    let my_fn = my_lib.get_function("kernel_mul_mm_tq1_0_f32", None).unwrap();
+    let my_pipeline =
+        device.new_compute_pipeline_state_with_function(&my_fn).unwrap();
+    let queue = device.new_command_queue();
+    let weights_buffer = device.new_buffer_with_data(
+        weights.as_ptr() as *const c_void,
+        weights.len() as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let input_buffer = device.new_buffer_with_data(
+        input_f16.as_ptr() as *const c_void,
+        (input_f16.len() * 2) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let output = device.new_buffer(
+        (m * n * 4) as u64,
+        metal::MTLResourceOptions::StorageModeShared,
+    );
+    let tg_size = MTLSize::new(128, 4, 1);
+    let tg_count =
+        MTLSize::new(((n + 31) / 32) as u64, ((m + 63) / 64) as u64, 1);
+
+    let mut total = 0u64;
+    for i in 0..rounds {
+        let cmd = queue.new_command_buffer();
+        let enc = cmd.new_compute_command_encoder();
+        enc.set_compute_pipeline_state(&my_pipeline);
+        enc.set_bytes(
+            0,
+            std::mem::size_of::<GemmArgs>() as u64,
+            &args as *const _ as *const c_void,
+        );
+        enc.set_buffer(1, Some(&weights_buffer), 0);
+        enc.set_buffer(2, Some(&input_buffer), 0);
+        enc.set_buffer(3, Some(&output), 0);
+        enc.set_threadgroup_memory_length(0, 8192);
+        enc.dispatch_thread_groups(tg_count, tg_size);
+        enc.end_encoding();
+        let start = Instant::now();
+        cmd.commit();
+        cmd.wait_until_completed();
+        total += start.elapsed().as_micros() as u64;
+        if (i + 1) % 10 == 0 {
+            print!(".");
+        }
+    }
+    println!();
+    println!(
+        "  TQ1_0 (self-written only): {:.2} µs avg",
+        total as f64 / rounds as f64
+    );
+
+    // GPU status after
+    let gpu_after = get_gpu_stats();
+    if let (Some(before), Some(after)) =
+        (gpu_before.as_ref(), gpu_after.as_ref())
+    {
+        let diff = before.diff(after);
+        print_diff(&diff);
+    }
+
+    println!("\nDone.");
 }
