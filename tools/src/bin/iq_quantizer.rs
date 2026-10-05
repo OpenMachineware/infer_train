@@ -1,6 +1,9 @@
 // IQ Quantizer Tool - Generate valid quantized test data
 // Based on llama.cpp test-quantize-fns.cpp
 //
+// Uses actual grid tables from llama.cpp for grid-based formats.
+// For formats without grids (IQ4_NL), uses standard quantization.
+//
 // Usage:
 //   cargo run --release --bin iq_quantizer -- --format iq2_xxs --output test.bin
 //   cargo run --release --bin iq_quantizer -- --format iq3_s --blocks 10 --export-rust

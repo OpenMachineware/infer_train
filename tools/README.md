@@ -107,9 +107,41 @@ grid_map = (0x04, 0x0c, 0x14, 0x1c, 0x24, 0x2c, 0x34, 0x3e)
 2. **For testing**: Use `iq_test_data_generator.py` to generate valid test data
 3. **For research**: Use `iq_grid_generator.py` to experiment with new grids
 
+### 4. iq_quantizer (Rust)
+
+Rust tool for generating quantized test data for all 9 IQ formats.
+
+**Usage:**
+```bash
+cd tools
+cargo run --release --bin iq_quantizer -- --format iq4_nl --blocks 10 --output test.bin
+cargo run --release --bin iq_quantizer -- --format iq2_xxs --blocks 1 --export-rust test_data.rs
+```
+
+**Supported formats:**
+- `iq1_s`, `iq1_m`, `iq2_xxs`, `iq2_xs`, `iq2_s`, `iq3_xxs`, `iq3_s`, `iq4_nl`, `iq4_xs`
+
+**Output formats:**
+- Binary file with quantized blocks
+- Rust source file with embedded test data (via `--export-rust`)
+
+**Capabilities:**
+- IQ4_NL, IQ4_XS: Full quantization (4-bit symmetric)
+- IQ1_M: Simple 1-bit sign encoding
+- Grid-based formats (IQ2/IQ3): Simplified quantization for testing
+
+**Limitations:**
+- Grid-based formats (IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S) use simplified quantization
+- For proper testing of grid-based formats, use:
+  - Real quantized data from GGUF files
+  - llama.cpp's quantization functions directly
+  - The Python tools with grid table lookup
+
 ## Notes
 
 - Grid generation is computationally expensive (k-means with 100K+ samples)
 - llama.cpp's grids were generated once and are now fixed
 - Use canonical grids for compatibility with existing quantized models
 - New grids would require re-quantization of model weights
+- For correctness testing, IQ4_NL and IQ1_M work with simplified quantization
+- Grid-based IQ formats require proper grid lookup for valid test data
