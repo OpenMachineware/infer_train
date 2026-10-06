@@ -1,103 +1,85 @@
-// ArgSort kernels for GPU
-// Used in sampling (top-k, top-p)
+// ARGSORT Metal kernel - Self-written implementation
+// Algorithm: Bitonic sort with parallel execution
+// Each threadgroup sorts one row of data
+// SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
+// SPDX-License-Identifier: AGPL-3.0-only
 
 #include <metal_stdlib>
 using namespace metal;
 
-// ArgSort ascending
-kernel void kernel_argsort_f32_i32_asc(
-    device const float* src [[buffer(0)]],
-    device int32_t* dst [[buffer(1)]],
-    constant int& n [[buffer(2)]],
-    uint gid [[thread_position_in_grid]]
+enum SortOrder : int {
+    Ascending = 0,
+    Descending = 1
+};
+
+// Bitonic sort - swaps elements to create sorted sequences
+kernel void argsort_f32_i32(
+    device const float* values [[buffer(0)]],
+    device int32_t* indices [[buffer(1)]],
+    constant int& num_elements [[buffer(2)]],
+    constant int& top_k [[buffer(3)]],
+    constant int& sort_order [[buffer(4)]],
+    threadgroup int32_t* shmem_indices [[threadgroup(0)]],
+    uint row_idx [[threadgroup_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint group_size [[threads_per_threadgroup]]
 ) {
-    if (gid >= n) return;
+    // Each threadgroup handles one row
+    device const float* row_values = values + row_idx * num_elements;
 
-    // Simple argsort: output the index
-    // This is a basic version - for full sorting, need a different algorithm
-    dst[gid] = int32_t(gid);
-}
-
-// ArgSort descending
-kernel void kernel_argsort_f32_i32_desc(
-    device const float* src [[buffer(0)]],
-    device int32_t* dst [[buffer(1)]],
-    constant int& n [[buffer(2)]],
-    uint gid [[thread_position_in_grid]]
-) {
-    if (gid >= n) return;
-
-    // Simple argsort: output the index in descending order
-    dst[gid] = int32_t(n - 1 - gid);
-}
-
-// Partial argsort (top-k)
-// Each threadgroup finds its local top-k, then global reduction
-kernel void kernel_argsort_top_k_f32(
-    device const float* src [[buffer(0)]],
-    device int32_t* dst [[buffer(1)]],
-    constant int& n [[buffer(2)]],
-    constant int& k [[buffer(3)]],
-    threadgroup float* shmem_val [[threadgroup(0)]],
-    threadgroup int* shmem_idx [[threadgroup(1)]],
-    uint gid [[thread_position_in_grid]],
-    uint tid [[thread_index_in_threadgroup]],
-    uint tgid [[threadgroup_position_in_grid]]
-) {
-    const int block_size = 256;
-
-    // Load data to shared memory
-    if (gid < n) {
-        shmem_val[tid] = src[gid];
-        shmem_idx[tid] = int32_t(gid);
-    } else {
-        shmem_val[tid] = -FLT_MAX;
-        shmem_idx[tid] = -1;
+    // Initialize indices
+    const int start = tid;
+    if (start < num_elements) {
+        shmem_indices[start] = start;
     }
-
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Selection sort in shared memory to find top-k
-    // This is O(k * block_size) - suitable for small k
-    const int local_k = min(k, int(block_size));
+    // Bitonic sort: create bitonic sequences and then merge them
+    for (int k = 2; k <= int(group_size); k *= 2) {
+        for (int j = k / 2; j > 0; j /= 2) {
+            const int idx_a = start;
+            const int idx_b = start ^ j;
 
-    for (int i = 0; i < local_k && tgid == 0; i++) {
-        float max_val = -FLT_MAX;
-        int max_idx = -1;
-        int max_pos = -1;
+            if (idx_b > idx_a && idx_a < num_elements && idx_b < num_elements) {
+                // Determine if we should swap based on sort order and phase
+                const bool in_k_segment = (idx_a & k) == 0;
 
-        // Find maximum
-        for (int j = 0; j < block_size; j++) {
-            if (shmem_val[j] > max_val && shmem_idx[j] >= 0) {
-                max_val = shmem_val[j];
-                max_idx = shmem_idx[j];
-                max_pos = j;
+                const int32_t a_idx = shmem_indices[idx_a];
+                const int32_t b_idx = shmem_indices[idx_b];
+
+                const float val_a = row_values[a_idx];
+                const float val_b = row_values[b_idx];
+
+                bool should_swap;
+                if (sort_order == SortOrder::Descending) {
+                    // Descending: larger values first
+                    if (in_k_segment) {
+                        should_swap = (val_a < val_b);
+                    } else {
+                        should_swap = (val_a > val_b);
+                    }
+                } else {
+                    // Ascending: smaller values first
+                    if (in_k_segment) {
+                        should_swap = (val_a > val_b);
+                    } else {
+                        should_swap = (val_a < val_b);
+                    }
+                }
+
+                if (should_swap) {
+                    shmem_indices[idx_a] = b_idx;
+                    shmem_indices[idx_b] = a_idx;
+                }
             }
-        }
 
-        if (max_pos >= 0 && i < k) {
-            dst[i] = max_idx;
-            shmem_val[max_pos] = -FLT_MAX;  // Mark as used
-        } else {
-            break;
+            threadgroup_barrier(mem_flags::mem_threadgroup);
         }
     }
-}
 
-// Batch argsort
-kernel void kernel_argsort_f32_i32_batch(
-    device const float* src [[buffer(0)]],
-    device int32_t* dst [[buffer(1)]],
-    constant int& n_rows [[buffer(2)]],
-    constant int& n_cols [[buffer(3)]],
-    uint2 gid [[thread_position_in_grid]]
-) {
-    const int row = gid.y;
-    const int col = gid.x;
-
-    if (row >= n_rows || col >= n_cols) return;
-
-    // For batch argsort, output indices
-    const int idx = row * n_cols + col;
-    dst[idx] = int32_t(col);
+    // Copy top-k results to output
+    if (tid < uint(top_k)) {
+        device int32_t* output_row = indices + row_idx * top_k;
+        output_row[tid] = shmem_indices[tid];
+    }
 }
