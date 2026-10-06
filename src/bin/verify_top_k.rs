@@ -1,6 +1,19 @@
 // Verify TOP_K kernel correctness
 use metal::{Device, MTLSize};
 
+// Must match llama.cpp struct layout exactly
+#[repr(C)]
+struct TopKArgs {
+    ne00: i32, // number of columns (elements per row)
+    ne01: i32, // rows
+    ne02: i32,
+    ne03: i32,
+    nb01: u64, // row stride in src0
+    nb02: u64,
+    nb03: u64,
+    top_k: i32, // k
+}
+
 fn main() {
     let device = Device::system_default().expect("No Metal device");
     let queue = device.new_command_queue();
@@ -49,19 +62,36 @@ fn main() {
         );
     }
 
-    // Need threadgroup memory for histogram (256 * 4) + 2 uints
-    let tg_mem = 256 * 4 + 8;
+    // Args struct
+    let args = TopKArgs {
+        ne00: n,
+        ne01: 1,
+        ne02: 1,
+        ne03: 1,
+        nb01: n as u64 * 4,
+        nb02: n as u64 * 4,
+        nb03: n as u64 * 4,
+        top_k: k,
+    };
+
+    // Threadgroup memory for histogram (256 * 4 bytes)
+    let tg_mem = 256 * 4;
+    let tg_mem_4 = 4; // for sh_bucket, sh_above, out_count
 
     let cmd = queue.new_command_buffer();
     let enc = cmd.new_compute_command_encoder();
     enc.set_compute_pipeline_state(&pipeline);
-    enc.set_buffer(0, Some(&input_buf), 0);
-    enc.set_buffer(1, Some(&output_buf), 0);
-    enc.set_bytes(2, 4, &n as *const i32 as *const std::ffi::c_void);
-    enc.set_bytes(3, 4, &k as *const i32 as *const std::ffi::c_void);
+    enc.set_bytes(
+        0,
+        std::mem::size_of::<TopKArgs>() as u64,
+        &args as *const TopKArgs as *const std::ffi::c_void,
+    );
+    enc.set_buffer(1, Some(&input_buf), 0);
+    enc.set_buffer(2, Some(&output_buf), 0);
     enc.set_threadgroup_memory_length(0, tg_mem as u64);
-    enc.set_threadgroup_memory_length(1, 4);
-    enc.set_threadgroup_memory_length(2, 4);
+    enc.set_threadgroup_memory_length(1, tg_mem_4 as u64);
+    enc.set_threadgroup_memory_length(2, tg_mem_4 as u64);
+    enc.set_threadgroup_memory_length(3, tg_mem_4 as u64);
     enc.dispatch_thread_groups(
         MTLSize { width: 1, height: 1, depth: 1 },
         MTLSize { width: 32, height: 1, depth: 1 },
@@ -79,22 +109,25 @@ fn main() {
 
     println!("=== TOP_K ===");
     println!("Input: {} values, find top-{}", n, k);
-    println!("Expected indices: {:?}", cpu_topk);
+    println!(
+        "Expected values: {:?}",
+        cpu_topk.iter().map(|&i| input_data[i as usize]).collect::<Vec<_>>()
+    );
     println!("Got indices: {:?}", gpu_out);
+    println!(
+        "Got values: {:?}",
+        gpu_out.iter().map(|&i| input_data[i as usize]).collect::<Vec<_>>()
+    );
 
-    // Check if results match (values should be in descending order)
-    let mut correct = true;
-    for i in 0..k as usize {
-        if i < gpu_out.len() {
-            let gpu_val = input_data[gpu_out[i] as usize];
-            let cpu_val = input_data[cpu_topk[i] as usize];
-            if (gpu_val - cpu_val).abs() > 1e-5 {
-                correct = false;
-            }
-        } else {
-            correct = false;
-        }
-    }
+    // Check if the VALUES match (order may differ)
+    let mut gpu_values: Vec<f32> =
+        gpu_out.iter().map(|&i| input_data[i as usize]).collect();
+    let mut cpu_values: Vec<f32> =
+        cpu_topk.iter().map(|&i| input_data[i as usize]).collect();
+    gpu_values.sort_by(|a, b| b.partial_cmp(a).unwrap());
+    cpu_values.sort_by(|a, b| b.partial_cmp(a).unwrap());
+
+    let correct = gpu_values == cpu_values;
 
     if correct {
         println!("✓ PASS");

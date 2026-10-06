@@ -19,14 +19,14 @@ static uint ggml_top_k_f2ui(float x) {
 
 // Struct matching llama.cpp exactly
 struct ggml_metal_kargs_top_k {
-    long ne00;    // number of columns (elements per row)
-    long ne01;    // number of rows
-    long ne02;
-    long ne03;
-    long nb01;    // byte stride for rows
-    long nb02;
-    long nb03;
-    long top_k;   // k value
+    int32_t ne00;   // number of columns (elements per row)
+    int32_t ne01;   // number of rows
+    int32_t ne02;
+    int32_t ne03;
+    uint64_t nb01;  // byte stride in src0
+    uint64_t nb02;
+    uint64_t nb03;
+    int32_t top_k;  // k
 };
 
 kernel void top_k_f32_i32(
