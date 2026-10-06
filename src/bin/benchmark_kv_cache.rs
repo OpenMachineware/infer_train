@@ -942,7 +942,11 @@ fn best_index_iq4nl_llama(x: f32) -> usize {
         }
     }
 
-    if x - KVALUES_IQ4NL[lo] < KVALUES_IQ4NL[hi] - x { lo } else { hi }
+    if x - KVALUES_IQ4NL[lo] < KVALUES_IQ4NL[hi] - x {
+        lo
+    } else {
+        hi
+    }
 }
 
 fn dequantize_row_iq4_nl_llama(x: &[BlockIQ4NL], y: &mut [f32]) {

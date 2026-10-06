@@ -162,5 +162,9 @@ fn make_qp_quants_test(
         suml2 += quant_weights[i] * li as f32 * li as f32;
     }
 
-    if suml2 > 0.0 { sumlx / suml2 } else { 1.0 / iscale }
+    if suml2 > 0.0 {
+        sumlx / suml2
+    } else {
+        1.0 / iscale
+    }
 }

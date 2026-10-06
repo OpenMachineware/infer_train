@@ -1,5 +1,5 @@
 use infer_train::quant::weights::iq_grid::{
-    IQ2GridData, KGRID_2BIT_256, nearest_int,
+    nearest_int, IQ2GridData, KGRID_2BIT_256,
 };
 
 fn main() {

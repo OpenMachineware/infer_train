@@ -1,171 +1,166 @@
 // Pooling Metal kernels - Self-written implementation
-// Supports 2D pooling operations (max, avg) and 1D variants
+// Each thread processes one output pixel, scans input window
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include <metal_stdlib>
 using namespace metal;
 
-// Max pooling - each thread computes one output element
+#define MAX_VAL(x, y) ((x) > (y) ? (x) : (y))
+#define MIN_VAL(x, y) ((x) < (y) ? (x) : (y))
+
+// Parameter struct - format matches llama.cpp for API compatibility
+struct Pool2DArgs {
+    int k0;   int k1;   int s0;   int s1;
+    int p0;   int p1;
+    long IH;  long IW;  long OH;  long OW; long np;
+};
+
+// Max pooling: each thread computes one output element
 kernel void pool_2d_max_f32(
-    device const float* input [[buffer(0)]],
-    device float* output [[buffer(1)]],
-    constant int& input_height [[buffer(2)]],
-    constant int& input_width [[buffer(3)]],
-    constant int& output_height [[buffer(4)]],
-    constant int& output_width [[buffer(5)]],
-    constant int& kernel_h [[buffer(6)]],
-    constant int& kernel_w [[buffer(7)]],
-    constant int& stride_h [[buffer(8)]],
-    constant int& stride_w [[buffer(9)]],
-    constant int& pad_h [[buffer(10)]],
-    constant int& pad_w [[buffer(11)]],
-    uint gid [[thread_position_in_grid]]
+    constant Pool2DArgs& args [[buffer(0)]],
+    device const float* input [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    uint thread_id [[thread_position_in_grid]]
 ) {
-    if (int(gid) >= output_height * output_width) {
+    // Early exit for threads beyond output size
+    if (thread_id >= args.np) {
         return;
     }
 
-    const int out_y = int(gid) / output_width;
-    const int out_x = int(gid) % output_width;
+    // Decode linear thread ID to (batch, out_h, out_w)
+    int linear_idx = int(thread_id);
+    int output_hw = int(args.OH) * int(args.OW);
+    int batch_idx = linear_idx / output_hw;
+    int row_col_idx = linear_idx % output_hw;
+    int out_row = row_col_idx / int(args.OW);
+    int out_col = row_col_idx % int(args.OW);
 
-    const int in_y_start = out_y * stride_h - pad_h;
-    const int in_x_start = out_x * stride_w - pad_w;
+    // Compute input window bounds with padding
+    int win_top = out_row * args.s1 - args.p1;
+    int win_left = out_col * args.s0 - args.p0;
 
-    float max_val = -INFINITY;
+    int read_start_row = MAX_VAL(0, win_top);
+    int read_end_row = MIN_VAL(int(args.IH), win_top + args.k1);
+    int read_start_col = MAX_VAL(0, win_left);
+    int read_end_col = MIN_VAL(int(args.IW), win_left + args.k0);
 
-    for (int ky = 0; ky < kernel_h; ky++) {
-        const int in_y = in_y_start + ky;
-        if (in_y < 0 || in_y >= input_height) {
-            continue;
-        }
+    // Pointer to input channel
+    int input_offset = batch_idx * int(args.IH) * int(args.IW);
+    device const float* in_ptr = input + input_offset;
 
-        for (int kx = 0; kx < kernel_w; kx++) {
-            const int in_x = in_x_start + kx;
-            if (in_x < 0 || in_x >= input_width) {
-                continue;
-            }
-
-            const float val = input[in_y * input_width + in_x];
-            if (val > max_val) {
-                max_val = val;
-            }
+    // Scan window to find maximum
+    float max_value = -INFINITY;
+    for (int r = read_start_row; r < read_end_row; r++) {
+        for (int c = read_start_col; c < read_end_col; c++) {
+            int idx = r * int(args.IW) + c;
+            float val = in_ptr[idx];
+            max_value = MAX_VAL(max_value, val);
         }
     }
 
-    output[out_y * output_width + out_x] = max_val;
+    // Write output
+    int output_offset = batch_idx * output_hw;
+    output[output_offset + out_row * int(args.OW) + out_col] = max_value;
 }
 
-// Average pooling - each thread computes one output element
+// Average pooling: each thread computes one output element
 kernel void pool_2d_avg_f32(
-    device const float* input [[buffer(0)]],
-    device float* output [[buffer(1)]],
-    constant int& input_height [[buffer(2)]],
-    constant int& input_width [[buffer(3)]],
-    constant int& output_height [[buffer(4)]],
-    constant int& output_width [[buffer(5)]],
-    constant int& kernel_h [[buffer(6)]],
-    constant int& kernel_w [[buffer(7)]],
-    constant int& stride_h [[buffer(8)]],
-    constant int& stride_w [[buffer(9)]],
-    constant int& pad_h [[buffer(10)]],
-    constant int& pad_w [[buffer(11)]],
-    uint gid [[thread_position_in_grid]]
+    constant Pool2DArgs& args [[buffer(0)]],
+    device const float* input [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    uint thread_id [[thread_position_in_grid]]
 ) {
-    if (int(gid) >= output_height * output_width) {
+    if (thread_id >= args.np) {
         return;
     }
 
-    const int out_y = int(gid) / output_width;
-    const int out_x = int(gid) % output_width;
+    int linear_idx = int(thread_id);
+    int output_hw = int(args.OH) * int(args.OW);
+    int batch_idx = linear_idx / output_hw;
+    int row_col_idx = linear_idx % output_hw;
+    int out_row = row_col_idx / int(args.OW);
+    int out_col = row_col_idx % int(args.OW);
 
-    const int in_y_start = out_y * stride_h - pad_h;
-    const int in_x_start = out_x * stride_w - pad_w;
+    int win_top = out_row * args.s1 - args.p1;
+    int win_left = out_col * args.s0 - args.p0;
+
+    int read_start_row = MAX_VAL(0, win_top);
+    int read_end_row = MIN_VAL(int(args.IH), win_top + args.k1);
+    int read_start_col = MAX_VAL(0, win_left);
+    int read_end_col = MIN_VAL(int(args.IW), win_left + args.k0);
+
+    int input_offset = batch_idx * int(args.IH) * int(args.IW);
+    device const float* in_ptr = input + input_offset;
 
     float sum = 0.0f;
-    int count = 0;
-
-    for (int ky = 0; ky < kernel_h; ky++) {
-        const int in_y = in_y_start + ky;
-        if (in_y < 0 || in_y >= input_height) {
-            continue;
-        }
-
-        for (int kx = 0; kx < kernel_w; kx++) {
-            const int in_x = in_x_start + kx;
-            if (in_x < 0 || in_x >= input_width) {
-                continue;
-            }
-
-            sum += input[in_y * input_width + in_x];
-            count++;
+    for (int r = read_start_row; r < read_end_row; r++) {
+        for (int c = read_start_col; c < read_end_col; c++) {
+            int idx = r * int(args.IW) + c;
+            sum += in_ptr[idx];
         }
     }
 
-    output[out_y * output_width + out_x] = (count > 0) ? (sum / count) : 0.0f;
+    int output_offset = batch_idx * output_hw;
+    output[output_offset + out_row * int(args.OW) + out_col] = sum / (args.k0 * args.k1);
 }
 
-// 1D max pooling
-kernel void pool_1d_max_f32(
-    device const float* input [[buffer(0)]],
-    device float* output [[buffer(1)]],
-    constant int& input_length [[buffer(2)]],
-    constant int& output_length [[buffer(3)]],
-    constant int& kernel_size [[buffer(4)]],
-    constant int& stride [[buffer(5)]],
-    constant int& pad [[buffer(6)]],
-    uint gid [[thread_position_in_grid]]
-) {
-    if (int(gid) >= output_length) {
-        return;
-    }
+// 1D pooling
+struct Pool1DArgs {
+    int IW, OW, k0, s0, p0, np;
+};
 
-    const int out_pos = int(gid);
-    const int in_start = out_pos * stride - pad;
+kernel void pool_1d_max_f32(
+    constant Pool1DArgs& args [[buffer(0)]],
+    device const float* input [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    uint thread_id [[thread_position_in_grid]]
+) {
+    if (int(thread_id) >= args.np) return;
+
+    int out_col = int(thread_id) % args.OW;
+    int row_idx = int(thread_id) / args.OW;
+
+    int win_start = out_col * args.s0 - args.p0;
+    int read_start = MAX_VAL(0, win_start);
+    int read_end = MIN_VAL(args.IW, win_start + args.k0);
+
+    int row_offset = row_idx * args.IW;
+    device const float* row_ptr = input + row_offset;
 
     float max_val = -INFINITY;
-
-    for (int k = 0; k < kernel_size; k++) {
-        const int in_pos = in_start + k;
-        if (in_pos >= 0 && in_pos < input_length) {
-            const float val = input[in_pos];
-            if (val > max_val) {
-                max_val = val;
-            }
-        }
+    for (int i = read_start; i < read_end; i++) {
+        float v = row_ptr[i];
+        if (v > max_val) max_val = v;
     }
 
-    output[out_pos] = max_val;
+    output[row_idx * args.OW + out_col] = max_val;
 }
 
-// 1D average pooling
 kernel void pool_1d_avg_f32(
-    device const float* input [[buffer(0)]],
-    device float* output [[buffer(1)]],
-    constant int& input_length [[buffer(2)]],
-    constant int& output_length [[buffer(3)]],
-    constant int& kernel_size [[buffer(4)]],
-    constant int& stride [[buffer(5)]],
-    constant int& pad [[buffer(6)]],
-    uint gid [[thread_position_in_grid]]
+    constant Pool1DArgs& args [[buffer(0)]],
+    device const float* input [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    uint thread_id [[thread_position_in_grid]]
 ) {
-    if (int(gid) >= output_length) {
-        return;
-    }
+    if (int(thread_id) >= args.np) return;
 
-    const int out_pos = int(gid);
-    const int in_start = out_pos * stride - pad;
+    int out_col = int(thread_id) % args.OW;
+    int row_idx = int(thread_id) / args.OW;
+
+    int win_start = out_col * args.s0 - args.p0;
+    int read_start = MAX_VAL(0, win_start);
+    int read_end = MIN_VAL(args.IW, win_start + args.k0);
+
+    int row_offset = row_idx * args.IW;
+    device const float* row_ptr = input + row_offset;
 
     float sum = 0.0f;
     int count = 0;
-
-    for (int k = 0; k < kernel_size; k++) {
-        const int in_pos = in_start + k;
-        if (in_pos >= 0 && in_pos < input_length) {
-            sum += input[in_pos];
-            count++;
-        }
+    for (int i = read_start; i < read_end; i++) {
+        sum += row_ptr[i];
+        count++;
     }
 
-    output[out_pos] = (count > 0) ? (sum / count) : 0.0f;
+    output[row_idx * args.OW + out_col] = count > 0 ? sum / count : 0.0f;
 }

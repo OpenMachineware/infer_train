@@ -211,7 +211,11 @@ fn make_qp_quants_debug(
         iscale, sumlx, suml2
     );
 
-    if suml2 > 0.0 { sumlx / suml2 } else { 1.0 / iscale }
+    if suml2 > 0.0 {
+        sumlx / suml2
+    } else {
+        1.0 / iscale
+    }
 }
 
 fn nearest_int(x: f32) -> i32 {

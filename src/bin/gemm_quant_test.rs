@@ -248,8 +248,8 @@ fn main() {
     let n = 64;
 
     // Generate random FP32 test data
-    use rand::SeedableRng;
     use rand::rngs::StdRng;
+    use rand::SeedableRng;
     let mut rng = StdRng::seed_from_u64(42);
 
     let weights_f32: Vec<f32> =

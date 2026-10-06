@@ -3,7 +3,7 @@
 
 use half::f16;
 use metal::*;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::ffi::c_void;
 
 fn main() {

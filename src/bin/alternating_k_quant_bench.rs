@@ -5,7 +5,7 @@ use std::ffi::c_void;
 use std::time::Instant;
 
 mod gpu_monitor_util;
-use gpu_monitor_util::{GpuMetrics, get_gpu_stats, print_diff, print_stats};
+use gpu_monitor_util::{get_gpu_stats, print_diff, print_stats, GpuMetrics};
 
 #[repr(C, packed)]
 #[derive(Copy, Clone)]

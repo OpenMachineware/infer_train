@@ -94,8 +94,8 @@ fn test_q4_k_gemm(device: &Device, pipeline: &metal::ComputePipelineState) {
         // Set scales to encode value 1 (scales[0] = 1, scales[1] = 0)
         weights[offset + 4] = 1; // scale for first 32 values
         weights[offset + 5] = 0; // min for first 32 values
-        // ... rest of scales
-        // Set qs to encode 1.0: 4-bit value 1 in low nibble, 4-bit value 1 in high nibble
+                                 // ... rest of scales
+                                 // Set qs to encode 1.0: 4-bit value 1 in low nibble, 4-bit value 1 in high nibble
         for j in 0..128 {
             weights[offset + 16 + j] = 0x11; // Both nibbles = 1
         }

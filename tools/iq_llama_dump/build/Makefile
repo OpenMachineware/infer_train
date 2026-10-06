@@ -162,6 +162,19 @@ depend:
 .PHONY : depend
 
 #=============================================================================
+# Target rules for targets named iq2_xxs_llama_dump
+
+# Build rule for target.
+iq2_xxs_llama_dump: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 iq2_xxs_llama_dump
+.PHONY : iq2_xxs_llama_dump
+
+# fast build rule for target.
+iq2_xxs_llama_dump/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_xxs_llama_dump.dir/build.make CMakeFiles/iq2_xxs_llama_dump.dir/build
+.PHONY : iq2_xxs_llama_dump/fast
+
+#=============================================================================
 # Target rules for targets named iq2_xs_llama_dump
 
 # Build rule for target.
@@ -199,6 +212,45 @@ iq3_xxs_llama_dump: cmake_check_build_system
 iq3_xxs_llama_dump/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_xxs_llama_dump.dir/build.make CMakeFiles/iq3_xxs_llama_dump.dir/build
 .PHONY : iq3_xxs_llama_dump/fast
+
+#=============================================================================
+# Target rules for targets named iq3_s_llama_dump
+
+# Build rule for target.
+iq3_s_llama_dump: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 iq3_s_llama_dump
+.PHONY : iq3_s_llama_dump
+
+# fast build rule for target.
+iq3_s_llama_dump/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_s_llama_dump.dir/build.make CMakeFiles/iq3_s_llama_dump.dir/build
+.PHONY : iq3_s_llama_dump/fast
+
+#=============================================================================
+# Target rules for targets named iq1_s_llama_dump
+
+# Build rule for target.
+iq1_s_llama_dump: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 iq1_s_llama_dump
+.PHONY : iq1_s_llama_dump
+
+# fast build rule for target.
+iq1_s_llama_dump/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_s_llama_dump.dir/build.make CMakeFiles/iq1_s_llama_dump.dir/build
+.PHONY : iq1_s_llama_dump/fast
+
+#=============================================================================
+# Target rules for targets named iq1_m_llama_dump
+
+# Build rule for target.
+iq1_m_llama_dump: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 iq1_m_llama_dump
+.PHONY : iq1_m_llama_dump
+
+# fast build rule for target.
+iq1_m_llama_dump/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_m_llama_dump.dir/build.make CMakeFiles/iq1_m_llama_dump.dir/build
+.PHONY : iq1_m_llama_dump/fast
 
 #=============================================================================
 # Target rules for targets named ggml-base
@@ -291,6 +343,54 @@ vendor-hash/fast:
 	$(MAKE) $(MAKESILENT) -f llama_build/vendor/hash/CMakeFiles/vendor-hash.dir/build.make llama_build/vendor/hash/CMakeFiles/vendor-hash.dir/build
 .PHONY : vendor-hash/fast
 
+iq1_m_llama_dump.o: iq1_m_llama_dump.c.o
+.PHONY : iq1_m_llama_dump.o
+
+# target to build an object file
+iq1_m_llama_dump.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_m_llama_dump.dir/build.make CMakeFiles/iq1_m_llama_dump.dir/iq1_m_llama_dump.c.o
+.PHONY : iq1_m_llama_dump.c.o
+
+iq1_m_llama_dump.i: iq1_m_llama_dump.c.i
+.PHONY : iq1_m_llama_dump.i
+
+# target to preprocess a source file
+iq1_m_llama_dump.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_m_llama_dump.dir/build.make CMakeFiles/iq1_m_llama_dump.dir/iq1_m_llama_dump.c.i
+.PHONY : iq1_m_llama_dump.c.i
+
+iq1_m_llama_dump.s: iq1_m_llama_dump.c.s
+.PHONY : iq1_m_llama_dump.s
+
+# target to generate assembly for a file
+iq1_m_llama_dump.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_m_llama_dump.dir/build.make CMakeFiles/iq1_m_llama_dump.dir/iq1_m_llama_dump.c.s
+.PHONY : iq1_m_llama_dump.c.s
+
+iq1_s_llama_dump.o: iq1_s_llama_dump.c.o
+.PHONY : iq1_s_llama_dump.o
+
+# target to build an object file
+iq1_s_llama_dump.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_s_llama_dump.dir/build.make CMakeFiles/iq1_s_llama_dump.dir/iq1_s_llama_dump.c.o
+.PHONY : iq1_s_llama_dump.c.o
+
+iq1_s_llama_dump.i: iq1_s_llama_dump.c.i
+.PHONY : iq1_s_llama_dump.i
+
+# target to preprocess a source file
+iq1_s_llama_dump.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_s_llama_dump.dir/build.make CMakeFiles/iq1_s_llama_dump.dir/iq1_s_llama_dump.c.i
+.PHONY : iq1_s_llama_dump.c.i
+
+iq1_s_llama_dump.s: iq1_s_llama_dump.c.s
+.PHONY : iq1_s_llama_dump.s
+
+# target to generate assembly for a file
+iq1_s_llama_dump.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_s_llama_dump.dir/build.make CMakeFiles/iq1_s_llama_dump.dir/iq1_s_llama_dump.c.s
+.PHONY : iq1_s_llama_dump.c.s
+
 iq2_s_llama_dump.o: iq2_s_llama_dump.c.o
 .PHONY : iq2_s_llama_dump.o
 
@@ -339,6 +439,54 @@ iq2_xs_llama_dump.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_xs_llama_dump.dir/build.make CMakeFiles/iq2_xs_llama_dump.dir/iq2_xs_llama_dump.c.s
 .PHONY : iq2_xs_llama_dump.c.s
 
+iq2_xxs_llama_dump.o: iq2_xxs_llama_dump.c.o
+.PHONY : iq2_xxs_llama_dump.o
+
+# target to build an object file
+iq2_xxs_llama_dump.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_xxs_llama_dump.dir/build.make CMakeFiles/iq2_xxs_llama_dump.dir/iq2_xxs_llama_dump.c.o
+.PHONY : iq2_xxs_llama_dump.c.o
+
+iq2_xxs_llama_dump.i: iq2_xxs_llama_dump.c.i
+.PHONY : iq2_xxs_llama_dump.i
+
+# target to preprocess a source file
+iq2_xxs_llama_dump.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_xxs_llama_dump.dir/build.make CMakeFiles/iq2_xxs_llama_dump.dir/iq2_xxs_llama_dump.c.i
+.PHONY : iq2_xxs_llama_dump.c.i
+
+iq2_xxs_llama_dump.s: iq2_xxs_llama_dump.c.s
+.PHONY : iq2_xxs_llama_dump.s
+
+# target to generate assembly for a file
+iq2_xxs_llama_dump.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_xxs_llama_dump.dir/build.make CMakeFiles/iq2_xxs_llama_dump.dir/iq2_xxs_llama_dump.c.s
+.PHONY : iq2_xxs_llama_dump.c.s
+
+iq3_s_llama_dump.o: iq3_s_llama_dump.c.o
+.PHONY : iq3_s_llama_dump.o
+
+# target to build an object file
+iq3_s_llama_dump.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_s_llama_dump.dir/build.make CMakeFiles/iq3_s_llama_dump.dir/iq3_s_llama_dump.c.o
+.PHONY : iq3_s_llama_dump.c.o
+
+iq3_s_llama_dump.i: iq3_s_llama_dump.c.i
+.PHONY : iq3_s_llama_dump.i
+
+# target to preprocess a source file
+iq3_s_llama_dump.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_s_llama_dump.dir/build.make CMakeFiles/iq3_s_llama_dump.dir/iq3_s_llama_dump.c.i
+.PHONY : iq3_s_llama_dump.c.i
+
+iq3_s_llama_dump.s: iq3_s_llama_dump.c.s
+.PHONY : iq3_s_llama_dump.s
+
+# target to generate assembly for a file
+iq3_s_llama_dump.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_s_llama_dump.dir/build.make CMakeFiles/iq3_s_llama_dump.dir/iq3_s_llama_dump.c.s
+.PHONY : iq3_s_llama_dump.c.s
+
 iq3_xxs_llama_dump.o: iq3_xxs_llama_dump.c.o
 .PHONY : iq3_xxs_llama_dump.o
 
@@ -380,17 +528,33 @@ help:
 	@echo "... ggml-blas"
 	@echo "... ggml-cpu"
 	@echo "... ggml-metal"
+	@echo "... iq1_m_llama_dump"
+	@echo "... iq1_s_llama_dump"
 	@echo "... iq2_s_llama_dump"
 	@echo "... iq2_xs_llama_dump"
+	@echo "... iq2_xxs_llama_dump"
+	@echo "... iq3_s_llama_dump"
 	@echo "... iq3_xxs_llama_dump"
 	@echo "... llama"
 	@echo "... vendor-hash"
+	@echo "... iq1_m_llama_dump.o"
+	@echo "... iq1_m_llama_dump.i"
+	@echo "... iq1_m_llama_dump.s"
+	@echo "... iq1_s_llama_dump.o"
+	@echo "... iq1_s_llama_dump.i"
+	@echo "... iq1_s_llama_dump.s"
 	@echo "... iq2_s_llama_dump.o"
 	@echo "... iq2_s_llama_dump.i"
 	@echo "... iq2_s_llama_dump.s"
 	@echo "... iq2_xs_llama_dump.o"
 	@echo "... iq2_xs_llama_dump.i"
 	@echo "... iq2_xs_llama_dump.s"
+	@echo "... iq2_xxs_llama_dump.o"
+	@echo "... iq2_xxs_llama_dump.i"
+	@echo "... iq2_xxs_llama_dump.s"
+	@echo "... iq3_s_llama_dump.o"
+	@echo "... iq3_s_llama_dump.i"
+	@echo "... iq3_s_llama_dump.s"
 	@echo "... iq3_xxs_llama_dump.o"
 	@echo "... iq3_xxs_llama_dump.i"
 	@echo "... iq3_xxs_llama_dump.s"
@@ -407,4 +571,3 @@ help:
 cmake_check_build_system:
 	$(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) --check-build-system CMakeFiles/Makefile.cmake 0
 .PHONY : cmake_check_build_system
-

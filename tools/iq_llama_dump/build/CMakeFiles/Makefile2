@@ -63,16 +63,24 @@ CMAKE_BINARY_DIR = /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build
 # Directory level rules for the build root directory
 
 # The main recursive "all" target.
+all: CMakeFiles/iq2_xxs_llama_dump.dir/all
 all: CMakeFiles/iq2_xs_llama_dump.dir/all
 all: CMakeFiles/iq2_s_llama_dump.dir/all
 all: CMakeFiles/iq3_xxs_llama_dump.dir/all
+all: CMakeFiles/iq3_s_llama_dump.dir/all
+all: CMakeFiles/iq1_s_llama_dump.dir/all
+all: CMakeFiles/iq1_m_llama_dump.dir/all
 all: llama_build/all
 .PHONY : all
 
 # The main recursive "codegen" target.
+codegen: CMakeFiles/iq2_xxs_llama_dump.dir/codegen
 codegen: CMakeFiles/iq2_xs_llama_dump.dir/codegen
 codegen: CMakeFiles/iq2_s_llama_dump.dir/codegen
 codegen: CMakeFiles/iq3_xxs_llama_dump.dir/codegen
+codegen: CMakeFiles/iq3_s_llama_dump.dir/codegen
+codegen: CMakeFiles/iq1_s_llama_dump.dir/codegen
+codegen: CMakeFiles/iq1_m_llama_dump.dir/codegen
 codegen: llama_build/codegen
 .PHONY : codegen
 
@@ -81,9 +89,13 @@ preinstall: llama_build/preinstall
 .PHONY : preinstall
 
 # The main recursive "clean" target.
+clean: CMakeFiles/iq2_xxs_llama_dump.dir/clean
 clean: CMakeFiles/iq2_xs_llama_dump.dir/clean
 clean: CMakeFiles/iq2_s_llama_dump.dir/clean
 clean: CMakeFiles/iq3_xxs_llama_dump.dir/clean
+clean: CMakeFiles/iq3_s_llama_dump.dir/clean
+clean: CMakeFiles/iq1_s_llama_dump.dir/clean
+clean: CMakeFiles/iq1_m_llama_dump.dir/clean
 clean: llama_build/clean
 .PHONY : clean
 
@@ -376,6 +388,42 @@ llama_build/vendor/stb/clean:
 .PHONY : llama_build/vendor/stb/clean
 
 #=============================================================================
+# Target rules for target CMakeFiles/iq2_xxs_llama_dump.dir
+
+# All Build rule for target.
+CMakeFiles/iq2_xxs_llama_dump.dir/all: llama_build/ggml/src/CMakeFiles/ggml-base.dir/all
+CMakeFiles/iq2_xxs_llama_dump.dir/all: llama_build/ggml/src/CMakeFiles/ggml.dir/all
+CMakeFiles/iq2_xxs_llama_dump.dir/all: llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/all
+CMakeFiles/iq2_xxs_llama_dump.dir/all: llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/all
+CMakeFiles/iq2_xxs_llama_dump.dir/all: llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/all
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_xxs_llama_dump.dir/build.make CMakeFiles/iq2_xxs_llama_dump.dir/depend
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_xxs_llama_dump.dir/build.make CMakeFiles/iq2_xxs_llama_dump.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=63 "Built target iq2_xxs_llama_dump"
+.PHONY : CMakeFiles/iq2_xxs_llama_dump.dir/all
+
+# Build rule for subdir invocation for target.
+CMakeFiles/iq2_xxs_llama_dump.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 57
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/iq2_xxs_llama_dump.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 0
+.PHONY : CMakeFiles/iq2_xxs_llama_dump.dir/rule
+
+# Convenience name for target.
+iq2_xxs_llama_dump: CMakeFiles/iq2_xxs_llama_dump.dir/rule
+.PHONY : iq2_xxs_llama_dump
+
+# codegen rule for target.
+CMakeFiles/iq2_xxs_llama_dump.dir/codegen:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_xxs_llama_dump.dir/build.make CMakeFiles/iq2_xxs_llama_dump.dir/codegen
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=63 "Finished codegen for target iq2_xxs_llama_dump"
+.PHONY : CMakeFiles/iq2_xxs_llama_dump.dir/codegen
+
+# clean rule for target.
+CMakeFiles/iq2_xxs_llama_dump.dir/clean:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_xxs_llama_dump.dir/build.make CMakeFiles/iq2_xxs_llama_dump.dir/clean
+.PHONY : CMakeFiles/iq2_xxs_llama_dump.dir/clean
+
+#=============================================================================
 # Target rules for target CMakeFiles/iq2_xs_llama_dump.dir
 
 # All Build rule for target.
@@ -386,12 +434,12 @@ CMakeFiles/iq2_xs_llama_dump.dir/all: llama_build/ggml/src/ggml-blas/CMakeFiles/
 CMakeFiles/iq2_xs_llama_dump.dir/all: llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_xs_llama_dump.dir/build.make CMakeFiles/iq2_xs_llama_dump.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_xs_llama_dump.dir/build.make CMakeFiles/iq2_xs_llama_dump.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=62 "Built target iq2_xs_llama_dump"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=61,62 "Built target iq2_xs_llama_dump"
 .PHONY : CMakeFiles/iq2_xs_llama_dump.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/iq2_xs_llama_dump.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 61
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 58
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/iq2_xs_llama_dump.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 0
 .PHONY : CMakeFiles/iq2_xs_llama_dump.dir/rule
@@ -403,7 +451,7 @@ iq2_xs_llama_dump: CMakeFiles/iq2_xs_llama_dump.dir/rule
 # codegen rule for target.
 CMakeFiles/iq2_xs_llama_dump.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_xs_llama_dump.dir/build.make CMakeFiles/iq2_xs_llama_dump.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=62 "Finished codegen for target iq2_xs_llama_dump"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=61,62 "Finished codegen for target iq2_xs_llama_dump"
 .PHONY : CMakeFiles/iq2_xs_llama_dump.dir/codegen
 
 # clean rule for target.
@@ -422,12 +470,12 @@ CMakeFiles/iq2_s_llama_dump.dir/all: llama_build/ggml/src/ggml-blas/CMakeFiles/g
 CMakeFiles/iq2_s_llama_dump.dir/all: llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_s_llama_dump.dir/build.make CMakeFiles/iq2_s_llama_dump.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_s_llama_dump.dir/build.make CMakeFiles/iq2_s_llama_dump.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=61 "Built target iq2_s_llama_dump"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=60 "Built target iq2_s_llama_dump"
 .PHONY : CMakeFiles/iq2_s_llama_dump.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/iq2_s_llama_dump.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 61
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 57
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/iq2_s_llama_dump.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 0
 .PHONY : CMakeFiles/iq2_s_llama_dump.dir/rule
@@ -439,7 +487,7 @@ iq2_s_llama_dump: CMakeFiles/iq2_s_llama_dump.dir/rule
 # codegen rule for target.
 CMakeFiles/iq2_s_llama_dump.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq2_s_llama_dump.dir/build.make CMakeFiles/iq2_s_llama_dump.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=61 "Finished codegen for target iq2_s_llama_dump"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=60 "Finished codegen for target iq2_s_llama_dump"
 .PHONY : CMakeFiles/iq2_s_llama_dump.dir/codegen
 
 # clean rule for target.
@@ -458,12 +506,12 @@ CMakeFiles/iq3_xxs_llama_dump.dir/all: llama_build/ggml/src/ggml-blas/CMakeFiles
 CMakeFiles/iq3_xxs_llama_dump.dir/all: llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_xxs_llama_dump.dir/build.make CMakeFiles/iq3_xxs_llama_dump.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_xxs_llama_dump.dir/build.make CMakeFiles/iq3_xxs_llama_dump.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=63,64 "Built target iq3_xxs_llama_dump"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=66 "Built target iq3_xxs_llama_dump"
 .PHONY : CMakeFiles/iq3_xxs_llama_dump.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/iq3_xxs_llama_dump.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 62
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 57
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/iq3_xxs_llama_dump.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 0
 .PHONY : CMakeFiles/iq3_xxs_llama_dump.dir/rule
@@ -475,13 +523,121 @@ iq3_xxs_llama_dump: CMakeFiles/iq3_xxs_llama_dump.dir/rule
 # codegen rule for target.
 CMakeFiles/iq3_xxs_llama_dump.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_xxs_llama_dump.dir/build.make CMakeFiles/iq3_xxs_llama_dump.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=63,64 "Finished codegen for target iq3_xxs_llama_dump"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=66 "Finished codegen for target iq3_xxs_llama_dump"
 .PHONY : CMakeFiles/iq3_xxs_llama_dump.dir/codegen
 
 # clean rule for target.
 CMakeFiles/iq3_xxs_llama_dump.dir/clean:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_xxs_llama_dump.dir/build.make CMakeFiles/iq3_xxs_llama_dump.dir/clean
 .PHONY : CMakeFiles/iq3_xxs_llama_dump.dir/clean
+
+#=============================================================================
+# Target rules for target CMakeFiles/iq3_s_llama_dump.dir
+
+# All Build rule for target.
+CMakeFiles/iq3_s_llama_dump.dir/all: llama_build/ggml/src/CMakeFiles/ggml-base.dir/all
+CMakeFiles/iq3_s_llama_dump.dir/all: llama_build/ggml/src/CMakeFiles/ggml.dir/all
+CMakeFiles/iq3_s_llama_dump.dir/all: llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/all
+CMakeFiles/iq3_s_llama_dump.dir/all: llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/all
+CMakeFiles/iq3_s_llama_dump.dir/all: llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/all
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_s_llama_dump.dir/build.make CMakeFiles/iq3_s_llama_dump.dir/depend
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_s_llama_dump.dir/build.make CMakeFiles/iq3_s_llama_dump.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=64,65 "Built target iq3_s_llama_dump"
+.PHONY : CMakeFiles/iq3_s_llama_dump.dir/all
+
+# Build rule for subdir invocation for target.
+CMakeFiles/iq3_s_llama_dump.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 58
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/iq3_s_llama_dump.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 0
+.PHONY : CMakeFiles/iq3_s_llama_dump.dir/rule
+
+# Convenience name for target.
+iq3_s_llama_dump: CMakeFiles/iq3_s_llama_dump.dir/rule
+.PHONY : iq3_s_llama_dump
+
+# codegen rule for target.
+CMakeFiles/iq3_s_llama_dump.dir/codegen:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_s_llama_dump.dir/build.make CMakeFiles/iq3_s_llama_dump.dir/codegen
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=64,65 "Finished codegen for target iq3_s_llama_dump"
+.PHONY : CMakeFiles/iq3_s_llama_dump.dir/codegen
+
+# clean rule for target.
+CMakeFiles/iq3_s_llama_dump.dir/clean:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq3_s_llama_dump.dir/build.make CMakeFiles/iq3_s_llama_dump.dir/clean
+.PHONY : CMakeFiles/iq3_s_llama_dump.dir/clean
+
+#=============================================================================
+# Target rules for target CMakeFiles/iq1_s_llama_dump.dir
+
+# All Build rule for target.
+CMakeFiles/iq1_s_llama_dump.dir/all: llama_build/ggml/src/CMakeFiles/ggml-base.dir/all
+CMakeFiles/iq1_s_llama_dump.dir/all: llama_build/ggml/src/CMakeFiles/ggml.dir/all
+CMakeFiles/iq1_s_llama_dump.dir/all: llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/all
+CMakeFiles/iq1_s_llama_dump.dir/all: llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/all
+CMakeFiles/iq1_s_llama_dump.dir/all: llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/all
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_s_llama_dump.dir/build.make CMakeFiles/iq1_s_llama_dump.dir/depend
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_s_llama_dump.dir/build.make CMakeFiles/iq1_s_llama_dump.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=59 "Built target iq1_s_llama_dump"
+.PHONY : CMakeFiles/iq1_s_llama_dump.dir/all
+
+# Build rule for subdir invocation for target.
+CMakeFiles/iq1_s_llama_dump.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 57
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/iq1_s_llama_dump.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 0
+.PHONY : CMakeFiles/iq1_s_llama_dump.dir/rule
+
+# Convenience name for target.
+iq1_s_llama_dump: CMakeFiles/iq1_s_llama_dump.dir/rule
+.PHONY : iq1_s_llama_dump
+
+# codegen rule for target.
+CMakeFiles/iq1_s_llama_dump.dir/codegen:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_s_llama_dump.dir/build.make CMakeFiles/iq1_s_llama_dump.dir/codegen
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=59 "Finished codegen for target iq1_s_llama_dump"
+.PHONY : CMakeFiles/iq1_s_llama_dump.dir/codegen
+
+# clean rule for target.
+CMakeFiles/iq1_s_llama_dump.dir/clean:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_s_llama_dump.dir/build.make CMakeFiles/iq1_s_llama_dump.dir/clean
+.PHONY : CMakeFiles/iq1_s_llama_dump.dir/clean
+
+#=============================================================================
+# Target rules for target CMakeFiles/iq1_m_llama_dump.dir
+
+# All Build rule for target.
+CMakeFiles/iq1_m_llama_dump.dir/all: llama_build/ggml/src/CMakeFiles/ggml-base.dir/all
+CMakeFiles/iq1_m_llama_dump.dir/all: llama_build/ggml/src/CMakeFiles/ggml.dir/all
+CMakeFiles/iq1_m_llama_dump.dir/all: llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/all
+CMakeFiles/iq1_m_llama_dump.dir/all: llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/all
+CMakeFiles/iq1_m_llama_dump.dir/all: llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/all
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_m_llama_dump.dir/build.make CMakeFiles/iq1_m_llama_dump.dir/depend
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_m_llama_dump.dir/build.make CMakeFiles/iq1_m_llama_dump.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=57,58 "Built target iq1_m_llama_dump"
+.PHONY : CMakeFiles/iq1_m_llama_dump.dir/all
+
+# Build rule for subdir invocation for target.
+CMakeFiles/iq1_m_llama_dump.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 58
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/iq1_m_llama_dump.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 0
+.PHONY : CMakeFiles/iq1_m_llama_dump.dir/rule
+
+# Convenience name for target.
+iq1_m_llama_dump: CMakeFiles/iq1_m_llama_dump.dir/rule
+.PHONY : iq1_m_llama_dump
+
+# codegen rule for target.
+CMakeFiles/iq1_m_llama_dump.dir/codegen:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_m_llama_dump.dir/build.make CMakeFiles/iq1_m_llama_dump.dir/codegen
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=57,58 "Finished codegen for target iq1_m_llama_dump"
+.PHONY : CMakeFiles/iq1_m_llama_dump.dir/codegen
+
+# clean rule for target.
+CMakeFiles/iq1_m_llama_dump.dir/clean:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/iq1_m_llama_dump.dir/build.make CMakeFiles/iq1_m_llama_dump.dir/clean
+.PHONY : CMakeFiles/iq1_m_llama_dump.dir/clean
 
 #=============================================================================
 # Target rules for target llama_build/ggml/src/CMakeFiles/ggml-base.dir
@@ -530,7 +686,7 @@ llama_build/ggml/src/CMakeFiles/ggml.dir/all: llama_build/ggml/src/ggml-metal/CM
 
 # Build rule for subdir invocation for target.
 llama_build/ggml/src/CMakeFiles/ggml.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 60
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 56
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 llama_build/ggml/src/CMakeFiles/ggml.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 0
 .PHONY : llama_build/ggml/src/CMakeFiles/ggml.dir/rule
@@ -557,7 +713,7 @@ llama_build/ggml/src/CMakeFiles/ggml.dir/clean:
 llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/all: llama_build/ggml/src/CMakeFiles/ggml-base.dir/all
 	$(MAKE) $(MAKESILENT) -f llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/build.make llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/depend
 	$(MAKE) $(MAKESILENT) -f llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/build.make llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=12,13,14,15,16,17,18,19,20,21,22,23 "Built target ggml-cpu"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=11,12,13,14,15,16,17,18,19,20,21,22 "Built target ggml-cpu"
 .PHONY : llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/all
 
 # Build rule for subdir invocation for target.
@@ -574,7 +730,7 @@ ggml-cpu: llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/rule
 # codegen rule for target.
 llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/build.make llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=12,13,14,15,16,17,18,19,20,21,22,23 "Finished codegen for target ggml-cpu"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=11,12,13,14,15,16,17,18,19,20,21,22 "Finished codegen for target ggml-cpu"
 .PHONY : llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/codegen
 
 # clean rule for target.
@@ -589,12 +745,12 @@ llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/clean:
 llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/all: llama_build/ggml/src/CMakeFiles/ggml-base.dir/all
 	$(MAKE) $(MAKESILENT) -f llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/build.make llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/depend
 	$(MAKE) $(MAKESILENT) -f llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/build.make llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=10,11 "Built target ggml-blas"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=10 "Built target ggml-blas"
 .PHONY : llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/all
 
 # Build rule for subdir invocation for target.
 llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 9
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 8
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 0
 .PHONY : llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/rule
@@ -606,7 +762,7 @@ ggml-blas: llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/rule
 # codegen rule for target.
 llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/build.make llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=10,11 "Finished codegen for target ggml-blas"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=10 "Finished codegen for target ggml-blas"
 .PHONY : llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/codegen
 
 # clean rule for target.
@@ -621,12 +777,12 @@ llama_build/ggml/src/ggml-blas/CMakeFiles/ggml-blas.dir/clean:
 llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/all: llama_build/ggml/src/CMakeFiles/ggml-base.dir/all
 	$(MAKE) $(MAKESILENT) -f llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/build.make llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/depend
 	$(MAKE) $(MAKESILENT) -f llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/build.make llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60 "Built target ggml-metal"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56 "Built target ggml-metal"
 .PHONY : llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/all
 
 # Build rule for subdir invocation for target.
 llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 44
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 41
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 0
 .PHONY : llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/rule
@@ -638,7 +794,7 @@ ggml-metal: llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/rule
 # codegen rule for target.
 llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/build.make llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60 "Finished codegen for target ggml-metal"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56 "Finished codegen for target ggml-metal"
 .PHONY : llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/codegen
 
 # clean rule for target.
@@ -657,12 +813,12 @@ llama_build/src/CMakeFiles/llama.dir/all: llama_build/ggml/src/ggml-blas/CMakeFi
 llama_build/src/CMakeFiles/llama.dir/all: llama_build/ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/all
 	$(MAKE) $(MAKESILENT) -f llama_build/src/CMakeFiles/llama.dir/build.make llama_build/src/CMakeFiles/llama.dir/depend
 	$(MAKE) $(MAKESILENT) -f llama_build/src/CMakeFiles/llama.dir/build.make llama_build/src/CMakeFiles/llama.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96 "Built target llama"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96 "Built target llama"
 .PHONY : llama_build/src/CMakeFiles/llama.dir/all
 
 # Build rule for subdir invocation for target.
 llama_build/src/CMakeFiles/llama.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 92
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 86
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 llama_build/src/CMakeFiles/llama.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles 0
 .PHONY : llama_build/src/CMakeFiles/llama.dir/rule
@@ -674,7 +830,7 @@ llama: llama_build/src/CMakeFiles/llama.dir/rule
 # codegen rule for target.
 llama_build/src/CMakeFiles/llama.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f llama_build/src/CMakeFiles/llama.dir/build.make llama_build/src/CMakeFiles/llama.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96 "Finished codegen for target llama"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/Users/jia/Desktop/infer_train/tools/iq_llama_dump/build/CMakeFiles --progress-num=67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96 "Finished codegen for target llama"
 .PHONY : llama_build/src/CMakeFiles/llama.dir/codegen
 
 # clean rule for target.
@@ -723,4 +879,3 @@ llama_build/vendor/hash/CMakeFiles/vendor-hash.dir/clean:
 cmake_check_build_system:
 	$(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) --check-build-system CMakeFiles/Makefile.cmake 0
 .PHONY : cmake_check_build_system
-

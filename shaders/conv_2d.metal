@@ -7,79 +7,75 @@
 #include <metal_stdlib>
 using namespace metal;
 
-struct Conv2DConfig {
-    int batch_size;
-    int input_channels;
-    int output_channels;
-    int input_height;
-    int input_width;
-    int output_height;
-    int output_width;
-    int kernel_h;
-    int kernel_w;
-    int stride_h;
-    int stride_w;
-    int dilation_h;
-    int dilation_w;
-    int pad_h;
-    int pad_w;
-};
-
 // Standard 2D convolution - each thread computes one output element
 kernel void conv_2d_f32_f32(
     device const float* weights [[buffer(0)]],
     device const float* input [[buffer(1)]],
     device float* output [[buffer(2)]],
-    constant Conv2DConfig& cfg [[buffer(3)]],
+    constant int& batch_size [[buffer(3)]],
+    constant int& input_channels [[buffer(4)]],
+    constant int& output_channels [[buffer(5)]],
+    constant int& input_height [[buffer(6)]],
+    constant int& input_width [[buffer(7)]],
+    constant int& output_height [[buffer(8)]],
+    constant int& output_width [[buffer(9)]],
+    constant int& kernel_h [[buffer(10)]],
+    constant int& kernel_w [[buffer(11)]],
+    constant int& stride_h [[buffer(12)]],
+    constant int& stride_w [[buffer(13)]],
+    constant int& dilation_h [[buffer(14)]],
+    constant int& dilation_w [[buffer(15)]],
+    constant int& pad_h [[buffer(16)]],
+    constant int& pad_w [[buffer(17)]],
     uint3 gid [[thread_position_in_grid]]
 ) {
     // Decode output position from global ID
-    const int total_outputs = cfg.batch_size * cfg.output_channels * cfg.output_height * cfg.output_width;
-    if (gid.x >= uint(total_outputs)) {
+    const int total_outputs = batch_size * output_channels * output_height * output_width;
+    if (int(gid.x) >= total_outputs) {
         return;
     }
 
-    int remaining = gid.x;
-    const int ow = remaining % cfg.output_width;
-    remaining /= cfg.output_width;
-    const int oh = remaining % cfg.output_height;
-    remaining /= cfg.output_height;
-    const int oc = remaining % cfg.output_channels;
-    remaining /= cfg.output_channels;
+    int remaining = int(gid.x);
+    const int ow = remaining % output_width;
+    remaining /= output_width;
+    const int oh = remaining % output_height;
+    remaining /= output_height;
+    const int oc = remaining % output_channels;
+    remaining /= output_channels;
     const int batch = remaining;
 
     // Compute input window position
-    const int in_y_start = oh * cfg.stride_h - cfg.pad_h;
-    const int in_x_start = ow * cfg.stride_w - cfg.pad_w;
+    const int in_y_start = oh * stride_h - pad_h;
+    const int in_x_start = ow * stride_w - pad_w;
 
     float accumulator = 0.0f;
 
     // Loop over input channels
-    for (int ic = 0; ic < cfg.input_channels; ic++) {
+    for (int ic = 0; ic < input_channels; ic++) {
         // Loop over kernel height
-        for (int kh = 0; kh < cfg.kernel_h; kh++) {
-            const int in_y = in_y_start + kh * cfg.dilation_h;
-            if (in_y < 0 || in_y >= cfg.input_height) {
+        for (int kh = 0; kh < kernel_h; kh++) {
+            const int in_y = in_y_start + kh * dilation_h;
+            if (in_y < 0 || in_y >= input_height) {
                 continue;
             }
 
             // Loop over kernel width
-            for (int kw = 0; kw < cfg.kernel_w; kw++) {
-                const int in_x = in_x_start + kw * cfg.dilation_w;
-                if (in_x < 0 || in_x >= cfg.input_width) {
+            for (int kw = 0; kw < kernel_w; kw++) {
+                const int in_x = in_x_start + kw * dilation_w;
+                if (in_x < 0 || in_x >= input_width) {
                     continue;
                 }
 
                 // Input index: [batch, ic, in_y, in_x]
-                const int input_idx = batch * cfg.input_channels * cfg.input_height * cfg.input_width
-                                    + ic * cfg.input_height * cfg.input_width
-                                    + in_y * cfg.input_width
+                const int input_idx = batch * input_channels * input_height * input_width
+                                    + ic * input_height * input_width
+                                    + in_y * input_width
                                     + in_x;
 
                 // Weight index: [oc, ic, kh, kw]
-                const int weight_idx = oc * cfg.input_channels * cfg.kernel_h * cfg.kernel_w
-                                     + ic * cfg.kernel_h * cfg.kernel_w
-                                     + kh * cfg.kernel_w
+                const int weight_idx = oc * input_channels * kernel_h * kernel_w
+                                     + ic * kernel_h * kernel_w
+                                     + kh * kernel_w
                                      + kw;
 
                 accumulator += input[input_idx] * weights[weight_idx];
@@ -88,9 +84,9 @@ kernel void conv_2d_f32_f32(
     }
 
     // Output index: [batch, oc, oh, ow]
-    const int output_idx = batch * cfg.output_channels * cfg.output_height * cfg.output_width
-                         + oc * cfg.output_height * cfg.output_width
-                         + oh * cfg.output_width
+    const int output_idx = batch * output_channels * output_height * output_width
+                         + oc * output_height * output_width
+                         + oh * output_width
                          + ow;
 
     output[output_idx] = accumulator;
@@ -101,49 +97,63 @@ kernel void conv_2d_f16_f32(
     device const half* weights [[buffer(0)]],
     device const float* input [[buffer(1)]],
     device float* output [[buffer(2)]],
-    constant Conv2DConfig& cfg [[buffer(3)]],
+    constant int& batch_size [[buffer(3)]],
+    constant int& input_channels [[buffer(4)]],
+    constant int& output_channels [[buffer(5)]],
+    constant int& input_height [[buffer(6)]],
+    constant int& input_width [[buffer(7)]],
+    constant int& output_height [[buffer(8)]],
+    constant int& output_width [[buffer(9)]],
+    constant int& kernel_h [[buffer(10)]],
+    constant int& kernel_w [[buffer(11)]],
+    constant int& stride_h [[buffer(12)]],
+    constant int& stride_w [[buffer(13)]],
+    constant int& dilation_h [[buffer(14)]],
+    constant int& dilation_w [[buffer(15)]],
+    constant int& pad_h [[buffer(16)]],
+    constant int& pad_w [[buffer(17)]],
     uint3 gid [[thread_position_in_grid]]
 ) {
-    const int total_outputs = cfg.batch_size * cfg.output_channels * cfg.output_height * cfg.output_width;
-    if (gid.x >= uint(total_outputs)) {
+    const int total_outputs = batch_size * output_channels * output_height * output_width;
+    if (int(gid.x) >= total_outputs) {
         return;
     }
 
-    int remaining = gid.x;
-    const int ow = remaining % cfg.output_width;
-    remaining /= cfg.output_width;
-    const int oh = remaining % cfg.output_height;
-    remaining /= cfg.output_height;
-    const int oc = remaining % cfg.output_channels;
-    remaining /= cfg.output_channels;
+    int remaining = int(gid.x);
+    const int ow = remaining % output_width;
+    remaining /= output_width;
+    const int oh = remaining % output_height;
+    remaining /= output_height;
+    const int oc = remaining % output_channels;
+    remaining /= output_channels;
     const int batch = remaining;
 
-    const int in_y_start = oh * cfg.stride_h - cfg.pad_h;
-    const int in_x_start = ow * cfg.stride_w - cfg.pad_w;
+    const int in_y_start = oh * stride_h - pad_h;
+    const int in_x_start = ow * stride_w - pad_w;
 
     float accumulator = 0.0f;
 
-    for (int ic = 0; ic < cfg.input_channels; ic++) {
-        for (int kh = 0; kh < cfg.kernel_h; kh++) {
-            const int in_y = in_y_start + kh * cfg.dilation_h;
-            if (in_y < 0 || in_y >= cfg.input_height) {
+    for (int ic = 0; ic < input_channels; ic++) {
+        for (int kh = 0; kh < kernel_h; kh++) {
+            const int in_y = in_y_start + kh * dilation_h;
+            if (in_y < 0 || in_y >= input_height) {
                 continue;
             }
 
-            for (int kw = 0; kw < cfg.kernel_w; kw++) {
-                const int in_x = in_x_start + kw * cfg.dilation_w;
-                if (in_x < 0 || in_x >= cfg.input_width) {
+            for (int kw = 0; kw < kernel_w; kw++) {
+                const int in_x = in_x_start + kw * dilation_w;
+                if (in_x < 0 || in_x >= input_width) {
                     continue;
                 }
 
-                const int input_idx = batch * cfg.input_channels * cfg.input_height * cfg.input_width
-                                    + ic * cfg.input_height * cfg.input_width
-                                    + in_y * cfg.input_width
+                const int input_idx = batch * input_channels * input_height * input_width
+                                    + ic * input_height * input_width
+                                    + in_y * input_width
                                     + in_x;
 
-                const int weight_idx = oc * cfg.input_channels * cfg.kernel_h * cfg.kernel_w
-                                     + ic * cfg.kernel_h * cfg.kernel_w
-                                     + kh * cfg.kernel_w
+                const int weight_idx = oc * input_channels * kernel_h * kernel_w
+                                     + ic * kernel_h * kernel_w
+                                     + kh * kernel_w
                                      + kw;
 
                 accumulator += input[input_idx] * float(weights[weight_idx]);
@@ -151,88 +161,84 @@ kernel void conv_2d_f16_f32(
         }
     }
 
-    const int output_idx = batch * cfg.output_channels * cfg.output_height * cfg.output_width
-                         + oc * cfg.output_height * cfg.output_width
-                         + oh * cfg.output_width
+    const int output_idx = batch * output_channels * output_height * output_width
+                         + oc * output_height * output_width
+                         + oh * output_width
                          + ow;
 
     output[output_idx] = accumulator;
 }
-
-struct DepthwiseConv2DConfig {
-    int batch_size;
-    int channels;
-    int input_height;
-    int input_width;
-    int output_height;
-    int output_width;
-    int kernel_h;
-    int kernel_w;
-    int stride_h;
-    int stride_w;
-    int dilation_h;
-    int dilation_w;
-    int pad_h;
-    int pad_w;
-};
 
 // Depthwise convolution - each thread computes one output element
 kernel void conv_2d_depthwise_f32_f32(
     device const float* weights [[buffer(0)]],
     device const float* input [[buffer(1)]],
     device float* output [[buffer(2)]],
-    constant DepthwiseConv2DConfig& cfg [[buffer(3)]],
+    constant int& batch_size [[buffer(3)]],
+    constant int& channels [[buffer(4)]],
+    constant int& input_height [[buffer(5)]],
+    constant int& input_width [[buffer(6)]],
+    constant int& output_height [[buffer(7)]],
+    constant int& output_width [[buffer(8)]],
+    constant int& kernel_h [[buffer(9)]],
+    constant int& kernel_w [[buffer(10)]],
+    constant int& stride_h [[buffer(11)]],
+    constant int& stride_w [[buffer(12)]],
+    constant int& dilation_h [[buffer(13)]],
+    constant int& dilation_w [[buffer(14)]],
+    constant int& pad_h [[buffer(15)]],
+    constant int& pad_w [[buffer(16)]],
     uint3 gid [[thread_position_in_grid]]
 ) {
-    const int total_outputs = cfg.batch_size * cfg.channels * cfg.output_height * cfg.output_width;
-    if (gid.x >= uint(total_outputs)) {
+    const int total_outputs = batch_size * channels * output_height * output_width;
+    if (int(gid.x) >= total_outputs) {
         return;
     }
 
-    int remaining = gid.x;
-    const int ow = remaining % cfg.output_width;
-    remaining /= cfg.output_width;
-    const int oh = remaining % cfg.output_height;
-    remaining /= cfg.output_height;
-    const int c = remaining % cfg.channels;
-    remaining /= cfg.channels;
+    int remaining = int(gid.x);
+    const int ow = remaining % output_width;
+    remaining /= output_width;
+    const int oh = remaining % output_height;
+    remaining /= output_height;
+    const int c = remaining % channels;
+    remaining /= channels;
     const int batch = remaining;
 
-    const int in_y_start = oh * cfg.stride_h - cfg.pad_h;
-    const int in_x_start = ow * cfg.stride_w - cfg.pad_w;
+    const int in_y_start = oh * stride_h - pad_h;
+    const int in_x_start = ow * stride_w - pad_w;
 
     float accumulator = 0.0f;
 
-    for (int kh = 0; kh < cfg.kernel_h; kh++) {
-        const int in_y = in_y_start + kh * cfg.dilation_h;
-        if (in_y < 0 || in_y >= cfg.input_height) {
+    for (int kh = 0; kh < kernel_h; kh++) {
+        const int in_y = in_y_start + kh * dilation_h;
+        if (in_y < 0 || in_y >= input_height) {
             continue;
         }
 
-        for (int kw = 0; kw < cfg.kernel_w; kw++) {
-            const int in_x = in_x_start + kw * cfg.dilation_w;
-            if (in_x < 0 || in_x >= cfg.input_width) {
+        for (int kw = 0; kw < kernel_w; kw++) {
+            const int in_x = in_x_start + kw * dilation_w;
+            if (in_x < 0 || in_x >= input_width) {
                 continue;
             }
 
             // Input index: [batch, c, in_y, in_x]
-            const int input_idx = batch * cfg.channels * cfg.input_height * cfg.input_width
-                                + c * cfg.input_height * cfg.input_width
-                                + in_y * cfg.input_width
+            const int input_idx = batch * channels * input_height * input_width
+                                + c * input_height * input_width
+                                + in_y * input_width
                                 + in_x;
 
             // Weight index: [c, kh, kw] (one filter per channel)
-            const int weight_idx = c * cfg.kernel_h * cfg.kernel_w
-                                 + kh * cfg.kernel_w
+            const int weight_idx = c * kernel_h * kernel_w
+                                 + kh * kernel_w
                                  + kw;
 
             accumulator += input[input_idx] * weights[weight_idx];
         }
     }
 
-    const int output_idx = batch * cfg.channels * cfg.output_height * cfg.output_width
-                         + c * cfg.output_height * cfg.output_width
-                         + oh * cfg.output_width
+    const int output_idx = batch * channels * output_height * output_width
+                         + c * output_height * output_width
+                         + oh * output_width
                          + ow;
 
     output[output_idx] = accumulator;
@@ -243,56 +249,69 @@ kernel void conv_2d_depthwise_f16_f32(
     device const half* weights [[buffer(0)]],
     device const float* input [[buffer(1)]],
     device float* output [[buffer(2)]],
-    constant DepthwiseConv2DConfig& cfg [[buffer(3)]],
+    constant int& batch_size [[buffer(3)]],
+    constant int& channels [[buffer(4)]],
+    constant int& input_height [[buffer(5)]],
+    constant int& input_width [[buffer(6)]],
+    constant int& output_height [[buffer(7)]],
+    constant int& output_width [[buffer(8)]],
+    constant int& kernel_h [[buffer(9)]],
+    constant int& kernel_w [[buffer(10)]],
+    constant int& stride_h [[buffer(11)]],
+    constant int& stride_w [[buffer(12)]],
+    constant int& dilation_h [[buffer(13)]],
+    constant int& dilation_w [[buffer(14)]],
+    constant int& pad_h [[buffer(15)]],
+    constant int& pad_w [[buffer(16)]],
     uint3 gid [[thread_position_in_grid]]
 ) {
-    const int total_outputs = cfg.batch_size * cfg.channels * cfg.output_height * cfg.output_width;
-    if (gid.x >= uint(total_outputs)) {
+    const int total_outputs = batch_size * channels * output_height * output_width;
+    if (int(gid.x) >= total_outputs) {
         return;
     }
 
-    int remaining = gid.x;
-    const int ow = remaining % cfg.output_width;
-    remaining /= cfg.output_width;
-    const int oh = remaining % cfg.output_height;
-    remaining /= cfg.output_height;
-    const int c = remaining % cfg.channels;
-    remaining /= cfg.channels;
+    int remaining = int(gid.x);
+    const int ow = remaining % output_width;
+    remaining /= output_width;
+    const int oh = remaining % output_height;
+    remaining /= output_height;
+    const int c = remaining % channels;
+    remaining /= channels;
     const int batch = remaining;
 
-    const int in_y_start = oh * cfg.stride_h - cfg.pad_h;
-    const int in_x_start = ow * cfg.stride_w - cfg.pad_w;
+    const int in_y_start = oh * stride_h - pad_h;
+    const int in_x_start = ow * stride_w - pad_w;
 
     float accumulator = 0.0f;
 
-    for (int kh = 0; kh < cfg.kernel_h; kh++) {
-        const int in_y = in_y_start + kh * cfg.dilation_h;
-        if (in_y < 0 || in_y >= cfg.input_height) {
+    for (int kh = 0; kh < kernel_h; kh++) {
+        const int in_y = in_y_start + kh * dilation_h;
+        if (in_y < 0 || in_y >= input_height) {
             continue;
         }
 
-        for (int kw = 0; kw < cfg.kernel_w; kw++) {
-            const int in_x = in_x_start + kw * cfg.dilation_w;
-            if (in_x < 0 || in_x >= cfg.input_width) {
+        for (int kw = 0; kw < kernel_w; kw++) {
+            const int in_x = in_x_start + kw * dilation_w;
+            if (in_x < 0 || in_x >= input_width) {
                 continue;
             }
 
-            const int input_idx = batch * cfg.channels * cfg.input_height * cfg.input_width
-                                + c * cfg.input_height * cfg.input_width
-                                + in_y * cfg.input_width
+            const int input_idx = batch * channels * input_height * input_width
+                                + c * input_height * input_width
+                                + in_y * input_width
                                 + in_x;
 
-            const int weight_idx = c * cfg.kernel_h * cfg.kernel_w
-                                 + kh * cfg.kernel_w
+            const int weight_idx = c * kernel_h * kernel_w
+                                 + kh * kernel_w
                                  + kw;
 
             accumulator += input[input_idx] * float(weights[weight_idx]);
         }
     }
 
-    const int output_idx = batch * cfg.channels * cfg.output_height * cfg.output_width
-                         + c * cfg.output_height * cfg.output_width
-                         + oh * cfg.output_width
+    const int output_idx = batch * channels * output_height * output_width
+                         + c * output_height * output_width
+                         + oh * output_width
                          + ow;
 
     output[output_idx] = accumulator;

@@ -53,10 +53,10 @@ fn main() {
         // Test with value 17 (binary 10001)
         x.qh[0] = 0b00000001; // bit 0 = 1
         x.qs[0] = 0x01; // low nibble = 1, high nibble = 0
-        // Element 0: low4bit = 1, high_bit = 1 → value = 1 | 16 = 17
-        // Element 1: low4bit = 0, high_bit = 0 → value = 0
-        // ...
-        // Element 16: high nibble of qs[0] = 0, bit 16 of qh = 0 → value = 0
+                        // Element 0: low4bit = 1, high_bit = 1 → value = 1 | 16 = 17
+                        // Element 1: low4bit = 0, high_bit = 0 → value = 0
+                        // ...
+                        // Element 16: high nibble of qs[0] = 0, bit 16 of qh = 0 → value = 0
 
         let result2 = vec_dot_q5_1_q8_1_neon(QK4_0, &[x.clone()], &[y.clone()]);
         println!(
@@ -80,8 +80,8 @@ fn main() {
         // Test with all bits = 1 (should give low4bit - 0 = low4bit)
         x0.qh = [0xFF, 0xFF, 0xFF, 0xFF]; // all 32 bits = 1
         x0.qs[0] = 0x88; // low nibble = 8, high nibble = 8
-        // Element 0: bit = 1, low4bit = 8, result = 8 - 0 = 8
-        // Element 16: bit = 1, high nibble = 8, result = 8 - 0 = 8
+                         // Element 0: bit = 1, low4bit = 8, result = 8 - 0 = 8
+                         // Element 16: bit = 1, high nibble = 8, result = 8 - 0 = 8
 
         let result3 =
             vec_dot_q5_0_q8_0_neon(QK4_0, &[x0.clone()], &[y0.clone()]);
@@ -94,8 +94,8 @@ fn main() {
         // Test with all bits = 0 (should give low4bit - 16)
         x0.qh = [0u8; 4]; // all 32 bits = 0
         x0.qs[0] = 0x00; // low nibble = 0, high nibble = 0
-        // Element 0: bit = 0, low4bit = 0, result = 0 - 16 = -16
-        // Element 16: bit = 0, high nibble = 0, result = 0 - 16 = -16
+                         // Element 0: bit = 0, low4bit = 0, result = 0 - 16 = -16
+                         // Element 16: bit = 0, high nibble = 0, result = 0 - 16 = -16
 
         let result4 =
             vec_dot_q5_0_q8_0_neon(QK4_0, &[x0.clone()], &[y0.clone()]);

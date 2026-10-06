@@ -411,7 +411,11 @@ fn main() {
     let test_data: Vec<f32> = (0..256)
         .map(|i| {
             // Mix of positive and negative values
-            if i % 7 == 0 { -1.0 } else { (i as f32) / 100.0 }
+            if i % 7 == 0 {
+                -1.0
+            } else {
+                (i as f32) / 100.0
+            }
         })
         .collect();
 
@@ -528,7 +532,7 @@ fn main() {
     println!("  Max error: {:.6}", max_error);
 
     // Now test with random data and compare CPU dequant vs quantized output
-    use rand::{Rng, SeedableRng, rngs::StdRng};
+    use rand::{rngs::StdRng, Rng, SeedableRng};
     let mut rng = StdRng::seed_from_u64(42);
     let random_data: Vec<f32> = (0..256).map(|_| rng.r#gen::<f32>()).collect();
 

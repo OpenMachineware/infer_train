@@ -131,9 +131,13 @@ set(CMAKE_MAKEFILE_PRODUCTS
 
 # Dependency information for all targets:
 set(CMAKE_DEPEND_INFO_FILES
+  "CMakeFiles/iq2_xxs_llama_dump.dir/DependInfo.cmake"
   "CMakeFiles/iq2_xs_llama_dump.dir/DependInfo.cmake"
   "CMakeFiles/iq2_s_llama_dump.dir/DependInfo.cmake"
   "CMakeFiles/iq3_xxs_llama_dump.dir/DependInfo.cmake"
+  "CMakeFiles/iq3_s_llama_dump.dir/DependInfo.cmake"
+  "CMakeFiles/iq1_s_llama_dump.dir/DependInfo.cmake"
+  "CMakeFiles/iq1_m_llama_dump.dir/DependInfo.cmake"
   "llama_build/ggml/src/CMakeFiles/ggml-base.dir/DependInfo.cmake"
   "llama_build/ggml/src/CMakeFiles/ggml.dir/DependInfo.cmake"
   "llama_build/ggml/src/CMakeFiles/ggml-cpu.dir/DependInfo.cmake"

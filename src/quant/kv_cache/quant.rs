@@ -556,7 +556,11 @@ fn best_index_iq4nl(x: f32) -> usize {
         }
     }
 
-    if x - values[lo] < values[hi] - x { lo } else { hi }
+    if x - values[lo] < values[hi] - x {
+        lo
+    } else {
+        hi
+    }
 }
 
 /// Quantize FP32 to IQ4_NL (scalar)

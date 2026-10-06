@@ -408,22 +408,24 @@ void dequantize_q1_0(device const block_q1_0 * xb, short il, thread type4x4 & re
 }
 
 // Q2_0: 2-bit quantization (64 elements per block, nl=4)
+// Values are signed: [-1, 0, 1, 2] scaled by d
 template <typename type4x4>
 void dequantize_q2_0(device const block_q2_0 * xb, short il, thread type4x4 & reg) {
+    device const uint8_t * qs = xb->qs;
     const float d = xb->d;
-    device const uint8_t * qs = (device const uint8_t *)xb->qs;
-    qs += 4 * il;  // Each il covers 16 elements, 4 bytes per 16 elements
-
-    const float dl = d * 0.25f;  // Scale for 4 values: 0, 1, 2, 3
+    const int byte_offset = il * 4;  // il*16 elements = il*4 bytes (4 elements per byte)
+    float4x4 reg_f;
 
     for (int i = 0; i < 4; ++i) {
-        const uint8_t v = qs[i];
-        // 2-bit per element, 4 elements per byte
-        reg[i][0] = dl * (v & 0x03);
-        reg[i][1] = dl * ((v >> 2) & 0x03);
-        reg[i][2] = dl * ((v >> 4) & 0x03);
-        reg[i][3] = dl * ((v >> 6) & 0x03);
+        const uint8_t b = qs[byte_offset + i];
+        // 2-bit per element, signed: 0→-1, 1→0, 2→1, 3→2
+        reg_f[i][0] = ((float)((b >> 0) & 3) - 1.0f) * d;
+        reg_f[i][1] = ((float)((b >> 2) & 3) - 1.0f) * d;
+        reg_f[i][2] = ((float)((b >> 4) & 3) - 1.0f) * d;
+        reg_f[i][3] = ((float)((b >> 6) & 3) - 1.0f) * d;
     }
+
+    reg = (type4x4) reg_f;
 }
 
 // MXFP4: 4-bit indices into kvalues_mxfp4_f with E8M0 scale
@@ -743,36 +745,31 @@ void dequantize_iq3_s(device const block_iq3_s *xb, short il, thread type4x4 & r
 //   - 4 bytes of auxiliary data (signs + scale bits)
 template <typename type4x4>
 void dequantize_iq3_xxs(device const block_iq3_xxs *xb, short il, thread type4x4 & reg) {
-    // il ranges from 0 to 15 (16 chunks of 16 elements each)
     const float d = xb->d;
-
-    // Determine which 32-element block we're in
-    // il 0,1 -> block 0; il 2,3 -> block 1; etc.
     const int ib32 = il / 2;
-    il = il % 2;  // il is now 0 or 1 within the 32-element block
+    il = il % 2;
 
-    // Grid indices: 8 bytes per 32-element block
     device const uint8_t * q3 = xb->qs + 8 * ib32;
-
-    // Auxiliary data: signs and scale bits
-    // Located at offset 64 in qs array (after 8*8 = 64 bytes of grid indices)
     device const uint16_t * gas = (device const uint16_t *)(xb->qs + QK_K / 4) + 2 * ib32;
     const uint32_t aux32 = gas[0] | (gas[1] << 16);
 
-    // Scale: upper 4 bits of aux32
     const float dl = d * (0.5f + (aux32 >> 28)) * 0.5f;
 
-    // Each 32-element block has 8 grid indices, each producing 4 values
-    // il=0 processes indices 0-3 (16 values), il=1 processes indices 4-7 (16 values)
-    for (int l = 0; l < 4; ++l) {
-        constant uint8_t * grid = (constant uint8_t *)(iq3xxs_grid + q3[4 * il + l]);
-        const uint8_t signs = ksigns_iq2xs[(aux32 >> (7 * (4 * il + l))) & 127];
-
-        for (int j = 0; j < 4; ++j) {
-            const int i = l * 4 + j;  // index within this 16-element chunk
-            // Grid values are used directly (no -128 offset)
-            reg[i/4][i%4] = dl * grid[j] * (signs & kmask_iq2xs[j] ? -1.f : 1.f);
-        }
+    // il=0 processes l=0,1 with shifts 0,7
+    // il=1 processes l=2,3 with shifts 14,21
+    constant uint8_t * grid1 = (constant uint8_t *)(iq3xxs_grid + q3[4*il+0]);
+    constant uint8_t * grid2 = (constant uint8_t *)(iq3xxs_grid + q3[4*il+1]);
+    uint8_t signs = ksigns_iq2xs[(aux32 >> (14*il)) & 127];
+    for (int i = 0; i < 4; ++i) {
+        reg[0][i] = dl * grid1[i] * (signs & kmask_iq2xs[i+0] ? -1.f : 1.f);
+        reg[1][i] = dl * grid2[i] * (signs & kmask_iq2xs[i+4] ? -1.f : 1.f);
+    }
+    grid1 = (constant uint8_t *)(iq3xxs_grid + q3[4*il+2]);
+    grid2 = (constant uint8_t *)(iq3xxs_grid + q3[4*il+3]);
+    signs = ksigns_iq2xs[(aux32 >> (14*il+7)) & 127];
+    for (int i = 0; i < 4; ++i) {
+        reg[2][i] = dl * grid1[i] * (signs & kmask_iq2xs[i+0] ? -1.f : 1.f);
+        reg[3][i] = dl * grid2[i] * (signs & kmask_iq2xs[i+4] ? -1.f : 1.f);
     }
 }
 
@@ -859,8 +856,8 @@ void dequantize_iq2_s(device const block_iq2_s *xb, short il, thread type4x4 & r
     constant uint8_t * grid1 = (constant uint8_t *)(iq2s_grid + (qs[0] | ((qh << 8) & 0x300)));
     constant uint8_t * grid2 = (constant uint8_t *)(iq2s_grid + (qs[1] | ((qh << 6) & 0x300)));
     for (int i = 0; i < 8; ++i) {
-        reg[i/4 + 0][i%4] = dl * grid1[i] * (signs[0] & kmask_iq2xs[i] ? -1.f : 1.f);
-        reg[i/4 + 2][i%4] = dl * grid2[i] * (signs[1] & kmask_iq2xs[i] ? -1.f : 1.f);
+        reg[i/4 + 0][i%4] = dl * grid1[i] * select(1.f, -1.f, signs[0] & kmask_iq2xs[i]);
+        reg[i/4 + 2][i%4] = dl * grid2[i] * select(1.f, -1.f, signs[1] & kmask_iq2xs[i]);
     }
 }
 

@@ -1,5 +1,5 @@
 use criterion::{
-    BenchmarkId, Criterion, black_box, criterion_group, criterion_main,
+    black_box, criterion_group, criterion_main, BenchmarkId, Criterion,
 };
 use half::f16;
 use infer_train::quant::types::BlockQ4K;

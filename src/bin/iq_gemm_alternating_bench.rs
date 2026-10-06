@@ -4,7 +4,7 @@
 use half::f16;
 use infer_train::quant::types::*;
 use metal::{Device, MTLSize};
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::ffi::c_void;
 use std::time::Instant;
 
@@ -526,7 +526,7 @@ fn main() {
 
     let device = Device::system_default().expect("No Metal device");
 
-    // Start with smaller dimensions to verify stability
+    // Test size: decode (N=1) with M, K
     let m = 1024usize;
     let k = 1024usize;
     let n = 1usize; // N=1 for MV (matrix-vector) comparison

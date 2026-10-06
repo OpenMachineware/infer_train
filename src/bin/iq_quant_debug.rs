@@ -4,7 +4,7 @@
 use half::f16;
 use infer_train::quant::types::*;
 use infer_train::quant::weights::iq::*;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{rngs::StdRng, Rng, SeedableRng};
 
 const QK_K: usize = 256;
 

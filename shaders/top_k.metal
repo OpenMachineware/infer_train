@@ -1,112 +1,127 @@
-// TOP_K Metal kernel - Self-written implementation
-// Algorithm: Histogram-based selection (radix selection)
-// 1. Convert float to sortable uint
-// 2. Find k-th largest value via histogram
-// 3. Output indices of top-k elements
+// TOP_K Metal kernel - Matches llama.cpp implementation exactly
+// Algorithm: Histogram-based radix selection + atomic output
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #include <metal_stdlib>
 using namespace metal;
 
-// Convert float to sortable unsigned integer
-// Maps -inf to 0x00000000, +inf to 0xFFFFFFFF
-// Preserves ordering: f1 < f2  =>  uint(f1) < uint(f2)
-static uint float_to_sortable_key(float f) {
-    uint bits = as_type<uint>(f);
-    // If negative, flip all bits (makes larger magnitudes smaller)
-    // If positive, set sign bit (makes all positives larger than negatives)
-    if ((bits & 0x80000000u) != 0u) {
-        bits ^= 0xFFFFFFFFu;
+// Convert float to sortable uint (same as llama.cpp ggml_top_k_f2ui)
+static uint ggml_top_k_f2ui(float x) {
+    uint y = as_type<uint>(x);
+    if ((y & 0x80000000u) != 0u) {
+        y ^= 0xFFFFFFFFu; // negative: flip all bits
     } else {
-        bits |= 0x80000000u;
+        y |= 0x80000000u; // positive: set sign bit
     }
-    return bits;
+    return y;
 }
 
-kernel void top_k_f32_i32(
-    device const float* values [[buffer(0)]],
-    device int32_t* indices [[buffer(1)]],
-    constant int& num_elements [[buffer(2)]],
-    constant int& k [[buffer(3)]],
-    threadgroup atomic_uint* histogram [[threadgroup(0)]],
-    threadgroup uint* selected_bucket [[threadgroup(1)]],
-    threadgroup uint* count_above [[threadgroup(2)]],
-    threadgroup atomic_uint* output_counter [[threadgroup(3)]],
-    uint tid [[thread_position_in_threadgroup]],
-    uint group_size [[threads_per_threadgroup]]
-) {
-    // Phase 1: Radix selection to find threshold
-    uint threshold_key = 0;
-    uint remaining = k;
+// Struct matching llama.cpp exactly
+struct ggml_metal_kargs_top_k {
+    long ne00;    // number of columns (elements per row)
+    long ne01;    // number of rows
+    long ne02;
+    long ne03;
+    long nb01;    // byte stride for rows
+    long nb02;
+    long nb03;
+    long top_k;   // k value
+};
 
-    // Process 8 bits at a time (256 buckets)
+kernel void top_k_f32_i32(
+    constant ggml_metal_kargs_top_k& args [[buffer(0)]],
+    device const char* src0 [[buffer(1)]],
+    device int32_t* dst [[buffer(2)]],
+    threadgroup atomic_uint* histogram [[threadgroup(0)]],
+    threadgroup uint* sh_bucket [[threadgroup(1)]],
+    threadgroup uint* sh_above [[threadgroup(2)]],
+    threadgroup atomic_uint* out_count [[threadgroup(3)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort3 tpitg [[thread_position_in_threadgroup]],
+    ushort3 ntg [[threads_per_threadgroup]]
+) {
+    const uint ncols = args.ne00;
+    const uint top_k = args.top_k;
+    const uint i01 = tgpig[0];
+    const uint i02 = tgpig[1];
+    const uint i03 = tgpig[2];
+
+    device const float* src0_row = (device const float*)(src0 + args.nb01 * i01 + args.nb02 * i02 + args.nb03 * i03);
+    device int32_t* dst_row = dst + top_k * (i01 + args.ne01 * i02 + args.ne01 * args.ne02 * i03);
+
+    const uint tid = tpitg.x;
+    const uint ntg_x = ntg.x;
+
+    uint prefix = 0;
+    uint desired = top_k;
+
+    // Radix selection: find the k-th largest value
     for (int shift = 24; shift >= 0; shift -= 8) {
         // Clear histogram
-        for (uint i = tid; i < 256; i += group_size) {
+        for (uint i = tid; i < 256; i += ntg_x) {
             atomic_store_explicit(&histogram[i], 0u, memory_order_relaxed);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // Build histogram for current byte
         const uint hi_mask = (shift + 8 >= 32) ? 0u : (0xFFFFFFFFu << uint(shift + 8));
-        const uint prefix_hi = threshold_key & hi_mask;
+        const uint prefix_hi = prefix & hi_mask;
 
-        for (uint i = tid; i < uint(num_elements); i += group_size) {
-            const uint key = float_to_sortable_key(values[i]);
+        // Build histogram
+        for (uint i = tid; i < ncols; i += ntg_x) {
+            const uint key = ggml_top_k_f2ui(src0_row[i]);
             if ((key & hi_mask) == prefix_hi) {
-                const uint bucket = (key >> uint(shift)) & 0xFFu;
-                atomic_fetch_add_explicit(&histogram[bucket], 1u, memory_order_relaxed);
+                atomic_fetch_add_explicit(&histogram[(key >> uint(shift)) & 0xFFu], 1u, memory_order_relaxed);
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // Find bucket containing k-th element (top-down scan for descending order)
+        // Find bucket containing k-th element (top-down for descending order)
         if (tid == 0) {
-            uint accumulated = 0;
-            uint bucket = 0;
-            for (int b = 255; b >= 0; b--) {
-                const uint cnt = atomic_load_explicit(&histogram[b], memory_order_relaxed);
-                if (accumulated + cnt >= remaining) {
-                    bucket = uint(b);
+            uint acc = 0;
+            uint b = 0;
+            for (int bb = 255; bb >= 0; --bb) {
+                const uint c = atomic_load_explicit(&histogram[bb], memory_order_relaxed);
+                if (acc + c >= desired) {
+                    b = uint(bb);
                     break;
                 }
-                accumulated += cnt;
+                acc += c;
             }
-            *selected_bucket = bucket;
-            *count_above = accumulated;
+            *sh_bucket = b;
+            *sh_above = acc;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        threshold_key |= (*selected_bucket) << uint(shift);
-        remaining -= *count_above;
+        prefix |= *sh_bucket << uint(shift);
+        desired -= *sh_above;
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    // Phase 2: Output indices
+    // Output indices
     if (tid == 0) {
-        atomic_store_explicit(output_counter, 0u, memory_order_relaxed);
+        atomic_store_explicit(out_count, 0u, memory_order_relaxed);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // First, output all elements strictly above threshold
-    for (uint i = tid; i < uint(num_elements); i += group_size) {
-        if (float_to_sortable_key(values[i]) > threshold_key) {
-            const uint pos = atomic_fetch_add_explicit(output_counter, 1u, memory_order_relaxed);
-            if (pos < uint(k)) {
-                indices[pos] = int32_t(i);
-            }
+    const uint threshold = prefix;
+
+    // Output elements above threshold
+    for (uint i = tid; i < ncols; i += ntg_x) {
+        if (ggml_top_k_f2ui(src0_row[i]) > threshold) {
+            const uint pos = atomic_fetch_add_explicit(out_count, 1u, memory_order_relaxed);
+            dst_row[pos] = (int32_t)i;
         }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Then, fill remaining slots from elements equal to threshold
-    for (uint i = tid; i < uint(num_elements); i += group_size) {
-        if (float_to_sortable_key(values[i]) == threshold_key) {
-            const uint pos = atomic_fetch_add_explicit(output_counter, 1u, memory_order_relaxed);
-            if (pos < uint(k)) {
-                indices[pos] = int32_t(i);
+    // Fill remaining with elements at threshold (ties)
+    for (uint i = tid; i < ncols; i += ntg_x) {
+        if (ggml_top_k_f2ui(src0_row[i]) == threshold) {
+            const uint pos = atomic_fetch_add_explicit(out_count, 1u, memory_order_relaxed);
+            if (pos < top_k) {
+                dst_row[pos] = (int32_t)i;
             }
         }
     }

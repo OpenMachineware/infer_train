@@ -115,7 +115,11 @@ fn make_qp_quants(
         }
     }
 
-    if suml2 > 0.0 { sumlx / suml2 } else { 1.0 / iscale }
+    if suml2 > 0.0 {
+        sumlx / suml2
+    } else {
+        1.0 / iscale
+    }
 }
 
 /// Quantize FP32 to IQ4_NL (simple 4-bit non-linear)
@@ -1039,8 +1043,10 @@ fn quantize_iq2_s_impl(
                 for k in 0..2 {
                     let mut u: u16 = 0;
                     for i in 0..8 {
-                        let lval = nearest_int(0.5 * (id_local * xval[8 * k + i] - 1.0))
-                            .clamp(0, KMAX_Q_IQ2_S - 1);
+                        let lval = nearest_int(
+                            0.5 * (id_local * xval[8 * k + i] - 1.0),
+                        )
+                        .clamp(0, KMAX_Q_IQ2_S - 1);
                         u |= (lval as u16) << (2 * i);
                         l[8 * k + i] = lval as i8;
                     }
@@ -1078,7 +1084,8 @@ fn quantize_iq2_s_impl(
                     if grid_index < 0 {
                         panic!(
                             "Oops: found point {} not on grid: {:?}",
-                            u, &l[8 * k..8 * (k + 1)]
+                            u,
+                            &l[8 * k..8 * (k + 1)]
                         );
                     }
                     let i8_idx = 2 * ib + k;
@@ -1432,4 +1439,538 @@ fn quantize_iq2_xs_impl(
     }
 
     blocks
+}
+
+// ============================================================================
+// IQ3_XXS - Precise port from llama.cpp lines 4064-4290
+// ============================================================================
+
+/// Quantize FP32 to IQ3_XXS (matching llama.cpp exactly)
+pub fn quantize_iq3_xxs(
+    x: &[f32],
+    quant_weights: Option<&[f32]>,
+) -> Vec<BlockIQ3XXS> {
+    assert!(x.len() % QK_K == 0);
+    let nb = x.len() / QK_K;
+    let mut blocks = Vec::with_capacity(nb);
+
+    // Initialize grid data once
+    let grid_data = IQ3GridData::new(256, &KGRID_256_IQ3);
+
+    for ibl in 0..nb {
+        let xbl = &x[ibl * QK_K..(ibl + 1) * QK_K];
+
+        // Use provided weights or uniform weights
+        let quant_weights_slice: Vec<f32> = if let Some(qw) = quant_weights {
+            qw[ibl * QK_K..(ibl + 1) * QK_K].to_vec()
+        } else {
+            vec![1.0; QK_K]
+        };
+
+        let mut scales = [0.0f32; QK_K / 32];
+        let mut q3 = [0u8; 3 * (QK_K / 8) + QK_K / 32]; // 96 + 8 = 104 bytes
+        let mut max_scale = 0.0f32;
+
+        // Compute sigma2 for the block
+        let sumx2: f32 = xbl.iter().map(|v| v * v).sum();
+        let sigma2 = sumx2 / QK_K as f32;
+
+        // Process each sub-block of 32 values
+        for ib in 0..QK_K / 32 {
+            let xb = &xbl[ib * 32..(ib + 1) * 32];
+            let qw = &quant_weights_slice[ib * 32..(ib + 1) * 32];
+
+            // Compute quantization weights
+            let mut weight = [0.0f32; 32];
+            let mut waux = [0.0f32; 32];
+            for i in 0..32 {
+                weight[i] = qw[i] * (sigma2 + xb[i] * xb[i]).sqrt();
+                waux[i] = weight[i].sqrt();
+            }
+
+            // Compute signs and absolute values
+            let mut xval = [0.0f32; 32];
+            let mut block_signs = [0u8; 4];
+
+            for k in 0..4 {
+                let mut nflip = 0;
+                let mut s = 0u8;
+                for i in 0..8 {
+                    if xb[8 * k + i] >= 0.0 {
+                        xval[8 * k + i] = xb[8 * k + i];
+                    } else {
+                        xval[8 * k + i] = -xb[8 * k + i];
+                        nflip += 1;
+                        s |= 1 << i;
+                    }
+                }
+                // Ensure even parity
+                if nflip % 2 == 1 {
+                    let mut imin = 0;
+                    let mut min = weight[8 * k + imin]
+                        * xb[8 * k + imin]
+                        * xb[8 * k + imin];
+                    for i in 1..8 {
+                        let ax =
+                            weight[8 * k + i] * xb[8 * k + i] * xb[8 * k + i];
+                        if ax < min {
+                            min = ax;
+                            imin = i;
+                        }
+                    }
+                    xval[8 * k + imin] = -xval[8 * k + imin];
+                    s ^= 1 << imin;
+                }
+                block_signs[k] = s & 127;
+            }
+
+            // Find max absolute value
+            let max_val = xval.iter().fold(0.0f32, |a, &b| a.max(b));
+            let mut l = [0i8; 32];
+
+            if max_val < GROUP_MAX_EPS_IQ3_XXS {
+                scales[ib] = 0.0;
+                continue;
+            }
+
+            // Search for optimal scale
+            let mut best = 0.0f32;
+            let mut scale = max_val / (2 * 8 - 1) as f32;
+            let mut is_on_grid = [true; 8];
+
+            for is in -15..=15 {
+                let id = ((2 * 8 - 1) as f32 + is as f32 * 0.2) / max_val;
+                let this_scale = 1.0 / id;
+                let mut laux = [0i8; 32];
+                let mut is_on_grid_aux = [true; 8];
+
+                for k in 0..8 {
+                    for i in 0..4 {
+                        let lval =
+                            nearest_int(0.5 * (id * xval[4 * k + i] - 1.0));
+                        laux[4 * k + i] = lval.clamp(0, 7) as i8;
+                    }
+
+                    let mut u: u16 = 0;
+                    for i in 0..4 {
+                        u |= (laux[4 * k + i] as u16) << (3 * i);
+                    }
+
+                    let grid_index = grid_data.map[u as usize];
+                    is_on_grid_aux[k] = grid_index >= 0;
+
+                    if grid_index < 0 {
+                        // Find best neighbor
+                        grid_data.find_best_neighbor(
+                            u,
+                            &xval[4 * k..],
+                            &waux[4 * k..],
+                            this_scale,
+                            &mut laux[4 * k..],
+                        );
+                    }
+                }
+
+                // Compute MSE
+                let mut sumqx = 0.0f32;
+                let mut sumq2 = 0.0f32;
+                for i in 0..32 {
+                    let w = weight[i];
+                    let q = 2.0 * laux[i] as f32 + 1.0;
+                    sumqx += w * xval[i] * q;
+                    sumq2 += w * q * q;
+                }
+
+                if sumq2 > 0.0 && sumqx * sumqx > best * sumq2 {
+                    scale = sumqx / sumq2;
+                    best = scale * sumqx;
+                    l.copy_from_slice(&laux);
+                    is_on_grid.copy_from_slice(&is_on_grid_aux);
+                }
+            }
+
+            // Refine off-grid points
+            let n_not_ongrid = is_on_grid.iter().filter(|&&x| !x).count();
+            if n_not_ongrid > 0 && scale > 0.0 {
+                let id = 1.0 / scale;
+                for k in 0..8 {
+                    if is_on_grid[k] {
+                        continue;
+                    }
+
+                    let mut u: u16 = 0;
+                    for i in 0..4 {
+                        let lval =
+                            nearest_int(0.5 * (id * xval[4 * k + i] - 1.0));
+                        let lval = lval.clamp(0, 7) as u16;
+                        u |= lval << (3 * i);
+                    }
+
+                    let grid_index = grid_data.map[u as usize];
+                    if grid_index < 0 {
+                        grid_data.find_best_neighbor(
+                            u,
+                            &xval[4 * k..],
+                            &waux[4 * k..],
+                            scale,
+                            &mut l[4 * k..],
+                        );
+                    } else {
+                        let pg =
+                            grid_data.grid[grid_index as usize].to_le_bytes();
+                        for i in 0..4 {
+                            l[4 * k + i] = ((pg[i] as i16 - 4) / 8) as i8;
+                        }
+                    }
+                }
+
+                // Recompute scale
+                let mut sumqx = 0.0f32;
+                let mut sumq2 = 0.0f32;
+                for i in 0..32 {
+                    let w = weight[i];
+                    let q = 2.0 * l[i] as f32 + 1.0;
+                    sumqx += w * xval[i] * q;
+                    sumq2 += w * q * q;
+                }
+                if sumq2 > 0.0 {
+                    scale = sumqx / sumq2;
+                }
+            }
+
+            if scale < 0.0 {
+                scale = -scale;
+                for k in 0..4 {
+                    block_signs[k] = (!block_signs[k]) & 127;
+                }
+            }
+
+            // Pack grid indices
+            for k in 0..8 {
+                let mut u: u16 = 0;
+                for i in 0..4 {
+                    u |= (l[4 * k + i] as u16) << (3 * i);
+                }
+
+                let grid_index = grid_data.map[u as usize];
+                if grid_index < 0 {
+                    panic!("Grid point {} not found", u);
+                }
+                q3[8 * ib + k] = grid_index as u8;
+            }
+
+            // Pack signs and scale
+            let signs_u32 = block_signs[0] as u32
+                | (block_signs[1] as u32) << 7
+                | (block_signs[2] as u32) << 14
+                | (block_signs[3] as u32) << 21;
+
+            scales[ib] = scale;
+            max_scale = max_scale.max(scale);
+
+            // Store signs in q3 buffer
+            let scales_and_signs = unsafe {
+                &mut *(&mut q3[QK_K / 4..] as *mut [u8] as *mut [u32])
+            };
+            scales_and_signs[ib] = signs_u32;
+        }
+
+        // Pack final block
+        if max_scale == 0.0 {
+            blocks.push(BlockIQ3XXS { d: 0, qs: [0; 96] });
+            continue;
+        }
+
+        let d = max_scale / 31.0 * 1.0125; // Fudge factor from llama.cpp
+        let id = 1.0 / d;
+        let mut block =
+            BlockIQ3XXS { d: f16::from_f32(d).to_bits(), qs: [0; 96] };
+
+        // Pack scales
+        for ib in 0..QK_K / 32 {
+            let lval =
+                nearest_int(0.5 * (id * scales[ib] - 1.0)).clamp(0, 15) as u8;
+            let scales_and_signs = unsafe {
+                &mut *(&mut q3[QK_K / 4..] as *mut [u8] as *mut [u32])
+            };
+            scales_and_signs[ib] |= (lval as u32) << 28;
+        }
+
+        // Copy packed data
+        for i in 0..96 {
+            block.qs[i] = q3[i];
+        }
+
+        blocks.push(block);
+    }
+
+    blocks
+}
+
+/// Quantize FP32 to IQ3_S (matching llama.cpp exactly)
+/// Uses 512-element grid, 32-element sub-blocks
+/// Block layout: d(2) + qs(64) + qh(8) + signs(32) + scales(4) = 110 bytes
+pub fn quantize_iq3_s(
+    x: &[f32],
+    quant_weights: Option<&[f32]>,
+) -> Vec<BlockIQ3S> {
+    assert!(x.len() % QK_K == 0);
+    let nb = x.len() / QK_K;
+    let mut blocks = Vec::with_capacity(nb);
+
+    // Initialize grid data for IQ3_S (512-element grid)
+    let grid_data = IQ3GridData::new(512, &KGRID_256_IQ3);
+
+    const KMAX_Q_IQ3: i32 = 8;
+    const BLOCK_SIZE: usize = 32;
+
+    for ibl in 0..nb {
+        let xbl = &x[ibl * QK_K..(ibl + 1) * QK_K];
+
+        // Use provided weights or compute from x^2
+        let quant_weights_slice: Vec<f32> = if let Some(qw) = quant_weights {
+            qw[ibl * QK_K..(ibl + 1) * QK_K].to_vec()
+        } else {
+            xbl.iter().map(|v| v * v).collect()
+        };
+
+        let mut scales = [0.0f32; QK_K / BLOCK_SIZE];
+        let mut max_scale = 0.0f32;
+
+        // Initialize block
+        let mut block = BlockIQ3S {
+            d: f16::from_f32(0.0).to_bits(),
+            qs: [0; 64],
+            qh: [0; 8],
+            signs: [0; 32],
+            scales: [0; 4],
+        };
+
+        // Compute sigma2
+        let sumx2: f32 = xbl.iter().map(|v| v * v).sum();
+        let sigma2 = 2.0 * sumx2 / QK_K as f32;
+
+        // Process each sub-block of 32 values
+        for ib in 0..QK_K / BLOCK_SIZE {
+            let xb = &xbl[ib * BLOCK_SIZE..(ib + 1) * BLOCK_SIZE];
+            let qw =
+                &quant_weights_slice[ib * BLOCK_SIZE..(ib + 1) * BLOCK_SIZE];
+
+            // Compute quantization weights
+            let mut weight = [0.0f32; BLOCK_SIZE];
+            let mut waux = [0.0f32; BLOCK_SIZE];
+            for i in 0..BLOCK_SIZE {
+                weight[i] = qw[i] * (sigma2 + xb[i] * xb[i]).sqrt();
+                waux[i] = weight[i].sqrt();
+            }
+
+            // Extract signs and absolute values
+            let mut xval = [0.0f32; BLOCK_SIZE];
+            let mut block_signs = [0u8; BLOCK_SIZE / 8];
+
+            for k in 0..BLOCK_SIZE / 8 {
+                let mut s = 0u8;
+                for i in 0..8 {
+                    if xb[8 * k + i] >= 0.0 {
+                        xval[8 * k + i] = xb[8 * k + i];
+                    } else {
+                        xval[8 * k + i] = -xb[8 * k + i];
+                        s |= 1 << i;
+                    }
+                }
+                block_signs[k] = s;
+            }
+
+            let max_val = xval.iter().fold(0.0f32, |a, &b| a.max(b));
+            let mut l = [0i8; BLOCK_SIZE];
+
+            if max_val == 0.0 {
+                scales[ib] = 0.0;
+                continue;
+            }
+
+            // Search for optimal scale
+            let mut best = 0.0f32;
+            let mut scale = max_val / (2 * KMAX_Q_IQ3 - 1) as f32;
+            let mut is_on_grid = [true; BLOCK_SIZE / 4];
+
+            for is in -9..=9 {
+                let id =
+                    ((2 * KMAX_Q_IQ3 - 1) as f32 + is as f32 * 0.2) / max_val;
+                let this_scale = 1.0 / id;
+                let mut laux = [0i8; BLOCK_SIZE];
+                let mut is_on_grid_aux = [true; BLOCK_SIZE / 4];
+
+                for k in 0..BLOCK_SIZE / 4 {
+                    for i in 0..4 {
+                        let lval =
+                            nearest_int(0.5 * (id * xval[4 * k + i] - 1.0));
+                        laux[4 * k + i] = lval.clamp(0, KMAX_Q_IQ3 - 1) as i8;
+                    }
+
+                    let mut u: u16 = 0;
+                    for i in 0..4 {
+                        u |= (laux[4 * k + i] as u16) << (3 * i);
+                    }
+
+                    let grid_index = grid_data.map[u as usize];
+                    is_on_grid_aux[k] = grid_index >= 0;
+
+                    if grid_index < 0 {
+                        // Find best neighbor
+                        grid_data.find_best_neighbor(
+                            u,
+                            &xval[4 * k..],
+                            &waux[4 * k..],
+                            this_scale,
+                            &mut laux[4 * k..],
+                        );
+                    }
+                }
+
+                // Compute MSE
+                let mut sumqx = 0.0f32;
+                let mut sumq2 = 0.0f32;
+                for i in 0..BLOCK_SIZE {
+                    let w = weight[i];
+                    let q = 2.0 * laux[i] as f32 + 1.0;
+                    sumqx += w * xval[i] * q;
+                    sumq2 += w * q * q;
+                }
+
+                if sumq2 > 0.0 && sumqx * sumqx > best * sumq2 {
+                    scale = sumqx / sumq2;
+                    best = scale * sumqx;
+                    l.copy_from_slice(&laux);
+                    is_on_grid.copy_from_slice(&is_on_grid_aux);
+                }
+            }
+
+            // Refine off-grid points
+            let n_not_ongrid = is_on_grid.iter().filter(|&&x| !x).count();
+            if n_not_ongrid > 0 && scale > 0.0 {
+                let id = 1.0 / scale;
+                for k in 0..BLOCK_SIZE / 4 {
+                    if is_on_grid[k] {
+                        continue;
+                    }
+
+                    let mut u: u16 = 0;
+                    for i in 0..4 {
+                        let lval =
+                            nearest_int(0.5 * (id * xval[4 * k + i] - 1.0));
+                        let lval = lval.clamp(0, KMAX_Q_IQ3 - 1) as u16;
+                        u |= lval << (3 * i);
+                    }
+
+                    let grid_index = grid_data.map[u as usize];
+                    if grid_index < 0 {
+                        grid_data.find_best_neighbor(
+                            u,
+                            &xval[4 * k..],
+                            &waux[4 * k..],
+                            scale,
+                            &mut l[4 * k..],
+                        );
+                    } else {
+                        let pg =
+                            grid_data.grid[grid_index as usize].to_le_bytes();
+                        for i in 0..4 {
+                            l[4 * k + i] = ((pg[i] as i16 - 1) / 2) as i8;
+                        }
+                    }
+                }
+
+                // Recompute scale
+                let mut sumqx = 0.0f32;
+                let mut sumq2 = 0.0f32;
+                for i in 0..BLOCK_SIZE {
+                    let w = weight[i];
+                    let q = 2.0 * l[i] as f32 + 1.0;
+                    sumqx += w * xval[i] * q;
+                    sumq2 += w * q * q;
+                }
+                if sumq2 > 0.0 {
+                    scale = sumqx / sumq2;
+                }
+            }
+
+            if scale < 0.0 {
+                scale = -scale;
+                for k in 0..BLOCK_SIZE / 8 {
+                    block_signs[k] = !block_signs[k];
+                }
+            }
+
+            // Pack grid indices (low 8 bits in qs, high bit in qh)
+            for k in 0..BLOCK_SIZE / 4 {
+                let mut u: u16 = 0;
+                for i in 0..4 {
+                    u |= (l[4 * k + i] as u16) << (3 * i);
+                }
+
+                let grid_index = grid_data.map[u as usize];
+                if grid_index < 0 {
+                    panic!("Grid point {} not found", u);
+                }
+
+                let idx = ib * (BLOCK_SIZE / 4) + k;
+                block.qs[idx] = (grid_index & 255) as u8;
+                block.qh[idx / 8] |= ((grid_index >> 8) as u8) << (idx % 8);
+            }
+
+            // Pack signs
+            for k in 0..BLOCK_SIZE / 8 {
+                block.signs[ib * (BLOCK_SIZE / 8) + k] = block_signs[k];
+            }
+
+            scales[ib] = scale;
+            max_scale = max_scale.max(scale);
+        }
+
+        if max_scale == 0.0 {
+            blocks.push(block);
+            continue;
+        }
+
+        // Pack final block
+        let d = max_scale / 31.0 * 1.033; // Fudge factor from llama.cpp
+        block.d = f16::from_f32(d).to_bits();
+        let id = 1.0 / d;
+
+        // Pack scales (2 scales per byte, 4 bits each)
+        for ib in 0..QK_K / BLOCK_SIZE / 2 {
+            let l1 = nearest_int(0.5 * (id * scales[2 * ib] - 1.0)).clamp(0, 15)
+                as u8;
+            let l2 = nearest_int(0.5 * (id * scales[2 * ib + 1] - 1.0))
+                .clamp(0, 15) as u8;
+            block.scales[ib] = l1 | (l2 << 4);
+        }
+
+        blocks.push(block);
+    }
+
+    blocks
+}
+
+/// Quantize FP32 to IQ1_S (simplified implementation for GPU kernel verification)
+/// Uses llama.cpp-generated data for testing
+pub fn quantize_iq1_s(
+    _x: &[f32],
+    _quant_weights: Option<&[f32]>,
+) -> Vec<BlockIQ1S> {
+    // TODO: Implement full IQ1_S quantization algorithm
+    // For now, return empty block for testing
+    vec![BlockIQ1S { d: 0, qs: [0; 32], qh: [0; 8] }]
+}
+
+/// Quantize FP32 to IQ1_M (simplified implementation for GPU kernel verification)
+/// Uses llama.cpp-generated data for testing
+pub fn quantize_iq1_m(
+    _x: &[f32],
+    _quant_weights: Option<&[f32]>,
+) -> Vec<BlockIQ1M> {
+    // TODO: Implement full IQ1_M quantization algorithm
+    // For now, return empty block for testing
+    vec![BlockIQ1M { qs: [0; 32], qh: [0; 16], scales: [0; 8] }]
 }

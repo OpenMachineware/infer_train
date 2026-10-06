@@ -1,8 +1,8 @@
 use crate::quant::types::{
     BlockIQ1M, BlockIQ1S, BlockIQ2S, BlockIQ2XS, BlockIQ2XXS, BlockIQ3S,
-    BlockIQ3XXS, BlockIQ4NL, BlockIQ4XS, BlockMXFP4, BlockQ1_0, BlockQ2_0,
-    BlockQ2K, BlockQ3K, BlockQ4_0, BlockQ4_1, BlockQ4K, BlockQ5_0, BlockQ5_1,
-    BlockQ5K, BlockQ6K, BlockQ8_0, BlockTQ1_0, BlockTQ2_0,
+    BlockIQ3XXS, BlockIQ4NL, BlockIQ4XS, BlockMXFP4, BlockQ1_0, BlockQ2K,
+    BlockQ2_0, BlockQ3K, BlockQ4K, BlockQ4_0, BlockQ4_1, BlockQ5K, BlockQ5_0,
+    BlockQ5_1, BlockQ6K, BlockQ8_0, BlockTQ1_0, BlockTQ2_0,
 };
 use metal::{
     Buffer, CommandQueue, ComputePipelineState, Device, FunctionConstantValues,

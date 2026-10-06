@@ -3,7 +3,7 @@
 use half::f16;
 use infer_train::quant::types::*;
 use infer_train::quant::vec_dot::arm::*;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{rngs::StdRng, Rng, SeedableRng};
 
 unsafe extern "C" {
     fn llama_vec_dot_q4_0_q8_0(

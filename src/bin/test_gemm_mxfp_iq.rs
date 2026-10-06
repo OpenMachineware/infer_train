@@ -3,7 +3,7 @@
 use half::f16;
 use infer_train::quant::types::*;
 use metal::{Device, MTLSize};
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::ffi::c_void;
 use std::time::Instant;
 
@@ -22,7 +22,7 @@ fn gen_mxfp4(m: usize, k: usize, s: u64) -> Vec<u8> {
     for _ in 0..m * nb {
         // E8M0 scale byte (exponent)
         result.push(127 + (rng.r#gen::<u8>() % 16)); // exponent around 127
-        // 16 bytes of 4-bit indices
+                                                     // 16 bytes of 4-bit indices
         for _ in 0..16 {
             result.push(rng.r#gen::<u8>());
         }

@@ -52,8 +52,8 @@ fn main() {
     println!("  Block scales[0:8] = {:02x?}", &blocks[0].scales[0..8]);
 
     // 读取 Rust dump 并对比
-    let rust_dump =
-        fs::read_to_string("/tmp/iq2_s_rust_dump.txt").expect("无法读取 Rust dump");
+    let rust_dump = fs::read_to_string("/tmp/iq2_s_rust_dump.txt")
+        .expect("无法读取 Rust dump");
     println!("\n=== Rust dump ===");
     println!("{}", rust_dump);
 

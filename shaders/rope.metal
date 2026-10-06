@@ -260,4 +260,3 @@ kernel void rope_norm_f16(
         row_out[base_idx + 1] = half(x0 * sin_theta + x1 * cos_theta);
     }
 }
-
