@@ -107,8 +107,13 @@ impl OurSoftmaxMetalContext {
             if use_vec4 { &self.pipeline_vec4 } else { &self.pipeline };
         let max_threads = pipeline.max_total_threads_per_threadgroup() as usize;
         let threads_per_row = seq_len.min(max_threads).next_power_of_two();
-        let simd_groups = (threads_per_row + 31) / 32;
-        let shmem_size = simd_groups * 4;
+        // Only allocate shmem if we need cross-SIMD reduction
+        let shmem_size = if threads_per_row > 32 {
+            let simd_groups = (threads_per_row + 31) / 32;
+            simd_groups * 4
+        } else {
+            0
+        };
         let ne00 = seq_len as i32;
         let ne01 = n_heads as i32;
 

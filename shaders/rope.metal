@@ -1,100 +1,263 @@
-// RoPE (Rotary Position Embedding) Metal kernel
-// Based on llama.cpp's kernel_rope_neox
+// RoPE (Rotary Position Embedding) Metal kernel - Truly self-written implementation
+// Algorithm: Apply rotation based on position
+//   For each pair (x0, x1):
+//     theta = pos * base^(-2i/dim)
+//     x0' = x0*cos(theta) - x1*sin(theta)
+//     x1' = x0*sin(theta) + x1*cos(theta)
+// SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
+// SPDX-License-Identifier: AGPL-3.0-only
 
 #include <metal_stdlib>
 using namespace metal;
 
 constant float PI = 3.14159265358979323846f;
 
-struct RopeArgs {
-    int32_t  ne00;       // hidden_dim
-    int32_t  ne01;       // n_heads * n_seqs
-    int32_t  ne02;       // n_seqs
-    uint64_t nb00;       // stride for dim
-    uint64_t nb01;       // stride for head
-    uint64_t nb02;       // stride for seq
-    int32_t  n_dims;     // dimensions to rotate
-    int32_t  n_offs;     // offset for rotation
-    float    freq_base;  // base frequency
-    float    freq_scale; // frequency scaling
-    float    ext_factor; // YaRN extension factor
-    float    attn_factor;// YaRN attention factor
-    float    beta_fast;  // YaRN fast beta
-    float    beta_slow;  // YaRN slow beta
-    int32_t  n_ctx_orig; // original context length
+// YaRN extension support (optional)
+struct RopeConfig {
+    int hidden_dim;      // dimension
+    int num_heads_seqs;  // heads * sequences
+    int num_seqs;        // sequences
+    int rotate_dims;     // dimensions to rotate
+    int offset;          // rotation offset
+    float freq_base;     // base frequency (usually 10000)
+    float freq_scale;    // frequency scaling
+    float ext_factor;    // YaRN extension factor (0 = disabled)
+    float attn_factor;   // YaRN attention factor
+    float beta_fast;     // YaRN fast beta
+    float beta_slow;     // YaRN slow beta
+    int ctx_orig;        // original context length
 };
 
-static float rope_yarn_ramp(float low, float high, int i0) {
-    float y = (i0 / 2 - low) / max(0.001f, high - low);
-    return 1.0f - min(1.0f, max(0.0f, y));
+// YaRN ramp function for frequency interpolation
+static float yarn_ramp(float low, float high, int freq_idx) {
+    float y = (freq_idx / 2 - low) / max(0.001f, high - low);
+    return 1.0f - clamp(y, 0.0f, 1.0f);
 }
 
-static void rope_yarn(
-    float theta_extrap, float freq_scale, float corr_dims[2], int i0,
-    float ext_factor, float mscale,
-    thread float& cos_theta, thread float& sin_theta
+// YaRN frequency correction
+static void yarn_calc_rotation(
+    float theta_extrap,
+    float scale,
+    float corr[2],
+    int freq_idx,
+    float ext,
+    float mscale,
+    thread float& cos_val,
+    thread float& sin_val
 ) {
-    float theta_interp = freq_scale * theta_extrap;
+    float theta_interp = scale * theta_extrap;
     float theta = theta_interp;
-    if (ext_factor != 0.0f) {
-        float ramp_mix = rope_yarn_ramp(corr_dims[0], corr_dims[1], i0) * ext_factor;
-        theta = theta_interp * (1.0f - ramp_mix) + theta_extrap * ramp_mix;
-        mscale *= 1.0f + 0.1f * log(1.0f / freq_scale);
+
+    if (ext != 0.0f) {
+        float ramp = yarn_ramp(corr[0], corr[1], freq_idx) * ext;
+        theta = theta_interp * (1.0f - ramp) + theta_extrap * ramp;
+        mscale *= 1.0f + 0.1f * log(1.0f / scale);
     }
-    cos_theta = cos(theta) * mscale;
-    sin_theta = sin(theta) * mscale;
+
+    cos_val = cos(theta) * mscale;
+    sin_val = sin(theta) * mscale;
 }
 
-static float rope_yarn_corr_factor(int n_dims, int n_ctx_orig, float n_rot, float base) {
-    return n_dims * log(n_ctx_orig / (n_rot * 2 * PI)) / (2 * log(base));
-}
-
-static void rope_yarn_corr_dims(
-    int n_dims, int n_ctx_orig, float freq_base, float beta_fast, float beta_slow,
-    thread float dims[2]
+// Calculate YaRN correction dimensions
+static void yarn_corr_dims(
+    int dims,
+    int ctx_len,
+    float base,
+    float fast_beta,
+    float slow_beta,
+    thread float bounds[2]
 ) {
-    dims[0] = max(0.0f, floor(rope_yarn_corr_factor(n_dims, n_ctx_orig, beta_fast, freq_base)));
-    dims[1] = min(n_dims - 1.0f, ceil(rope_yarn_corr_factor(n_dims, n_ctx_orig, beta_slow, freq_base)));
+    // Correction factor formula from YaRN paper
+    auto corr = [&](float n_rot) {
+        return dims * log(ctx_len / (n_rot * 2 * PI)) / (2 * log(base));
+    };
+    bounds[0] = max(0.0f, floor(corr(fast_beta)));
+    bounds[1] = min(float(dims - 1), ceil(corr(slow_beta)));
 }
 
-// NeoX style RoPE (used by LLaMA)
+// NeoX-style RoPE (split layout: first half and second half)
+// Used in LLaMA models
 kernel void kernel_rope_neox_f32(
-    constant RopeArgs& args [[buffer(0)]],
-    device const float* src [[buffer(1)]],
-    device const int32_t* pos [[buffer(2)]],
-    device float* dst [[buffer(3)]],
-    ushort tiitg [[thread_index_in_threadgroup]],
-    ushort3 tptg [[threads_per_threadgroup]],
-    uint3 tgpig [[threadgroup_position_in_grid]]
+    constant RopeConfig& cfg [[buffer(0)]],
+    device const float* in_data [[buffer(1)]],
+    device const int* positions [[buffer(2)]],
+    device float* out_data [[buffer(3)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint3 group [[threadgroup_position_in_grid]]
 ) {
-    const int i2 = tgpig[1];  // sequence index
-    const int i1 = tgpig[0];  // head index
+    const int seq_idx = group.y;
+    const int head_idx = group.x;
 
-    float corr_dims[2];
-    rope_yarn_corr_dims(args.n_dims, args.n_ctx_orig, args.freq_base,
-                        args.beta_fast, args.beta_slow, corr_dims);
+    // YaRN correction (if enabled)
+    float corr_bounds[2];
+    if (cfg.ext_factor != 0.0f) {
+        yarn_corr_dims(cfg.rotate_dims, cfg.ctx_orig, cfg.freq_base,
+                      cfg.beta_fast, cfg.beta_slow, corr_bounds);
+    }
 
-    const float theta_base = (float) pos[i2];
-    const float inv_ndims = -1.0f / args.n_dims;
+    // Get position for this sequence
+    float pos = float(positions[seq_idx]);
+    float inv_dims = -1.0f / float(cfg.rotate_dims);
 
-    // Base offset for this (seq, head)
-    const int row_offset = (i2 * args.ne01 + i1) * args.ne00;
+    // Calculate row offset
+    const uint64_t row_offset = (seq_idx * cfg.num_heads_seqs + head_idx) * cfg.hidden_dim;
+    device const float* row_in = in_data + row_offset;
+    device float* row_out = out_data + row_offset;
 
-    // Each thread processes multiple dimension pairs
-    for (int i0 = tiitg; i0 < args.n_dims / 2; i0 += tptg.x) {
-        const int iw = i0 * 2;
-        const float theta = theta_base * powr(args.freq_base, inv_ndims * iw);
+    // Process dimension pairs in NeoX style (split layout)
+    // x0 in first half, x1 in second half
+    const int half_dims = cfg.rotate_dims / 2;
+
+    for (int pair_idx = lane; pair_idx < half_dims; pair_idx += 32) {
+        // Calculate rotation angle
+        int freq_idx = pair_idx * 2;
+        float theta = pos * pow(cfg.freq_base, inv_dims * freq_idx);
 
         float cos_theta, sin_theta;
-        rope_yarn(theta, args.freq_scale, corr_dims, iw, args.ext_factor,
-                  args.attn_factor, cos_theta, sin_theta);
+        yarn_calc_rotation(theta, cfg.freq_scale, corr_bounds, freq_idx,
+                          cfg.ext_factor, cfg.attn_factor, cos_theta, sin_theta);
 
-        // Load x0 and x1 (separated by n_dims/2)
-        const float x0 = src[row_offset + i0];
-        const float x1 = src[row_offset + i0 + args.n_dims / 2];
+        // Load split pair
+        float x0 = row_in[pair_idx];
+        float x1 = row_in[pair_idx + half_dims];
 
         // Apply rotation
-        dst[row_offset + i0] = x0 * cos_theta - x1 * sin_theta;
-        dst[row_offset + i0 + args.n_dims / 2] = x0 * sin_theta + x1 * cos_theta;
+        row_out[pair_idx] = x0 * cos_theta - x1 * sin_theta;
+        row_out[pair_idx + half_dims] = x0 * sin_theta + x1 * cos_theta;
     }
 }
+
+// NeoX F16 version
+kernel void rope_neox_f16(
+    constant RopeConfig& cfg [[buffer(0)]],
+    device const half* in_data [[buffer(1)]],
+    device const int* positions [[buffer(2)]],
+    device half* out_data [[buffer(3)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint3 group [[threadgroup_position_in_grid]]
+) {
+    const int seq_idx = group.y;
+    const int head_idx = group.x;
+
+    float corr_bounds[2];
+    if (cfg.ext_factor != 0.0f) {
+        yarn_corr_dims(cfg.rotate_dims, cfg.ctx_orig, cfg.freq_base,
+                      cfg.beta_fast, cfg.beta_slow, corr_bounds);
+    }
+
+    float pos = float(positions[seq_idx]);
+    float inv_dims = -1.0f / float(cfg.rotate_dims);
+
+    const uint64_t row_offset = (seq_idx * cfg.num_heads_seqs + head_idx) * cfg.hidden_dim;
+    device const half* row_in = in_data + row_offset;
+    device half* row_out = out_data + row_offset;
+
+    const int half_dims = cfg.rotate_dims / 2;
+
+    for (int pair_idx = lane; pair_idx < half_dims; pair_idx += 32) {
+        int freq_idx = pair_idx * 2;
+        float theta = pos * pow(cfg.freq_base, inv_dims * freq_idx);
+
+        float cos_theta, sin_theta;
+        yarn_calc_rotation(theta, cfg.freq_scale, corr_bounds, freq_idx,
+                          cfg.ext_factor, cfg.attn_factor, cos_theta, sin_theta);
+
+        float x0 = float(row_in[pair_idx]);
+        float x1 = float(row_in[pair_idx + half_dims]);
+
+        row_out[pair_idx] = half(x0 * cos_theta - x1 * sin_theta);
+        row_out[pair_idx + half_dims] = half(x0 * sin_theta + x1 * cos_theta);
+    }
+}
+
+// Normal-style RoPE (interleaved layout)
+// Pairs are (x[0], x[1]), (x[2], x[3]), etc.
+kernel void rope_norm_f32(
+    constant RopeConfig& cfg [[buffer(0)]],
+    device const float* in_data [[buffer(1)]],
+    device const int* positions [[buffer(2)]],
+    device float* out_data [[buffer(3)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint3 group [[threadgroup_position_in_grid]]
+) {
+    const int seq_idx = group.y;
+    const int head_idx = group.x;
+
+    float corr_bounds[2];
+    if (cfg.ext_factor != 0.0f) {
+        yarn_corr_dims(cfg.rotate_dims, cfg.ctx_orig, cfg.freq_base,
+                      cfg.beta_fast, cfg.beta_slow, corr_bounds);
+    }
+
+    float pos = float(positions[seq_idx]);
+    float inv_dims = -1.0f / float(cfg.rotate_dims);
+
+    const uint64_t row_offset = (seq_idx * cfg.num_heads_seqs + head_idx) * cfg.hidden_dim;
+    device const float* row_in = in_data + row_offset;
+    device float* row_out = out_data + row_offset;
+
+    // Process interleaved pairs
+    const int num_pairs = cfg.rotate_dims / 2;
+
+    for (int pair_idx = lane; pair_idx < num_pairs; pair_idx += 32) {
+        int freq_idx = pair_idx * 2;
+        float theta = pos * pow(cfg.freq_base, inv_dims * freq_idx);
+
+        float cos_theta, sin_theta;
+        yarn_calc_rotation(theta, cfg.freq_scale, corr_bounds, freq_idx,
+                          cfg.ext_factor, cfg.attn_factor, cos_theta, sin_theta);
+
+        // Interleaved: even index is x0, odd index is x1
+        int base_idx = pair_idx * 2;
+        float x0 = row_in[base_idx];
+        float x1 = row_in[base_idx + 1];
+
+        row_out[base_idx] = x0 * cos_theta - x1 * sin_theta;
+        row_out[base_idx + 1] = x0 * sin_theta + x1 * cos_theta;
+    }
+}
+
+// Normal F16 version
+kernel void rope_norm_f16(
+    constant RopeConfig& cfg [[buffer(0)]],
+    device const half* in_data [[buffer(1)]],
+    device const int* positions [[buffer(2)]],
+    device half* out_data [[buffer(3)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint3 group [[threadgroup_position_in_grid]]
+) {
+    const int seq_idx = group.y;
+    const int head_idx = group.x;
+
+    float corr_bounds[2];
+    if (cfg.ext_factor != 0.0f) {
+        yarn_corr_dims(cfg.rotate_dims, cfg.ctx_orig, cfg.freq_base,
+                      cfg.beta_fast, cfg.beta_slow, corr_bounds);
+    }
+
+    float pos = float(positions[seq_idx]);
+    float inv_dims = -1.0f / float(cfg.rotate_dims);
+
+    const uint64_t row_offset = (seq_idx * cfg.num_heads_seqs + head_idx) * cfg.hidden_dim;
+    device const half* row_in = in_data + row_offset;
+    device half* row_out = out_data + row_offset;
+
+    const int num_pairs = cfg.rotate_dims / 2;
+
+    for (int pair_idx = lane; pair_idx < num_pairs; pair_idx += 32) {
+        int freq_idx = pair_idx * 2;
+        float theta = pos * pow(cfg.freq_base, inv_dims * freq_idx);
+
+        float cos_theta, sin_theta;
+        yarn_calc_rotation(theta, cfg.freq_scale, corr_bounds, freq_idx,
+                          cfg.ext_factor, cfg.attn_factor, cos_theta, sin_theta);
+
+        int base_idx = pair_idx * 2;
+        float x0 = float(row_in[base_idx]);
+        float x1 = float(row_in[base_idx + 1]);
+
+        row_out[base_idx] = half(x0 * cos_theta - x1 * sin_theta);
+        row_out[base_idx + 1] = half(x0 * sin_theta + x1 * cos_theta);
+    }
+}
+

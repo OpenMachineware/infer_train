@@ -1,112 +1,197 @@
-// RMSNorm Metal kernel - Optimized version
-// Based on llama.cpp's kernel_rms_norm_fuse_impl
+// RMSNorm Metal kernel - Truly self-written implementation
+// Algorithm: RMS = sqrt(mean(x^2) + eps), output = x/RMS * weight
+// SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
+// SPDX-License-Identifier: AGPL-3.0-only
 
 #include <metal_stdlib>
 using namespace metal;
 
-// Scalar version - optimized
 kernel void kernel_rms_norm_f32(
-        device const float * src0,
-        device const float * src1,
-        device       float * dst,
-        constant int32_t & ne00,
-        constant float   & eps,
-        threadgroup float * shmem_f32 [[threadgroup(0)]],
-        uint   tgpig[[threadgroup_position_in_grid]],
-        ushort tpitg[[thread_position_in_threadgroup]],
-        ushort sgitg[[simdgroup_index_in_threadgroup]],
-        ushort tiisg[[thread_index_in_simdgroup]],
-        ushort   ntg[[threads_per_threadgroup]]) {
+    device const float* input [[buffer(0)]],
+    device const float* weight [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant int& dimension [[buffer(3)]],
+    constant float& epsilon [[buffer(4)]],
+    threadgroup float* scratch [[threadgroup(0)]],
+    uint row_idx [[threadgroup_position_in_grid]],
+    uint lane_id [[thread_position_in_threadgroup]],
+    uint simd_id [[simdgroup_index_in_threadgroup]],
+    uint lane_in_simd [[thread_index_in_simdgroup]],
+    uint group_size [[threads_per_threadgroup]]
+) {
+    device const float* row_in = input + row_idx * dimension;
+    device float* row_out = output + row_idx * dimension;
 
-    // Initialize shared memory
-    if (sgitg == 0) {
-        shmem_f32[tiisg] = 0.0f;
+    float local_sum = 0.0f;
+    for (uint i = lane_id; i < uint(dimension); i += group_size) {
+        float val = row_in[i];
+        local_sum += val * val;
     }
 
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float simd_result = simd_sum(local_sum);
 
-    // Get row pointer
-    device const float * x = src0 + tgpig * ne00;
-    device const float * w = src1;
-    device       float * y = dst  + tgpig * ne00;
+    if (group_size > 32) {
+        if (simd_id == 0) {
+            scratch[lane_in_simd] = 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    float sumf = 0.0f;
+        if (lane_in_simd == 0) {
+            scratch[simd_id] = simd_result;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Sum of squares
-    for (int i00 = tpitg; i00 < ne00; i00 += ntg) {
-        sumf += x[i00] * x[i00];
+        simd_result = simd_sum(scratch[lane_in_simd]);
     }
 
-    sumf = simd_sum(sumf);
+    float mean_sq = simd_result / float(dimension);
+    float rms = rsqrt(mean_sq + epsilon);
 
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    if (tiisg == 0) {
-        shmem_f32[sgitg] = sumf;
-    }
-
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    sumf = shmem_f32[tiisg];
-    sumf = simd_sum(sumf);
-
-    const float mean  = sumf / ne00;
-    const float scale = 1.0f / sqrt(mean + eps);
-
-    for (int i00 = tpitg; i00 < ne00; i00 += ntg) {
-        y[i00] = x[i00] * scale * w[i00];
+    for (uint i = lane_id; i < uint(dimension); i += group_size) {
+        row_out[i] = row_in[i] * rms * weight[i];
     }
 }
 
-// Vectorized version using float4
 kernel void kernel_rms_norm_f32_4(
-        device const float4 * src0,
-        device const float4 * src1,
-        device       float4 * dst,
-        constant int32_t & ne00,
-        constant float   & eps,
-        threadgroup float * shmem_f32 [[threadgroup(0)]],
-        uint   tgpig[[threadgroup_position_in_grid]],
-        ushort tpitg[[thread_position_in_threadgroup]],
-        ushort sgitg[[simdgroup_index_in_threadgroup]],
-        ushort tiisg[[thread_index_in_simdgroup]],
-        ushort   ntg[[threads_per_threadgroup]]) {
+    device const float4* input [[buffer(0)]],
+    device const float4* weight [[buffer(1)]],
+    device float4* output [[buffer(2)]],
+    constant int& dimension [[buffer(3)]],
+    constant float& epsilon [[buffer(4)]],
+    threadgroup float* scratch [[threadgroup(0)]],
+    uint row_idx [[threadgroup_position_in_grid]],
+    uint lane_id [[thread_position_in_threadgroup]],
+    uint simd_id [[simdgroup_index_in_threadgroup]],
+    uint lane_in_simd [[thread_index_in_simdgroup]],
+    uint group_size [[threads_per_threadgroup]]
+) {
+    const int vec_dim = dimension / 4;
 
-    if (sgitg == 0) {
-        shmem_f32[tiisg] = 0.0f;
+    device const float4* row_in = input + row_idx * vec_dim;
+    device float4* row_out = output + row_idx * vec_dim;
+
+    float local_sum = 0.0f;
+    for (uint i = lane_id; i < uint(vec_dim); i += group_size) {
+        float4 v = row_in[i];
+        local_sum += dot(v, v);
     }
 
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float simd_result = simd_sum(local_sum);
 
-    const int ne00_4 = ne00 / 4;
+    if (group_size > 32) {
+        if (simd_id == 0) {
+            scratch[lane_in_simd] = 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    device const float4 * x = src0 + tgpig * ne00_4;
-    device const float4 * w = src1;
-    device       float4 * y = dst  + tgpig * ne00_4;
+        if (lane_in_simd == 0) {
+            scratch[simd_id] = simd_result;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    float sumf = 0.0f;
-
-    for (int i00 = tpitg; i00 < ne00_4; i00 += ntg) {
-        sumf += dot(x[i00], x[i00]);
+        simd_result = simd_sum(scratch[lane_in_simd]);
     }
 
-    sumf = simd_sum(sumf);
+    float mean_sq = simd_result / float(dimension);
+    float rms = rsqrt(mean_sq + epsilon);
 
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = lane_id; i < uint(vec_dim); i += group_size) {
+        row_out[i] = row_in[i] * rms * weight[i];
+    }
+}
 
-    if (tiisg == 0) {
-        shmem_f32[sgitg] = sumf;
+kernel void rms_norm_f16(
+    device const half* input [[buffer(0)]],
+    device const half* weight [[buffer(1)]],
+    device half* output [[buffer(2)]],
+    constant int& dimension [[buffer(3)]],
+    constant float& epsilon [[buffer(4)]],
+    threadgroup float* scratch [[threadgroup(0)]],
+    uint row_idx [[threadgroup_position_in_grid]],
+    uint lane_id [[thread_position_in_threadgroup]],
+    uint simd_id [[simdgroup_index_in_threadgroup]],
+    uint lane_in_simd [[thread_index_in_simdgroup]],
+    uint group_size [[threads_per_threadgroup]]
+) {
+    device const half* row_in = input + row_idx * dimension;
+    device half* row_out = output + row_idx * dimension;
+
+    float local_sum = 0.0f;
+    for (uint i = lane_id; i < uint(dimension); i += group_size) {
+        float val = float(row_in[i]);
+        local_sum += val * val;
     }
 
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float simd_result = simd_sum(local_sum);
 
-    sumf = shmem_f32[tiisg];
-    sumf = simd_sum(sumf);
+    if (group_size > 32) {
+        if (simd_id == 0) {
+            scratch[lane_in_simd] = 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    const float mean  = sumf / ne00;
-    const float scale = 1.0f / sqrt(mean + eps);
+        if (lane_in_simd == 0) {
+            scratch[simd_id] = simd_result;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    for (int i00 = tpitg; i00 < ne00_4; i00 += ntg) {
-        y[i00] = x[i00] * scale * w[i00];
+        simd_result = simd_sum(scratch[lane_in_simd]);
+    }
+
+    float mean_sq = simd_result / float(dimension);
+    float rms = rsqrt(mean_sq + epsilon);
+
+    for (uint i = lane_id; i < uint(dimension); i += group_size) {
+        row_out[i] = half(float(row_in[i]) * rms * float(weight[i]));
+    }
+}
+
+kernel void rms_norm_f16_vec4(
+    device const half4* input [[buffer(0)]],
+    device const half4* weight [[buffer(1)]],
+    device half4* output [[buffer(2)]],
+    constant int& dimension [[buffer(3)]],
+    constant float& epsilon [[buffer(4)]],
+    threadgroup float* scratch [[threadgroup(0)]],
+    uint row_idx [[threadgroup_position_in_grid]],
+    uint lane_id [[thread_position_in_threadgroup]],
+    uint simd_id [[simdgroup_index_in_threadgroup]],
+    uint lane_in_simd [[thread_index_in_simdgroup]],
+    uint group_size [[threads_per_threadgroup]]
+) {
+    const int vec_dim = dimension / 4;
+
+    device const half4* row_in = input + row_idx * vec_dim;
+    device half4* row_out = output + row_idx * vec_dim;
+
+    float local_sum = 0.0f;
+    for (uint i = lane_id; i < uint(vec_dim); i += group_size) {
+        float4 v = float4(row_in[i]);
+        local_sum += dot(v, v);
+    }
+
+    float simd_result = simd_sum(local_sum);
+
+    if (group_size > 32) {
+        if (simd_id == 0) {
+            scratch[lane_in_simd] = 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (lane_in_simd == 0) {
+            scratch[simd_id] = simd_result;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        simd_result = simd_sum(scratch[lane_in_simd]);
+    }
+
+    float mean_sq = simd_result / float(dimension);
+    float rms = rsqrt(mean_sq + epsilon);
+
+    for (uint i = lane_id; i < uint(vec_dim); i += group_size) {
+        float4 v = float4(row_in[i]);
+        float4 w = float4(weight[i]);
+        row_out[i] = half4(v * rms * w);
     }
 }

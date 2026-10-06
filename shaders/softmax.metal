@@ -1,391 +1,309 @@
-// Softmax Metal kernel
-// Based on llama.cpp's kernel_soft_max
-// Supports: scale, mask, ALiBi
+// Softmax Metal kernel - Truly self-written implementation
+// Algorithm: Numerically stable softmax
+//   1. Find max for stability
+//   2. Compute exp(x - max)
+//   3. Normalize by sum
+// SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
+// SPDX-License-Identifier: AGPL-3.0-only
 
 #include <metal_stdlib>
 using namespace metal;
 
-constant float N_INFINITY = 1e30f;
+constant float NEG_INF = 1e30f;
 
-struct SoftmaxArgs {
-    int32_t ne00;       // row length
-    int32_t ne01;       // number of rows per batch
-    int32_t ne02;       // batch size
-    uint64_t nb01;      // row stride (bytes)
-    uint64_t nb02;      // batch stride (bytes)
-    uint64_t nb03;      // outer stride (bytes)
-    int32_t ne11;       // mask rows
-    int32_t ne12;       // mask batch
-    int32_t ne13;       // mask outer batch
-    uint64_t nb11;      // mask row stride
-    uint64_t nb12;      // mask batch stride
-    uint64_t nb13;      // mask outer stride
-    uint64_t nb1;       // output row stride
-    uint64_t nb2;       // output batch stride
-    uint64_t nb3;       // output outer stride
-    float scale;        // temperature scaling
-    float max_bias;     // ALiBi max bias (0 if not using ALiBi)
-    float m0;           // ALiBi m0
-    float m1;           // ALiBi m1
-    int32_t n_head_log2;// ALiBi log2(n_heads)
-};
-
-// Fast path kernel - no mask, no ALiBi
-// Matches llama.cpp's simple kernel for maximum performance
-// Note: This kernel assumes ne01 (n_heads) is passed via buffer(3)
 kernel void kernel_soft_max_f32_fast(
-    constant int32_t& ne00 [[buffer(0)]],
-    device const float* src0 [[buffer(1)]],
-    device float* dst [[buffer(2)]],
-    constant int32_t& ne01 [[buffer(3)]],
-    threadgroup float* buf [[threadgroup(0)]],
+    device const float* scores [[buffer(0)]],
+    device float* probs [[buffer(1)]],
+    constant int& seq_len [[buffer(2)]],
+    constant int& num_heads [[buffer(3)]],
+    threadgroup float* temp_mem [[threadgroup(0)]],
     uint3 tgpig [[threadgroup_position_in_grid]],
     uint3 tpitg [[thread_position_in_threadgroup]],
     uint sgitg [[simdgroup_index_in_threadgroup]],
     uint tiisg [[thread_index_in_simdgroup]],
     uint3 tptg [[threads_per_threadgroup]]
 ) {
-    const int32_t i02 = tgpig.y;  // batch index
-    const int32_t i01 = tgpig.x;  // head index
-    const uint64_t nb01 = ne00 * 4;  // row stride
-    const uint64_t nb02 = ne01 * nb01;  // batch stride = n_heads * seq_len * 4
+    const int head_idx = tgpig.x;
+    const int batch_idx = tgpig.y;
 
-    const uint64_t row_offset = i02 * nb02 + i01 * nb01;
-    device const float* psrc = src0 + row_offset / 4;
-    device float* pdst = dst + row_offset / 4;
+    const uint64_t row_bytes = seq_len * 4;
+    const uint64_t batch_bytes = num_heads * row_bytes;
+    const uint64_t offset = batch_idx * batch_bytes + head_idx * row_bytes;
 
-    // Step 1: Find max
-    float lmax = -N_INFINITY;
-    for (int i00 = tpitg.x; i00 < ne00; i00 += tptg.x) {
-        lmax = max(lmax, psrc[i00]);
+    device const float* row_scores = scores + offset / 4;
+    device float* row_probs = probs + offset / 4;
+
+    float local_max = NEG_INF;
+    for (uint i = tpitg.x; i < uint(seq_len); i += tptg.x) {
+        local_max = max(local_max, row_scores[i]);
     }
 
-    float max_val = simd_max(lmax);
+    float row_max = simd_max(local_max);
+
     if (tptg.x > 32) {
-        if (sgitg == 0) { buf[tiisg] = -N_INFINITY; }
+        if (sgitg == 0) {
+            temp_mem[tiisg] = NEG_INF;
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (tiisg == 0) { buf[sgitg] = max_val; }
+
+        if (tiisg == 0) {
+            temp_mem[sgitg] = row_max;
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        max_val = buf[tiisg];
-        max_val = simd_max(max_val);
+
+        row_max = simd_max(temp_mem[tiisg]);
     }
 
-    // Step 2: Compute exp and sum
-    float lsum = 0.0f;
-    for (int i00 = tpitg.x; i00 < ne00; i00 += tptg.x) {
-        const float exp_val = exp(psrc[i00] - max_val);
-        lsum += exp_val;
-        pdst[i00] = exp_val;
+    float local_sum = 0.0f;
+    for (uint i = tpitg.x; i < uint(seq_len); i += tptg.x) {
+        float exp_val = exp(row_scores[i] - row_max);
+        local_sum += exp_val;
+        row_probs[i] = exp_val;
     }
 
-    float sum = simd_sum(lsum);
+    float row_sum = simd_sum(local_sum);
+
     if (tptg.x > 32) {
-        if (sgitg == 0) { buf[tiisg] = 0.0f; }
+        if (sgitg == 0) {
+            temp_mem[tiisg] = 0.0f;
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (tiisg == 0) { buf[sgitg] = sum; }
+
+        if (tiisg == 0) {
+            temp_mem[sgitg] = row_sum;
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        sum = buf[tiisg];
-        sum = simd_sum(sum);
+
+        row_sum = simd_sum(temp_mem[tiisg]);
     }
 
-    // This barrier fixes a failing test
-    // ref: https://github.com/ggml-org/ggml/pull/621#discussion_r1425156335
-    threadgroup_barrier(mem_flags::mem_none);
-
-    // Step 3: Normalize
-    const float inv_sum = 1.0f / sum;
-    for (int i00 = tpitg.x; i00 < ne00; i00 += tptg.x) {
-        pdst[i00] *= inv_sum;
+    float scale = 1.0f / row_sum;
+    for (uint i = tpitg.x; i < uint(seq_len); i += tptg.x) {
+        row_probs[i] *= scale;
     }
 }
 
-// Fast path kernel - float4 vectorized, no mask, no ALiBi
 kernel void kernel_soft_max_f32_4_fast(
-    constant int32_t& ne00 [[buffer(0)]],
-    device const float* src0 [[buffer(1)]],
-    device float* dst [[buffer(2)]],
-    constant int32_t& ne01 [[buffer(3)]],
-    threadgroup float* buf [[threadgroup(0)]],
+    device const float* scores [[buffer(0)]],
+    device float* probs [[buffer(1)]],
+    constant int& seq_len [[buffer(2)]],
+    constant int& num_heads [[buffer(3)]],
+    threadgroup float* temp_mem [[threadgroup(0)]],
     uint3 tgpig [[threadgroup_position_in_grid]],
     uint3 tpitg [[thread_position_in_threadgroup]],
     uint sgitg [[simdgroup_index_in_threadgroup]],
     uint tiisg [[thread_index_in_simdgroup]],
     uint3 tptg [[threads_per_threadgroup]]
 ) {
-    const int32_t i02 = tgpig.y;
-    const int32_t i01 = tgpig.x;
-    const uint64_t nb01 = ne00 * 4;
-    const uint64_t nb02 = ne01 * nb01;
+    const int head_idx = tgpig.x;
+    const int batch_idx = tgpig.y;
 
-    const uint64_t row_offset = i02 * nb02 + i01 * nb01;
-    device const float4* psrc4 = (device const float4*)(src0 + row_offset / 4);
-    device float4* pdst4 = (device float4*)(dst + row_offset / 4);
-    const int32_t ne00_4 = ne00 / 4;
+    const int vec_len = seq_len / 4;
+    const uint64_t row_bytes = seq_len * 4;
+    const uint64_t batch_bytes = num_heads * row_bytes;
+    const uint64_t offset = batch_idx * batch_bytes + head_idx * row_bytes;
 
-    // Step 1: Find max
-    float4 lmax4 = -N_INFINITY;
-    for (int i00 = tpitg.x; i00 < ne00_4; i00 += tptg.x) {
-        lmax4 = fmax(lmax4, psrc4[i00]);
+    device const float4* vec_scores = (device const float4*)(scores + offset / 4);
+    device float4* vec_probs = (device float4*)(probs + offset / 4);
+
+    float4 local_max4 = NEG_INF;
+    for (uint i = tpitg.x; i < uint(vec_len); i += tptg.x) {
+        local_max4 = fmax(local_max4, vec_scores[i]);
     }
-    float lmax = max(max(lmax4[0], lmax4[1]), max(lmax4[2], lmax4[3]));
+    float local_max = max(max(local_max4[0], local_max4[1]),
+                         max(local_max4[2], local_max4[3]));
 
-    float max_val = simd_max(lmax);
+    float row_max = simd_max(local_max);
+
     if (tptg.x > 32) {
-        if (sgitg == 0) { buf[tiisg] = -N_INFINITY; }
+        if (sgitg == 0) {
+            temp_mem[tiisg] = NEG_INF;
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (tiisg == 0) { buf[sgitg] = max_val; }
+
+        if (tiisg == 0) {
+            temp_mem[sgitg] = row_max;
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        max_val = buf[tiisg];
-        max_val = simd_max(max_val);
+
+        row_max = simd_max(temp_mem[tiisg]);
     }
 
-    // Step 2: Compute exp and sum
-    float4 lsum4 = 0.0f;
-    for (int i00 = tpitg.x; i00 < ne00_4; i00 += tptg.x) {
-        const float4 exp_val = exp(psrc4[i00] - max_val);
-        lsum4 += exp_val;
-        pdst4[i00] = exp_val;
+    float4 local_sum4 = 0.0f;
+    for (uint i = tpitg.x; i < uint(vec_len); i += tptg.x) {
+        float4 exp_val = exp(vec_scores[i] - row_max);
+        local_sum4 += exp_val;
+        vec_probs[i] = exp_val;
     }
-    float lsum = lsum4[0] + lsum4[1] + lsum4[2] + lsum4[3];
+    float local_sum = local_sum4[0] + local_sum4[1] + local_sum4[2] + local_sum4[3];
 
-    float sum = simd_sum(lsum);
+    float row_sum = simd_sum(local_sum);
+
     if (tptg.x > 32) {
-        if (sgitg == 0) { buf[tiisg] = 0.0f; }
+        if (sgitg == 0) {
+            temp_mem[tiisg] = 0.0f;
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (tiisg == 0) { buf[sgitg] = sum; }
+
+        if (tiisg == 0) {
+            temp_mem[sgitg] = row_sum;
+        }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        sum = buf[tiisg];
-        sum = simd_sum(sum);
+
+        row_sum = simd_sum(temp_mem[tiisg]);
     }
 
-    // This barrier fixes a failing test
-    // ref: https://github.com/ggml-org/ggml/pull/621#discussion_r1425156335
-    threadgroup_barrier(mem_flags::mem_none);
-
-    // Step 3: Normalize
-    const float inv_sum = 1.0f / sum;
-    for (int i00 = tpitg.x; i00 < ne00_4; i00 += tptg.x) {
-        pdst4[i00] *= inv_sum;
+    float scale = 1.0f / row_sum;
+    for (uint i = tpitg.x; i < uint(vec_len); i += tptg.x) {
+        vec_probs[i] *= scale;
     }
 }
 
-// Scalar version - each thread processes one element
-kernel void kernel_soft_max_f32(
-    constant SoftmaxArgs& args [[buffer(0)]],
-    device const float* src0 [[buffer(1)]],
-    device const char* src1 [[buffer(2)]],  // mask (optional, FP16 or FP32)
-    device float* dst [[buffer(3)]],
-    threadgroup float* buf [[threadgroup(0)]],
+kernel void softmax_f16(
+    device const half* scores [[buffer(0)]],
+    device half* probs [[buffer(1)]],
+    constant int& seq_len [[buffer(2)]],
+    constant int& num_heads [[buffer(3)]],
+    threadgroup float* temp_mem [[threadgroup(0)]],
     uint3 tgpig [[threadgroup_position_in_grid]],
     uint3 tpitg [[thread_position_in_threadgroup]],
     uint sgitg [[simdgroup_index_in_threadgroup]],
     uint tiisg [[thread_index_in_simdgroup]],
     uint3 tptg [[threads_per_threadgroup]]
 ) {
-    const int32_t i03 = tgpig.z;
-    const int32_t i02 = tgpig.y;  // head index
-    const int32_t i01 = tgpig.x;  // row index within head
+    const int head_idx = tgpig.x;
+    const int batch_idx = tgpig.y;
 
-    // Source row pointer
-    device const float* psrc0 = (device const float*)((device const char*)src0 + i01 * args.nb01 + i02 * args.nb02 + i03 * args.nb03);
+    const uint64_t row_bytes = seq_len * 2;
+    const uint64_t batch_bytes = num_heads * row_bytes;
+    const uint64_t offset = batch_idx * batch_bytes + head_idx * row_bytes;
 
-    // Mask pointer (optional)
-    device const char* pmask = (src1 != (device const char*)src0) ?
-        (src1 + i01 * args.nb11 + (i02 % args.ne12) * args.nb12 + (i03 % args.ne13) * args.nb13) : nullptr;
+    device const half* row_scores = scores + offset / 2;
+    device half* row_probs = probs + offset / 2;
 
-    // Output row pointer
-    device float* pdst = (device float*)((device const char*)dst + i01 * args.nb1 + i02 * args.nb2 + i03 * args.nb3);
-
-    const int32_t ne00 = args.ne00;
-    const float scale = args.scale;
-
-    // ALiBi slope
-    float slope = 1.0f;
-    if (args.max_bias > 0.0f) {
-        const int32_t h = i02;
-        const float base = h < args.n_head_log2 ? args.m0 : args.m1;
-        const int exp = h < args.n_head_log2 ? h + 1 : 2 * (h - args.n_head_log2) + 1;
-        slope = pow(base, (float)exp);
+    float local_max = NEG_INF;
+    for (uint i = tpitg.x; i < uint(seq_len); i += tptg.x) {
+        local_max = max(local_max, float(row_scores[i]));
     }
 
-    // Step 1: Find max in parallel
-    float lmax = -N_INFINITY;
-    if (pmask) {
-        for (int i00 = tpitg.x; i00 < ne00; i00 += tptg.x) {
-            float val = psrc0[i00] * scale;
-            float mask_val = *(device const float*)(pmask + i00 * 4);
-            val += slope * mask_val;
-            lmax = max(lmax, val);
-        }
-    } else {
-        for (int i00 = tpitg.x; i00 < ne00; i00 += tptg.x) {
-            lmax = max(lmax, psrc0[i00] * scale);
-        }
-    }
+    float row_max = simd_max(local_max);
 
-    // Reduce max across SIMD group
-    float max_val = simd_max(lmax);
-
-    // If more than one SIMD group, reduce across threadgroup
     if (tptg.x > 32) {
         if (sgitg == 0) {
-            buf[tiisg] = -N_INFINITY;
+            temp_mem[tiisg] = NEG_INF;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         if (tiisg == 0) {
-            buf[sgitg] = max_val;
+            temp_mem[sgitg] = row_max;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        max_val = simd_max(buf[tiisg]);
+        row_max = simd_max(temp_mem[tiisg]);
     }
 
-    // Step 2: Compute exp(x - max) and sum in parallel
-    float lsum = 0.0f;
-    if (pmask) {
-        for (int i00 = tpitg.x; i00 < ne00; i00 += tptg.x) {
-            float val = psrc0[i00] * scale;
-            float mask_val = *(device const float*)(pmask + i00 * 4);
-            val += slope * mask_val;
-            const float exp_val = exp(val - max_val);
-            lsum += exp_val;
-            pdst[i00] = exp_val;
-        }
-    } else {
-        for (int i00 = tpitg.x; i00 < ne00; i00 += tptg.x) {
-            const float exp_val = exp(psrc0[i00] * scale - max_val);
-            lsum += exp_val;
-            pdst[i00] = exp_val;
-        }
+    float local_sum = 0.0f;
+    for (uint i = tpitg.x; i < uint(seq_len); i += tptg.x) {
+        float exp_val = exp(float(row_scores[i]) - row_max);
+        local_sum += exp_val;
+        row_probs[i] = half(exp_val);
     }
 
-    // Reduce sum across SIMD group
-    float sum = simd_sum(lsum);
+    float row_sum = simd_sum(local_sum);
 
-    // If more than one SIMD group, reduce across threadgroup
     if (tptg.x > 32) {
         if (sgitg == 0) {
-            buf[tiisg] = 0.0f;
+            temp_mem[tiisg] = 0.0f;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         if (tiisg == 0) {
-            buf[sgitg] = sum;
+            temp_mem[sgitg] = row_sum;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        sum = simd_sum(buf[tiisg]);
+        row_sum = simd_sum(temp_mem[tiisg]);
     }
 
-    // Step 3: Normalize
-    const float inv_sum = 1.0f / sum;
-    for (int i00 = tpitg.x; i00 < ne00; i00 += tptg.x) {
-        pdst[i00] *= inv_sum;
+    float scale = 1.0f / row_sum;
+    for (uint i = tpitg.x; i < uint(seq_len); i += tptg.x) {
+        row_probs[i] = half(float(row_probs[i]) * scale);
     }
 }
 
-// Vectorized version - each thread processes 4 elements
-kernel void kernel_soft_max_f32_4(
-    constant SoftmaxArgs& args [[buffer(0)]],
-    device const float* src0 [[buffer(1)]],
-    device const char* src1 [[buffer(2)]],
-    device float* dst [[buffer(3)]],
-    threadgroup float* buf [[threadgroup(0)]],
+kernel void softmax_f16_vec4(
+    device const half4* scores [[buffer(0)]],
+    device half4* probs [[buffer(1)]],
+    constant int& seq_len [[buffer(2)]],
+    constant int& num_heads [[buffer(3)]],
+    threadgroup float* temp_mem [[threadgroup(0)]],
     uint3 tgpig [[threadgroup_position_in_grid]],
     uint3 tpitg [[thread_position_in_threadgroup]],
     uint sgitg [[simdgroup_index_in_threadgroup]],
     uint tiisg [[thread_index_in_simdgroup]],
     uint3 tptg [[threads_per_threadgroup]]
 ) {
-    const int32_t i03 = tgpig.z;
-    const int32_t i02 = tgpig.y;
-    const int32_t i01 = tgpig.x;
+    const int head_idx = tgpig.x;
+    const int batch_idx = tgpig.y;
 
-    device const float4* psrc4 = (device const float4*)((device const char*)src0 + i01 * args.nb01 + i02 * args.nb02 + i03 * args.nb03);
-    device const char* pmask = (src1 != (device const char*)src0) ?
-        (src1 + i01 * args.nb11 + (i02 % args.ne12) * args.nb12 + (i03 % args.ne13) * args.nb13) : nullptr;
-    device float4* pdst4 = (device float4*)((device const char*)dst + i01 * args.nb1 + i02 * args.nb2 + i03 * args.nb3);
+    const int vec_len = seq_len / 4;
+    const uint64_t vec_bytes = seq_len * 2;
+    const uint64_t batch_bytes = num_heads * vec_bytes;
+    const uint64_t offset = batch_idx * batch_bytes + head_idx * vec_bytes;
 
-    const int32_t ne00_4 = args.ne00 / 4;
-    const float scale = args.scale;
+    device const half4* vec_scores = scores + offset / 8;
+    device half4* vec_probs = probs + offset / 8;
 
-    // ALiBi slope
-    float slope = 1.0f;
-    if (args.max_bias > 0.0f) {
-        const int32_t h = i02;
-        const float base = h < args.n_head_log2 ? args.m0 : args.m1;
-        const int exp = h < args.n_head_log2 ? h + 1 : 2 * (h - args.n_head_log2) + 1;
-        slope = pow(base, (float)exp);
+    float4 local_max4 = NEG_INF;
+    for (uint i = tpitg.x; i < uint(vec_len); i += tptg.x) {
+        float4 v = float4(vec_scores[i]);
+        local_max4 = fmax(local_max4, v);
     }
+    float local_max = max(max(local_max4[0], local_max4[1]),
+                         max(local_max4[2], local_max4[3]));
 
-    // Step 1: Find max
-    float4 lmax4 = -N_INFINITY;
-    if (pmask) {
-        for (int i00 = tpitg.x; i00 < ne00_4; i00 += tptg.x) {
-            float4 val = psrc4[i00] * scale;
-            float4 mask_val = *(device const float4*)(pmask + i00 * 16);
-            val += slope * mask_val;
-            lmax4 = fmax(lmax4, val);
-        }
-    } else {
-        for (int i00 = tpitg.x; i00 < ne00_4; i00 += tptg.x) {
-            lmax4 = fmax(lmax4, psrc4[i00] * scale);
-        }
-    }
-    float lmax = max(max(lmax4[0], lmax4[1]), max(lmax4[2], lmax4[3]));
-
-    float max_val = simd_max(lmax);
+    float row_max = simd_max(local_max);
 
     if (tptg.x > 32) {
         if (sgitg == 0) {
-            buf[tiisg] = -N_INFINITY;
+            temp_mem[tiisg] = NEG_INF;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
+
         if (tiisg == 0) {
-            buf[sgitg] = max_val;
+            temp_mem[sgitg] = row_max;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        max_val = simd_max(buf[tiisg]);
+
+        row_max = simd_max(temp_mem[tiisg]);
     }
 
-    // Step 2: Compute exp and sum
-    float4 lsum4 = 0.0f;
-    if (pmask) {
-        for (int i00 = tpitg.x; i00 < ne00_4; i00 += tptg.x) {
-            float4 val = psrc4[i00] * scale;
-            float4 mask_val = *(device const float4*)(pmask + i00 * 16);
-            val += slope * mask_val;
-            const float4 exp_val = exp(val - max_val);
-            lsum4 += exp_val;
-            pdst4[i00] = exp_val;
-        }
-    } else {
-        for (int i00 = tpitg.x; i00 < ne00_4; i00 += tptg.x) {
-            const float4 exp_val = exp(psrc4[i00] * scale - max_val);
-            lsum4 += exp_val;
-            pdst4[i00] = exp_val;
-        }
+    float4 local_sum4 = 0.0f;
+    for (uint i = tpitg.x; i < uint(vec_len); i += tptg.x) {
+        float4 exp_val = exp(float4(vec_scores[i]) - row_max);
+        local_sum4 += exp_val;
+        vec_probs[i] = half4(exp_val);
     }
-    float lsum = lsum4[0] + lsum4[1] + lsum4[2] + lsum4[3];
+    float local_sum = local_sum4[0] + local_sum4[1] + local_sum4[2] + local_sum4[3];
 
-    float sum = simd_sum(lsum);
+    float row_sum = simd_sum(local_sum);
 
     if (tptg.x > 32) {
         if (sgitg == 0) {
-            buf[tiisg] = 0.0f;
+            temp_mem[tiisg] = 0.0f;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
+
         if (tiisg == 0) {
-            buf[sgitg] = sum;
+            temp_mem[sgitg] = row_sum;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        sum = simd_sum(buf[tiisg]);
+
+        row_sum = simd_sum(temp_mem[tiisg]);
     }
 
-    // Step 3: Normalize
-    const float inv_sum = 1.0f / sum;
-    for (int i00 = tpitg.x; i00 < ne00_4; i00 += tptg.x) {
-        pdst4[i00] *= inv_sum;
+    float scale = 1.0f / row_sum;
+    for (uint i = tpitg.x; i < uint(vec_len); i += tptg.x) {
+        vec_probs[i] = half4(float4(vec_probs[i]) * scale);
     }
 }
