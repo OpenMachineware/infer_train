@@ -202,7 +202,8 @@ pub fn quantize_row_q8_1(x: &[f32], y: &mut [BlockQ8_1]) {
         }
 
         y[i].d = fp32_to_fp16(d);
-        y[i].s = fp32_to_fp16(sum as f32);
+        // s = d * sum(q_i) = sum of dequantized values (matches llama.cpp)
+        y[i].s = fp32_to_fp16(sum as f32 * d);
     }
 }
 
