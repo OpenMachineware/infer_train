@@ -826,6 +826,322 @@ pub unsafe fn decode_attention_iq4_nl_neon(
 }
 
 // ============================================================================
+// K-quant Attention (scalar implementation for correctness)
+// ============================================================================
+
+/// Dequantize Q2_K KV cache block (256 elements) to f32
+/// Only returns first head_dim elements (for head_dim < 256)
+fn dequantize_q2_k_kv(
+    block: &crate::quant::kv_cache::BlockQ2K_KV,
+    out: &mut [f32],
+) {
+    use crate::quant::kv_cache::BlockQ2K_KV;
+    let d = half::f16::from_bits(block.d).to_f32();
+    let dmin = half::f16::from_bits(block.dmin).to_f32();
+
+    for sub_block in 0..16 {
+        let sc = block.scales[sub_block];
+        let dl = d * ((sc & 0x0F) as f32);
+        let ml = dmin * ((sc >> 4) as f32);
+
+        // Each sub-block has 16 elements, stored in 4 bytes
+        for j in 0..4 {
+            let byte = block.qs[sub_block * 4 + j];
+            for k in 0..4 {
+                let val = ((byte >> (2 * k)) & 0x03) as f32;
+                out[sub_block * 16 + j * 4 + k] = dl * val - ml;
+            }
+        }
+    }
+}
+
+/// Dequantize Q3_K KV cache block (256 elements) to f32
+fn dequantize_q3_k_kv(
+    block: &crate::quant::kv_cache::BlockQ3K_KV,
+    out: &mut [f32],
+) {
+    use crate::quant::kv_cache::BlockQ3K_KV;
+    let d = half::f16::from_bits(block.d).to_f32();
+
+    // Q3_K has 8 sub-blocks of 32 elements each
+    for sub in 0..8 {
+        let sc = block.scales[sub] as f32;
+        let start = sub * 32;
+
+        // 32 elements = 8 bytes of qs
+        for j in 0..8 {
+            let byte = block.qs[sub * 8 + j];
+            for k in 0..4 {
+                let idx = start + j * 4 + k;
+                let low2 = ((byte >> (2 * k)) & 0x03) as f32;
+                let high1 = ((block.hmask[idx / 8] >> (idx % 8)) & 1) as f32;
+                let val = low2 + high1 * 4.0 - 4.0; // 3-bit signed: [-4, 3]
+                out[idx] = d * sc * val;
+            }
+        }
+    }
+}
+
+/// Dequantize Q4_K KV cache block (256 elements) to f32
+fn dequantize_q4_k_kv(
+    block: &crate::quant::kv_cache::BlockQ4K_KV,
+    out: &mut [f32],
+) {
+    use crate::quant::kv_cache::BlockQ4K_KV;
+    let d = half::f16::from_bits(block.d).to_f32();
+    let min = half::f16::from_bits(block.dmin).to_f32();
+
+    // Q4_K stores elements 0..127 in low nibbles, elements 128..255 in high nibbles
+    // For head_dim <= 128, we use only low nibbles
+    for j in 0..128 {
+        out[j] = ((block.qs[j] & 0x0F) as f32) * d + min;
+    }
+    // For head_dim > 128, also dequantize high nibbles
+    for j in 0..128 {
+        out[128 + j] = (((block.qs[j] >> 4) & 0x0F) as f32) * d + min;
+    }
+}
+
+/// Dequantize Q5_K KV cache block (256 elements) to f32
+fn dequantize_q5_k_kv(
+    block: &crate::quant::kv_cache::BlockQ5K_KV,
+    out: &mut [f32],
+) {
+    use crate::quant::kv_cache::BlockQ5K_KV;
+    let d = half::f16::from_bits(block.d).to_f32();
+    let min = half::f16::from_bits(block.dmin).to_f32();
+
+    for j in 0..128 {
+        let low = (block.qs[j] & 0x0F) as f32;
+        let high = ((block.qh[j / 8] >> (j % 8)) & 1) as f32 * 16.0;
+        out[j] = (low + high) * d + min;
+    }
+    for j in 0..128 {
+        let low = ((block.qs[j] >> 4) & 0x0F) as f32;
+        let high =
+            ((block.qh[(128 + j) / 8] >> ((128 + j) % 8)) & 1) as f32 * 16.0;
+        out[128 + j] = (low + high) * d + min;
+    }
+}
+
+/// Dequantize Q6_K KV cache block (256 elements) to f32
+/// Only computes first 128 elements (matching Metal shader behavior for head_dim <= 128)
+fn dequantize_q6_k_kv(
+    block: &crate::quant::kv_cache::BlockQ6K_KV,
+    out: &mut [f32],
+) {
+    use crate::quant::kv_cache::BlockQ6K_KV;
+    let d = half::f16::from_bits(block.d).to_f32();
+
+    // ql[j] = element j (low nibble) | element j+128 (high nibble)
+    // We only compute first 128 elements (low nibbles)
+    for j in 0..128 {
+        let low = (block.ql[j] & 0x0F) as i32;
+        let high = ((block.qh[j / 2] >> (4 * (j % 2))) & 0x03) as i32;
+        let val = (low + high * 16 - 32) as i8 as f32; // 6-bit signed [-32, 31]
+        out[j] = d * val;
+    }
+}
+
+/// Generic K-quant attention (scalar implementation)
+fn decode_attention_kquant_scalar<K, V>(
+    q: &[f32],
+    k: &[K],
+    v: &[V],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+    dequant_k: fn(&K, &mut [f32]),
+    dequant_v: fn(&V, &mut [f32]),
+) {
+    // K-quant uses 256-element blocks
+    let mut k_deq = vec![0.0f32; 256];
+    let mut v_deq = vec![0.0f32; 256];
+
+    for h in 0..num_heads {
+        let q_head = &q[h * head_dim..(h + 1) * head_dim];
+        let output_head = &mut output[h * head_dim..(h + 1) * head_dim];
+
+        let mut max_val = f32::NEG_INFINITY;
+        let mut sum_exp = 0.0f32;
+
+        for d in 0..head_dim {
+            output_head[d] = 0.0;
+        }
+
+        for s in 0..seq_len {
+            // Each KV row is one K-quant block (256 elements, but we use head_dim)
+            let k_block = &k[s * num_heads + h];
+            let v_block = &v[s * num_heads + h];
+
+            // Dequantize
+            dequant_k(k_block, &mut k_deq);
+            dequant_v(v_block, &mut v_deq);
+
+            // Compute score
+            let score = vec_dot_f32_scalar(q_head, &k_deq[..head_dim]) * scale;
+
+            // Online softmax
+            let old_max = max_val;
+            if score > max_val {
+                max_val = score;
+            }
+
+            let weight;
+            if score > old_max {
+                let correction = (old_max - max_val).exp();
+                sum_exp *= correction;
+                for d in 0..head_dim {
+                    output_head[d] *= correction;
+                }
+                weight = 1.0;
+            } else {
+                weight = (score - max_val).exp();
+            }
+
+            sum_exp += weight;
+
+            // Accumulate V
+            for d in 0..head_dim {
+                output_head[d] += weight * v_deq[d];
+            }
+        }
+
+        let inv_sum = 1.0 / sum_exp;
+        for d in 0..head_dim {
+            output_head[d] *= inv_sum;
+        }
+    }
+}
+
+/// Q2_K attention (scalar implementation)
+pub fn decode_attention_q2_k(
+    q: &[f32],
+    k: &[crate::quant::kv_cache::BlockQ2K_KV],
+    v: &[crate::quant::kv_cache::BlockQ2K_KV],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    decode_attention_kquant_scalar(
+        q,
+        k,
+        v,
+        output,
+        num_heads,
+        head_dim,
+        seq_len,
+        scale,
+        dequantize_q2_k_kv,
+        dequantize_q2_k_kv,
+    );
+}
+
+/// Q3_K attention (scalar implementation)
+pub fn decode_attention_q3_k(
+    q: &[f32],
+    k: &[crate::quant::kv_cache::BlockQ3K_KV],
+    v: &[crate::quant::kv_cache::BlockQ3K_KV],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    decode_attention_kquant_scalar(
+        q,
+        k,
+        v,
+        output,
+        num_heads,
+        head_dim,
+        seq_len,
+        scale,
+        dequantize_q3_k_kv,
+        dequantize_q3_k_kv,
+    );
+}
+
+/// Q4_K attention (scalar implementation)
+pub fn decode_attention_q4_k(
+    q: &[f32],
+    k: &[crate::quant::kv_cache::BlockQ4K_KV],
+    v: &[crate::quant::kv_cache::BlockQ4K_KV],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    decode_attention_kquant_scalar(
+        q,
+        k,
+        v,
+        output,
+        num_heads,
+        head_dim,
+        seq_len,
+        scale,
+        dequantize_q4_k_kv,
+        dequantize_q4_k_kv,
+    );
+}
+
+/// Q5_K attention (scalar implementation)
+pub fn decode_attention_q5_k(
+    q: &[f32],
+    k: &[crate::quant::kv_cache::BlockQ5K_KV],
+    v: &[crate::quant::kv_cache::BlockQ5K_KV],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    decode_attention_kquant_scalar(
+        q,
+        k,
+        v,
+        output,
+        num_heads,
+        head_dim,
+        seq_len,
+        scale,
+        dequantize_q5_k_kv,
+        dequantize_q5_k_kv,
+    );
+}
+
+/// Q6_K attention (scalar implementation)
+pub fn decode_attention_q6_k(
+    q: &[f32],
+    k: &[crate::quant::kv_cache::BlockQ6K_KV],
+    v: &[crate::quant::kv_cache::BlockQ6K_KV],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    decode_attention_kquant_scalar(
+        q,
+        k,
+        v,
+        output,
+        num_heads,
+        head_dim,
+        seq_len,
+        scale,
+        dequantize_q6_k_kv,
+        dequantize_q6_k_kv,
+    );
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
