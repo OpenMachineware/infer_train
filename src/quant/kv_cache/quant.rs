@@ -621,3 +621,213 @@ pub fn quantize_row_iq4_nl(x: &[f32], y: &mut [super::BlockIQ4NL]) {
         }
     }
 }
+
+// ============================================================================
+// K-quant quantization for KV cache (Metal layout compatible)
+// ============================================================================
+
+/// Quantize FP32 row to Q2_K_KV (256 elements per block)
+/// Simplified implementation for testing - uses uniform quantization
+pub fn quantize_row_q2_k_kv(x: &[f32], y: &mut super::BlockQ2K_KV) {
+    use super::QK_K;
+    assert!(x.len() == QK_K);
+
+    // Find overall max/min
+    let mut amax = 0.0f32;
+    let mut amin = 0.0f32;
+    for &val in x {
+        amax = amax.max(val);
+        amin = amin.min(val);
+    }
+
+    // Calculate super-block scale and min
+    let max_scale = (amax - amin) / 3.0; // 2-bit has range [0,3]
+    let d = if max_scale > 0.0 { max_scale } else { 1.0 };
+    let dmin = amin;
+
+    y.d = fp32_to_fp16(d);
+    y.dmin = fp32_to_fp16(0.0); // No separate min for simplified version
+
+    // Quantize each 16-element sub-block
+    for j in 0..16 {
+        let xsub = &x[j * 16..(j + 1) * 16];
+
+        // Find sub-block max
+        let mut sub_max = 0.0f32;
+        for &val in xsub {
+            sub_max = sub_max.max(val.abs());
+        }
+
+        // Scale is 4-bit: lower 4 bits for scale, upper 4 bits for min
+        let sub_scale = if sub_max > 0.0 {
+            ((sub_max / d).min(15.0) as u8) & 0x0F
+        } else {
+            0
+        };
+        y.scales[j] = sub_scale; // Lower 4 bits only, no min
+
+        // Quantize to 2-bit
+        let id = if sub_scale > 0 {
+            1.0 / (sub_scale as f32 * d / 15.0)
+        } else {
+            0.0
+        };
+        for k in 0..4 {
+            let mut byte = 0u8;
+            for l in 0..4 {
+                let val = (xsub[k * 4 + l] * id + 2.0).clamp(0.0, 3.0) as u8;
+                byte |= (val & 0x03) << (2 * l);
+            }
+            y.qs[j * 4 + k] = byte;
+        }
+    }
+}
+
+/// Quantize FP32 row to Q3_K_KV (256 elements per block)
+pub fn quantize_row_q3_k_kv(x: &[f32], y: &mut super::BlockQ3K_KV) {
+    use super::QK_K;
+    assert!(x.len() == QK_K);
+
+    let mut amax = 0.0f32;
+    for &val in x {
+        amax = amax.max(val.abs());
+    }
+
+    let d = if amax > 0.0 { amax / 3.5 } else { 1.0 };
+    y.d = fp32_to_fp16(d);
+
+    // Initialize hmask and qs
+    y.hmask.fill(0);
+    y.qs.fill(0);
+    y.scales.fill(0);
+
+    // Quantize: 3-bit values (0-7), high bit in hmask
+    let id = if d > 0.0 { 1.0 / d } else { 0.0 };
+
+    for j in 0..QK_K {
+        let val = (x[j] * id + 4.0).clamp(0.0, 7.0) as u8;
+        let low2 = val & 0x03;
+        let high1 = (val >> 2) & 0x01;
+
+        // Pack low 2 bits into qs
+        let byte_idx = j / 4;
+        let bit_offset = (j % 4) * 2;
+        y.qs[byte_idx] |= low2 << bit_offset;
+
+        // High bit in hmask
+        if high1 == 1 {
+            y.hmask[j / 8] |= 1 << (j % 8);
+        }
+    }
+
+    // Set a uniform scale
+    y.scales[0] = 1;
+    for i in 1..12 {
+        y.scales[i] = y.scales[0];
+    }
+}
+
+/// Quantize FP32 row to Q4_K_KV (256 elements per block)
+pub fn quantize_row_q4_k_kv(x: &[f32], y: &mut super::BlockQ4K_KV) {
+    use super::QK_K;
+    assert!(x.len() == QK_K);
+
+    let mut amax = 0.0f32;
+    let mut amin = 0.0f32;
+    for &val in x {
+        amax = amax.max(val);
+        amin = amin.min(val);
+    }
+
+    let d = if amax > amin { (amax - amin) / 15.0 } else { 1.0 };
+    let dmin = amin;
+
+    y.d = fp32_to_fp16(d);
+    y.dmin = fp32_to_fp16(0.0);
+
+    // Simplified: use uniform scale for all sub-blocks
+    y.scales.fill(0x11); // Scale=1, Min=0 for each
+
+    // Quantize to 4-bit
+    let id = if d > 0.0 { 1.0 / d } else { 0.0 };
+
+    for j in 0..128 {
+        let v0 = ((x[j] * id - dmin / d).clamp(0.0, 15.0) as u8) & 0x0F;
+        let v1 = ((x[j + 128] * id - dmin / d).clamp(0.0, 15.0) as u8) & 0x0F;
+        y.qs[j] = v0 | (v1 << 4);
+    }
+}
+
+/// Quantize FP32 row to Q5_K_KV (256 elements per block)
+pub fn quantize_row_q5_k_kv(x: &[f32], y: &mut super::BlockQ5K_KV) {
+    use super::QK_K;
+    assert!(x.len() == QK_K);
+
+    let mut amax = 0.0f32;
+    let mut amin = 0.0f32;
+    for &val in x {
+        amax = amax.max(val);
+        amin = amin.min(val);
+    }
+
+    let d = if amax > amin { (amax - amin) / 31.0 } else { 1.0 };
+    let dmin = amin;
+
+    y.d = fp32_to_fp16(d);
+    y.dmin = fp32_to_fp16(0.0);
+    y.scales.fill(0x11);
+    y.qh.fill(0);
+
+    let id = if d > 0.0 { 1.0 / d } else { 0.0 };
+
+    for j in 0..128 {
+        let v0 = (x[j] * id - dmin / d).clamp(0.0, 31.0) as u8;
+        let v1 = (x[j + 128] * id - dmin / d).clamp(0.0, 31.0) as u8;
+
+        // Low 4 bits go to qs
+        y.qs[j] = (v0 & 0x0F) | ((v1 & 0x0F) << 4);
+
+        // High bit goes to qh (one bit per element, 8 elements per byte)
+        if v0 & 0x10 != 0 {
+            y.qh[j / 8] |= 1 << (j % 8);
+        }
+        if v1 & 0x10 != 0 {
+            y.qh[(j + 128) / 8] |= 1 << ((j + 128) % 8);
+        }
+    }
+}
+
+/// Quantize FP32 row to Q6_K_KV (256 elements per block)
+pub fn quantize_row_q6_k_kv(x: &[f32], y: &mut super::BlockQ6K_KV) {
+    use super::QK_K;
+    assert!(x.len() == QK_K);
+
+    let mut amax = 0.0f32;
+    for &val in x {
+        amax = amax.max(val.abs());
+    }
+
+    let d = if amax > 0.0 { amax / 32.0 } else { 1.0 };
+    y.d = fp32_to_fp16(d);
+
+    // Uniform scale for all sub-blocks
+    y.scales.fill(1);
+    y.ql.fill(0);
+    y.qh.fill(0);
+
+    let id = if d > 0.0 { 1.0 / d } else { 0.0 };
+
+    // Q6_K uses signed 6-bit values: range [-32, 31]
+    for j in 0..128 {
+        let v0 = (x[j] * id + 32.0).clamp(0.0, 63.0) as u8;
+        let v1 = (x[j + 128] * id + 32.0).clamp(0.0, 63.0) as u8;
+
+        // Lower 4 bits in ql
+        y.ql[j] = (v0 & 0x0F) | ((v1 & 0x0F) << 4);
+
+        // Upper 2 bits in qh
+        let h0 = (v0 >> 4) & 0x03;
+        let h1 = (v1 >> 4) & 0x03;
+        y.qh[j / 2] |= (h0 << (4 * (j % 2))) | (h1 << (4 * (j % 2) + 2));
+    }
+}

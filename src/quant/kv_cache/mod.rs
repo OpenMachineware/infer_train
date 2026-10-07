@@ -88,3 +88,80 @@ pub const KVALUES_IQ4NL: [f32; 16] = [
 /// IQ4_NL lookup table as int8 (for NEON TBL instruction)
 pub const KVALUES_IQ4NL_I8: [i8; 16] =
     [-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113];
+
+// ===== K-quant formats for KV cache (Metal layout compatible) =====
+// These structures must match the Metal shader layout exactly
+
+/// Block size for K-quant formats
+pub const QK_K: usize = 256;
+
+/// Q2_K block: 2-bit quantization with scale and min
+/// 256 elements per block, 84 bytes total
+/// Layout matches Metal shader: d, dmin, scales, qs
+#[derive(Clone, Copy, Debug)]
+#[repr(C, packed)]
+pub struct BlockQ2K_KV {
+    pub d: u16,           // Super-block scale (offset 0)
+    pub dmin: u16,        // Super-block min scale (offset 2)
+    pub scales: [u8; 16], // Scales and mins (4 bits each) (offset 4)
+    pub qs: [u8; 64],     // 2-bit quants (offset 20)
+}
+
+/// Q3_K block: 3-bit quantization
+/// 256 elements per block, 110 bytes total
+/// Layout matches Metal shader: d, hmask, qs, scales
+#[derive(Clone, Copy, Debug)]
+#[repr(C, packed)]
+pub struct BlockQ3K_KV {
+    pub d: u16,          // Super-block scale (offset 0)
+    pub hmask: [u8; 32], // High bit mask (offset 2)
+    pub qs: [u8; 64],    // Low 2 bits (offset 34)
+    pub scales: [i8; 12], // Scales (offset 98)
+                         // Note: there's 2 bytes padding at the end to make it 110 bytes
+}
+
+/// Q4_K block: 4-bit quantization with scale and min
+/// 256 elements per block, 144 bytes total
+/// Layout matches Metal shader: d, dmin, scales, qs
+#[derive(Clone, Copy, Debug)]
+#[repr(C, packed)]
+pub struct BlockQ4K_KV {
+    pub d: u16,           // Super-block scale (offset 0)
+    pub dmin: u16,        // Super-block min scale (offset 2)
+    pub scales: [u8; 12], // Scales and mins (offset 4)
+    pub qs: [u8; 128],    // 4-bit quants, packed 2 per byte (offset 16)
+}
+
+/// Q5_K block: 5-bit quantization with scale and min
+/// 256 elements per block, 176 bytes total
+/// Layout matches Metal shader: d, dmin, scales, qh, qs
+#[derive(Clone, Copy, Debug)]
+#[repr(C, packed)]
+pub struct BlockQ5K_KV {
+    pub d: u16,           // Super-block scale (offset 0)
+    pub dmin: u16,        // Super-block min scale (offset 2)
+    pub scales: [u8; 12], // Scales and mins (offset 4)
+    pub qh: [u8; 32],     // High bits (offset 16)
+    pub qs: [u8; 128],    // Low 4 bits (offset 48)
+}
+
+/// Q6_K block: 6-bit quantization
+/// 256 elements per block, 210 bytes total
+/// Layout matches Metal shader: d, scales, ql, qh
+#[derive(Clone, Copy, Debug)]
+#[repr(C, packed)]
+pub struct BlockQ6K_KV {
+    pub d: u16,           // Super-block scale (offset 0)
+    pub scales: [i8; 16], // Scales (offset 2)
+    pub ql: [u8; 128],    // Lower 4 bits (offset 18)
+    pub qh: [u8; 64],     // Upper 2 bits (offset 146)
+}
+
+// Verify sizes at compile time
+const _: () = {
+    assert!(std::mem::size_of::<BlockQ2K_KV>() == 84);
+    assert!(std::mem::size_of::<BlockQ3K_KV>() == 110);
+    assert!(std::mem::size_of::<BlockQ4K_KV>() == 144);
+    assert!(std::mem::size_of::<BlockQ5K_KV>() == 176);
+    assert!(std::mem::size_of::<BlockQ6K_KV>() == 210);
+};
