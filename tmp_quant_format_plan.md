@@ -30,10 +30,10 @@
 - [x] shmem修复: 512 + nsg*16 + nsg*512 bytes
 - [ ] 性能对比 (llama.cpp benchmark工具需要修复)
 
-### K-quant: Q2_K, Q3_K, Q4_K, Q5_K, Q6_K
+### K-quant: Q2_K, Q3_K, Q4_K, Q5_K, Q6_K ✓
 - [x] 单SIMD组kernel已实现 (flash_decode_attention_kquant)
-- [ ] 多SIMD组kernel需要新模板 (type4x4 vs type4不兼容)
-- [ ] 正确性验证
+- [x] 正确性验证通过 (所有格式PASS, max_diff < 4e-7)
+- [ ] 多SIMD组kernel (需要type4x4模板变体, 可选优化)
 - [ ] 性能对比
 
 ## 关键发现
@@ -51,14 +51,15 @@
 
 ## 下一步
 
-1. **完成Q4_1/Q5_0/Q5_1/BF16性能对比**
-   - 修复llama.cpp benchmark工具 (缺少ggml-metal-impl.h)
-   - 或使用内置GFLOPS测量
+1. **性能对比**
+   - 使用内置GFLOPS测量 (无需llama.cpp源码)
+   - 测试Q4_1/Q5_0/Q5_1/BF16性能
+   - 测试K-quant性能
 
-2. **K-quant验证**
-   - 测试现有单SIMD组kernel的正确性
-   - 如需要多SIMD组优化，创建type4x4模板变体
-
-3. **优化自适应策略**
-   - seq_k=4096应使用2-4个SIMD组，而不是8个
+2. **优化自适应策略** (可选)
+   - seq_k=4096应使用2-4个SIMD组
    - 分析llama.cpp的nsg选择策略
+
+3. **多SIMD组K-quant** (可选优化)
+   - 长序列场景可能受益
+   - 需要创建type4x4模板变体
