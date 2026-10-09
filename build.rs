@@ -3,15 +3,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 fn main() {
-    // Only link for the benchmark binary
-    if std::env::var("CARGO_BIN_NAME").unwrap_or_default()
-        == "bench_flash_attn_vs_llama_fair"
-    {
-        // Link llama.cpp Metal library from the correct build directory
+    // Only link for llama.cpp benchmark binaries when llama-bench feature is enabled
+    if std::env::var("CARGO_FEATURE_LLAMA_BENCH").is_ok() {
+        // Link llama.cpp Metal library from tools directory
         println!("cargo:rustc-link-search=native=tools");
-        println!(
-            "cargo:rustc-link-search=native=tools/iq2_xxs_llama_dump/build/bin"
-        );
         println!("cargo:rustc-link-lib=dylib=llama_fa_bench");
         println!("cargo:rustc-link-lib=dylib=ggml-metal");
         println!("cargo:rustc-link-lib=dylib=ggml-cpu");

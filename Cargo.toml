@@ -3,6 +3,11 @@ name = "infer_train"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+metal = []
+llama-bench = []  # Feature for linking llama.cpp libraries
+
 [profile.release]
 opt-level = 3
 target-cpu = "native"
@@ -51,7 +56,3 @@ harness = false
 [[bench]]
 name = "gpu_kernel_comparison"
 harness = false
-
-[features]
-default = []
-metal = []
