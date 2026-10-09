@@ -2321,3 +2321,87 @@ template [[host_name("flash_decode_multi_group_q8_0_g8")]]
 kernel void flash_decode_multi_group<block_q8_0, block_q8_0, float4, 8, 8, dequantize_q8_0_t4, dequantize_q8_0_t4, 8>(
     constant FlashAttnArgs &, device const float *, device const char *, device const char *,
     device float *, threadgroup half *, uint3, ushort, ushort);
+
+// Q4_1
+template [[host_name("flash_decode_multi_group_q4_1_g1")]]
+kernel void flash_decode_multi_group<block_q4_1, block_q4_1, float4, 8, 8, dequantize_q4_1_t4, dequantize_q4_1_t4, 1>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_q4_1_g2")]]
+kernel void flash_decode_multi_group<block_q4_1, block_q4_1, float4, 8, 8, dequantize_q4_1_t4, dequantize_q4_1_t4, 2>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_q4_1_g4")]]
+kernel void flash_decode_multi_group<block_q4_1, block_q4_1, float4, 8, 8, dequantize_q4_1_t4, dequantize_q4_1_t4, 4>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_q4_1_g8")]]
+kernel void flash_decode_multi_group<block_q4_1, block_q4_1, float4, 8, 8, dequantize_q4_1_t4, dequantize_q4_1_t4, 8>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+// Q5_0
+template [[host_name("flash_decode_multi_group_q5_0_g1")]]
+kernel void flash_decode_multi_group<block_q5_0, block_q5_0, float4, 8, 8, dequantize_q5_0_t4, dequantize_q5_0_t4, 1>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_q5_0_g2")]]
+kernel void flash_decode_multi_group<block_q5_0, block_q5_0, float4, 8, 8, dequantize_q5_0_t4, dequantize_q5_0_t4, 2>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_q5_0_g4")]]
+kernel void flash_decode_multi_group<block_q5_0, block_q5_0, float4, 8, 8, dequantize_q5_0_t4, dequantize_q5_0_t4, 4>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_q5_0_g8")]]
+kernel void flash_decode_multi_group<block_q5_0, block_q5_0, float4, 8, 8, dequantize_q5_0_t4, dequantize_q5_0_t4, 8>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+// Q5_1
+template [[host_name("flash_decode_multi_group_q5_1_g1")]]
+kernel void flash_decode_multi_group<block_q5_1, block_q5_1, float4, 8, 8, dequantize_q5_1_t4, dequantize_q5_1_t4, 1>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_q5_1_g2")]]
+kernel void flash_decode_multi_group<block_q5_1, block_q5_1, float4, 8, 8, dequantize_q5_1_t4, dequantize_q5_1_t4, 2>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_q5_1_g4")]]
+kernel void flash_decode_multi_group<block_q5_1, block_q5_1, float4, 8, 8, dequantize_q5_1_t4, dequantize_q5_1_t4, 4>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_q5_1_g8")]]
+kernel void flash_decode_multi_group<block_q5_1, block_q5_1, float4, 8, 8, dequantize_q5_1_t4, dequantize_q5_1_t4, 8>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+// BF16
+template [[host_name("flash_decode_multi_group_bf16_g1")]]
+kernel void flash_decode_multi_group<block_bf16, block_bf16, float4, 1, 1, dequantize_bf16_t4, dequantize_bf16_t4, 1>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_bf16_g2")]]
+kernel void flash_decode_multi_group<block_bf16, block_bf16, float4, 1, 1, dequantize_bf16_t4, dequantize_bf16_t4, 2>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_bf16_g4")]]
+kernel void flash_decode_multi_group<block_bf16, block_bf16, float4, 1, 1, dequantize_bf16_t4, dequantize_bf16_t4, 4>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_bf16_g8")]]
+kernel void flash_decode_multi_group<block_bf16, block_bf16, float4, 1, 1, dequantize_bf16_t4, dequantize_bf16_t4, 8>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
