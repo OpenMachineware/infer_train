@@ -18,16 +18,15 @@ use crate::quant::kv_cache::{
 // ============================================================================
 
 /// FP16 FMA using inline assembly: a = a + b * c
-/// This gives us access to vfmaq_f16 without needing nightly features
+/// Uses uint16x8_t (stable) to avoid unstable float16x8_t type
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn vfmaq_f16_asm(
-    a: float16x8_t,
-    b: float16x8_t,
-    c: float16x8_t,
-) -> float16x8_t {
-    use std::arch::asm;
-    let result: float16x8_t;
+    a: uint16x8_t,
+    b: uint16x8_t,
+    c: uint16x8_t,
+) -> uint16x8_t {
+    let result: uint16x8_t;
     asm!(
         "fmla {0:v}.8h, {1:v}.8h, {2:v}.8h",
         inout(vreg) a => result,
@@ -39,11 +38,11 @@ unsafe fn vfmaq_f16_asm(
 }
 
 /// FP16 add using inline assembly
+/// Uses uint16x8_t (stable) to avoid unstable float16x8_t type
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn vaddq_f16_asm(a: float16x8_t, b: float16x8_t) -> float16x8_t {
-    use std::arch::asm;
-    let result: float16x8_t;
+unsafe fn vaddq_f16_asm(a: uint16x8_t, b: uint16x8_t) -> uint16x8_t {
+    let result: uint16x8_t;
     asm!(
         "fadd {0:v}.8h, {1:v}.8h, {2:v}.8h",
         lateout(vreg) result,
@@ -55,16 +54,74 @@ unsafe fn vaddq_f16_asm(a: float16x8_t, b: float16x8_t) -> float16x8_t {
 }
 
 /// FP16 mul using inline assembly
+/// Uses uint16x8_t (stable) to avoid unstable float16x8_t type
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn vmulq_f16_asm(a: float16x8_t, b: float16x8_t) -> float16x8_t {
-    use std::arch::asm;
-    let result: float16x8_t;
+unsafe fn vmulq_f16_asm(a: uint16x8_t, b: uint16x8_t) -> uint16x8_t {
+    let result: uint16x8_t;
     asm!(
         "fmul {0:v}.8h, {1:v}.8h, {2:v}.8h",
         lateout(vreg) result,
         in(vreg) a,
         in(vreg) b,
+        options(pure, nomem, nostack)
+    );
+    result
+}
+
+/// Convert FP16 vector (as uint16x8_t) to two FP32 vectors using inline asm
+/// Returns (low 4 floats, high 4 floats)
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn vcvt_f32_from_f16(v: uint16x8_t) -> (float32x4_t, float32x4_t) {
+    let low: float32x4_t;
+    let high: float32x4_t;
+    asm!(
+        "fcvtl {0:v}.4s, {2:v}.4h",
+        "fcvtl2 {1:v}.4s, {2:v}.8h",
+        lateout(vreg) low,
+        lateout(vreg) high,
+        in(vreg) v,
+        options(pure, nomem, nostack)
+    );
+    (low, high)
+}
+
+/// Horizontal sum of float32x4_t
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn vaddvq_f32_inline(v: float32x4_t) -> f32 {
+    vaddvq_f32(v)
+}
+
+/// Convert two FP32 vectors to FP16 vector using inline asm
+/// Returns uint16x8_t (FP16 bits) to avoid unstable float16x8_t type
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn vcvt_f16_from_f32(low: float32x4_t, high: float32x4_t) -> uint16x8_t {
+    let result: uint16x8_t;
+    asm!(
+        "fcvtn {0:v}.8h, {1:v}.4s",
+        "fcvtn2 {0:v}.8h, {2:v}.4s",
+        lateout(vreg) result,
+        in(vreg) low,
+        in(vreg) high,
+        options(pure, nomem, nostack)
+    );
+    result
+}
+
+/// Load 4 FP16 values from memory and convert to FP32 using inline asm
+/// Uses uint16x4_t (stable) to avoid unstable float16x4_t type
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn vld1_f16_and_cvt_to_f32(ptr: *const u16) -> float32x4_t {
+    let result: float32x4_t;
+    asm!(
+        "ld1 {0:v}.4h, [{1}]",
+        "fcvtl {0:v}.4s, {0:v}.4h",
+        lateout(vreg) result,
+        in(reg) ptr,
         options(pure, nomem, nostack)
     );
     result
@@ -1176,12 +1233,12 @@ pub unsafe fn vec_dot_f32_neon(a: &[f32], b: &[f32], n: usize) -> f32 {
 // Pure Rust FP16 NEON Attention
 // ============================================================================
 
-/// Load pair of float16x8_t using ldp instruction (faster than 2x vld1q)
+/// Load pair of uint16x8_t (FP16 bits) using ldp instruction (faster than 2x vld1q)
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn load_pair_f16(ptr: *const u16) -> (float16x8_t, float16x8_t) {
-    let v0: float16x8_t;
-    let v1: float16x8_t;
+unsafe fn load_pair_f16(ptr: *const u16) -> (uint16x8_t, uint16x8_t) {
+    let v0: uint16x8_t;
+    let v1: uint16x8_t;
     asm!(
         "ldp {0:q}, {1:q}, [{2}]",
         lateout(vreg) v0,
@@ -1192,62 +1249,90 @@ unsafe fn load_pair_f16(ptr: *const u16) -> (float16x8_t, float16x8_t) {
     (v0, v1)
 }
 
-/// FP16 × FP16 dot product using native FP16 FMA via inline assembly
-/// Uses ldp for faster loading
+/// FP16 × FP16 dot product using single inline asm block
+/// Single optimization unit to match llama.cpp's compiler optimization
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
 pub unsafe fn vec_dot_f16_neon(q: &[u16], k: &[u16], n: usize) -> f32 {
     let q_ptr = q.as_ptr();
     let k_ptr = k.as_ptr();
+    let np = n & !31;
 
-    // FP16 accumulators
-    let mut sum0: float16x8_t;
-    let mut sum1: float16x8_t;
-    let mut sum2: float16x8_t;
-    let mut sum3: float16x8_t;
+    // Use a pointer to the result
+    let mut result: f32 = 0.0;
 
+    // Store result through a register
     asm!(
-        "movi v0.2d, #0",
-        "movi v1.2d, #0",
-        "movi v2.2d, #0",
-        "movi v3.2d, #0",
-        lateout("v0") sum0,
-        lateout("v1") sum1,
-        lateout("v2") sum2,
-        lateout("v3") sum3,
+        // Initialize 4 FP16 accumulators to zero
+        "movi v0.2d, #0",  // sum0
+        "movi v1.2d, #0",  // sum1
+        "movi v2.2d, #0",  // sum2
+        "movi v3.2d, #0",  // sum3
+        "mov x8, #0",      // loop counter
+        "cmp x2, #32",
+        "b.lt 2f",         // skip if n < 32
+
+        // Main loop - process 32 elements per iteration
+        "1:",
+        // Load 32 q values using ldp
+        "ldp q4, q5, [x0, #0]",
+        "ldp q6, q7, [x0, #32]",
+        // Load 32 k values using ldp
+        "ldp q16, q17, [x1, #0]",
+        "ldp q18, q19, [x1, #32]",
+
+        // FP16 FMA: sum += q * k
+        "fmla v0.8h, v4.8h, v16.8h",
+        "fmla v1.8h, v5.8h, v17.8h",
+        "fmla v2.8h, v6.8h, v18.8h",
+        "fmla v3.8h, v7.8h, v19.8h",
+
+        // Update pointers and counter
+        "add x0, x0, #64",
+        "add x1, x1, #64",
+        "add x8, x8, #32",
+        "cmp x8, x2",
+        "b.lt 1b",
+
+        // Reduce accumulators
+        "2:",
+        "fadd v0.8h, v0.8h, v1.8h",
+        "fadd v2.8h, v2.8h, v3.8h",
+        "fadd v0.8h, v0.8h, v2.8h",
+
+        // Convert FP16 to FP32 and horizontal sum
+        "fcvtl v1.4s, v0.4h",
+        "fcvtl2 v2.4s, v0.8h",
+        "fadd v0.4s, v1.4s, v2.4s",
+        "faddp v0.4s, v0.4s",
+        // Move result to s20 (safe register, doesn't conflict with v0-v3)
+        "fmov s20, v0.s[0]",
+        // Store to result via pointer
+        "str s20, [x3]",
+
+        inout("x0") q_ptr => _,
+        inout("x1") k_ptr => _,
+        in("x2") np as u64,
+        in("x3") &mut result as *mut f32,
+        out("v0") _,
+        out("v1") _,
+        out("v2") _,
+        out("v3") _,
+        out("v4") _,
+        out("v5") _,
+        out("v6") _,
+        out("v7") _,
+        out("v16") _,
+        out("v17") _,
+        out("v18") _,
+        out("v19") _,
+        out("v20") _,
+        out("x8") _,
         options(nostack)
     );
 
-    let np = n & !31;
-    let mut i = 0;
-
-    while i < np {
-        // Use ldp for faster loading
-        let (q0, q1) = load_pair_f16(q_ptr.add(i));
-        let (k0, k1) = load_pair_f16(k_ptr.add(i));
-        sum0 = vfmaq_f16_asm(sum0, q0, k0);
-        sum1 = vfmaq_f16_asm(sum1, q1, k1);
-
-        let (q2, q3) = load_pair_f16(q_ptr.add(i + 16));
-        let (k2, k3) = load_pair_f16(k_ptr.add(i + 16));
-        sum2 = vfmaq_f16_asm(sum2, q2, k2);
-        sum3 = vfmaq_f16_asm(sum3, q3, k3);
-
-        i += 32;
-    }
-
-    // Reduce accumulators in FP16
-    sum0 = vaddq_f16_asm(sum0, sum1);
-    sum2 = vaddq_f16_asm(sum2, sum3);
-    sum0 = vaddq_f16_asm(sum0, sum2);
-
-    // Convert to FP32 and do horizontal sum
-    let sum_f32_0 = vcvt_f32_f16(vget_low_f16(sum0));
-    let sum_f32_1 = vcvt_high_f32_f16(sum0);
-    let mut result = vaddvq_f32(vaddq_f32(sum_f32_0, sum_f32_1));
-
-    // Handle remaining elements (scalar fallback)
+    // Handle remaining elements
     for j in np..n {
         let q_val = half::f16::from_bits(q[j]).to_f32();
         let k_val = half::f16::from_bits(k[j]).to_f32();
@@ -1256,7 +1341,24 @@ pub unsafe fn vec_dot_f16_neon(q: &[u16], k: &[u16], n: usize) -> f32 {
     result
 }
 
+/// Convert FP32 to FP16 bits using hardware fcvt instruction
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub unsafe fn fp32_to_fp16_bits(v: f32) -> u16 {
+    let result: u16;
+    asm!(
+        "fcvt h16, s0",
+        "fmov {0}, h16",
+        out(reg) result,
+        in("s0") v,
+        out("h16") _,
+        options(pure, nomem, nostack)
+    );
+    result
+}
+
 /// FP16 vec_mad with NEON using native FP16 FMA: y += x * v
+/// Uses uint16x8_t (stable) to avoid unstable float16x8_t type
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
@@ -1266,22 +1368,22 @@ pub unsafe fn vec_mad_f16_neon(y: &mut [u16], x: &[u16], v: f32, n: usize) {
 
     // Convert scalar v to FP16 - use half crate for scalar conversion
     let v_bits = half::f16::from_f32(v).to_bits();
-    // Duplicate to all 8 lanes
-    let v_f16 = vreinterpretq_f16_u16(vdupq_n_u16(v_bits));
+    // Duplicate to all 8 lanes (no reinterpret needed - just u16)
+    let v_f16 = vdupq_n_u16(v_bits);
 
     let np = n & !7;
     let mut i = 0;
 
     while i < np {
-        // Load 8 FP16 values
-        let x8 = vreinterpretq_f16_u16(vld1q_u16(x_ptr.add(i)));
-        let y8 = vreinterpretq_f16_u16(vld1q_u16(y_ptr.add(i)));
+        // Load 8 FP16 values as u16
+        let x8 = vld1q_u16(x_ptr.add(i));
+        let y8 = vld1q_u16(y_ptr.add(i));
 
-        // FP16 FMA: y += x * v
+        // FP16 FMA: y += x * v (inline asm handles reinterpret)
         let result = vfmaq_f16_asm(y8, x8, v_f16);
 
-        // Store back
-        vst1q_u16(y_ptr.add(i), vreinterpretq_u16_f16(result));
+        // Store back (no reinterpret needed - just u16)
+        vst1q_u16(y_ptr.add(i), result);
         i += 8;
     }
 
@@ -1294,6 +1396,7 @@ pub unsafe fn vec_mad_f16_neon(y: &mut [u16], x: &[u16], v: f32, n: usize) {
 }
 
 /// FP16 vec_scale with NEON using native FP16 MUL: y *= v
+/// Uses uint16x8_t (stable) to avoid unstable float16x8_t type
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
@@ -1302,16 +1405,16 @@ pub unsafe fn vec_scale_f16_neon(y: &mut [u16], v: f32, n: usize) {
 
     // Convert scalar v to FP16 - use half crate for scalar conversion
     let v_bits = half::f16::from_f32(v).to_bits();
-    // Duplicate to all 8 lanes
-    let v_f16 = vreinterpretq_f16_u16(vdupq_n_u16(v_bits));
+    // Duplicate to all 8 lanes (no reinterpret needed - just u16)
+    let v_f16 = vdupq_n_u16(v_bits);
 
     let np = n & !7;
     let mut i = 0;
 
     while i < np {
-        let y8 = vreinterpretq_f16_u16(vld1q_u16(y_ptr.add(i)));
+        let y8 = vld1q_u16(y_ptr.add(i));
         let result = vmulq_f16_asm(y8, v_f16);
-        vst1q_u16(y_ptr.add(i), vreinterpretq_u16_f16(result));
+        vst1q_u16(y_ptr.add(i), result);
         i += 8;
     }
 
@@ -1322,7 +1425,8 @@ pub unsafe fn vec_scale_f16_neon(y: &mut [u16], v: f32, n: usize) {
     }
 }
 
-/// Decode attention for batch=1, FP16 version with NEON (pure Rust)
+/// Decode attention for batch=1, FP16 version with NEON
+/// All operations inlined - no function call overhead
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn decode_attention_f16_neon(
@@ -1337,14 +1441,15 @@ pub unsafe fn decode_attention_f16_neon(
 ) {
     // Work buffer for FP16 VKQ accumulator
     let mut vkq: [u16; 256] = [0u16; 256];
+    let np = head_dim & !31;
 
     for h in 0..num_heads {
         let q_head = &q[h * head_dim..];
         let out_head = &mut output[h * head_dim..];
 
-        // Zero accumulator
-        for d in 0..head_dim {
-            vkq[d] = 0;
+        // Zero accumulator using SIMD
+        for d in (0..head_dim).step_by(8) {
+            vst1q_u16(vkq.as_mut_ptr().add(d), vdupq_n_u16(0));
         }
 
         let mut m: f32 = f32::NEG_INFINITY;
@@ -1354,19 +1459,68 @@ pub unsafe fn decode_attention_f16_neon(
             let k_row = &k[(pos * num_heads + h) * head_dim..];
             let v_row = &v[(pos * num_heads + h) * head_dim..];
 
-            let score = vec_dot_f16_neon(q_head, k_row, head_dim) * scale;
+            // === INLINED vec_dot_f16_neon ===
+            let mut q_ptr = q_head.as_ptr();
+            let mut k_ptr = k_row.as_ptr();
 
-            // Online softmax (llama.cpp style)
+            // Pre-increment for llama.cpp addressing
+            q_ptr = q_ptr.add(16);
+            k_ptr = k_ptr.add(16);
+
+            let mut sum0: uint16x8_t;
+            asm!(
+                "movi v0.2d, #0", "movi v1.2d, #0", "movi v2.2d, #0", "movi v3.2d, #0",
+                "mov x8, #0", "cmp x2, #32", "b.lt 2f",
+                "1:",
+                "ldp q4, q5, [x0, #-32]", "ldp q6, q7, [x1, #-32]",
+                "fmla v3.8h, v6.8h, v4.8h", "fmla v2.8h, v7.8h, v5.8h",
+                "ldp q4, q5, [x0], #64", "ldp q6, q7, [x1], #64",
+                "fmla v1.8h, v6.8h, v4.8h", "fmla v0.8h, v7.8h, v5.8h",
+                "add x8, x8, #32", "cmp x8, x2", "b.lo 1b",
+                "2:", "fadd v2.8h, v2.8h, v3.8h", "fadd v0.8h, v0.8h, v1.8h", "fadd v0.8h, v0.8h, v2.8h",
+                lateout("v0") sum0, out("v1") _, out("v2") _, out("v3") _,
+                out("v4") _, out("v5") _, out("v6") _, out("v7") _, out("x8") _,
+                inout("x0") q_ptr => _, inout("x1") k_ptr => _, in("x2") np,
+                options(nostack)
+            );
+            let (sum_f32_0, sum_f32_1) = vcvt_f32_from_f16(sum0);
+            let mut score = vaddvq_f32(vaddq_f32(sum_f32_0, sum_f32_1));
+            for j in np..head_dim {
+                score += half::f16::from_bits(q_head[j]).to_f32()
+                    * half::f16::from_bits(k_row[j]).to_f32();
+            }
+            score *= scale;
+
+            // Online softmax
             if score > m {
                 let ms = (m - score).exp();
                 s *= ms;
-                vec_scale_f16_neon(&mut vkq[..head_dim], ms, head_dim);
+                // === INLINED vec_scale_f16_neon with hardware fcvt ===
+                let ms_bits = fp32_to_fp16_bits(ms);
+                let ms_vec = vdupq_n_u16(ms_bits);
+                for d in (0..head_dim).step_by(8) {
+                    let y8 = vld1q_u16(vkq.as_ptr().add(d));
+                    vst1q_u16(
+                        vkq.as_mut_ptr().add(d),
+                        vmulq_f16_asm(y8, ms_vec),
+                    );
+                }
                 m = score;
             }
 
             let vs = (score - m).exp();
             s += vs;
-            vec_mad_f16_neon(&mut vkq[..head_dim], v_row, vs, head_dim);
+            // === INLINED vec_mad_f16_neon with hardware fcvt ===
+            let vs_bits = fp32_to_fp16_bits(vs);
+            let vs_vec = vdupq_n_u16(vs_bits);
+            for d in (0..head_dim).step_by(8) {
+                let x8 = vld1q_u16(v_row.as_ptr().add(d));
+                let y8 = vld1q_u16(vkq.as_ptr().add(d));
+                vst1q_u16(
+                    vkq.as_mut_ptr().add(d),
+                    vfmaq_f16_asm(y8, x8, vs_vec),
+                );
+            }
         }
 
         // Normalize and write output
@@ -1400,16 +1554,12 @@ pub unsafe fn decode_attention_f32_q_f16_kv_neon(
         let q_head = &q[h * head_dim..];
         let out_head = &mut output[h * head_dim..];
 
-        // Convert Q to FP16 (once per head)
+        // Convert Q to FP16 (once per head) using inline asm
         for d in (0..head_dim).step_by(8) {
             let q0 = vld1q_f32(q_head.as_ptr().add(d));
             let q1 = vld1q_f32(q_head.as_ptr().add(d + 4));
-            let q_f16_low = vcvt_f16_f32(q0);
-            let q_f16_vec = vcvt_high_f16_f32(q_f16_low, q1);
-            vst1q_u16(
-                q_f16.as_mut_ptr().add(d),
-                vreinterpretq_u16_f16(q_f16_vec),
-            );
+            let q_f16_vec = vcvt_f16_from_f32(q0, q1);
+            vst1q_u16(q_f16.as_mut_ptr().add(d), q_f16_vec);
         }
 
         // Zero accumulator using SIMD
@@ -1430,10 +1580,10 @@ pub unsafe fn decode_attention_f32_q_f16_kv_neon(
             let v_row = v_base.add((pos * num_heads + h) * head_dim);
 
             // FP16 dot product using inline assembly wrappers
-            let mut sum0: float16x8_t;
-            let mut sum1: float16x8_t;
-            let mut sum2: float16x8_t;
-            let mut sum3: float16x8_t;
+            let mut sum0: uint16x8_t;
+            let mut sum1: uint16x8_t;
+            let mut sum2: uint16x8_t;
+            let mut sum3: uint16x8_t;
             asm!(
                 "movi v0.2d, #0\nmovi v1.2d, #0\nmovi v2.2d, #0\nmovi v3.2d, #0",
                 lateout("v0") sum0, lateout("v1") sum1, lateout("v2") sum2, lateout("v3") sum3,
@@ -1462,8 +1612,7 @@ pub unsafe fn decode_attention_f32_q_f16_kv_neon(
             sum0 = vaddq_f16_asm(sum0, sum2);
 
             // Convert to FP32 and horizontal sum
-            let sum_f32_0 = vcvt_f32_f16(vget_low_f16(sum0));
-            let sum_f32_1 = vcvt_high_f32_f16(sum0);
+            let (sum_f32_0, sum_f32_1) = vcvt_f32_from_f16(sum0);
             let sum_vec = vaddq_f32(sum_f32_0, sum_f32_1);
             let mut score = vaddvq_f32(sum_vec);
 
@@ -1484,7 +1633,7 @@ pub unsafe fn decode_attention_f32_q_f16_kv_neon(
 
                 // Scale vkq using inline assembly
                 let ms_bits = half::f16::from_f32(ms).to_bits();
-                let ms_vec: float16x8_t;
+                let ms_vec: uint16x8_t;
                 asm!(
                     "dup {0:v}.8h, {1:w}",
                     lateout(vreg) ms_vec,
@@ -1496,11 +1645,11 @@ pub unsafe fn decode_attention_f32_q_f16_kv_neon(
                     let (v0, v1) = load_pair_f16(vkq.as_ptr().add(d));
                     vst1q_u16(
                         vkq.as_mut_ptr().add(d),
-                        vreinterpretq_u16_f16(vmulq_f16_asm(v0, ms_vec)),
+                        vmulq_f16_asm(v0, ms_vec),
                     );
                     vst1q_u16(
                         vkq.as_mut_ptr().add(d + 8),
-                        vreinterpretq_u16_f16(vmulq_f16_asm(v1, ms_vec)),
+                        vmulq_f16_asm(v1, ms_vec),
                     );
                 }
             }
@@ -1510,7 +1659,7 @@ pub unsafe fn decode_attention_f32_q_f16_kv_neon(
 
             // vec_mad using inline assembly: vkq += v * vs
             let vs_bits = half::f16::from_f32(vs).to_bits();
-            let vs_vec: float16x8_t;
+            let vs_vec: uint16x8_t;
             asm!(
                 "dup {0:v}.8h, {1:w}",
                 lateout(vreg) vs_vec,
@@ -1523,11 +1672,11 @@ pub unsafe fn decode_attention_f32_q_f16_kv_neon(
                 let (vkq0, vkq1) = load_pair_f16(vkq.as_ptr().add(d));
                 vst1q_u16(
                     vkq.as_mut_ptr().add(d),
-                    vreinterpretq_u16_f16(vfmaq_f16_asm(vkq0, v0, vs_vec)),
+                    vfmaq_f16_asm(vkq0, v0, vs_vec),
                 );
                 vst1q_u16(
                     vkq.as_mut_ptr().add(d + 8),
-                    vreinterpretq_u16_f16(vfmaq_f16_asm(vkq1, v1, vs_vec)),
+                    vfmaq_f16_asm(vkq1, v1, vs_vec),
                 );
             }
         }
@@ -1564,23 +1713,22 @@ pub unsafe fn vec_dot_f32_f16_neon(
     // Process 16 elements at a time (4 iterations of 4 elements each)
     while i + 16 <= n {
         // Load and convert 4 FP16 to FP32 (iteration 0)
-        let k0 = vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(ptr_k.add(i))));
+        let k0 = vld1_f16_and_cvt_to_f32(ptr_k.add(i));
         let q0 = vld1q_f32(ptr_q.add(i));
         sum0 = vfmaq_f32(sum0, q0, k0);
 
         // Load and convert 4 FP16 to FP32 (iteration 1)
-        let k1 = vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(ptr_k.add(i + 4))));
+        let k1 = vld1_f16_and_cvt_to_f32(ptr_k.add(i + 4));
         let q1 = vld1q_f32(ptr_q.add(i + 4));
         sum1 = vfmaq_f32(sum1, q1, k1);
 
         // Load and convert 4 FP16 to FP32 (iteration 2)
-        let k2 = vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(ptr_k.add(i + 8))));
+        let k2 = vld1_f16_and_cvt_to_f32(ptr_k.add(i + 8));
         let q2 = vld1q_f32(ptr_q.add(i + 8));
         sum2 = vfmaq_f32(sum2, q2, k2);
 
         // Load and convert 4 FP16 to FP32 (iteration 3)
-        let k3 =
-            vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(ptr_k.add(i + 12))));
+        let k3 = vld1_f16_and_cvt_to_f32(ptr_k.add(i + 12));
         let q3 = vld1q_f32(ptr_q.add(i + 12));
         sum3 = vfmaq_f32(sum3, q3, k3);
 
@@ -1594,7 +1742,7 @@ pub unsafe fn vec_dot_f32_f16_neon(
 
     // Process remaining 4 elements
     if i + 4 <= n {
-        let k = vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(ptr_k.add(i))));
+        let k = vld1_f16_and_cvt_to_f32(ptr_k.add(i));
         let q = vld1q_f32(ptr_q.add(i));
         sum0 = vfmaq_f32(sum0, q, k);
         i += 4;
@@ -1629,23 +1777,22 @@ pub unsafe fn vec_mad_f32_f16_neon(
     // Process 16 elements at a time (4 parallel operations)
     while i + 16 <= n {
         // Convert 4 FP16 to FP32 and do FMA (iteration 0)
-        let v0 = vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(ptr_v.add(i))));
+        let v0 = vld1_f16_and_cvt_to_f32(ptr_v.add(i));
         let out0 = vld1q_f32(ptr_out.add(i));
         vst1q_f32(ptr_out.add(i), vfmaq_f32(out0, v0, w_vec));
 
         // Convert 4 FP16 to FP32 and do FMA (iteration 1)
-        let v1 = vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(ptr_v.add(i + 4))));
+        let v1 = vld1_f16_and_cvt_to_f32(ptr_v.add(i + 4));
         let out1 = vld1q_f32(ptr_out.add(i + 4));
         vst1q_f32(ptr_out.add(i + 4), vfmaq_f32(out1, v1, w_vec));
 
         // Convert 4 FP16 to FP32 and do FMA (iteration 2)
-        let v2 = vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(ptr_v.add(i + 8))));
+        let v2 = vld1_f16_and_cvt_to_f32(ptr_v.add(i + 8));
         let out2 = vld1q_f32(ptr_out.add(i + 8));
         vst1q_f32(ptr_out.add(i + 8), vfmaq_f32(out2, v2, w_vec));
 
         // Convert 4 FP16 to FP32 and do FMA (iteration 3)
-        let v3 =
-            vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(ptr_v.add(i + 12))));
+        let v3 = vld1_f16_and_cvt_to_f32(ptr_v.add(i + 12));
         let out3 = vld1q_f32(ptr_out.add(i + 12));
         vst1q_f32(ptr_out.add(i + 12), vfmaq_f32(out3, v3, w_vec));
 
@@ -1654,7 +1801,7 @@ pub unsafe fn vec_mad_f32_f16_neon(
 
     // Process remaining 4 elements
     if i + 4 <= n {
-        let v = vcvt_f32_f16(vreinterpret_f16_u16(vld1_u16(ptr_v.add(i))));
+        let v = vld1_f16_and_cvt_to_f32(ptr_v.add(i));
         let out = vld1q_f32(ptr_out.add(i));
         vst1q_f32(ptr_out.add(i), vfmaq_f32(out, v, w_vec));
         i += 4;
@@ -1671,9 +1818,18 @@ pub unsafe fn vec_mad_f32_f16_neon(
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub unsafe fn fp16_to_fp32(bits: u16) -> f32 {
-    let f16 = vreinterpret_f16_u16(vdup_n_u16(bits));
-    let f32_vec = vcvt_f32_f16(f16);
-    vgetq_lane_f32(f32_vec, 0)
+    // Use inline asm to avoid unstable float16x4_t type
+    let result: f32;
+    asm!(
+        "dup v0.4h, {1:w}",
+        "fcvtl v0.4s, v0.4h",
+        "fmov {0}, s0",
+        out(reg) result,
+        in(reg) bits,
+        out("v0") _,
+        options(pure, nomem, nostack)
+    );
+    result
 }
 
 #[cfg(target_arch = "aarch64")]

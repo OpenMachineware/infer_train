@@ -496,7 +496,7 @@ fn main() {
     println!("║     CPU算子统一性能对比测试（vs llama.cpp）                 ║");
     println!("║     每个算子 · 每种格式 · 每个尺寸                          ║");
     println!("╚════════════════════════════════════════════════════════════╝");
-    println!("\n使用: llama.cpp-0.5.0/build/bin/libggml-cpu.dylib");
+    println!("\n使用: llama.cpp-0.6.0/build/bin/libggml-cpu.dylib");
     println!("数据: 统一种子 (seed=42)，可复现\n");
 
     println!("预热CPU...");

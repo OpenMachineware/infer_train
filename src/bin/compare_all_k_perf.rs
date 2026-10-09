@@ -143,7 +143,7 @@ fn main() {
 
     // Load llama.cpp kernel library
     let llama_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("llama.cpp-0.5.0/build/bin/kernels");
+        .join("llama.cpp-0.6.0/build/bin/kernels");
     let llama_source =
         std::fs::read_to_string(llama_dir.join("mul_mv.metal")).unwrap();
     let llama_lib = device

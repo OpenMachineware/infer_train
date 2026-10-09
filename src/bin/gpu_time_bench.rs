@@ -257,7 +257,7 @@ fn main() {
     let queue = device.new_command_queue();
 
     let llama_shader = std::fs::read_to_string(
-        "/Users/jia/Desktop/infer_train/llama.cpp-0.5.0/build/bin/kernels/mul_mv.metal"
+        "/Users/jia/Desktop/infer_train/llama.cpp-0.6.0/build/bin/kernels/mul_mv.metal"
     ).unwrap();
     let my_shader = std::fs::read_to_string(
         "/Users/jia/Desktop/infer_train/shaders/gemm.metal",

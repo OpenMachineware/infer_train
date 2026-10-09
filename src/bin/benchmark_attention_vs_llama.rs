@@ -41,7 +41,7 @@ fn main() {
     println!("\n=== llama.cpp Comparison ===\n");
 
     // Build llama.cpp benchmark if needed
-    let llama_dir = "llama.cpp-0.5.0";
+    let llama_dir = "llama.cpp-0.6.0";
     if !Path::new(&format!("{}/build/bin/llama-bench", llama_dir)).exists() {
         println!("llama.cpp not built, skipping comparison");
         println!(

@@ -65,7 +65,7 @@ fn main() {
 
     // Load llama.cpp template
     let llama_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("llama.cpp-0.5.0/ggml/src/ggml-metal/kernels");
+        .join("llama.cpp-0.6.0/ggml/src/ggml-metal/kernels");
     let llama_source =
         std::fs::read_to_string(llama_dir.join("mul_mv.metal")).unwrap();
     let llama_lib = device

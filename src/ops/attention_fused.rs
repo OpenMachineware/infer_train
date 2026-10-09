@@ -285,7 +285,7 @@ pub unsafe fn vec_mad_f32_q8_0_neon(
 }
 
 /// Fused vec_mad: y += weight * V (Q4_0 format)
-/// Optimized: scalar dequant + NEON FMA (simple and fast)
+/// Optimized: NEON vectorized dequantization
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_q4_0_neon(
@@ -295,34 +295,81 @@ pub unsafe fn vec_mad_f32_q4_0_neon(
     n: usize,
 ) {
     let nb = n / QK;
+    let w_vec = vdupq_n_f32(weight);
+    let m4b = vdupq_n_u8(0x0F);
+    let s8b = vdupq_n_s8(0x8);
 
     for b in 0..nb {
         let block = &v[b];
         let scale = fp16_to_fp32_scalar(block.d);
-
-        // Scalar dequantization (memory-bound, SIMD doesn't help much)
-        let mut vals = [0.0f32; QK];
-        for j in 0..(QK / 2) {
-            let packed = block.qs[j];
-            let lo = (packed & 0x0F) as i32 - 8;
-            let hi = ((packed >> 4) & 0x0F) as i32 - 8;
-            vals[j] = (lo as f32) * scale;
-            vals[j + QK / 2] = (hi as f32) * scale;
-        }
-
-        // NEON FMA: y += weight * vals
-        let w_vec = vdupq_n_f32(weight);
+        let scale_vec = vdupq_n_f32(scale);
         let y_ptr = y.as_mut_ptr().add(b * QK);
-        for i in (0..QK).step_by(4) {
-            let y_vec = vld1q_f32(y_ptr.add(i));
-            let v_vec = vld1q_f32(vals.as_ptr().add(i));
-            vst1q_f32(y_ptr.add(i), vfmaq_f32(y_vec, v_vec, w_vec));
-        }
+
+        // Load 16 bytes of packed 4-bit values
+        let packed = vld1q_u8(block.qs.as_ptr());
+
+        // Unpack 4-bit to 8-bit (low and high nibbles)
+        let lo = vreinterpretq_s8_u8(vandq_u8(packed, m4b));
+        let hi = vreinterpretq_s8_u8(vshrq_n_u8(packed, 4));
+
+        // Subtract bias (8)
+        let lo_s = vsubq_s8(lo, s8b);
+        let hi_s = vsubq_s8(hi, s8b);
+
+        // Convert to int32 (sign extend) then to float32
+        // Process in 4-element chunks for better NEON utilization
+        let lo_0 = vmovl_s8(vget_low_s8(lo_s)); // 8 x int16
+        let lo_1 = vmovl_s8(vget_high_s8(lo_s));
+        let hi_0 = vmovl_s8(vget_low_s8(hi_s));
+        let hi_1 = vmovl_s8(vget_high_s8(hi_s));
+
+        // Convert int16 to float32 and multiply by scale
+        // Process lower half of block (first 16 values)
+        let f0 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo_0)));
+        let f1 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(lo_0)));
+        let f2 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo_1)));
+        let f3 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(lo_1)));
+
+        // Apply scale
+        let f0 = vmulq_f32(f0, scale_vec);
+        let f1 = vmulq_f32(f1, scale_vec);
+        let f2 = vmulq_f32(f2, scale_vec);
+        let f3 = vmulq_f32(f3, scale_vec);
+
+        // Load y, apply weight, accumulate
+        let y0 = vld1q_f32(y_ptr);
+        let y1 = vld1q_f32(y_ptr.add(4));
+        let y2 = vld1q_f32(y_ptr.add(8));
+        let y3 = vld1q_f32(y_ptr.add(12));
+        vst1q_f32(y_ptr, vfmaq_f32(y0, f0, w_vec));
+        vst1q_f32(y_ptr.add(4), vfmaq_f32(y1, f1, w_vec));
+        vst1q_f32(y_ptr.add(8), vfmaq_f32(y2, f2, w_vec));
+        vst1q_f32(y_ptr.add(12), vfmaq_f32(y3, f3, w_vec));
+
+        // Process upper half (high nibbles, second 16 values)
+        let f4 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi_0)));
+        let f5 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(hi_0)));
+        let f6 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi_1)));
+        let f7 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(hi_1)));
+
+        let f4 = vmulq_f32(f4, scale_vec);
+        let f5 = vmulq_f32(f5, scale_vec);
+        let f6 = vmulq_f32(f6, scale_vec);
+        let f7 = vmulq_f32(f7, scale_vec);
+
+        let y4 = vld1q_f32(y_ptr.add(16));
+        let y5 = vld1q_f32(y_ptr.add(20));
+        let y6 = vld1q_f32(y_ptr.add(24));
+        let y7 = vld1q_f32(y_ptr.add(28));
+        vst1q_f32(y_ptr.add(16), vfmaq_f32(y4, f4, w_vec));
+        vst1q_f32(y_ptr.add(20), vfmaq_f32(y5, f5, w_vec));
+        vst1q_f32(y_ptr.add(24), vfmaq_f32(y6, f6, w_vec));
+        vst1q_f32(y_ptr.add(28), vfmaq_f32(y7, f7, w_vec));
     }
 }
 
 /// Fused vec_mad: y += weight * V (Q4_1 format)
-/// Optimized: scalar dequant + NEON accumulation (matches llama.cpp approach)
+/// Optimized: NEON vectorized dequantization with min offset
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_q4_1_neon(
@@ -332,33 +379,72 @@ pub unsafe fn vec_mad_f32_q4_1_neon(
     n: usize,
 ) {
     let nb = n / QK;
+    let w_vec = vdupq_n_f32(weight);
+    let m4b = vdupq_n_u8(0x0F);
 
     for b in 0..nb {
         let block = &v[b];
         let scale = fp16_to_fp32_scalar(block.d);
         let min = fp16_to_fp32_scalar(block.m);
+        let scale_vec = vdupq_n_f32(scale);
+        let min_vec = vdupq_n_f32(min);
+        let y_ptr = y.as_mut_ptr().add(b * QK);
 
-        // Scalar dequantization
-        let mut vals = [0.0f32; QK];
-        for j in 0..(QK / 2) {
-            let packed = block.qs[j];
-            let lo = (packed & 0x0F) as f32;
-            let hi = ((packed >> 4) & 0x0F) as f32;
+        // Load 16 bytes of packed 4-bit values
+        let packed = vld1q_u8(block.qs.as_ptr());
 
-            vals[j] = scale * lo + min;
-            vals[j + QK / 2] = scale * hi + min;
-        }
+        // Unpack 4-bit to 8-bit (low and high nibbles)
+        let lo = vandq_u8(packed, m4b);
+        let hi = vshrq_n_u8(packed, 4);
 
-        // NEON accumulation: y += weight * vals
-        let weight_vec = vdupq_n_f32(weight);
-        let base = b * QK;
+        // Convert to int16 (zero extend u8 to u16, then reinterpret as i16)
+        // Q4_1 values are 0-15, need to convert to float
+        let lo_0 = vmovl_u8(vget_low_u8(lo));
+        let lo_1 = vmovl_u8(vget_high_u8(lo));
+        let hi_0 = vmovl_u8(vget_low_u8(hi));
+        let hi_1 = vmovl_u8(vget_high_u8(hi));
 
-        for i in (0..QK).step_by(4) {
-            let y_vec = vld1q_f32(y.as_ptr().add(base + i));
-            let v_vec = vld1q_f32(vals.as_ptr().add(i));
-            let result = vmlaq_f32(y_vec, v_vec, weight_vec);
-            vst1q_f32(y.as_mut_ptr().add(base + i), result);
-        }
+        // Convert uint16 to float32
+        let f0 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(lo_0)));
+        let f1 = vcvtq_f32_u32(vmovl_u16(vget_high_u16(lo_0)));
+        let f2 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(lo_1)));
+        let f3 = vcvtq_f32_u32(vmovl_u16(vget_high_u16(lo_1)));
+
+        // Apply scale * val + min
+        let f0 = vmlaq_f32(min_vec, f0, scale_vec);
+        let f1 = vmlaq_f32(min_vec, f1, scale_vec);
+        let f2 = vmlaq_f32(min_vec, f2, scale_vec);
+        let f3 = vmlaq_f32(min_vec, f3, scale_vec);
+
+        // Load y, apply weight, accumulate
+        let y0 = vld1q_f32(y_ptr);
+        let y1 = vld1q_f32(y_ptr.add(4));
+        let y2 = vld1q_f32(y_ptr.add(8));
+        let y3 = vld1q_f32(y_ptr.add(12));
+        vst1q_f32(y_ptr, vfmaq_f32(y0, f0, w_vec));
+        vst1q_f32(y_ptr.add(4), vfmaq_f32(y1, f1, w_vec));
+        vst1q_f32(y_ptr.add(8), vfmaq_f32(y2, f2, w_vec));
+        vst1q_f32(y_ptr.add(12), vfmaq_f32(y3, f3, w_vec));
+
+        // Process upper half (high nibbles)
+        let f4 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(hi_0)));
+        let f5 = vcvtq_f32_u32(vmovl_u16(vget_high_u16(hi_0)));
+        let f6 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(hi_1)));
+        let f7 = vcvtq_f32_u32(vmovl_u16(vget_high_u16(hi_1)));
+
+        let f4 = vmlaq_f32(min_vec, f4, scale_vec);
+        let f5 = vmlaq_f32(min_vec, f5, scale_vec);
+        let f6 = vmlaq_f32(min_vec, f6, scale_vec);
+        let f7 = vmlaq_f32(min_vec, f7, scale_vec);
+
+        let y4 = vld1q_f32(y_ptr.add(16));
+        let y5 = vld1q_f32(y_ptr.add(20));
+        let y6 = vld1q_f32(y_ptr.add(24));
+        let y7 = vld1q_f32(y_ptr.add(28));
+        vst1q_f32(y_ptr.add(16), vfmaq_f32(y4, f4, w_vec));
+        vst1q_f32(y_ptr.add(20), vfmaq_f32(y5, f5, w_vec));
+        vst1q_f32(y_ptr.add(24), vfmaq_f32(y6, f6, w_vec));
+        vst1q_f32(y_ptr.add(28), vfmaq_f32(y7, f7, w_vec));
     }
 }
 
@@ -394,13 +480,11 @@ pub unsafe fn vec_mad_f32_q5_0_neon(
     let nb = n / QK;
     let m4b = vdupq_n_u8(0x0F);
     let v16 = vdupq_n_s8(16);
-    let weight_vec = vdupq_n_f32(weight);
     let table_ptr = TABLE_B2B_1_Q5_0.as_ptr();
 
     for b in 0..nb {
         let block = &v[b];
         let scale = fp16_to_fp32_scalar(block.d);
-        let scale_vec = vdupq_n_f32(scale);
         let base = b * QK;
 
         // Load 4-bit quants
@@ -457,82 +541,41 @@ pub unsafe fn vec_mad_f32_q5_0_neon(
         let vh_3_i32 = vmovl_s16(vget_high_s16(vh_1_i16));
 
         // Convert to f32, scale, multiply by weight, and accumulate
-        // y += weight * (scale * value)
-        let vl_0_f32 = vmulq_f32(vcvtq_f32_s32(vl_0_i32), scale_vec);
-        let vl_1_f32 = vmulq_f32(vcvtq_f32_s32(vl_1_i32), scale_vec);
-        let vl_2_f32 = vmulq_f32(vcvtq_f32_s32(vl_2_i32), scale_vec);
-        let vl_3_f32 = vmulq_f32(vcvtq_f32_s32(vl_3_i32), scale_vec);
+        // y += weight * (scale * value) = (weight * scale) * value
+        let ws = weight * scale;
+        let ws_vec = vdupq_n_f32(ws);
 
-        let vh_0_f32 = vmulq_f32(vcvtq_f32_s32(vh_0_i32), scale_vec);
-        let vh_1_f32 = vmulq_f32(vcvtq_f32_s32(vh_1_i32), scale_vec);
-        let vh_2_f32 = vmulq_f32(vcvtq_f32_s32(vh_2_i32), scale_vec);
-        let vh_3_f32 = vmulq_f32(vcvtq_f32_s32(vh_3_i32), scale_vec);
+        // Load y values once
+        let y_ptr = y.as_mut_ptr().add(base);
+        let y0 = vld1q_f32(y_ptr);
+        let y1 = vld1q_f32(y_ptr.add(4));
+        let y2 = vld1q_f32(y_ptr.add(8));
+        let y3 = vld1q_f32(y_ptr.add(12));
+        let y4 = vld1q_f32(y_ptr.add(16));
+        let y5 = vld1q_f32(y_ptr.add(20));
+        let y6 = vld1q_f32(y_ptr.add(24));
+        let y7 = vld1q_f32(y_ptr.add(28));
 
-        // Load y and accumulate: y += weight * v
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 0),
-            vmlaq_f32(
-                vld1q_f32(y.as_ptr().add(base + 0)),
-                vl_0_f32,
-                weight_vec,
-            ),
-        );
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 4),
-            vmlaq_f32(
-                vld1q_f32(y.as_ptr().add(base + 4)),
-                vl_1_f32,
-                weight_vec,
-            ),
-        );
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 8),
-            vmlaq_f32(
-                vld1q_f32(y.as_ptr().add(base + 8)),
-                vl_2_f32,
-                weight_vec,
-            ),
-        );
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 12),
-            vmlaq_f32(
-                vld1q_f32(y.as_ptr().add(base + 12)),
-                vl_3_f32,
-                weight_vec,
-            ),
-        );
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 16),
-            vmlaq_f32(
-                vld1q_f32(y.as_ptr().add(base + 16)),
-                vh_0_f32,
-                weight_vec,
-            ),
-        );
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 20),
-            vmlaq_f32(
-                vld1q_f32(y.as_ptr().add(base + 20)),
-                vh_1_f32,
-                weight_vec,
-            ),
-        );
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 24),
-            vmlaq_f32(
-                vld1q_f32(y.as_ptr().add(base + 24)),
-                vh_2_f32,
-                weight_vec,
-            ),
-        );
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 28),
-            vmlaq_f32(
-                vld1q_f32(y.as_ptr().add(base + 28)),
-                vh_3_f32,
-                weight_vec,
-            ),
-        );
+        // FMLA: y = y + ws * value
+        // vfmaq_f32(a, b, c) = a + b * c
+        let r0 = vfmaq_f32(y0, vcvtq_f32_s32(vl_0_i32), ws_vec);
+        let r1 = vfmaq_f32(y1, vcvtq_f32_s32(vl_1_i32), ws_vec);
+        let r2 = vfmaq_f32(y2, vcvtq_f32_s32(vl_2_i32), ws_vec);
+        let r3 = vfmaq_f32(y3, vcvtq_f32_s32(vl_3_i32), ws_vec);
+        let r4 = vfmaq_f32(y4, vcvtq_f32_s32(vh_0_i32), ws_vec);
+        let r5 = vfmaq_f32(y5, vcvtq_f32_s32(vh_1_i32), ws_vec);
+        let r6 = vfmaq_f32(y6, vcvtq_f32_s32(vh_2_i32), ws_vec);
+        let r7 = vfmaq_f32(y7, vcvtq_f32_s32(vh_3_i32), ws_vec);
+
+        // Store results
+        vst1q_f32(y_ptr, r0);
+        vst1q_f32(y_ptr.add(4), r1);
+        vst1q_f32(y_ptr.add(8), r2);
+        vst1q_f32(y_ptr.add(12), r3);
+        vst1q_f32(y_ptr.add(16), r4);
+        vst1q_f32(y_ptr.add(20), r5);
+        vst1q_f32(y_ptr.add(24), r6);
+        vst1q_f32(y_ptr.add(28), r7);
     }
 }
 
@@ -547,19 +590,13 @@ pub unsafe fn vec_mad_f32_q5_1_neon(
     n: usize,
 ) {
     let nb = n / QK;
-
     let table_ptr = TABLE_B2B_1_Q5_0.as_ptr();
-
     let m4b = vdupq_n_u8(0x0F);
-    let v16 = vdupq_n_s8(16);
-    let weight_vec = vdupq_n_f32(weight);
 
     for b in 0..nb {
         let block = &v[b];
         let scale = fp16_to_fp32_scalar(block.d);
         let min = fp16_to_fp32_scalar(block.m);
-        let scale_vec = vdupq_n_f32(scale);
-        let min_vec = vdupq_n_f32(min);
         let base = b * QK;
 
         // Load 4-bit quants
@@ -610,58 +647,58 @@ pub unsafe fn vec_mad_f32_q5_1_neon(
 
         // Convert to f32: value = scale * q + min
         // y += weight * (scale * q + min) = weight * scale * q + weight * min
-        // Optimize: pre-compute weight * scale and weight * min
-        let ws_vec = vmulq_n_f32(scale_vec, weight);
-        let wm_vec = vmulq_n_f32(min_vec, weight);
+        // Use FMLA for fused multiply-add accumulation
+        let ws = weight * scale;
+        let ws_vec = vdupq_n_f32(ws);
+        let wm = weight * min;
+        let wm_vec = vdupq_n_f32(wm);
 
-        let vl_0 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vl_0_i32), ws_vec);
-        let vl_1 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vl_1_i32), ws_vec);
-        let vl_2 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vl_2_i32), ws_vec);
-        let vl_3 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vl_3_i32), ws_vec);
+        // Load y values once
+        let y_ptr = y.as_mut_ptr().add(base);
+        let y0 = vld1q_f32(y_ptr);
+        let y1 = vld1q_f32(y_ptr.add(4));
+        let y2 = vld1q_f32(y_ptr.add(8));
+        let y3 = vld1q_f32(y_ptr.add(12));
+        let y4 = vld1q_f32(y_ptr.add(16));
+        let y5 = vld1q_f32(y_ptr.add(20));
+        let y6 = vld1q_f32(y_ptr.add(24));
+        let y7 = vld1q_f32(y_ptr.add(28));
 
-        let vh_0 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vh_0_i32), ws_vec);
-        let vh_1 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vh_1_i32), ws_vec);
-        let vh_2 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vh_2_i32), ws_vec);
-        let vh_3 = vmlaq_f32(wm_vec, vcvtq_f32_s32(vh_3_i32), ws_vec);
+        // FMLA: y = y + ws * q, then add wm
+        // vfmaq_f32(a, b, c) = a + b * c
+        let q0 = vcvtq_f32_s32(vl_0_i32);
+        let q1 = vcvtq_f32_s32(vl_1_i32);
+        let q2 = vcvtq_f32_s32(vl_2_i32);
+        let q3 = vcvtq_f32_s32(vl_3_i32);
+        let q4 = vcvtq_f32_s32(vh_0_i32);
+        let q5 = vcvtq_f32_s32(vh_1_i32);
+        let q6 = vcvtq_f32_s32(vh_2_i32);
+        let q7 = vcvtq_f32_s32(vh_3_i32);
 
-        // Accumulate: y += value
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 0),
-            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 0)), vl_0),
-        );
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 4),
-            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 4)), vl_1),
-        );
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 8),
-            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 8)), vl_2),
-        );
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 12),
-            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 12)), vl_3),
-        );
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 16),
-            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 16)), vh_0),
-        );
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 20),
-            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 20)), vh_1),
-        );
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 24),
-            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 24)), vh_2),
-        );
-        vst1q_f32(
-            y.as_mut_ptr().add(base + 28),
-            vaddq_f32(vld1q_f32(y.as_ptr().add(base + 28)), vh_3),
-        );
+        // y += ws * q + wm = (y + ws * q) + wm
+        let r0 = vaddq_f32(vfmaq_f32(y0, q0, ws_vec), wm_vec);
+        let r1 = vaddq_f32(vfmaq_f32(y1, q1, ws_vec), wm_vec);
+        let r2 = vaddq_f32(vfmaq_f32(y2, q2, ws_vec), wm_vec);
+        let r3 = vaddq_f32(vfmaq_f32(y3, q3, ws_vec), wm_vec);
+        let r4 = vaddq_f32(vfmaq_f32(y4, q4, ws_vec), wm_vec);
+        let r5 = vaddq_f32(vfmaq_f32(y5, q5, ws_vec), wm_vec);
+        let r6 = vaddq_f32(vfmaq_f32(y6, q6, ws_vec), wm_vec);
+        let r7 = vaddq_f32(vfmaq_f32(y7, q7, ws_vec), wm_vec);
+
+        // Store results
+        vst1q_f32(y_ptr, r0);
+        vst1q_f32(y_ptr.add(4), r1);
+        vst1q_f32(y_ptr.add(8), r2);
+        vst1q_f32(y_ptr.add(12), r3);
+        vst1q_f32(y_ptr.add(16), r4);
+        vst1q_f32(y_ptr.add(20), r5);
+        vst1q_f32(y_ptr.add(24), r6);
+        vst1q_f32(y_ptr.add(28), r7);
     }
 }
 
 /// Fused vec_mad: y += weight * V (IQ4_NL format)
-/// Strategy: scalar dequant + NEON FMA (matches llama.cpp approach)
+/// Optimized: NEON TBL for vectorized lookup
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_iq4_nl_neon(
@@ -672,33 +709,99 @@ pub unsafe fn vec_mad_f32_iq4_nl_neon(
 ) {
     let nb = n / QK;
 
+    // Lookup table as i8 bytes: [-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113]
+    let lut_bytes: [u8; 16] = [
+        (-127i8) as u8,
+        (-104i8) as u8,
+        (-83i8) as u8,
+        (-65i8) as u8,
+        (-49i8) as u8,
+        (-35i8) as u8,
+        (-22i8) as u8,
+        (-10i8) as u8,
+        1,
+        13,
+        25,
+        38,
+        53,
+        69,
+        89,
+        113,
+    ];
+
+    // Load LUT into NEON register for TBL instruction
+    let lut = vld1q_u8(lut_bytes.as_ptr());
+    let m4b = vdupq_n_u8(0x0F);
+    let ws = vdupq_n_f32(weight);
+
     for b in 0..nb {
         let block = &v[b];
         let scale = fp16_to_fp32_scalar(block.d);
-        let ws = weight * scale;
-        let base = b * QK;
+        let ws_scale = vmulq_n_f32(ws, scale);
+        let y_ptr = y.as_mut_ptr().add(b * QK);
 
-        // Scalar dequantization (matches llama.cpp's approach)
-        // This is memory-bound, SIMD widening overhead doesn't help
-        let mut vals = [0.0f32; QK];
-        for j in 0..(QK / 2) {
-            let packed = block.qs[j];
-            let lo = (packed & 0x0F) as usize;
-            let hi = ((packed >> 4) & 0x0F) as usize;
+        // Load 16 bytes of packed 4-bit indices
+        let packed = vld1q_u8(block.qs.as_ptr());
 
-            vals[j] = KVALUES_IQ4NL[lo];
-            vals[j + QK / 2] = KVALUES_IQ4NL[hi];
-        }
+        // Unpack 4-bit indices to 8-bit
+        let lo_idx = vandq_u8(packed, m4b);
+        let hi_idx = vshrq_n_u8(packed, 4);
 
-        // NEON FMA: y += ws * vals
-        let ws_vec = vdupq_n_f32(ws);
-        for i in (0..QK).step_by(4) {
-            let y_vec = vld1q_f32(y.as_ptr().add(base + i));
-            let v_vec = vld1q_f32(vals.as_ptr().add(i));
-            vst1q_f32(
-                y.as_mut_ptr().add(base + i),
-                vfmaq_f32(y_vec, v_vec, ws_vec),
-            );
-        }
+        // TBL lookup: get i8 values for each index
+        let lo_vals = vqtbl1q_u8(lut, lo_idx);
+        let hi_vals = vqtbl1q_u8(lut, hi_idx);
+
+        // Convert i8 to i16 (widening)
+        let lo_i16_0 = vmovl_s8(vget_low_s8(vreinterpretq_s8_u8(lo_vals)));
+        let lo_i16_1 = vmovl_high_s8(vreinterpretq_s8_u8(lo_vals));
+        let hi_i16_0 = vmovl_s8(vget_low_s8(vreinterpretq_s8_u8(hi_vals)));
+        let hi_i16_1 = vmovl_high_s8(vreinterpretq_s8_u8(hi_vals));
+
+        // Convert i16 to i32 then to f32 (lower 8 of each i16)
+        // Process lower half (indices 0-7 and 16-23)
+        let lo_f32_0 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo_i16_0)));
+        let lo_f32_1 = vcvtq_f32_s32(vmovl_high_s16(lo_i16_0));
+        let hi_f32_0 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi_i16_0)));
+        let hi_f32_1 = vcvtq_f32_s32(vmovl_high_s16(hi_i16_0));
+
+        // Load existing y values
+        let y0 = vld1q_f32(y_ptr);
+        let y1 = vld1q_f32(y_ptr.add(4));
+        let y2 = vld1q_f32(y_ptr.add(8));
+        let y3 = vld1q_f32(y_ptr.add(12));
+        let y16 = vld1q_f32(y_ptr.add(16));
+        let y17 = vld1q_f32(y_ptr.add(20));
+        let y18 = vld1q_f32(y_ptr.add(24));
+        let y19 = vld1q_f32(y_ptr.add(28));
+
+        // FMA: y += weight * scale * val
+        let r0 = vfmaq_f32(y0, lo_f32_0, ws_scale);
+        let r1 = vfmaq_f32(y1, lo_f32_1, ws_scale);
+        let r2 = vfmaq_f32(y2, hi_f32_0, ws_scale);
+        let r3 = vfmaq_f32(y3, hi_f32_1, ws_scale);
+        let r16 = vfmaq_f32(
+            y16,
+            vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo_i16_1))),
+            ws_scale,
+        );
+        let r17 =
+            vfmaq_f32(y17, vcvtq_f32_s32(vmovl_high_s16(lo_i16_1)), ws_scale);
+        let r18 = vfmaq_f32(
+            y18,
+            vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi_i16_1))),
+            ws_scale,
+        );
+        let r19 =
+            vfmaq_f32(y19, vcvtq_f32_s32(vmovl_high_s16(hi_i16_1)), ws_scale);
+
+        // Store results
+        vst1q_f32(y_ptr, r0);
+        vst1q_f32(y_ptr.add(4), r1);
+        vst1q_f32(y_ptr.add(8), r2);
+        vst1q_f32(y_ptr.add(12), r3);
+        vst1q_f32(y_ptr.add(16), r16);
+        vst1q_f32(y_ptr.add(20), r17);
+        vst1q_f32(y_ptr.add(24), r18);
+        vst1q_f32(y_ptr.add(28), r19);
     }
 }

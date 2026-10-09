@@ -4,7 +4,7 @@ project(iq_llama_dump C)
 set(CMAKE_C_STANDARD 11)
 
 # llama.cpp 路径
-set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp-0.5.0")
+set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../llama.cpp-0.6.0")
 
 # 添加 llama.cpp 子目录
 add_subdirectory(${LLAMA_DIR} llama_build)

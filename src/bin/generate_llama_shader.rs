@@ -5,7 +5,7 @@ use std::fs;
 
 fn main() {
     let base_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("llama.cpp-0.5.0/ggml/src");
+        .join("llama.cpp-0.6.0/ggml/src");
 
     // Read ggml-common.h (block definitions)
     let ggml_common = fs::read_to_string(base_dir.join("ggml-common.h"))

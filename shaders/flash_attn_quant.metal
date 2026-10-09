@@ -523,9 +523,9 @@ kernel void flash_decode_attention_quant(
                 type4 reg;
                 deq_k(kb, il, reg);
                 ushort d4 = blk * BLK4 + il;
-                for (ushort j = 0; j < 4; j++) {
-                    score += q_ptr[d4 * 4 + j] * reg[j];
-                }
+                // Vectorized dot product (4 elements at once)
+                float4 q4 = *(device const float4 *)(q_ptr + d4 * 4);
+                score += dot((float4)reg, q4);
             }
         }
         score *= scale;
@@ -553,9 +553,8 @@ kernel void flash_decode_attention_quant(
                 type4 reg;
                 deq_v(vb, il, reg);
                 ushort d4 = blk * BLK4 + il;
-                for (ushort j = 0; j < 4; j++) {
-                    local_out[d4 * 4 + j] += weight * reg[j];
-                }
+                // Vectorized accumulation
+                *(thread float4 *)(local_out + d4 * 4) += weight * (float4)reg;
             }
         }
     }
@@ -564,16 +563,24 @@ kernel void flash_decode_attention_quant(
     float sg_max = simd_max(local_max);
     float scale_factor = exp(local_max - sg_max);
     float scaled_sum = local_sum * scale_factor;
-    for (ushort d = 0; d < head_dim; d++) {
-        local_out[d] *= scale_factor;
+    // Vectorized scaling
+    for (ushort d4 = 0; d4 < head_dim / 4; d4++) {
+        *(thread float4 *)(local_out + d4 * 4) *= scale_factor;
     }
 
     float sg_sum = simd_sum(scaled_sum);
 
     // SIMD sum for each dimension - ALL threads must participate
     float sg_out[128];
-    for (ushort d = 0; d < head_dim; d++) {
-        sg_out[d] = simd_sum(local_out[d]);
+    // Vectorized SIMD sum
+    for (ushort d4 = 0; d4 < head_dim / 4; d4++) {
+        float4 tmp = *(thread float4 *)(local_out + d4 * 4);
+        float4 sum4;
+        sum4.x = simd_sum(tmp.x);
+        sum4.y = simd_sum(tmp.y);
+        sum4.z = simd_sum(tmp.z);
+        sum4.w = simd_sum(tmp.w);
+        *(thread float4 *)(sg_out + d4 * 4) = sum4;
     }
 
     // Write output - only thread 0 writes
@@ -643,9 +650,9 @@ kernel void flash_prefill_attention_quant(
                 type4 reg;
                 deq_k(kb, il, reg);
                 ushort d4 = blk * BLK4 + il;
-                for (ushort j = 0; j < 4; j++) {
-                    score += q_ptr[d4 * 4 + j] * reg[j];
-                }
+                // Vectorized dot product (4 elements at once)
+                float4 q4 = *(device const float4 *)(q_ptr + d4 * 4);
+                score += dot((float4)reg, q4);
             }
         }
         score *= scale;
@@ -673,9 +680,8 @@ kernel void flash_prefill_attention_quant(
                 type4 reg;
                 deq_v(vb, il, reg);
                 ushort d4 = blk * BLK4 + il;
-                for (ushort j = 0; j < 4; j++) {
-                    local_out[d4 * 4 + j] += weight * reg[j];
-                }
+                // Vectorized accumulation
+                *(thread float4 *)(local_out + d4 * 4) += weight * (float4)reg;
             }
         }
     }
@@ -848,6 +854,443 @@ kernel void flash_decode_attention_f16(
         }
     }
 }
+
+// ============================================================================
+// Adaptive Decode kernel: supports multiple SIMD groups for better GPU utilization
+// Uses threadgroup memory for cross-SIMD reduction
+// NSG (number of SIMD groups) determines parallelism based on seq_k
+// ============================================================================
+
+template<
+    typename k_block_t,
+    typename v_block_t,
+    typename type4,
+    void (*deq_k)(device const k_block_t *, short, thread type4 &),
+    void (*deq_v)(device const v_block_t *, short, thread type4 &)>
+
+kernel void flash_decode_attention_adaptive(
+    constant FlashAttnArgs & args [[buffer(0)]],
+    device const float * q [[buffer(1)]],
+    device const char * k [[buffer(2)]],
+    device const char * v [[buffer(3)]],
+    device float * output [[buffer(4)]],
+    threadgroup float * shmem [[threadgroup(0)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort3 ntg [[threads_per_threadgroup]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const uint b = tgpig.z;
+    const uint h = tgpig.y;
+    const ushort head_dim = args.head_dim;
+    const float scale = args.scale;
+    const uint seq_k = args.seq_k;
+
+    // Get NSG from function constant or default
+    const ushort nsg = ntg.y;  // Number of SIMD groups
+    const ushort n_threads = ntg.x * nsg;  // Total threads
+
+    device const float * q_ptr = q + b * args.q_stride_b + h * args.q_stride_h;
+    device const char * k_base = k + b * args.k_stride_b + h * args.k_stride_h;
+    device const char * v_base = v + b * args.v_stride_b + h * args.v_stride_h;
+
+    // Threadgroup memory for cross-SIMD reduction
+    // Layout: [nsg max_values][nsg sum_values][nsg * head_dim output]
+    threadgroup float * sg_max_vals = shmem;
+    threadgroup float * sg_sum_vals = shmem + nsg;
+    threadgroup float * sg_outputs = shmem + 2 * nsg;
+
+    // Online softmax state per thread
+    float local_max = -FLT_MAX/2;
+    float local_sum = 0.0f;
+    float local_out[128];
+    for (ushort d = 0; d < head_dim; d++) {
+        local_out[d] = 0.0f;
+    }
+
+    // Global thread index within the threadgroup
+    const ushort tid = sgitg * 32 + tiisg;
+
+    // Early return if this thread has no positions to process
+    if (tid >= seq_k) {
+        // Still need to write to threadgroup memory for reduction
+        sg_max_vals[sgitg] = local_max;
+        sg_sum_vals[sgitg] = 0.0f;
+        for (ushort d = 0; d < head_dim; d++) {
+            sg_outputs[sgitg * head_dim + d] = 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        return;
+    }
+
+    // Process KV positions assigned to this thread
+    // Each thread processes positions: tid, tid + n_threads, tid + 2*n_threads, ...
+    for (uint kv_idx = tid; kv_idx < seq_k; kv_idx += n_threads) {
+        // Compute Q*K
+        device const char * k_row = k_base + kv_idx * args.k_stride_s;
+        float score = 0.0f;
+
+        for (ushort blk = 0; blk < head_dim / 32; blk++) {
+            device const k_block_t * kb = (device const k_block_t *)(k_row + blk * sizeof(k_block_t));
+            for (ushort il = 0; il < 8; il++) {
+                type4 reg;
+                deq_k(kb, il, reg);
+                ushort d4 = blk * 8 + il;
+                // Vectorized dot product
+                float4 q4 = *(device const float4 *)(q_ptr + d4 * 4);
+                score += dot((float4)reg, q4);
+            }
+        }
+        score *= scale;
+
+        // Online softmax update
+        float old_max = local_max;
+        local_max = max(local_max, score);
+
+        if (old_max > -FLT_MAX/4) {
+            float scale_old = exp(old_max - local_max);
+            local_sum *= scale_old;
+            for (ushort d = 0; d < head_dim; d++) {
+                local_out[d] *= scale_old;
+            }
+        }
+
+        float weight = exp(score - local_max);
+        local_sum += weight;
+
+        // Accumulate weighted V
+        device const char * v_row = v_base + kv_idx * args.v_stride_s;
+        for (ushort blk = 0; blk < head_dim / 32; blk++) {
+            device const v_block_t * vb = (device const v_block_t *)(v_row + blk * sizeof(v_block_t));
+            for (ushort il = 0; il < 8; il++) {
+                type4 reg;
+                deq_v(vb, il, reg);
+                ushort d4 = blk * 8 + il;
+                // Vectorized accumulation
+                *(thread float4 *)(local_out + d4 * 4) += weight * (float4)reg;
+            }
+        }
+    }
+
+    // SIMD-level reduction within each SIMD group
+    float sg_max = simd_max(local_max);
+    float scale_factor = exp(local_max - sg_max);
+    float scaled_sum = local_sum * scale_factor;
+    // Vectorized scaling
+    for (ushort d4 = 0; d4 < head_dim / 4; d4++) {
+        *(thread float4 *)(local_out + d4 * 4) *= scale_factor;
+    }
+
+    float sg_sum = simd_sum(scaled_sum);
+    float sg_out[128];
+    for (ushort d = 0; d < head_dim; d++) {
+        sg_out[d] = simd_sum(local_out[d]);
+    }
+
+    // Write SIMD group results to threadgroup memory
+    if (tiisg == 0) {
+        sg_max_vals[sgitg] = sg_max;
+        sg_sum_vals[sgitg] = sg_sum;
+        for (ushort d = 0; d < head_dim; d++) {
+            sg_outputs[sgitg * head_dim + d] = sg_out[d];
+        }
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Final reduction across SIMD groups (only SIMD group 0)
+    if (sgitg == 0) {
+        // Find global max
+        float global_max = sg_max_vals[0];
+        for (ushort sg = 1; sg < nsg; sg++) {
+            global_max = max(global_max, sg_max_vals[sg]);
+        }
+
+        // Scale sums and compute global sum
+        float global_sum = 0.0f;
+        for (ushort sg = 0; sg < nsg; sg++) {
+            float scale_sg = exp(sg_max_vals[sg] - global_max);
+            sg_sum_vals[sg] *= scale_sg;
+            global_sum += sg_sum_vals[sg];
+
+            // Scale outputs
+            for (ushort d = 0; d < head_dim; d++) {
+                sg_outputs[sg * head_dim + d] *= scale_sg;
+            }
+        }
+
+        // Sum outputs and write result
+        // Use all 32 threads in SIMD group 0 to write all head_dim outputs
+        for (ushort d = tiisg; d < head_dim; d += 32) {
+            float sum = 0.0f;
+            for (ushort sg = 0; sg < nsg; sg++) {
+                sum += sg_outputs[sg * head_dim + d];
+            }
+            output[b * args.o_stride_b + h * args.o_stride_h + d] = sum / global_sum;
+        }
+    }
+}
+
+// Template instantiations for adaptive decode (F16 format, 4 SIMD groups = 128 threads)
+template [[host_name("flash_decode_attention_f16_adaptive")]]
+kernel void flash_decode_attention_adaptive<block_f16, block_f16, float4, dequantize_f16_t4, dequantize_f16_t4>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *, device float *,
+    threadgroup float *, uint3, ushort3, ushort, ushort);
+
+template [[host_name("flash_decode_attention_q4_0_adaptive")]]
+kernel void flash_decode_attention_adaptive<block_q4_0, block_q4_0, float4, dequantize_q4_0_t4, dequantize_q4_0_t4>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *, device float *,
+    threadgroup float *, uint3, ushort3, ushort, ushort);
+
+template [[host_name("flash_decode_attention_q8_0_adaptive")]]
+kernel void flash_decode_attention_adaptive<block_q8_0, block_q8_0, float4, dequantize_q8_0_t4, dequantize_q8_0_t4>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *, device float *,
+    threadgroup float *, uint3, ushort3, ushort, ushort);
+
+// ============================================================================
+// Multi-workgroup Decode kernel: matches llama.cpp's approach
+// Uses NWG=32 workgroups, NSG=2 SIMD groups per workgroup
+// Partial results are combined via reduction kernel
+// ============================================================================
+
+struct PartialResult {
+    float m;        // max value
+    float s;        // sum value
+};
+
+template<
+    typename k_block_t,
+    typename v_block_t,
+    typename type4,
+    void (*deq_k)(device const k_block_t *, short, thread type4 &),
+    void (*deq_v)(device const v_block_t *, short, thread type4 &)>
+
+kernel void flash_decode_attention_multi_wg(
+    constant FlashAttnArgs & args [[buffer(0)]],
+    device const float * q [[buffer(1)]],
+    device const char * k [[buffer(2)]],
+    device const char * v [[buffer(3)]],
+    device float * partial_out [[buffer(4)]],      // [nwg, head_dim] partial outputs
+    device PartialResult * partial_ms [[buffer(5)]], // [nwg] partial max/sum
+    threadgroup float * shmem [[threadgroup(0)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort3 ntg [[threads_per_threadgroup]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const uint b = tgpig.z;
+    const uint h = tgpig.y;
+    const ushort iwg = tgpig.x;  // workgroup index (0..nwg-1)
+    const ushort nwg = ntg.x;    // number of workgroups
+
+    const ushort head_dim = args.head_dim;
+    const float scale = args.scale;
+    const uint seq_k = args.seq_k;
+
+    // Each workgroup processes a contiguous chunk of KV positions
+    const uint chunk_size = (seq_k + nwg - 1) / nwg;  // ceil division
+    const uint kv_start = iwg * chunk_size;
+    const uint kv_end = min(kv_start + chunk_size, seq_k);
+
+    if (kv_start >= seq_k) {
+        // No work for this workgroup - write zeros
+        if (sgitg == 0 && tiisg == 0) {
+            partial_ms[iwg] = (PartialResult){ -FLT_MAX/2, 0.0f };
+            for (ushort d = 0; d < head_dim; d++) {
+                partial_out[iwg * head_dim + d] = 0.0f;
+            }
+        }
+        return;
+    }
+
+    device const float * q_ptr = q + b * args.q_stride_b + h * args.q_stride_h;
+    device const char * k_base = k + b * args.k_stride_b + h * args.k_stride_h;
+    device const char * v_base = v + b * args.v_stride_b + h * args.v_stride_h;
+
+    // Threadgroup memory for SIMD reduction
+    threadgroup float * sg_max_vals = shmem;
+    threadgroup float * sg_sum_vals = shmem + 2;
+    threadgroup float * sg_outputs = shmem + 4;
+
+    // Online softmax state per thread
+    float local_max = -FLT_MAX/2;
+    float local_sum = 0.0f;
+    float local_out[128];
+    for (ushort d = 0; d < head_dim; d++) {
+        local_out[d] = 0.0f;
+    }
+
+    // Process KV positions assigned to this thread
+    // Each thread processes positions with stride nsg*32
+    const ushort n_threads = 2 * 32;  // 2 SIMD groups * 32 threads
+    const ushort tid = sgitg * 32 + tiisg;
+
+    for (uint kv_idx = kv_start + tid; kv_idx < kv_end; kv_idx += n_threads) {
+        // Compute Q*K
+        device const char * k_row = k_base + kv_idx * args.k_stride_s;
+        float score = 0.0f;
+
+        for (ushort blk = 0; blk < head_dim / 32; blk++) {
+            device const k_block_t * kb = (device const k_block_t *)(k_row + blk * sizeof(k_block_t));
+            for (ushort il = 0; il < 8; il++) {
+                type4 reg;
+                deq_k(kb, il, reg);
+                ushort d4 = blk * 8 + il;
+                // Vectorized dot product
+                float4 q4 = *(device const float4 *)(q_ptr + d4 * 4);
+                score += dot((float4)reg, q4);
+            }
+        }
+        score *= scale;
+
+        // Online softmax update
+        float old_max = local_max;
+        local_max = max(local_max, score);
+
+        if (old_max > -FLT_MAX/4) {
+            float scale_old = exp(old_max - local_max);
+            local_sum *= scale_old;
+            for (ushort d = 0; d < head_dim; d++) {
+                local_out[d] *= scale_old;
+            }
+        }
+
+        float weight = exp(score - local_max);
+        local_sum += weight;
+
+        // Accumulate weighted V
+        device const char * v_row = v_base + kv_idx * args.v_stride_s;
+        for (ushort blk = 0; blk < head_dim / 32; blk++) {
+            device const v_block_t * vb = (device const v_block_t *)(v_row + blk * sizeof(v_block_t));
+            for (ushort il = 0; il < 8; il++) {
+                type4 reg;
+                deq_v(vb, il, reg);
+                ushort d4 = blk * 8 + il;
+                // Vectorized accumulation
+                *(thread float4 *)(local_out + d4 * 4) += weight * (float4)reg;
+            }
+        }
+    }
+
+    // SIMD-level reduction within each SIMD group
+    float sg_max = simd_max(local_max);
+    float scale_factor = exp(local_max - sg_max);
+    float scaled_sum = local_sum * scale_factor;
+    // Vectorized scaling
+    for (ushort d4 = 0; d4 < head_dim / 4; d4++) {
+        *(thread float4 *)(local_out + d4 * 4) *= scale_factor;
+    }
+
+    float sg_sum = simd_sum(scaled_sum);
+    float sg_out[128];
+    for (ushort d = 0; d < head_dim; d++) {
+        sg_out[d] = simd_sum(local_out[d]);
+    }
+
+    // Write SIMD group results to threadgroup memory
+    if (tiisg == 0) {
+        sg_max_vals[sgitg] = sg_max;
+        sg_sum_vals[sgitg] = sg_sum;
+        for (ushort d = 0; d < head_dim; d++) {
+            sg_outputs[sgitg * head_dim + d] = sg_out[d];
+        }
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Final reduction across SIMD groups (only SIMD group 0)
+    if (sgitg == 0) {
+        float global_max = sg_max_vals[0];
+        float global_sum = 0.0f;
+        float global_out[128];
+        for (ushort d = 0; d < head_dim; d++) {
+            global_out[d] = 0.0f;
+        }
+
+        for (ushort sg = 0; sg < 2; sg++) {
+            float scale_g = exp(sg_max_vals[sg] - global_max);
+            // Rescale previous
+            if (sg > 0) {
+                global_sum *= scale_g;
+                for (ushort d = 0; d < head_dim; d++) {
+                    global_out[d] *= scale_g;
+                }
+            }
+            global_max = max(global_max, sg_max_vals[sg]);
+            float new_scale = exp(sg_max_vals[sg] - global_max);
+            global_sum += sg_sum_vals[sg] * new_scale;
+            for (ushort d = 0; d < head_dim; d++) {
+                global_out[d] += sg_outputs[sg * head_dim + d] * new_scale;
+            }
+        }
+
+        // Store partial result for this workgroup
+        partial_ms[iwg].m = global_max;
+        partial_ms[iwg].s = global_sum;
+        for (ushort d = tiisg; d < head_dim; d += 32) {
+            partial_out[iwg * head_dim + d] = global_out[d];
+        }
+    }
+}
+
+// Reduction kernel: combines partial results from multiple workgroups
+kernel void flash_decode_attention_reduce(
+    constant FlashAttnArgs & args [[buffer(0)]],
+    device const float * partial_out [[buffer(1)]],      // [nwg, head_dim]
+    device const PartialResult * partial_ms [[buffer(2)]], // [nwg]
+    device float * output [[buffer(3)]],
+    constant ushort & nwg [[buffer(4)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]])
+{
+    const uint b = tgpig.z;
+    const uint h = tgpig.y;
+    const ushort head_dim = args.head_dim;
+
+    // Find global max
+    float global_max = partial_ms[0].m;
+    for (ushort wg = 1; wg < nwg; wg++) {
+        global_max = max(global_max, partial_ms[wg].m);
+    }
+
+    // Combine partial results with online softmax
+    float global_sum = 0.0f;
+    float final_out[128];
+    for (ushort d = 0; d < head_dim; d++) {
+        final_out[d] = 0.0f;
+    }
+
+    for (ushort wg = 0; wg < nwg; wg++) {
+        float scale = exp(partial_ms[wg].m - global_max);
+        global_sum += partial_ms[wg].s * scale;
+        for (ushort d = 0; d < head_dim; d++) {
+            final_out[d] += partial_out[wg * head_dim + d] * scale;
+        }
+    }
+
+    // Write final output
+    if (tiisg == 0) {
+        for (ushort d = 0; d < head_dim; d++) {
+            output[b * args.o_stride_b + h * args.o_stride_h + d] = final_out[d] / global_sum;
+        }
+    }
+}
+
+// Template instantiations for multi-wg decode
+template [[host_name("flash_decode_attention_f16_multi_wg")]]
+kernel void flash_decode_attention_multi_wg<block_f16, block_f16, float4, dequantize_f16_t4, dequantize_f16_t4>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *, device float *, device PartialResult *,
+    threadgroup float *, uint3, ushort3, ushort, ushort);
+
+template [[host_name("flash_decode_attention_q4_0_multi_wg")]]
+kernel void flash_decode_attention_multi_wg<block_q4_0, block_q4_0, float4, dequantize_q4_0_t4, dequantize_q4_0_t4>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *, device float *, device PartialResult *,
+    threadgroup float *, uint3, ushort3, ushort, ushort);
+
+template [[host_name("flash_decode_attention_q8_0_multi_wg")]]
+kernel void flash_decode_attention_multi_wg<block_q8_0, block_q8_0, float4, dequantize_q8_0_t4, dequantize_q8_0_t4>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *, device float *, device PartialResult *,
+    threadgroup float *, uint3, ushort3, ushort, ushort);
 
 template<
     typename k_block_t,
@@ -1392,3 +1835,447 @@ template [[host_name("flash_prefill_attention_q6_K")]]
 kernel void flash_prefill_attention_kquant<block_q6_K, block_q6_K, float4x4, dequantize_q6_K_t4x4, dequantize_q6_K_t4x4>(
     constant FlashAttnArgs &, device const float *, device const char *, device const char *, device float *,
     uint3, ushort3, ushort, ushort);
+
+// ============================================================================
+// High-performance decode: 8x4 grid with stride-8 access
+// Each thread processes 4 float4s (16 elements) with stride 8 across head_dim
+// Grid: 32 threads = 8 (tx) x 4 (ty), ty handles cache items, tx handles head_dim
+// ============================================================================
+
+template<
+    typename k_block_t,
+    typename v_block_t,
+    typename type4,
+    short nl_k,  // Number of float4s per block (e.g., 1 for F16, 8 for Q4_0)
+    short nl_v,
+    void (*deq_k)(device const k_block_t *, short, thread type4 &),
+    void (*deq_v)(device const v_block_t *, short, thread type4 &)>
+
+kernel void flash_decode_grid8x4(
+    constant FlashAttnArgs & args [[buffer(0)]],
+    device const float * q [[buffer(1)]],
+    device const char * k [[buffer(2)]],
+    device const char * v [[buffer(3)]],
+    device float * output [[buffer(4)]],
+    threadgroup half * shmem [[threadgroup(0)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]])
+{
+    // 8x4 grid: tx (0-7) for head_dim, ty (0-3) for cache items within chunk
+    const ushort tx = tiisg % 8;
+    const ushort ty = tiisg / 8;
+
+    const float scale = args.scale;
+    const uint seq_k = args.seq_k;
+    const uint b = tgpig.z;
+    const uint h = tgpig.y;
+
+    constexpr ushort DK4 = 32;   // 32 float4s = 128 elements
+    constexpr ushort NL = 8;     // 8 tx threads
+    constexpr ushort NE = 4;     // 4 cache items per chunk
+    constexpr ushort ITER = 4;   // 4 float4s per thread
+
+    // Threadgroup memory layout:
+    // [0..256): query (32 half4)
+    // [256..288): scores for current chunk (32 float = NE*NL)
+    threadgroup char * tg_base = (threadgroup char *) shmem;
+    threadgroup half4 * sq4 = (threadgroup half4 *) (tg_base + 0);
+    threadgroup float * ss = (threadgroup float *) (tg_base + 256);
+
+    // Load query
+    device const float4 * q_dev = (device const float4 *)
+        (q + b * args.q_stride_b + h * args.q_stride_h);
+    if (tiisg < DK4) {
+        sq4[tiisg] = half4(q_dev[tiisg]);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Per-thread online softmax state (will be reduced across threads)
+    float M = -FLT_MAX / 2;   // Local max
+    float S = 0.0f;           // Local sum
+
+    // Per-thread output accumulator (each thread handles 4 float4s)
+    float4 O[ITER];
+    for (ushort i = 0; i < ITER; i++) {
+        O[i] = float4(0.0f);
+    }
+
+    device const char * k_base = k + b * args.k_stride_b + h * args.k_stride_h;
+    device const char * v_base = v + b * args.v_stride_b + h * args.v_stride_h;
+
+    // Process cache items in chunks of NE
+    const uint num_chunks = (seq_k + NE - 1) / NE;
+
+    for (uint chunk = 0; chunk < num_chunks; chunk++) {
+        const uint kv_idx = chunk * NE + ty;
+        const bool valid = kv_idx < seq_k;
+
+        // Step 1: Compute Q*K^T for my cache item
+        float score = 0.0f;
+        if (valid) {
+            device const k_block_t * pk = (device const k_block_t *)
+                (k_base + kv_idx * args.k_stride_s);
+            for (ushort iter = 0; iter < ITER; iter++) {
+                const ushort i = iter * NL + tx;
+                type4 k_vec;
+                deq_k(pk + i / nl_k, i % nl_k, k_vec);
+                score += dot((float4) k_vec, (float4) sq4[i]);
+            }
+        } else {
+            score = -FLT_MAX / 2;  // Invalid cache item
+        }
+
+        // Step 2: Reduce score across tx (within each ty group)
+        score += simd_shuffle_xor(score, 4);
+        score += simd_shuffle_xor(score, 2);
+        score += simd_shuffle_xor(score, 1);
+        // Now tx=0 has the reduced score for each ty
+
+        // Step 3: Store score to threadgroup memory
+        // After reduction, only tx=0 has the correct score for each ty
+        // We need to broadcast to all tx threads
+        if (tx == 0) {
+            ss[ty] = score * scale;  // Store at position ty (0-3)
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Step 4: Online softmax update
+        // Process each cache item sequentially (online softmax algorithm)
+        {
+            for (ushort cc = 0; cc < NE; cc++) {
+                const uint item_idx = chunk * NE + cc;
+                if (item_idx >= seq_k) {
+                    ss[cc] = 0.0f;  // Invalid item, zero weight
+                    continue;
+                }
+
+                const float s = ss[cc];  // Score for cc-th cache item
+
+                // Only tx==0 computes the new M and weight
+                float ms = 1.0f;  // Scaling factor for old output
+                float vs = 0.0f;  // Weight for new V
+
+                if (tx == 0) {
+                    const float m = M;
+                    M = max(M, s);
+
+                    ms = exp(m - M);  // Scaling factor
+                    vs = exp(s - M);  // New weight
+
+                    S = S * ms + vs;
+
+                    ss[cc] = vs;  // Store weight for V accumulation
+                    ss[NE] = M;   // Store updated M
+                    ss[NE + 1] = ms;  // Store scaling factor
+                }
+
+                threadgroup_barrier(mem_flags::mem_threadgroup);
+
+                // All threads read the scaling factor and weight
+                if (tx != 0) {
+                    M = ss[NE];
+                    ms = ss[NE + 1];
+                }
+
+                // All threads scale their output
+                for (ushort i = 0; i < ITER; i++) {
+                    O[i] *= ms;
+                }
+            }
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Step 5: V accumulation - ALL threads participate
+        {
+            for (ushort cc = 0; cc < NE; cc++) {
+                const uint item_idx = chunk * NE + cc;
+                if (item_idx >= seq_k) continue;
+
+                const float weight = ss[cc];  // Weight for this cache item
+
+                device const v_block_t * pv = (device const v_block_t *)
+                    (v_base + item_idx * args.v_stride_s);
+
+                for (ushort iter = 0; iter < ITER; iter++) {
+                    const ushort i = iter * NL + tx;
+                    type4 v_vec;
+                    deq_v(pv + i / nl_v, i % nl_v, v_vec);
+                    O[iter] += weight * (float4) v_vec;
+                }
+            }
+        }
+    }
+
+    // After all chunks, broadcast S from tx==0 to all threads
+    // (Only tx==0 updated S during softmax)
+    if (tx == 0) {
+        ss[0] = S;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float final_sum = ss[0];
+
+    // Final output: normalize and write (only ty=0 to avoid duplicate writes)
+    if (ty == 0) {
+        const float inv_sum = 1.0f / final_sum;
+        for (ushort iter = 0; iter < ITER; iter++) {
+            const ushort i = iter * NL + tx;
+            const float4 result = O[iter] * inv_sum;
+            output[b * args.o_stride_b + h * args.o_stride_h + i * 4 + 0] = result.x;
+            output[b * args.o_stride_b + h * args.o_stride_h + i * 4 + 1] = result.y;
+            output[b * args.o_stride_b + h * args.o_stride_h + i * 4 + 2] = result.z;
+            output[b * args.o_stride_b + h * args.o_stride_h + i * 4 + 3] = result.w;
+        }
+    }
+}
+
+// Instantiations
+template [[host_name("flash_decode_grid8x4_f16")]]
+kernel void flash_decode_grid8x4<block_f16, block_f16, float4, 1, 1, dequantize_f16_t4, dequantize_f16_t4>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort);
+
+template [[host_name("flash_decode_grid8x4_q4_0")]]
+kernel void flash_decode_grid8x4<block_q4_0, block_q4_0, float4, 8, 8, dequantize_q4_0_t4, dequantize_q4_0_t4>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort);
+
+template [[host_name("flash_decode_grid8x4_q8_0")]]
+kernel void flash_decode_grid8x4<block_q8_0, block_q8_0, float4, 8, 8, dequantize_q8_0_t4, dequantize_q8_0_t4>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort);
+
+// ============================================================================
+// Multi-SIMD Group Flash Attention Decode
+// Each threadgroup has multiple SIMD groups for parallel cache processing
+// ============================================================================
+
+template<
+    typename k_block_t,
+    typename v_block_t,
+    typename type4,
+    short nl_k,
+    short nl_v,
+    void (*deq_k)(device const k_block_t *, short, thread type4 &),
+    void (*deq_v)(device const v_block_t *, short, thread type4 &),
+    short NUM_GROUPS>  // Number of SIMD groups per threadgroup
+
+kernel void flash_decode_multi_group(
+    constant FlashAttnArgs & args [[buffer(0)]],
+    device const float * q [[buffer(1)]],
+    device const char * k [[buffer(2)]],
+    device const char * v [[buffer(3)]],
+    device float * output [[buffer(4)]],
+    threadgroup half * shmem [[threadgroup(0)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    // Thread organization
+    const ushort lane_id = tiisg;          // 0-31, thread within SIMD group
+    const ushort group_id = sgitg;         // 0..NUM_GROUPS-1, SIMD group within threadgroup
+
+    const float scale = args.scale;
+    const uint seq_k = args.seq_k;
+    const uint b = tgpig.z;
+    const uint h = tgpig.y;
+
+    // Constants
+    constexpr ushort DK4 = 32;     // 32 float4s = 128 elements
+    constexpr ushort LANES = 32;   // Threads per SIMD group
+    constexpr ushort CHUNK = 4;    // Cache items per chunk
+    constexpr ushort ITER = 4;     // Float4s per thread for head_dim
+
+    // Threadgroup memory layout
+    // [0..128): query (32 float4s)
+    // [128..128+NUM_GROUPS*16): per-group M and S (2 floats each, 16 aligned)
+    // [128+NUM_GROUPS*16..]: per-group output accumulators
+    threadgroup float4 * query_vec = (threadgroup float4 *) shmem;
+    threadgroup float * group_ms = (threadgroup float *) (shmem + 128);
+    threadgroup float4 * group_out = (threadgroup float4 *) (shmem + 128 + NUM_GROUPS * 16);
+
+    // Load query (all threads participate)
+    device const float4 * q_dev = (device const float4 *)
+        (q + b * args.q_stride_b + h * args.q_stride_h);
+    if (lane_id < DK4) {
+        query_vec[lane_id] = float4(q_dev[lane_id]);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Per-group state for online softmax
+    float local_M = -FLT_MAX / 2;
+    float local_S = 0.0f;
+    float4 local_O[ITER];
+    for (ushort i = 0; i < ITER; i++) {
+        local_O[i] = float4(0.0f);
+    }
+
+    // Sub-thread indexing for head_dim parallelization
+    const ushort tx = lane_id % 8;  // Head_dim dimension
+    const ushort ty = lane_id / 8;  // Auxiliary
+
+    // Pointers to K/V cache
+    device const char * k_base = k + b * args.k_stride_b + h * args.k_stride_h;
+    device const char * v_base = v + b * args.v_stride_b + h * args.v_stride_h;
+
+    // Process cache items in chunks
+    // Each SIMD group starts at a different offset
+    const uint group_stride = NUM_GROUPS;  // Number of groups in this threadgroup
+    const uint start_chunk = group_id;     // Starting chunk for this group
+
+    for (uint chunk_idx = start_chunk; chunk_idx * CHUNK < seq_k; chunk_idx += group_stride) {
+        const uint base_item = chunk_idx * CHUNK;
+
+        // Process CHUNK cache items
+        for (ushort c = 0; c < CHUNK; c++) {
+            const uint item_idx = base_item + c;
+            if (item_idx >= seq_k) continue;
+
+            // Step 1: Compute Q*K^T score
+            float score = 0.0f;
+            device const k_block_t * pk = (device const k_block_t *)
+                (k_base + item_idx * args.k_stride_s);
+
+            for (ushort iter = 0; iter < ITER; iter++) {
+                const ushort i = iter * 8 + tx;
+                type4 k_vec;
+                deq_k(pk + i / nl_k, i % nl_k, k_vec);
+                score += dot((float4) k_vec, query_vec[i]);
+            }
+
+            // Reduce score across threads in SIMD group
+            score += simd_shuffle_xor(score, 4);
+            score += simd_shuffle_xor(score, 2);
+            score += simd_shuffle_xor(score, 1);
+            // Now thread 0 has the complete score
+
+            // Threadgroup storage for this chunk's scores
+            threadgroup float * chunk_scores = group_ms + group_id * 16;
+            if (lane_id == 0) {
+                chunk_scores[c] = score * scale;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+
+            // Step 2: Online softmax update
+            if (lane_id == 0) {
+                const float s = chunk_scores[c];
+                const float old_M = local_M;
+                local_M = max(local_M, s);
+
+                const float scale_old = exp(old_M - local_M);
+                const float weight = exp(s - local_M);
+
+                local_S = local_S * scale_old + weight;
+
+                chunk_scores[c] = weight;  // Store weight for V accumulation
+                chunk_scores[CHUNK + 0] = scale_old;  // Store scale for all threads
+            }
+
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+
+            // Step 3: All threads scale previous output
+            const float scale_factor = chunk_scores[CHUNK + 0];
+            for (ushort iter = 0; iter < ITER; iter++) {
+                local_O[iter] *= scale_factor;
+            }
+
+            // Step 4: All threads accumulate weighted V
+            const float weight = chunk_scores[c];
+            device const v_block_t * pv = (device const v_block_t *)
+                (v_base + item_idx * args.v_stride_s);
+            for (ushort iter = 0; iter < ITER; iter++) {
+                const ushort i = iter * 8 + tx;
+                type4 v_vec;
+                deq_v(pv + i / nl_v, i % nl_v, v_vec);
+                local_O[iter] += weight * (float4) v_vec;
+            }
+        }
+    }
+
+    // Store per-group results to threadgroup memory
+    // M and S
+    if (lane_id == 0) {
+        group_ms[group_id * 2 + 0] = local_S;
+        group_ms[group_id * 2 + 1] = local_M;
+    }
+
+    // Output accumulator
+    // Each thread has ITER float4s, indexed by (iter, tx)
+    // Total per group: ITER * 8 float4s
+    for (ushort iter = 0; iter < ITER; iter++) {
+        const ushort idx = group_id * ITER * 8 + iter * 8 + tx;
+        group_out[idx] = local_O[iter];
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Step 4: Tree reduction across SIMD groups
+    for (ushort r = NUM_GROUPS / 2; r > 0; r >>= 1) {
+        if (group_id < r) {
+            // Combine group [group_id] and group [group_id + r]
+            const float S0 = group_ms[(group_id) * 2 + 0];
+            const float M0 = group_ms[(group_id) * 2 + 1];
+            const float S1 = group_ms[(group_id + r) * 2 + 0];
+            const float M1 = group_ms[(group_id + r) * 2 + 1];
+
+            const float Mx = max(M0, M1);
+            const float scale0 = exp(M0 - Mx);
+            const float scale1 = exp(M1 - Mx);
+
+            const float combined_S = S0 * scale0 + S1 * scale1;
+
+            // Update group 0's state
+            if (lane_id == 0) {
+                group_ms[group_id * 2 + 0] = combined_S;
+                group_ms[group_id * 2 + 1] = Mx;
+            }
+
+            // Combine outputs
+            for (ushort iter = 0; iter < ITER; iter++) {
+                const ushort idx0 = group_id * ITER * 8 + iter * 8 + tx;
+                const ushort idx1 = (group_id + r) * ITER * 8 + iter * 8 + tx;
+                const float4 O0 = group_out[idx0];
+                const float4 O1 = group_out[idx1];
+                group_out[idx0] = O0 * scale0 + O1 * scale1;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Step 5: Final output (only group 0 writes)
+    if (group_id == 0 && ty == 0) {
+        const float final_S = group_ms[0];
+        const float inv_S = 1.0f / final_S;
+
+        for (ushort iter = 0; iter < ITER; iter++) {
+            const ushort idx = iter * 8 + tx;
+            const ushort i = iter * 8 + tx;  // Element index in head_dim
+            const float4 result = group_out[idx] * inv_S;
+            output[b * args.o_stride_b + h * args.o_stride_h + i * 4 + 0] = result.x;
+            output[b * args.o_stride_b + h * args.o_stride_h + i * 4 + 1] = result.y;
+            output[b * args.o_stride_b + h * args.o_stride_h + i * 4 + 2] = result.z;
+            output[b * args.o_stride_b + h * args.o_stride_h + i * 4 + 3] = result.w;
+        }
+    }
+}
+
+// Instantiations for F16 with different group counts
+template [[host_name("flash_decode_multi_group_f16_g1")]]
+kernel void flash_decode_multi_group<block_f16, block_f16, float4, 1, 1, dequantize_f16_t4, dequantize_f16_t4, 1>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_f16_g2")]]
+kernel void flash_decode_multi_group<block_f16, block_f16, float4, 1, 1, dequantize_f16_t4, dequantize_f16_t4, 2>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_f16_g4")]]
+kernel void flash_decode_multi_group<block_f16, block_f16, float4, 1, 1, dequantize_f16_t4, dequantize_f16_t4, 4>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);
+
+template [[host_name("flash_decode_multi_group_f16_g8")]]
+kernel void flash_decode_multi_group<block_f16, block_f16, float4, 1, 1, dequantize_f16_t4, dequantize_f16_t4, 8>(
+    constant FlashAttnArgs &, device const float *, device const char *, device const char *,
+    device float *, threadgroup half *, uint3, ushort, ushort);

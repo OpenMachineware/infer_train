@@ -202,7 +202,7 @@ fn bench_pool_2d(device: &Device, queue: &metal::CommandQueue) {
         .expect("No self pipeline");
 
     let llama_pool_source = include_str!(
-        "../../llama.cpp-0.5.0/ggml/src/ggml-metal/kernels/pool.metal"
+        "../../llama.cpp-0.6.0/ggml/src/ggml-metal/kernels/pool.metal"
     )
     .replace("#include \"common.h\"", "");
     let llama_source =

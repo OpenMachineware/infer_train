@@ -80,7 +80,7 @@ fn main() {
     }
 
     println!("Compare with C++:\n");
-    println!("  cd llama.cpp-0.5.0");
+    println!("  cd llama.cpp-0.6.0");
     println!("  g++ -O3 -mcpu=native test_sgemm_simple.cpp -o test_sgemm_cpp");
     println!("  ./test_sgemm_cpp");
 }
