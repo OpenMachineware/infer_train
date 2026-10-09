@@ -4,6 +4,9 @@
 // Test multi-SIMD group flash attention for all quantized formats
 
 use half::f16;
+use infer_train::quant::kv_cache::{
+    BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0,
+};
 use metal::*;
 
 fn main() {
@@ -50,9 +53,11 @@ fn test_format(
     let (k_quant, v_quant, k_stride, v_stride) =
         quantize_kv(format, &k_raw, &v_raw, seq_k, head_dim);
 
-    // CPU reference (using quantized K/V)
+    // CPU reference (using F16 K/V for consistency with quantization)
+    let k_f16: Vec<f16> = k_raw.iter().map(|&x| f16::from_f32(x)).collect();
+    let v_f16: Vec<f16> = v_raw.iter().map(|&x| f16::from_f32(x)).collect();
     let ref_output = compute_cpu_attention(
-        &q_data, &k_quant, &v_quant, format, num_heads, head_dim, seq_k,
+        &q_data, &k_f16, &v_f16, num_heads, head_dim, seq_k,
     );
 
     // Create buffers
@@ -129,18 +134,18 @@ fn test_format(
             seq_k: seq_k as u32,
             head_dim: head_dim as u32,
             scale: 1.0 / (head_dim as f32).sqrt(),
-            q_stride_b: (num_heads * head_dim * 4) as u32,
-            q_stride_h: (head_dim * 4) as u32,
-            q_stride_s: (head_dim * 4) as u32,
-            k_stride_b: k_stride as u32, // All K data for batch
-            k_stride_h: k_stride as u32, // All K data for one head (shared across heads)
-            k_stride_s: get_block_size(format, head_dim) as u32, // One row of K data
-            v_stride_b: v_stride as u32,
-            v_stride_h: v_stride as u32,
-            v_stride_s: get_block_size(format, head_dim) as u32,
-            o_stride_b: (num_heads * head_dim * 4) as u32,
-            o_stride_h: (head_dim * 4) as u32,
-            o_stride_s: (head_dim * 4) as u32,
+            q_stride_b: (num_heads * head_dim) as u32,
+            q_stride_h: head_dim as u32,
+            q_stride_s: head_dim as u32,
+            k_stride_b: (seq_k * k_stride) as u32, // Total K for one batch
+            k_stride_h: (seq_k * k_stride) as u32, // All tokens for one head
+            k_stride_s: k_stride as u32,           // One token
+            v_stride_b: (seq_k * v_stride) as u32,
+            v_stride_h: (seq_k * v_stride) as u32,
+            v_stride_s: v_stride as u32,
+            o_stride_b: (num_heads * head_dim) as u32,
+            o_stride_h: head_dim as u32,
+            o_stride_s: head_dim as u32,
         };
 
         let args_bytes = unsafe {
@@ -151,7 +156,11 @@ fn test_format(
         };
 
         // Threadgroup memory
-        let shmem_size = nsg * (2 + head_dim) * 4;
+        // Layout: [query (512B)] [M+S per group (16B each)] [output per group (512B each)]
+        let query_size = 32 * 16;
+        let ms_size = nsg * 16;
+        let out_size = nsg * 4 * 8 * 16;
+        let shmem_size = query_size + ms_size + out_size;
 
         // Dispatch
         let cmd = queue.new_command_buffer();
@@ -201,19 +210,14 @@ fn test_format(
 
 fn compute_cpu_attention(
     q: &[f32],
-    k_quant: &[u8],
-    v_quant: &[u8],
-    format: &str,
+    k_f16: &[f16],
+    v_f16: &[f16],
     num_heads: usize,
     head_dim: usize,
     seq_k: usize,
 ) -> Vec<f32> {
     let scale = 1.0 / (head_dim as f32).sqrt();
     let mut output = vec![0.0f32; head_dim];
-
-    // Dequantize K/V for reference
-    let k_f32 = dequantize_kv(format, k_quant, seq_k, head_dim);
-    let v_f32 = dequantize_kv(format, v_quant, seq_k, head_dim);
 
     // Compute for first head
     let q_head = &q[0..head_dim];
@@ -226,7 +230,7 @@ fn compute_cpu_attention(
         // Compute Q·K^T for this position
         let mut score = 0.0f32;
         for d in 0..head_dim {
-            score += q_head[d] * k_f32[k * head_dim + d];
+            score += q_head[d] * k_f16[k * head_dim + d].to_f32();
         }
         score *= scale;
 
@@ -246,7 +250,7 @@ fn compute_cpu_attention(
         sum_val += weight;
 
         for d in 0..head_dim {
-            output[d] += weight * v_f32[k * head_dim + d];
+            output[d] += weight * v_f16[k * head_dim + d].to_f32();
         }
     }
 
@@ -256,65 +260,6 @@ fn compute_cpu_attention(
     }
 
     output
-}
-
-fn dequantize_kv(
-    format: &str,
-    quant: &[u8],
-    seq_k: usize,
-    head_dim: usize,
-) -> Vec<f32> {
-    let mut result = vec![0.0f32; seq_k * head_dim];
-
-    match format {
-        "q4_0" => {
-            let block_size = 18;
-            let blocks_per_row = head_dim / 32;
-            for s in 0..seq_k {
-                for b in 0..blocks_per_row {
-                    let block_offset = (s * blocks_per_row + b) * block_size;
-                    let d = f16::from_bits(u16::from_le_bytes([
-                        quant[block_offset],
-                        quant[block_offset + 1],
-                    ]))
-                    .to_f32();
-                    for i in 0..32 {
-                        let q = (quant[block_offset + 2 + i / 2]
-                            >> ((i % 2) * 4))
-                            & 0x0F;
-                        let q = q as i8 - 8; // Signed
-                        result[s * head_dim + b * 32 + i] = q as f32 * d;
-                    }
-                }
-            }
-        }
-        "q8_0" => {
-            let block_size = 34;
-            let blocks_per_row = head_dim / 32;
-            for s in 0..seq_k {
-                for b in 0..blocks_per_row {
-                    let block_offset = (s * blocks_per_row + b) * block_size;
-                    let d = f16::from_bits(u16::from_le_bytes([
-                        quant[block_offset],
-                        quant[block_offset + 1],
-                    ]))
-                    .to_f32();
-                    for i in 0..32 {
-                        let q = quant[block_offset + 2 + i] as i8;
-                        result[s * head_dim + b * 32 + i] = q as f32 * d;
-                    }
-                }
-            }
-        }
-        // For other formats, use simple approximation (just scale by 1.0)
-        _ => {
-            for (i, v) in result.iter_mut().enumerate() {
-                *v = quant[i % quant.len()] as f32;
-            }
-        }
-    }
-
-    result
 }
 
 fn quantize_kv(
@@ -328,51 +273,39 @@ fn quantize_kv(
         "q4_0" => {
             let k = quantize_to_q4_0(k_f32, seq_k, head_dim);
             let v = quantize_to_q4_0(v_f32, seq_k, head_dim);
-            let stride = seq_k * head_dim / 32 * 18;
+            let stride = (head_dim / 32) * std::mem::size_of::<BlockQ4_0>();
             (k, v, stride, stride)
         }
         "q4_1" => {
             let k = quantize_to_q4_1(k_f32, seq_k, head_dim);
             let v = quantize_to_q4_1(v_f32, seq_k, head_dim);
-            let stride = seq_k * head_dim / 32 * 20;
+            let stride = (head_dim / 32) * std::mem::size_of::<BlockQ4_1>();
             (k, v, stride, stride)
         }
         "q5_0" => {
             let k = quantize_to_q5_0(k_f32, seq_k, head_dim);
             let v = quantize_to_q5_0(v_f32, seq_k, head_dim);
-            let stride = seq_k * head_dim / 32 * 22;
+            let stride = (head_dim / 32) * std::mem::size_of::<BlockQ5_0>();
             (k, v, stride, stride)
         }
         "q5_1" => {
             let k = quantize_to_q5_1(k_f32, seq_k, head_dim);
             let v = quantize_to_q5_1(v_f32, seq_k, head_dim);
-            let stride = seq_k * head_dim / 32 * 24;
+            let stride = (head_dim / 32) * std::mem::size_of::<BlockQ5_1>();
             (k, v, stride, stride)
         }
         "q8_0" => {
             let k = quantize_to_q8_0(k_f32, seq_k, head_dim);
             let v = quantize_to_q8_0(v_f32, seq_k, head_dim);
-            let stride = seq_k * head_dim / 32 * 34;
+            let stride = (head_dim / 32) * std::mem::size_of::<BlockQ8_0>();
             (k, v, stride, stride)
         }
         "bf16" => {
             let k = quantize_to_bf16(k_f32, seq_k, head_dim);
             let v = quantize_to_bf16(v_f32, seq_k, head_dim);
-            let stride = seq_k * head_dim * 2;
+            let stride = head_dim * 2;
             (k, v, stride, stride)
         }
-        _ => panic!("Unknown format: {}", format),
-    }
-}
-
-fn get_block_size(format: &str, head_dim: usize) -> usize {
-    match format {
-        "q4_0" => 18,
-        "q4_1" => 20,
-        "q5_0" => 22,
-        "q5_1" => 24,
-        "q8_0" => 34,
-        "bf16" => 2,
         _ => panic!("Unknown format: {}", format),
     }
 }
