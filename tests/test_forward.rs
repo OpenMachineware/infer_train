@@ -1,6 +1,8 @@
 // End-to-end forward pass test
 
-use infer_train::inference::{InferenceContext, KVCache};
+use infer_train::inference::{
+    InferenceContext, KVCache, KVCacheBase, KVCacheFormat,
+};
 use infer_train::model::config::ModelConfig;
 
 #[test]
@@ -24,7 +26,7 @@ fn test_forward_basic() {
     };
 
     // Create KV cache
-    let mut kv_cache = KVCache::new(&config, 100);
+    let mut kv_cache = KVCache::new(&config, 100, KVCacheFormat::F32);
 
     // Test tokens
     let tokens = vec![1, 2, 3]; // BOS, token2, token3
@@ -36,10 +38,7 @@ fn test_forward_basic() {
         "Config: {} layers, {} heads, {} hidden",
         config.n_layers, config.n_heads, config.hidden_size
     );
-    println!(
-        "KV cache initialized for {} positions",
-        kv_cache.k_cache[0].len() / config.hidden_size
-    );
+    println!("KV cache initialized with format: {:?}", kv_cache.format());
 }
 
 #[test]
@@ -62,7 +61,8 @@ fn test_forward_with_model() {
 
     // Create KV cache
     let max_seq_len = 100;
-    let mut kv_cache = KVCache::new(&ctx.config, max_seq_len);
+    let mut kv_cache =
+        KVCache::new(&ctx.config, max_seq_len, KVCacheFormat::F32);
 
     // Test forward pass
     let tokens = vec![ctx.config.bos_token_id];

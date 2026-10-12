@@ -1,6 +1,6 @@
 // Llama model architecture definition
 
-use crate::inference::dequant_to_f32;
+use crate::inference::{dequant_to_f32, KVCacheBase};
 use crate::model::config::ModelConfig;
 use crate::model::tensor::{DataType, Tensor};
 use crate::model::weights::WeightStore;
@@ -117,20 +117,20 @@ impl LlamaModel {
 
         // Process each token
         let mut hidden = Vec::with_capacity(hidden_size);
-        for (pos, &token) in tokens.iter().enumerate() {
+        for &token in tokens.iter() {
             // 1. Embedding lookup
             hidden = self.embedding_lookup(token)?;
 
             // 2. Process through layers
             for (layer_idx, layer) in self.layers.iter().enumerate() {
                 hidden = self.forward_layer(
-                    layer, layer_idx, &hidden, pos, kv_cache, n_heads,
-                    head_dim, n_kv_heads,
+                    layer, layer_idx, &hidden, kv_cache, n_heads, head_dim,
+                    n_kv_heads,
                 )?;
             }
 
-            // Update KV cache position
-            kv_cache.seq_len = pos + 1;
+            // Advance KV cache position
+            kv_cache.advance();
         }
 
         // 3. Final norm and output projection
@@ -161,13 +161,13 @@ impl LlamaModel {
         layer: &LlamaLayer,
         layer_idx: usize,
         hidden: &[f32],
-        pos: usize,
         kv_cache: &mut crate::inference::KVCache,
         n_heads: usize,
         head_dim: usize,
         n_kv_heads: usize,
     ) -> Option<Vec<f32>> {
         let hidden_size = self.config.hidden_size;
+        let pos = kv_cache.seq_len();
 
         // 1. Attention norm
         let normed = self.apply_rms_norm(
@@ -189,7 +189,7 @@ impl LlamaModel {
 
         // 4. Attention (updates KV cache)
         let attn_out = self.attention(
-            &q_rope, &k_rope, &v, layer_idx, pos, kv_cache, n_heads, head_dim,
+            &q_rope, &k_rope, &v, layer_idx, kv_cache, n_heads, head_dim,
             n_kv_heads,
         )?;
 
@@ -284,33 +284,32 @@ impl LlamaModel {
         k: &[f32],
         v: &[f32],
         layer_idx: usize,
-        pos: usize,
         kv_cache: &mut crate::inference::KVCache,
         n_heads: usize,
         head_dim: usize,
         n_kv_heads: usize,
     ) -> Option<Vec<f32>> {
-        // Store K, V in cache
-        kv_cache.append(layer_idx, k, v);
+        // Store K, V in cache (will be stored at current seq_len position)
+        kv_cache.set_k(layer_idx, k, n_kv_heads, head_dim);
+        kv_cache.set_v(layer_idx, v, n_kv_heads, head_dim);
 
-        let seq_len = pos + 1;
+        let seq_len = kv_cache.seq_len() + 1; // +1 because we just added
         let scale = 1.0f32 / (head_dim as f32).sqrt();
 
         let mut out = vec![0.0f32; n_heads * head_dim];
 
-        // For each head
+        // For each query head
         for h in 0..n_heads {
-            let kv_head = h * n_kv_heads / n_heads; // GQA mapping
+            // GQA mapping: multiple Q heads share one KV head
+            let kv_head = h * n_kv_heads / n_heads;
 
             // Compute attention scores for all positions
             let mut scores = vec![0.0f32; seq_len];
             for s in 0..seq_len {
-                let k_offset = (s * n_kv_heads + kv_head) * head_dim;
+                let k_s = kv_cache.get_k(layer_idx, kv_head, s);
                 let mut score = 0.0f32;
                 for d in 0..head_dim {
-                    score += q[h * head_dim + d]
-                        * kv_cache.k_cache[layer_idx * n_kv_heads + kv_head]
-                            [k_offset + d];
+                    score += q[h * head_dim + d] * k_s[d];
                 }
                 scores[s] = score * scale;
             }
@@ -331,10 +330,8 @@ impl LlamaModel {
             for d in 0..head_dim {
                 let mut sum = 0.0f32;
                 for s in 0..seq_len {
-                    let v_offset = (s * n_kv_heads + kv_head) * head_dim;
-                    sum += scores[s]
-                        * kv_cache.v_cache[layer_idx * n_kv_heads + kv_head]
-                            [v_offset + d];
+                    let v_s = kv_cache.get_v(layer_idx, kv_head, s);
+                    sum += scores[s] * v_s[d];
                 }
                 out[h * head_dim + d] = sum;
             }

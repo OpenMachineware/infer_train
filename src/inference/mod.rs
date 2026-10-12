@@ -1,5 +1,9 @@
 // Inference runtime: connect model layer with operators
 
+mod kv_cache;
+
+pub use kv_cache::{KVCache, KVCacheBase, KVCacheFormat};
+
 use crate::model::config::ModelConfig;
 use crate::model::llama::LlamaModel;
 use crate::model::tensor::DataType;
@@ -69,8 +73,11 @@ impl InferenceContext {
         max_tokens: usize,
         strategy: &SamplingStrategy,
     ) -> Vec<u32> {
-        let mut kv_cache =
-            KVCache::new(&self.config, prompt_tokens.len() + max_tokens);
+        let mut kv_cache = KVCache::new(
+            &self.config,
+            prompt_tokens.len() + max_tokens,
+            KVCacheFormat::F32,
+        );
         let mut generated = Vec::with_capacity(max_tokens);
 
         // Prefill: process prompt
@@ -143,65 +150,5 @@ pub fn dequant_to_f32(data: &[u8], dtype: DataType, count: usize) -> Vec<f32> {
             // For quantized types, return zeros (needs proper dequant)
             vec![0.0; count]
         }
-    }
-}
-
-/// KV Cache for attention
-pub struct KVCache {
-    pub k_cache: Vec<Vec<f32>>,
-    pub v_cache: Vec<Vec<f32>>,
-    pub seq_len: usize,
-    pub n_layers: usize,
-    pub n_heads: usize,
-    pub head_dim: usize,
-}
-
-impl KVCache {
-    pub fn new(config: &ModelConfig, max_seq_len: usize) -> Self {
-        let head_dim = config.hidden_size / config.n_heads;
-        let cache_size = max_seq_len * head_dim;
-
-        KVCache {
-            k_cache: vec![
-                vec![0.0; cache_size];
-                config.n_layers * config.n_kv_heads
-            ],
-            v_cache: vec![
-                vec![0.0; cache_size];
-                config.n_layers * config.n_kv_heads
-            ],
-            seq_len: 0,
-            n_layers: config.n_layers,
-            n_heads: config.n_heads,
-            head_dim,
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.seq_len = 0;
-        for layer in 0..self.n_layers {
-            for head in 0..self.n_heads / (self.n_heads / self.n_heads) {
-                let idx = layer * self.n_heads + head;
-                if idx < self.k_cache.len() {
-                    self.k_cache[idx].fill(0.0);
-                    self.v_cache[idx].fill(0.0);
-                }
-            }
-        }
-    }
-
-    pub fn append(&mut self, layer: usize, k: &[f32], v: &[f32]) {
-        let offset = self.seq_len * self.head_dim;
-        for head in 0..self.n_heads {
-            let idx = layer * self.n_heads + head;
-            if idx < self.k_cache.len() {
-                let k_start = head * self.head_dim;
-                let k_slice = &k[k_start..k_start + self.head_dim];
-                for (i, &val) in k_slice.iter().enumerate() {
-                    self.k_cache[idx][offset + i] = val;
-                }
-            }
-        }
-        self.seq_len += 1;
     }
 }
