@@ -2,6 +2,7 @@
 
 pub mod binary;
 pub mod dup;
+pub mod gelu;
 pub mod rms_norm;
 pub mod sampling;
 pub mod silu;
@@ -11,6 +12,8 @@ pub mod tensor;
 pub use binary::{add_f32, div_f32, mul_f32, sub_f32};
 pub use dup::dup_f16_to_f32 as dup_f16_to_f32_neon;
 pub use dup::dup_f32_to_f16 as dup_f32_to_f16_neon;
+pub use gelu::gelu_f32 as gelu_f32_neon;
+pub use gelu::gelu_quick_f32 as gelu_quick_f32_neon;
 pub use rms_norm::rms_norm_f32 as rms_norm_f32_neon;
 pub use rms_norm::rms_norm_fp16_to_f32 as rms_norm_fp16_to_f32_neon;
 pub use sampling::argmax_f32 as argmax_f32_neon;
