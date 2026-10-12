@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Complete CPU vec_dot benchmark: llama.cpp vs Rust
 // Tests all quantization formats in the same process with identical data
 // Method: 10000 iterations, no warmup, release mode

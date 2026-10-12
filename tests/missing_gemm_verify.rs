@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Verify all GEMM kernels exist and work
 // Q1_0, Q2_0, F32, F16
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu

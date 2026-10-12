@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test IQ2_XXS grid construction
 
 use infer_train::quant::weights::iq_grid::*;

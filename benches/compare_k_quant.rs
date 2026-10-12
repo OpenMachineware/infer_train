@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Comprehensive K-quant vec_dot benchmark
 // Tests Q2_K, Q3_K, Q4_K, Q5_K, Q6_K with K=4096
 

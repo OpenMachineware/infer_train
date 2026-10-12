@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Comprehensive GPU MV vs llama.cpp verification
 // Test all formats across all K sizes
 

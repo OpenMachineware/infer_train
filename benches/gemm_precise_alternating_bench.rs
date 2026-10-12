@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Precise GEMM alternating benchmark with GPU frequency normalization
 // Compares self-written kernels against llama.cpp kernels
 // No excuses: if ratio < 100%, kernel is slower

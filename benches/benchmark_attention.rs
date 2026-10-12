@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark attention operator vs llama.cpp
 // Tests all 9 KV cache formats with fused NEON implementation
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Verify POOL_2D kernel correctness vs CPU reference
 use metal::{Device, MTLSize};
 

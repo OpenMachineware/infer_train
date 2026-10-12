@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Debug IQ4_NL nibble extraction and y-value mapping
 use half::f16;
 

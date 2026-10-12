@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test llama.cpp's templated GEMM approach
 // This test verifies the new Metal shader works correctly
 

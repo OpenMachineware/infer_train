@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Generate Q4_K test data using llama.cpp's quantization
 // This ensures the data format is correct
 

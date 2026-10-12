@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Simple Q4_K Metal MV benchmark using ggml C API directly
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Verify Q3_K, Q5_K, Q6_K correctness against llama.cpp
 
 use half::f16;

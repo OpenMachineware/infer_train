@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Simple wrapper to expose llama.cpp vec_dot functions for benchmarking
 // Compile with:
 // clang -c -O3 -mcpu=apple-m1 -I../llama.cpp-0.5.0/ggml/src -I../llama.cpp-0.5.0/ggml/src/ggml-cpu -I../llama.cpp-0.5.0/ggml/src/ggml-cpu/arch/arm -I../llama.cpp-0.5.0/ggml/include llama_vec_dot_wrapper.c -o llama_vec_dot_wrapper.o

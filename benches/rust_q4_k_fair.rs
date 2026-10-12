@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Self-written Q4_K GPU test
 // Measures CPU time and GPU time separately
 // Run: cargo run --release --bin rust_q4_k_fair

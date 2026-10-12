@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Direct comparison: Rust vs llama.cpp for IQ3_XXS
 // Uses the same methodology as bench_cpu_operators
 

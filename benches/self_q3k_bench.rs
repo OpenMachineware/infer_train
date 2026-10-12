@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Standalone benchmark for Q3_K MV kernel - self-written version
 // Run: cargo run --release --bin self_q3k_bench
 

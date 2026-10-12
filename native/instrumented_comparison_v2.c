@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // 两边算法插桩对比 - 修正版（确保逻辑一致）
 #include <stdio.h>
 #include <stdlib.h>

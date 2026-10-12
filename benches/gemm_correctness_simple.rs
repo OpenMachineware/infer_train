@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Simple GEMM correctness test
 // Compare self-written mul_mm_standalone.metal vs llama.cpp's mul_mm_template.metallib
 

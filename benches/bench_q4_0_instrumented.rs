@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Instrumented benchmark for Q4_0: measure each step
 // Use Instant for precise timing
 

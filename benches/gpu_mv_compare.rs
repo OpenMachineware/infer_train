@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Compare MetalContext MV vs raw Metal API
 use half::f16;
 use infer_train::quant::types::BlockQ4K;

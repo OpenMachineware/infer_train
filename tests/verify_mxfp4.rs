@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Verify MXFP4 MV kernel against llama.cpp Metal kernel
 use metal::*;
 use std::ffi::c_void;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Batch test all 23 MV kernels
 // 1. Compilation verification
 // 2. Correctness test (compare with llama.cpp reference)

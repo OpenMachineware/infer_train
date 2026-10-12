@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Fair F16 attention benchmark - match llama.cpp's benchmark exactly
 // Takes FP16 Q (like llama.cpp), no FP32→FP16 conversion inside
 #include <stdio.h>

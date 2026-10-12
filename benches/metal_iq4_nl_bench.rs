@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark IQ4_NL Metal kernel across multiple sizes
 use half::f16;
 use infer_train::quant::types::*;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // FIXED: Use float input, not f16!
 use half::f16;
 use infer_train::quant::types::BlockIQ4NL;

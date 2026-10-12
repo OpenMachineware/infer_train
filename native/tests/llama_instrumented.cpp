@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // llama.cpp Metal Q4_K MV - for Instruments Time Profiler
 // Compile: clang++ -O3 -framework Metal -framework Foundation -I../llama.cpp-0.5.0/ggml/include -L../llama.cpp-0.5.0/build/ggml/src -lggml -lggml-metal -o llama_instrumented llama_instrumented.cpp
 // Run: Instruments -t "Time Profiler" ./llama_instrumented

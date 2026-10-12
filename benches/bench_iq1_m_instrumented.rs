@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Instrumented IQ1_M benchmark to find performance bottlenecks
 // Measures each step's absolute time
 

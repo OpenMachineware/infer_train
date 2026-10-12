@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // IQ GEMM benchmark: self-written vs llama.cpp
 // All 9 IQ formats
 

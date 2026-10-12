@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // CPU GEMM benchmark: Our implementation performance
 use infer_train::quant::matmul::*;
 use std::time::Instant;

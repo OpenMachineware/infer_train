@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Complete FP16 attention kernel in C
 // Uses FP16 accumulation for maximum performance
 #include <arm_neon.h>

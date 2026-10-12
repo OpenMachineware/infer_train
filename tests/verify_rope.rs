@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Verify ROPE correctness between Rust and llama.cpp
 
 use infer_train::ops::rope;

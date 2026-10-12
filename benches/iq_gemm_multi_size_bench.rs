@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Multi-size IQ GEMM benchmark
 // Test all 9 IQ formats at multiple dimensions
 

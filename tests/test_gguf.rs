@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test GGUF parsing and model layer
 // Run: cargo run --release --bin test_gguf -- models/qwen-7b-q4_0.gguf
 

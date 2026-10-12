@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Alternating benchmark for K-quant MV kernels
 // Eliminates thermal bias by alternating between llama.cpp and self-written
 use metal::*;

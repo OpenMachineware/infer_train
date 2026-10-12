@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // 专门测试 vec_mad 性能
 #include <stdio.h>
 #include <stdlib.h>

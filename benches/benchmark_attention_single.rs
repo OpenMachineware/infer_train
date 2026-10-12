@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Single attention benchmark for testing one format/size at a time
 // Usage: benchmark_attention_single <format> <num_heads> <head_dim> <seq_len>
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Verify ALL IQ formats: Our NEON vs llama.cpp CPU
 // Simple test with random but valid-ish data
 

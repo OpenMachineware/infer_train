@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // FIXED: Use FC_MUL_MV = 600, not FC_MUL_MM = 700!
 use half::f16;
 use infer_train::quant::types::BlockIQ4NL;

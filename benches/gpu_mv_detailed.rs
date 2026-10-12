@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Detailed instrumented GPU MV - measure each step
 use metal::*;
 use std::ffi::c_void;

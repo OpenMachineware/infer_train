@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Compare nsg=2 (llama.cpp default) vs optimized nsg values
 // Alternating benchmark for fair comparison
 

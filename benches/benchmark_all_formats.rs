@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark all K-quant formats against llama.cpp
 // Run: cargo run --release --bin benchmark_all_formats
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test fcvt vs ucvtf for FP16 conversion
 use std::arch::aarch64::*;
 use std::time::Instant;

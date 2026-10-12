@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark GPU Flash Attention vs llama.cpp
 // Tests decode case (batch=1) with different seq_len and formats
 

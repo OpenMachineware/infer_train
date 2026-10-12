@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark F32/F16, MXFP4, Q1_0, Q2_0, TQ1_0, TQ2_0 GEMM
 // Alternating A-B test against llama.cpp
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Smoke test for IQ GEMM kernels - minimal test to verify kernels don't hang
 
 use half::f16;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Single kernel test: llama.cpp Q4_K GPU
 // Measures each step separately
 // Build: clang++ -framework Metal -framework Foundation -I../.. llama_q4_k_test.cpp -o llama_q4_k_test

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark GPU Softmax vs llama.cpp Metal implementation
 use metal::{Buffer, CommandQueue, ComputePipelineState, Device, MTLSize};
 use std::cell::RefCell;

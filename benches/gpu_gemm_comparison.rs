@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // GPU GEMM Performance Comparison: Rust vs llama.cpp
 // Test all K sizes from 256 to 4096
 

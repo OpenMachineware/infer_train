@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test dequantization correctness
 use infer_train::quant::kv_cache::{BlockQ4_0, BlockQ8_0};
 use metal::*;

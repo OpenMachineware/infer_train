@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Compare both Q6_K versions side-by-side
 use metal::*;
 use std::ffi::c_void;

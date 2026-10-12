@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Performance test for Standard Q, TQ, and MXFP formats
 use metal::*;
 use std::ffi::c_void;

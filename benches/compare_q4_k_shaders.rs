@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Compare llama.cpp shader vs self-written shader
 // Run: cargo run --bin compare_q4_k_shaders --release
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // IQ GEMM benchmark with GPU frequency normalization
 // Tests all IQ formats with alternating A-B-A-B pattern
 

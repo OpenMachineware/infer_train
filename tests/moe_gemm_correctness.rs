@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // MoE GEMM correctness test - compare with reference MV kernel
 // For 1 expert, 1 token, MoE kernel should match regular MV kernel
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test llama.cpp Metal Q4_K MV kernel performance
 #include <stdio.h>
 #include <stdlib.h>

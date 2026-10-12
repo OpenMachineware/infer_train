@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark: Our GPU Softmax vs llama.cpp NATIVE Metal kernel
 // Directly loads llama.cpp's softmax.metal without modification
 use metal::{Buffer, CommandQueue, ComputePipelineState, Device, MTLSize};

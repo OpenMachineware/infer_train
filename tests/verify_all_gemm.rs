@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Complete GEMM Verification: All 24 formats
 // Verifies all GPU kernels run correctly after refactoring
 

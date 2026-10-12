@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Unified CPU operator benchmark: llama.cpp vs Rust
 // Direct comparison in the same process with identical test data
 // Method: 10 iterations, no warmup, same environment

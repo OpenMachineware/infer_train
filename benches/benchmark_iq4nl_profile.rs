@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // 插桩分析 IQ4_NL vs llama.cpp
 // 分5步测量每步的绝对时间
 

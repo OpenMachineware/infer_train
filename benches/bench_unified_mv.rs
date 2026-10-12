@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Unified MV benchmark: llama.cpp Metal vs Rust Metal
 // Tests both in the same session for fair comparison
 

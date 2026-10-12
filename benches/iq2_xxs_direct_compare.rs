@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Direct comparison between Rust quantizer and llama.cpp output
 // Uses hardcoded test data and compares the block output
 

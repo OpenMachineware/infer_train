@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Fair benchmark: Self-written vs llama.cpp Q3_K kernel
 // Both use the same Rust test harness, same data, same flow
 // Run: cargo run --release --bin fair_q3k_bench

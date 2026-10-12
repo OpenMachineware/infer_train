@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark binary ops (ADD, MUL, SUB, DIV) vs vDSP (Accelerate)
 // llama.cpp uses vDSP for F32 binary ops on macOS
 

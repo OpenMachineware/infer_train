@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Standalone benchmark for Q3_K MV kernel - llama.cpp version
 // Compile: clang++ -fobjc-arc -framework Metal -framework Foundation -O3 -o llama_q3k_bench llama_q3k_bench.mm
 // Run: ./llama_q3k_bench

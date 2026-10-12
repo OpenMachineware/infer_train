@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Verify remaining Standard quantization MV kernels: Q4_1, Q5_0, Q5_1, Q1_0, Q2_0
 
 use half::f16;

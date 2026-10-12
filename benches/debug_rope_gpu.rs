@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Debug GPU RoPE correctness
 use infer_train::ops::metal::RopeMetalContext;
 use infer_train::ops::rope::rope_neox_simple;

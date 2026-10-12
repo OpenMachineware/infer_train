@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Comprehensive vec_dot benchmark for K-quants
 // Tests all sizes and compares with reference llama.cpp numbers
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Simple test for IQ GEMM - test one kernel at a time
 // Test with simple known values instead of random data
 

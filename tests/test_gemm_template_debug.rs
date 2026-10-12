@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Simple test to debug templated GEMM kernel
 use bytemuck::Zeroable;
 use infer_train::quant::types::BlockQ4K;

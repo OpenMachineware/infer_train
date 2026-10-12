@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test unified model loader with architecture detection
 // Run: cargo run --release --bin test_unified -- model.gguf
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Verify Q3_K GEMM kernel correctness
 // Run: cargo run --release --bin verify_q3k_correctness
 

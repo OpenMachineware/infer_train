@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // 测试所有K-quant格式的matmul性能对比
 use half::f16;
 use infer_train::quant::matmul::*;

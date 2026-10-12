@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Minimal single-row IQ4_NL test
 // Tests just 1 row with 1 threadgroup to debug the kernel
 

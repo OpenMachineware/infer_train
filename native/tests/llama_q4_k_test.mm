@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // llama.cpp Q4_K MV test - calls real ggml-metal API
 // Compile: clang++ -O3 -fobjc-arc -framework Metal -framework Foundation -o llama_q4_k_test llama_q4_k_test.mm
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // MoE vs Regular GEMM comparison
 // For 1 expert, all tokens to expert 0, MoE should match regular GEMM
 

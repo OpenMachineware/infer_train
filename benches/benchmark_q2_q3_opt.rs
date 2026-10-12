@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark Q2_K/Q3_K with optimized dequantization
 // Run: cargo run --release --bin benchmark_q2_q3_opt
 

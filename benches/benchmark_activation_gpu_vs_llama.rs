@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark our GPU activation vs llama.cpp's GPU activation
 // Conclusion: Both implementations achieve parity because kernels are identical
 // - Same formulas: SiLU = x / (1 + exp(-x)), GELU = 0.5 * x * (1 + tanh(...))

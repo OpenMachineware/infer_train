@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // llama.cpp Q4_K GPU test
 // Measures CPU time and GPU time separately
 // Build: clang++ -framework Metal -framework Foundation llama_q4_k_fair.cpp -o llama_q4_k_fair

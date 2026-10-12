@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 use infer_train::ops::moe::mul_mat_id_f32;
 use std::hint::black_box;
 use std::time::Instant;

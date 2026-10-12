@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Verify softmax precision vs llama.cpp
 // Test if both implementations have similar floating point errors
 

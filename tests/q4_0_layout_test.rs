@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test Q4_0 layout and dequantization order
 use infer_train::quant::kv_cache::BlockQ4_0;
 use metal::*;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Check if KGRID_2BIT_256 covers all possible l-value patterns
 
 use infer_train::quant::weights::iq_grid::KGRID_2BIT_256;

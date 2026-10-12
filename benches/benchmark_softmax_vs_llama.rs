@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark CPU Softmax vs llama.cpp
 // llama.cpp uses NEON SIMD with custom exp approximation
 

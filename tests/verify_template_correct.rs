@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Verify template kernel correctness
 // Run: cargo run --release --bin verify_template_correct
 

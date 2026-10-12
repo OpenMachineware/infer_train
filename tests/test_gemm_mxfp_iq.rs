@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Quick test for MXFP4 and IQ4_NL GEMM kernels
 
 use half::f16;

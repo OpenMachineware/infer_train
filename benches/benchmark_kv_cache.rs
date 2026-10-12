@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark KV cache quantization vs llama.cpp
 use infer_train::quant::kv_cache::*;
 use std::time::Instant;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Rust GEMM comparison test - must use same data as C++ version
 use infer_train::quant::matmul::*;
 use std::time::Instant;

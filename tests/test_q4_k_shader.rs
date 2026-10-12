@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test self-written Q4_K shader correctness and performance
 // Usage: cargo run --bin test_q4_k_shader --release
 

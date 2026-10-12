@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // K-quant GEMM vs MV performance comparison
 // Tests both MV (N=1) and GEMM (N>1) kernels
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test all quantization formats using quantize functions
 use half::f16;
 use metal::{Device, MTLSize};

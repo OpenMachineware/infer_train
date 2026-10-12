@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // 直接调用 Rust 的 IQ2_S 量化函数，与 llama.cpp dump 对比
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
 // SPDX-License-Identifier: AGPL-3.0-only

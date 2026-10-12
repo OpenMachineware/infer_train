@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // For Instruments Time Profiler analysis
 // Run with: cargo run --bin gpu_mv_instrumented --release
 // Profile with: Instruments -t "Time Profiler" target/release/gpu_mv_instrumented

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // MoE GEMM correctness test - 4 tokens (partial tile)
 // Compare self-written kernel with llama.cpp kernel
 

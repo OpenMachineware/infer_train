@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Alternating Standard Q kernel benchmark vs llama.cpp
 // A-B-A-B pattern eliminates thermal bias
 

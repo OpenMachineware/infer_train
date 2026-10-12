@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark Q5_0 and Q5_1 vec_dot performance
 use half::f16;
 use infer_train::quant::types::{

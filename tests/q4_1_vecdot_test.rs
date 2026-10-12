@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Verify Q4_1 quantization round-trip
 use infer_train::quant::kv_cache::quant::{
     quantize_row_q4_1, quantize_row_q8_1,

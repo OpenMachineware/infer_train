@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Compare Rust vs llama.cpp vec_dot performance directly
 // Calls both implementations with identical data
 use std::arch::aarch64::*;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test IQ kernels at different sizes
 // Compare CPU implementations vs llama.cpp reference
 

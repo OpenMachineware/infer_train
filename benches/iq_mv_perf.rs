@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Fair performance comparison: Self-written vs llama.cpp
 // Using MetalContext API for consistent measurement
 use half::f16;

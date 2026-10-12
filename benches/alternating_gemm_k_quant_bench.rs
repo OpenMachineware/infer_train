@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Alternating A-B benchmark: K-quant GEMM performance comparison
 // Same methodology as MV benchmark: alternating test + GPU frequency normalization
 

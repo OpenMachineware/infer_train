@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // llama.cpp Metal MV test - Direct Metal API call
 // Compile: clang++ -O2 -framework Metal -framework Foundation -o llama_metal_test llama_metal_test.mm
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark RoPE: Fair comparison with identical logic
 // Run: cargo run --release --bin benchmark_rope_vs_llama
 

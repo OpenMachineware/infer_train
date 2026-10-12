@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2026 Jia Liu
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
 
 // Direct comparison: Our Multi-WG Q5 Flash Decode vs llama.cpp decode kernel
 // Uses the correct llama.cpp decode kernel (kernel_flash_attn_ext_q5_*, not fa_vec)

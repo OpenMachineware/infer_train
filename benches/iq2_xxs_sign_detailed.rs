@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Trace sign encoding for IQ2_XXS with actual quantized data
 // Focus on why some signs are wrong
 

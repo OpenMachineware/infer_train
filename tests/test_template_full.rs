@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Full test for templated GEMM kernel with correctness verification
 use infer_train::quant::types::BlockQ4K;
 use metal::{Device, MTLSize};

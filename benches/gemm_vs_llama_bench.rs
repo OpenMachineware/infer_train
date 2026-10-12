@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Fair comparison: my implementation vs llama.cpp original
 // Loads two separate Metal libraries and runs alternating tests
 

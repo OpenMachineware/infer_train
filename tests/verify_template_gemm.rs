@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Verify templated GEMM kernels from llama.cpp
 // Run: cargo run --release --bin verify_template_gemm
 

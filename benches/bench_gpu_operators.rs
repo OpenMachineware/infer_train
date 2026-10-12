@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // GPU Operator Performance Benchmark - Complete Version
 // All formats, all sizes, all batch sizes
 

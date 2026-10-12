@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // 直接测量，排除框架开销
 use infer_train::quant::kv_cache::{BlockIQ4NL, QK};
 use std::time::Instant;

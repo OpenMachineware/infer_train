@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Q4_K插桩对比 - 检查Rust和llama.cpp的中间结果
 // 使用完全相同的测试数据
 

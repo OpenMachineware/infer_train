@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark GPU Flash Attention: Self-written vs llama.cpp
 // Compares performance for formats both support
 

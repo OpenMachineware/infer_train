@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Safe IQ GEMM correctness test
 // Tests implemented IQ formats
 // Single run per format, small data, no heavy loops

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Alternating benchmark for all K-quant formats
 // Uses correct block structures and alternating execution to eliminate thermal bias
 

@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText: 2026 Jia Liu
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
 
 // Flash Attention benchmark: Decode and Prefill
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Correctness test for IQ GEMM kernels
 // Compare self-written mul_mm_standalone.metal vs llama.cpp mul_mm_template.metal
 // Uses quantization functions to generate proper test data

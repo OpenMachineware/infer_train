@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 #[cfg(target_arch = "aarch64")]
 #[test]
 fn test_gpu_correctness() {

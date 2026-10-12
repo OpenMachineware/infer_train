@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Verify IQ GEMM with realistic quantized data (small scales)
 // Proper scales prevent accumulation overflow
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu

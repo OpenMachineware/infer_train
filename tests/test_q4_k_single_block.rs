@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test single Q4_K block to find the bug
 // Usage: cargo run --bin test_q4_k_single_block --release
 

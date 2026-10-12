@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Rust Q4_K MV test - calls real MetalContext API
 // Run: cargo run --bin rust_q4_k_test --release
 

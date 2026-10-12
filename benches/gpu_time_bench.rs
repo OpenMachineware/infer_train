@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // GPU timing benchmark - eliminates CPU-side variance
 // Uses Metal GPU timestamps for accurate measurement
 

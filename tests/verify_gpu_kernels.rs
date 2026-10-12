@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Verify GPU kernels against llama.cpp baselines
 // Run: cargo run --release --bin verify_gpu_kernels
 

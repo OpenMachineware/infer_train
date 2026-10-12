@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Correctness check for MPP tensor API kernels
 // Verifies output matches SIMD version before benchmarking
 

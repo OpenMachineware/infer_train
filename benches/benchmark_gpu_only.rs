@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark GPU execution time only (matching llama.cpp methodology)
 // Run: cargo run --release --bin benchmark_gpu_only
 

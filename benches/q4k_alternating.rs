@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Alternating benchmark: Self-written vs llama.cpp Q4_K MV
 // Minimal version: compile both kernels, measure alternating
 use metal::*;

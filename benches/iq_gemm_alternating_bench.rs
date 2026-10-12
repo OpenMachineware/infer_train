@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Alternating IQ GEMM benchmark: self-written gemm.metal vs llama.cpp mul_mm_template.metal
 // A-B-A-B pattern eliminates thermal bias
 

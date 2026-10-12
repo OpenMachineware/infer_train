@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // IQ GEMM correctness check: compare self-written vs llama.cpp
 // Single run per format, compare outputs - no heavy loops
 // Uses REAL quantized data (not random bytes)

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Fair alternating benchmark: self-written vs llama.cpp
 // Each run alternates between both kernels to eliminate thermal variance
 use half::f16;

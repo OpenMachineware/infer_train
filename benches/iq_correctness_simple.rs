@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Simple correctness test for all 9 IQ kernels
 // Minimal data (K=256, M=1, N=1), just verify kernels run without crash
 

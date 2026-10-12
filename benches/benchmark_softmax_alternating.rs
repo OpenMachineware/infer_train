@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark Softmax using alternating A-B-A-B methodology
 // Sequential testing has FALSE gaps due to GPU frequency variation
 // MUST alternate between implementations for fair comparison

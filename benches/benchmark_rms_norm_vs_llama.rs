@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Compare RMSNorm performance: our NEON vs llama.cpp scalar
 // Run: cargo run --release --bin benchmark_rms_norm_vs_llama
 

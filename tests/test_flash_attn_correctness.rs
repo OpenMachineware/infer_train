@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Minimal Flash Attention test with CPU reference
 // Uses the simplest possible kernel to verify correctness
 

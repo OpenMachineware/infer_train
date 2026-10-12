@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Quick correctness test for attention
 #[cfg(target_arch = "aarch64")]
 use infer_train::ops::attention::decode_attention_f16_neon;

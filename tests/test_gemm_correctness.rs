@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // GEMM Correctness Test: GPU kernel verification
 // Verifies GPU kernels run correctly and produce valid output
 

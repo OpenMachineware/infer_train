@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Simple Q4_K GEMM test - no warmup tricks, just measure
 use infer_train::quant::types::BlockQ4K;
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;

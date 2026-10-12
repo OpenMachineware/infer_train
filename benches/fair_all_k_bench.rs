@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Fair benchmark: All K-quant kernels vs llama.cpp
 // Same environment, same data, same function constants
 

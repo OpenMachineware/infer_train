@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Comprehensive correctness test for all matmul formats
 use half::f16;
 use infer_train::quant::matmul::*;

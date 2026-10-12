@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Q3_K MV test
 use infer_train::quant::types::BlockQ3K;
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;

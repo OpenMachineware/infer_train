@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Deep analysis of Q4_K shader performance
 // Compare multiple optimization strategies
 

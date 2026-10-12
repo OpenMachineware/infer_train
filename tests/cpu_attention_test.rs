@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (c) 2026 Infer Train Authors
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
 
 //! Comprehensive test for CPU attention operators
 //! Tests all quantized KV cache formats against FP32 reference

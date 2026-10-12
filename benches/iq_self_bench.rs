@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Self-written IQ kernel performance benchmark
 // Tests only self-written kernels, no llama.cpp comparison
 

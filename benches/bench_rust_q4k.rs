@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Rust Q4_K vec_dot benchmark
 // 直接调用Rust函数，无FFI开销
 // 使用与llama.cpp benchmark完全相同的测试数据

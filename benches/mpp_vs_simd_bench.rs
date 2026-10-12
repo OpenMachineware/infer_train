@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark: MPP tensor API vs traditional SIMD-group matrix multiply
 // Compares llama.cpp's mul_mm compiled with/without GGML_METAL_HAS_TENSOR
 

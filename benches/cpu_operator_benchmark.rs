@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // 统一CPU算子性能对比测试框架
 // 每个算子、每种格式、每个size，直接与llama.cpp对比
 

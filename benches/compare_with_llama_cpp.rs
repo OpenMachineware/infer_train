@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Compare template kernel with llama.cpp using identical test data
 // Run: cargo run --release --bin compare_with_llama_cpp
 

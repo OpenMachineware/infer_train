@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Minimal test to compare assembly with llama.cpp
 // Compile with: clang -O3 -S -march=armv8.2-a+fp16 test_attention_only.c
 

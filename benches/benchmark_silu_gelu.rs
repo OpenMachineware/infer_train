@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark SiLU and GELU vs llama.cpp
 use std::arch::aarch64::*;
 use std::time::Instant;

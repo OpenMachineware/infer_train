@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // GPU Self-written Operator Performance Benchmark
 // Tests absolute performance of self-written GPU operators
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu

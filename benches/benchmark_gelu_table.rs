@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark: GELU lookup table vs exp approximation
 // Run: cargo run --release --bin benchmark_gelu_table
 

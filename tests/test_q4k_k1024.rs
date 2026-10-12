@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test Q4_K specifically at K=1024
 use bytemuck::Zeroable;
 use half::f16;

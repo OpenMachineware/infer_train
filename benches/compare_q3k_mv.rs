@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Compare Q3_K MV kernel vs llama.cpp
 use half::f16;
 use metal::*;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Simple llama.cpp Metal MV benchmark for Q4_K
 // Compile: gcc -o test_llama_metal_mv test_llama_metal_mv.c -I../llama.cpp-0.5.0 -L../llama.cpp-0.5.0/build-metal -lggml-metal -lggml
 

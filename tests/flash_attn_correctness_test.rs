@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Correctness test for self-written flash attention kernels
 // Compares GPU output against CPU reference implementation
 

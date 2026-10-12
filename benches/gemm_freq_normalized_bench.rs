@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // GEMM performance benchmark with GPU frequency normalization
 // Tests all formats and normalizes by GPU frequency for fair comparison
 

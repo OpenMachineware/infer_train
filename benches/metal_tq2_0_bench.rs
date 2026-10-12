@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test TQ2_0 Metal MV kernel
 use half::f16;
 use infer_train::quant::types::BlockTQ2_0;

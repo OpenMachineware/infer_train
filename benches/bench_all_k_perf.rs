@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Compare all K-quant MV kernels using MetalContext
 use half::f16;
 use infer_train::quant::types::*;

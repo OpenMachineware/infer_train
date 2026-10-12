@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark IQ/TQ MV kernels with GPU warmup
 // Run: cargo run --release --bin benchmark_mv_iq_tq
 

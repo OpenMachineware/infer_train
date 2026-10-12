@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // GPU GEMM llama.cpp Comparison Test
 // Compare our Metal kernels with llama.cpp's implementation
 

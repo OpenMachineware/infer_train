@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark the templated GEMM kernel from llama.cpp
 // Compare performance with our hand-written kernel
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Utility module for GPU monitoring
 // Uses mactop (https://github.com/metaspartan/mactop) to get GPU frequency
 

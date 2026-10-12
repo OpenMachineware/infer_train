@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // GEMM benchmark for all quantization formats with N>1 (true GEMM)
 // Tests mul_mm_standalone.metal vs llama.cpp mul_mm_template.metallib
 

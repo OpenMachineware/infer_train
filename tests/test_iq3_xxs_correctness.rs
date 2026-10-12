@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Correctness test: compare Rust vs llama.cpp for IQ3_XXS
 
 use infer_train::quant::types::{BlockIQ3XXS, BlockQ8K, QK_K};

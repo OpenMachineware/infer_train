@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Compare IQ2_XXS quantization step by step with llama.cpp
 // Generate test data and compare quantized outputs
 

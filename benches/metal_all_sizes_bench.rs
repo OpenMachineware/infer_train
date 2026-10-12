@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Comprehensive multi-size benchmark for all IQ/TQ Metal MV kernels
 use half::f16;
 use infer_train::quant::types::*;

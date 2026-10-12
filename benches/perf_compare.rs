@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // 直接对比我们的matmul与llama.cpp的matmul性能
 use half::f16;
 use infer_train::quant::matmul::*;

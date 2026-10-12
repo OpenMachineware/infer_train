@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Alternating benchmark: Standard Q, MXFP4, IQ4_NL GEMM vs llama.cpp
 // Compares self-written template kernels with llama.cpp reference
 

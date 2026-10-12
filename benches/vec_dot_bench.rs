@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use infer_train::quant::vec_dot::scalar::bf16::vec_dot_bf16;
 use infer_train::quant::vec_dot::scalar::fp16::vec_dot_fp16;

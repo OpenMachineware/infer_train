@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test MV correctness with larger sizes
 use half::f16;
 use infer_train::quant::types::*;

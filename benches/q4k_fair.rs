@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Fair alternating benchmark: Q4_K MV self-written vs llama.cpp
 use metal::*;
 use std::ffi::c_void;

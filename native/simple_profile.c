@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // 简化版插桩 - 只测量关键步骤
 #include <stdio.h>
 #include <stdlib.h>

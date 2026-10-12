@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark vec_dot performance comparison
 // FP16 vs FP32 accumulation
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Test compilation of new flash decode vec kernel
 // This is a minimal test to verify the kernel compiles
 

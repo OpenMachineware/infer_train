@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // True alternating test: nsg=2 vs optimized nsg
 // A-B-A-B in a single run to eliminate thermal variance
 

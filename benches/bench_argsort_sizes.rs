@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark argsort at different sizes
 use infer_train::ops::sampling::argsort_f32_inplace;
 use std::time::Instant;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 use bytemuck::Zeroable;
 use half::f16;
 use infer_train::quant::types::BlockQ4K;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // GPU GEMM Performance Benchmark
 // Compares GPU GEMM performance with CPU for all quantization formats
 

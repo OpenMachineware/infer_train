@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Compare IQ3_S quantization output with llama.cpp
 // Uses same test data as iq3_s_llama_dump.c
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu

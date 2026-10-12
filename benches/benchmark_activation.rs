@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Benchmark activation functions (GELU, GELU-Quick, SILU) vs llama.cpp
 
 use half::f16;

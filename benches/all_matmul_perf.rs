@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Compare Rust matmul performance with llama.cpp
 // llama.cpp vec_dot baseline from previous tests:
 // Q4_K: 82 GFLOPS, Q2_K: 67 GFLOPS, Q3_K: 50 GFLOPS, Q5_K: 70 GFLOPS

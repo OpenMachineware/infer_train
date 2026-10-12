@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 use infer_train::quant::weights::iq_grid::{
     nearest_int, IQ2GridData, KGRID_2BIT_256,
 };
