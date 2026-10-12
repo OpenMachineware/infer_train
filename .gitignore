@@ -8,6 +8,9 @@ it-server
 it-cli
 
 *.gguf
+*.metallib
+*.air
+*.bak
 
 # External dependencies (not tracked)
 llama.cpp-0.6.0/
