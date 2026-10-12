@@ -1,7 +1,7 @@
 // Weight store: tensor manager for model weights
 
-use crate::model::gguf::GgufFile;
-use crate::model::tensor::{DataType, Tensor, TensorData};
+use crate::model::gguf::{tensor_from_gguf, GgufError, GgufFile};
+use crate::model::tensor::{DataType, Tensor};
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
@@ -18,7 +18,7 @@ pub enum WeightError {
     DtypeMismatch { expected: DataType, actual: DataType },
 
     #[error("GGUF error: {0}")]
-    Gguf(#[from] crate::model::gguf::GgufError),
+    Gguf(#[from] GgufError),
 }
 
 pub struct WeightStore {
@@ -46,7 +46,7 @@ impl WeightStore {
 
         for tensor_info in &gguf.tensors {
             if let Some(data) = gguf.get_tensor_data(&tensor_info.name) {
-                let tensor = Tensor::from_gguf(tensor_info, data);
+                let tensor = tensor_from_gguf(tensor_info, data);
                 self.tensors.insert(tensor_info.name.clone(), tensor);
             }
         }
