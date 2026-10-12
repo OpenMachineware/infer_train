@@ -48,112 +48,111 @@ struct F16Block {
     half values[4];
 };
 
-// Dequantization functions
+// Dequantization functions - optimized to match llama.cpp
 template<typename T4>
 inline void dequant_q4_0(device const Q4_0Block* block, int lane, thread T4& result) {
-    const half d = block->d;
-    const int group = lane % 8;
-    const int is_high = group / 4;
-    const int idx = group % 4;
+    // Match llama.cpp's approach: use float for intermediate values
+    device const uint16_t* qs = ((device const uint16_t*)block) + 1;
+    const int il = lane;
 
-    device const uint16_t* qs16 = (device const uint16_t*)block->qs;
-
-    const half scale = is_high ? d / 16.0h : d;
-    const half offset = -8.0h * d;
-    const uint16_t mask = is_high ? 0x00F0 : 0x000F;
+    const float d1 = (il / 4) ? (block->d / 16.0h) : block->d;
+    const float d2 = d1 / 256.0f;
+    const float md = -8.0h * block->d;
+    const ushort mask0 = (il / 4) ? 0x00F0 : 0x000F;
+    const ushort mask1 = mask0 << 8;
 
     for (int i = 0; i < 2; i++) {
-        uint16_t val = qs16[2 * idx + i];
-        result[2*i + 0] = scale * half(val & mask) + offset;
-        result[2*i + 1] = (scale / 256.0h) * half((val >> 8) & mask) + offset;
+        result[2*i + 0] = d1 * (qs[2*(il % 4) + i] & mask0) + md;
+        result[2*i + 1] = d2 * (qs[2*(il % 4) + i] & mask1) + md;
     }
 }
 
 template<typename T4>
 inline void dequant_q4_1(device const Q4_1Block* block, int lane, thread T4& result) {
-    const half d = block->d;
-    const half m = block->m;
-    const int group = lane % 8;
-    const int is_high = group / 4;
-    const int idx = group % 4;
+    // Match llama.cpp's approach: use float for intermediate values
+    device const uint16_t* qs = ((device const uint16_t*)block) + 2;
+    const int il = lane;
 
-    device const uint16_t* qs16 = (device const uint16_t*)block->qs;
-
-    const half scale = is_high ? d / 16.0h : d;
-    const uint16_t mask = is_high ? 0x00F0 : 0x000F;
+    const float d1 = (il / 4) ? (block->d / 16.0h) : block->d;
+    const float d2 = d1 / 256.0f;
+    const float m = block->m;
+    const ushort mask0 = (il / 4) ? 0x00F0 : 0x000F;
+    const ushort mask1 = mask0 << 8;
 
     for (int i = 0; i < 2; i++) {
-        uint16_t val = qs16[2 * idx + i];
-        result[2*i + 0] = scale * half(val & mask) + m;
-        result[2*i + 1] = (scale / 256.0h) * half((val >> 8) & mask) + m;
+        result[2*i + 0] = d1 * (qs[2*(il % 4) + i] & mask0) + m;
+        result[2*i + 1] = d2 * (qs[2*(il % 4) + i] & mask1) + m;
     }
 }
 
 template<typename T4>
 inline void dequant_q5_0(device const Q5_0Block* block, int lane, thread T4& result) {
-    const half d = block->d;
-    const half md = -16.0h * d;
-    const int group = lane % 8;
-    const int is_high = group / 4;
-    const int idx = group % 4;
+    // Match llama.cpp's approach: use float for intermediate values
+    device const uint16_t* qs = ((device const uint16_t*)block) + 3;
+    const int il = lane;
 
-    device const uint16_t* qs16 = (device const uint16_t*)block->qs;
+    const float d = block->d;
+    const float md = -16.0h * block->d;
+    const ushort mask = (il / 4) ? 0x00F0 : 0x000F;
+
     const uint32_t qh = *((device const uint32_t*)block->qh);
 
-    const uint16_t mask = is_high ? 0x00F0 : 0x000F;
-    const int x_mv = is_high ? 4 : 0;
-    const int gh_mv = is_high ? 12 : 0;
-    const int gh_bk = is_high ? 0 : 4;
+    const int x_mv = (il / 4) ? 4 : 0;
+    const int gh_mv = (il / 4) ? 12 : 0;
+    const int gh_bk = (il / 4) ? 0 : 4;
 
-    for (int i = 0; i < 2; i++) {
-        int j = 2 * idx + i;
-        const uint8_t xh_0 = ((qh >> (gh_mv + 2*j)) << gh_bk) & 0x10;
-        const uint8_t xh_1 = ((qh >> (gh_mv + 2*j+1)) << gh_bk) & 0x10;
+    for (int ii = 0; ii < 2; ii++) {
+        int i = 2*(il % 4) + ii;
 
-        const int32_t x0 = (((qs16[j] & mask) >> x_mv) | xh_0);
-        const int32_t x1 = (((qs16[j] >> 8) & mask) >> x_mv) | xh_1;
+        const uint8_t xh_0 = ((qh >> (gh_mv + 2*i)) << gh_bk) & 0x10;
+        const uint8_t xh_1 = ((qh >> (gh_mv + 2*i+1)) << gh_bk) & 0x10;
 
-        result[2*i + 0] = d * x0 + md;
-        result[2*i + 1] = d * x1 + md;
+        const int32_t x0 = ((((qs[i] & mask) >> x_mv) | xh_0));
+        const int32_t x1 = ((((qs[i] >> 8) & mask) >> x_mv) | xh_1);
+
+        result[2*ii + 0] = d * x0 + md;
+        result[2*ii + 1] = d * x1 + md;
     }
 }
 
 template<typename T4>
 inline void dequant_q5_1(device const Q5_1Block* block, int lane, thread T4& result) {
-    const half d = block->d;
-    const half m = block->m;
-    const int group = lane % 8;
-    const int is_high = group / 4;
-    const int idx = group % 4;
+    // Match llama.cpp's approach: use float for intermediate values
+    device const uint16_t* qs = ((device const uint16_t*)block) + 3;
+    const int il = lane;
 
-    device const uint16_t* qs16 = (device const uint16_t*)block->qs;
+    const float d = block->d;
+    const float m = block->m;
+    const ushort mask = (il / 4) ? 0x00F0 : 0x000F;
+
     const uint32_t qh = *((device const uint32_t*)block->qh);
 
-    const uint16_t mask = is_high ? 0x00F0 : 0x000F;
-    const int x_mv = is_high ? 4 : 0;
-    const int gh_mv = is_high ? 12 : 0;
-    const int gh_bk = is_high ? 0 : 4;
+    const int x_mv = (il / 4) ? 4 : 0;
+    const int gh_mv = (il / 4) ? 12 : 0;
+    const int gh_bk = (il / 4) ? 0 : 4;
 
-    for (int i = 0; i < 2; i++) {
-        int j = 2 * idx + i;
-        const uint8_t xh_0 = ((qh >> (gh_mv + 2*j)) << gh_bk) & 0x10;
-        const uint8_t xh_1 = ((qh >> (gh_mv + 2*j+1)) << gh_bk) & 0x10;
+    for (int ii = 0; ii < 2; ii++) {
+        int i = 2*(il % 4) + ii;
 
-        const int32_t x0 = (((qs16[j] & mask) >> x_mv) | xh_0);
-        const int32_t x1 = (((qs16[j] >> 8) & mask) >> x_mv) | xh_1;
+        const uint8_t xh_0 = ((qh >> (gh_mv + 2*i)) << gh_bk) & 0x10;
+        const uint8_t xh_1 = ((qh >> (gh_mv + 2*i+1)) << gh_bk) & 0x10;
 
-        result[2*i + 0] = d * x0 + m;
-        result[2*i + 1] = d * x1 + m;
+        const int32_t x0 = ((((qs[i] & mask) >> x_mv) | xh_0));
+        const int32_t x1 = ((((qs[i] >> 8) & mask) >> x_mv) | xh_1);
+
+        result[2*ii + 0] = d * x0 + m;
+        result[2*ii + 1] = d * x1 + m;
     }
 }
 
 template<typename T4>
 inline void dequant_q8_0(device const Q8_0Block* block, int lane, thread T4& result) {
-    const half d = block->d;
+    // Match llama.cpp's approach: use float for intermediate values
+    const float d = block->d;
     const int idx = lane % 8;
 
     for (int i = 0; i < 4; i++) {
-        result[i] = d * (half)block->qs[4 * idx + i];
+        result[i] = d * (float)block->qs[4 * idx + i];
     }
 }
 
