@@ -1,5 +1,8 @@
 use std::arch::aarch64::*;
 
+#[cfg(target_arch = "aarch64")]
+use super::arm::neon::vexpq_f32;
+
 const GELU_COEF_A: f32 = 0.044715;
 const SQRT_2_OVER_PI: f32 = 0.7978845608028654;
 const SQRT_2_INV: f32 = 0.7071067811865475;
@@ -17,11 +20,9 @@ pub unsafe fn vtanhq_f32(x: float32x4_t) -> float32x4_t {
     // For |x| >= 4, tanh(x) ≈ sign(x) * 1.0
     let large_mask = vcagtq_f32(x, four);
 
-    // For small |x|, use exp approximation: tanh(x) = (e^x - e^-x) / (e^x + e^-x)
-    // = (e^(2x) - 1) / (e^(2x) + 1)
-    // = 1 - 2 / (e^(2x) + 1)
+    // For small |x|, use exp approximation
     let two_x = vmulq_f32(two, x);
-    let exp_2x = crate::ops::silu::vexpq_f32(two_x);
+    let exp_2x = vexpq_f32(two_x);
     let tanh_approx = vsubq_f32(one, vdivq_f32(two, vaddq_f32(exp_2x, one)));
 
     // For large |x|, return sign(x)
@@ -92,7 +93,7 @@ pub unsafe fn gelu_quick_f32(x: &[f32], dst: &mut [f32]) {
 
         // arg = -1.702 * x
         let arg = vmulq_f32(quick_coef, vx);
-        let exp_arg = crate::ops::silu::vexpq_f32(arg);
+        let exp_arg = vexpq_f32(arg);
         let sigmoid = vdivq_f32(one, vaddq_f32(one, exp_arg));
 
         let result = vmulq_f32(vx, sigmoid);

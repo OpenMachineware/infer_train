@@ -1,9 +1,13 @@
-// NEON SIMD operators for ARM64
-// NEON implementations are currently inline in the operator files
-// (attention.rs, rms_norm.rs, etc.) using #[cfg(target_arch = "aarch64")]
-// This module is for future organization
+// NEON SIMD implementations for ARM64
 
-// TODO: Move NEON-specific code here for better organization
+pub mod rms_norm;
+pub mod silu;
+pub mod softmax;
 
-// Note: Current NEON functions are exported directly from their source modules
-// via cfg(target_arch = "aarch64")
+pub use rms_norm::rms_norm_f32 as rms_norm_f32_neon;
+pub use rms_norm::rms_norm_fp16_to_f32 as rms_norm_fp16_to_f32_neon;
+pub use silu::silu_backward_f32 as silu_backward_f32_neon;
+pub use silu::silu_f32 as silu_f32_neon;
+pub use silu::vexpq_f32;
+pub use softmax::exp as neon_exp;
+pub use softmax::softmax_f32 as softmax_f32_neon;
