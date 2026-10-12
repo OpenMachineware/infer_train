@@ -2,15 +2,18 @@
 .idea/
 .vscode/
 
-# build artifacts
+# Build artifacts
 infer_train
 it-server
 it-cli
 
 *.gguf
-llama.cpp-0.5.0/
+
+# External dependencies (not tracked)
+llama.cpp-0.6.0/
 llvm-project-llvmorg-23.1.0/
 vllm-0.31.0/
+muser/
 
 # Added by cargo
 /target
@@ -19,35 +22,17 @@ vllm-0.31.0/
 # Benchmark tools (llama.cpp binaries)
 .llama-cpp-tools/
 
-# Native C/C++ build artifacts
+# Native build artifacts
 *.o
 *.a
-*.dylib
-*.s
-native/benchmark_memory
-native/exact_llama_test
-native/f16_bench_direct
-native/f16_bench_fair
-native/hybrid_test
-native/identical_test
-native/instrumented_comparison
-native/llama_attention_bench
-native/loop_test
-native/mad_benchmark
-native/memory_access_test
-native/our_attention_bench
-native/simple_profile
-native/timing_test
+native/bin/
+native/bench_*
+native/llama_metal_test
+native/compare_*
 
-# Root directory test binaries
-bench_attention_llama
-test_20_iter
-test_c_timing
-test_data_pattern
-test_llama_all_k
-test_llama_metal_q4_k
-test_minimal_ffi
-test_rust_ffi
+# Tools build artifacts
+tools/*/build/
+tools/*.dylib
 
 # Root directory test/debug Rust files (should be in src/bin/)
 /test_*.rs

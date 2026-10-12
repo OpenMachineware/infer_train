@@ -48,6 +48,10 @@ struct F16Block {
     half values[4];
 };
 
+struct BF16Block {
+    bfloat values[4];
+};
+
 // Dequantization functions - optimized to match llama.cpp
 template<typename T4>
 inline void dequant_q4_0(device const Q4_0Block* block, int lane, thread T4& result) {
@@ -158,6 +162,13 @@ inline void dequant_q8_0(device const Q8_0Block* block, int lane, thread T4& res
 
 template<typename T4>
 inline void dequant_f16(device const F16Block* block, int lane, thread T4& result) {
+    for (int i = 0; i < 4; i++) {
+        result[i] = block->values[i];
+    }
+}
+
+template<typename T4>
+inline void dequant_bf16(device const BF16Block* block, int lane, thread T4& result) {
     for (int i = 0; i < 4; i++) {
         result[i] = block->values[i];
     }
@@ -681,6 +692,274 @@ kernel void flash_decode_multi_wg_partial<
     32, 32,
     dequant_q8_0, dequant_q8_0,
     128, 4, 32, 1, 8
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// ============================================================================
+// C=64 variants (matching llama.cpp chunk size)
+// ============================================================================
+
+// F16 C=64 NWG=8
+template [[host_name("flash_decode_multi_wg_partial_f16_c64_nwg8")]]
+kernel void flash_decode_multi_wg_partial<
+    F16Block, F16Block, float4, half4, half4,
+    1, 1,
+    dequant_f16, dequant_f16,
+    128, 4, 64, 2, 8
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Finalize kernel reused from C=32 variant (same NWG=8)
+
+// F16 C=64 NWG=16
+template [[host_name("flash_decode_multi_wg_partial_f16_c64_nwg16")]]
+kernel void flash_decode_multi_wg_partial<
+    F16Block, F16Block, float4, half4, half4,
+    1, 1,
+    dequant_f16, dequant_f16,
+    128, 4, 64, 2, 16
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Finalize kernel reused from C=32 variant (same NWG=16)
+
+// Q8_0 C=64 NWG=8
+template [[host_name("flash_decode_multi_wg_partial_q8_0_c64_nwg8")]]
+kernel void flash_decode_multi_wg_partial<
+    Q8_0Block, Q8_0Block, float4, float4, float4,
+    8, 8,
+    dequant_q8_0, dequant_q8_0,
+    128, 4, 64, 1, 8
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Q8_0 C=64 NWG=16
+template [[host_name("flash_decode_multi_wg_partial_q8_0_c64_nwg16")]]
+kernel void flash_decode_multi_wg_partial<
+    Q8_0Block, Q8_0Block, float4, float4, float4,
+    16, 16,
+    dequant_q8_0, dequant_q8_0,
+    128, 4, 64, 1, 16
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Q8_0 C=64 NWG=32
+template [[host_name("flash_decode_multi_wg_partial_q8_0_c64_nwg32")]]
+kernel void flash_decode_multi_wg_partial<
+    Q8_0Block, Q8_0Block, float4, float4, float4,
+    32, 32,
+    dequant_q8_0, dequant_q8_0,
+    128, 4, 64, 1, 32
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Q4_0 C=64 NWG=8
+template [[host_name("flash_decode_multi_wg_partial_q4_0_c64_nwg8")]]
+kernel void flash_decode_multi_wg_partial<
+    Q4_0Block, Q4_0Block, float4, float4, float4,
+    8, 8,
+    dequant_q4_0, dequant_q4_0,
+    128, 4, 64, 1, 8
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Q4_0 C=64 NWG=16
+template [[host_name("flash_decode_multi_wg_partial_q4_0_c64_nwg16")]]
+kernel void flash_decode_multi_wg_partial<
+    Q4_0Block, Q4_0Block, float4, float4, float4,
+    16, 16,
+    dequant_q4_0, dequant_q4_0,
+    128, 4, 64, 1, 16
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Q4_0 C=64 NWG=32
+template [[host_name("flash_decode_multi_wg_partial_q4_0_c64_nwg32")]]
+kernel void flash_decode_multi_wg_partial<
+    Q4_0Block, Q4_0Block, float4, float4, float4,
+    32, 32,
+    dequant_q4_0, dequant_q4_0,
+    128, 4, 64, 1, 32
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Q4_1 C=64 NWG=8
+template [[host_name("flash_decode_multi_wg_partial_q4_1_c64_nwg8")]]
+kernel void flash_decode_multi_wg_partial<
+    Q4_1Block, Q4_1Block, float4, float4, float4,
+    8, 8,
+    dequant_q4_1, dequant_q4_1,
+    128, 4, 64, 1, 8
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Q5_0 C=64 NWG=8
+template [[host_name("flash_decode_multi_wg_partial_q5_0_c64_nwg8")]]
+kernel void flash_decode_multi_wg_partial<
+    Q5_0Block, Q5_0Block, float4, float4, float4,
+    8, 8,
+    dequant_q5_0, dequant_q5_0,
+    128, 4, 64, 1, 8
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Q5_1 C=64 NWG=8
+template [[host_name("flash_decode_multi_wg_partial_q5_1_c64_nwg8")]]
+kernel void flash_decode_multi_wg_partial<
+    Q5_1Block, Q5_1Block, float4, float4, float4,
+    8, 8,
+    dequant_q5_1, dequant_q5_1,
+    128, 4, 64, 1, 8
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Q5_0 C=64 NWG=16
+template [[host_name("flash_decode_multi_wg_partial_q5_0_c64_nwg16")]]
+kernel void flash_decode_multi_wg_partial<
+    Q5_0Block, Q5_0Block, float4, float4, float4,
+    16, 16,
+    dequant_q5_0, dequant_q5_0,
+    128, 4, 64, 1, 16
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Q5_0 C=64 NWG=32
+template [[host_name("flash_decode_multi_wg_partial_q5_0_c64_nwg32")]]
+kernel void flash_decode_multi_wg_partial<
+    Q5_0Block, Q5_0Block, float4, float4, float4,
+    32, 32,
+    dequant_q5_0, dequant_q5_0,
+    128, 4, 64, 1, 32
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Q5_1 C=64 NWG=16
+template [[host_name("flash_decode_multi_wg_partial_q5_1_c64_nwg16")]]
+kernel void flash_decode_multi_wg_partial<
+    Q5_1Block, Q5_1Block, float4, float4, float4,
+    16, 16,
+    dequant_q5_1, dequant_q5_1,
+    128, 4, 64, 1, 16
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Q5_1 C=64 NWG=32
+template [[host_name("flash_decode_multi_wg_partial_q5_1_c64_nwg32")]]
+kernel void flash_decode_multi_wg_partial<
+    Q5_1Block, Q5_1Block, float4, float4, float4,
+    32, 32,
+    dequant_q5_1, dequant_q5_1,
+    128, 4, 64, 1, 32
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Q4_1 C=64 NWG=16
+template [[host_name("flash_decode_multi_wg_partial_q4_1_c64_nwg16")]]
+kernel void flash_decode_multi_wg_partial<
+    Q4_1Block, Q4_1Block, float4, float4, float4,
+    16, 16,
+    dequant_q4_1, dequant_q4_1,
+    128, 4, 64, 1, 16
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// Q4_1 C=64 NWG=32
+template [[host_name("flash_decode_multi_wg_partial_q4_1_c64_nwg32")]]
+kernel void flash_decode_multi_wg_partial<
+    Q4_1Block, Q4_1Block, float4, float4, float4,
+    32, 32,
+    dequant_q4_1, dequant_q4_1,
+    128, 4, 64, 1, 32
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// BF16 C=64 NWG=8
+template [[host_name("flash_decode_multi_wg_partial_bf16_c64_nwg8")]]
+kernel void flash_decode_multi_wg_partial<
+    BF16Block, BF16Block, float4, bfloat4, bfloat4,
+    1, 1,
+    dequant_bf16, dequant_bf16,
+    128, 4, 64, 2, 8
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// BF16 C=64 NWG=16
+template [[host_name("flash_decode_multi_wg_partial_bf16_c64_nwg16")]]
+kernel void flash_decode_multi_wg_partial<
+    BF16Block, BF16Block, float4, bfloat4, bfloat4,
+    1, 1,
+    dequant_bf16, dequant_bf16,
+    128, 4, 64, 2, 16
+>(
+    constant uint&, constant float&, device const float*, device const char*,
+    device const char*, device float*, device PartialResult*,
+    uint3, ushort, ushort
+);
+
+// BF16 C=64 NWG=32
+template [[host_name("flash_decode_multi_wg_partial_bf16_c64_nwg32")]]
+kernel void flash_decode_multi_wg_partial<
+    BF16Block, BF16Block, float4, bfloat4, bfloat4,
+    1, 1,
+    dequant_bf16, dequant_bf16,
+    128, 4, 64, 2, 32
 >(
     constant uint&, constant float&, device const float*, device const char*,
     device const char*, device float*, device PartialResult*,
