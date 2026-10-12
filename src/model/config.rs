@@ -39,11 +39,12 @@ impl ModelConfig {
         let architecture =
             get_string(meta, "general.architecture").unwrap_or_default();
 
-        let prefix = format!("{}.architecture.", architecture);
+        // Architecture-specific prefix (e.g., "qwen3." for keys like "qwen3.block_count")
+        let arch_prefix = format!("{}.", architecture);
         let arch_meta: HashMap<String, MetadataValue> = meta
             .iter()
             .filter_map(|(k, v)| {
-                k.strip_prefix(&prefix)
+                k.strip_prefix(&arch_prefix)
                     .map(|stripped| (stripped.to_string(), v.clone()))
             })
             .collect();
@@ -78,10 +79,12 @@ impl ModelConfig {
 
         let rope_freq_base = get_f32(meta, "general.rope.freq_base")
             .or_else(|| get_f32(&arch_meta, "rope.freq_base"))
+            .or_else(|| get_f32(&arch_meta, "rope_dimension_count"))
             .unwrap_or(10000.0);
 
         let rms_norm_eps = get_f32(meta, "general.layer_norm_rms_epsilon")
             .or_else(|| get_f32(&arch_meta, "layer_norm_rms_epsilon"))
+            .or_else(|| get_f32(&arch_meta, "attention.layer_norm_rms_epsilon"))
             .unwrap_or(1e-5);
 
         let max_position_embeddings = get_u64(meta, "general.context_length")
