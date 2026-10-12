@@ -3,7 +3,7 @@
 
 // Inference runtime: connect model layer with operators
 
-mod kv_cache;
+pub mod kv_cache;
 
 pub use kv_cache::{KVCache, KVCacheBase, KVCacheFormat};
 
