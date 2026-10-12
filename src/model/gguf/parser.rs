@@ -140,6 +140,33 @@ impl GgufFile {
         };
         bytes_per_elem
     }
+
+    /// Check if this is a split GGUF file
+    pub fn is_split(&self) -> bool {
+        self.metadata.contains_key("split.count")
+    }
+
+    /// Get split info: (current_no, total_count)
+    pub fn split_info(&self) -> Option<(usize, usize)> {
+        let count = self.get_metadata_u64("split.count")?;
+        let no = self.get_metadata_u64("split.no")?;
+        Some((no as usize, count as usize))
+    }
+
+    /// Get metadata value as u64
+    fn get_metadata_u64(&self, key: &str) -> Option<u64> {
+        match self.metadata.get(key)? {
+            MetadataValue::Uint64(v) => Some(*v),
+            MetadataValue::Int64(v) => Some(*v as u64),
+            MetadataValue::Uint32(v) => Some(*v as u64),
+            MetadataValue::Int32(v) => Some(*v as u64),
+            MetadataValue::Uint16(v) => Some(*v as u64),
+            MetadataValue::Int16(v) => Some(*v as u64),
+            MetadataValue::Uint8(v) => Some(*v as u64),
+            MetadataValue::Int8(v) => Some(*v as u64),
+            _ => None,
+        }
+    }
 }
 
 fn read_u32(data: &[u8], cursor: &mut usize) -> Result<u32, GgufError> {
