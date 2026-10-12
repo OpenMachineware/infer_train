@@ -350,7 +350,7 @@ pub unsafe fn decode_attention_q8_0_neon(
 
             // Accumulate V with NEON vec_mad
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            vec_mad_f32_q8_0_neon(
+            vec_mad_f32_q8_0(
                 output_head,
                 &v[v_offset..v_offset + blocks_per_row],
                 weight,
@@ -446,7 +446,7 @@ pub unsafe fn decode_attention_q4_0_neon(
 
             // Accumulate V
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            vec_mad_f32_q4_0_neon(
+            vec_mad_f32_q4_0(
                 output_head,
                 &v[v_offset..v_offset + blocks_per_row],
                 weight,
@@ -557,7 +557,7 @@ pub unsafe fn decode_attention_q4_1_neon(
 
             // Accumulate V with NEON vec_mad
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            vec_mad_f32_q4_1_neon(
+            vec_mad_f32_q4_1(
                 output_head,
                 &v[v_offset..v_offset + blocks_per_row],
                 weight,
@@ -653,7 +653,7 @@ pub unsafe fn decode_attention_q5_0_neon(
             sum_exp += weight;
 
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            vec_mad_f32_q5_0_neon(
+            vec_mad_f32_q5_0(
                 output_head,
                 &v[v_offset..v_offset + blocks_per_row],
                 weight,
@@ -763,7 +763,7 @@ pub unsafe fn decode_attention_q5_1_neon(
 
             // Accumulate V with NEON vec_mad
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            vec_mad_f32_q5_1_neon(
+            vec_mad_f32_q5_1(
                 output_head,
                 &v[v_offset..v_offset + blocks_per_row],
                 weight,
@@ -859,7 +859,7 @@ pub unsafe fn decode_attention_iq4_nl_neon(
             sum_exp += weight;
 
             let v_offset = (s * num_heads + h) * blocks_per_row;
-            vec_mad_f32_iq4_nl_neon(
+            vec_mad_f32_iq4_nl(
                 output_head,
                 &v[v_offset..v_offset + blocks_per_row],
                 weight,
@@ -1859,12 +1859,13 @@ pub unsafe fn dequantize_row_bf16_neon_inline(x: &[u16], y: &mut [f32]) {
 }
 
 // Fused vec_dot and vec_mad functions are provided by attention_fused module
+#[cfg(target_arch = "aarch64")]
 use super::attention_fused::{
     fp16_to_fp32_scalar, quantize_query_to_q8_0, quantize_query_to_q8_1,
     vec_dot_iq4_nl_q8_0, vec_dot_q4_0_q8_0, vec_dot_q4_1_q8_1,
     vec_dot_q5_0_q8_0, vec_dot_q5_1_q8_1, vec_dot_q8_0_q8_0,
-    vec_mad_f32_iq4_nl_neon, vec_mad_f32_q4_0_neon, vec_mad_f32_q4_1_neon,
-    vec_mad_f32_q5_0_neon, vec_mad_f32_q5_1_neon, vec_mad_f32_q8_0_neon,
+    vec_mad_f32_iq4_nl, vec_mad_f32_q4_0, vec_mad_f32_q4_1, vec_mad_f32_q5_0,
+    vec_mad_f32_q5_1, vec_mad_f32_q8_0,
 };
 
 #[cfg(test)]
