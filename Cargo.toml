@@ -72,3 +72,7 @@ harness = false
 [[bench]]
 name = "bench_flash_decode_stages"
 harness = false
+
+[[bench]]
+name = "kv_cache_bench"
+harness = false
