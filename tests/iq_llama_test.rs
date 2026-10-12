@@ -18,7 +18,7 @@ fn main() {
         .expect("Failed to compile llama combined library");
 
     // Load self-written library
-    let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
+    let ggml_common = include_str!("../src/ops/metal/blocks.h");
     let ggml_common_metal =
         format!("#define GGML_COMMON_IMPL_METAL\n{}", ggml_common);
     let standalone_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");

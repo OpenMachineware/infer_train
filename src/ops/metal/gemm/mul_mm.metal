@@ -6,7 +6,7 @@ using namespace metal;
 
 // Include block structure definitions
 #define GGML_COMMON_DECL_METAL
-#include "../include/ggml-common.h"
+#include "../include/blocks.h"
 
 // Constants
 #define QK_K 256
@@ -31,7 +31,7 @@ constexpr constant static uint8_t ksigns_iq2xs[128] = {
 // Include IQ grid tables from separate header
 #include "../include/iq_grid_tables.h"
 
-// Block structures are defined in ggml-common.h via GGML_COMMON_DECL_METAL
+// Block structures are defined in blocks.h via GGML_COMMON_DECL_METAL
 
 // Kernel argument structure (matching llama.cpp's ggml_metal_kargs_mul_mm)
 struct ggml_metal_kargs_mul_mm {
@@ -111,7 +111,7 @@ constexpr constant static float kvalues_mxfp4_f[16] = {
 };
 
 // Sign lookup tables for IQ formats (not in iq_grid_tables.h)
-// These are defined in ggml-common.h when GGML_COMMON_IMPL_METAL is set
+// These are defined in blocks.h when GGML_COMMON_IMPL_METAL is set
 
 // E8M0 scale decode: exponent stored in byte, value = 2^(e-127)
 static inline float decode_e8m0_scale(uint8_t e) {
@@ -893,7 +893,7 @@ void dequantize_iq1_s(device const block_iq1_s *xb, short il, thread type4x4 & r
 
 // IQ1_M: 1.75 bpw
 // 256 elements per block
-// iq1m_scale_t is defined in ggml-common.h
+// iq1m_scale_t is defined in blocks.h
 template <typename type4x4>
 void dequantize_iq1_m(device const block_iq1_m *xb, short il, thread type4x4 & reg) {
     const int ib32 = il / 2;

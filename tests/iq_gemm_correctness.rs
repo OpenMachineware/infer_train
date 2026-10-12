@@ -401,8 +401,8 @@ fn main() {
     println!("M={}, K={}, N={} (conservative test)\n", m, k, n);
 
     // Load self-written mul_mm_standalone.metal
-    // Need to define GGML_COMMON_IMPL_METAL before including ggml-common.h for correct grid tables
-    let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
+    // Need to define GGML_COMMON_IMPL_METAL before including blocks.h for correct grid tables
+    let ggml_common = include_str!("../src/ops/metal/blocks.h");
     let ggml_common_metal =
         format!("#define GGML_COMMON_IMPL_METAL\n{}", ggml_common);
     let standalone_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");

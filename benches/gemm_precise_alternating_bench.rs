@@ -331,11 +331,11 @@ fn main() {
         .new_library_with_source(&llama_source, &compile_opts)
         .expect("Failed to compile llama.cpp library");
 
-    // Load self-written library (inline ggml-common.h with Metal define)
+    // Load self-written library (inline blocks.h with Metal define)
     let shader_dir =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
     let ggml_common =
-        std::fs::read_to_string(shader_dir.join("ggml-common.h")).unwrap();
+        std::fs::read_to_string(shader_dir.join("blocks.h")).unwrap();
     let iq_grid_tables =
         std::fs::read_to_string(shader_dir.join("iq_grid_tables.h")).unwrap();
     let self_base =

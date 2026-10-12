@@ -780,16 +780,16 @@ fn load_llama_kernels() -> Result<String, std::io::Error> {
         std::fs::read_to_string(&format!("{}/common.h", base_kernels))?;
     let common = common_raw.replace("#include \"ggml-metal-impl.h\"", "");
 
-    // Load ggml-common.h
+    // Load blocks.h
     let ggml_common =
-        std::fs::read_to_string(&format!("{}/ggml-common.h", base_ggml))?;
+        std::fs::read_to_string(&format!("{}/blocks.h", base_ggml))?;
 
     // Load dequantize.h without the includes
     let dequantize_raw =
         std::fs::read_to_string(&format!("{}/dequantize.h", base_kernels))?;
     let dequantize = dequantize_raw
         .replace("#include \"common.h\"", "")
-        .replace("#include \"ggml-common.h\"", "");
+        .replace("#include \"blocks.h\"", "");
 
     let fa_common =
         std::fs::read_to_string(&format!("{}/fa_common.metal", base_kernels))?;

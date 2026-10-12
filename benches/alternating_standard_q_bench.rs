@@ -233,8 +233,8 @@ fn main() {
     let llama_shader_base =
         std::fs::read_to_string("/tmp/combined_llama.metal")
             .expect("llama.cpp shader not found at /tmp/combined_llama.metal");
-    let ggml_common = std::fs::read_to_string("/tmp/ggml-common.h")
-        .expect("ggml-common.h not found");
+    let ggml_common =
+        std::fs::read_to_string("/tmp/blocks.h").expect("blocks.h not found");
 
     let ggml_common_clean: String = ggml_common
         .lines()
@@ -256,18 +256,18 @@ fn main() {
             let l = line.trim();
             !l.starts_with("#pragma once")
                 && !l.starts_with("#include")
-                && !l.contains("__embed_ggml-common.h__")
+                && !l.contains("__embed_blocks.h__")
         })
         .collect::<Vec<_>>()
         .join("\n");
 
     // Load and inline self-written shader
     let my_shader_base = include_str!("../src/ops/metal/gemm/mul_mm.metal");
-    let my_ggml_common = include_str!("../src/ops/metal/ggml-common.h");
+    let my_ggml_common = include_str!("../src/ops/metal/blocks.h");
 
     let ggml_common_with_metal =
         format!("#define GGML_COMMON_IMPL_METAL\n{}", my_ggml_common);
-    let my_shader = my_shader_base.replace("#include \"ggml-common.h\"", "");
+    let my_shader = my_shader_base.replace("#include \"blocks.h\"", "");
     let my_shader = format!("{}\n{}", ggml_common_with_metal, my_shader);
 
     let compile_options = CompileOptions::new();

@@ -94,14 +94,14 @@ impl FlashAttnMetalContext {
         let compile_options = metal::CompileOptions::new();
         compile_options.set_fast_math_enabled(true);
 
-        // Combine dequantize.metal and flash_attn.metal
-        let dequantize_source = include_str!("include/dequantize.metal");
+        // Combine dequantize.h and flash_attn.metal
+        let dequantize_source = include_str!("include/dequantize.h");
         let flash_attn_source = include_str!("attention/flash_attn.metal");
         // Remove the include directive and concatenate
         let source = format!(
             "{}\n{}",
             dequantize_source,
-            flash_attn_source.replace("#include \"dequantize.metal\"", "")
+            flash_attn_source.replace("#include \"dequantize.h\"", "")
         );
         let source = source.as_str();
 

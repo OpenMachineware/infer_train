@@ -8,7 +8,7 @@ use metal::{Device, MTLSize};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::ffi::c_void;
 
-// Block sizes from ggml-common.h
+// Block sizes from blocks.h
 const QK1_0: usize = 128; // 128 values per block
 const QK2_0: usize = 64; // 64 values per block
 

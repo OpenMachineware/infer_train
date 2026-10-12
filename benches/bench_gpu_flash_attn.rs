@@ -155,7 +155,7 @@ fn load_llama_cpp_kernels() -> Result<String, std::io::Error> {
     let base = "llama.cpp-0.6.0/ggml/src/ggml-metal/kernels";
 
     let dequantize =
-        std::fs::read_to_string(&format!("{}/dequantize.metal", base))?;
+        std::fs::read_to_string(&format!("{}/dequantize.h", base))?;
     let fa_common =
         std::fs::read_to_string(&format!("{}/fa_common.metal", base))?;
     let fa_f16 = std::fs::read_to_string(&format!("{}/fa_f16.metal", base))?;

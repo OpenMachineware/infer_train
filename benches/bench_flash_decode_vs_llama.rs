@@ -423,9 +423,9 @@ fn load_llama_kernels() -> Result<String, std::io::Error> {
     let impl_header =
         std::fs::read_to_string(&format!("{}/ggml-metal-impl.h", impl_base))?;
 
-    // Load ggml-common.h (needed by dequantize.h)
+    // Load blocks.h (needed by dequantize.h)
     let ggml_common =
-        std::fs::read_to_string(&format!("{}/ggml-common.h", common_base))?;
+        std::fs::read_to_string(&format!("{}/blocks.h", common_base))?;
 
     // Load required files and strip includes/pragma
     let common = std::fs::read_to_string(&format!("{}/common.h", base))?;

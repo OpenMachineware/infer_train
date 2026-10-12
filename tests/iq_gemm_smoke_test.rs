@@ -73,7 +73,7 @@ fn main() {
 
     // Compile gemm.metal
     let gemm_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
-    let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
+    let ggml_common = include_str!("../src/ops/metal/blocks.h");
     let ggml_common_metal = format!(
         "#define GGML_COMMON_DECL_METAL\n#define GGML_COMMON_IMPL_METAL\n{}",
         ggml_common

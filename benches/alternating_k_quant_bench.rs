@@ -129,7 +129,7 @@ fn expand_includes(
             let filename = &line[start..end];
             if !visited.contains(&filename.to_string()) {
                 visited.push(filename.to_string());
-                // Search in multiple directories (ggml-common.h is 2 levels up from kernels)
+                // Search in multiple directories (blocks.h is 2 levels up from kernels)
                 let search_paths = vec![
                     base_dir.join(filename),
                     base_dir.parent().unwrap().join(filename),
@@ -196,13 +196,13 @@ fn main() {
         .new_library_with_source(&llama_source, &compile_options)
         .unwrap();
 
-    // Load self-written template (inline ggml-common.h with Metal define)
+    // Load self-written template (inline blocks.h with Metal define)
     let shader_dir =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
     let my_base =
         std::fs::read_to_string(shader_dir.join("gemm.metal")).unwrap();
     let ggml_common =
-        std::fs::read_to_string(shader_dir.join("ggml-common.h")).unwrap();
+        std::fs::read_to_string(shader_dir.join("blocks.h")).unwrap();
     let iq_grid_tables =
         std::fs::read_to_string(shader_dir.join("iq_grid_tables.h")).unwrap();
 
@@ -221,11 +221,11 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 };
 "#;
 
-    // Define GGML_COMMON_DECL_METAL and inline the full ggml-common.h
+    // Define GGML_COMMON_DECL_METAL and inline the full blocks.h
     let ggml_common_metal =
         format!("#define GGML_COMMON_DECL_METAL\n{}", ggml_common);
 
-    // Combine: ggml-common.h + IQ extra tables + IQ grid tables + gemm.metal
+    // Combine: blocks.h + IQ extra tables + IQ grid tables + gemm.metal
     let my_source = format!(
         "{}\n{}\n{}\n{}",
         ggml_common_metal, iq_extra_tables, iq_grid_tables, my_base

@@ -30,7 +30,7 @@ fn main() {
     println!("Input[0..4]: {:?}", &input_f32[0..4]);
 
     let gemm_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
-    let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
+    let ggml_common = include_str!("../src/ops/metal/blocks.h");
     let ggml_common_metal =
         format!("#define GGML_COMMON_DECL_METAL\n{}", ggml_common);
     let iq_grid_tables = include_str!("../src/ops/metal/iq_grid_tables.h");

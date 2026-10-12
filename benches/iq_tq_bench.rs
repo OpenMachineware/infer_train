@@ -189,12 +189,12 @@ fn main() {
 
     // Compile template with includes
     let shader_base = include_str!("../src/ops/metal/gemm/mul_mm.metal");
-    let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
-    // Define GGML_COMMON_IMPL_METAL before including ggml-common.h
+    let ggml_common = include_str!("../src/ops/metal/blocks.h");
+    // Define GGML_COMMON_IMPL_METAL before including blocks.h
     let ggml_common_with_metal =
         "#define GGML_COMMON_IMPL_METAL\n".to_string() + ggml_common;
-    let shader = shader_base
-        .replace("#include \"ggml-common.h\"", &ggml_common_with_metal);
+    let shader =
+        shader_base.replace("#include \"blocks.h\"", &ggml_common_with_metal);
 
     let compile_options = CompileOptions::new();
     let lib = match device.new_library_with_source(&shader, &compile_options) {
