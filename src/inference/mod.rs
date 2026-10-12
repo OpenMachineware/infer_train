@@ -3,6 +3,7 @@
 
 // Inference runtime: connect model layer with operators
 
+pub mod dequant;
 pub mod kv_cache;
 
 pub use kv_cache::{KVCache, KVCacheBase, KVCacheFormat};
@@ -12,6 +13,11 @@ use crate::model::llama::LlamaModel;
 use crate::model::tensor::DataType;
 use crate::model::weights::WeightStore;
 use crate::ops::sampling::{sample, SamplingStrategy};
+use crate::quant::kv_cache::blocks::QK;
+use crate::quant::types::{
+    BlockIQ4NL, BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0,
+};
+use half::f16;
 
 /// Inference context
 pub struct InferenceContext {
@@ -35,23 +41,6 @@ impl InferenceContext {
         let model = LlamaModel::from_weights(&store, config.clone());
 
         Ok(InferenceContext { config, model, device })
-    }
-
-    /// Get embedding for token
-    pub fn get_embedding(&self, token_id: u32) -> Option<Vec<f32>> {
-        let embed = self.model.tok_embeddings.as_ref()?;
-        let hidden_size = self.config.hidden_size;
-        let dtype = embed.dtype;
-
-        let bytes = embed.bytes();
-        let offset = (token_id as usize) * hidden_size * dtype_size(dtype);
-
-        if offset + hidden_size * dtype_size(dtype) > bytes.len() {
-            return None;
-        }
-
-        let data = &bytes[offset..offset + hidden_size * dtype_size(dtype)];
-        Some(dequant_to_f32(data, dtype, hidden_size))
     }
 
     /// Get layer count
@@ -112,46 +101,261 @@ impl InferenceContext {
     }
 }
 
-fn dtype_size(dtype: DataType) -> usize {
+/// Dequantize quantized/FP data to F32
+/// Handles all supported data types including K-quant and standard quantization
+pub fn dequant_to_f32(data: &[u8], dtype: DataType, count: usize) -> Vec<f32> {
+    let mut result = vec![0.0f32; count];
+
     match dtype {
-        DataType::F32 => 4,
-        DataType::F16 => 2,
-        DataType::BF16 => 2,
-        _ => 1, // Quantized types need special handling
+        DataType::F32 => {
+            for i in 0..count {
+                let offset = i * 4;
+                if offset + 4 <= data.len() {
+                    let bytes: [u8; 4] =
+                        data[offset..offset + 4].try_into().unwrap();
+                    result[i] = f32::from_le_bytes(bytes);
+                }
+            }
+        }
+        DataType::F16 => {
+            for i in 0..count {
+                let offset = i * 2;
+                if offset + 2 <= data.len() {
+                    let bytes: [u8; 2] =
+                        data[offset..offset + 2].try_into().unwrap();
+                    result[i] = f16::from_le_bytes(bytes).to_f32();
+                }
+            }
+        }
+        DataType::BF16 => {
+            for i in 0..count {
+                let offset = i * 2;
+                if offset + 2 <= data.len() {
+                    let bytes: [u8; 2] =
+                        data[offset..offset + 2].try_into().unwrap();
+                    // BF16 to F32: shift left by 16 bits
+                    let bits = u16::from_le_bytes(bytes) as u32;
+                    result[i] = f32::from_bits(bits << 16);
+                }
+            }
+        }
+        DataType::Q4_0 => {
+            dequant_q4_0(data, &mut result, count);
+        }
+        DataType::Q4_1 => {
+            dequant_q4_1(data, &mut result, count);
+        }
+        DataType::Q5_0 => {
+            dequant_q5_0(data, &mut result, count);
+        }
+        DataType::Q5_1 => {
+            dequant_q5_1(data, &mut result, count);
+        }
+        DataType::Q8_0 => {
+            dequant_q8_0(data, &mut result, count);
+        }
+        DataType::Q2_K => {
+            dequant::dequant_q2_k(data, &mut result, count);
+        }
+        DataType::Q3_K => {
+            dequant::dequant_q3_k(data, &mut result, count);
+        }
+        DataType::Q4_K => {
+            dequant::dequant_q4_k(data, &mut result, count);
+        }
+        DataType::Q5_K => {
+            dequant::dequant_q5_k(data, &mut result, count);
+        }
+        DataType::Q6_K => {
+            dequant::dequant_q6_k(data, &mut result, count);
+        }
+        DataType::IQ4_NL => {
+            dequant_iq4_nl(data, &mut result, count);
+        }
+    }
+
+    result
+}
+
+// Standard Q formats (32 elements per block)
+
+fn dequant_q4_0(data: &[u8], out: &mut [f32], count: usize) {
+    let n_blocks = count.div_ceil(QK);
+    for i in 0..n_blocks {
+        let block_offset = i * std::mem::size_of::<BlockQ4_0>();
+        if block_offset + std::mem::size_of::<BlockQ4_0>() > data.len() {
+            break;
+        }
+        let block: &BlockQ4_0 =
+            unsafe { &*(data.as_ptr().add(block_offset) as *const BlockQ4_0) };
+        let d = f16::from_bits(block.d).to_f32();
+
+        for j in 0..QK / 2 {
+            let q = block.qs[j];
+            let q0 = ((q & 0x0F) as i32) - 8;
+            let q1 = (((q >> 4) & 0x0F) as i32) - 8;
+
+            let idx0 = i * QK + j;
+            let idx1 = i * QK + j + QK / 2;
+            if idx0 < count {
+                out[idx0] = q0 as f32 * d;
+            }
+            if idx1 < count {
+                out[idx1] = q1 as f32 * d;
+            }
+        }
     }
 }
 
-pub fn dequant_to_f32(data: &[u8], dtype: DataType, count: usize) -> Vec<f32> {
-    match dtype {
-        DataType::F32 => {
-            let mut result = Vec::with_capacity(count);
-            for i in 0..count {
-                let bytes: [u8; 4] = data[i * 4..i * 4 + 4].try_into().unwrap();
-                result.push(f32::from_le_bytes(bytes));
-            }
-            result
+fn dequant_q4_1(data: &[u8], out: &mut [f32], count: usize) {
+    let n_blocks = count.div_ceil(QK);
+    for i in 0..n_blocks {
+        let block_offset = i * std::mem::size_of::<BlockQ4_1>();
+        if block_offset + std::mem::size_of::<BlockQ4_1>() > data.len() {
+            break;
         }
-        DataType::F16 => {
-            let mut result = Vec::with_capacity(count);
-            for i in 0..count {
-                let bytes: [u8; 2] = data[i * 2..i * 2 + 2].try_into().unwrap();
-                let f16 = half::f16::from_le_bytes(bytes);
-                result.push(f16.to_f32());
+        let block: &BlockQ4_1 =
+            unsafe { &*(data.as_ptr().add(block_offset) as *const BlockQ4_1) };
+        let d = f16::from_bits(block.d).to_f32();
+        let m = f16::from_bits(block.m).to_f32();
+
+        for j in 0..QK / 2 {
+            let q = block.qs[j];
+            let q0 = (q & 0x0F) as i32;
+            let q1 = ((q >> 4) & 0x0F) as i32;
+
+            let idx0 = i * QK + j;
+            let idx1 = i * QK + j + QK / 2;
+            if idx0 < count {
+                out[idx0] = q0 as f32 * d + m;
             }
-            result
-        }
-        DataType::BF16 => {
-            let mut result = Vec::with_capacity(count);
-            for i in 0..count {
-                let bytes: [u8; 2] = data[i * 2..i * 2 + 2].try_into().unwrap();
-                let bf16 = half::bf16::from_le_bytes(bytes);
-                result.push(bf16.to_f32());
+            if idx1 < count {
+                out[idx1] = q1 as f32 * d + m;
             }
-            result
         }
-        _ => {
-            // For quantized types, return zeros (needs proper dequant)
-            vec![0.0; count]
+    }
+}
+
+fn dequant_q5_0(data: &[u8], out: &mut [f32], count: usize) {
+    let n_blocks = count.div_ceil(QK);
+    for i in 0..n_blocks {
+        let block_offset = i * std::mem::size_of::<BlockQ5_0>();
+        if block_offset + std::mem::size_of::<BlockQ5_0>() > data.len() {
+            break;
+        }
+        let block: &BlockQ5_0 =
+            unsafe { &*(data.as_ptr().add(block_offset) as *const BlockQ5_0) };
+        let d = f16::from_bits(block.d).to_f32();
+
+        let qh = block.qh[0] as u32
+            | ((block.qh[1] as u32) << 8)
+            | ((block.qh[2] as u32) << 16)
+            | ((block.qh[3] as u32) << 24);
+
+        for j in 0..QK / 2 {
+            let xh0 = ((qh >> j) & 1) << 4;
+            let xh1 = ((qh >> (j + 16)) & 1) << 4;
+
+            let q0 = ((block.qs[j] & 0x0F) as i32 | xh0 as i32) - 16;
+            let q1 = (((block.qs[j] >> 4) & 0x0F) as i32 | xh1 as i32) - 16;
+
+            let idx0 = i * QK + j;
+            let idx1 = i * QK + j + QK / 2;
+            if idx0 < count {
+                out[idx0] = q0 as f32 * d;
+            }
+            if idx1 < count {
+                out[idx1] = q1 as f32 * d;
+            }
+        }
+    }
+}
+
+fn dequant_q5_1(data: &[u8], out: &mut [f32], count: usize) {
+    let n_blocks = count.div_ceil(QK);
+    for i in 0..n_blocks {
+        let block_offset = i * std::mem::size_of::<BlockQ5_1>();
+        if block_offset + std::mem::size_of::<BlockQ5_1>() > data.len() {
+            break;
+        }
+        let block: &BlockQ5_1 =
+            unsafe { &*(data.as_ptr().add(block_offset) as *const BlockQ5_1) };
+        let d = f16::from_bits(block.d).to_f32();
+        let m = f16::from_bits(block.m).to_f32();
+
+        let qh = block.qh[0] as u32
+            | ((block.qh[1] as u32) << 8)
+            | ((block.qh[2] as u32) << 16)
+            | ((block.qh[3] as u32) << 24);
+
+        for j in 0..QK / 2 {
+            let xh0 = ((qh >> j) & 1) << 4;
+            let xh1 = ((qh >> (j + 16)) & 1) << 4;
+
+            let q0 = (block.qs[j] & 0x0F) as i32 | xh0 as i32;
+            let q1 = ((block.qs[j] >> 4) & 0x0F) as i32 | xh1 as i32;
+
+            let idx0 = i * QK + j;
+            let idx1 = i * QK + j + QK / 2;
+            if idx0 < count {
+                out[idx0] = q0 as f32 * d + m;
+            }
+            if idx1 < count {
+                out[idx1] = q1 as f32 * d + m;
+            }
+        }
+    }
+}
+
+fn dequant_q8_0(data: &[u8], out: &mut [f32], count: usize) {
+    let n_blocks = count.div_ceil(QK);
+    for i in 0..n_blocks {
+        let block_offset = i * std::mem::size_of::<BlockQ8_0>();
+        if block_offset + std::mem::size_of::<BlockQ8_0>() > data.len() {
+            break;
+        }
+        let block: &BlockQ8_0 =
+            unsafe { &*(data.as_ptr().add(block_offset) as *const BlockQ8_0) };
+        let d = f16::from_bits(block.d).to_f32();
+
+        for j in 0..QK {
+            let idx = i * QK + j;
+            if idx < count {
+                out[idx] = block.qs[j] as f32 * d;
+            }
+        }
+    }
+}
+
+fn dequant_iq4_nl(data: &[u8], out: &mut [f32], count: usize) {
+    const KVALUES: [f32; 16] = [
+        -127.0, -104.0, -83.0, -65.0, -49.0, -35.0, -22.0, -10.0, 1.0, 13.0,
+        25.0, 38.0, 53.0, 69.0, 89.0, 113.0,
+    ];
+
+    let n_blocks = count.div_ceil(QK);
+    for i in 0..n_blocks {
+        let block_offset = i * std::mem::size_of::<BlockIQ4NL>();
+        if block_offset + std::mem::size_of::<BlockIQ4NL>() > data.len() {
+            break;
+        }
+        let block: &BlockIQ4NL =
+            unsafe { &*(data.as_ptr().add(block_offset) as *const BlockIQ4NL) };
+        let d = f16::from_bits(block.d).to_f32();
+
+        for j in 0..QK / 2 {
+            let q = block.qs[j];
+            let idx0 = (q & 0x0F) as usize;
+            let idx1 = ((q >> 4) & 0x0F) as usize;
+
+            let out_idx0 = i * QK + j;
+            let out_idx1 = i * QK + j + QK / 2;
+            if out_idx0 < count {
+                out[out_idx0] = KVALUES[idx0] * d / 127.0;
+            }
+            if out_idx1 < count {
+                out[out_idx1] = KVALUES[idx1] * d / 127.0;
+            }
         }
     }
 }

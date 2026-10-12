@@ -148,14 +148,22 @@ impl LlamaModel {
         let hidden_size = self.config.hidden_size;
         let dtype = embed.dtype;
 
+        // GGUF stores embeddings transposed: shape is [hidden_size, vocab_size]
+        // So for token N, we need to read column N (stride by hidden_size)
         let bytes = embed.bytes();
-        let offset = (token as usize) * hidden_size * dtype.size();
+        let bytes_per_row = dtype.bytes_for_elems(hidden_size);
+        let token = token as usize;
 
-        if offset + hidden_size * dtype.size() > bytes.len() {
+        // For quantized formats with block-based storage, we need to handle
+        // the strided access differently. Each row is hidden_size elements.
+        // Token N's embedding starts at byte offset: N * bytes_per_row
+        let offset = token * bytes_per_row;
+
+        if offset + bytes_per_row > bytes.len() {
             return None;
         }
 
-        let data = &bytes[offset..offset + hidden_size * dtype.size()];
+        let data = &bytes[offset..offset + bytes_per_row];
         Some(dequant_to_f32(data, dtype, hidden_size))
     }
 
@@ -268,7 +276,8 @@ impl LlamaModel {
 
     fn gemv(&self, x: &[f32], w: &Tensor, out_size: usize) -> Option<Vec<f32>> {
         let in_size = x.len();
-        let w_data = dequant_to_f32(w.bytes(), w.dtype, in_size * out_size);
+        let total_elems = in_size * out_size;
+        let w_data = dequant_to_f32(w.bytes(), w.dtype, total_elems);
 
         let mut out = vec![0.0f32; out_size];
         for i in 0..out_size {
