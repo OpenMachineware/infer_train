@@ -16,9 +16,9 @@ fn main() {
     let queue = device.new_command_queue();
 
     let our_source =
-        include_str!("../../shaders/test_flash_decode_steps.metal");
+        include_str!("../../shaders/test/test_flash_decode_steps.metal");
     let llama_source =
-        include_str!("../../shaders/test_flash_decode_steps_llama.metal");
+        include_str!("../../shaders/test/test_flash_decode_steps_llama.metal");
     let options = CompileOptions::new();
     options.set_fast_math_enabled(true);
     let our_library =

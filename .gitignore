@@ -14,6 +14,7 @@ llama.cpp-0.6.0/
 llvm-project-llvmorg-23.1.0/
 vllm-0.31.0/
 muser/
+Strata-0.1.43/
 
 # Added by cargo
 /target
