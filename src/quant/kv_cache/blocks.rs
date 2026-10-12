@@ -1,11 +1,6 @@
-// KV Cache Quantization
-// Supports: F16, BF16, Q8_0, Q4_0, Q4_1, Q5_0, Q5_1, IQ4_NL
-
-pub mod dequant;
-pub mod quant;
-
-pub use dequant::*;
-pub use quant::*;
+// KV Cache quantization block structures
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Jia Liu
 
 // Block size for Qn_0/Qn_1 formats
 pub const QK: usize = 32;
