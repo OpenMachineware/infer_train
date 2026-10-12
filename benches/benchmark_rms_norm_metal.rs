@@ -1,7 +1,7 @@
 // Benchmark RMSNorm: Metal vs CPU NEON vs llama.cpp scalar
 // Run: cargo run --release --bin benchmark_rms_norm_metal
 
-use infer_train::ops::gpu::metal::RmsNormMetalContext;
+use infer_train::ops::metal::RmsNormMetalContext;
 use infer_train::ops::rms_norm::rms_norm_f32;
 use std::time::Instant;
 

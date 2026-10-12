@@ -1,7 +1,7 @@
 // Benchmark GPU Flash Attention - vec kernel (decode)
 // Compares with llama.cpp expected performance
 
-use infer_train::ops::gpu::metal::{FlashAttnMetalContext, KvFormat};
+use infer_train::ops::metal::{FlashAttnMetalContext, KvFormat};
 use std::time::Instant;
 
 fn main() {

@@ -1,7 +1,7 @@
 // Minimal Flash Attention test with CPU reference
 // Uses the simplest possible kernel to verify correctness
 
-use infer_train::ops::gpu::metal::{FlashAttnMetalContext, KvFormat};
+use infer_train::ops::metal::{FlashAttnMetalContext, KvFormat};
 use std::time::Instant;
 
 fn cpu_attention_reference(

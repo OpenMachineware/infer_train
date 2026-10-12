@@ -24,9 +24,6 @@ pub mod silu;
 pub mod softmax;
 pub mod tensor;
 
-// GPU module (contains metal implementation)
-pub mod gpu;
-
 // Re-exports
 pub use attention::*;
 pub use binary::*;

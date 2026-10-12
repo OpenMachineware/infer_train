@@ -1,7 +1,7 @@
 // Benchmark GPU RoPE vs llama.cpp
 // Run: cargo run --release --bin benchmark_rope_gpu
 
-use infer_train::ops::gpu::metal::RopeMetalContext;
+use infer_train::ops::metal::RopeMetalContext;
 use infer_train::ops::rope::rope_neox_simple;
 
 fn main() {

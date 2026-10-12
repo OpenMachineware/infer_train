@@ -1,7 +1,7 @@
 // Simple test for GPU Flash Attention
 // Tests if Metal kernel compiles and runs correctly
 
-use infer_train::ops::gpu::metal::{FlashAttnMetalContext, KvFormat};
+use infer_train::ops::metal::{FlashAttnMetalContext, KvFormat};
 
 fn main() {
     println!("Testing GPU Flash Attention...");

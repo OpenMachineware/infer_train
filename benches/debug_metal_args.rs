@@ -1,4 +1,4 @@
-use infer_train::ops::gpu::metal::RmsNormMetalContext;
+use infer_train::ops::metal::RmsNormMetalContext;
 
 fn main() {
     let ctx = match RmsNormMetalContext::new() {

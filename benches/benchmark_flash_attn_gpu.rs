@@ -1,7 +1,7 @@
 // Benchmark GPU Flash Attention vs llama.cpp
 // Tests decode case (batch=1) with different seq_len and formats
 
-use infer_train::ops::gpu::metal::{FlashAttnMetalContext, KvFormat};
+use infer_train::ops::metal::{FlashAttnMetalContext, KvFormat};
 use infer_train::quant::kv_cache::{
     BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, QK,
 };
