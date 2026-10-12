@@ -4,7 +4,7 @@ use crate::model::config::ModelConfig;
 use crate::model::llama::LlamaModel;
 use crate::model::tensor::DataType;
 use crate::model::weights::WeightStore;
-use std::sync::Arc;
+use crate::ops::sampling::{sample, SamplingStrategy};
 
 /// Inference context
 pub struct InferenceContext {
@@ -61,6 +61,45 @@ impl InferenceContext {
     pub fn is_loaded(&self) -> bool {
         self.model.tok_embeddings.is_some() && !self.model.layers.is_empty()
     }
+
+    /// Generate tokens from prompt
+    pub fn generate(
+        &mut self,
+        prompt_tokens: &[u32],
+        max_tokens: usize,
+        strategy: &SamplingStrategy,
+    ) -> Vec<u32> {
+        let mut kv_cache =
+            KVCache::new(&self.config, prompt_tokens.len() + max_tokens);
+        let mut generated = Vec::with_capacity(max_tokens);
+
+        // Prefill: process prompt
+        if let Some(logits) = self.model.forward(prompt_tokens, &mut kv_cache) {
+            let first_token = sample(&logits, strategy) as u32;
+            generated.push(first_token);
+        }
+
+        // Decode: generate remaining tokens
+        for _ in 1..max_tokens {
+            let eos = self.config.eos_token_id;
+            if generated.last() == Some(&eos) {
+                break;
+            }
+
+            let last_token =
+                generated.last().copied().unwrap_or(self.config.bos_token_id);
+            if let Some(logits) =
+                self.model.forward(&[last_token], &mut kv_cache)
+            {
+                let next_token = sample(&logits, strategy) as u32;
+                generated.push(next_token);
+            } else {
+                break;
+            }
+        }
+
+        generated
+    }
 }
 
 fn dtype_size(dtype: DataType) -> usize {
@@ -72,7 +111,7 @@ fn dtype_size(dtype: DataType) -> usize {
     }
 }
 
-fn dequant_to_f32(data: &[u8], dtype: DataType, count: usize) -> Vec<f32> {
+pub fn dequant_to_f32(data: &[u8], dtype: DataType, count: usize) -> Vec<f32> {
     match dtype {
         DataType::F32 => {
             let mut result = Vec::with_capacity(count);

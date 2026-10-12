@@ -28,6 +28,28 @@ pub enum DataType {
     IQ4_NL,
 }
 
+impl DataType {
+    /// Size in bytes per element
+    pub fn size(&self) -> usize {
+        match self {
+            DataType::F32 => 4,
+            DataType::F16 => 2,
+            DataType::BF16 => 2,
+            DataType::Q4_0 => 18, // 16 bytes + 1 half scale
+            DataType::Q4_1 => 20, // 16 bytes + 2 halves (scale + min)
+            DataType::Q5_0 => 20,
+            DataType::Q5_1 => 22,
+            DataType::Q8_0 => 34, // 32 bytes + 1 half scale
+            DataType::Q2_K => 84,
+            DataType::Q3_K => 110,
+            DataType::Q4_K => 144,
+            DataType::Q5_K => 176,
+            DataType::Q6_K => 210,
+            DataType::IQ4_NL => 18,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TensorData {
     Owned(Vec<u8>),
