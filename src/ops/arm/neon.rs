@@ -1,5 +1,6 @@
 // NEON SIMD implementations for ARM64
 
+pub mod attention;
 pub mod attention_fused;
 pub mod binary;
 pub mod conv;
@@ -11,6 +12,12 @@ pub mod silu;
 pub mod softmax;
 pub mod tensor;
 
+pub use attention::{
+    bf16_to_fp32, dequantize_row_bf16, dequantize_row_f16, fp16_to_fp32,
+    fp32_to_fp16_bits, vaddq_f16_asm, vcvt_f16_from_f32, vcvt_f32_from_f16,
+    vec_dot_f16, vec_dot_f32, vec_dot_f32_f16, vec_mad_f16, vec_mad_f32_f16,
+    vec_scale_f16, vfmaq_f16_asm, vmulq_f16_asm,
+};
 pub use attention_fused::{
     bf16_to_fp32_scalar, fp16_to_fp32_scalar, quantize_query_to_q8_0,
     quantize_query_to_q8_1, vec_dot_iq4_nl_q8_0, vec_dot_q4_0_q8_0,
