@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Generic tensor abstraction (format-agnostic)
 
 use std::sync::Arc;

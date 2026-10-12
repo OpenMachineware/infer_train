@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 use half::bf16;
 
 /// BF16 vector dot product (scalar implementation)

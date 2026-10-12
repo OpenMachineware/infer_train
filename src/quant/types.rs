@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 use bytemuck::{Pod, Zeroable};
 
 pub const QK4_0: usize = 32; // Block size for Q4_0

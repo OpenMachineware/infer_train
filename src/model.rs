@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Model layer: GGUF parsing, tensor management, model architectures
 
 pub mod config;

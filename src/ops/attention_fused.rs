@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Fused vec_dot and vec_mad for KV cache quantization formats
 // Following llama.cpp's approach: quantize Q to Q8_0, then use Q8_0 × Qn_0 NEON fused vec_dot
 // This enables hardware INT8 dot product acceleration (SDOT instruction)

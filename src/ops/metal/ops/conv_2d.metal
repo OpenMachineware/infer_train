@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Convolution Metal kernels - Self-written implementation
 // Supports 2D convolution with F32/F16 weights
 // Algorithm: Direct convolution with padding handling

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Scalar operations: SCALE, ADD1
 // Matches llama.cpp's ggml_compute_forward_scale and ggml_compute_forward_add1
 

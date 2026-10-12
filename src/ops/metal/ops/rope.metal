@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // RoPE (Rotary Position Embedding) Metal kernel - Truly self-written implementation
 // Algorithm: Apply rotation based on position
 //   For each pair (x0, x1):

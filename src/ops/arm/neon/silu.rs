@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // NEON SiLU (Swish) activation implementation
 
 use std::arch::aarch64::*;

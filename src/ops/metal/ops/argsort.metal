@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // ARGSORT Metal kernel - Self-written bitonic sort implementation
 // Algorithm: Bitonic sort with template for sort order
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu

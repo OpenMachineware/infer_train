@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 //! Other operators: NORM, GROUP_NORM, CONCAT, REPEAT, CLAMP
 
 #[cfg(target_arch = "aarch64")]

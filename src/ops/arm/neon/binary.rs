@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // NEON SIMD implementations for binary operations (for non-macOS ARM64)
 
 use std::arch::aarch64::*;

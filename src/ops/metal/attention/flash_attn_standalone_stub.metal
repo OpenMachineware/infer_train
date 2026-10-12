@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Stub Flash Attention for testing
 // Real implementation uses template specialization which requires Metal function constants
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Pooling Metal kernels - Self-written implementation
 // Each thread processes one output pixel, scans input window
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu

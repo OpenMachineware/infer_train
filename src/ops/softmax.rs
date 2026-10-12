@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Softmax operator implementation
 // Based on llama.cpp's ggml_vec_soft_max_f32
 

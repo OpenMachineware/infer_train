@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Binary operations: ADD, SUB, MUL, DIV
 // Matches llama.cpp's binary-ops.cpp template approach
 // On macOS, uses vDSP (Accelerate) for F32 - same as llama.cpp

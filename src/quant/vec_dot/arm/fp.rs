@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 use std::arch::aarch64::*;
 
 /// Convert FP16 to FP32 using NEON fcvt instruction

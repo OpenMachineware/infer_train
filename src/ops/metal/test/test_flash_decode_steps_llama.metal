@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // llama.cpp-style step testing
 // Extract key patterns from llama.cpp for direct comparison
 //

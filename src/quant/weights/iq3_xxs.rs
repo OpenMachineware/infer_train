@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // IQ3_XXS, IQ3_S, IQ1_S, IQ1_M quantization implementations
 // Ported from llama.cpp ggml-quants.c
 

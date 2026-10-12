@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Quantization kernels for GPU
 // Convert FP32 to quantized formats
 

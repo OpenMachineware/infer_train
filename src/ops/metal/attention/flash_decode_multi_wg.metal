@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Flash Decode Multi-Workgroup Kernel
 // Implements parallel KV cache processing across multiple workgroups
 // Based on llama.cpp's strided processing design

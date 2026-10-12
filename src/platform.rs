@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Platform detection: CPU and GPU capabilities
 // Detects hardware features at startup for optimal operator selection
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Flash Decode Vectorized Kernel
 // Implements high-performance decode attention based on proven design principles
 //

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // RMSNorm Metal kernel - Truly self-written implementation
 // Algorithm: RMS = sqrt(mean(x^2) + eps), output = x/RMS * weight
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu

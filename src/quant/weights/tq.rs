@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // TQ formats: TQ1_0, TQ2_0 (Ternary Quantization)
 
 use crate::quant::types::*;

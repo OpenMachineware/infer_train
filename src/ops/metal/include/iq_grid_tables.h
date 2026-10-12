@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Grid lookup tables for IQ quantization formats
 // Auto-generated from tables.rs
 

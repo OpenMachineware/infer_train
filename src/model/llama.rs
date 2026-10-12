@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Llama model architecture definition
 
 use crate::inference::{dequant_to_f32, KVCacheBase};

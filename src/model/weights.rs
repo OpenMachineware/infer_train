@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Weight store: tensor manager for model weights
 
 use crate::model::gguf::{tensor_from_gguf, GgufError, GgufFile};

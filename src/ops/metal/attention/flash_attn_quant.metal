@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Self-written Flash Attention kernels with quantized KV support
 // Dequantizes K/V on-the-fly during attention computation
 //

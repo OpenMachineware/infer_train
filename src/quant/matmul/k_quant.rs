@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 use crate::quant::types::*;
 use crate::quant::vec_dot::arm::*;
 use std::arch::aarch64::*;

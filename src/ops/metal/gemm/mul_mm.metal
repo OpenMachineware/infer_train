@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Self-contained GEMM kernel for all formats
 // Independent implementation, NOT copied from llama.cpp
 

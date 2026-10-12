@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Unified model loader with architecture detection
 
 use crate::model::config::ModelConfig;

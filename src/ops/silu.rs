@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // SiLU (Swish) activation implementation
 
 #[cfg(target_arch = "aarch64")]

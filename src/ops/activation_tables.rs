@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // FP16 lookup tables for activation functions
 // Matches llama.cpp's ggml_table_gelu_f16 and ggml_table_gelu_quick_f16
 // Tables are initialized at runtime, same as llama.cpp

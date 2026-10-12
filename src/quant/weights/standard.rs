@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Standard quantization formats: Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q1_0, Q2_0
 
 use crate::quant::types::*;

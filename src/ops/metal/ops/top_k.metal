@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // TOP_K Metal kernel - Matches llama.cpp implementation exactly
 // Algorithm: Histogram-based radix selection + atomic output
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu

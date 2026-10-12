@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 use crate::quant::types::{
     BlockIQ1M, BlockIQ1S, BlockIQ2S, BlockIQ2XS, BlockIQ2XXS, BlockIQ3S,
     BlockIQ3XXS, BlockIQ4NL, BlockIQ4XS, BlockMXFP4, BlockQ1_0, BlockQ2K,

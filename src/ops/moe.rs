@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 //! MoE (Mixture of Experts) operators: GET_ROWS, SET_ROWS, ADD_ID, MUL_MAT_ID
 
 /// Get specific rows from a matrix

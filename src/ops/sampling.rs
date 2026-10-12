@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Token sampling strategies
 
 /// Greedy sampling: select the token with highest probability

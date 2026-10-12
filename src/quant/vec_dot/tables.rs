@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 pub const IQ1S_DELTA: f32 = 0.125;
 pub const IQ1M_DELTA: f32 = 0.125;
 

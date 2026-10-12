@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Attention operator NEON implementations
 // FP16 inline assembly for stable Rust compatibility
 

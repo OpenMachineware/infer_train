@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // K-quant formats: Q2_K, Q3_K, Q4_K, Q5_K, Q6_K
 // Based on llama.cpp's quantization
 

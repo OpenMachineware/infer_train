@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // MoE (Mixture of Experts) layer definition
 // Used by models like DeepSeek-Coder-V2, Mixtral, etc.
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 use std::arch::aarch64::*;
 
 use crate::quant::types::{BlockQ8K, BlockTQ1_0, BlockTQ2_0, QK_K};

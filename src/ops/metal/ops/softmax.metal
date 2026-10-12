@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Softmax Metal kernel - Truly self-written implementation
 // Algorithm: Numerically stable softmax
 //   1. Find max for stability

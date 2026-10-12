@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Self-written Flash Attention kernels from first principles
 // Uses online softmax to avoid materializing full attention matrix
 //

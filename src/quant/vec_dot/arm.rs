@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 pub mod fp;
 pub mod iq;
 pub mod k_quant;

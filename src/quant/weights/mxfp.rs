@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // MXFP formats: MXFP4 (E2M1 with E8M0 scale)
 
 use crate::quant::types::*;

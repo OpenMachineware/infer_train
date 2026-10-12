@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 use crate::quant::types::{BlockQ5_1, BlockQ8_1, QK4_0};
 use half::f16;
 

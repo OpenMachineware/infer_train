@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // GEMV kernels with Q8_0 quantized input
 // Used for KV cache with IQ4_NL weights
 

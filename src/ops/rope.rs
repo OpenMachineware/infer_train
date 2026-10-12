@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // RoPE (Rotary Position Embedding) with precomputed cache
 // Matches llama.cpp's ggml_compute_forward_rope
 

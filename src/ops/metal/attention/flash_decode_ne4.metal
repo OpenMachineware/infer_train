@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Flash Decode Kernel - Correct NE=4 Implementation
 //
 // Key insight: NE=4 means each thread processes 4 cache items in parallel

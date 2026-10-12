@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // DeepSeek-V2/V3 style MoE layer with Multi-Query Attention
 // Uses MQA (attn_kv_a_mqa, attn_kv_b) instead of separate wk/wv
 

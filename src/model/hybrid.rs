@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // Hybrid MoE + SSM layer definition
 // Used by models like Qwen3.6-35B (MoE + SSM hybrid)
 

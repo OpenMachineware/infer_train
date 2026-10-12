@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 //! CNN operators: CONV_2D, CONV_2D_DW, POOL_2D, IM2COL
 
 #[cfg(target_arch = "aarch64")]

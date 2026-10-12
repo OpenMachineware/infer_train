@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
 // KV Cache: multi-format key-value storage for attention
 // Reference: llama.cpp llama_kv_cache
 
