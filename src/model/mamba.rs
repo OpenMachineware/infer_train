@@ -8,11 +8,13 @@ use crate::model::weights::WeightStore;
 pub struct MambaLayer {
     pub layer_idx: usize,
 
-    // Attention (may not exist in pure Mamba layers)
+    // Attention (combined QKV for hybrid models)
     pub attention_norm: Option<Tensor>,
-    pub wq: Option<Tensor>,
-    pub wk: Option<Tensor>,
-    pub wv: Option<Tensor>,
+    pub attn_qkv: Option<Tensor>, // Combined QKV (hybrid)
+    pub attn_gate: Option<Tensor>, // Attention gate (hybrid)
+    pub wq: Option<Tensor>,       // Separate Q (pure attention)
+    pub wk: Option<Tensor>,       // Separate K (pure attention)
+    pub wv: Option<Tensor>,       // Separate V (pure attention)
     pub wo: Option<Tensor>,
 
     // SSM (State Space Model)
@@ -20,12 +22,15 @@ pub struct MambaLayer {
     pub ssm_in: Option<Tensor>,     // Input projection
     pub ssm_out: Option<Tensor>,    // Output projection
     pub ssm_conv1d: Option<Tensor>, // 1D convolution
-    pub ssm_a: Option<Tensor>,      // A parameter
-    pub ssm_d: Option<Tensor>,      // D parameter (skip connection)
-    pub ssm_delta: Option<Tensor>,  // Delta parameter
+    pub ssm_a: Option<Tensor>, // A parameter (may not have .weight extension)
+    pub ssm_dt: Option<Tensor>, // Delta parameter
+    pub ssm_dt_bias: Option<Tensor>, // Delta bias
+    pub ssm_b: Option<Tensor>, // B parameter
+    pub ssm_c: Option<Tensor>, // C parameter
+    // Legacy naming
+    pub ssm_d: Option<Tensor>, // D parameter (skip connection)
+    pub ssm_delta: Option<Tensor>, // Delta parameter (alt name)
     pub ssm_delta_bias: Option<Tensor>,
-    pub ssm_b: Option<Tensor>,     // B parameter
-    pub ssm_c: Option<Tensor>,     // C parameter
     pub ssm_alpha: Option<Tensor>, // Alpha parameter
 
     // Hybrid: some layers have both attention and SSM
@@ -46,18 +51,25 @@ impl MambaLayer {
         MambaLayer {
             layer_idx,
 
-            // Attention
+            // Attention (combined QKV for hybrid models)
             attention_norm: store
                 .get(&format!("{}.attn_norm.weight", qwen_prefix))
+                .cloned(),
+            attn_qkv: store
+                .get(&format!("{}.attn_qkv.weight", qwen_prefix))
+                .cloned(),
+            attn_gate: store
+                .get(&format!("{}.attn_gate.weight", qwen_prefix))
                 .cloned(),
             wq: store.get(&format!("{}.attn_q.weight", qwen_prefix)).cloned(),
             wk: store.get(&format!("{}.attn_k.weight", qwen_prefix)).cloned(),
             wv: store.get(&format!("{}.attn_v.weight", qwen_prefix)).cloned(),
             wo: store
                 .get(&format!("{}.attn_output.weight", qwen_prefix))
+                .or_else(|| store.get(&format!("{}.wo.weight", qwen_prefix)))
                 .cloned(),
 
-            // SSM
+            // SSM (check both .weight extension and no extension)
             ssm_norm: store
                 .get(&format!("{}.ssm_norm.weight", qwen_prefix))
                 .cloned(),
@@ -70,7 +82,21 @@ impl MambaLayer {
             ssm_conv1d: store
                 .get(&format!("{}.ssm_conv1d.weight", qwen_prefix))
                 .cloned(),
-            ssm_a: store.get(&format!("{}.ssm_a.weight", qwen_prefix)).cloned(),
+            // ssm_a may not have .weight extension
+            ssm_a: store
+                .get(&format!("{}.ssm_a", qwen_prefix))
+                .or_else(|| store.get(&format!("{}.ssm_a.weight", qwen_prefix)))
+                .cloned(),
+            // ssm_dt naming variants
+            ssm_dt: store
+                .get(&format!("{}.ssm_dt.weight", qwen_prefix))
+                .cloned(),
+            ssm_dt_bias: store
+                .get(&format!("{}.ssm_dt.bias", qwen_prefix))
+                .cloned(),
+            ssm_b: store.get(&format!("{}.ssm_b.weight", qwen_prefix)).cloned(),
+            ssm_c: store.get(&format!("{}.ssm_c.weight", qwen_prefix)).cloned(),
+            // Legacy naming
             ssm_d: store.get(&format!("{}.ssm_d.weight", qwen_prefix)).cloned(),
             ssm_delta: store
                 .get(&format!("{}.ssm_delta.weight", qwen_prefix))
@@ -78,8 +104,6 @@ impl MambaLayer {
             ssm_delta_bias: store
                 .get(&format!("{}.ssm_delta.bias", qwen_prefix))
                 .cloned(),
-            ssm_b: store.get(&format!("{}.ssm_b.weight", qwen_prefix)).cloned(),
-            ssm_c: store.get(&format!("{}.ssm_c.weight", qwen_prefix)).cloned(),
             ssm_alpha: store
                 .get(&format!("{}.ssm_alpha.weight", qwen_prefix))
                 .cloned(),
@@ -113,6 +137,8 @@ impl MambaLayer {
 
         let tensors: Vec<Option<&Tensor>> = vec![
             self.attention_norm.as_ref(),
+            self.attn_qkv.as_ref(),
+            self.attn_gate.as_ref(),
             self.wq.as_ref(),
             self.wk.as_ref(),
             self.wv.as_ref(),
@@ -122,11 +148,13 @@ impl MambaLayer {
             self.ssm_out.as_ref(),
             self.ssm_conv1d.as_ref(),
             self.ssm_a.as_ref(),
+            self.ssm_dt.as_ref(),
+            self.ssm_dt_bias.as_ref(),
+            self.ssm_b.as_ref(),
+            self.ssm_c.as_ref(),
             self.ssm_d.as_ref(),
             self.ssm_delta.as_ref(),
             self.ssm_delta_bias.as_ref(),
-            self.ssm_b.as_ref(),
-            self.ssm_c.as_ref(),
             self.ssm_alpha.as_ref(),
             self.post_attention_norm.as_ref(),
             self.post_ffw_norm.as_ref(),
@@ -150,7 +178,8 @@ impl MambaLayer {
     }
 
     pub fn is_attention(&self) -> bool {
-        self.wq.is_some() && self.wo.is_some()
+        // Combined QKV or separate Q+W
+        (self.attn_qkv.is_some() || self.wq.is_some()) && self.wo.is_some()
     }
 
     pub fn is_hybrid(&self) -> bool {
@@ -159,9 +188,11 @@ impl MambaLayer {
 
     pub fn is_complete(&self) -> bool {
         // SSM layer: need ssm_in, ssm_out
-        // Attention layer: need wq, wo
+        // Attention layer: need (attn_qkv or wq), wo
         // Either is valid
         (self.is_ssm() && self.ssm_in.is_some() && self.ssm_out.is_some())
-            || (self.is_attention() && self.wq.is_some() && self.wo.is_some())
+            || (self.is_attention()
+                && (self.attn_qkv.is_some() || self.wq.is_some())
+                && self.wo.is_some())
     }
 }

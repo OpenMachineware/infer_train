@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod gguf;
+pub mod hybrid;
 pub mod llama;
 pub mod mamba;
 pub mod moe;
@@ -12,6 +13,7 @@ pub mod weights;
 
 pub use config::*;
 pub use gguf::*;
+pub use hybrid::*;
 pub use llama::*;
 pub use mamba::*;
 pub use moe::*;

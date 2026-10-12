@@ -2,6 +2,7 @@
 
 use crate::model::config::ModelConfig;
 use crate::model::gguf::GgufFile;
+use crate::model::hybrid::HybridMoESsmLayer;
 use crate::model::llama::{LlamaLayer, LlamaModel};
 use crate::model::mamba::MambaLayer;
 use crate::model::moe::MoeLayer;
@@ -32,6 +33,7 @@ pub struct Model {
     pub llama_layers: Vec<LlamaLayer>,
     pub moe_layers: Vec<MoeLayer>,
     pub mamba_layers: Vec<MambaLayer>,
+    pub hybrid_layers: Vec<HybridMoESsmLayer>,
 }
 
 impl Model {
@@ -65,33 +67,40 @@ impl Model {
             .cloned();
 
         // Load layers based on architecture
-        let (llama_layers, moe_layers, mamba_layers) = match architecture {
-            Architecture::Llama => {
-                let layers: Vec<LlamaLayer> = (0..config.n_layers)
-                    .map(|i| LlamaLayer::from_weights(store, i))
-                    .collect();
-                (layers, vec![], vec![])
-            }
-            Architecture::MoE => {
-                let layers: Vec<MoeLayer> = (0..config.n_layers)
-                    .map(|i| MoeLayer::from_weights(store, i))
-                    .collect();
-                (vec![], layers, vec![])
-            }
-            Architecture::Mamba | Architecture::Hybrid => {
-                let layers: Vec<MambaLayer> = (0..config.n_layers)
-                    .map(|i| MambaLayer::from_weights(store, i))
-                    .collect();
-                (vec![], vec![], layers)
-            }
-            Architecture::Unknown => {
-                // Fallback: try Llama
-                let layers: Vec<LlamaLayer> = (0..config.n_layers)
-                    .map(|i| LlamaLayer::from_weights(store, i))
-                    .collect();
-                (layers, vec![], vec![])
-            }
-        };
+        let (llama_layers, moe_layers, mamba_layers, hybrid_layers) =
+            match architecture {
+                Architecture::Llama => {
+                    let layers: Vec<LlamaLayer> = (0..config.n_layers)
+                        .map(|i| LlamaLayer::from_weights(store, i))
+                        .collect();
+                    (layers, vec![], vec![], vec![])
+                }
+                Architecture::MoE => {
+                    let layers: Vec<MoeLayer> = (0..config.n_layers)
+                        .map(|i| MoeLayer::from_weights(store, i))
+                        .collect();
+                    (vec![], layers, vec![], vec![])
+                }
+                Architecture::Mamba => {
+                    let layers: Vec<MambaLayer> = (0..config.n_layers)
+                        .map(|i| MambaLayer::from_weights(store, i))
+                        .collect();
+                    (vec![], vec![], layers, vec![])
+                }
+                Architecture::Hybrid => {
+                    let layers: Vec<HybridMoESsmLayer> = (0..config.n_layers)
+                        .map(|i| HybridMoESsmLayer::from_weights(store, i))
+                        .collect();
+                    (vec![], vec![], vec![], layers)
+                }
+                Architecture::Unknown => {
+                    // Fallback: try Llama
+                    let layers: Vec<LlamaLayer> = (0..config.n_layers)
+                        .map(|i| LlamaLayer::from_weights(store, i))
+                        .collect();
+                    (layers, vec![], vec![], vec![])
+                }
+            };
 
         Model {
             config,
@@ -102,6 +111,7 @@ impl Model {
             llama_layers,
             moe_layers,
             mamba_layers,
+            hybrid_layers,
         }
     }
 
@@ -109,32 +119,32 @@ impl Model {
         store: &WeightStore,
         config: &ModelConfig,
     ) -> Architecture {
-        // Check first layer for architecture hints
-        let prefix = format!("blk.0.");
-
-        // Check for MoE: has ffn_gate_inp or ffn_down_exps
-        // Note: MoE components may not be in first layer, check multiple
+        // Check first few layers for architecture hints
         for i in 0..std::cmp::min(5, config.n_layers) {
             let prefix = format!("blk.{}.", i);
-            if store.get(&format!("{}ffn_gate_inp.weight", prefix)).is_some()
-                || store
-                    .get(&format!("{}ffn_down_exps.weight", prefix))
-                    .is_some()
-            {
+
+            // Check for MoE + SSM hybrid (has both ffn_down_exps and ssm_in)
+            let has_moe =
+                store.get(&format!("{}ffn_down_exps.weight", prefix)).is_some()
+                    || store
+                        .get(&format!("{}ffn_gate_inp.weight", prefix))
+                        .is_some();
+            let has_ssm = store
+                .get(&format!("{}ssm_in.weight", prefix))
+                .is_some()
+                || store.get(&format!("{}ssm_out.weight", prefix)).is_some();
+
+            if has_moe && has_ssm {
+                return Architecture::Hybrid;
+            }
+
+            // Check for pure MoE
+            if has_moe {
                 return Architecture::MoE;
             }
-        }
 
-        // Check for Mamba: has ssm_in or ssm_out
-        for i in 0..std::cmp::min(5, config.n_layers) {
-            let prefix = format!("blk.{}.", i);
-            if store.get(&format!("{}ssm_in.weight", prefix)).is_some()
-                || store.get(&format!("{}ssm_out.weight", prefix)).is_some()
-            {
-                // Check if also has attention
-                if store.get(&format!("{}attn_q.weight", prefix)).is_some() {
-                    return Architecture::Hybrid;
-                }
+            // Check for pure Mamba/SSM
+            if has_ssm {
                 return Architecture::Mamba;
             }
         }
@@ -147,6 +157,7 @@ impl Model {
         self.llama_layers.len()
             + self.moe_layers.len()
             + self.mamba_layers.len()
+            + self.hybrid_layers.len()
     }
 
     pub fn complete_layers(&self) -> usize {
@@ -155,7 +166,9 @@ impl Model {
         let moe = self.moe_layers.iter().filter(|l| l.is_complete()).count();
         let mamba =
             self.mamba_layers.iter().filter(|l| l.is_complete()).count();
-        llama + moe + mamba
+        let hybrid =
+            self.hybrid_layers.iter().filter(|l| l.is_complete()).count();
+        llama + moe + mamba + hybrid
     }
 
     pub fn param_count(&self) -> usize {
@@ -178,6 +191,9 @@ impl Model {
             count += layer.param_count();
         }
         for layer in &self.mamba_layers {
+            count += layer.param_count();
+        }
+        for layer in &self.hybrid_layers {
             count += layer.param_count();
         }
 
