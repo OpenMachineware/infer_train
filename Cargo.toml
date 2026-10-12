@@ -66,10 +66,10 @@ harness = false
 name = "gpu_kernel_comparison"
 harness = false
 
-[[bin]]
+[[bench]]
 name = "bench_all_flash_decode_formats"
-path = "src/bin/bench_all_flash_decode_formats.rs"
+harness = false
 
-[[bin]]
+[[bench]]
 name = "bench_flash_decode_stages"
-path = "src/bin/bench_flash_decode_stages.rs"
+harness = false
