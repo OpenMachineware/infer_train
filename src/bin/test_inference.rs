@@ -76,47 +76,40 @@ fn main() {
         }
         println!();
 
-        if dtype == DataType::Q5_K {
-            // Try to manually interpret the first block
-            println!("\n  Manual Q5_K block interpretation:");
-
-            // BlockQ5K: d: u16, dmin: u16, scales: [u8; 12], qh: [u8; 32], qs: [u8; 128]
-            // For 1536 elements, we need ceil(1536/256) = 6 blocks
-
-            let blocks_needed = cols.div_ceil(256);
-            println!("    Blocks needed per row: {}", blocks_needed);
-
-            // Read first block
-            let block_bytes = &bytes[0..176];
-
-            // d and dmin
-            let d_bits = u16::from_le_bytes([block_bytes[0], block_bytes[1]]);
-            let d = half::f16::from_bits(d_bits).to_f32();
-            let dmin_bits =
-                u16::from_le_bytes([block_bytes[2], block_bytes[3]]);
-            let dmin = half::f16::from_bits(dmin_bits).to_f32();
-
-            println!("    Block 0: d={}, dmin={}", d, dmin);
-            println!("    Scales: {:02x?}", &block_bytes[4..16]);
-
-            // Dequantize first row
-            let data = &bytes[0..bytes_per_row];
-            let dequant = dequant_to_f32(data, dtype, cols);
-
-            let max_val =
-                dequant.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            let min_val = dequant.iter().cloned().fold(f32::INFINITY, f32::min);
-            let mean_val: f32 =
-                dequant.iter().sum::<f32>() / dequant.len() as f32;
-
-            println!("\n  Dequantified row 0:");
-            println!(
-                "    Min: {:.4}, Max: {:.4}, Mean: {:.4}",
-                min_val, max_val, mean_val
-            );
-            println!("    First 10: {:?}", &dequant[..10.min(dequant.len())]);
+        // Test embedding lookup for token 0
+        println!("\n  Testing embedding lookup for token 0...");
+        if let Some(hidden) = ctx.model.test_embedding_lookup(0) {
+            println!("    Success! Got {} values", hidden.len());
+            println!("    First 5: {:?}", &hidden[..5.min(hidden.len())]);
+            let sum: f32 = hidden.iter().sum();
+            println!("    Sum: {}", sum);
+        } else {
+            println!("    Failed: embedding_lookup returned None");
         }
     }
+
+    // Check layers
+    println!("\n=== Checking Layers ===");
+    println!("  Layer count: {}", ctx.model.layers.len());
+    if let Some(layer) = ctx.model.layers.first() {
+        println!(
+            "  Layer 0 has attention_norm: {}",
+            layer.attention_norm.is_some()
+        );
+        println!("  Layer 0 has wq: {}", layer.wq.is_some());
+        println!("  Layer 0 has wk: {}", layer.wk.is_some());
+        println!("  Layer 0 has wv: {}", layer.wv.is_some());
+        println!("  Layer 0 has wo: {}", layer.wo.is_some());
+        println!("  Layer 0 has ffn_norm: {}", layer.ffn_norm.is_some());
+        println!("  Layer 0 has w1: {}", layer.w1.is_some());
+        println!("  Layer 0 has w2: {}", layer.w2.is_some());
+        println!("  Layer 0 has w3: {}", layer.w3.is_some());
+    }
+
+    // Check output
+    println!("\n=== Checking Output ===");
+    println!("  Output norm: {}", ctx.model.norm.is_some());
+    println!("  Output projection: {}", ctx.model.output.is_some());
 
     // Test generation
     println!("\n=== Testing Generation ===");

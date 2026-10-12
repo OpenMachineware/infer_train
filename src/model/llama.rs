@@ -101,6 +101,11 @@ impl LlamaModel {
         count
     }
 
+    /// Public test method for embedding lookup
+    pub fn test_embedding_lookup(&self, token: u32) -> Option<Vec<f32>> {
+        self.embedding_lookup(token)
+    }
+
     /// Forward pass: tokens → logits
     /// Returns logits for the last token position
     pub fn forward(

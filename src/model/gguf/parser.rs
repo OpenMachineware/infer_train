@@ -44,6 +44,7 @@ pub struct GgufFile {
     pub metadata: HashMap<String, MetadataValue>,
     pub tensors: Vec<TensorInfo>,
     pub data_offset: u64,
+    alignment: usize, // Alignment in bytes
     mmap: Mmap,
 }
 
@@ -96,6 +97,13 @@ impl GgufFile {
 
         let data_offset = cursor as u64;
 
+        // Get alignment from metadata (default 32)
+        let alignment = match metadata.get("general.alignment") {
+            Some(MetadataValue::Uint32(v)) => *v as usize,
+            Some(MetadataValue::Uint64(v)) => *v as usize,
+            _ => 32,
+        };
+
         Ok(GgufFile {
             version,
             tensor_count,
@@ -103,6 +111,7 @@ impl GgufFile {
             metadata,
             tensors,
             data_offset,
+            alignment,
             mmap,
         })
     }
@@ -110,7 +119,13 @@ impl GgufFile {
     pub fn get_tensor_data(&self, name: &str) -> Option<&[u8]> {
         let tensor = self.tensors.iter().find(|t| t.name == name)?;
 
-        let start = self.data_offset as usize + tensor.offset as usize;
+        // Calculate aligned data start
+        let data_offset = self.data_offset as usize;
+        let aligned_start = data_offset
+            + (self.alignment - (data_offset % self.alignment))
+                % self.alignment;
+
+        let start = aligned_start + tensor.offset as usize;
         let size = self.tensor_size(tensor);
 
         if start + size <= self.mmap.len() {
@@ -138,7 +153,13 @@ impl GgufFile {
             GgufDtype::Q6_K => (elem_count / 256) * 210,
             _ => elem_count * 4,
         };
-        bytes_per_elem
+        // For FP types, bytes_per_elem is the size; for quantized, it's already calculated
+        match tensor.dtype {
+            GgufDtype::F32 | GgufDtype::F16 | GgufDtype::BF16 => {
+                elem_count * bytes_per_elem
+            }
+            _ => bytes_per_elem,
+        }
     }
 
     /// Check if this is a split GGUF file
