@@ -16,7 +16,7 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Read our template shader
-    let my_shader = include_str!("../../shaders/gemm.metal");
+    let my_shader = include_str!("../src/ops/metal/gemm.metal");
 
     // Read llama.cpp shader
     let llama_shader = include_str!("/tmp/q4_k_standalone.metal");

@@ -110,7 +110,7 @@ fn main() {
     // STEP 3: Load kernel
     let t5 = Instant::now();
     let shader = std::fs::read_to_string(
-        "/Users/jia/Desktop/infer_train/shaders/gemm.metal",
+        "/Users/jia/Desktop/infer_trasrc/ops/metal/gemm.metal",
     )
     .unwrap();
     let compile_options = CompileOptions::new();

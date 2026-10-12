@@ -279,7 +279,7 @@ kernel void kernel_gemm_q3_K_f32(
 "#;
 
     // Self-written template
-    let self_shader = include_str!("../../shaders/gemm.metal");
+    let self_shader = include_str!("../src/ops/metal/gemm.metal");
 
     let llama_lib = device
         .new_library_with_source(llama_shader, &options)

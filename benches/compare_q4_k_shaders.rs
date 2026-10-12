@@ -292,7 +292,7 @@ kernel void kernel_gemm_q4_K_f32(
         };
 
     // Load self-written shader
-    let my_source = include_str!("../../shaders/mul_mv_q4_k.metal");
+    let my_source = include_str!("../src/ops/metal/mul_mv_q4_k.metal");
     let my_lib =
         match device.new_library_with_source(my_source, &compile_options) {
             Ok(lib) => {

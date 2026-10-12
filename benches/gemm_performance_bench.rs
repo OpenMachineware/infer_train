@@ -15,10 +15,11 @@ fn main() {
 
     // Load libraries
     let llama_lib = device
-        .new_library_with_file("shaders/mul_mm_template.metallib")
+        .new_library_with_file("src/ops/metal/mul_mm_template.metallib")
         .expect("Failed to load llama.cpp library");
 
-    let mul_mm_source = include_str!("../../shaders/mul_mm_standalone.metal");
+    let mul_mm_source =
+        include_str!("../src/ops/metal/mul_mm_standalone.metal");
     let compile_opts = CompileOptions::new();
     let self_lib = device
         .new_library_with_source(mul_mm_source, &compile_opts)

@@ -57,7 +57,8 @@ fn main() {
     let device = Device::system_default().unwrap();
     let queue = device.new_command_queue();
 
-    let our_source = include_str!("../../shaders/flash_decode_multi_wg.metal");
+    let our_source =
+        include_str!("../src/ops/metal/flash_decode_multi_wg.metal");
     let options = CompileOptions::new();
     options.set_fast_math_enabled(true);
     let our_library =

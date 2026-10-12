@@ -178,7 +178,7 @@ fn main() {
     let device = Device::system_default().expect("No Metal device");
     let queue = device.new_command_queue();
 
-    let shader = include_str!("../../shaders/gemm.metal");
+    let shader = include_str!("../src/ops/metal/gemm.metal");
     let lib =
         device.new_library_with_source(shader, &CompileOptions::new()).unwrap();
 

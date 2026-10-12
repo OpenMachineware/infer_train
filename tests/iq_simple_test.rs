@@ -20,17 +20,17 @@ fn main() {
 
     // Load llama.cpp library
     let llama_lib_path =
-        std::path::Path::new("shaders/mul_mm_template.metallib");
+        std::path::Path::new("src/ops/metal/mul_mm_template.metallib");
     let llama_lib = device
         .new_library_with_file(llama_lib_path)
         .expect("Failed to load llama.cpp library");
 
     // Load self-written library
-    let ggml_common = include_str!("../../shaders/ggml-common.h");
+    let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
     let ggml_common_metal =
         format!("#define GGML_COMMON_IMPL_METAL\n{}", ggml_common);
     let standalone_source =
-        include_str!("../../shaders/mul_mm_standalone.metal");
+        include_str!("../src/ops/metal/mul_mm_standalone.metal");
     let standalone_no_include = standalone_source
         .lines()
         .filter(|line| !line.contains("#include \"iq_grid_tables.h\""))

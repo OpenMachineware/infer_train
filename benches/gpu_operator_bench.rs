@@ -23,7 +23,7 @@ fn main() {
 fn test_pool_2d(device: &Device, queue: &metal::CommandQueue) {
     println!("--- POOL_2D (Max Pooling) ---");
 
-    let source = include_str!("../../shaders/pool_2d.metal");
+    let source = include_str!("../src/ops/metal/pool_2d.metal");
     let options = metal::CompileOptions::new();
     options.set_fast_math_enabled(true);
     let library = device
@@ -163,7 +163,7 @@ fn test_pool_2d(device: &Device, queue: &metal::CommandQueue) {
 fn test_top_k(device: &Device, queue: &metal::CommandQueue) {
     println!("--- TOP_K ---");
 
-    let source = include_str!("../../shaders/top_k.metal");
+    let source = include_str!("../src/ops/metal/top_k.metal");
     let options = metal::CompileOptions::new();
     options.set_fast_math_enabled(true);
     let library = device
@@ -253,7 +253,7 @@ fn test_top_k(device: &Device, queue: &metal::CommandQueue) {
 fn test_argsort(device: &Device, queue: &metal::CommandQueue) {
     println!("--- ARGSORT (Descending) ---");
 
-    let source = include_str!("../../shaders/argsort.metal");
+    let source = include_str!("../src/ops/metal/argsort.metal");
     let options = metal::CompileOptions::new();
     options.set_fast_math_enabled(true);
     let library = device
@@ -369,7 +369,7 @@ fn test_argsort(device: &Device, queue: &metal::CommandQueue) {
 fn test_conv_2d(device: &Device, queue: &metal::CommandQueue) {
     println!("--- CONV_2D ---");
 
-    let source = include_str!("../../shaders/conv_2d.metal");
+    let source = include_str!("../src/ops/metal/conv_2d.metal");
     let options = metal::CompileOptions::new();
     options.set_fast_math_enabled(true);
     let library = device

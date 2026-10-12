@@ -78,7 +78,7 @@ fn main() {
 
     // Load self-written template
     let shader_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("shaders/gemm.metal");
+        .join("src/ops/metal/gemm.metal");
     let source =
         std::fs::read_to_string(&shader_path).expect("Failed to read shader");
     let library = device

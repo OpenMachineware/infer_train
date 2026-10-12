@@ -80,10 +80,10 @@ fn main() {
     let queue = device.new_command_queue();
 
     let llama_lib = device
-        .new_library_with_file("shaders/mul_mm_template.metallib")
+        .new_library_with_file("src/ops/metal/mul_mm_template.metallib")
         .expect("Failed to load llama.cpp library");
     let self_lib = device
-        .new_library_with_file("shaders/mul_mm_standalone.metallib")
+        .new_library_with_file("src/ops/metal/mul_mm_standalone.metallib")
         .expect("Failed to load self-written library");
 
     println!("✓ Libraries loaded\n");

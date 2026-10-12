@@ -65,7 +65,8 @@ fn main() {
     );
 
     // Compile shader with function constants
-    let shader_source = include_str!("../../shaders/mul_mm_standalone.metal");
+    let shader_source =
+        include_str!("../src/ops/metal/mul_mm_standalone.metal");
     let compile_options = CompileOptions::new();
     let library = device
         .new_library_with_source(shader_source, &compile_options)

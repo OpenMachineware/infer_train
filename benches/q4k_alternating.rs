@@ -65,7 +65,7 @@ fn main() {
     opts.set_fast_math_enabled(true);
 
     // Load grid tables
-    let grid_tables = include_str!("../../shaders/iq_grid_tables.h");
+    let grid_tables = include_str!("../src/ops/metal/iq_grid_tables.h");
     // Add missing tables for IQ kernels
     let iq_extra_tables = r#"
 constexpr constant static uint8_t kmask_iq2xs[8] = {1, 2, 4, 8, 16, 32, 64, 128};
@@ -144,7 +144,7 @@ kernel void kernel_mul_mv_q4_K_f32(constant ggml_metal_kargs_mul_mv & args, devi
         .expect("Failed to compile llama kernel");
 
     // Compile our kernel (from gemm.metal)
-    let our_source = include_str!("../../shaders/gemm.metal");
+    let our_source = include_str!("../src/ops/metal/gemm.metal");
     let our_combined =
         format!("{}\n{}\n{}", iq_extra_tables, grid_tables, our_source);
     let our_lib = device

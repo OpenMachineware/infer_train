@@ -251,7 +251,7 @@ fn main() {
     );
     println!("{}", "-".repeat(45));
 
-    let common = include_str!("../../shaders/gemm.metal");
+    let common = include_str!("../src/ops/metal/gemm.metal");
 
     let k_quants: Vec<KQuantInfo> = vec![
         KQuantInfo { name: "q2_K", nsg: 2, nr0: 2, block_size: 84 },

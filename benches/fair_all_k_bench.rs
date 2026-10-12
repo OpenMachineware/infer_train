@@ -352,7 +352,7 @@ kernel void kernel_gemm_q4_K_f32(constant ggml_metal_kargs_mul_mv & args, device
     );
 
     // Q6_K benchmark (same shader, just different name)
-    let q6k_shader = include_str!("../../shaders/gemm.metal");
+    let q6k_shader = include_str!("../src/ops/metal/gemm.metal");
 
     // Extract just the Q6_K kernel from the template for the self-written version
     // For now, use the fair_q6k_bench result

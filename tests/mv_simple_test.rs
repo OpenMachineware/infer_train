@@ -9,11 +9,11 @@ fn main() {
     let device = Device::system_default().expect("No Metal device");
 
     // Load gemm.metal (MV kernel) at runtime
-    let gemm_source = include_str!("../../shaders/gemm.metal");
-    let ggml_common = include_str!("../../shaders/ggml-common.h");
+    let gemm_source = include_str!("../src/ops/metal/gemm.metal");
+    let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
     let ggml_common_metal =
         format!("#define GGML_COMMON_DECL_METAL\n{}", ggml_common);
-    let iq_grid_tables = include_str!("../../shaders/iq_grid_tables.h");
+    let iq_grid_tables = include_str!("../src/ops/metal/iq_grid_tables.h");
 
     let combined =
         format!("{}\n{}\n{}", ggml_common_metal, iq_grid_tables, gemm_source);

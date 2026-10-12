@@ -68,7 +68,7 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Q6_K shader (both llama.cpp and self-written use same code)
-    let shader = include_str!("../../shaders/gemm.metal");
+    let shader = include_str!("../src/ops/metal/gemm.metal");
 
     let compile_options = CompileOptions::new();
     let lib = device

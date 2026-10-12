@@ -13,13 +13,13 @@ fn main() {
 
     // Load llama.cpp's pre-compiled library
     let llama_lib = device
-        .new_library_with_file("shaders/mul_mm_template.metallib")
+        .new_library_with_file("src/ops/metal/mul_mm_template.metallib")
         .expect("Failed to load llama.cpp library");
 
     // Load precompiled self-written shader
     println!("Loading self-written shader...");
     let self_lib = device
-        .new_library_with_file("shaders/mul_mm_standalone.metallib")
+        .new_library_with_file("src/ops/metal/mul_mm_standalone.metallib")
         .expect("Failed to load self-written library");
     println!("✓ Shaders loaded\n");
 

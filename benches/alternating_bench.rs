@@ -238,7 +238,7 @@ fn main() {
     let llama_shader =
         std::fs::read_to_string("/tmp/combined_llama.metal").unwrap();
     let my_shader = std::fs::read_to_string(
-        "/Users/jia/Desktop/infer_train/shaders/gemm.metal",
+        "/Users/jia/Desktop/infer_trasrc/ops/metal/gemm.metal",
     )
     .unwrap();
 

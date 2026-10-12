@@ -22,7 +22,7 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Compile kernel
-    let source = include_str!("../../shaders/pool_2d.metal");
+    let source = include_str!("../src/ops/metal/pool_2d.metal");
     let options = metal::CompileOptions::new();
     options.set_fast_math_enabled(true);
     let library = device

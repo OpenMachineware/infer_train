@@ -70,7 +70,7 @@ fn main() {
     // Load shaders
     let llama_shader =
         std::fs::read_to_string("/tmp/extract_q6_k.metal").unwrap();
-    let my_shader = include_str!("../../shaders/gemm.metal");
+    let my_shader = include_str!("../src/ops/metal/gemm.metal");
 
     let opts = CompileOptions::new();
     let llama_lib =

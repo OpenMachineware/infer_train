@@ -7,7 +7,7 @@ fn main() {
     let device = Device::system_default().unwrap();
 
     // Load the new kernel
-    let source = include_str!("../../shaders/flash_decode_vec.metal");
+    let source = include_str!("../src/ops/metal/flash_decode_vec.metal");
     let options = CompileOptions::new();
     options.set_fast_math_enabled(true);
 

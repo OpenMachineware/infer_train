@@ -147,10 +147,10 @@ fn main() {
 
     // Load libraries
     let my_lib = device
-        .new_library_with_file("shaders/mul_mm_standalone.metallib")
+        .new_library_with_file("src/ops/metal/mul_mm_standalone.metallib")
         .unwrap();
     let llama_lib = device
-        .new_library_with_file("shaders/mul_mm_template.metallib")
+        .new_library_with_file("src/ops/metal/mul_mm_template.metallib")
         .unwrap();
 
     // Test parameters

@@ -264,7 +264,7 @@ fn main() {
     println!("{}", "-".repeat(55));
 
     // Common Metal code
-    let common = include_str!("../../shaders/gemm.metal");
+    let common = include_str!("../src/ops/metal/gemm.metal");
 
     // K-quant configurations: (name, nsg, nr0, block_size)
     let k_quants: Vec<KQuantInfo> = vec![

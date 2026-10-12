@@ -66,7 +66,7 @@ fn main() {
     let device = Device::system_default().unwrap();
     let queue = device.new_command_queue();
 
-    let shader = include_str!("../../shaders/gemm.metal");
+    let shader = include_str!("../src/ops/metal/gemm.metal");
     let compile_opts = CompileOptions::new();
     let lib = device.new_library_with_source(shader, &compile_opts).unwrap();
 

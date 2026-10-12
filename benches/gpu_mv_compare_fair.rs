@@ -86,7 +86,7 @@ fn main() {
         let queue = device.new_command_queue();
 
         // Compile shader (same as llama.cpp)
-        let source = include_str!("../../shaders/gemm.metal");
+        let source = include_str!("../src/ops/metal/gemm.metal");
         let library = device
             .new_library_with_source(source, &CompileOptions::new())
             .expect("Failed to compile");

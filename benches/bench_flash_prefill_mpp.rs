@@ -13,7 +13,7 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Load MPP kernel
-    let source = include_str!("../../shaders/flash_prefill_mpp.metal");
+    let source = include_str!("../src/ops/metal/flash_prefill_mpp.metal");
     let options = CompileOptions::new();
     options.set_fast_math_enabled(true);
 

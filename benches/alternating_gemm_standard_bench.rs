@@ -148,7 +148,7 @@ fn run_gemm_test(
     println!("\n=== {} GEMM Benchmark ===", name);
 
     // Load GEMM library (standalone version with standard Q)
-    let lib_source = include_str!("../../shaders/mul_mm_standalone.metal");
+    let lib_source = include_str!("../src/ops/metal/mul_mm_standalone.metal");
 
     let compile_opts = metal::CompileOptions::new();
     let lib = device

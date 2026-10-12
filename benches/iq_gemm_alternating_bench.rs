@@ -544,7 +544,7 @@ fn main() {
     // Load pre-compiled libraries
     // Use mul_mm_standalone.metallib for self-written kernels (verified correct via gemm_quant_test)
     let my_lib_path =
-        std::path::Path::new("shaders/mul_mm_standalone.metallib");
+        std::path::Path::new("src/ops/metal/mul_mm_standalone.metallib");
     let my_lib = device
         .new_library_with_file(my_lib_path)
         .expect("Failed to load self-written GEMM library");
@@ -552,7 +552,7 @@ fn main() {
     // Load pre-compiled llama.cpp mul_mm_template.metallib
     // MetalPerformancePrimitives cannot be compiled at runtime, so we use offline compilation
     let llama_lib_path =
-        std::path::Path::new("shaders/mul_mm_template.metallib");
+        std::path::Path::new("src/ops/metal/mul_mm_template.metallib");
     let llama_lib = device
         .new_library_with_file(llama_lib_path)
         .expect("Failed to load pre-compiled llama.cpp template library");

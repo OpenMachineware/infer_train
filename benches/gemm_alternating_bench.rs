@@ -253,7 +253,7 @@ fn main() {
     };
 
     // Load library
-    let lib_source = include_str!("../../shaders/mul_mm_standalone.metal");
+    let lib_source = include_str!("../src/ops/metal/mul_mm_standalone.metal");
     let compile_opts = metal::CompileOptions::new();
     let lib = device
         .new_library_with_source(lib_source, &compile_opts)

@@ -230,26 +230,25 @@ impl MetalContext {
         // Note: metal-rs 0.31 doesn't expose set_optimization_level directly
         // but the default should be equivalent to -O3
 
-        let vec_dot_source = include_str!("../../../../shaders/vec_dot.metal");
+        let vec_dot_source = include_str!("../../../ops/metal/vec_dot.metal");
         let vec_dot_library = device
             .new_library_with_source(vec_dot_source, &compile_options)
             .map_err(|e| format!("Failed to compile vec_dot library: {}", e))?;
 
-        let mv_source = include_str!("../../../../shaders/mv.metal");
+        let mv_source = include_str!("../../../ops/metal/mv.metal");
         let mv_library = device
             .new_library_with_source(mv_source, &compile_options)
             .map_err(|e| format!("Failed to compile mv library: {}", e))?;
 
-        let mv_simd_source = include_str!("../../../../shaders/mv_simd.metal");
+        let mv_simd_source = include_str!("../../../ops/metal/mv_simd.metal");
         let mv_simd_library = device
             .new_library_with_source(mv_simd_source, &compile_options)
             .map_err(|e| format!("Failed to compile mv_simd library: {}", e))?;
 
         // Compile IQ/TQ MV library (includes all IQ formats)
-        let mv_iq_tq_source =
-            include_str!("../../../../shaders/mv_iq_tq.metal");
+        let mv_iq_tq_source = include_str!("../../../ops/metal/mv_iq_tq.metal");
         let iq_grid_tables =
-            include_str!("../../../../shaders/iq_grid_tables.h");
+            include_str!("../../../ops/metal/iq_grid_tables.h");
         let mv_iq_tq_combined = mv_iq_tq_source
             .replace("#include \"iq_grid_tables.h\"", iq_grid_tables);
         let mv_iq_tq_library = device
@@ -259,9 +258,9 @@ impl MetalContext {
             })?;
 
         // Compile templated MV library from llama.cpp (all K-quant formats in one file)
-        let gemm_source = include_str!("../../../../shaders/gemm.metal");
+        let gemm_source = include_str!("../../../ops/metal/gemm.metal");
         // Inline ggml-common.h with Metal define
-        let ggml_common = include_str!("../../../../shaders/ggml-common.h");
+        let ggml_common = include_str!("../../../ops/metal/ggml-common.h");
         let ggml_common_metal =
             format!("#define GGML_COMMON_DECL_METAL\n{}", ggml_common);
         // Add kmask_iq2xs and ksigns_iq2xs tables needed by IQ kernels
@@ -288,7 +287,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         // Compile templated GEMM library (self-contained, no C++ headers)
         let gemm_template_source =
-            include_str!("../../../../shaders/mul_mm_standalone.metal");
+            include_str!("../../../ops/metal/mul_mm_standalone.metal");
         let gemm_template_library = device
             .new_library_with_source(gemm_template_source, &compile_options)
             .map_err(|e| {
@@ -296,8 +295,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
             })?;
 
         // Compile RMS Norm library
-        let rms_norm_source =
-            include_str!("../../../../shaders/rms_norm.metal");
+        let rms_norm_source = include_str!("../../../ops/metal/rms_norm.metal");
         let rms_norm_library = device
             .new_library_with_source(rms_norm_source, &compile_options)
             .map_err(|e| {
@@ -305,20 +303,20 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
             })?;
 
         // Compile Softmax library
-        let softmax_source = include_str!("../../../../shaders/softmax.metal");
+        let softmax_source = include_str!("../../../ops/metal/softmax.metal");
         let softmax_library = device
             .new_library_with_source(softmax_source, &compile_options)
             .map_err(|e| format!("Failed to compile softmax library: {}", e))?;
 
         // Compile ROPE library
-        let rope_source = include_str!("../../../../shaders/rope.metal");
+        let rope_source = include_str!("../../../ops/metal/rope.metal");
         let rope_library = device
             .new_library_with_source(rope_source, &compile_options)
             .map_err(|e| format!("Failed to compile rope library: {}", e))?;
 
         // Compile Activation library
         let activation_source =
-            include_str!("../../../../shaders/activation.metal");
+            include_str!("../../../ops/metal/activation.metal");
         let activation_library = device
             .new_library_with_source(activation_source, &compile_options)
             .map_err(|e| {
@@ -326,9 +324,8 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
             })?;
 
         // Compile Flash Attention library (standalone with expanded includes)
-        let flash_attn_source = include_str!(
-            "../../../../shaders/flash_attn_standalone_stub.metal"
-        );
+        let flash_attn_source =
+            include_str!("../../../ops/metal/flash_attn_standalone_stub.metal");
         let flash_attn_library = device
             .new_library_with_source(flash_attn_source, &compile_options)
             .map_err(|e| {
@@ -336,8 +333,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
             })?;
 
         // Compile Quantize library
-        let quantize_source =
-            include_str!("../../../../shaders/quantize.metal");
+        let quantize_source = include_str!("../../../ops/metal/quantize.metal");
         let quantize_library = device
             .new_library_with_source(quantize_source, &compile_options)
             .map_err(|e| {

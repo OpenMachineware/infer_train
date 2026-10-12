@@ -74,7 +74,7 @@ fn main() {
     // Load shaders from project's tmp directory
     let llama_shader = std::fs::read_to_string("/tmp/llama_full.metal")
         .expect("Run: cp /tmp/llama_full.metal to project");
-    let my_shader = include_str!("../../shaders/gemm.metal");
+    let my_shader = include_str!("../src/ops/metal/gemm.metal");
 
     let opts = CompileOptions::new();
     let llama_lib = match device.new_library_with_source(&llama_shader, &opts) {

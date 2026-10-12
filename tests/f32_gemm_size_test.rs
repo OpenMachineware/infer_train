@@ -209,12 +209,12 @@ fn main() {
     let device = Device::system_default().expect("No Metal device");
     let my_lib = device
         .new_library_with_file(std::path::Path::new(
-            "shaders/mul_mm_standalone.metallib",
+            "src/ops/metal/mul_mm_standalone.metallib",
         ))
         .unwrap();
     let llama_lib = device
         .new_library_with_file(std::path::Path::new(
-            "shaders/mul_mm_template.metallib",
+            "src/ops/metal/mul_mm_template.metallib",
         ))
         .unwrap();
 

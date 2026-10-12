@@ -360,7 +360,7 @@ fn main() {
 
     // Load pre-compiled libraries
     let my_lib_path =
-        std::path::Path::new("shaders/mul_mm_standalone.metallib");
+        std::path::Path::new("src/ops/metal/mul_mm_standalone.metallib");
     let my_lib = if my_lib_path.exists() {
         device
             .new_library_with_file(my_lib_path)
@@ -373,7 +373,7 @@ fn main() {
     };
 
     let llama_lib_path =
-        std::path::Path::new("shaders/mul_mm_template.metallib");
+        std::path::Path::new("src/ops/metal/mul_mm_template.metallib");
     let llama_lib = device
         .new_library_with_file(llama_lib_path)
         .expect("Failed to load llama.cpp template library");

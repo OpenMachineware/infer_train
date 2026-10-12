@@ -56,7 +56,7 @@ impl RmsNormMetalContext {
         let compile_options = metal::CompileOptions::new();
         compile_options.set_fast_math_enabled(true);
 
-        let source = include_str!("../../shaders/rms_norm.metal");
+        let source = include_str!("metal/rms_norm.metal");
         let library = device
             .new_library_with_source(source, &compile_options)
             .map_err(|e| format!("Failed to compile RMSNorm library: {}", e))?;
@@ -254,7 +254,7 @@ impl RopeMetalContext {
         let compile_options = metal::CompileOptions::new();
         compile_options.set_fast_math_enabled(true);
 
-        let source = include_str!("../../shaders/rope.metal");
+        let source = include_str!("metal/rope.metal");
         let library = device
             .new_library_with_source(source, &compile_options)
             .map_err(|e| format!("Failed to compile RoPE library: {}", e))?;
@@ -466,7 +466,7 @@ impl SoftmaxMetalContext {
         let compile_options = metal::CompileOptions::new();
         compile_options.set_fast_math_enabled(true);
 
-        let source = include_str!("../../shaders/softmax.metal");
+        let source = include_str!("metal/softmax.metal");
         let library = device
             .new_library_with_source(source, &compile_options)
             .map_err(|e| format!("Failed to compile Softmax library: {}", e))?;
@@ -762,7 +762,7 @@ impl ActivationMetalContext {
         let compile_options = metal::CompileOptions::new();
         compile_options.set_fast_math_enabled(true);
 
-        let source = include_str!("../../shaders/activation.metal");
+        let source = include_str!("metal/activation.metal");
         let library =
             device.new_library_with_source(source, &compile_options).map_err(
                 |e| format!("Failed to compile activation library: {}", e),
@@ -1136,8 +1136,8 @@ impl FlashAttnMetalContext {
         compile_options.set_fast_math_enabled(true);
 
         // Combine dequantize.metal and flash_attn.metal
-        let dequantize_source = include_str!("../../shaders/dequantize.metal");
-        let flash_attn_source = include_str!("../../shaders/flash_attn.metal");
+        let dequantize_source = include_str!("metal/dequantize.metal");
+        let flash_attn_source = include_str!("metal/flash_attn.metal");
         // Remove the include directive and concatenate
         let source = format!(
             "{}\n{}",

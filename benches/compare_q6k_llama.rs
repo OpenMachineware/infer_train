@@ -245,7 +245,7 @@ kernel void kernel_gemm_q6_K_f32(
         };
 
     // Load self-written shader
-    let my_source = include_str!("../../shaders/gemm.metal");
+    let my_source = include_str!("../src/ops/metal/gemm.metal");
     let my_lib =
         match device.new_library_with_source(my_source, &compile_options) {
             Ok(lib) => {

@@ -163,7 +163,7 @@ fn run_gpu_flash_attention(
     head_dim: usize,
 ) -> Vec<f32> {
     // Compile kernel
-    let source = include_str!("../../shaders/flash_attn.metal");
+    let source = include_str!("../src/ops/metal/flash_attn.metal");
     let options = CompileOptions::new();
     options.set_fast_math_enabled(true);
     let library = device

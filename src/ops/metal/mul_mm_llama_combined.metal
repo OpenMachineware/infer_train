@@ -269,10 +269,10 @@ void dequantize_q2_K(device const block_q2_K *xb, short il, thread type4x4 & reg
     device const uint8_t * q = (device const uint8_t *)xb->qs;
     float dl, ml;
     uint8_t sc = xb->scales[il];
-    
+
     q = q + 32*(il/8) + 16*(il&1);
     il = (il/2)%4;
-    
+
     half coef = il>1 ? (il>2 ? 1/64.h : 1/16.h) : (il>0 ? 1/4.h : 1.h);
     uchar mask = il>1 ? (il>2 ? 192 : 48) : (il>0 ? 12 : 3);
     dl = d * (sc & 0xF) * coef;
@@ -288,14 +288,14 @@ void dequantize_q3_K(device const block_q3_K *xb, short il, thread type4x4 & reg
     device const uint8_t * q = (device const uint8_t *)xb->qs;
     device const uint8_t * h = (device const uint8_t *)xb->hmask;
     device const int8_t * scales = (device const int8_t *)xb->scales;
-    
+
     q = q + 32 * (il/8) + 16 * (il&1);
     h = h + 16 * (il&1);
     il = (il/2)%4;
-    
+
     const int8_t sc = scales[il];
     half dl = d_all * (il == 0 ? 4.f : il == 1 ? 2.f : il == 2 ? 1.f : 0.5f);
-    
+
     for (int i = 0; i < 16; ++i) {
         half qval = q[i] & 3;
         half hbit = h[i] & 1;
@@ -314,7 +314,7 @@ void dequantize_q4_K(device const block_q4_K *xb, short il, thread type4x4 & reg
     const float min = xb->dmin;
     const float dl = d * sc[0];
     const float ml = min * sc[1];
-    
+
     const ushort mask = il < 2 ? 0x0F : 0xF0;
     for (int i = 0; i < 16; ++i) {
         reg[i/4][i%4] = dl * (q[i] & mask) - ml;
@@ -330,7 +330,7 @@ void dequantize_q5_K(device const block_q5_K *xb, short il, thread type4x4 & reg
     const uchar sc = xb->scales[il/2];
     const float dl = d * (sc & 0xF);
     const float ml = min * (sc >> 4);
-    
+
     for (int i = 0; i < 16; ++i) {
         uchar qval = q[i] & 0x0F;
         uchar hbit = (qh[i] >> (il & 1)) & 1;
@@ -344,7 +344,7 @@ void dequantize_q6_K(device const block_q6_K *xb, short il, thread type4x4 & reg
     device const uint8_t * ql = xb->ql + 64*(il/4) + 32*((il/2)&1) + 16*(il&1);
     device const uint8_t * qh = xb->qh + 32*(il/4) + 16*(il&1);
     const int8_t sc = xb->scales[il/2];
-    
+
     for (int i = 0; i < 16; ++i) {
         const half q0 = ql[i] & 0xF;
         const half q1 = ql[i] >> 4;
@@ -372,39 +372,39 @@ kernel void kernel_mul_mm(
         uint3  tgpig [[threadgroup_position_in_grid]],
         ushort tiitg [[thread_index_in_threadgroup]],
         ushort sgitg [[simdgroup_index_in_threadgroup]]) {
-    
+
     threadgroup S0 * sa = (threadgroup S0 *)(shmem);
     threadgroup S1 * sb = (threadgroup S1 *)(shmem + 4096);
-    
+
     constexpr int NR0 = 64;
     constexpr int NR1 = 32;
     constexpr int NK  = 32;
     constexpr int NL0 = NK/16;
     constexpr int NL1 = NK/8;
-    
+
     const int im = tgpig.z;
     const int r0 = tgpig.y;
     const int r1 = tgpig.x;
-    
+
     const uint i12 = im % args.ne12;
     const uint i13 = im / args.ne12;
-    
+
     const uint64_t offset0 = r0*args.nb01 + (i12/args.r2)*args.nb02 + (i13/args.r3)*args.nb03;
     const uint64_t offset1 = r1*args.nb11 + i12*args.nb12 + i13*args.nb13;
-    
+
     device const block_q * x = (device const block_q *)(srcA + offset0);
     device const char    * y = srcB + offset1;
-    
+
     const int nb = args.ne00 / (nl * 16);
-    
+
     float result[NR0] = {0.f};
-    
+
     for (int ib = tiitg / NL1; ib < nb; ib += 32 / NL1) {
         threadgroup S0 * yf = sa + 64 * (tiitg % NL1);
         threadgroup S1 * xf = sb + 32 * (tiitg % NL1);
-        
+
         const int i = tiitg % NL1;
-        
+
         S0_4x4 tmp;
         dequantize_func(x + ib, i, tmp);
         for (int j = 0; j < 4; ++j) {
@@ -412,9 +412,9 @@ kernel void kernel_mul_mm(
                 yf[4*j + k] = tmp[j][k];
             }
         }
-        
+
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        
+
         for (int ir = sgitg * 16; ir < NR0; ir += 64) {
             float acc[4] = {0.f, 0.f, 0.f, 0.f};
             for (int j = 0; j < 4; ++j) {
@@ -426,10 +426,10 @@ kernel void kernel_mul_mm(
                 result[ir + j] += acc[j];
             }
         }
-        
+
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
-    
+
     device float * dstf = (device float *)(dst + im*args.ne0*args.ne1*4 + r1*args.ne0*4);
     for (int ir = sgitg * 16; ir < NR0; ir += 64) {
         float sum = 0.f;

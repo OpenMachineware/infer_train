@@ -14,8 +14,8 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Load shader with BOTH DECL and IMPL for Metal
-    let gemm_source = include_str!("../../shaders/gemm.metal");
-    let ggml_common = include_str!("../../shaders/ggml-common.h");
+    let gemm_source = include_str!("../src/ops/metal/gemm.metal");
+    let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
     let ggml_common_metal = format!(
         "#define GGML_COMMON_DECL_METAL\n#define GGML_COMMON_IMPL_METAL\n{}",
         ggml_common

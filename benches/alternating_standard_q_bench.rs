@@ -262,8 +262,8 @@ fn main() {
         .join("\n");
 
     // Load and inline self-written shader
-    let my_shader_base = include_str!("../../shaders/gemm.metal");
-    let my_ggml_common = include_str!("../../shaders/ggml-common.h");
+    let my_shader_base = include_str!("../src/ops/metal/gemm.metal");
+    let my_ggml_common = include_str!("../src/ops/metal/ggml-common.h");
 
     let ggml_common_with_metal =
         format!("#define GGML_COMMON_IMPL_METAL\n{}", my_ggml_common);

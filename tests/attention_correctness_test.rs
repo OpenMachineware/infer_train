@@ -186,7 +186,7 @@ fn run_gpu_attention(
     head_dim: usize,
 ) -> Vec<f32> {
     // Compile kernel
-    let source = include_str!("../../shaders/attention.metal");
+    let source = include_str!("../src/ops/metal/attention.metal");
     let options = CompileOptions::new();
     options.set_fast_math_enabled(true);
     let library = device

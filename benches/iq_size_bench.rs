@@ -13,11 +13,11 @@ fn main() {
     let device = Device::system_default().expect("No Metal device");
 
     // Compile library
-    let ggml_common = include_str!("../../shaders/ggml-common.h");
+    let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
     let ggml_common_metal =
         format!("#define GGML_COMMON_DECL_METAL\n{}", ggml_common);
-    let iq_grid_tables = include_str!("../../shaders/iq_grid_tables.h");
-    let gemm_source = include_str!("../../shaders/gemm.metal");
+    let iq_grid_tables = include_str!("../src/ops/metal/iq_grid_tables.h");
+    let gemm_source = include_str!("../src/ops/metal/gemm.metal");
 
     let iq_extra_tables = r#"
 constexpr constant static uint8_t kmask_iq2xs[8] = {1, 2, 4, 8, 16, 32, 64, 128};

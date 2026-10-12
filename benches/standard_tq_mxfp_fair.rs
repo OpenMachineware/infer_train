@@ -107,7 +107,7 @@ fn main() {
     opts.set_fast_math_enabled(true);
 
     // Load IQ grid tables for our kernels
-    let iq_grid_tables = include_str!("../../shaders/iq_grid_tables.h");
+    let iq_grid_tables = include_str!("../src/ops/metal/iq_grid_tables.h");
     let iq_extra_tables = r#"
 constexpr constant static uint8_t kmask_iq2xs[8] = {1, 2, 4, 8, 16, 32, 64, 128};
 constexpr constant static int8_t ksigns_iq2xs[128] = {

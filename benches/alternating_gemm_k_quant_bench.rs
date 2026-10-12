@@ -190,7 +190,7 @@ fn run_alternating_gemm_test(
 
     // Load pre-compiled GEMM library
     let llama_lib = device
-        .new_library_with_file("shaders/mul_mm_standalone.metallib")
+        .new_library_with_file("src/ops/metal/mul_mm_standalone.metallib")
         .expect("Failed to load pre-compiled GEMM library");
 
     // Create pipelines with function constants

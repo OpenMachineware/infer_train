@@ -14,7 +14,8 @@ fn main() {
     let device = Device::system_default().unwrap();
     let queue = device.new_command_queue();
 
-    let our_source = include_str!("../../shaders/flash_decode_multi_wg.metal");
+    let our_source =
+        include_str!("../src/ops/metal/flash_decode_multi_wg.metal");
     let options = CompileOptions::new();
     options.set_fast_math_enabled(true);
     let our_library =
@@ -68,7 +69,7 @@ fn main() {
 
     // Compare with single-workgroup kernel
     println!("\n=== Comparison with Single-WG ===");
-    let single_source = include_str!("../../shaders/flash_decode_vec.metal");
+    let single_source = include_str!("../src/ops/metal/flash_decode_vec.metal");
     let single_library =
         device.new_library_with_source(single_source, &options).unwrap();
 

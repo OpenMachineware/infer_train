@@ -7,7 +7,7 @@ fn main() {
 
     let device = Device::system_default().expect("No Metal device found");
     let shader_source =
-        include_str!("../../shaders/mul_mm_llama_combined.metal");
+        include_str!("../src/ops/metal/mul_mm_llama_combined.metal");
     let compile_options = metal::CompileOptions::new();
     let library = device
         .new_library_with_source(shader_source, &compile_options)

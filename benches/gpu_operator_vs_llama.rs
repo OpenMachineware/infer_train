@@ -189,7 +189,7 @@ fn bench_pool_2d(device: &Device, queue: &metal::CommandQueue) {
     println!("POOL_2D (Max Pooling) vs llama.cpp");
     println!("========================================");
 
-    let self_source = include_str!("../../shaders/pool_2d.metal");
+    let self_source = include_str!("../src/ops/metal/pool_2d.metal");
     let options = metal::CompileOptions::new();
     options.set_fast_math_enabled(true);
     let self_lib = device
@@ -529,7 +529,7 @@ fn bench_top_k(device: &Device, queue: &metal::CommandQueue) {
     println!("TOP_K vs llama.cpp (histogram-based radix selection)");
     println!("========================================");
 
-    let self_source = include_str!("../../shaders/top_k.metal");
+    let self_source = include_str!("../src/ops/metal/top_k.metal");
     let options = metal::CompileOptions::new();
     options.set_fast_math_enabled(true);
     let self_lib = device
@@ -784,7 +784,7 @@ fn bench_argsort(device: &Device, queue: &metal::CommandQueue) {
     println!("ARGSORT vs llama.cpp (Bitonic Sort)");
     println!("========================================");
 
-    let self_source = include_str!("../../shaders/argsort.metal");
+    let self_source = include_str!("../src/ops/metal/argsort.metal");
     let options = metal::CompileOptions::new();
     options.set_fast_math_enabled(true);
     let self_lib = device

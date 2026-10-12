@@ -64,8 +64,8 @@ fn main() {
     );
 
     // Compile both kernels
-    let opt_shader = include_str!("../../shaders/mul_mm_optimized.metal");
-    let orig_shader = include_str!("../../shaders/mul_mm_standalone.metal");
+    let opt_shader = include_str!("../src/ops/metal/mul_mm_optimized.metal");
+    let orig_shader = include_str!("../src/ops/metal/mul_mm_standalone.metal");
     let compile_options = CompileOptions::new();
 
     let opt_library = device

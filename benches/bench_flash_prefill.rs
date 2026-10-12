@@ -13,7 +13,7 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Load our kernels
-    let source = include_str!("../../shaders/flash_attn_quant.metal");
+    let source = include_str!("../src/ops/metal/flash_attn_quant.metal");
     let options = CompileOptions::new();
     options.set_fast_math_enabled(true);
 

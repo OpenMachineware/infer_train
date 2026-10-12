@@ -16,7 +16,7 @@ fn main() {
 
     // Our activation kernels (from shaders/activation.metal)
     // Uses dispatch_threads with thread_position_in_grid - simpler and more efficient
-    let our_source = include_str!("../../shaders/activation.metal");
+    let our_source = include_str!("../src/ops/metal/activation.metal");
     let our_library = device
         .new_library_with_source(our_source, &compile_options)
         .expect("Our library compile failed");

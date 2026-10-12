@@ -6,7 +6,7 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Compile shader
-    let source = include_str!("../../shaders/activation.metal");
+    let source = include_str!("../src/ops/metal/activation.metal");
     let compile_options = CompileOptions::new();
     compile_options.set_fast_math_enabled(true);
     let library = device

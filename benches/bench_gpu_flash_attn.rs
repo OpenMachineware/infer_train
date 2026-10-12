@@ -21,7 +21,7 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Load our self-written kernels
-    let our_source = include_str!("../../shaders/flash_attn_quant.metal");
+    let our_source = include_str!("../src/ops/metal/flash_attn_quant.metal");
     let options = CompileOptions::new();
     options.set_fast_math_enabled(true);
     let our_library = device

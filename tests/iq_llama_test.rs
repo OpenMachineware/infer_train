@@ -11,18 +11,18 @@ fn main() {
 
     // Load llama.cpp combined library (simple kernel template)
     let llama_combined =
-        include_str!("../../shaders/mul_mm_llama_combined.metal");
+        include_str!("../src/ops/metal/mul_mm_llama_combined.metal");
     let compile_opts = metal::CompileOptions::new();
     let llama_lib = device
         .new_library_with_source(llama_combined, &compile_opts)
         .expect("Failed to compile llama combined library");
 
     // Load self-written library
-    let ggml_common = include_str!("../../shaders/ggml-common.h");
+    let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
     let ggml_common_metal =
         format!("#define GGML_COMMON_IMPL_METAL\n{}", ggml_common);
     let standalone_source =
-        include_str!("../../shaders/mul_mm_standalone.metal");
+        include_str!("../src/ops/metal/mul_mm_standalone.metal");
     let standalone_no_include = standalone_source
         .lines()
         .filter(|line| !line.contains("#include \"iq_grid_tables.h\""))

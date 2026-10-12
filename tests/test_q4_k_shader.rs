@@ -113,7 +113,7 @@ impl TestContext {
         let queue = device.new_command_queue();
 
         // Load self-written shader
-        let source = include_str!("../../shaders/mul_mv_q4_k.metal");
+        let source = include_str!("../src/ops/metal/mul_mv_q4_k.metal");
         let compile_options = CompileOptions::new();
         let library =
             match device.new_library_with_source(source, &compile_options) {

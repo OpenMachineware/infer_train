@@ -188,8 +188,8 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Compile template with includes
-    let shader_base = include_str!("../../shaders/gemm.metal");
-    let ggml_common = include_str!("../../shaders/ggml-common.h");
+    let shader_base = include_str!("../src/ops/metal/gemm.metal");
+    let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
     // Define GGML_COMMON_IMPL_METAL before including ggml-common.h
     let ggml_common_with_metal =
         "#define GGML_COMMON_IMPL_METAL\n".to_string() + ggml_common;

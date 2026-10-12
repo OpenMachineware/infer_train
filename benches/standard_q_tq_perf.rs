@@ -63,7 +63,7 @@ fn main() {
     opts.set_fast_math_enabled(true);
 
     // Load IQ grid tables
-    let iq_grid_tables = include_str!("../../shaders/iq_grid_tables.h");
+    let iq_grid_tables = include_str!("../src/ops/metal/iq_grid_tables.h");
 
     // Add missing tables for IQ kernels
     let iq_extra_tables = r#"

@@ -65,11 +65,11 @@ fn main() {
 
     // Load libraries
     let simd_lib = device
-        .new_library_with_file("shaders/mul_mm_template.metallib")
+        .new_library_with_file("src/ops/metal/mul_mm_template.metallib")
         .expect("Failed to load SIMD library");
 
     let mpp_lib = device
-        .new_library_with_file("shaders/mul_mm_llama_tensor.metallib")
+        .new_library_with_file("src/ops/metal/mul_mm_llama_tensor.metallib")
         .expect("Failed to load MPP library");
 
     // Function constants

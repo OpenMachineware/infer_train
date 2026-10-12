@@ -65,7 +65,7 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Load our rewritten shader
-    let my_shader = include_str!("../../shaders/gemm.metal");
+    let my_shader = include_str!("../src/ops/metal/gemm.metal");
 
     // Load llama.cpp standalone shader
     let llama_shader = include_str!("/tmp/q4_k_standalone.metal");

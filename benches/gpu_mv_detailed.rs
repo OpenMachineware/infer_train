@@ -66,7 +66,7 @@ fn main() {
 
     // 2. Library compilation
     let t1 = Instant::now();
-    let source = include_str!("../../shaders/gemm.metal");
+    let source = include_str!("../src/ops/metal/gemm.metal");
     let compile_options = CompileOptions::new();
     let library = device
         .new_library_with_source(source, &compile_options)

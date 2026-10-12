@@ -13,7 +13,7 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Our MPP kernel
-    let our_source = include_str!("../../shaders/flash_prefill_mpp.metal");
+    let our_source = include_str!("../src/ops/metal/flash_prefill_mpp.metal");
     let our_source_with_define =
         format!("#define GGML_METAL_HAS_TENSOR\n{}", our_source);
 

@@ -12,8 +12,8 @@ fn main() {
     // ========== 阶段1: GPU预热 ==========
     println!("阶段1: GPU预热 (100次迭代)...");
 
-    let warmup_shader = include_str!("../../shaders/mv_iq_tq.metal");
-    let iq_grid_tables = include_str!("../../shaders/iq_grid_tables.h");
+    let warmup_shader = include_str!("../src/ops/metal/mv_iq_tq.metal");
+    let iq_grid_tables = include_str!("../src/ops/metal/iq_grid_tables.h");
     let warmup_combined =
         warmup_shader.replace("#include \"iq_grid_tables.h\"", iq_grid_tables);
 
@@ -154,8 +154,8 @@ fn benchmark_format(
     kernel_name: &str,
 ) -> Result<f64, String> {
     // Compile kernel
-    let shader = include_str!("../../shaders/mv_iq_tq.metal");
-    let iq_grid_tables = include_str!("../../shaders/iq_grid_tables.h");
+    let shader = include_str!("../src/ops/metal/mv_iq_tq.metal");
+    let iq_grid_tables = include_str!("../src/ops/metal/iq_grid_tables.h");
     let combined =
         shader.replace("#include \"iq_grid_tables.h\"", iq_grid_tables);
 

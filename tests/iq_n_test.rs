@@ -57,11 +57,11 @@ fn main() {
     let k = 4096usize;
     let seed = 42u64;
 
-    let gemm_source = include_str!("../../shaders/gemm.metal");
-    let ggml_common = include_str!("../../shaders/ggml-common.h");
+    let gemm_source = include_str!("../src/ops/metal/gemm.metal");
+    let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
     let ggml_common_metal =
         format!("#define GGML_COMMON_DECL_METAL\n{}", ggml_common);
-    let iq_grid_tables = include_str!("../../shaders/iq_grid_tables.h");
+    let iq_grid_tables = include_str!("../src/ops/metal/iq_grid_tables.h");
     let iq_extra_tables = r#"
 constexpr constant static uint8_t kmask_iq2xs[8] = {1, 2, 4, 8, 16, 32, 64, 128};
 constexpr constant static int8_t ksigns_iq2xs[128] = {
@@ -84,7 +84,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
         .unwrap();
     let llama_lib = device
         .new_library_with_file(std::path::Path::new(
-            "shaders/mul_mm_template.metallib",
+            "src/ops/metal/mul_mm_template.metallib",
         ))
         .unwrap();
 

@@ -5,7 +5,7 @@ fn main() {
     let device = Device::system_default().expect("No Metal device");
     let queue = device.new_command_queue();
 
-    let source = include_str!("../../shaders/argsort.metal");
+    let source = include_str!("../src/ops/metal/argsort.metal");
     let options = metal::CompileOptions::new();
     options.set_fast_math_enabled(true);
     let library = device
