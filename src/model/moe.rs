@@ -15,6 +15,11 @@ pub struct MoeLayer {
     pub wv: Option<Tensor>,
     pub wo: Option<Tensor>,
 
+    // Multi-Query Attention (DeepSeek-Coder-V2)
+    pub attn_kv_a_mqa: Option<Tensor>,
+    pub attn_kv_a_norm: Option<Tensor>,
+    pub attn_kv_b: Option<Tensor>,
+
     // FFN with MoE
     pub ffn_norm: Option<Tensor>,
     pub ffn_gate_inp: Option<Tensor>, // Router/gate for expert selection
@@ -26,6 +31,11 @@ pub struct MoeLayer {
     // Additional DeepSeek-Coder-V2 MoE components
     pub ffn_gate_exps: Option<Tensor>, // Expert gates
     pub ffn_up_shexp: Option<Tensor>,  // Shared expert up
+
+    // Standard FFN (for dense layers in MoE models)
+    pub ffn_gate: Option<Tensor>,
+    pub ffn_down: Option<Tensor>,
+    pub ffn_up: Option<Tensor>,
 
     // Alternative naming
     pub ffn_experts: Option<Tensor>, // Some models store experts differently
@@ -69,6 +79,17 @@ impl MoeLayer {
                 .or_else(|| {
                     store.get(&format!("{}.attn_output.weight", qwen_prefix))
                 })
+                .cloned(),
+
+            // Multi-Query Attention (DeepSeek-Coder-V2)
+            attn_kv_a_mqa: store
+                .get(&format!("{}.attn_kv_a_mqa.weight", qwen_prefix))
+                .cloned(),
+            attn_kv_a_norm: store
+                .get(&format!("{}.attn_kv_a_norm.weight", qwen_prefix))
+                .cloned(),
+            attn_kv_b: store
+                .get(&format!("{}.attn_kv_b.weight", qwen_prefix))
                 .cloned(),
 
             // FFN with MoE
@@ -134,18 +155,30 @@ impl MoeLayer {
             ffn_up_shexp: store
                 .get(&format!("{}.ffn_up_shexp.weight", qwen_prefix))
                 .cloned(),
+
+            // Standard FFN (for dense layers in MoE models)
+            ffn_gate: store
+                .get(&format!("{}.ffn_gate.weight", qwen_prefix))
+                .cloned(),
+            ffn_down: store
+                .get(&format!("{}.ffn_down.weight", qwen_prefix))
+                .cloned(),
+            ffn_up: store
+                .get(&format!("{}.ffn_up.weight", qwen_prefix))
+                .cloned(),
         }
     }
 
     pub fn param_count(&self) -> usize {
-        let mut count = 0usize;
-
         let tensors: Vec<Option<&Tensor>> = vec![
             self.attention_norm.as_ref(),
             self.wq.as_ref(),
             self.wk.as_ref(),
             self.wv.as_ref(),
             self.wo.as_ref(),
+            self.attn_kv_a_mqa.as_ref(),
+            self.attn_kv_a_norm.as_ref(),
+            self.attn_kv_b.as_ref(),
             self.ffn_norm.as_ref(),
             self.ffn_gate_inp.as_ref(),
             self.ffn_gate_shexp.as_ref(),
@@ -153,13 +186,14 @@ impl MoeLayer {
             self.ffn_gate_up_exps.as_ref(),
             self.ffn_down_shexp.as_ref(),
             self.ffn_experts.as_ref(),
+            self.ffn_gate_exps.as_ref(),
+            self.ffn_up_shexp.as_ref(),
+            self.ffn_gate.as_ref(),
+            self.ffn_down.as_ref(),
+            self.ffn_up.as_ref(),
         ];
 
-        for tensor in tensors.iter().flatten() {
-            count += tensor.elem_count();
-        }
-
-        count
+        tensors.iter().flatten().map(|t| t.elem_count()).sum()
     }
 
     pub fn is_moe(&self) -> bool {
@@ -168,13 +202,22 @@ impl MoeLayer {
             || self.ffn_gate_up_exps.is_some()
     }
 
+    pub fn is_dense_ffn(&self) -> bool {
+        self.ffn_gate.is_some()
+            && self.ffn_down.is_some()
+            && self.ffn_up.is_some()
+    }
+
     pub fn is_complete(&self) -> bool {
-        self.attention_norm.is_some()
-            && self.wq.is_some()
-            && self.wo.is_some()
-            && self.ffn_norm.is_some()
-            && (self.is_moe()
-                || (self.ffn_down_exps.is_some()
-                    && self.ffn_gate_up_exps.is_some()))
+        // Need attention (norm + (wq or attn_kv_a_mqa) + wo)
+        let has_attention = self.attention_norm.is_some()
+            && (self.wq.is_some() || self.attn_kv_a_mqa.is_some())
+            && self.wo.is_some();
+
+        // Need FFN (either MoE or dense)
+        let has_ffn =
+            self.ffn_norm.is_some() && (self.is_moe() || self.is_dense_ffn());
+
+        has_attention && has_ffn
     }
 }
