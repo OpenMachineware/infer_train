@@ -2,8 +2,12 @@
 // Based on llama.cpp's flash attention mechanism
 
 #[cfg(target_arch = "aarch64")]
+use crate::ops::arm::neon::{
+    vaddq_f16_asm, vaddvq_f32_inline, vcvt_f16_from_f32, vcvt_f32_from_f16,
+    vfmaq_f16_asm, vld1_f16_and_cvt_to_f32, vmulq_f16_asm,
+};
+#[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
-
 #[cfg(target_arch = "aarch64")]
 use std::arch::asm;
 
@@ -12,120 +16,6 @@ use crate::quant::kv_cache::{
     BlockIQ4NL, BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0,
     BlockQ8_1, QK,
 };
-
-// ============================================================================
-// FP16 NEON via inline assembly (stable Rust compatible)
-// ============================================================================
-
-/// FP16 FMA using inline assembly: a = a + b * c
-/// Uses uint16x8_t (stable) to avoid unstable float16x8_t type
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-unsafe fn vfmaq_f16_asm(
-    a: uint16x8_t,
-    b: uint16x8_t,
-    c: uint16x8_t,
-) -> uint16x8_t {
-    let result: uint16x8_t;
-    asm!(
-        "fmla {0:v}.8h, {1:v}.8h, {2:v}.8h",
-        inout(vreg) a => result,
-        in(vreg) b,
-        in(vreg) c,
-        options(pure, nomem, nostack)
-    );
-    result
-}
-
-/// FP16 add using inline assembly
-/// Uses uint16x8_t (stable) to avoid unstable float16x8_t type
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-unsafe fn vaddq_f16_asm(a: uint16x8_t, b: uint16x8_t) -> uint16x8_t {
-    let result: uint16x8_t;
-    asm!(
-        "fadd {0:v}.8h, {1:v}.8h, {2:v}.8h",
-        lateout(vreg) result,
-        in(vreg) a,
-        in(vreg) b,
-        options(pure, nomem, nostack)
-    );
-    result
-}
-
-/// FP16 mul using inline assembly
-/// Uses uint16x8_t (stable) to avoid unstable float16x8_t type
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-unsafe fn vmulq_f16_asm(a: uint16x8_t, b: uint16x8_t) -> uint16x8_t {
-    let result: uint16x8_t;
-    asm!(
-        "fmul {0:v}.8h, {1:v}.8h, {2:v}.8h",
-        lateout(vreg) result,
-        in(vreg) a,
-        in(vreg) b,
-        options(pure, nomem, nostack)
-    );
-    result
-}
-
-/// Convert FP16 vector (as uint16x8_t) to two FP32 vectors using inline asm
-/// Returns (low 4 floats, high 4 floats)
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-unsafe fn vcvt_f32_from_f16(v: uint16x8_t) -> (float32x4_t, float32x4_t) {
-    let low: float32x4_t;
-    let high: float32x4_t;
-    asm!(
-        "fcvtl {0:v}.4s, {2:v}.4h",
-        "fcvtl2 {1:v}.4s, {2:v}.8h",
-        lateout(vreg) low,
-        lateout(vreg) high,
-        in(vreg) v,
-        options(pure, nomem, nostack)
-    );
-    (low, high)
-}
-
-/// Horizontal sum of float32x4_t
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-unsafe fn vaddvq_f32_inline(v: float32x4_t) -> f32 {
-    vaddvq_f32(v)
-}
-
-/// Convert two FP32 vectors to FP16 vector using inline asm
-/// Returns uint16x8_t (FP16 bits) to avoid unstable float16x8_t type
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-unsafe fn vcvt_f16_from_f32(low: float32x4_t, high: float32x4_t) -> uint16x8_t {
-    let result: uint16x8_t;
-    asm!(
-        "fcvtn {0:v}.8h, {1:v}.4s",
-        "fcvtn2 {0:v}.8h, {2:v}.4s",
-        lateout(vreg) result,
-        in(vreg) low,
-        in(vreg) high,
-        options(pure, nomem, nostack)
-    );
-    result
-}
-
-/// Load 4 FP16 values from memory and convert to FP32 using inline asm
-/// Uses uint16x4_t (stable) to avoid unstable float16x4_t type
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-unsafe fn vld1_f16_and_cvt_to_f32(ptr: *const u16) -> float32x4_t {
-    let result: float32x4_t;
-    asm!(
-        "ld1 {0:v}.4h, [{1}]",
-        "fcvtl {0:v}.4s, {0:v}.4h",
-        lateout(vreg) result,
-        in(reg) ptr,
-        options(pure, nomem, nostack)
-    );
-    result
-}
 
 // ============================================================================
 // FP32 and FP16 Attention (baseline)
@@ -1635,7 +1525,7 @@ pub unsafe fn decode_attention_f32_q_f16_kv_neon(
                 let ms_bits = half::f16::from_f32(ms).to_bits();
                 let ms_vec: uint16x8_t;
                 asm!(
-                    "dup {0:v}.8h, {1:w}",
+                    "dup {0}.8h, {1:w}",
                     lateout(vreg) ms_vec,
                     in(reg) ms_bits,
                     options(pure, nomem, nostack)
@@ -1661,7 +1551,7 @@ pub unsafe fn decode_attention_f32_q_f16_kv_neon(
             let vs_bits = half::f16::from_f32(vs).to_bits();
             let vs_vec: uint16x8_t;
             asm!(
-                "dup {0:v}.8h, {1:w}",
+                "dup {0}.8h, {1:w}",
                 lateout(vreg) vs_vec,
                 in(reg) vs_bits,
                 options(pure, nomem, nostack)
@@ -1861,12 +1751,884 @@ pub unsafe fn dequantize_row_bf16_neon_inline(x: &[u16], y: &mut [f32]) {
 // Fused vec_dot and vec_mad functions are provided by attention_fused module
 #[cfg(target_arch = "aarch64")]
 use super::attention_fused::{
-    fp16_to_fp32_scalar, quantize_query_to_q8_0, quantize_query_to_q8_1,
-    vec_dot_iq4_nl_q8_0, vec_dot_q4_0_q8_0, vec_dot_q4_1_q8_1,
-    vec_dot_q5_0_q8_0, vec_dot_q5_1_q8_1, vec_dot_q8_0_q8_0,
-    vec_mad_f32_iq4_nl, vec_mad_f32_q4_0, vec_mad_f32_q4_1, vec_mad_f32_q5_0,
-    vec_mad_f32_q5_1, vec_mad_f32_q8_0,
+    quantize_query_to_q8_0, quantize_query_to_q8_1, vec_dot_iq4_nl_q8_0,
+    vec_dot_q4_0_q8_0, vec_dot_q4_1_q8_1, vec_dot_q5_0_q8_0, vec_dot_q5_1_q8_1,
+    vec_dot_q8_0_q8_0, vec_mad_f32_iq4_nl, vec_mad_f32_q4_0, vec_mad_f32_q4_1,
+    vec_mad_f32_q5_0, vec_mad_f32_q5_1, vec_mad_f32_q8_0,
 };
+
+// ============================================================================
+// Scalar fallbacks for non-aarch64 platforms
+// ============================================================================
+
+/// Scalar FP32 vec_dot
+#[cfg(not(target_arch = "aarch64"))]
+fn vec_dot_f32_scalar(a: &[f32], b: &[f32], n: usize) -> f32 {
+    let mut sum = 0.0f32;
+    for i in 0..n {
+        sum += a[i] * b[i];
+    }
+    sum
+}
+
+/// Scalar FP16 to FP32 conversion
+fn fp16_to_fp32_scalar(bits: u16) -> f32 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe { crate::ops::arm::neon::fp16_to_fp32(bits) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        half::f16::from_bits(bits).to_f32()
+    }
+}
+
+/// Scalar BF16 to FP32 conversion
+fn bf16_to_fp32_scalar(bits: u16) -> f32 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe { crate::ops::arm::neon::bf16_to_fp32(bits) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        f32::from_bits((bits as u32) << 16)
+    }
+}
+
+/// Scalar FP16 vec_dot
+fn vec_dot_f16_scalar(q: &[u16], k: &[u16], n: usize) -> f32 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe { crate::ops::arm::neon::vec_dot_f16(q, k, n) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let mut sum = 0.0f32;
+        for i in 0..n {
+            sum += fp16_to_fp32_scalar(q[i]) * fp16_to_fp32_scalar(k[i]);
+        }
+        sum
+    }
+}
+
+/// Scalar FP32 query, FP16 KV vec_dot
+fn vec_dot_f32_f16_scalar(q: &[f32], k: &[u16], n: usize) -> f32 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe { crate::ops::arm::neon::vec_dot_f32_f16(q, k, n) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let mut sum = 0.0f32;
+        for i in 0..n {
+            sum += q[i] * fp16_to_fp32_scalar(k[i]);
+        }
+        sum
+    }
+}
+
+/// Scalar FP16 vec_mad: y += x * v
+fn vec_mad_f16_scalar(y: &mut [u16], x: &[u16], v: f32, n: usize) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe { crate::ops::arm::neon::vec_mad_f16(y, x, v, n) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..n {
+            let y_val = fp16_to_fp32_scalar(y[i]);
+            let x_val = fp16_to_fp32_scalar(x[i]);
+            y[i] = half::f16::from_f32(y_val + x_val * v).to_bits();
+        }
+    }
+}
+
+/// Scalar FP32 output, FP16 V vec_mad
+fn vec_mad_f32_f16_scalar(y: &mut [f32], v: &[u16], weight: f32, n: usize) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe { crate::ops::arm::neon::vec_mad_f32_f16(y, v, weight, n) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..n {
+            y[i] += weight * fp16_to_fp32_scalar(v[i]);
+        }
+    }
+}
+
+/// Scalar FP16 scale
+fn vec_scale_f16_scalar(y: &mut [u16], v: f32, n: usize) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe { crate::ops::arm::neon::vec_scale_f16(y, v, n) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..n {
+            let y_val = fp16_to_fp32_scalar(y[i]);
+            y[i] = half::f16::from_f32(y_val * v).to_bits();
+        }
+    }
+}
+
+/// Scalar dequantize BF16 row
+fn dequantize_row_bf16_scalar(x: &[u16], y: &mut [f32]) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe { crate::ops::arm::neon::dequantize_row_bf16(x, y) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..x.len() {
+            y[i] = bf16_to_fp32_scalar(x[i]);
+        }
+    }
+}
+
+/// Scalar dequantize FP16 row
+fn dequantize_row_f16_scalar(x: &[u16], y: &mut [f32]) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe { crate::ops::arm::neon::dequantize_row_f16(x, y) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for i in 0..x.len() {
+            y[i] = fp16_to_fp32_scalar(x[i]);
+        }
+    }
+}
+
+// ============================================================================
+// Dispatch functions for standard quantization formats
+// ============================================================================
+// Dispatch functions for standard quantization formats
+// ============================================================================
+
+/// BF16 attention
+pub fn decode_attention_bf16(
+    q: &[f32],
+    k: &[u16],
+    v: &[u16],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            decode_attention_bf16_neon(
+                q, k, v, output, num_heads, head_dim, seq_len, scale,
+            )
+        };
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let mut k_f32 = vec![0.0f32; head_dim];
+        let mut v_f32 = vec![0.0f32; head_dim];
+
+        for h in 0..num_heads {
+            let q_head = &q[h * head_dim..(h + 1) * head_dim];
+            let output_head = &mut output[h * head_dim..(h + 1) * head_dim];
+
+            let mut max_val = f32::NEG_INFINITY;
+            let mut sum_exp = 0.0f32;
+
+            output_head.fill(0.0);
+
+            for s in 0..seq_len {
+                let k_offset = (s * num_heads + h) * head_dim;
+                dequantize_row_bf16_scalar(
+                    &k[k_offset..k_offset + head_dim],
+                    &mut k_f32,
+                );
+
+                let score =
+                    vec_dot_f32_scalar(q_head, &k_f32, head_dim) * scale;
+
+                let old_max = max_val;
+                if score > max_val {
+                    max_val = score;
+                }
+
+                let weight;
+                if score > old_max {
+                    let correction = (old_max - max_val).exp();
+                    sum_exp *= correction;
+                    for d in 0..head_dim {
+                        output_head[d] *= correction;
+                    }
+                    weight = 1.0;
+                } else {
+                    weight = (score - max_val).exp();
+                }
+
+                sum_exp += weight;
+
+                dequantize_row_bf16_scalar(
+                    &v[k_offset..k_offset + head_dim],
+                    &mut v_f32,
+                );
+                for d in 0..head_dim {
+                    output_head[d] += weight * v_f32[d];
+                }
+            }
+
+            let inv_sum = 1.0 / sum_exp;
+            for d in 0..head_dim {
+                output_head[d] *= inv_sum;
+            }
+        }
+    }
+}
+
+/// FP16 attention
+/// Note: This accepts FP32 query and uses FP16 KV.
+/// For full FP16 query+KV, use decode_attention_f16_neon directly.
+pub fn decode_attention_f16(
+    q: &[f32],
+    k: &[u16],
+    v: &[u16],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    // Use f32 query + f16 KV implementation
+    decode_attention_f32_q_f16_kv(
+        q, k, v, output, num_heads, head_dim, seq_len, scale,
+    );
+}
+
+/// FP32 query with FP16 KV attention
+pub fn decode_attention_f32_q_f16_kv(
+    q: &[f32],
+    k: &[u16],
+    v: &[u16],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            decode_attention_f32_q_f16_kv_neon(
+                q, k, v, output, num_heads, head_dim, seq_len, scale,
+            )
+        };
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for h in 0..num_heads {
+            let q_head = &q[h * head_dim..(h + 1) * head_dim];
+            let output_head = &mut output[h * head_dim..(h + 1) * head_dim];
+
+            let mut max_val = f32::NEG_INFINITY;
+            let mut sum_exp = 0.0f32;
+
+            output_head.fill(0.0);
+
+            for s in 0..seq_len {
+                let k_offset = (s * num_heads + h) * head_dim;
+                let k_row = &k[k_offset..k_offset + head_dim];
+
+                let score =
+                    vec_dot_f32_f16_scalar(q_head, k_row, head_dim) * scale;
+
+                let old_max = max_val;
+                if score > max_val {
+                    max_val = score;
+                }
+
+                let weight;
+                if score > old_max {
+                    let correction = (old_max - max_val).exp();
+                    sum_exp *= correction;
+                    for d in 0..head_dim {
+                        output_head[d] *= correction;
+                    }
+                    weight = 1.0;
+                } else {
+                    weight = (score - max_val).exp();
+                }
+
+                sum_exp += weight;
+
+                let v_row = &v[k_offset..k_offset + head_dim];
+                for d in 0..head_dim {
+                    output_head[d] += weight * fp16_to_fp32_scalar(v_row[d]);
+                }
+            }
+
+            let inv_sum = 1.0 / sum_exp;
+            for d in 0..head_dim {
+                output_head[d] *= inv_sum;
+            }
+        }
+    }
+}
+
+/// Q8_0 attention
+pub fn decode_attention_q8_0(
+    q: &[f32],
+    k: &[BlockQ8_0],
+    v: &[BlockQ8_0],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            decode_attention_q8_0_neon(
+                q, k, v, output, num_heads, head_dim, seq_len, scale,
+            )
+        };
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let blocks_per_row = (head_dim + QK - 1) / QK;
+        let mut q_q8 = vec![BlockQ8_0::default(); blocks_per_row];
+
+        for h in 0..num_heads {
+            let q_head = &q[h * head_dim..(h + 1) * head_dim];
+            let output_head = &mut output[h * head_dim..(h + 1) * head_dim];
+
+            // Quantize query to Q8_0
+            crate::quant::kv_cache::quant::quantize_row_q8_0_scalar(
+                q_head, &mut q_q8,
+            );
+
+            let mut max_val = f32::NEG_INFINITY;
+            let mut sum_exp = 0.0f32;
+
+            output_head.fill(0.0);
+
+            for s in 0..seq_len {
+                let kv_offset = (s * num_heads + h) * blocks_per_row;
+                let k_blocks = &k[kv_offset..kv_offset + blocks_per_row];
+
+                let score = crate::quant::vec_dot::vec_dot_q8_0_q8_0(
+                    head_dim, &q_q8, k_blocks,
+                ) * scale;
+
+                let old_max = max_val;
+                if score > max_val {
+                    max_val = score;
+                }
+
+                let weight;
+                if score > old_max {
+                    let correction = (old_max - max_val).exp();
+                    sum_exp *= correction;
+                    for d in 0..head_dim {
+                        output_head[d] *= correction;
+                    }
+                    weight = 1.0;
+                } else {
+                    weight = (score - max_val).exp();
+                }
+
+                sum_exp += weight;
+
+                // Accumulate V
+                let v_blocks = &v[kv_offset..kv_offset + blocks_per_row];
+                for (bi, block) in v_blocks.iter().enumerate() {
+                    let block_scale = fp16_to_fp32_scalar(block.d);
+                    for j in 0..QK {
+                        let idx = bi * QK + j;
+                        if idx < head_dim {
+                            output_head[idx] +=
+                                weight * block_scale * block.qs[j] as f32;
+                        }
+                    }
+                }
+            }
+
+            let inv_sum = 1.0 / sum_exp;
+            for d in 0..head_dim {
+                output_head[d] *= inv_sum;
+            }
+        }
+    }
+}
+
+/// Q4_0 attention
+pub fn decode_attention_q4_0(
+    q: &[f32],
+    k: &[BlockQ4_0],
+    v: &[BlockQ4_0],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            decode_attention_q4_0_neon(
+                q, k, v, output, num_heads, head_dim, seq_len, scale,
+            )
+        };
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let blocks_per_row = (head_dim + QK - 1) / QK;
+        let mut q_q8 = vec![BlockQ8_0::default(); blocks_per_row];
+
+        for h in 0..num_heads {
+            let q_head = &q[h * head_dim..(h + 1) * head_dim];
+            let output_head = &mut output[h * head_dim..(h + 1) * head_dim];
+
+            crate::quant::kv_cache::quant::quantize_row_q8_0_scalar(
+                q_head, &mut q_q8,
+            );
+
+            let mut max_val = f32::NEG_INFINITY;
+            let mut sum_exp = 0.0f32;
+
+            output_head.fill(0.0);
+
+            for s in 0..seq_len {
+                let kv_offset = (s * num_heads + h) * blocks_per_row;
+                let k_blocks = &k[kv_offset..kv_offset + blocks_per_row];
+
+                let score = crate::quant::vec_dot::vec_dot_q4_0_q8_0(
+                    head_dim, &q_q8, k_blocks,
+                ) * scale;
+
+                let old_max = max_val;
+                if score > max_val {
+                    max_val = score;
+                }
+
+                let weight;
+                if score > old_max {
+                    let correction = (old_max - max_val).exp();
+                    sum_exp *= correction;
+                    for d in 0..head_dim {
+                        output_head[d] *= correction;
+                    }
+                    weight = 1.0;
+                } else {
+                    weight = (score - max_val).exp();
+                }
+
+                sum_exp += weight;
+
+                let v_blocks = &v[kv_offset..kv_offset + blocks_per_row];
+                for (bi, block) in v_blocks.iter().enumerate() {
+                    let block_scale = fp16_to_fp32_scalar(block.d);
+                    for j in 0..QK / 2 {
+                        let idx_lo = bi * QK + j;
+                        let idx_hi = bi * QK + j + QK / 2;
+                        let packed = block.qs[j];
+                        let lo = ((packed & 0x0F) as i8 as i32 - 8) as f32;
+                        let hi =
+                            (((packed >> 4) & 0x0F) as i8 as i32 - 8) as f32;
+                        if idx_lo < head_dim {
+                            output_head[idx_lo] += weight * block_scale * lo;
+                        }
+                        if idx_hi < head_dim {
+                            output_head[idx_hi] += weight * block_scale * hi;
+                        }
+                    }
+                }
+            }
+
+            let inv_sum = 1.0 / sum_exp;
+            for d in 0..head_dim {
+                output_head[d] *= inv_sum;
+            }
+        }
+    }
+}
+
+/// Q4_1 attention
+pub fn decode_attention_q4_1(
+    q: &[f32],
+    k: &[BlockQ4_1],
+    v: &[BlockQ4_1],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            decode_attention_q4_1_neon(
+                q, k, v, output, num_heads, head_dim, seq_len, scale,
+            )
+        };
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let blocks_per_row = (head_dim + QK - 1) / QK;
+        let mut q_q8 = vec![BlockQ8_0::default(); blocks_per_row];
+
+        for h in 0..num_heads {
+            let q_head = &q[h * head_dim..(h + 1) * head_dim];
+            let output_head = &mut output[h * head_dim..(h + 1) * head_dim];
+
+            crate::quant::kv_cache::quant::quantize_row_q8_0_scalar(
+                q_head, &mut q_q8,
+            );
+
+            let mut max_val = f32::NEG_INFINITY;
+            let mut sum_exp = 0.0f32;
+
+            output_head.fill(0.0);
+
+            for s in 0..seq_len {
+                let kv_offset = (s * num_heads + h) * blocks_per_row;
+                let k_blocks = &k[kv_offset..kv_offset + blocks_per_row];
+
+                let score = crate::quant::vec_dot::vec_dot_q4_1_q8_0(
+                    head_dim, &q_q8, k_blocks,
+                ) * scale;
+
+                let old_max = max_val;
+                if score > max_val {
+                    max_val = score;
+                }
+
+                let weight;
+                if score > old_max {
+                    let correction = (old_max - max_val).exp();
+                    sum_exp *= correction;
+                    for d in 0..head_dim {
+                        output_head[d] *= correction;
+                    }
+                    weight = 1.0;
+                } else {
+                    weight = (score - max_val).exp();
+                }
+
+                sum_exp += weight;
+
+                let v_blocks = &v[kv_offset..kv_offset + blocks_per_row];
+                for (bi, block) in v_blocks.iter().enumerate() {
+                    let bs = fp16_to_fp32_scalar(block.d);
+                    let bm = fp16_to_fp32_scalar(block.m);
+                    for j in 0..QK / 2 {
+                        let idx_lo = bi * QK + j;
+                        let idx_hi = bi * QK + j + QK / 2;
+                        let packed = block.qs[j];
+                        let lo = (packed & 0x0F) as f32;
+                        let hi = ((packed >> 4) & 0x0F) as f32;
+                        if idx_lo < head_dim {
+                            output_head[idx_lo] += weight * (bs * lo + bm);
+                        }
+                        if idx_hi < head_dim {
+                            output_head[idx_hi] += weight * (bs * hi + bm);
+                        }
+                    }
+                }
+            }
+
+            let inv_sum = 1.0 / sum_exp;
+            for d in 0..head_dim {
+                output_head[d] *= inv_sum;
+            }
+        }
+    }
+}
+
+/// Q5_0 attention
+pub fn decode_attention_q5_0(
+    q: &[f32],
+    k: &[BlockQ5_0],
+    v: &[BlockQ5_0],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            decode_attention_q5_0_neon(
+                q, k, v, output, num_heads, head_dim, seq_len, scale,
+            )
+        };
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let blocks_per_row = (head_dim + QK - 1) / QK;
+        let mut q_q8 = vec![BlockQ8_0::default(); blocks_per_row];
+
+        for h in 0..num_heads {
+            let q_head = &q[h * head_dim..(h + 1) * head_dim];
+            let output_head = &mut output[h * head_dim..(h + 1) * head_dim];
+
+            crate::quant::kv_cache::quant::quantize_row_q8_0_scalar(
+                q_head, &mut q_q8,
+            );
+
+            let mut max_val = f32::NEG_INFINITY;
+            let mut sum_exp = 0.0f32;
+
+            output_head.fill(0.0);
+
+            for s in 0..seq_len {
+                let kv_offset = (s * num_heads + h) * blocks_per_row;
+                let k_blocks = &k[kv_offset..kv_offset + blocks_per_row];
+
+                let score = crate::quant::vec_dot::vec_dot_q5_0_q8_0(
+                    head_dim, &q_q8, k_blocks,
+                ) * scale;
+
+                let old_max = max_val;
+                if score > max_val {
+                    max_val = score;
+                }
+
+                let weight;
+                if score > old_max {
+                    let correction = (old_max - max_val).exp();
+                    sum_exp *= correction;
+                    for d in 0..head_dim {
+                        output_head[d] *= correction;
+                    }
+                    weight = 1.0;
+                } else {
+                    weight = (score - max_val).exp();
+                }
+
+                sum_exp += weight;
+
+                let v_blocks = &v[kv_offset..kv_offset + blocks_per_row];
+                for (bi, block) in v_blocks.iter().enumerate() {
+                    let bs = fp16_to_fp32_scalar(block.d);
+                    let qh = u32::from_le_bytes(block.qh);
+                    for j in 0..QK / 2 {
+                        let idx_lo = bi * QK + j;
+                        let idx_hi = bi * QK + j + QK / 2;
+                        let packed = block.qs[j];
+                        let lo = ((packed & 0x0F) as i32
+                            + ((qh >> j) & 1) as i32 * 16
+                            - 16) as f32;
+                        let hi = (((packed >> 4) & 0x0F) as i32
+                            + ((qh >> (j + 16)) & 1) as i32 * 16
+                            - 16) as f32;
+                        if idx_lo < head_dim {
+                            output_head[idx_lo] += weight * bs * lo;
+                        }
+                        if idx_hi < head_dim {
+                            output_head[idx_hi] += weight * bs * hi;
+                        }
+                    }
+                }
+            }
+
+            let inv_sum = 1.0 / sum_exp;
+            for d in 0..head_dim {
+                output_head[d] *= inv_sum;
+            }
+        }
+    }
+}
+
+/// Q5_1 attention
+pub fn decode_attention_q5_1(
+    q: &[f32],
+    k: &[BlockQ5_1],
+    v: &[BlockQ5_1],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            decode_attention_q5_1_neon(
+                q, k, v, output, num_heads, head_dim, seq_len, scale,
+            )
+        };
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let blocks_per_row = (head_dim + QK - 1) / QK;
+        let mut q_q8 = vec![BlockQ8_0::default(); blocks_per_row];
+
+        for h in 0..num_heads {
+            let q_head = &q[h * head_dim..(h + 1) * head_dim];
+            let output_head = &mut output[h * head_dim..(h + 1) * head_dim];
+
+            crate::quant::kv_cache::quant::quantize_row_q8_0_scalar(
+                q_head, &mut q_q8,
+            );
+
+            let mut max_val = f32::NEG_INFINITY;
+            let mut sum_exp = 0.0f32;
+
+            output_head.fill(0.0);
+
+            for s in 0..seq_len {
+                let kv_offset = (s * num_heads + h) * blocks_per_row;
+                let k_blocks = &k[kv_offset..kv_offset + blocks_per_row];
+
+                let score = crate::quant::vec_dot::vec_dot_q5_1_q8_0(
+                    head_dim, &q_q8, k_blocks,
+                ) * scale;
+
+                let old_max = max_val;
+                if score > max_val {
+                    max_val = score;
+                }
+
+                let weight;
+                if score > old_max {
+                    let correction = (old_max - max_val).exp();
+                    sum_exp *= correction;
+                    for d in 0..head_dim {
+                        output_head[d] *= correction;
+                    }
+                    weight = 1.0;
+                } else {
+                    weight = (score - max_val).exp();
+                }
+
+                sum_exp += weight;
+
+                let v_blocks = &v[kv_offset..kv_offset + blocks_per_row];
+                for (bi, block) in v_blocks.iter().enumerate() {
+                    let bs = fp16_to_fp32_scalar(block.d);
+                    let bm = fp16_to_fp32_scalar(block.m);
+                    let qh = u32::from_le_bytes(block.qh);
+                    for j in 0..QK / 2 {
+                        let idx_lo = bi * QK + j;
+                        let idx_hi = bi * QK + j + QK / 2;
+                        let packed = block.qs[j];
+                        let lo = ((packed & 0x0F) as f32
+                            + ((qh >> j) & 1) as f32 * 16.0);
+                        let hi = (((packed >> 4) & 0x0F) as f32
+                            + ((qh >> (j + 16)) & 1) as f32 * 16.0);
+                        if idx_lo < head_dim {
+                            output_head[idx_lo] += weight * (bs * lo + bm);
+                        }
+                        if idx_hi < head_dim {
+                            output_head[idx_hi] += weight * (bs * hi + bm);
+                        }
+                    }
+                }
+            }
+
+            let inv_sum = 1.0 / sum_exp;
+            for d in 0..head_dim {
+                output_head[d] *= inv_sum;
+            }
+        }
+    }
+}
+
+/// IQ4_NL attention
+pub fn decode_attention_iq4_nl(
+    q: &[f32],
+    k: &[BlockIQ4NL],
+    v: &[BlockIQ4NL],
+    output: &mut [f32],
+    num_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    scale: f32,
+) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            decode_attention_iq4_nl_neon(
+                q, k, v, output, num_heads, head_dim, seq_len, scale,
+            )
+        };
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        use crate::quant::kv_cache::KVALUES_IQ4NL;
+
+        let blocks_per_row = (head_dim + QK - 1) / QK;
+        let mut q_q8 = vec![BlockQ8_0::default(); blocks_per_row];
+
+        for h in 0..num_heads {
+            let q_head = &q[h * head_dim..(h + 1) * head_dim];
+            let output_head = &mut output[h * head_dim..(h + 1) * head_dim];
+
+            crate::quant::kv_cache::quant::quantize_row_q8_0_scalar(
+                q_head, &mut q_q8,
+            );
+
+            let mut max_val = f32::NEG_INFINITY;
+            let mut sum_exp = 0.0f32;
+
+            output_head.fill(0.0);
+
+            for s in 0..seq_len {
+                let kv_offset = (s * num_heads + h) * blocks_per_row;
+                let k_blocks = &k[kv_offset..kv_offset + blocks_per_row];
+
+                let score = crate::quant::vec_dot::vec_dot_iq4_nl_q8_0(
+                    head_dim, &q_q8, k_blocks,
+                ) * scale;
+
+                let old_max = max_val;
+                if score > max_val {
+                    max_val = score;
+                }
+
+                let weight;
+                if score > old_max {
+                    let correction = (old_max - max_val).exp();
+                    sum_exp *= correction;
+                    for d in 0..head_dim {
+                        output_head[d] *= correction;
+                    }
+                    weight = 1.0;
+                } else {
+                    weight = (score - max_val).exp();
+                }
+
+                sum_exp += weight;
+
+                let v_blocks = &v[kv_offset..kv_offset + blocks_per_row];
+                for (bi, block) in v_blocks.iter().enumerate() {
+                    let bs = fp16_to_fp32_scalar(block.d);
+                    for j in 0..QK / 2 {
+                        let idx_lo = bi * QK + j;
+                        let idx_hi = bi * QK + j + QK / 2;
+                        let packed = block.qs[j];
+                        let lo = KVALUES_IQ4NL[(packed & 0x0F) as usize] as f32;
+                        let hi = KVALUES_IQ4NL[((packed >> 4) & 0x0F) as usize]
+                            as f32;
+                        if idx_lo < head_dim {
+                            output_head[idx_lo] += weight * bs * lo;
+                        }
+                        if idx_hi < head_dim {
+                            output_head[idx_hi] += weight * bs * hi;
+                        }
+                    }
+                }
+            }
+
+            let inv_sum = 1.0 / sum_exp;
+            for d in 0..head_dim {
+                output_head[d] *= inv_sum;
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

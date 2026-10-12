@@ -22,7 +22,7 @@ pub unsafe fn vfmaq_f16_asm(
 ) -> uint16x8_t {
     let result: uint16x8_t;
     asm!(
-        "fmla {0:v}.8h, {1:v}.8h, {2:v}.8h",
+        "fmla {0}.8h, {1}.8h, {2}.8h",
         inout(vreg) a => result,
         in(vreg) b,
         in(vreg) c,
@@ -37,7 +37,7 @@ pub unsafe fn vfmaq_f16_asm(
 pub unsafe fn vaddq_f16_asm(a: uint16x8_t, b: uint16x8_t) -> uint16x8_t {
     let result: uint16x8_t;
     asm!(
-        "fadd {0:v}.8h, {1:v}.8h, {2:v}.8h",
+        "fadd {0}.8h, {1}.8h, {2}.8h",
         lateout(vreg) result,
         in(vreg) a,
         in(vreg) b,
@@ -52,7 +52,7 @@ pub unsafe fn vaddq_f16_asm(a: uint16x8_t, b: uint16x8_t) -> uint16x8_t {
 pub unsafe fn vmulq_f16_asm(a: uint16x8_t, b: uint16x8_t) -> uint16x8_t {
     let result: uint16x8_t;
     asm!(
-        "fmul {0:v}.8h, {1:v}.8h, {2:v}.8h",
+        "fmul {0}.8h, {1}.8h, {2}.8h",
         lateout(vreg) result,
         in(vreg) a,
         in(vreg) b,
@@ -68,8 +68,8 @@ pub unsafe fn vcvt_f32_from_f16(v: uint16x8_t) -> (float32x4_t, float32x4_t) {
     let low: float32x4_t;
     let high: float32x4_t;
     asm!(
-        "fcvtl {0:v}.4s, {2:v}.4h",
-        "fcvtl2 {1:v}.4s, {2:v}.8h",
+        "fcvtl {0}.4s, {2}.4h",
+        "fcvtl2 {1}.4s, {2}.8h",
         lateout(vreg) low,
         lateout(vreg) high,
         in(vreg) v,
@@ -93,8 +93,8 @@ pub unsafe fn vcvt_f16_from_f32(
 ) -> uint16x8_t {
     let result: uint16x8_t;
     asm!(
-        "fcvtn {0:v}.4h, {1:v}.4s",
-        "fcvtn2 {0:v}.8h, {2:v}.4s",
+        "fcvtn {0}.4h, {1}.4s",
+        "fcvtn2 {0}.8h, {2}.4s",
         lateout(vreg) result,
         in(vreg) low,
         in(vreg) high,
@@ -103,12 +103,18 @@ pub unsafe fn vcvt_f16_from_f32(
     result
 }
 
-/// Load 4 FP16 values and convert to FP32
+/// Load 4 FP16 values and convert to FP32 using inline asm (stable Rust)
 #[inline(always)]
 pub unsafe fn vld1_f16_and_cvt_to_f32(ptr: *const u16) -> float32x4_t {
-    let f16_bits = vld1_u16(ptr); // Load as u16
-    let f16 = vreinterpret_f16_u16(f16_bits); // Reinterpret as f16
-    vcvt_f32_f16(f16) // Convert to f32
+    let result: float32x4_t;
+    asm!(
+        "ld1 {0}.4h, [{1}]",
+        "fcvtl {0}.4s, {0}.4h",
+        lateout(vreg) result,
+        in(reg) ptr,
+        options(pure, nomem, nostack)
+    );
+    result
 }
 
 // ============================================================================
