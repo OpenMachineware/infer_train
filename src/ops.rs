@@ -1,3 +1,13 @@
+// Operator implementations organized by platform
+
+// Platform-specific modules
+pub mod arm;
+pub mod common;
+pub mod cuda;
+pub mod metal;
+pub mod x86;
+
+// Existing operator modules
 pub mod activation_tables;
 pub mod attention;
 pub mod attention_fused;
@@ -14,9 +24,10 @@ pub mod silu;
 pub mod softmax;
 pub mod tensor;
 
+// GPU module (contains metal implementation)
 pub mod gpu;
 
-pub use activation_tables::*;
+// Re-exports
 pub use attention::*;
 pub use binary::*;
 pub use conv::*;
