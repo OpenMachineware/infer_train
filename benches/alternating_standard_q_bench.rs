@@ -78,7 +78,7 @@ fn run_alternating(
 ) -> (f64, f64, usize, usize) {
     let cv = create_function_constants(info.nsg);
     let llama_kernel_name = format!("kernel_mul_mv_{}_f32", info.name);
-    let my_kernel_name = format!("kernel_gemm_{}_f32", info.name);
+    let my_kernel_name = format!("kernel_mul_mm_{}_f32", info.name);
 
     let llama_func =
         match llama_lib.get_function(&llama_kernel_name, Some(cv.clone())) {
@@ -262,7 +262,7 @@ fn main() {
         .join("\n");
 
     // Load and inline self-written shader
-    let my_shader_base = include_str!("../src/ops/metal/gemm.metal");
+    let my_shader_base = include_str!("../src/ops/metal/gemm/mul_mm.metal");
     let my_ggml_common = include_str!("../src/ops/metal/ggml-common.h");
 
     let ggml_common_with_metal =

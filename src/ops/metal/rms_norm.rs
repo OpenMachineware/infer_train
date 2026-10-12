@@ -24,7 +24,7 @@ impl RmsNormMetalContext {
         let compile_options = metal::CompileOptions::new();
         compile_options.set_fast_math_enabled(true);
 
-        let source = include_str!("rms_norm.metal");
+        let source = include_str!("ops/rms_norm.metal");
         let library = device
             .new_library_with_source(source, &compile_options)
             .map_err(|e| format!("Failed to compile RMSNorm library: {}", e))?;

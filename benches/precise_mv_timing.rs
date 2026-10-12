@@ -68,7 +68,7 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Q6_K shader (both llama.cpp and self-written use same code)
-    let shader = include_str!("../src/ops/metal/gemm.metal");
+    let shader = include_str!("../src/ops/metal/gemm/mul_mm.metal");
 
     let compile_options = CompileOptions::new();
     let lib = device
@@ -76,7 +76,7 @@ fn main() {
         .expect("Compilation failed");
 
     let cv = create_function_constants(2, 1, 1, 1);
-    let func = lib.get_function("kernel_gemm_q6_K_f32", Some(cv)).unwrap();
+    let func = lib.get_function("kernel_mul_mm_q6_K_f32", Some(cv)).unwrap();
     let pipeline =
         device.new_compute_pipeline_state_with_function(&func).unwrap();
 

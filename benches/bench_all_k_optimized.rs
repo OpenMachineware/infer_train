@@ -66,7 +66,7 @@ fn main() {
     let device = Device::system_default().unwrap();
     let queue = device.new_command_queue();
 
-    let shader = include_str!("../src/ops/metal/gemm.metal");
+    let shader = include_str!("../src/ops/metal/gemm/mul_mm.metal");
     let compile_opts = CompileOptions::new();
     let lib = device.new_library_with_source(shader, &compile_opts).unwrap();
 
@@ -90,7 +90,7 @@ fn main() {
     ];
 
     for info in &k_quants {
-        let kernel_name = format!("kernel_gemm_{}_f32", info.name);
+        let kernel_name = format!("kernel_mul_mm_{}_f32", info.name);
         let func = lib
             .get_function(&kernel_name, Some(create_fc(info.nsg, 1, 1, 1)))
             .unwrap();

@@ -266,9 +266,9 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         // Kernel names:
         // - llama.cpp: kernel_mul_mv_q4_K_f32 (with mul_mv)
-        // - self-written: kernel_gemm_q4_K_f32 (with gemm)
+        // - self-written: kernel_mul_mm_q4_K_f32 (with gemm)
         let llama_kernel_name = format!("kernel_mul_mv_{}_f32", name);
-        let my_kernel_name = format!("kernel_gemm_{}_f32", name);
+        let my_kernel_name = format!("kernel_mul_mm_{}_f32", name);
         let qk = 256;
         let nb = k / qk;
         let nb01 = (block_size * nb) as u64;

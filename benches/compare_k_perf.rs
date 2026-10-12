@@ -115,7 +115,7 @@ fn main() {
     );
 
     for (name, block_size) in formats {
-        let kernel_name = format!("kernel_gemm_{}_f32", name);
+        let kernel_name = format!("kernel_mul_mm_{}_f32", name);
         let nb = k / 256;
         let nb01 = (block_size * nb) as u64;
 

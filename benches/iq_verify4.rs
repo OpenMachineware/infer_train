@@ -29,7 +29,7 @@ fn main() {
 
     println!("Input[0..4]: {:?}", &input_f32[0..4]);
 
-    let gemm_source = include_str!("../src/ops/metal/gemm.metal");
+    let gemm_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
     let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
     let ggml_common_metal =
         format!("#define GGML_COMMON_DECL_METAL\n{}", ggml_common);
@@ -148,7 +148,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {1,1,1,1,1,1,1,1,-1,1,1,1,1
     let my_pipeline = device
         .new_compute_pipeline_state_with_function(
             &my_lib
-                .get_function("kernel_gemm_iq4_nl_f32", Some(cv.clone()))
+                .get_function("kernel_mul_mm_iq4_nl_f32", Some(cv.clone()))
                 .unwrap(),
         )
         .unwrap();

@@ -65,7 +65,7 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Load our rewritten shader
-    let my_shader = include_str!("../src/ops/metal/gemm.metal");
+    let my_shader = include_str!("../src/ops/metal/gemm/mul_mm.metal");
 
     // Load llama.cpp standalone shader
     let llama_shader = include_str!("/tmp/q4_k_standalone.metal");
@@ -157,7 +157,7 @@ fn test_format(
         r3: 1,
     };
 
-    let kernel_name = format!("kernel_gemm_{}_f32", name);
+    let kernel_name = format!("kernel_mul_mm_{}_f32", name);
     let cv = create_function_constants(nsg, 1, 1, 1);
 
     // Get functions

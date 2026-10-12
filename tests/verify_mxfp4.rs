@@ -115,7 +115,7 @@ static float e8m0_to_fp32(uint8_t e) {
 }
 
 template<int NR0, typename args_t>
-void kernel_gemm_mxfp4_f32_impl(args_t args, device const char * src0, device const char * src1,
+void kernel_mul_mm_mxfp4_f32_impl(args_t args, device const char * src0, device const char * src1,
     device char * dst, threadgroup char * shmem, uint3 tgpig, ushort tiisg, ushort sgitg) {
     const short NSG = FC_mul_mv_nsg;
     threadgroup float * shmem_f32 = (threadgroup float *) shmem;
@@ -156,12 +156,12 @@ void kernel_gemm_mxfp4_f32_impl(args_t args, device const char * src0, device co
         if (tiisg == 0) { dst_f32[first_row + row] = sum_all; }
     }
 }
-[[host_name("kernel_gemm_mxfp4_f32")]]
-kernel void kernel_gemm_mxfp4_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
+[[host_name("kernel_mul_mm_mxfp4_f32")]]
+kernel void kernel_mul_mm_mxfp4_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
     device const char * src1, device char * dst, uint3 tgpig[[threadgroup_position_in_grid]],
     ushort tiisg[[thread_index_in_simdgroup]], ushort sgitg[[simdgroup_index_in_threadgroup]]) {
     threadgroup char shmem[64];
-    kernel_gemm_mxfp4_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
+    kernel_mul_mm_mxfp4_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
 }
 "#;
 
@@ -204,10 +204,11 @@ fn main() {
 
     let cv = create_cv();
     let llama_kernel = llama_lib
-        .get_function("kernel_gemm_mxfp4_f32", Some(cv.clone()))
+        .get_function("kernel_mul_mm_mxfp4_f32", Some(cv.clone()))
         .unwrap();
-    let my_kernel =
-        my_lib.get_function("kernel_gemm_mxfp4_f32", Some(cv.clone())).unwrap();
+    let my_kernel = my_lib
+        .get_function("kernel_mul_mm_mxfp4_f32", Some(cv.clone()))
+        .unwrap();
 
     let llama_pipeline =
         device.new_compute_pipeline_state_with_function(&llama_kernel).unwrap();

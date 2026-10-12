@@ -95,8 +95,8 @@ impl FlashAttnMetalContext {
         compile_options.set_fast_math_enabled(true);
 
         // Combine dequantize.metal and flash_attn.metal
-        let dequantize_source = include_str!("dequantize.metal");
-        let flash_attn_source = include_str!("flash_attn.metal");
+        let dequantize_source = include_str!("ops/dequantize.metal");
+        let flash_attn_source = include_str!("attention/flash_attn.metal");
         // Remove the include directive and concatenate
         let source = format!(
             "{}\n{}",

@@ -95,13 +95,13 @@ impl OptimizedMvContext {
         let device = Device::system_default().expect("No Metal device");
         let queue = device.new_command_queue();
 
-        let source = include_str!("../src/ops/metal/gemm.metal");
+        let source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
         let library = device
             .new_library_with_source(source, &CompileOptions::new())
             .expect("Failed to compile");
         let cv = create_function_constants(2, 1, 1, 1);
         let kernel = library
-            .get_function("kernel_gemm_q4_K_f32", Some(cv))
+            .get_function("kernel_mul_mm_q4_K_f32", Some(cv))
             .expect("Failed to get kernel");
         let pipeline = device
             .new_compute_pipeline_state_with_function(&kernel)

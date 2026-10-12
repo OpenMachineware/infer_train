@@ -73,10 +73,10 @@ fn main() {
     let cv = create_fc(nsg, 1, 1, 1);
 
     let llama_func = lib
-        .get_function("kernel_gemm_q6_K_f32_llama", Some(cv.clone()))
+        .get_function("kernel_mul_mm_q6_K_f32_llama", Some(cv.clone()))
         .unwrap();
     let self_func =
-        lib.get_function("kernel_gemm_q6_K_f32_self", Some(cv)).unwrap();
+        lib.get_function("kernel_mul_mm_q6_K_f32_self", Some(cv)).unwrap();
 
     let llama_pipe =
         device.new_compute_pipeline_state_with_function(&llama_func).unwrap();

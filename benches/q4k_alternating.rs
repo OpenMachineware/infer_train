@@ -144,7 +144,7 @@ kernel void kernel_mul_mv_q4_K_f32(constant ggml_metal_kargs_mul_mv & args, devi
         .expect("Failed to compile llama kernel");
 
     // Compile our kernel (from gemm.metal)
-    let our_source = include_str!("../src/ops/metal/gemm.metal");
+    let our_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
     let our_combined =
         format!("{}\n{}\n{}", iq_extra_tables, grid_tables, our_source);
     let our_lib = device
@@ -161,7 +161,7 @@ kernel void kernel_mul_mv_q4_K_f32(constant ggml_metal_kargs_mul_mv & args, devi
         .unwrap();
     let our_pipeline = device
         .new_compute_pipeline_state_with_function(
-            &our_lib.get_function("kernel_gemm_q4_K_f32", Some(cv)).unwrap(),
+            &our_lib.get_function("kernel_mul_mm_q4_K_f32", Some(cv)).unwrap(),
         )
         .unwrap();
 

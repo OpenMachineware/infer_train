@@ -107,7 +107,7 @@ fn main() {
 
     // Try to get a specific kernel
     println!("\n=== Testing kernel retrieval ===");
-    match library.get_function("kernel_gemm_ext_q4_K_f32_r1_2", None) {
+    match library.get_function("kernel_mul_mm_ext_q4_K_f32_r1_2", None) {
         Ok(func) => println!("✓ Got kernel: {:?}", func.name()),
         Err(e) => println!("✗ Failed to get kernel: {}", e),
     }

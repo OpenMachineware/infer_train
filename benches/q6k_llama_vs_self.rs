@@ -70,7 +70,7 @@ fn main() {
     // Load shaders
     let llama_shader =
         std::fs::read_to_string("/tmp/extract_q6_k.metal").unwrap();
-    let my_shader = include_str!("../src/ops/metal/gemm.metal");
+    let my_shader = include_str!("../src/ops/metal/gemm/mul_mm.metal");
 
     let opts = CompileOptions::new();
     let llama_lib =
@@ -80,10 +80,10 @@ fn main() {
     let cv = create_fc(nsg, 1, 1, 1);
 
     let llama_func = llama_lib
-        .get_function("kernel_gemm_q6_K_f32", Some(cv.clone()))
+        .get_function("kernel_mul_mm_q6_K_f32", Some(cv.clone()))
         .unwrap();
     let my_func =
-        my_lib.get_function("kernel_gemm_q6_K_f32", Some(cv)).unwrap();
+        my_lib.get_function("kernel_mul_mm_q6_K_f32", Some(cv)).unwrap();
 
     let llama_pipe =
         device.new_compute_pipeline_state_with_function(&llama_func).unwrap();

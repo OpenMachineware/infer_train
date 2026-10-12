@@ -297,7 +297,7 @@ fn main() {
 
     let cv = create_function_constants(2, 1, 1, 1);
     let my_kernel = my_lib
-        .get_function("kernel_gemm_q4_K_f32", Some(cv.clone()))
+        .get_function("kernel_mul_mm_q4_K_f32", Some(cv.clone()))
         .expect("Failed to get Q4_K kernel");
     let my_pipeline = device
         .new_compute_pipeline_state_with_function(&my_kernel)
@@ -368,7 +368,7 @@ fn main() {
     );
 
     let my_kernel = my_lib
-        .get_function("kernel_gemm_q2_K_f32", Some(cv.clone()))
+        .get_function("kernel_mul_mm_q2_K_f32", Some(cv.clone()))
         .expect("Failed to get Q2_K kernel");
     let my_pipeline = device
         .new_compute_pipeline_state_with_function(&my_kernel)

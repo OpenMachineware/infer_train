@@ -88,7 +88,7 @@ fn run_alternating_benchmark(
     let my_lib =
         device.new_library_with_source(my_shader, &compile_options).unwrap();
 
-    let kernel_name = format!("kernel_gemm_{}_f32", info.name);
+    let kernel_name = format!("kernel_mul_mm_{}_f32", info.name);
     let llama_func =
         llama_lib.get_function(&kernel_name, Some(cv.clone())).unwrap();
     let my_func = my_lib.get_function(&kernel_name, Some(cv)).unwrap();

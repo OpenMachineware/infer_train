@@ -123,7 +123,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
     // Test Standard Q
     println!("\n## Standard Q (7 formats)");
     for (name, block_size) in &std_formats {
-        let kernel_name = format!("kernel_gemm_{}_f32", name.to_lowercase());
+        let kernel_name = format!("kernel_mul_mm_{}_f32", name.to_lowercase());
         if let Ok(func) = my_lib.get_function(&kernel_name, Some(cv.clone())) {
             if let Ok(pipeline) =
                 device.new_compute_pipeline_state_with_function(&func)
@@ -147,7 +147,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
     // Test TQ + MXFP
     println!("\n## TQ + MXFP (3 formats)");
     for (name, block_size) in &other_formats {
-        let kernel_name = format!("kernel_gemm_{}_f32", name.to_lowercase());
+        let kernel_name = format!("kernel_mul_mm_{}_f32", name.to_lowercase());
         if let Ok(func) = my_lib.get_function(&kernel_name, Some(cv.clone())) {
             if let Ok(pipeline) =
                 device.new_compute_pipeline_state_with_function(&func)

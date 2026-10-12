@@ -189,7 +189,7 @@ constant short FC_mul_mv_r2 [[function_constant(FC_MUL_MV + 3)]];
 constant short FC_mul_mv_r3 [[function_constant(FC_MUL_MV + 4)]];
 
 template<int nr0, typename args_t>
-void kernel_gemm_q3_K_f32_impl(args_t args, device const char * src0, device const char * src1,
+void kernel_mul_mm_q3_K_f32_impl(args_t args, device const char * src0, device const char * src1,
     device char * dst, threadgroup char * shmem, uint3 tgpig, ushort tiisg, ushort sgitg) {
     const short NSG = FC_mul_mv_nsg;
     const int nb = args.ne00/QK_K;
@@ -258,11 +258,11 @@ void kernel_gemm_q3_K_f32_impl(args_t args, device const char * src0, device con
     device float * dst_f32 = (device float *) dst + (uint64_t)im*args.ne0*args.ne1 + (uint64_t)r1*args.ne0;
     if (tiisg == 0) { for (int row = 0; row < nr0 && first_row + row < args.ne0; ++row) { dst_f32[first_row + row] = sumf1[row]; } }
 }
-[[host_name("kernel_gemm_q3_K_f32")]]
-kernel void kernel_gemm_q3_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
+[[host_name("kernel_mul_mm_q3_K_f32")]]
+kernel void kernel_mul_mm_q3_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
     device const char * src1, device char * dst, uint3 tgpig[[threadgroup_position_in_grid]],
     ushort tiisg[[thread_index_in_simdgroup]], ushort sgitg[[simdgroup_index_in_threadgroup]]) {
-    kernel_gemm_q3_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+    kernel_mul_mm_q3_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }
 "#;
 
@@ -332,10 +332,10 @@ fn main() {
     };
 
     let llama_kernel = llama_q3k_lib
-        .get_function("kernel_gemm_q3_K_f32", Some(cv.clone()))
+        .get_function("kernel_mul_mm_q3_K_f32", Some(cv.clone()))
         .expect("Failed to get llama.cpp Q3_K kernel");
     let my_kernel = my_lib
-        .get_function("kernel_gemm_q3_K_f32", Some(cv.clone()))
+        .get_function("kernel_mul_mm_q3_K_f32", Some(cv.clone()))
         .expect("Failed to get self-written Q3_K kernel");
 
     let llama_pipeline = device
@@ -454,7 +454,7 @@ constant short FC_mul_mv_r2 [[function_constant(FC_MUL_MV + 3)]];
 constant short FC_mul_mv_r3 [[function_constant(FC_MUL_MV + 4)]];
 
 template<int nr0, typename args_t>
-void kernel_gemm_q5_K_f32_impl(args_t args, device const char * src0, device const char * src1,
+void kernel_mul_mm_q5_K_f32_impl(args_t args, device const char * src0, device const char * src1,
     device char * dst, threadgroup char * shmem, uint3 tgpig, ushort tiisg, ushort sgitg) {
     const short NSG = FC_mul_mv_nsg;
     const int nb = args.ne00/QK_K;
@@ -512,11 +512,11 @@ void kernel_gemm_q5_K_f32_impl(args_t args, device const char * src0, device con
         if (tiisg == 0) { dst_f32[first_row + row] = sum_all; }
     }
 }
-[[host_name("kernel_gemm_q5_K_f32")]]
-kernel void kernel_gemm_q5_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
+[[host_name("kernel_mul_mm_q5_K_f32")]]
+kernel void kernel_mul_mm_q5_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
     device const char * src1, device char * dst, uint3 tgpig[[threadgroup_position_in_grid]],
     ushort tiisg[[thread_index_in_simdgroup]], ushort sgitg[[simdgroup_index_in_threadgroup]]) {
-    kernel_gemm_q5_K_f32_impl<1, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+    kernel_mul_mm_q5_K_f32_impl<1, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }
 "#;
 
@@ -547,10 +547,10 @@ kernel void kernel_gemm_q5_K_f32(constant ggml_metal_kargs_mul_mv & args, device
     };
 
     let llama_q5k_kernel = llama_q5k_lib
-        .get_function("kernel_gemm_q5_K_f32", Some(cv.clone()))
+        .get_function("kernel_mul_mm_q5_K_f32", Some(cv.clone()))
         .expect("Failed to get llama.cpp Q5_K kernel");
     let my_q5k_kernel = my_lib
-        .get_function("kernel_gemm_q5_K_f32", Some(cv.clone()))
+        .get_function("kernel_mul_mm_q5_K_f32", Some(cv.clone()))
         .expect("Failed to get self-written Q5_K kernel");
 
     let llama_q5k_pipeline = device
@@ -657,7 +657,7 @@ constant short FC_mul_mv_r2 [[function_constant(FC_MUL_MV + 3)]];
 constant short FC_mul_mv_r3 [[function_constant(FC_MUL_MV + 4)]];
 
 template<int nr0, typename args_t>
-void kernel_gemm_q6_K_f32_impl(args_t args, device const char * src0, device const char * src1,
+void kernel_mul_mm_q6_K_f32_impl(args_t args, device const char * src0, device const char * src1,
     device char * dst, threadgroup char * shmem, uint3 tgpig, ushort tiisg, ushort sgitg) {
     const short NSG = FC_mul_mv_nsg;
     constexpr uint8_t kmask1 = 0x03; constexpr uint8_t kmask2 = 0x0C; constexpr uint8_t kmask3 = 0x30; constexpr uint8_t kmask4 = 0xC0;
@@ -702,11 +702,11 @@ void kernel_gemm_q6_K_f32_impl(args_t args, device const char * src0, device con
         if (tiisg == 0) { dst_f32[first_row + row] = sum_all; }
     }
 }
-[[host_name("kernel_gemm_q6_K_f32")]]
-kernel void kernel_gemm_q6_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
+[[host_name("kernel_mul_mm_q6_K_f32")]]
+kernel void kernel_mul_mm_q6_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
     device const char * src1, device char * dst, uint3 tgpig[[threadgroup_position_in_grid]],
     ushort tiisg[[thread_index_in_simdgroup]], ushort sgitg[[simdgroup_index_in_threadgroup]]) {
-    kernel_gemm_q6_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+    kernel_mul_mm_q6_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }
 "#;
 
@@ -745,10 +745,10 @@ kernel void kernel_gemm_q6_K_f32(constant ggml_metal_kargs_mul_mv & args, device
     };
 
     let llama_q6k_kernel = llama_q6k_lib
-        .get_function("kernel_gemm_q6_K_f32", Some(cv.clone()))
+        .get_function("kernel_mul_mm_q6_K_f32", Some(cv.clone()))
         .expect("Failed to get llama.cpp Q6_K kernel");
     let my_q6k_kernel = my_lib
-        .get_function("kernel_gemm_q6_K_f32", Some(cv.clone()))
+        .get_function("kernel_mul_mm_q6_K_f32", Some(cv.clone()))
         .expect("Failed to get self-written Q6_K kernel");
 
     let llama_q6k_pipeline = device

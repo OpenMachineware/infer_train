@@ -221,11 +221,11 @@ fn main() {
 
     // Test all K-quant formats
     let formats: Vec<(&str, usize, &str, &str)> = vec![
-        ("Q2_K", 84, "kernel_mul_mv_q2_K_f32", "kernel_gemm_q2_K_f32"),
-        ("Q3_K", 110, "kernel_mul_mv_q3_K_f32", "kernel_gemm_q3_K_f32"),
-        ("Q4_K", 144, "kernel_mul_mv_q4_K_f32", "kernel_gemm_q4_K_f32"),
-        ("Q5_K", 176, "kernel_mul_mv_q5_K_f32", "kernel_gemm_q5_K_f32"),
-        ("Q6_K", 210, "kernel_mul_mv_q6_K_f32", "kernel_gemm_q6_K_f32"),
+        ("Q2_K", 84, "kernel_mul_mv_q2_K_f32", "kernel_mul_mm_q2_K_f32"),
+        ("Q3_K", 110, "kernel_mul_mv_q3_K_f32", "kernel_mul_mm_q3_K_f32"),
+        ("Q4_K", 144, "kernel_mul_mv_q4_K_f32", "kernel_mul_mm_q4_K_f32"),
+        ("Q5_K", 176, "kernel_mul_mv_q5_K_f32", "kernel_mul_mm_q5_K_f32"),
+        ("Q6_K", 210, "kernel_mul_mv_q6_K_f32", "kernel_mul_mm_q6_K_f32"),
     ];
 
     println!("=== K-quant Fair Alternating Benchmark ===");

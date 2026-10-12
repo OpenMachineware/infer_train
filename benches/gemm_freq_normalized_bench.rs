@@ -198,8 +198,7 @@ fn main() {
     }
 
     // Load libraries
-    let llama_lib_source =
-        include_str!("../src/ops/metal/mul_mm_standalone.metal");
+    let llama_lib_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
     let compile_opts = metal::CompileOptions::new();
     let llama_lib = device
         .new_library_with_source(llama_lib_source, &compile_opts)

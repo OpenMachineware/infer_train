@@ -81,7 +81,7 @@ fn run_alternating_test(
     let cv_nsg2 = create_function_constants(2, 1, 1, 1);
     let cv_opt = create_function_constants(config.opt_nsg, 1, 1, 1);
 
-    let kernel_name = format!("kernel_gemm_{}_f32", config.name);
+    let kernel_name = format!("kernel_mul_mm_{}_f32", config.name);
     let func_nsg2 = lib.get_function(&kernel_name, Some(cv_nsg2)).unwrap();
     let func_opt = lib.get_function(&kernel_name, Some(cv_opt)).unwrap();
 
@@ -230,7 +230,7 @@ fn main() {
     let device = Device::system_default().expect("No Metal device");
     let queue = device.new_command_queue();
 
-    let shader = include_str!("../src/ops/metal/gemm.metal");
+    let shader = include_str!("../src/ops/metal/gemm/mul_mm.metal");
     let lib =
         device.new_library_with_source(shader, &CompileOptions::new()).unwrap();
 

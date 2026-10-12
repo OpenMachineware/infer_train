@@ -86,7 +86,7 @@ fn test_kernel(
     n: usize,
     k: usize,
 ) -> bool {
-    let lib_source = include_str!("../src/ops/metal/mul_mm_standalone.metal");
+    let lib_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
     let compile_opts = metal::CompileOptions::new();
 
     let lib = match device.new_library_with_source(lib_source, &compile_opts) {

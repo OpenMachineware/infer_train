@@ -75,8 +75,7 @@ fn main() {
     );
 
     // Compile template kernel
-    let shader_source =
-        include_str!("../src/ops/metal/mul_mm_standalone.metal");
+    let shader_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
     let compile_options = metal::CompileOptions::new();
     let library = device
         .new_library_with_source(shader_source, &compile_options)

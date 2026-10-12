@@ -405,8 +405,7 @@ fn main() {
     let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
     let ggml_common_metal =
         format!("#define GGML_COMMON_IMPL_METAL\n{}", ggml_common);
-    let standalone_source =
-        include_str!("../src/ops/metal/mul_mm_standalone.metal");
+    let standalone_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
 
     // Remove the #include line from standalone_source since we're prepending the content
     // Load pre-compiled metallib files

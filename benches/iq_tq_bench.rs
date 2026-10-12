@@ -77,7 +77,7 @@ fn run_benchmark(
     k: usize,
 ) -> f64 {
     let cv = create_function_constants(info.nsg, 1, 1, 1);
-    let kernel_name = format!("kernel_gemm_{}_f32", info.name);
+    let kernel_name = format!("kernel_mul_mm_{}_f32", info.name);
     let func = match lib.get_function(&kernel_name, Some(cv)) {
         Ok(f) => f,
         Err(_) => {
@@ -188,7 +188,7 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Compile template with includes
-    let shader_base = include_str!("../src/ops/metal/gemm.metal");
+    let shader_base = include_str!("../src/ops/metal/gemm/mul_mm.metal");
     let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
     // Define GGML_COMMON_IMPL_METAL before including ggml-common.h
     let ggml_common_with_metal =

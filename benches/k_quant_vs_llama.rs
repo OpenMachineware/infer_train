@@ -74,7 +74,7 @@ fn main() {
     // Load shaders from project's tmp directory
     let llama_shader = std::fs::read_to_string("/tmp/llama_full.metal")
         .expect("Run: cp /tmp/llama_full.metal to project");
-    let my_shader = include_str!("../src/ops/metal/gemm.metal");
+    let my_shader = include_str!("../src/ops/metal/gemm/mul_mm.metal");
 
     let opts = CompileOptions::new();
     let llama_lib = match device.new_library_with_source(&llama_shader, &opts) {
@@ -113,12 +113,12 @@ fn main() {
 
         let llama_func = llama_lib
             .get_function(
-                &format!("kernel_gemm_{}_f32", info.name),
+                &format!("kernel_mul_mm_{}_f32", info.name),
                 Some(cv.clone()),
             )
             .unwrap();
         let my_func = my_lib
-            .get_function(&format!("kernel_gemm_{}_f32", info.name), Some(cv))
+            .get_function(&format!("kernel_mul_mm_{}_f32", info.name), Some(cv))
             .unwrap();
 
         let llama_pipe = device

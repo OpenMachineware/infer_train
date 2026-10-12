@@ -303,8 +303,7 @@ fn main() {
         };
 
     // Load self-written library
-    let self_lib_source =
-        include_str!("../src/ops/metal/mul_mm_standalone.metal");
+    let self_lib_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
     let self_lib = device
         .new_library_with_source(self_lib_source, &compile_opts)
         .expect("Failed to compile self library");

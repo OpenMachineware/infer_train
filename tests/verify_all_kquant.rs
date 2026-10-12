@@ -81,7 +81,7 @@ fn main() {
     let kernels = ["q2_K", "q3_K", "q4_K", "q5_K", "q6_K"];
 
     for kernel_name in &kernels {
-        let full_name = format!("kernel_gemm_{}_f32", kernel_name);
+        let full_name = format!("kernel_mul_mm_{}_f32", kernel_name);
         print!("Testing {}...", full_name);
 
         match lib.get_function(&full_name, Some(cv.clone())) {

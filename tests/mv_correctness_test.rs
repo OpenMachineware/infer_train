@@ -10,7 +10,7 @@ fn main() {
     let device = Device::system_default().expect("No Metal device");
 
     // Load gemm.metal (MV kernel)
-    let gemm_source = include_str!("../src/ops/metal/gemm.metal");
+    let gemm_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
     let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
     let ggml_common_metal =
         format!("#define GGML_COMMON_DECL_METAL\n{}", ggml_common);
@@ -134,7 +134,7 @@ fn main() {
     let my_pipeline = device
         .new_compute_pipeline_state_with_function(
             &my_lib
-                .get_function("kernel_gemm_q4_0_f32", Some(cv.clone()))
+                .get_function("kernel_mul_mm_q4_0_f32", Some(cv.clone()))
                 .unwrap(),
         )
         .unwrap();

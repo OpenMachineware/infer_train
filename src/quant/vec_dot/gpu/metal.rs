@@ -18,10 +18,8 @@ pub struct MetalContext {
     mv_library: Library,
     mv_simd_library: Library,
     mv_iq_tq_library: Library,
-    // Templated MV library from llama.cpp (all K-quant formats)
+    // Self-written GEMM template library (all formats)
     gemm_library: Library,
-    // Templated GEMM library from llama.cpp
-    gemm_template_library: Library,
     // Cached MV pipelines - Standard Q
     mv_q1_0_pipeline: ComputePipelineState,
     mv_q2_0_pipeline: ComputePipelineState,
@@ -230,25 +228,28 @@ impl MetalContext {
         // Note: metal-rs 0.31 doesn't expose set_optimization_level directly
         // but the default should be equivalent to -O3
 
-        let vec_dot_source = include_str!("../../../ops/metal/vec_dot.metal");
+        let vec_dot_source =
+            include_str!("../../../ops/metal/gemv/gemv_q80.metal");
         let vec_dot_library = device
             .new_library_with_source(vec_dot_source, &compile_options)
             .map_err(|e| format!("Failed to compile vec_dot library: {}", e))?;
 
-        let mv_source = include_str!("../../../ops/metal/mv.metal");
+        let mv_source = include_str!("../../../ops/metal/gemv/gemv_q80.metal");
         let mv_library = device
             .new_library_with_source(mv_source, &compile_options)
             .map_err(|e| format!("Failed to compile mv library: {}", e))?;
 
-        let mv_simd_source = include_str!("../../../ops/metal/mv_simd.metal");
+        let mv_simd_source =
+            include_str!("../../../ops/metal/gemv/gemv_q80.metal");
         let mv_simd_library = device
             .new_library_with_source(mv_simd_source, &compile_options)
             .map_err(|e| format!("Failed to compile mv_simd library: {}", e))?;
 
         // Compile IQ/TQ MV library (includes all IQ formats)
-        let mv_iq_tq_source = include_str!("../../../ops/metal/mv_iq_tq.metal");
+        let mv_iq_tq_source =
+            include_str!("../../../ops/metal/gemv/mul_mv_split.metal");
         let iq_grid_tables =
-            include_str!("../../../ops/metal/iq_grid_tables.h");
+            include_str!("../../../ops/metal/include/iq_grid_tables.h");
         let mv_iq_tq_combined = mv_iq_tq_source
             .replace("#include \"iq_grid_tables.h\"", iq_grid_tables);
         let mv_iq_tq_library = device
@@ -257,45 +258,15 @@ impl MetalContext {
                 format!("Failed to compile mv_iq_tq library: {}", e)
             })?;
 
-        // Compile templated MV library from llama.cpp (all K-quant formats in one file)
-        let gemm_source = include_str!("../../../ops/metal/gemm.metal");
-        // Inline ggml-common.h with Metal define
-        let ggml_common = include_str!("../../../ops/metal/ggml-common.h");
-        let ggml_common_metal =
-            format!("#define GGML_COMMON_DECL_METAL\n{}", ggml_common);
-        // Add kmask_iq2xs and ksigns_iq2xs tables needed by IQ kernels
-        let iq_extra_tables = r#"
-constexpr constant static uint8_t kmask_iq2xs[8] = {1, 2, 4, 8, 16, 32, 64, 128};
-constexpr constant static int8_t ksigns_iq2xs[128] = {
-     1,  1,  1,  1,  1,  1,  1,  1, -1,  1,  1,  1,  1,  1,  1, -1,
-     1, -1,  1,  1,  1,  1,  1, -1, -1, -1,  1,  1,  1,  1,  1,  1,
-     1,  1, -1,  1,  1,  1,  1, -1, -1,  1, -1,  1,  1,  1,  1,  1,
-     1, -1, -1,  1,  1,  1,  1,  1, -1, -1, -1,  1,  1,  1,  1, -1,
-     1,  1,  1, -1,  1,  1,  1, -1, -1,  1,  1, -1,  1,  1,  1,  1,
-     1, -1,  1, -1,  1,  1,  1,  1, -1, -1,  1, -1,  1,  1,  1, -1,
-     1,  1, -1, -1,  1,  1,  1,  1, -1,  1, -1, -1,  1,  1,  1, -1,
-     1, -1, -1, -1,  1,  1,  1, -1, -1, -1, -1, -1,  1,  1,  1,  1,
-};
-"#;
-        let gemm_combined = format!(
-            "{}\n{}\n{}\n{}",
-            ggml_common_metal, iq_extra_tables, iq_grid_tables, gemm_source
-        );
+        // Compile self-written GEMM library (all formats, self-contained)
+        let gemm_source = include_str!("../../../ops/metal/gemm/mul_mm.metal");
         let gemm_library = device
-            .new_library_with_source(&gemm_combined, &compile_options)
+            .new_library_with_source(gemm_source, &compile_options)
             .map_err(|e| format!("Failed to compile gemm library: {}", e))?;
 
-        // Compile templated GEMM library (self-contained, no C++ headers)
-        let gemm_template_source =
-            include_str!("../../../ops/metal/mul_mm_standalone.metal");
-        let gemm_template_library = device
-            .new_library_with_source(gemm_template_source, &compile_options)
-            .map_err(|e| {
-                format!("Failed to compile gemm_template library: {}", e)
-            })?;
-
         // Compile RMS Norm library
-        let rms_norm_source = include_str!("../../../ops/metal/rms_norm.metal");
+        let rms_norm_source =
+            include_str!("../../../ops/metal/ops/rms_norm.metal");
         let rms_norm_library = device
             .new_library_with_source(rms_norm_source, &compile_options)
             .map_err(|e| {
@@ -303,20 +274,21 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
             })?;
 
         // Compile Softmax library
-        let softmax_source = include_str!("../../../ops/metal/softmax.metal");
+        let softmax_source =
+            include_str!("../../../ops/metal/ops/softmax.metal");
         let softmax_library = device
             .new_library_with_source(softmax_source, &compile_options)
             .map_err(|e| format!("Failed to compile softmax library: {}", e))?;
 
         // Compile ROPE library
-        let rope_source = include_str!("../../../ops/metal/rope.metal");
+        let rope_source = include_str!("../../../ops/metal/ops/rope.metal");
         let rope_library = device
             .new_library_with_source(rope_source, &compile_options)
             .map_err(|e| format!("Failed to compile rope library: {}", e))?;
 
         // Compile Activation library
         let activation_source =
-            include_str!("../../../ops/metal/activation.metal");
+            include_str!("../../../ops/metal/ops/activation.metal");
         let activation_library = device
             .new_library_with_source(activation_source, &compile_options)
             .map_err(|e| {
@@ -324,8 +296,9 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
             })?;
 
         // Compile Flash Attention library (standalone with expanded includes)
-        let flash_attn_source =
-            include_str!("../../../ops/metal/flash_attn_standalone_stub.metal");
+        let flash_attn_source = include_str!(
+            "../../../ops/metal/attention/flash_attn_standalone_stub.metal"
+        );
         let flash_attn_library = device
             .new_library_with_source(flash_attn_source, &compile_options)
             .map_err(|e| {
@@ -333,7 +306,8 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
             })?;
 
         // Compile Quantize library
-        let quantize_source = include_str!("../../../ops/metal/quantize.metal");
+        let quantize_source =
+            include_str!("../../../ops/metal/ops/quantize.metal");
         let quantize_library = device
             .new_library_with_source(quantize_source, &compile_options)
             .map_err(|e| {
@@ -344,7 +318,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
         // Q4_0 kernel also requires function constants
         let mv_q4_0_kernel = gemm_library
             .get_function(
-                "kernel_gemm_q4_0_f32",
+                "kernel_mul_mm_q4_0_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q4_0 kernel: {}", e))?;
@@ -355,7 +329,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
         // Standard Q kernels (from gemm.metal)
         let mv_q1_0_kernel = gemm_library
             .get_function(
-                "kernel_gemm_q1_0_f32",
+                "kernel_mul_mm_q1_0_f32",
                 Some(create_mv_function_constants(8, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q1_0 kernel: {}", e))?;
@@ -365,7 +339,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_q2_0_kernel = gemm_library
             .get_function(
-                "kernel_gemm_q2_0_f32",
+                "kernel_mul_mm_q2_0_f32",
                 Some(create_mv_function_constants(8, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q2_0 kernel: {}", e))?;
@@ -375,7 +349,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_q4_1_kernel = gemm_library
             .get_function(
-                "kernel_gemm_q4_1_f32",
+                "kernel_mul_mm_q4_1_f32",
                 Some(create_mv_function_constants(4, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q4_1 kernel: {}", e))?;
@@ -385,7 +359,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_q5_0_kernel = gemm_library
             .get_function(
-                "kernel_gemm_q5_0_f32",
+                "kernel_mul_mm_q5_0_f32",
                 Some(create_mv_function_constants(4, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q5_0 kernel: {}", e))?;
@@ -395,7 +369,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_q5_1_kernel = gemm_library
             .get_function(
-                "kernel_gemm_q5_1_f32",
+                "kernel_mul_mm_q5_1_f32",
                 Some(create_mv_function_constants(4, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q5_1 kernel: {}", e))?;
@@ -405,7 +379,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_q8_0_kernel = gemm_library
             .get_function(
-                "kernel_gemm_q8_0_f32",
+                "kernel_mul_mm_q8_0_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q8_0 kernel: {}", e))?;
@@ -418,7 +392,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_q4_k_kernel = gemm_library
             .get_function(
-                "kernel_gemm_q4_K_f32",
+                "kernel_mul_mm_q4_K_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q4_K kernel: {}", e))?;
@@ -428,7 +402,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_q5_k_kernel = gemm_library
             .get_function(
-                "kernel_gemm_q5_K_f32",
+                "kernel_mul_mm_q5_K_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q5_K kernel: {}", e))?;
@@ -438,7 +412,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_q2_k_kernel = gemm_library
             .get_function(
-                "kernel_gemm_q2_K_f32",
+                "kernel_mul_mm_q2_K_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q2_K kernel: {}", e))?;
@@ -448,7 +422,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_q6_k_kernel = gemm_library
             .get_function(
-                "kernel_gemm_q6_K_f32",
+                "kernel_mul_mm_q6_K_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q6_K kernel: {}", e))?;
@@ -458,7 +432,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_q3_k_kernel = gemm_library
             .get_function(
-                "kernel_gemm_q3_K_f32",
+                "kernel_mul_mm_q3_K_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get Q3_K kernel: {}", e))?;
@@ -469,7 +443,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
         // Create cached pipeline for IQ4_NL MV
         let mv_iq4_nl_kernel = gemm_library
             .get_function(
-                "kernel_gemm_iq4_nl_f32",
+                "kernel_mul_mm_iq4_nl_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get IQ4_NL kernel: {}", e))?;
@@ -480,7 +454,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
         // Create cached pipeline for TQ2_0 MV
         let mv_tq2_0_kernel = gemm_library
             .get_function(
-                "kernel_gemm_tq2_0_f32",
+                "kernel_mul_mm_tq2_0_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get TQ2_0 kernel: {}", e))?;
@@ -491,7 +465,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
         // Create cached pipeline for IQ4_XS MV
         let mv_iq4_xs_kernel = gemm_library
             .get_function(
-                "kernel_gemm_iq4_xs_f32",
+                "kernel_mul_mm_iq4_xs_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get IQ4_XS kernel: {}", e))?;
@@ -502,7 +476,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
         // Create cached pipeline for TQ1_0 MV
         let mv_tq1_0_kernel = gemm_library
             .get_function(
-                "kernel_gemm_tq1_0_f32",
+                "kernel_mul_mm_tq1_0_f32",
                 Some(create_mv_function_constants(4, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get TQ1_0 kernel: {}", e))?;
@@ -513,7 +487,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
         // Create pipelines for IQ series
         let mv_iq1_s_kernel = gemm_library
             .get_function(
-                "kernel_gemm_iq1_s_f32",
+                "kernel_mul_mm_iq1_s_f32",
                 Some(create_mv_function_constants(4, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get IQ1_S kernel: {}", e))?;
@@ -523,7 +497,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_iq1_m_kernel = gemm_library
             .get_function(
-                "kernel_gemm_iq1_m_f32",
+                "kernel_mul_mm_iq1_m_f32",
                 Some(create_mv_function_constants(4, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get IQ1_M kernel: {}", e))?;
@@ -533,7 +507,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_iq2_xxs_kernel = gemm_library
             .get_function(
-                "kernel_gemm_iq2_xxs_f32",
+                "kernel_mul_mm_iq2_xxs_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get IQ2_XXS kernel: {}", e))?;
@@ -554,7 +528,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_iq2_xs_kernel = gemm_library
             .get_function(
-                "kernel_gemm_iq2_xs_f32",
+                "kernel_mul_mm_iq2_xs_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get IQ2_XS kernel: {}", e))?;
@@ -591,7 +565,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_iq3_xxs_kernel = gemm_library
             .get_function(
-                "kernel_gemm_iq3_xxs_f32",
+                "kernel_mul_mm_iq3_xxs_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get IQ3_XXS kernel: {}", e))?;
@@ -612,7 +586,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
         let mv_iq3_s_kernel = gemm_library
             .get_function(
-                "kernel_gemm_iq3_s_f32",
+                "kernel_mul_mm_iq3_s_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get IQ3_S kernel: {}", e))?;
@@ -632,7 +606,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
         // MXFP4 kernel
         let mv_mxfp4_kernel = gemm_library
             .get_function(
-                "kernel_gemm_mxfp4_f32",
+                "kernel_mul_mm_mxfp4_f32",
                 Some(create_mv_function_constants(2, 1, 1, 1)),
             )
             .map_err(|e| format!("Failed to get MXFP4 kernel: {}", e))?;
@@ -681,11 +655,9 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q4_K_f32");
             descriptor.set_constant_values(&constant_values);
-            gemm_template_library
-                .new_function_with_descriptor(&descriptor)
-                .map_err(|e| {
-                    format!("Failed to get templated Q4_K kernel: {}", e)
-                })?
+            gemm_library.new_function_with_descriptor(&descriptor).map_err(
+                |e| format!("Failed to get templated Q4_K kernel: {}", e),
+            )?
         };
         let gemm_template_q4_k_pipeline = device
             .new_compute_pipeline_state_with_function(
@@ -735,11 +707,9 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q2_K_f32");
             descriptor.set_constant_values(&constant_values);
-            gemm_template_library
-                .new_function_with_descriptor(&descriptor)
-                .map_err(|e| {
-                    format!("Failed to get templated Q2_K kernel: {}", e)
-                })?
+            gemm_library.new_function_with_descriptor(&descriptor).map_err(
+                |e| format!("Failed to get templated Q2_K kernel: {}", e),
+            )?
         };
         let gemm_template_q2_k_pipeline = device
             .new_compute_pipeline_state_with_function(
@@ -788,11 +758,9 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q3_K_f32");
             descriptor.set_constant_values(&constant_values);
-            gemm_template_library
-                .new_function_with_descriptor(&descriptor)
-                .map_err(|e| {
-                    format!("Failed to get templated Q3_K kernel: {}", e)
-                })?
+            gemm_library.new_function_with_descriptor(&descriptor).map_err(
+                |e| format!("Failed to get templated Q3_K kernel: {}", e),
+            )?
         };
         let gemm_template_q3_k_pipeline = device
             .new_compute_pipeline_state_with_function(
@@ -841,11 +809,9 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q5_K_f32");
             descriptor.set_constant_values(&constant_values);
-            gemm_template_library
-                .new_function_with_descriptor(&descriptor)
-                .map_err(|e| {
-                    format!("Failed to get templated Q5_K kernel: {}", e)
-                })?
+            gemm_library.new_function_with_descriptor(&descriptor).map_err(
+                |e| format!("Failed to get templated Q5_K kernel: {}", e),
+            )?
         };
         let gemm_template_q5_k_pipeline = device
             .new_compute_pipeline_state_with_function(
@@ -894,11 +860,9 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q6_K_f32");
             descriptor.set_constant_values(&constant_values);
-            gemm_template_library
-                .new_function_with_descriptor(&descriptor)
-                .map_err(|e| {
-                    format!("Failed to get templated Q6_K kernel: {}", e)
-                })?
+            gemm_library.new_function_with_descriptor(&descriptor).map_err(
+                |e| format!("Failed to get templated Q6_K kernel: {}", e),
+            )?
         };
         let gemm_template_q6_k_pipeline = device
             .new_compute_pipeline_state_with_function(
@@ -1065,9 +1029,8 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
             mv_library,
             mv_simd_library,
             mv_iq_tq_library,
-            // Templated MV library
+            // Self-written GEMM template library
             gemm_library,
-            gemm_template_library,
             // MV pipelines - Standard Q
             mv_q1_0_pipeline,
             mv_q2_0_pipeline,

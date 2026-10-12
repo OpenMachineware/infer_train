@@ -141,7 +141,7 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
         .unwrap();
     let our_pipeline = device
         .new_compute_pipeline_state_with_function(
-            &our_lib.get_function("kernel_gemm_q4_K_f32", Some(cv)).unwrap(),
+            &our_lib.get_function("kernel_mul_mm_q4_K_f32", Some(cv)).unwrap(),
         )
         .unwrap();
 

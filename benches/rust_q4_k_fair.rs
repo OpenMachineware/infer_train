@@ -120,7 +120,7 @@ fn main() {
         device.new_library_with_source(&shader, &compile_options).unwrap();
     let cv = create_function_constants(2, 1, 1, 1);
     let kernel =
-        library.get_function("kernel_gemm_q4_K_f32", Some(cv)).unwrap();
+        library.get_function("kernel_mul_mm_q4_K_f32", Some(cv)).unwrap();
     let pipeline =
         device.new_compute_pipeline_state_with_function(&kernel).unwrap();
     let t6 = Instant::now();

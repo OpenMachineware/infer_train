@@ -17,7 +17,7 @@ impl ActivationMetalContext {
         let compile_options = metal::CompileOptions::new();
         compile_options.set_fast_math_enabled(true);
 
-        let source = include_str!("../src/ops/metal/activation.metal");
+        let source = include_str!("../src/ops/metal/ops/activation.metal");
         let library = device
             .new_library_with_source(source, &compile_options)
             .map_err(|e| format!("Failed to compile library: {}", e))?;

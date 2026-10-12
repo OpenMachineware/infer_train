@@ -19,7 +19,7 @@ fn main() {
     println!("M={}, K={}, N={}\n", m, k, n);
 
     // Compile original shader
-    let orig_shader = include_str!("../src/ops/metal/mul_mm_standalone.metal");
+    let orig_shader = include_str!("../src/ops/metal/gemm/mul_mm.metal");
     let compile_options = CompileOptions::new();
     let orig_library = device
         .new_library_with_source(orig_shader, &compile_options)

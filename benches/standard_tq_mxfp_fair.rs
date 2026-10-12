@@ -150,16 +150,16 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
     // Test formats: (name, nsg, block_size, llama_kernel_name, our_kernel_name)
     let formats: Vec<(&str, i16, usize, &str, &str)> = vec![
-        ("Q1_0", 8, 18, "kernel_mul_mv_q1_0_f32", "kernel_gemm_q1_0_f32"),
-        ("Q2_0", 4, 18, "kernel_mul_mv_q2_0_f32", "kernel_gemm_q2_0_f32"),
-        ("Q4_0", 2, 18, "kernel_mul_mv_q4_0_f32", "kernel_gemm_q4_0_f32"),
-        ("Q4_1", 2, 20, "kernel_mul_mv_q4_1_f32", "kernel_gemm_q4_1_f32"),
-        ("Q5_0", 2, 22, "kernel_mul_mv_q5_0_f32", "kernel_gemm_q5_0_f32"),
-        ("Q5_1", 2, 24, "kernel_mul_mv_q5_1_f32", "kernel_gemm_q5_1_f32"),
-        ("Q8_0", 2, 34, "kernel_mul_mv_q8_0_f32", "kernel_gemm_q8_0_f32"),
-        ("TQ1_0", 2, 40, "kernel_mul_mv_tq1_0_f32", "kernel_gemm_tq1_0_f32"),
-        ("TQ2_0", 2, 66, "kernel_mul_mv_tq2_0_f32", "kernel_gemm_tq2_0_f32"),
-        ("MXFP4", 2, 17, "kernel_mul_mv_mxfp4_f32", "kernel_gemm_mxfp4_f32"),
+        ("Q1_0", 8, 18, "kernel_mul_mv_q1_0_f32", "kernel_mul_mm_q1_0_f32"),
+        ("Q2_0", 4, 18, "kernel_mul_mv_q2_0_f32", "kernel_mul_mm_q2_0_f32"),
+        ("Q4_0", 2, 18, "kernel_mul_mv_q4_0_f32", "kernel_mul_mm_q4_0_f32"),
+        ("Q4_1", 2, 20, "kernel_mul_mv_q4_1_f32", "kernel_mul_mm_q4_1_f32"),
+        ("Q5_0", 2, 22, "kernel_mul_mv_q5_0_f32", "kernel_mul_mm_q5_0_f32"),
+        ("Q5_1", 2, 24, "kernel_mul_mv_q5_1_f32", "kernel_mul_mm_q5_1_f32"),
+        ("Q8_0", 2, 34, "kernel_mul_mv_q8_0_f32", "kernel_mul_mm_q8_0_f32"),
+        ("TQ1_0", 2, 40, "kernel_mul_mv_tq1_0_f32", "kernel_mul_mm_tq1_0_f32"),
+        ("TQ2_0", 2, 66, "kernel_mul_mv_tq2_0_f32", "kernel_mul_mm_tq2_0_f32"),
+        ("MXFP4", 2, 17, "kernel_mul_mv_mxfp4_f32", "kernel_mul_mm_mxfp4_f32"),
     ];
 
     for (name, nsg, block_size, llama_kernel, our_kernel) in formats {

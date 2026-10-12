@@ -6,7 +6,7 @@ using namespace metal;
 
 // Include block structure definitions
 #define GGML_COMMON_DECL_METAL
-#include "ggml-common.h"
+#include "../include/ggml-common.h"
 
 // Constants
 #define QK_K 256
@@ -29,7 +29,7 @@ constexpr constant static uint8_t ksigns_iq2xs[128] = {
 };
 
 // Include IQ grid tables from separate header
-#include "iq_grid_tables.h"
+#include "../include/iq_grid_tables.h"
 
 // Block structures are defined in ggml-common.h via GGML_COMMON_DECL_METAL
 

@@ -23,7 +23,7 @@ fn main() {
         .new_library_with_source(&warmup_combined, &warmup_options)
         .unwrap();
     let warmup_fn =
-        warmup_lib.get_function("kernel_gemm_iq4_nl_f32", None).unwrap();
+        warmup_lib.get_function("kernel_mul_mm_iq4_nl_f32", None).unwrap();
     let warmup_pipe =
         device.new_compute_pipeline_state_with_function(&warmup_fn).unwrap();
 
@@ -92,17 +92,17 @@ fn main() {
 
     // Format: (name, block_size, kernel_name, weights_per_block)
     let formats = [
-        ("IQ4_NL", 32, "kernel_gemm_iq4_nl_f32", 16), // 4-bit, 16 bytes per 32 values
-        ("IQ4_XS", 64, "kernel_gemm_iq4_xs_f32", 68), // 4-bit, 68 bytes per 64 values
-        ("IQ3_XXS", 32, "kernel_gemm_iq3_xxs_f32", 56), // 3-bit variant
-        ("IQ3_S", 32, "kernel_gemm_iq3_s_f32", 64),   // 3-bit variant
-        ("IQ2_XXS", 32, "kernel_gemm_iq2_xxs_f32", 48), // 2-bit variant
-        ("IQ2_XS", 32, "kernel_gemm_iq2_xs_f32", 56), // 2-bit variant
-        ("IQ2_S", 32, "kernel_gemm_iq2_s_f32_split0", 64), // 2-bit variant
-        ("IQ1_S", 32, "kernel_gemm_iq1_s_f32", 40),   // 1-bit variant
-        ("IQ1_M", 32, "kernel_gemm_iq1_m_f32", 44),   // 1-bit variant
-        ("TQ2_0", 32, "kernel_gemm_tq2_0_f32", 16), // 2-bit, 16 bytes per 32 values
-        ("TQ1_0", 32, "kernel_gemm_tq1_0_f32", 8), // 1-bit, 8 bytes per 32 values
+        ("IQ4_NL", 32, "kernel_mul_mm_iq4_nl_f32", 16), // 4-bit, 16 bytes per 32 values
+        ("IQ4_XS", 64, "kernel_mul_mm_iq4_xs_f32", 68), // 4-bit, 68 bytes per 64 values
+        ("IQ3_XXS", 32, "kernel_mul_mm_iq3_xxs_f32", 56), // 3-bit variant
+        ("IQ3_S", 32, "kernel_mul_mm_iq3_s_f32", 64),   // 3-bit variant
+        ("IQ2_XXS", 32, "kernel_mul_mm_iq2_xxs_f32", 48), // 2-bit variant
+        ("IQ2_XS", 32, "kernel_mul_mm_iq2_xs_f32", 56), // 2-bit variant
+        ("IQ2_S", 32, "kernel_mul_mm_iq2_s_f32_split0", 64), // 2-bit variant
+        ("IQ1_S", 32, "kernel_mul_mm_iq1_s_f32", 40),   // 1-bit variant
+        ("IQ1_M", 32, "kernel_mul_mm_iq1_m_f32", 44),   // 1-bit variant
+        ("TQ2_0", 32, "kernel_mul_mm_tq2_0_f32", 16), // 2-bit, 16 bytes per 32 values
+        ("TQ1_0", 32, "kernel_mul_mm_tq1_0_f32", 8), // 1-bit, 8 bytes per 32 values
     ];
 
     println!("┌─────────┬──────────┬──────────┬──────────┐");

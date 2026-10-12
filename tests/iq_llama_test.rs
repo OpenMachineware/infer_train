@@ -21,8 +21,7 @@ fn main() {
     let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
     let ggml_common_metal =
         format!("#define GGML_COMMON_IMPL_METAL\n{}", ggml_common);
-    let standalone_source =
-        include_str!("../src/ops/metal/mul_mm_standalone.metal");
+    let standalone_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
     let standalone_no_include = standalone_source
         .lines()
         .filter(|line| !line.contains("#include \"iq_grid_tables.h\""))

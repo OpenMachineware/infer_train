@@ -72,7 +72,7 @@ fn main() {
     println!("M={}, K={}, N={} (minimal test)", m, k, n);
 
     // Compile gemm.metal
-    let gemm_source = include_str!("../src/ops/metal/gemm.metal");
+    let gemm_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
     let ggml_common = include_str!("../src/ops/metal/ggml-common.h");
     let ggml_common_metal = format!(
         "#define GGML_COMMON_DECL_METAL\n#define GGML_COMMON_IMPL_METAL\n{}",
@@ -113,7 +113,7 @@ fn main() {
 
     // Get function
     let func = lib
-        .get_function("kernel_gemm_iq1_s_f32", Some(cv))
+        .get_function("kernel_mul_mm_iq1_s_f32", Some(cv))
         .expect("Failed to get function");
     let pipeline = device
         .new_compute_pipeline_state_with_function(&func)

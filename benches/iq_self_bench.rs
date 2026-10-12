@@ -18,7 +18,7 @@ fn main() {
     let ggml_common_metal =
         format!("#define GGML_COMMON_DECL_METAL\n{}", ggml_common);
     let iq_grid_tables = include_str!("../src/ops/metal/iq_grid_tables.h");
-    let gemm_source = include_str!("../src/ops/metal/gemm.metal");
+    let gemm_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
 
     let iq_extra_tables = r#"
 constexpr constant static uint8_t kmask_iq2xs[8] = {1, 2, 4, 8, 16, 32, 64, 128};
@@ -107,15 +107,15 @@ constexpr constant static int8_t ksigns_iq2xs[128] = {
 
     // Test each IQ format
     let kernels: [(&str, &str, i32); 9] = [
-        ("IQ1_S", "kernel_gemm_iq1_s_f32", 56), // Block size 56 bytes
-        ("IQ1_M", "kernel_gemm_iq1_m_f32", 56),
-        ("IQ2_XXS", "kernel_gemm_iq2_xxs_f32", 66),
-        ("IQ2_XS", "kernel_gemm_iq2_xs_f32", 74),
-        ("IQ2_S", "kernel_gemm_iq2_s_f32", 82),
-        ("IQ3_XXS", "kernel_gemm_iq3_xxs_f32", 98),
-        ("IQ3_S", "kernel_gemm_iq3_s_f32", 110),
-        ("IQ4_NL", "kernel_gemm_iq4_nl_f32", 18), // Special: 32 elements/block
-        ("IQ4_XS", "kernel_gemm_iq4_xs_f32", 136),
+        ("IQ1_S", "kernel_mul_mm_iq1_s_f32", 56), // Block size 56 bytes
+        ("IQ1_M", "kernel_mul_mm_iq1_m_f32", 56),
+        ("IQ2_XXS", "kernel_mul_mm_iq2_xxs_f32", 66),
+        ("IQ2_XS", "kernel_mul_mm_iq2_xs_f32", 74),
+        ("IQ2_S", "kernel_mul_mm_iq2_s_f32", 82),
+        ("IQ3_XXS", "kernel_mul_mm_iq3_xxs_f32", 98),
+        ("IQ3_S", "kernel_mul_mm_iq3_s_f32", 110),
+        ("IQ4_NL", "kernel_mul_mm_iq4_nl_f32", 18), // Special: 32 elements/block
+        ("IQ4_XS", "kernel_mul_mm_iq4_xs_f32", 136),
     ];
 
     println!("Format      Time (µs)   Output (sum)   Status");

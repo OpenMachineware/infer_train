@@ -1415,7 +1415,8 @@ fn run_gpu_flash_attention_quant(
     format: &str,
 ) -> Vec<f32> {
     // Compile kernel
-    let source = include_str!("../src/ops/metal/flash_attn_quant.metal");
+    let source =
+        include_str!("../src/ops/metal/attention/flash_attn_quant.metal");
     let options = CompileOptions::new();
     options.set_fast_math_enabled(true);
     let library = device

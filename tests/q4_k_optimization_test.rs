@@ -255,7 +255,7 @@ constant short FC_mul_mv_r2 [[function_constant(FC_MUL_MV + 3)]];
 constant short FC_mul_mv_r3 [[function_constant(FC_MUL_MV + 4)]];
 
 template<int nr0, typename args_t>
-void kernel_gemm_q4_K_f32_impl(args_t args, device const char * src0, device const char * src1, device char * dst, threadgroup char * shmem, uint3 tgpig, ushort tiisg, ushort sgitg) {
+void kernel_mul_mm_q4_K_f32_impl(args_t args, device const char * src0, device const char * src1, device char * dst, threadgroup char * shmem, uint3 tgpig, ushort tiisg, ushort sgitg) {
     const short NSG = FC_mul_mv_nsg;
     constexpr uint16_t kmask1 = 0x3f3f, kmask2 = 0x0f0f, kmask3 = 0xc0c0;
     const short ix = tiisg/8, it = tiisg%8, iq = it/4, ir = it%4;
@@ -312,9 +312,9 @@ void kernel_gemm_q4_K_f32_impl(args_t args, device const char * src0, device con
     }
 }
 
-[[host_name("kernel_gemm_q4_K_f32")]]
-kernel void kernel_gemm_q4_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0, device const char * src1, device char * dst, uint3 tgpig[[threadgroup_position_in_grid]], ushort tiisg[[thread_index_in_simdgroup]], ushort sgitg[[simdgroup_index_in_threadgroup]]) {
-    kernel_gemm_q4_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+[[host_name("kernel_mul_mm_q4_K_f32")]]
+kernel void kernel_mul_mm_q4_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0, device const char * src1, device char * dst, uint3 tgpig[[threadgroup_position_in_grid]], ushort tiisg[[thread_index_in_simdgroup]], ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    kernel_mul_mm_q4_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }
 "#;
 
@@ -340,7 +340,7 @@ constant short FC_mul_mv_r2 [[function_constant(FC_MUL_MV + 3)]];
 constant short FC_mul_mv_r3 [[function_constant(FC_MUL_MV + 4)]];
 
 template<int nr0, typename args_t>
-void kernel_gemm_q4_K_f32_impl(args_t args, device const char * src0, device const char * src1, device char * dst, threadgroup char * shmem, uint3 tgpig, ushort tiisg, ushort sgitg) {
+void kernel_mul_mm_q4_K_f32_impl(args_t args, device const char * src0, device const char * src1, device char * dst, threadgroup char * shmem, uint3 tgpig, ushort tiisg, ushort sgitg) {
     const short NSG = FC_mul_mv_nsg;
     constexpr uint16_t kmask1 = 0x3f3f, kmask2 = 0x0f0f, kmask3 = 0xc0c0;
     const short ix = tiisg/8, it = tiisg%8, iq = it/4, ir = it%4;
@@ -398,9 +398,9 @@ void kernel_gemm_q4_K_f32_impl(args_t args, device const char * src0, device con
     }
 }
 
-[[host_name("kernel_gemm_q4_K_f32")]]
-kernel void kernel_gemm_q4_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0, device const char * src1, device char * dst, uint3 tgpig[[threadgroup_position_in_grid]], ushort tiisg[[thread_index_in_simdgroup]], ushort sgitg[[simdgroup_index_in_threadgroup]]) {
-    kernel_gemm_q4_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+[[host_name("kernel_mul_mm_q4_K_f32")]]
+kernel void kernel_mul_mm_q4_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0, device const char * src1, device char * dst, uint3 tgpig[[threadgroup_position_in_grid]], ushort tiisg[[thread_index_in_simdgroup]], ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    kernel_mul_mm_q4_K_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
 }
 "#;
 
@@ -415,7 +415,7 @@ kernel void kernel_gemm_q4_K_f32(constant ggml_metal_kargs_mul_mv & args, device
         .unwrap();
     let baseline_cv = create_function_constants(2, 1, 1, 1);
     let baseline_kernel = baseline_lib
-        .get_function("kernel_gemm_q4_K_f32", Some(baseline_cv))
+        .get_function("kernel_mul_mm_q4_K_f32", Some(baseline_cv))
         .unwrap();
     let baseline_pipeline = device
         .new_compute_pipeline_state_with_function(&baseline_kernel)
@@ -426,7 +426,7 @@ kernel void kernel_gemm_q4_K_f32(constant ggml_metal_kargs_mul_mv & args, device
         device.new_library_with_source(optimized_v1, &compile_options).unwrap();
     let v1_cv = create_function_constants(2, 1, 1, 1);
     let v1_kernel =
-        v1_lib.get_function("kernel_gemm_q4_K_f32", Some(v1_cv)).unwrap();
+        v1_lib.get_function("kernel_mul_mm_q4_K_f32", Some(v1_cv)).unwrap();
     let v1_pipeline =
         device.new_compute_pipeline_state_with_function(&v1_kernel).unwrap();
 

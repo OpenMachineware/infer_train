@@ -1,7 +1,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
-#include "iq_grid_tables.h"
+#include "../include/iq_grid_tables.h"
 
 #define QK_K 256
 #define QK4_NL 32

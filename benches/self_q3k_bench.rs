@@ -88,7 +88,7 @@ fn main() {
     // Create pipeline with function constants
     let cv = create_cv();
     let kernel = library
-        .get_function("kernel_gemm_q3_K_f32", Some(cv))
+        .get_function("kernel_mul_mm_q3_K_f32", Some(cv))
         .expect("Failed to get kernel");
     let pipeline = device
         .new_compute_pipeline_state_with_function(&kernel)

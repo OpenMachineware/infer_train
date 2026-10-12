@@ -359,7 +359,7 @@ constexpr constant static float kvalues_iq4nl_f[16] = {
 };
 
 template<int NR0, typename args_t>
-void kernel_gemm_iq4_nl_f32_impl(args_t args, device const char * src0, device const char * src1,
+void kernel_mul_mm_iq4_nl_f32_impl(args_t args, device const char * src0, device const char * src1,
     device char * dst, threadgroup char * shmem, uint3 tgpig, ushort tiisg, ushort sgitg) {
     const short NSG = FC_mul_mv_nsg;
     threadgroup float * shmem_f32 = (threadgroup float *) shmem;
@@ -414,12 +414,12 @@ void kernel_gemm_iq4_nl_f32_impl(args_t args, device const char * src0, device c
         if (tiisg == 0) { dst_f32[first_row + row] = sum_all; }
     }
 }
-[[host_name("kernel_gemm_iq4_nl_f32")]]
-kernel void kernel_gemm_iq4_nl_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
+[[host_name("kernel_mul_mm_iq4_nl_f32")]]
+kernel void kernel_mul_mm_iq4_nl_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0,
     device const char * src1, device char * dst, uint3 tgpig[[threadgroup_position_in_grid]],
     ushort tiisg[[thread_index_in_simdgroup]], ushort sgitg[[simdgroup_index_in_threadgroup]]) {
     threadgroup char shmem[64];
-    kernel_gemm_iq4_nl_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
+    kernel_mul_mm_iq4_nl_f32_impl<2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
 }
 "#;
 
@@ -535,7 +535,7 @@ fn test_format<T: Copy>(
         r3: 1,
     };
 
-    let kernel_name = format!("kernel_gemm_{}_f32", name.to_lowercase());
+    let kernel_name = format!("kernel_mul_mm_{}_f32", name.to_lowercase());
     let llama_kernel =
         llama_lib.get_function(&kernel_name, Some(cv.clone())).unwrap();
     let my_kernel =

@@ -16,7 +16,7 @@ fn main() {
     let queue = device.new_command_queue();
 
     // Read our template shader
-    let my_shader = include_str!("../src/ops/metal/gemm.metal");
+    let my_shader = include_str!("../src/ops/metal/gemm/mul_mm.metal");
 
     // Read llama.cpp shader
     let llama_shader = include_str!("/tmp/q4_k_standalone.metal");
@@ -41,7 +41,7 @@ fn main() {
         device.new_library_with_source(my_shader, &compile_options).unwrap();
 
     // Get Q2_K kernel
-    let kernel_name = "kernel_gemm_q2_K_f32";
+    let kernel_name = "kernel_mul_mm_q2_K_f32";
     let cv = create_function_constants(2, 1, 1, 1);
     let my_func = my_lib.get_function(kernel_name, Some(cv.clone())).unwrap();
     let my_pipeline =
