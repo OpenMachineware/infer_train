@@ -1,7 +1,7 @@
-// Test GGUF parsing
+// Test GGUF parsing and model layer
 // Run: cargo run --release --bin test_gguf -- models/qwen-7b-q4_0.gguf
 
-use infer_train::model::GgufFile;
+use infer_train::model::{GgufFile, ModelConfig, WeightStore};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -13,44 +13,64 @@ fn main() {
     let path = &args[1];
     println!("Loading GGUF file: {}", path);
 
-    match GgufFile::open(path) {
-        Ok(gguf) => {
-            println!("✓ GGUF version: {}", gguf.version);
-            println!("✓ Tensor count: {}", gguf.tensor_count);
-            println!("✓ Metadata count: {}", gguf.metadata_kv_count);
-            println!();
+    // Test GGUF parsing
+    let gguf = match GgufFile::open(path) {
+        Ok(gguf) => gguf,
+        Err(e) => {
+            eprintln!("✗ Error: {}", e);
+            std::process::exit(1);
+        }
+    };
 
-            // Print some metadata
-            println!("=== Key Metadata ===");
-            for (key, value) in &gguf.metadata {
-                if key.starts_with("general.") || key.starts_with("model.") {
-                    println!("  {}: {:?}", key, value);
-                }
-            }
-            println!();
+    println!("✓ GGUF version: {}", gguf.version);
+    println!("✓ Tensor count: {}", gguf.tensor_count);
+    println!("✓ Metadata count: {}", gguf.metadata_kv_count);
+    println!();
 
-            // Print first few tensors
-            println!("=== Tensors (first 10) ===");
-            for tensor in gguf.tensors.iter().take(10) {
-                println!(
-                    "  {} {:?} {:?}",
-                    tensor.name, tensor.dims, tensor.dtype
-                );
-            }
+    // Test ModelConfig
+    let config = ModelConfig::from_gguf(&gguf);
+    println!("=== Model Config ===");
+    println!("  Architecture: {}", config.architecture);
+    println!("  Hidden size: {}", config.hidden_size);
+    println!("  Intermediate size: {}", config.intermediate_size);
+    println!("  Layers: {}", config.n_layers);
+    println!("  Heads: {} (KV: {})", config.n_heads, config.n_kv_heads);
+    println!("  Vocab size: {}", config.vocab_size);
+    println!(
+        "  RoPE dim: {} (base: {})",
+        config.rope_dim, config.rope_freq_base
+    );
+    println!("  RMS norm eps: {}", config.rms_norm_eps);
+    println!("  Max position: {}", config.max_position_embeddings);
+    println!("  Head dim: {}", config.head_dim());
+    println!();
 
-            // Verify tensor data is accessible
-            if let Some(first_tensor) = gguf.tensors.first() {
-                if let Some(data) = gguf.get_tensor_data(&first_tensor.name) {
+    // Test WeightStore
+    println!("=== Loading Weights ===");
+    match WeightStore::from_gguf(path) {
+        Ok(store) => {
+            println!("✓ Loaded {} tensors", store.tensor_count());
+            println!(
+                "✓ Total size: {:.2} MB",
+                store.total_bytes() as f64 / 1024.0 / 1024.0
+            );
+
+            // Test tensor access
+            println!("\n=== Sample Tensors ===");
+            for name in store.tensor_names().iter().take(5) {
+                if let Some(tensor) = store.get(name) {
                     println!(
-                        "\n✓ First tensor data accessible: {} bytes",
-                        data.len()
+                        "  {} {:?} {:?} ({} bytes)",
+                        tensor.name,
+                        tensor.shape,
+                        tensor.dtype,
+                        tensor.bytes().len()
                     );
                 }
             }
         }
         Err(e) => {
-            eprintln!("✗ Error: {}", e);
-            std::process::exit(1);
+            eprintln!("✗ WeightStore error: {}", e);
         }
     }
 }
