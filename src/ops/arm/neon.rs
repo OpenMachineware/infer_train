@@ -1,6 +1,7 @@
 // NEON SIMD implementations for ARM64
 
 pub mod binary;
+pub mod conv;
 pub mod dup;
 pub mod gelu;
 pub mod rms_norm;
@@ -10,6 +11,7 @@ pub mod softmax;
 pub mod tensor;
 
 pub use binary::{add_f32, div_f32, mul_f32, sub_f32};
+pub use conv::{conv_2d_f32, pool_2d_avg_f32, pool_2x2, pool_3x3};
 pub use dup::dup_f16_to_f32 as dup_f16_to_f32_neon;
 pub use dup::dup_f32_to_f16 as dup_f32_to_f16_neon;
 pub use gelu::gelu_f32 as gelu_f32_neon;

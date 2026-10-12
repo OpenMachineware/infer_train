@@ -1,6 +1,7 @@
 //! CNN operators: CONV_2D, CONV_2D_DW, POOL_2D, IM2COL
 
-use std::arch::aarch64::*;
+#[cfg(target_arch = "aarch64")]
+use super::arm::neon;
 
 /// 2D Convolution (simple, no padding)
 /// Optimized: input_channel major order for better cache reuse
@@ -201,9 +202,8 @@ pub fn conv_2d_f32(
     }
 }
 
-/// 2D Convolution with NEON optimization (1x1 and 3x3 kernels)
-#[target_feature(enable = "neon")]
-pub unsafe fn conv_2d_f32_neon(
+/// 2D Convolution with dispatch (NEON on aarch64, scalar otherwise)
+pub fn conv_2d_f32_dispatch(
     input: &[f32],
     weights: &[f32],
     bias: Option<&[f32]>,
@@ -217,93 +217,21 @@ pub unsafe fn conv_2d_f32_neon(
     stride: usize,
     padding: usize,
 ) {
-    let h_out = (h + 2 * padding - kh) / stride + 1;
-    let w_out = (w + 2 * padding - kw) / stride + 1;
-    let kernel_size = kh * kw;
-
-    for oc in 0..c_out {
-        let w_oc_offset = oc * c_in * kernel_size;
-        let out_oc_offset = oc * h_out * w_out;
-        let bias_val = bias.map(|b| b[oc]).unwrap_or(0.0);
-
-        for oh in 0..h_out {
-            let out_row_offset = out_oc_offset + oh * w_out;
-
-            for ow in 0..w_out {
-                let mut sum = vdupq_n_f32(bias_val);
-
-                for ic in 0..c_in {
-                    let w_ic_offset = w_oc_offset + ic * kernel_size;
-                    let in_ch_offset = ic * h * w;
-
-                    for kiy in 0..kh {
-                        let iy =
-                            (oh * stride + kiy) as isize - padding as isize;
-                        if iy < 0 || (iy as usize) >= h {
-                            continue;
-                        }
-
-                        let row_offset = in_ch_offset + (iy as usize) * w;
-
-                        // Process kw elements with NEON if possible
-                        if kw >= 4 && padding == 0 {
-                            let ix_start = ow * stride;
-                            for kix in (0..kw).step_by(4) {
-                                let ix = ix_start + kix;
-                                if ix + 3 < w {
-                                    let in_v = vld1q_f32(
-                                        input.as_ptr().add(row_offset + ix),
-                                    );
-                                    let w_v = vld1q_f32(
-                                        weights
-                                            .as_ptr()
-                                            .add(w_ic_offset + kiy * kw + kix),
-                                    );
-                                    sum = vfmaq_f32(sum, in_v, w_v);
-                                } else {
-                                    // Handle boundary
-                                    for j in 0..4 {
-                                        let idx = ix + j;
-                                        if idx < w {
-                                            sum = vsetq_lane_f32(
-                                                vgetq_lane_f32(sum, 0)
-                                                    + input[row_offset + idx]
-                                                        * weights[w_ic_offset
-                                                            + kiy * kw
-                                                            + kix
-                                                            + j],
-                                                sum,
-                                                0,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            // Scalar fallback
-                            for kix in 0..kw {
-                                let ix = (ow * stride + kix) as isize
-                                    - padding as isize;
-                                if ix >= 0 && (ix as usize) < w {
-                                    let in_idx = row_offset + (ix as usize);
-                                    let w_idx = w_ic_offset + kiy * kw + kix;
-                                    sum = vsetq_lane_f32(
-                                        vgetq_lane_f32(sum, 0)
-                                            + input[in_idx] * weights[w_idx],
-                                        sum,
-                                        0,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Horizontal sum
-                let result = vaddvq_f32(sum);
-                output[out_row_offset + ow] = result;
-            }
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            neon::conv_2d_f32(
+                input, weights, bias, output, c_in, c_out, h, w, kh, kw,
+                stride, padding,
+            )
         }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        conv_2d_f32(
+            input, weights, bias, output, c_in, c_out, h, w, kh, kw, stride,
+            padding,
+        )
     }
 }
 
@@ -377,13 +305,14 @@ pub fn pool_2d_max_f32(
     let h_out = (h - kh) / stride + 1;
     let w_out = (w - kw) / stride + 1;
 
-    // Specialized kernels for small sizes
+    // Specialized kernels for small sizes (NEON on aarch64)
+    #[cfg(target_arch = "aarch64")]
     if stride == 2 {
         if kh == 2 && kw == 2 {
-            return unsafe { pool_2x2_neon(input, output, c, h, w) };
+            return unsafe { neon::pool_2x2(input, output, c, h, w) };
         }
         if kh == 3 && kw == 3 {
-            return unsafe { pool_3x3_neon(input, output, c, h, w) };
+            return unsafe { neon::pool_3x3(input, output, c, h, w) };
         }
     }
 
@@ -417,272 +346,8 @@ pub fn pool_2d_max_f32(
     }
 }
 
-/// 2x2 Max Pooling - matching C++ NEON intrinsics version
-/// Process 4 outputs at a time, exactly like C++ NEON
-#[target_feature(enable = "neon")]
-unsafe fn pool_2x2_neon(
-    input: &[f32],
-    output: &mut [f32],
-    c: usize,
-    h: usize,
-    w: usize,
-) {
-    let stride = 2;
-    let h_out = (h - 2) / stride + 1;
-    let w_out = (w - 2) / stride + 1;
-
-    for ch in 0..c {
-        let in_ch = input.as_ptr().add(ch * h * w);
-        let out_ch = output.as_mut_ptr().add(ch * h_out * w_out);
-
-        for oh in 0..h_out {
-            let iy0 = oh * stride;
-            let row0 = in_ch.add(iy0 * w);
-            let row1 = in_ch.add((iy0 + 1) * w);
-            let out_row = out_ch.add(oh * w_out);
-
-            // Process 4 outputs at a time - exactly like C++
-            let mut ow: usize = 0;
-            while ow + 4 <= w_out {
-                let ix0 = ow * stride;
-                let ix1 = (ow + 1) * stride;
-                let ix2 = (ow + 2) * stride;
-                let ix3 = (ow + 3) * stride;
-
-                // Manual inline to match C++ codegen
-                let a0 = *row0.add(ix0);
-                let a1 = *row0.add(ix0 + 1);
-                let b0 = *row1.add(ix0);
-                let b1 = *row1.add(ix0 + 1);
-                *out_row.add(ow) = a0.max(a1).max(b0.max(b1));
-
-                let a0 = *row0.add(ix1);
-                let a1 = *row0.add(ix1 + 1);
-                let b0 = *row1.add(ix1);
-                let b1 = *row1.add(ix1 + 1);
-                *out_row.add(ow + 1) = a0.max(a1).max(b0.max(b1));
-
-                let a0 = *row0.add(ix2);
-                let a1 = *row0.add(ix2 + 1);
-                let b0 = *row1.add(ix2);
-                let b1 = *row1.add(ix2 + 1);
-                *out_row.add(ow + 2) = a0.max(a1).max(b0.max(b1));
-
-                let a0 = *row0.add(ix3);
-                let a1 = *row0.add(ix3 + 1);
-                let b0 = *row1.add(ix3);
-                let b1 = *row1.add(ix3 + 1);
-                *out_row.add(ow + 3) = a0.max(a1).max(b0.max(b1));
-
-                ow += 4;
-            }
-
-            // Handle remainder
-            while ow < w_out {
-                let ix = ow * stride;
-                let a0 = *row0.add(ix);
-                let a1 = *row0.add(ix + 1);
-                let b0 = *row1.add(ix);
-                let b1 = *row1.add(ix + 1);
-                *out_row.add(ow) = a0.max(a1).max(b0.max(b1));
-                ow += 1;
-            }
-        }
-    }
-}
-
-/// 3x3 Max Pooling with NEON optimization
-#[target_feature(enable = "neon")]
-unsafe fn pool_3x3_neon(
-    input: &[f32],
-    output: &mut [f32],
-    c: usize,
-    h: usize,
-    w: usize,
-) {
-    use std::arch::aarch64::*;
-
-    let stride = 2;
-    let h_out = (h - 3) / stride + 1;
-    let w_out = (w - 3) / stride + 1;
-
-    for ch in 0..c {
-        let in_ch = input.as_ptr().add(ch * h * w);
-        let out_ch = output.as_mut_ptr().add(ch * h_out * w_out);
-
-        for oh in 0..h_out {
-            let iy0 = oh * stride;
-            let row0 = in_ch.add(iy0 * w);
-            let row1 = in_ch.add((iy0 + 1) * w);
-            let row2 = in_ch.add((iy0 + 2) * w);
-            let out_row = out_ch.add(oh * w_out);
-
-            // Process each output position
-            for ow in 0..w_out {
-                let ix = ow * stride;
-
-                // Load 3 elements from each row (load 4 and ignore the last)
-                let v0 = vld1q_f32(row0.add(ix)); // [ix, ix+1, ix+2, ix+3]
-                let v1 = vld1q_f32(row1.add(ix));
-                let v2 = vld1q_f32(row2.add(ix));
-
-                // Max across rows (element-wise)
-                let max01 = vmaxq_f32(v0, v1);
-                let max012 = vmaxq_f32(max01, v2);
-
-                // Reduce first 3 elements to single max
-                // vpmaxq_f32 does pairwise max: [a,b,c,d] -> [max(a,b), max(c,d), max(a,b), max(c,d)]
-                let pairwise = vpmaxq_f32(max012, max012);
-                // Now pairwise = [max(el0,el1), max(el2,el3), ...]
-                // We need max of first 3 elements
-                let final_max = f32::max(
-                    vgetq_lane_f32(pairwise, 0),
-                    vgetq_lane_f32(max012, 2),
-                );
-
-                *out_row.add(ow) = final_max;
-            }
-        }
-    }
-}
-
-/// 2D Max Pooling with NEON optimization
-/// Optimized for common kernel sizes (2x2, 3x3)
-///
-/// DEPRECATED: This function has correctness issues and is slower than the
-/// auto-vectorized scalar version. Use `pool_2d_max_f32` instead, which
-/// achieves equivalent performance to C++ through compiler auto-vectorization.
-#[deprecated(
-    note = "Use pool_2d_max_f32 instead - auto-vectorization achieves same performance"
-)]
-#[target_feature(enable = "neon")]
-pub unsafe fn pool_2d_max_f32_neon(
-    input: &[f32],
-    output: &mut [f32],
-    c: usize,
-    h: usize,
-    w: usize,
-    kh: usize,
-    kw: usize,
-    stride: usize,
-) {
-    use std::arch::aarch64::*;
-
-    let h_out = (h - kh) / stride + 1;
-    let w_out = (w - kw) / stride + 1;
-
-    for ch in 0..c {
-        let in_ch = input.as_ptr().add(ch * h * w);
-        let out_ch = output.as_mut_ptr().add(ch * h_out * w_out);
-
-        // Process output rows
-        for oh in 0..h_out {
-            let iy0 = oh * stride;
-            let out_row = out_ch.add(oh * w_out);
-
-            // Process output columns in batches of 4
-            let mut ow = 0;
-
-            // Handle 4 output pixels at a time
-            while ow + 4 <= w_out {
-                // Compute 4 max values in parallel
-                let mut max_vec0 = vdupq_n_f32(f32::NEG_INFINITY);
-                let mut max_vec1 = vdupq_n_f32(f32::NEG_INFINITY);
-                let mut max_vec2 = vdupq_n_f32(f32::NEG_INFINITY);
-                let mut max_vec3 = vdupq_n_f32(f32::NEG_INFINITY);
-
-                let ix0 = ow * stride;
-                let ix1 = (ow + 1) * stride;
-                let ix2 = (ow + 2) * stride;
-                let ix3 = (ow + 3) * stride;
-
-                for kiy in 0..kh {
-                    let iy = iy0 + kiy;
-                    let row_ptr = in_ch.add(iy * w);
-
-                    // Load 4x4 block for 4 output pixels
-                    // For each output pixel, we need kw values starting from ix
-                    // Since kernel is small (kw=2 or 3), we can load a wider block
-                    if kw == 3 {
-                        // Load up to 6 values: max needed is ix3+kw-1 = ix3+2
-                        let v = vld1q_f32(row_ptr.add(ix0));
-                        max_vec0 = vmaxq_f32(max_vec0, v);
-                        max_vec0 = vmaxq_f32(
-                            max_vec0,
-                            vld1q_f32(row_ptr.add(ix0 + 2)),
-                        );
-
-                        let v = vld1q_f32(row_ptr.add(ix1));
-                        max_vec1 = vmaxq_f32(max_vec1, v);
-                        max_vec1 = vmaxq_f32(
-                            max_vec1,
-                            vld1q_f32(row_ptr.add(ix1 + 2)),
-                        );
-
-                        let v = vld1q_f32(row_ptr.add(ix2));
-                        max_vec2 = vmaxq_f32(max_vec2, v);
-                        max_vec2 = vmaxq_f32(
-                            max_vec2,
-                            vld1q_f32(row_ptr.add(ix2 + 2)),
-                        );
-
-                        let v = vld1q_f32(row_ptr.add(ix3));
-                        max_vec3 = vmaxq_f32(max_vec3, v);
-                        max_vec3 = vmaxq_f32(
-                            max_vec3,
-                            vld1q_f32(row_ptr.add(ix3 + 2)),
-                        );
-                    } else {
-                        // Generic fallback for other kw
-                        for kix in 0..kw {
-                            max_vec0 = vsetq_lane_f32(
-                                (*row_ptr.add(ix0 + kix))
-                                    .max(vgetq_lane_f32(max_vec0, 0)),
-                                max_vec0,
-                                0,
-                            );
-                        }
-                    }
-                }
-
-                // Reduce to scalar max
-                let m0 = vmaxvq_f32(max_vec0);
-                let m1 = vmaxvq_f32(max_vec1);
-                let m2 = vmaxvq_f32(max_vec2);
-                let m3 = vmaxvq_f32(max_vec3);
-
-                *out_row.add(ow) = m0;
-                *out_row.add(ow + 1) = m1;
-                *out_row.add(ow + 2) = m2;
-                *out_row.add(ow + 3) = m3;
-
-                ow += 4;
-            }
-
-            // Tail: scalar
-            while ow < w_out {
-                let ix = ow * stride;
-                let mut max_val = f32::NEG_INFINITY;
-
-                for kiy in 0..kh {
-                    let iy = iy0 + kiy;
-                    let row_ptr = in_ch.add(iy * w);
-                    for kix in 0..kw {
-                        let val = *row_ptr.add(ix + kix);
-                        max_val = max_val.max(val);
-                    }
-                }
-
-                *out_row.add(ow) = max_val;
-                ow += 1;
-            }
-        }
-    }
-}
-
-/// 2D Average Pooling with NEON optimization
-#[target_feature(enable = "neon")]
-pub unsafe fn pool_2d_avg_f32_neon(
+/// 2D Average Pooling
+pub fn pool_2d_avg_f32(
     input: &[f32],
     output: &mut [f32],
     c: usize,
@@ -712,25 +377,35 @@ pub unsafe fn pool_2d_avg_f32_neon(
                     let iy = iy_start + kiy;
                     let row_offset = ch_offset + iy * w + ix_start;
 
-                    // Use NEON for processing 4 elements at a time
-                    if kw >= 4 {
-                        let mut sum_vec = vdupq_n_f32(0.0);
-                        for kix in (0..kw).step_by(4) {
-                            let v =
-                                vld1q_f32(input.as_ptr().add(row_offset + kix));
-                            sum_vec = vaddq_f32(sum_vec, v);
-                        }
-                        sum += vaddvq_f32(sum_vec);
-                    } else {
-                        for kix in 0..kw {
-                            sum += input[row_offset + kix];
-                        }
+                    for kix in 0..kw {
+                        sum += input[row_offset + kix];
                     }
                 }
 
                 output[out_offset + oh * w_out + ow] = sum * scale;
             }
         }
+    }
+}
+
+/// 2D Average Pooling with dispatch (NEON on aarch64, scalar otherwise)
+pub fn pool_2d_avg_f32_dispatch(
+    input: &[f32],
+    output: &mut [f32],
+    c: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    stride: usize,
+) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe { neon::pool_2d_avg_f32(input, output, c, h, w, kh, kw, stride) }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        pool_2d_avg_f32(input, output, c, h, w, kh, kw, stride)
     }
 }
 
