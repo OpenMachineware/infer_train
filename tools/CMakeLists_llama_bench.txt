@@ -1,0 +1,52 @@
+# Build llama.cpp flash attention benchmark library
+
+cmake_minimum_required(VERSION 3.16)
+project(llama_flash_attn_bench C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# llama.cpp paths
+set(LLAMA_CPP_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../llama.cpp-0.6.0)
+set(LLAMA_INCLUDE_DIR ${LLAMA_CPP_ROOT})
+set(LLAMA_SRC_DIR ${LLAMA_CPP_ROOT}/ggml/src)
+
+# Source files for llama.cpp Metal backend
+set(LLAMA_SOURCES
+    ${LLAMA_SRC_DIR}/ggml.c
+    ${LLAMA_SRC_DIR}/ggml-alloc.c
+    ${LLAMA_SRC_DIR}/ggml-backend.c
+    ${LLAMA_SRC_DIR}/ggml-metal/ggml-metal.m
+    ${LLAMA_SRC_DIR}/ggml-metal/ggml-metal-impl.m
+)
+
+# Create static library for llama.cpp core
+add_library(ggml_metal STATIC ${LLAMA_SOURCES})
+target_include_directories(ggml_metal PUBLIC
+    ${LLAMA_INCLUDE_DIR}
+    ${LLAMA_INCLUDE_DIR}/ggml/include
+    ${LLAMA_INCLUDE_DIR}/ggml/src
+)
+target_compile_definitions(ggml_metal PUBLIC
+    GGML_USE_METAL
+    GGML_METAL_NDEBUG
+)
+
+# Link Metal framework
+find_library(METAL_LIBRARY Metal REQUIRED)
+find_library(FOUNDATION_LIBRARY Foundation REQUIRED)
+target_link_libraries(ggml_metal PUBLIC
+    ${METAL_LIBRARY}
+    ${FOUNDATION_LIBRARY}
+)
+
+# Benchmark library
+add_library(llama_fa_bench SHARED llama_flash_attn_bench.cpp)
+target_include_directories(llama_fa_bench PUBLIC
+    ${LLAMA_INCLUDE_DIR}
+    ${LLAMA_INCLUDE_DIR}/ggml/include
+)
+target_link_libraries(llama_fa_bench PUBLIC ggml_metal)
+
+# Install
+install(TARGETS llama_fa_bench LIBRARY DESTINATION lib)

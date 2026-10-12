@@ -415,8 +415,18 @@ fn get_llama_kernel_name(format: &str) -> String {
 
 fn load_llama_kernels() -> Result<String, std::io::Error> {
     let base = "llama.cpp-0.6.0/ggml/src/ggml-metal/kernels";
+    let impl_base = "llama.cpp-0.6.0/ggml/src/ggml-metal";
+    let common_base = "llama.cpp-0.6.0/ggml/src";
 
-    // Load required files
+    // Load impl header (needed by common.h)
+    let impl_header =
+        std::fs::read_to_string(&format!("{}/ggml-metal-impl.h", impl_base))?;
+
+    // Load ggml-common.h (needed by dequantize.h)
+    let ggml_common =
+        std::fs::read_to_string(&format!("{}/ggml-common.h", common_base))?;
+
+    // Load required files and strip includes/pragma
     let common = std::fs::read_to_string(&format!("{}/common.h", base))?;
     let dequantize =
         std::fs::read_to_string(&format!("{}/dequantize.h", base))?;
@@ -438,10 +448,26 @@ fn load_llama_kernels() -> Result<String, std::io::Error> {
     let fa_vec_q8_0 =
         std::fs::read_to_string(&format!("{}/fa_vec_q8_0.metal", base))?;
 
+    // Helper to strip includes and pragma once
+    fn strip_includes(content: &str) -> String {
+        content
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                !trimmed.starts_with("#include")
+                    && !trimmed.starts_with("#pragma once")
+                    && !trimmed.starts_with("__embed_")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     Ok(format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
-        common,
-        dequantize,
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        impl_header,
+        ggml_common,
+        strip_includes(&common),
+        strip_includes(&dequantize),
         fa_common,
         fa_aux,
         fa_vec_common,

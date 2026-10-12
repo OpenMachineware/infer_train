@@ -1,0 +1,15 @@
+=== Flash Decode Performance Analysis ===
+
+Key Findings:
+1. g8 is optimal for all formats and seq_k sizes
+2. seq_k=4096 performance (GFLOPS):
+   - Q4_0: 47.51
+   - Q4_1: 44.75
+   - Q5_0: 37.04
+   - Q5_1: 36.44
+   - Q8_0: 30.84
+   - BF16: 20.63
+
+3. Performance increases with seq_k (better parallelism)
+
+Next: Need llama.cpp baseline for fair comparison

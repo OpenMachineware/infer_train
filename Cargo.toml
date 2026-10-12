@@ -56,3 +56,11 @@ harness = false
 [[bench]]
 name = "gpu_kernel_comparison"
 harness = false
+
+[[bin]]
+name = "bench_all_flash_decode_formats"
+path = "src/bin/bench_all_flash_decode_formats.rs"
+
+[[bin]]
+name = "bench_flash_decode_stages"
+path = "src/bin/bench_flash_decode_stages.rs"
