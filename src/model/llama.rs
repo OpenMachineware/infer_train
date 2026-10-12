@@ -47,8 +47,11 @@ impl LlamaModel {
             output: None,
         };
 
-        // Load embeddings
-        model.tok_embeddings = store.get("tok_embeddings.weight").cloned();
+        // Load embeddings - try multiple naming conventions
+        model.tok_embeddings = store
+            .get("tok_embeddings.weight")
+            .or_else(|| store.get("token_embd.weight"))
+            .cloned();
 
         // Load layers
         for i in 0..model.config.n_layers {
@@ -56,11 +59,17 @@ impl LlamaModel {
             model.layers.push(layer);
         }
 
-        // Load output norm
-        model.norm = store.get("norm.weight").cloned();
+        // Load output norm - try multiple naming conventions
+        model.norm = store
+            .get("norm.weight")
+            .or_else(|| store.get("output_norm.weight"))
+            .cloned();
 
-        // Load output projection
-        model.output = store.get("output.weight").cloned();
+        // Load output projection - try multiple naming conventions
+        model.output = store
+            .get("output.weight")
+            .or_else(|| store.get("lm_head.weight"))
+            .cloned();
 
         model
     }
@@ -91,32 +100,69 @@ impl LlamaModel {
 
 impl LlamaLayer {
     pub fn from_weights(store: &WeightStore, layer_idx: usize) -> Self {
-        let prefix = format!("layers.{}", layer_idx);
+        // Try both Llama-style and Qwen-style naming conventions
+        let llama_prefix = format!("layers.{}", layer_idx);
+        let qwen_prefix = format!("blk.{}", layer_idx);
 
         LlamaLayer {
             layer_idx,
 
             // Attention
             attention_norm: store
-                .get(&format!("{}.attention_norm.weight", prefix))
+                .get(&format!("{}.attention_norm.weight", llama_prefix))
+                .or_else(|| {
+                    store.get(&format!("{}.attn_norm.weight", qwen_prefix))
+                })
                 .cloned(),
-            wq: store.get(&format!("{}.attention.wq.weight", prefix)).cloned(),
-            wk: store.get(&format!("{}.attention.wk.weight", prefix)).cloned(),
-            wv: store.get(&format!("{}.attention.wv.weight", prefix)).cloned(),
-            wo: store.get(&format!("{}.attention.wo.weight", prefix)).cloned(),
+            wq: store
+                .get(&format!("{}.attention.wq.weight", llama_prefix))
+                .or_else(|| {
+                    store.get(&format!("{}.attn_q.weight", qwen_prefix))
+                })
+                .cloned(),
+            wk: store
+                .get(&format!("{}.attention.wk.weight", llama_prefix))
+                .or_else(|| {
+                    store.get(&format!("{}.attn_k.weight", qwen_prefix))
+                })
+                .cloned(),
+            wv: store
+                .get(&format!("{}.attention.wv.weight", llama_prefix))
+                .or_else(|| {
+                    store.get(&format!("{}.attn_v.weight", qwen_prefix))
+                })
+                .cloned(),
+            wo: store
+                .get(&format!("{}.attention.wo.weight", llama_prefix))
+                .or_else(|| {
+                    store.get(&format!("{}.attn_output.weight", qwen_prefix))
+                })
+                .cloned(),
 
             // FFN
             ffn_norm: store
-                .get(&format!("{}.ffn_norm.weight", prefix))
+                .get(&format!("{}.ffn_norm.weight", llama_prefix))
+                .or_else(|| {
+                    store.get(&format!("{}.ffn_norm.weight", qwen_prefix))
+                })
                 .cloned(),
             w1: store
-                .get(&format!("{}.feed_forward.w1.weight", prefix))
+                .get(&format!("{}.feed_forward.w1.weight", llama_prefix))
+                .or_else(|| {
+                    store.get(&format!("{}.ffn_gate.weight", qwen_prefix))
+                })
                 .cloned(),
             w2: store
-                .get(&format!("{}.feed_forward.w2.weight", prefix))
+                .get(&format!("{}.feed_forward.w2.weight", llama_prefix))
+                .or_else(|| {
+                    store.get(&format!("{}.ffn_down.weight", qwen_prefix))
+                })
                 .cloned(),
             w3: store
-                .get(&format!("{}.feed_forward.w3.weight", prefix))
+                .get(&format!("{}.feed_forward.w3.weight", llama_prefix))
+                .or_else(|| {
+                    store.get(&format!("{}.ffn_up.weight", qwen_prefix))
+                })
                 .cloned(),
         }
     }

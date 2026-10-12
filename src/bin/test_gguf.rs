@@ -61,6 +61,13 @@ fn main() {
     );
     println!();
 
+    // Print ALL tensor names to understand the naming convention
+    println!("=== Tensor Names (first 50) ===");
+    for (i, name) in store.tensor_names().iter().enumerate().take(50) {
+        println!("  [{}] {}", i, name);
+    }
+    println!();
+
     // Test Llama Model
     println!("=== Building Llama Model ===");
     let model = LlamaModel::from_weights(&store, config.clone());
