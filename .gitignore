@@ -40,3 +40,6 @@ tools/*.dylib
 
 # Root directory test/debug Rust files (should be in src/bin/)
 /test_*.rs
+
+# Temporary planning documents
+TMP_*.md
