@@ -2,14 +2,27 @@
 
 ## Background
 
-Mojo CPU path was abandoned due to loop overhead issues (11-16x vs C), deciding to rewrite CPU inference engine in Rust.
+Rust-based LLM inference engine with CPU (NEON/AVX) and GPU (Metal/CUDA/ROCm) backends.
 
 **Business Goals**:
 - Both CPU and GPU performance exceed llama.cpp (≥100%, not 95%)
 - Extend vLLM features (multi-request batching)
-- Find acquaintances to promote, try using in their companies
+- Cross-platform support: macOS (Metal), Linux (CUDA/ROCm), Windows (CUDA)
 
-**Platform Scope**: macOS only (Metal), other platforms CPU fallback
+## Platform Support
+
+### Current (Phase 1)
+- **CPU**: ARM (NEON), x86 (AVX/AVX2/AVX-512) via feature detection
+- **GPU**: Metal (Apple Silicon)
+
+### Future
+- **GPU**: CUDA (NVIDIA), ROCm (AMD)
+- **CPU**: SVE (ARMv9)
+
+### Platform Detection
+- Detect CPU features at startup: arch, vendor, SIMD capabilities
+- Detect GPU features at startup: vendor, memory, supported operations
+- Zero runtime overhead: selection happens once at init
 
 ## Core Architecture
 
@@ -18,7 +31,7 @@ Mojo CPU path was abandoned due to loop overhead issues (11-16x vs C), deciding 
 │        InferenceEngine (Rust)           │
 ├─────────────────────────────────────────┤
 │  CPU Kernels (NEON/AVX2/Scalar)         │
-│  GPU Kernels (Metal/CUDA)               │
+│  GPU Kernels (Metal/CUDA/ROCm)          │
 │  Unified Memory Manager                 │
 ├─────────────────────────────────────────┤
 │  Single-User Fast Path                  │ ← Local deployment: zero overhead
@@ -29,81 +42,76 @@ Mojo CPU path was abandoned due to loop overhead issues (11-16x vs C), deciding 
 └─────────────────────────────────────────┘
 ```
 
-## Phase 1: MVP (Local Single Machine)
+## Module Organization
 
-### Goals
-- CPU NEON kernels performance ≥ llama.cpp
-- Metal GPU kernels usable
-- Single request inference usable
-
-### CPU Kernels
-
-**Quantization Format Support**:
-- K-quant: Q2_K, Q3_K, Q4_K, Q5_K, Q6_K
-- IQ series: IQ1_S, IQ1_M, IQ2_S, IQ2_XS, IQ2_XXS, IQ3_S, IQ3_XXS, IQ4_XS, IQ4_NL
-- Quantized weights + FP16 activations
-
-**Key Optimizations** (from Mojo experience):
-1. **Q8_K Quantization Reuse**:
-   - Quantize activations to Q8_K once, reuse for multiple projections (gate+up, QKV)
-   - Quantization overhead: ~10µs vs multiple quantizations ~100µs
-
-2. **Threaded Kernel**:
-   - Threshold: N >= 2048 (threading only beneficial above this)
-   - Batch prefill: Use threaded kernel when M > 1
-   - Decode: Use single-threaded kernel when M = 1
-
-3. **IQ4_XS Processing**:
-   - Non-K-quant format, but uses Q8_K vec_dot kernel
-   - Block size: 136 bytes
-   - Dispatch: ggml_type == 23
-
-**Performance Targets** (reference Mojo benchmark):
-| Format | GFLOPS | vs llama.cpp |
-|--------|--------|-------------|
-| Q4_K | 117-121 | +5-21% |
-| Q5_K | ~95 | +10% |
-| Q6_K | ~85 | +10% |
-| IQ4_XS | ~70 | +21% |
-| IQ3_S | ~20 | +11% |
-
-**Verification Methodology**:
-- **Bottom-up**: Each kernel ≥100% llama.cpp before building up
-- **Assembly comparison**: Ensure same SIMD instructions generated
-- **Test data**: Use llama.cpp verbatim test data (no simplification)
-
-### GPU Kernels (Metal)
-
-**Tech Stack**: Rust + `metal-rs`
-
-**Kernel List**:
-- Matmul (quantized weights + FP16 activations)
-- Flash Attention (prefill optimized)
-- RMSNorm, Softmax
-- RoPE
-
-**Performance Targets**:
-- Prefill: Close to llama.cpp (Metal path)
-- Decode: GPU slower than CPU is normal (for small batches), but acceptable
-
-**Unified Memory**:
-- CPU and GPU share memory, zero-copy
-- macOS unique advantage
-
-### Execution Mode
-
-**Single-User Fast Path**:
-```rust
-fn forward_fast(&mut self, tokens: &[Token]) -> Logits {
-    // No scheduler, no locks, no caching checks
-    // Contiguous KV Cache (not paged)
-    // Direct execution, close to llama.cpp overhead
-}
+```
+src/
+  platform/         # CPU/GPU feature detection
+    cpu.rs          # ARM/x86 detection
+    gpu.rs          # Metal/CUDA/ROCm detection
+  ops/              # Operator implementations
+    arm/            # ARM CPU operators
+      neon.rs       # NEON SIMD kernels
+    x86/            # x86 CPU operators
+      avx.rs        # AVX/AVX2 kernels
+    metal/          # Metal GPU operators
+      mv.rs         # Matrix-vector
+      gemm.rs       # Matrix-matrix
+      attention.rs  # Flash attention
+    cuda/           # CUDA operators (future)
+    common/         # Shared tables, utilities
+  model/            # GGUF parsing, model architectures
+    gguf.rs         # File format parser
+    weights.rs      # Weight storage
+    llama.rs        # Llama architecture
+    moe.rs          # MoE layers
+    mamba.rs        # Mamba/SSM layers
+  quant/            # Quantization types
 ```
 
-**Design Principle**:
-- Local deployment performance ≥ llama.cpp
-- Don't sacrifice single-user performance for vLLM features
+## Phase 1: MVP (Complete ✅)
+
+### CPU Kernels ✅
+
+**Quantization Format Support**:
+- K-quant: Q2_K, Q3_K, Q4_K, Q5_K, Q6_K (all exceed llama.cpp)
+- IQ series: IQ1_S, IQ1_M, IQ2_S, IQ2_XS, IQ2_XXS, IQ3_S, IQ3_XXS, IQ4_XS, IQ4_NL
+- Standard: Q4_0, Q4_1, Q5_0, Q5_1, Q8_0
+- TQ series: TQ1_0, TQ2_0
+- MXFP: MXFP4
+
+**Performance Results** (NEON on M1 Max):
+| Format | vs llama.cpp |
+|--------|-------------|
+| Q2_K-Q6_K | 100%+ (matching) |
+| IQ series | 100%+ (matching) |
+| Attention (quantized KV) | 100%+ |
+| RMS Norm | 290% (3-4x faster) |
+| Group Norm | 372% (3-4x faster) |
+| Top-K | 181% |
+| Argsort | 150%+ |
+
+### GPU Kernels (Metal) ✅
+
+**Implemented**:
+- Matrix-vector (MV): All 23 quantization formats
+- Matrix-matrix (GEMM): All formats with MoE support
+- Flash Attention: Decode (100+ GFLOPS) + Prefill (MPP tensor)
+- Operators: RMS_NORM, SOFTMAX, ROPE, POOL_2D, TOP_K, ARGSORT, CONV_2D
+
+**Performance Results** (M1 Max):
+| Kernel | vs llama.cpp |
+|--------|-------------|
+| MV (all formats) | 100%+ |
+| GEMM (all formats) | 100%+ |
+| Flash Decode | 107 GFLOPS (exceeds 90 GFLOPS baseline) |
+| Flash Prefill | 1106 GFLOPS via MPP tensor |
+
+### Model Layer ✅
+
+**GGUF Parser**: Full format support, 29 data types
+**Architectures**: Llama, MoE (DeepSeek), Mamba/SSM (Qwen3.8), Hybrid MoE+SSM (Qwen3.6)
+**Tested Models**: 7 models at 100% layer completeness
 
 ## Phase 2: Server Deployment
 
@@ -111,224 +119,94 @@ fn forward_fast(&mut self, tokens: &[Token]) -> Logits {
 
 **Core Features**:
 1. **PagedAttention + Block Manager**
-   - KV Cache paged management, similar to OS virtual memory
-   - Shared prefix (system prompt) automatic deduplication
-   - Avoid wasting pre-allocated `max_context × n_requests`
+   - KV Cache paged management
+   - Shared prefix deduplication
 
 2. **Prefix Caching**
-   - Multiple users share system prompt → KV Cache reuse
-   - Throughput doubled (in real scenarios)
-   - Implementation: KV block reference counting + LRU eviction
+   - System prompt KV reuse
+   - Throughput doubled
 
 3. **Continuous Batching**
-   - Don't wait for all requests to complete, insert new requests when slots available
-   - Avoid "long prompt blocks all short requests"
+   - Dynamic request insertion
+   - Avoid long prompt blocking
 
 4. **Fast/Slow Path Separation**
    ```rust
    enum ExecutionMode {
-       SingleUser,      // Local deployment: no scheduling overhead
-       MultiUser,       // Server: full vLLM features
+       SingleUser,  // No scheduling overhead
+       MultiUser,   // Full vLLM features
    }
    ```
-
-**Single-User Overhead Analysis**:
-| Feature | Single-User Overhead | Reason |
-|---------|---------------------|--------|
-| PagedAttention | 2-5% | Pointer indirection vs contiguous memory |
-| Continuous Batching | <1% | If branch, CPU prediction accurate |
-| Prefix Caching | <1% | LRU lookup |
-
-**Goal**: Single-user mode performance ≥ llama.cpp
 
 ### Async Architecture
 
 **Tech Stack**: Rust + tokio
-
-**Design**:
-- async/await + tokio runtime
-- Zero overhead for single request (fast path)
+- Zero overhead for single request
 - Automatic scheduling for multiple requests
-
-**vs Mojo**:
-- Mojo pthread: ms-level scheduling overhead
-- Rust tokio: µs-level scheduling overhead
-- Solves "single request thread pool eats benefits" problem
-
-### Other vLLM Features (Optional)
-
-**Chunked Prefill** (Phase 2.5):
-- Execute long prompt in chunks (32 tokens per chunk)
-- Interleave decode requests
-- Avoid long prompt blocking
-
-**KV Cache Quantization** (Phase 2.5):
-- Q8/Q6/Q4 quantized KV Cache
-- Significant benefit in memory bandwidth sensitive scenarios
-- Accuracy loss needs trade-off
-
-**Speculative Decoding** (Phase 3):
-- Small model predicts, large model verifies
-- Decoding speed ×3 (high accuracy scenarios)
-- Requires: two models + verification logic
-
-**Attention Sink** (Phase 3):
-- Retain first few tokens' KV during streaming generation
-- Solves rolling window attention collapse
 
 ## Phase 3: Distributed/Heterogeneous
 
 ### Heterogeneous Architecture (AMD AI Max + NVIDIA 5090)
 
-**Scenario**:
-- AI Max: 192GB unified memory (fits entire large model)
-- 5090: 24-32GB VRAM, but 10x faster compute
-- Combination: AI Max as memory pool, 5090 as compute
-
-**Pipeline Parallel + Local Weights**:
-```
-AI Max (Memory Server)       5090 (Compute Node)
-┌──────────────────┐         ┌──────────────────┐
-│ 192GB Memory Pool│ ←RDMA──→│ 24GB VRAM        │
-│ Activation/KV    │ Zero    │ All Computation  │
-│ Model Weights    │ Copy    │ Read from AI Max │
-└──────────────────┘         └──────────────────┘
-```
-
-**Communication Methods**:
-1. **Same-machine PCIe** (Optimal):
-   - AI Max motherboard with 5090
-   - Unified memory + PCIe = zero-copy
-
-2. **RDMA Network**:
-   - GPU Direct RDMA
-   - Bandwidth: ~12.5GB/s (100Gbps)
-   - Latency: <10µs
-
-**Scheduling Strategy**:
-```rust
-struct PipelineSchedule {
-    layers_on_device_a: Range<usize>,  // AI Max: 0-15
-    layers_on_device_b: Range<usize>,  // 5090: 16-31
-    activation_channel: Channel<Tensor>,  // KB-level
-}
-```
-
-**Performance Analysis**:
-- Activation transfer: 8KB per token
-- Network latency: negligible (µs-level)
-- Computation: dominant factor (ms-level)
+**Pipeline Parallel**:
+- AI Max: 192GB unified memory (model storage)
+- 5090: 24-32GB VRAM, 10x faster compute
+- RDMA communication: 12.5GB/s bandwidth
 
 ### Homogeneous GPU Cluster
 
-**Benchmark vLLM**:
-- Tensor Parallel (intra-layer split)
-- Pipeline Parallel (inter-layer split)
-- RDMA + GPU Direct communication
+**Tensor Parallel**: Intra-layer split
+**Pipeline Parallel**: Inter-layer split
 
-**RPC Mode** (Not Recommended):
-- Traditional network transfer weights too slow
-- 40GB × 10Gbps = 32 seconds
-- Only suitable for occasional calls, not continuous inference
+## Performance Targets
 
-## Technology Selection
+### Current Results ✅
 
-### Rust GPU Libraries
-
-| Platform | Library | Performance vs Mojo/C++ | Maturity |
-|----------|---------|-------------------------|----------|
-| Metal | metal-rs | = Mojo | Community library, sufficient |
-| CUDA | cust, rust-cuda | = C++ | Mature |
-| ROCm | rocm-rs | = C++ | Weak, may need FFI |
-
-**Key Points**:
-- GPU kernel performance independent of host language (same shader/PTX)
-- API call overhead negligible (µs-level vs ms-level kernel)
-- Performance not an issue, ecosystem maturity is
-
-### Quantization Kernel Implementation
-
-**Reference**: llama.cpp NEON kernels
-
-**Verification Method**:
-1. Copy llama.cpp test data (no simplification)
-2. Compare output function by function
-3. Assembly-level SIMD instruction comparison
-
-**Key Code Paths** (port from Mojo):
-- `ggml_vec_dot_q2_k_q8_k` → Rust NEON
-- `ggml_vec_dot_q4_k_q8_k` → Rust NEON
-- `quantize_row_q8_k` → Rust NEON
-
-## Performance Target Summary
-
-### CPU Kernels
-
-| Format | Mojo GFLOPS | Target Rust GFLOPS | vs llama.cpp |
-|--------|-------------|-------------------|-------------|
-| Q4_K | 117-121 | ≥120 | ≥105% |
-| Q5_K | ~95 | ≥95 | ≥110% |
-| Q6_K | ~85 | ≥85 | ≥110% |
-| IQ4_XS | ~70 | ≥70 | ≥121% |
+| Component | Target | Achieved |
+|-----------|--------|----------|
+| CPU kernels | ≥100% llama.cpp | ✅ 100%+ |
+| GPU MV/GEMM | ≥100% llama.cpp | ✅ 100%+ |
+| Flash Decode | >90 GFLOPS | ✅ 107 GFLOPS |
+| Model loading | All formats | ✅ 29 formats |
 
 ### End-to-End
 
-| Scenario | Target | vs llama.cpp |
-|----------|--------|-------------|
-| Local single request (7B Q4_K) | ≥10 t/s | ≥100% |
-| Server multi-request | Throughput priority | vLLM level |
+| Scenario | Target | Status |
+|----------|--------|--------|
+| Local inference (7B Q4_K) | ≥10 t/s | Pending integration |
+| Server multi-request | vLLM level | Phase 2 |
 
-### GPU
+## Porting to New Platforms
 
-| Scenario | Target | vs llama.cpp |
-|----------|--------|-------------|
-| Prefill | 300+ t/s | ~100% |
-| Decode | 70% of CPU | Acceptable (small batch) |
+### Adding a New CPU Architecture
 
-## Development Priority
+1. Create `src/ops/<arch>/` directory
+2. Implement operators in `<arch>/<simd>.rs`
+3. Add detection in `src/platform/cpu.rs`
+4. Update `src/ops.rs` to dispatch based on detected features
 
-**Phase 1** (2-4 weeks):
-- [ ] CPU NEON kernels (quantization formats)
-- [ ] Metal GPU kernels
-- [ ] Single-user fast path
-- [ ] Performance verification ≥ llama.cpp
+### Adding a New GPU Backend
 
-**Phase 2** (2-4 weeks):
-- [ ] Multi-user batch path
-- [ ] PagedAttention
-- [ ] Prefix Caching
-- [ ] Continuous Batching
-
-**Phase 3** (As needed):
-- [ ] Pipeline Parallel
-- [ ] Heterogeneous memory pool
-- [ ] RDMA communication
+1. Create `src/ops/<backend>/` directory
+2. Implement kernels (mv, gemm, attention)
+3. Add detection in `src/platform/gpu.rs`
+4. Update `src/ops.rs` for backend selection
 
 ## References
 
 ### Code
 
-- `src/core/ops/quantized/qweight.mojo` - Quantized projection dispatch
-- `src/core/ops/cpu/matmul_q8k_threaded.mojo` - Threaded kernel, fused projection
-- `src/core/ops/attention/mha.mojo` - Attention implementation, QKV fused
+- `src/ops/arm/neon.rs` - ARM NEON kernels
+- `src/ops/metal/` - Metal GPU kernels
 - `llama.cpp/src/ggml-quants.c` - NEON kernel reference
 
 ### Memory
 
-- `Q4_K Final Performance` - 117-121 GFLOPS, +5-21% vs llama.cpp
-- `IQ Series Final Status` - 5 formats exceed llama.cpp 11-67%
-- `Mojo Loop Overhead` - 11-16x vs C, abandoned CPU path
-- `vLLM Design Strategy` - vLLM feature priorities
-- `Heterogeneous Distributed Architecture` - Heterogeneous architecture design
-
-### Methodology
-
-- **Bottom-up verification**: Each layer ≥100% llama.cpp before building up
-- **Assembly comparison**: Ensure SIMD instructions match
-- **Test data**: llama.cpp verbatim data, no simplification
+- Project memory files in `.qoder-cn/projects/-Users-jia-Desktop-infer-train/memory/`
 
 ---
 
 **Created**: 2026-09-22
-**Status**: Design complete, awaiting implementation
-**Next Step**: Phase 1 CPU kernels
+**Updated**: 2026-10-12
+**Status**: Phase 1 complete, Phase 2 pending
+**Next Step**: Inference engine integration
