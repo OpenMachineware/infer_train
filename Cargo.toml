@@ -43,6 +43,10 @@ path = "tools/trace_bpe.rs"
 name = "trace-sequence"
 path = "tools/trace_sequence.rs"
 
+[[bin]]
+name = "test-long-text"
+path = "tools/test_long_text.rs"
+
 [features]
 default = []
 metal = []

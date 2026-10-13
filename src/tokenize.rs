@@ -223,37 +223,115 @@ impl BpeTokenizer {
             return vec![text.to_string()];
         }
 
-        // Simple O(n²) algorithm for correctness
-        let mut tokens: Vec<String> =
-            chars.iter().map(|c| c.to_string()).collect();
+        // Use linked list + priority queue for O(n log n) complexity
+        // Each node: (token_string, prev_index, next_index)
+        // prev_index and next_index are -1 if none
+        let mut tokens: Vec<(String, i32, i32)> = chars
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let prev = if i > 0 { (i - 1) as i32 } else { -1 };
+                let next = if i < n - 1 { (i + 1) as i32 } else { -1 };
+                (c.to_string(), prev, next)
+            })
+            .collect();
 
-        // Apply BPE merges iteratively
-        while tokens.len() > 1 {
-            // Find the best merge (lowest rank)
-            let mut best_merge: Option<(usize, usize)> = None;
-            let mut best_rank = usize::MAX;
+        // Track which positions are still alive
+        let mut alive: Vec<bool> = vec![true; n];
 
-            for i in 0..tokens.len() - 1 {
-                let key = (tokens[i].clone(), tokens[i + 1].clone());
-                if let Some(&rank) = self.merges.get(&key) {
-                    if rank < best_rank {
-                        best_rank = rank;
-                        best_merge = Some((i, rank));
-                    }
-                }
-            }
+        // Min-heap: (rank, left_position)
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        let mut heap: BinaryHeap<Reverse<(usize, usize)>> = BinaryHeap::new();
 
-            if let Some((i, _)) = best_merge {
-                // Apply merge
-                let merged = tokens[i].clone() + &tokens[i + 1];
-                tokens.splice(i..=i + 1, std::iter::once(merged));
-            } else {
-                // No more merges possible
-                break;
+        // Initialize heap with all mergeable pairs
+        for i in 0..n - 1 {
+            let key = (tokens[i].0.clone(), tokens[i + 1].0.clone());
+            if let Some(&rank) = self.merges.get(&key) {
+                heap.push(Reverse((rank, i)));
             }
         }
 
-        tokens
+        // Process merges
+        while let Some(Reverse((rank, pos))) = heap.pop() {
+            // Check if left position is still alive
+            if !alive[pos] {
+                continue;
+            }
+
+            // Get next position from linked list
+            let next_pos = tokens[pos].2;
+            if next_pos == -1 || !alive[next_pos as usize] {
+                continue;
+            }
+            let next_idx = next_pos as usize;
+
+            // Verify the pair still matches (tokens haven't changed)
+            let key = (tokens[pos].0.clone(), tokens[next_idx].0.clone());
+            match self.merges.get(&key) {
+                Some(&r) if r == rank => {} // Valid merge
+                Some(&r) => {
+                    // Rank changed, re-add with correct rank
+                    heap.push(Reverse((r, pos)));
+                    continue;
+                }
+                None => continue, // Pair no longer mergeable
+            }
+
+            // Apply merge at position pos
+            let merged = tokens[pos].0.clone() + &tokens[next_idx].0;
+            let new_next = tokens[next_idx].2;
+
+            tokens[pos].0 = merged;
+            tokens[pos].2 = new_next;
+
+            // Mark merged node as dead
+            alive[next_idx] = false;
+
+            // Update prev pointer of new_next if exists
+            if new_next != -1 {
+                tokens[new_next as usize].1 = pos as i32;
+            }
+
+            // Add new pairs formed with neighbors
+            // Left neighbor
+            let left_pos = tokens[pos].1;
+            if left_pos != -1 && alive[left_pos as usize] {
+                let left_idx = left_pos as usize;
+                let key = (tokens[left_idx].0.clone(), tokens[pos].0.clone());
+                if let Some(&r) = self.merges.get(&key) {
+                    heap.push(Reverse((r, left_idx)));
+                }
+            }
+
+            // Right neighbor
+            let right_pos = tokens[pos].2;
+            if right_pos != -1 && alive[right_pos as usize] {
+                let right_idx = right_pos as usize;
+                let key = (tokens[pos].0.clone(), tokens[right_idx].0.clone());
+                if let Some(&r) = self.merges.get(&key) {
+                    heap.push(Reverse((r, pos)));
+                }
+            }
+        }
+
+        // Collect surviving tokens in order
+        // Find the first alive position
+        let mut result = Vec::new();
+        let mut current = 0i32;
+        while current != -1 && (current as usize) < n {
+            if alive[current as usize] {
+                result.push(tokens[current as usize].0.clone());
+                // Move to next in linked list
+                current = tokens[current as usize].2;
+            } else {
+                // Skip dead nodes by finding next alive
+                // This shouldn't happen if we track correctly, but handle it
+                current = tokens[current as usize].2;
+            }
+        }
+
+        result
     }
 
     /// Decode token IDs to text
