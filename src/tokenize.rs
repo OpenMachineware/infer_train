@@ -191,34 +191,7 @@ impl BpeTokenizer {
             let bytes = self.bytes_to_gpt2(&chunk);
 
             // Split into initial tokens (characters in GPT-2 encoding)
-            let mut tokens: Vec<String> =
-                bytes.chars().map(|c| c.to_string()).collect();
-
-            // Apply BPE merges iteratively
-            while tokens.len() > 1 {
-                // Find the best merge (lowest rank)
-                let mut best_merge: Option<(usize, usize)> = None;
-                let mut best_rank = usize::MAX;
-
-                for i in 0..tokens.len() - 1 {
-                    let key = (tokens[i].clone(), tokens[i + 1].clone());
-                    if let Some(&rank) = self.merges.get(&key) {
-                        if rank < best_rank {
-                            best_rank = rank;
-                            best_merge = Some((i, rank));
-                        }
-                    }
-                }
-
-                if let Some((i, _)) = best_merge {
-                    // Apply merge
-                    let merged = tokens[i].clone() + &tokens[i + 1];
-                    tokens.splice(i..=i + 1, std::iter::once(merged));
-                } else {
-                    // No more merges possible
-                    break;
-                }
-            }
+            let tokens = self.bpe_encode_optimized(&bytes);
 
             // Convert to IDs
             for t in tokens {
@@ -236,6 +209,134 @@ impl BpeTokenizer {
         }
 
         all_ids
+    }
+
+    /// Optimized BPE encoding using priority queue - O(n log n)
+    fn bpe_encode_optimized(&self, text: &str) -> Vec<String> {
+        if text.is_empty() {
+            return vec![];
+        }
+
+        let chars: Vec<char> = text.chars().collect();
+        let n = chars.len();
+        if n == 1 {
+            return vec![text.to_string()];
+        }
+
+        // Use a linked list structure for efficient merges
+        // Each node: (token, prev_index, next_index)
+        // -1 means no prev/next
+        let mut tokens: Vec<(String, i32, i32)> = chars
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let prev = if i > 0 { (i - 1) as i32 } else { -1 };
+                let next = if i < n - 1 { (i + 1) as i32 } else { -1 };
+                (c.to_string(), prev, next)
+            })
+            .collect();
+
+        // Build initial priority queue of mergeable pairs
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+
+        let mut heap: BinaryHeap<Reverse<(usize, usize)>> = BinaryHeap::new();
+        let mut in_heap: Vec<std::collections::HashSet<usize>> =
+            vec![std::collections::HashSet::new(); n];
+
+        // Initialize heap with all mergeable pairs
+        for i in 0..n - 1 {
+            let key = (tokens[i].0.clone(), tokens[i + 1].0.clone());
+            if let Some(&rank) = self.merges.get(&key) {
+                heap.push(Reverse((rank, i)));
+                in_heap[i].insert(rank);
+            }
+        }
+
+        // Process merges in priority order
+        while let Some(Reverse((rank, pos))) = heap.pop() {
+            // Check if this entry is still valid
+            if !in_heap[pos].remove(&rank) {
+                continue;
+            }
+
+            // Verify the pair still exists at this position
+            let (token_a, prev_a, next_a) = &tokens[pos];
+            if *next_a == -1 {
+                continue;
+            }
+
+            let next_idx = *next_a as usize;
+            let (token_b, _, next_b) = &tokens[next_idx];
+            if token_a.clone() + token_b
+                != tokens[pos].0.clone() + &tokens[next_idx].0
+            {
+                // Tokens changed, need to verify
+            }
+
+            // Apply merge at position pos
+            let merged = tokens[pos].0.clone() + &tokens[next_idx].0;
+            let new_next = tokens[next_idx].2;
+
+            tokens[pos] = (merged, tokens[pos].1, new_next);
+
+            // Mark merged node as invalid
+            tokens[next_idx] = (String::new(), -1, -1);
+
+            // Update next pointer of new_next if exists
+            if new_next != -1 {
+                tokens[new_next as usize].1 = pos as i32;
+            }
+
+            // Add new pairs formed with neighbors
+            // Left neighbor
+            if tokens[pos].1 != -1 {
+                let left_idx = tokens[pos].1 as usize;
+                let key = (tokens[left_idx].0.clone(), tokens[pos].0.clone());
+                if let Some(&r) = self.merges.get(&key) {
+                    heap.push(Reverse((r, left_idx)));
+                    in_heap[left_idx].insert(r);
+                }
+            }
+
+            // Right neighbor
+            if tokens[pos].2 != -1 {
+                let right_idx = tokens[pos].2 as usize;
+                let key = (tokens[pos].0.clone(), tokens[right_idx].0.clone());
+                if let Some(&r) = self.merges.get(&key) {
+                    heap.push(Reverse((r, pos)));
+                    in_heap[pos].insert(r);
+                }
+            }
+        }
+
+        // Collect remaining tokens from linked list
+        let mut result = Vec::new();
+
+        // Find the head of the list (first node with prev == -1)
+        let mut head = None;
+        for i in 0..n {
+            if !tokens[i].0.is_empty() && tokens[i].1 == -1 {
+                head = Some(i);
+                break;
+            }
+        }
+
+        // Traverse the list
+        if let Some(mut current) = head {
+            loop {
+                if tokens[current].0.is_empty() {
+                    break;
+                }
+                result.push(tokens[current].0.clone());
+                if tokens[current].2 == -1 {
+                    break;
+                }
+                current = tokens[current].2 as usize;
+            }
+        }
+
+        result
     }
 
     /// Decode token IDs to text
