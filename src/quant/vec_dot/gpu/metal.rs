@@ -258,8 +258,10 @@ impl MetalContext {
             include_str!("../../../ops/metal/gemv/mul_mv_split.metal");
         let iq_grid_tables =
             include_str!("../../../ops/metal/include/iq_grid_tables.h");
-        let mv_iq_tq_combined = mv_iq_tq_source
-            .replace("#include \"iq_grid_tables.h\"", iq_grid_tables);
+        let mv_iq_tq_combined = mv_iq_tq_source.replace(
+            "#include \"../include/iq_grid_tables.h\"",
+            iq_grid_tables,
+        );
         let mv_iq_tq_library = device
             .new_library_with_source(&mv_iq_tq_combined, &compile_options)
             .map_err(|e| {
@@ -268,8 +270,17 @@ impl MetalContext {
 
         // Compile self-written GEMM library (all formats, self-contained)
         let gemm_source = include_str!("../../../ops/metal/gemm/mul_mm.metal");
+        let blocks_h = include_str!("../../../ops/metal/include/blocks.h");
+        let iq_grid_tables =
+            include_str!("../../../ops/metal/include/iq_grid_tables.h");
+        let gemm_combined = gemm_source
+            .replace("#include \"../include/blocks.h\"", blocks_h)
+            .replace(
+                "#include \"../include/iq_grid_tables.h\"",
+                iq_grid_tables,
+            );
         let gemm_library = device
-            .new_library_with_source(gemm_source, &compile_options)
+            .new_library_with_source(&gemm_combined, &compile_options)
             .map_err(|e| format!("Failed to compile gemm library: {}", e))?;
 
         // Compile RMS Norm library
@@ -921,14 +932,14 @@ impl MetalContext {
             })?;
 
         let softmax_kernel = softmax_library
-            .get_function("kernel_soft_max_f32", None)
+            .get_function("kernel_soft_max_f32_fast", None)
             .map_err(|e| format!("Failed to get Softmax kernel: {}", e))?;
         let softmax_pipeline = device
             .new_compute_pipeline_state_with_function(&softmax_kernel)
             .map_err(|e| format!("Failed to create Softmax pipeline: {}", e))?;
 
         let softmax_4_kernel = softmax_library
-            .get_function("kernel_soft_max_f32_4", None)
+            .get_function("kernel_soft_max_f32_4_fast", None)
             .map_err(|e| format!("Failed to get Softmax 4 kernel: {}", e))?;
         let softmax_4_pipeline = device
             .new_compute_pipeline_state_with_function(&softmax_4_kernel)
