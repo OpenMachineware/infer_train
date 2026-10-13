@@ -106,7 +106,51 @@ impl LlamaModel {
         self.embedding_lookup(token)
     }
 
-    /// Forward pass: tokens → logits
+    /// Forward pass with GPU context
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward_gpu(
+        &self,
+        tokens: &[u32],
+        kv_cache: &mut crate::inference::KVCache,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        if tokens.is_empty() || self.tok_embeddings.is_none() {
+            return None;
+        }
+
+        let hidden_size = self.config.hidden_size;
+        let n_heads = self.config.n_heads;
+        let head_dim = hidden_size / n_heads;
+        let n_kv_heads = self.config.n_kv_heads;
+        let vocab_size = self.config.vocab_size;
+
+        // Process each token
+        let mut hidden = Vec::with_capacity(hidden_size);
+        for &token in tokens.iter() {
+            // 1. Embedding lookup (CPU)
+            hidden = self.embedding_lookup(token)?;
+
+            // 2. Process through layers (GPU)
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                hidden = self.forward_layer_gpu(
+                    layer, layer_idx, &hidden, kv_cache, n_heads, head_dim,
+                    n_kv_heads, gpu_ctx,
+                )?;
+            }
+
+            // Advance KV cache position
+            kv_cache.advance();
+        }
+
+        // 3. Final norm and output projection (GPU)
+        let final_hidden = self.apply_output_norm_gpu(&hidden, gpu_ctx)?;
+        let logits =
+            self.output_projection_gpu(&final_hidden, vocab_size, gpu_ctx)?;
+
+        Some(logits)
+    }
+
+    /// Forward pass: tokens → logits (CPU version)
     /// Returns logits for the last token position
     pub fn forward(
         &self,
@@ -394,6 +438,260 @@ impl LlamaModel {
         vocab_size: usize,
     ) -> Option<Vec<f32>> {
         self.gemv(hidden, self.output.as_ref()?, vocab_size)
+    }
+
+    // GPU versions of operators
+
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn forward_layer_gpu(
+        &self,
+        layer: &LlamaLayer,
+        layer_idx: usize,
+        hidden: &[f32],
+        kv_cache: &mut crate::inference::KVCache,
+        n_heads: usize,
+        head_dim: usize,
+        n_kv_heads: usize,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        let hidden_size = self.config.hidden_size;
+        let pos = kv_cache.seq_len();
+
+        // 1. Attention norm (GPU)
+        let normed = self.apply_rms_norm_gpu(
+            hidden,
+            layer.attention_norm.as_ref()?,
+            hidden_size,
+            gpu_ctx,
+        )?;
+
+        // 2. QKV projections (GPU)
+        let q =
+            self.gemv_gpu(&normed, layer.wq.as_ref()?, hidden_size, gpu_ctx)?;
+        let k = self.gemv_gpu(
+            &normed,
+            layer.wk.as_ref()?,
+            n_kv_heads * head_dim,
+            gpu_ctx,
+        )?;
+        let v = self.gemv_gpu(
+            &normed,
+            layer.wv.as_ref()?,
+            n_kv_heads * head_dim,
+            gpu_ctx,
+        )?;
+
+        // 3. RoPE (GPU)
+        let q_rope =
+            self.apply_rope_gpu(&q, pos, n_heads, head_dim, gpu_ctx)?;
+        let k_rope =
+            self.apply_rope_gpu(&k, pos, n_kv_heads, head_dim, gpu_ctx)?;
+
+        // 4. Attention (GPU - updates KV cache)
+        let attn_out = self.attention_gpu(
+            &q_rope, &k_rope, &v, layer_idx, kv_cache, n_heads, head_dim,
+            n_kv_heads, gpu_ctx,
+        )?;
+
+        // 5. Output projection (GPU)
+        let attn_proj =
+            self.gemv_gpu(&attn_out, layer.wo.as_ref()?, hidden_size, gpu_ctx)?;
+
+        // 6. Residual
+        let residual: Vec<f32> =
+            hidden.iter().zip(attn_proj.iter()).map(|(h, a)| h + a).collect();
+
+        // 7. FFN norm (GPU)
+        let ffn_normed = self.apply_rms_norm_gpu(
+            &residual,
+            layer.ffn_norm.as_ref()?,
+            hidden_size,
+            gpu_ctx,
+        )?;
+
+        // 8. FFN (SwiGLU) (GPU)
+        let ffn_out =
+            self.ffn_swiglu_gpu(&ffn_normed, layer, hidden_size, gpu_ctx)?;
+
+        // 9. Residual
+        Some(residual.iter().zip(ffn_out.iter()).map(|(r, f)| r + f).collect())
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn apply_rms_norm_gpu(
+        &self,
+        x: &[f32],
+        weight: &Tensor,
+        size: usize,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        let w = dequant_to_f32(weight.bytes(), weight.dtype, size);
+        gpu_ctx.rms_norm_f32(1, size, x, &w, 1e-5).ok()
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn gemv_gpu(
+        &self,
+        x: &[f32],
+        w: &Tensor,
+        out_size: usize,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        let in_size = x.len();
+        let w_bytes = w.bytes();
+
+        // Select appropriate MV kernel based on weight dtype
+        match w.dtype {
+            crate::model::tensor::DataType::Q4_0 => {
+                // Reinterpret bytes as BlockQ4_0 slice
+                let block_size =
+                    std::mem::size_of::<crate::quant::types::BlockQ4_0>();
+                let n_blocks = w_bytes.len() / block_size;
+                let weights: &[crate::quant::types::BlockQ4_0] = unsafe {
+                    std::slice::from_raw_parts(
+                        w_bytes.as_ptr() as *const _,
+                        n_blocks,
+                    )
+                };
+                gpu_ctx.mv_q4_0_f32(out_size, in_size, weights, x).ok()
+            }
+            crate::model::tensor::DataType::Q4_1 => {
+                let block_size =
+                    std::mem::size_of::<crate::quant::types::BlockQ4_1>();
+                let n_blocks = w_bytes.len() / block_size;
+                let weights: &[crate::quant::types::BlockQ4_1] = unsafe {
+                    std::slice::from_raw_parts(
+                        w_bytes.as_ptr() as *const _,
+                        n_blocks,
+                    )
+                };
+                gpu_ctx.mv_q4_1_f32(out_size, in_size, weights, x).ok()
+            }
+            crate::model::tensor::DataType::Q5_0 => {
+                let block_size =
+                    std::mem::size_of::<crate::quant::types::BlockQ5_0>();
+                let n_blocks = w_bytes.len() / block_size;
+                let weights: &[crate::quant::types::BlockQ5_0] = unsafe {
+                    std::slice::from_raw_parts(
+                        w_bytes.as_ptr() as *const _,
+                        n_blocks,
+                    )
+                };
+                gpu_ctx.mv_q5_0_f32(out_size, in_size, weights, x).ok()
+            }
+            crate::model::tensor::DataType::Q5_1 => {
+                let block_size =
+                    std::mem::size_of::<crate::quant::types::BlockQ5_1>();
+                let n_blocks = w_bytes.len() / block_size;
+                let weights: &[crate::quant::types::BlockQ5_1] = unsafe {
+                    std::slice::from_raw_parts(
+                        w_bytes.as_ptr() as *const _,
+                        n_blocks,
+                    )
+                };
+                gpu_ctx.mv_q5_1_f32(out_size, in_size, weights, x).ok()
+            }
+            crate::model::tensor::DataType::Q8_0 => {
+                let block_size =
+                    std::mem::size_of::<crate::quant::types::BlockQ8_0>();
+                let n_blocks = w_bytes.len() / block_size;
+                let weights: &[crate::quant::types::BlockQ8_0] = unsafe {
+                    std::slice::from_raw_parts(
+                        w_bytes.as_ptr() as *const _,
+                        n_blocks,
+                    )
+                };
+                gpu_ctx.mv_q8_0_f32(out_size, in_size, weights, x).ok()
+            }
+            _ => {
+                // Fallback to CPU for unsupported formats
+                self.gemv(x, w, out_size)
+            }
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn apply_rope_gpu(
+        &self,
+        x: &[f32],
+        pos: usize,
+        n_heads: usize,
+        head_dim: usize,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        // For now, use CPU RoPE (RoPE is memory-bound, GPU advantage is small)
+        // TODO: Implement GPU RoPE when needed
+        self.apply_rope(x, pos, n_heads, head_dim)
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn attention_gpu(
+        &self,
+        q: &[f32],
+        k: &[f32],
+        v: &[f32],
+        layer_idx: usize,
+        kv_cache: &mut crate::inference::KVCache,
+        n_heads: usize,
+        head_dim: usize,
+        n_kv_heads: usize,
+        _gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        // For now, use CPU attention
+        // TODO: Implement GPU Flash Attention with KV cache integration
+        self.attention(
+            q, k, v, layer_idx, kv_cache, n_heads, head_dim, n_kv_heads,
+        )
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn ffn_swiglu_gpu(
+        &self,
+        x: &[f32],
+        layer: &LlamaLayer,
+        hidden_size: usize,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        let intermediate = hidden_size * 4;
+
+        // Gate and Up projections (GPU)
+        let gate =
+            self.gemv_gpu(x, layer.w1.as_ref()?, intermediate, gpu_ctx)?;
+        let up = self.gemv_gpu(x, layer.w3.as_ref()?, intermediate, gpu_ctx)?;
+
+        // SiLU activation (GPU)
+        let silu_gate = gpu_ctx.silu_f32(intermediate, &gate).ok()?;
+
+        // Element-wise multiply (CPU - small operation)
+        let hidden: Vec<f32> =
+            silu_gate.iter().zip(up.iter()).map(|(g, u)| g * u).collect();
+
+        // Down projection (GPU)
+        self.gemv_gpu(&hidden, layer.w2.as_ref()?, hidden_size, gpu_ctx)
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn apply_output_norm_gpu(
+        &self,
+        hidden: &[f32],
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        self.apply_rms_norm_gpu(
+            hidden,
+            self.norm.as_ref()?,
+            self.config.hidden_size,
+            gpu_ctx,
+        )
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn output_projection_gpu(
+        &self,
+        hidden: &[f32],
+        vocab_size: usize,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        self.gemv_gpu(hidden, self.output.as_ref()?, vocab_size, gpu_ctx)
     }
 }
 

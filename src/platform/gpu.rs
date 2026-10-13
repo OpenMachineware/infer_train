@@ -143,14 +143,15 @@ fn detect_metal() -> Option<GpuCapabilities> {
     caps.memory = device.recommended_max_working_set_size();
 
     // SIMD width
-    caps.simd_width = device.max_threads_per_threadgroup() as usize;
+    caps.simd_width = device.max_threads_per_threadgroup().width as usize;
     // Apple GPU has SIMD width of 32
     if caps.simd_width >= 1024 {
         caps.simd_width = 32; // max_threads_per_threadgroup returns max total threads
     }
 
     // Threadgroup memory
-    caps.max_threadgroup_memory = device.max_threadgroup_memory_length();
+    caps.max_threadgroup_memory =
+        device.max_threadgroup_memory_length() as usize;
 
     // Detect GPU family
     // Apple GPUs support family Apple7+ (M1+)

@@ -24,6 +24,8 @@ pub struct InferenceContext {
     pub config: ModelConfig,
     pub model: LlamaModel,
     pub device: Device,
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    gpu_ctx: Option<crate::quant::vec_dot::gpu::metal::MetalContext>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,7 +42,23 @@ impl InferenceContext {
         let config = ModelConfig::from_gguf(&gguf);
         let model = LlamaModel::from_weights(&store, config.clone());
 
-        Ok(InferenceContext { config, model, device })
+        #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+        let gpu_ctx = if device == Device::Gpu {
+            crate::quant::vec_dot::gpu::metal::MetalContext::new().ok()
+        } else {
+            None
+        };
+
+        #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+        let _ = device; // Silence unused warning
+
+        Ok(InferenceContext {
+            config,
+            model,
+            device,
+            #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+            gpu_ctx,
+        })
     }
 
     /// Get layer count
@@ -58,6 +76,31 @@ impl InferenceContext {
         self.model.tok_embeddings.is_some() && !self.model.layers.is_empty()
     }
 
+    /// Run forward pass with appropriate device
+    pub fn forward(
+        &self,
+        tokens: &[u32],
+        kv_cache: &mut KVCache,
+    ) -> Option<Vec<f32>> {
+        match self.device {
+            Device::Gpu => {
+                #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+                {
+                    if let Some(ref gpu_ctx) = self.gpu_ctx {
+                        self.model.forward_gpu(tokens, kv_cache, gpu_ctx)
+                    } else {
+                        self.model.forward(tokens, kv_cache)
+                    }
+                }
+                #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+                {
+                    self.model.forward(tokens, kv_cache)
+                }
+            }
+            Device::Cpu => self.model.forward(tokens, kv_cache),
+        }
+    }
+
     /// Generate tokens from prompt
     pub fn generate(
         &mut self,
@@ -73,7 +116,7 @@ impl InferenceContext {
         let mut generated = Vec::with_capacity(max_tokens);
 
         // Prefill: process prompt
-        if let Some(logits) = self.model.forward(prompt_tokens, &mut kv_cache) {
+        if let Some(logits) = self.forward(prompt_tokens, &mut kv_cache) {
             let first_token = sample(&logits, strategy) as u32;
             generated.push(first_token);
         }
@@ -87,9 +130,8 @@ impl InferenceContext {
 
             let last_token =
                 generated.last().copied().unwrap_or(self.config.bos_token_id);
-            if let Some(logits) =
-                self.model.forward(&[last_token], &mut kv_cache)
-            {
+
+            if let Some(logits) = self.forward(&[last_token], &mut kv_cache) {
                 let next_token = sample(&logits, strategy) as u32;
                 generated.push(next_token);
             } else {

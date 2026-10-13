@@ -47,6 +47,10 @@ path = "tools/trace_sequence.rs"
 name = "test-long-text"
 path = "tools/test_long_text.rs"
 
+[[bin]]
+name = "test-gpu-inference"
+path = "tools/test_gpu_inference.rs"
+
 [features]
 default = []
 metal = []
