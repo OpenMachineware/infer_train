@@ -341,6 +341,33 @@ impl LlamaModel {
         Some(out)
     }
 
+    /// Transposed gemv: weight is stored as [in_size, out_size] instead of [out_size, in_size]
+    /// This is needed for tied embeddings where weight shape is [hidden_size, vocab_size]
+    fn gemv_transposed(
+        &self,
+        x: &[f32],
+        w: &Tensor,
+        out_size: usize,
+    ) -> Option<Vec<f32>> {
+        let in_size = x.len();
+        let total_elems = w.elem_count();
+        let w_data = dequant_to_f32(w.bytes(), w.dtype, total_elems);
+
+        // Weight shape is [in_size, out_size], so row stride is out_size
+        let row_stride = w.shape[1]; // vocab_size for embeddings
+
+        let mut out = vec![0.0f32; out_size];
+        for i in 0..out_size {
+            let mut sum = 0.0f32;
+            for j in 0..in_size {
+                // Weight[j, i] is at position j * row_stride + i
+                sum += w_data[j * row_stride + i] * x[j];
+            }
+            out[i] = sum;
+        }
+        Some(out)
+    }
+
     fn attention(
         &self,
         q: &[f32],
@@ -439,7 +466,15 @@ impl LlamaModel {
         hidden: &[f32],
         vocab_size: usize,
     ) -> Option<Vec<f32>> {
-        self.gemv(hidden, self.output.as_ref()?, vocab_size)
+        let output = self.output.as_ref()?;
+        // Detect weight format and use appropriate gemv
+        if output.shape.len() == 2 && output.shape[0] == hidden.len() {
+            // Weight is [hidden_size, vocab_size] - transposed
+            self.gemv_transposed(hidden, output, output.shape[1])
+        } else {
+            // Weight is [vocab_size, hidden_size] - normal
+            self.gemv(hidden, output, vocab_size)
+        }
     }
 
     // GPU versions of operators
@@ -755,21 +790,16 @@ impl LlamaModel {
     ) -> Option<Vec<f32>> {
         let output = self.output.as_ref()?;
 
-        // Check if weight shape matches expected format [vocab_size, hidden_size]
-        // For tied embeddings, the shape might be [hidden_size, vocab_size] (transposed)
-        // In that case, use CPU fallback
-        if output.shape.len() == 2 {
-            let (dim0, dim1) = (output.shape[0], output.shape[1]);
-            if dim0 == hidden.len() {
-                // Weight is transposed: [hidden_size, vocab_size]
-                // Use CPU fallback for now
-                // TODO: Implement transposed MV kernel
-                return self.gemv(hidden, output, dim1);
-            }
+        // Detect weight format
+        if output.shape.len() == 2 && output.shape[0] == hidden.len() {
+            // Weight is [hidden_size, vocab_size] - transposed
+            // Use CPU transposed gemv for now
+            // TODO: Implement GPU transposed MV kernel
+            self.gemv_transposed(hidden, output, output.shape[1])
+        } else {
+            // Weight is [vocab_size, hidden_size] - normal
+            self.gemv_gpu(hidden, output, vocab_size, gpu_ctx)
         }
-
-        // Weight is in expected format: [vocab_size, hidden_size]
-        self.gemv_gpu(hidden, output, vocab_size, gpu_ctx)
     }
 }
 
