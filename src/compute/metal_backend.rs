@@ -382,83 +382,32 @@ impl MetalBackend {
         let m = weight.1[1]; // Output size (columns in column-major)
         let k = weight.1[0]; // Input size (rows in column-major)
 
-        // Dispatch to appropriate MV kernel based on weight dtype
-        // For now, use CPU-to-GPU methods (weights need caching by pointer)
-        // TODO: Add GPU-native MV methods that accept weight GPU buffers
-        let weight_contents = weight.3.contents();
-        let vec_contents = vec.3.contents();
-
-        let vec_f32: &[f32] = bytemuck::cast_slice(unsafe {
-            std::slice::from_raw_parts(vec_contents as *const u8, k * 4)
-        });
-
-        let output_f32 = match weight.2 {
-            DataType::Q4_0 => {
-                let weight_bytes = unsafe {
-                    std::slice::from_raw_parts(
-                        weight_contents as *const u8,
-                        weight.3.length() as usize,
-                    )
-                };
-                self.ctx
-                    .mv_q4_0_f32(m, k, weight_bytes, vec_f32)
-                    .map_err(BackendError::ExecFailed)?
-            }
-            DataType::Q8_0 => {
-                let weight_bytes = unsafe {
-                    std::slice::from_raw_parts(
-                        weight_contents as *const u8,
-                        weight.3.length() as usize,
-                    )
-                };
-                self.ctx
-                    .mv_q8_0_f32(m, k, weight_bytes, vec_f32)
-                    .map_err(BackendError::ExecFailed)?
-            }
-            DataType::Q4_1 => {
-                let weight_bytes = unsafe {
-                    std::slice::from_raw_parts(
-                        weight_contents as *const u8,
-                        weight.3.length() as usize,
-                    )
-                };
-                self.ctx
-                    .mv_q4_1_f32(m, k, weight_bytes, vec_f32)
-                    .map_err(BackendError::ExecFailed)?
-            }
-            DataType::Q5_0 => {
-                let weight_bytes = unsafe {
-                    std::slice::from_raw_parts(
-                        weight_contents as *const u8,
-                        weight.3.length() as usize,
-                    )
-                };
-                self.ctx
-                    .mv_q5_0_f32(m, k, weight_bytes, vec_f32)
-                    .map_err(BackendError::ExecFailed)?
-            }
-            DataType::Q5_1 => {
-                let weight_bytes = unsafe {
-                    std::slice::from_raw_parts(
-                        weight_contents as *const u8,
-                        weight.3.length() as usize,
-                    )
-                };
-                self.ctx
-                    .mv_q5_1_f32(m, k, weight_bytes, vec_f32)
-                    .map_err(BackendError::ExecFailed)?
-            }
-            DataType::IQ4_NL => {
-                let weight_bytes = unsafe {
-                    std::slice::from_raw_parts(
-                        weight_contents as *const u8,
-                        weight.3.length() as usize,
-                    )
-                };
-                self.ctx
-                    .mv_iq4_nl_f32(m, k, weight_bytes, vec_f32)
-                    .map_err(BackendError::ExecFailed)?
-            }
+        // Use GPU-native methods (fully zero-copy, both weights and input as GPU buffers)
+        let output_buffer = match weight.2 {
+            DataType::Q4_0 => self
+                .ctx
+                .mv_q4_0_f32_gpu_weights(m, k, &weight.3, &vec.3)
+                .map_err(BackendError::ExecFailed)?,
+            DataType::Q8_0 => self
+                .ctx
+                .mv_q8_0_f32_gpu_weights(m, k, &weight.3, &vec.3)
+                .map_err(BackendError::ExecFailed)?,
+            DataType::Q4_1 => self
+                .ctx
+                .mv_q4_1_f32_gpu_weights(m, k, &weight.3, &vec.3)
+                .map_err(BackendError::ExecFailed)?,
+            DataType::Q5_0 => self
+                .ctx
+                .mv_q5_0_f32_gpu_weights(m, k, &weight.3, &vec.3)
+                .map_err(BackendError::ExecFailed)?,
+            DataType::Q5_1 => self
+                .ctx
+                .mv_q5_1_f32_gpu_weights(m, k, &weight.3, &vec.3)
+                .map_err(BackendError::ExecFailed)?,
+            DataType::IQ4_NL => self
+                .ctx
+                .mv_iq4_nl_f32_gpu_weights(m, k, &weight.3, &vec.3)
+                .map_err(BackendError::ExecFailed)?,
             _ => {
                 return Err(BackendError::OpNotSupported(format!(
                     "MatVec for weight dtype {:?}",
@@ -467,12 +416,13 @@ impl MetalBackend {
             }
         };
 
-        // Create output tensor
-        let output = self.alloc_tensor(&node.output, vec![m], DataType::F32)?;
-        self.copy_to_tensor(
-            &mut output.clone(),
-            bytemuck::cast_slice(&output_f32),
-        )?;
+        // Create output tensor with the returned GPU buffer
+        let output = Tensor::from_metal_buffer(
+            &node.output,
+            vec![m],
+            DataType::F32,
+            output_buffer,
+        );
         graph.add_tensor(output);
 
         Ok(())
