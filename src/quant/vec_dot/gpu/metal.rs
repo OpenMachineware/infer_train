@@ -94,8 +94,9 @@ pub struct MetalContext {
     mv_weights_buffer: RefCell<Option<Buffer>>,
     mv_input_buffer: RefCell<Option<Buffer>>,
     mv_output_buffer: RefCell<Option<Buffer>>,
-    // Track buffer sizes to know if we need to recreate
+    // Track buffer sizes and data pointers to know if we need to recreate
     mv_weights_size: RefCell<usize>,
+    mv_weights_ptr: RefCell<usize>, // Track data pointer to detect different tensors
     mv_input_size: RefCell<usize>,
     mv_output_size: RefCell<usize>,
     // Cached buffers for GEMM operations
@@ -1104,6 +1105,7 @@ impl MetalContext {
             mv_input_buffer: RefCell::new(None),
             mv_output_buffer: RefCell::new(None),
             mv_weights_size: RefCell::new(0),
+            mv_weights_ptr: RefCell::new(0),
             mv_input_size: RefCell::new(0),
             mv_output_size: RefCell::new(0),
             // GEMM buffers
@@ -1114,6 +1116,11 @@ impl MetalContext {
             gemm_input_size: RefCell::new(0),
             gemm_output_size: RefCell::new(0),
         })
+    }
+
+    /// Get the Metal device
+    pub fn device(&self) -> &Device {
+        &self.device
     }
 
     pub fn vec_dot_iq4_nl_q8_0(
@@ -1411,13 +1418,15 @@ impl MetalContext {
         let input_size = input.len() * std::mem::size_of::<f32>();
         let output_size = m * std::mem::size_of::<f32>();
 
-        // Weights buffer - only create once, reuse without copy
+        // Weights buffer - cache by data pointer (weights are static during inference)
         let weights_buffer = {
             let mut buf_cell = self.mv_weights_buffer.borrow_mut();
             let mut size_cell = self.mv_weights_size.borrow_mut();
+            let mut ptr_cell = self.mv_weights_ptr.borrow_mut();
+            let data_ptr = weights.as_ptr() as usize;
 
-            if *size_cell != weights_size {
-                // Size changed, create new buffer with data
+            if *size_cell != weights_size || *ptr_cell != data_ptr {
+                // Size or pointer changed, create new buffer with data
                 let buf = self.device.new_buffer_with_data(
                     weights.as_ptr() as *const std::ffi::c_void,
                     weights_size as u64,
@@ -1425,19 +1434,21 @@ impl MetalContext {
                 );
                 *buf_cell = Some(buf.clone());
                 *size_cell = weights_size;
+                *ptr_cell = data_ptr;
                 buf
             } else {
-                // Size matches, reuse existing buffer
+                // Same pointer, reuse existing buffer (data already on GPU)
                 buf_cell.as_ref().unwrap().clone()
             }
         };
 
-        // Input buffer - only create once, reuse without copy
+        // Input buffer - data changes every layer, so always upload
         let input_buffer = {
             let mut buf_cell = self.mv_input_buffer.borrow_mut();
             let mut size_cell = self.mv_input_size.borrow_mut();
 
             if *size_cell != input_size {
+                // Size changed, create new buffer with data
                 let buf = self.device.new_buffer_with_data(
                     input.as_ptr() as *const std::ffi::c_void,
                     input_size as u64,
@@ -1447,7 +1458,17 @@ impl MetalContext {
                 *size_cell = input_size;
                 buf
             } else {
-                buf_cell.as_ref().unwrap().clone()
+                // Size matches, reuse buffer but copy new data
+                let buf = buf_cell.as_ref().unwrap().clone();
+                let contents = buf.contents();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        input.as_ptr() as *const std::ffi::c_void,
+                        contents,
+                        input_size,
+                    );
+                }
+                buf
             }
         };
 
@@ -2165,13 +2186,15 @@ impl MetalContext {
         let input_size = input.len() * std::mem::size_of::<f32>();
         let output_size = m * std::mem::size_of::<f32>();
 
-        // Weights buffer - only create once, reuse without copy
+        // Weights buffer - cache by data pointer (weights are static during inference)
         let weights_buffer = {
             let mut buf_cell = self.mv_weights_buffer.borrow_mut();
             let mut size_cell = self.mv_weights_size.borrow_mut();
+            let mut ptr_cell = self.mv_weights_ptr.borrow_mut();
+            let data_ptr = weights.as_ptr() as usize;
 
-            if *size_cell != weights_size {
-                // Size changed, create new buffer with data
+            if *size_cell != weights_size || *ptr_cell != data_ptr {
+                // Size or pointer changed, create new buffer with data
                 let buf = self.device.new_buffer_with_data(
                     weights.as_ptr() as *const std::ffi::c_void,
                     weights_size as u64,
@@ -2179,19 +2202,21 @@ impl MetalContext {
                 );
                 *buf_cell = Some(buf.clone());
                 *size_cell = weights_size;
+                *ptr_cell = data_ptr;
                 buf
             } else {
-                // Size matches, reuse existing buffer
+                // Same pointer, reuse existing buffer (data already on GPU)
                 buf_cell.as_ref().unwrap().clone()
             }
         };
 
-        // Input buffer - only create once, reuse without copy
+        // Input buffer - data changes every layer, so always upload
         let input_buffer = {
             let mut buf_cell = self.mv_input_buffer.borrow_mut();
             let mut size_cell = self.mv_input_size.borrow_mut();
 
             if *size_cell != input_size {
+                // Size changed, create new buffer with data
                 let buf = self.device.new_buffer_with_data(
                     input.as_ptr() as *const std::ffi::c_void,
                     input_size as u64,
@@ -2201,7 +2226,17 @@ impl MetalContext {
                 *size_cell = input_size;
                 buf
             } else {
-                buf_cell.as_ref().unwrap().clone()
+                // Size matches, reuse buffer but copy new data
+                let buf = buf_cell.as_ref().unwrap().clone();
+                let contents = buf.contents();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        input.as_ptr() as *const std::ffi::c_void,
+                        contents,
+                        input_size,
+                    );
+                }
+                buf
             }
         };
 
@@ -2331,13 +2366,15 @@ impl MetalContext {
         let input_size = input.len() * std::mem::size_of::<f32>();
         let output_size = m * std::mem::size_of::<f32>();
 
-        // Weights buffer - only create once, reuse without copy
+        // Weights buffer - cache by data pointer (weights are static during inference)
         let weights_buffer = {
             let mut buf_cell = self.mv_weights_buffer.borrow_mut();
             let mut size_cell = self.mv_weights_size.borrow_mut();
+            let mut ptr_cell = self.mv_weights_ptr.borrow_mut();
+            let data_ptr = weights.as_ptr() as usize;
 
-            if *size_cell != weights_size {
-                // Size changed, create new buffer with data
+            if *size_cell != weights_size || *ptr_cell != data_ptr {
+                // Size or pointer changed, create new buffer with data
                 let buf = self.device.new_buffer_with_data(
                     weights.as_ptr() as *const std::ffi::c_void,
                     weights_size as u64,
@@ -2345,19 +2382,21 @@ impl MetalContext {
                 );
                 *buf_cell = Some(buf.clone());
                 *size_cell = weights_size;
+                *ptr_cell = data_ptr;
                 buf
             } else {
-                // Size matches, reuse existing buffer
+                // Same pointer, reuse existing buffer (data already on GPU)
                 buf_cell.as_ref().unwrap().clone()
             }
         };
 
-        // Input buffer - only create once, reuse without copy
+        // Input buffer - data changes every layer, so always upload
         let input_buffer = {
             let mut buf_cell = self.mv_input_buffer.borrow_mut();
             let mut size_cell = self.mv_input_size.borrow_mut();
 
             if *size_cell != input_size {
+                // Size changed, create new buffer with data
                 let buf = self.device.new_buffer_with_data(
                     input.as_ptr() as *const std::ffi::c_void,
                     input_size as u64,
@@ -2367,7 +2406,17 @@ impl MetalContext {
                 *size_cell = input_size;
                 buf
             } else {
-                buf_cell.as_ref().unwrap().clone()
+                // Size matches, reuse buffer but copy new data
+                let buf = buf_cell.as_ref().unwrap().clone();
+                let contents = buf.contents();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        input.as_ptr() as *const std::ffi::c_void,
+                        contents,
+                        input_size,
+                    );
+                }
+                buf
             }
         };
 
@@ -2494,13 +2543,15 @@ impl MetalContext {
         let input_size = input.len() * std::mem::size_of::<f32>();
         let output_size = m * std::mem::size_of::<f32>();
 
-        // Weights buffer - only create once, reuse without copy
+        // Weights buffer - cache by data pointer (weights are static during inference)
         let weights_buffer = {
             let mut buf_cell = self.mv_weights_buffer.borrow_mut();
             let mut size_cell = self.mv_weights_size.borrow_mut();
+            let mut ptr_cell = self.mv_weights_ptr.borrow_mut();
+            let data_ptr = weights.as_ptr() as usize;
 
-            if *size_cell != weights_size {
-                // Size changed, create new buffer with data
+            if *size_cell != weights_size || *ptr_cell != data_ptr {
+                // Size or pointer changed, create new buffer with data
                 let buf = self.device.new_buffer_with_data(
                     weights.as_ptr() as *const std::ffi::c_void,
                     weights_size as u64,
@@ -2508,19 +2559,21 @@ impl MetalContext {
                 );
                 *buf_cell = Some(buf.clone());
                 *size_cell = weights_size;
+                *ptr_cell = data_ptr;
                 buf
             } else {
-                // Size matches, reuse existing buffer
+                // Same pointer, reuse existing buffer (data already on GPU)
                 buf_cell.as_ref().unwrap().clone()
             }
         };
 
-        // Input buffer - only create once, reuse without copy
+        // Input buffer - data changes every layer, so always upload
         let input_buffer = {
             let mut buf_cell = self.mv_input_buffer.borrow_mut();
             let mut size_cell = self.mv_input_size.borrow_mut();
 
             if *size_cell != input_size {
+                // Size changed, create new buffer with data
                 let buf = self.device.new_buffer_with_data(
                     input.as_ptr() as *const std::ffi::c_void,
                     input_size as u64,
@@ -2530,7 +2583,17 @@ impl MetalContext {
                 *size_cell = input_size;
                 buf
             } else {
-                buf_cell.as_ref().unwrap().clone()
+                // Size matches, reuse buffer but copy new data
+                let buf = buf_cell.as_ref().unwrap().clone();
+                let contents = buf.contents();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        input.as_ptr() as *const std::ffi::c_void,
+                        contents,
+                        input_size,
+                    );
+                }
+                buf
             }
         };
 

@@ -22,7 +22,7 @@ fn main() {
     let gpu_ctx = InferenceContext::from_gguf(model_path, Device::Gpu);
 
     match gpu_ctx {
-        Ok(ctx) => {
+        Ok(mut ctx) => {
             println!("✓ Model loaded on GPU");
             println!("  Layers: {}", ctx.layer_count());
             println!("  Params: {}M", ctx.param_count() / 1_000_000);
@@ -71,7 +71,7 @@ fn main() {
 
     // Compare with CPU
     println!("\n=== CPU Inference (for comparison) ===");
-    let cpu_ctx = InferenceContext::from_gguf(model_path, Device::Cpu)
+    let mut cpu_ctx = InferenceContext::from_gguf(model_path, Device::Cpu)
         .expect("Failed to load model on CPU");
 
     println!("✓ Model loaded on CPU");

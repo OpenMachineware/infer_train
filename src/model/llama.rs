@@ -113,6 +113,10 @@ impl LlamaModel {
         tokens: &[u32],
         kv_cache: &mut crate::inference::KVCache,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+        gpu_weight_buffers: &mut std::collections::HashMap<
+            (usize, &'static str),
+            metal::Buffer,
+        >,
     ) -> Option<Vec<f32>> {
         if tokens.is_empty() || self.tok_embeddings.is_none() {
             return None;
@@ -133,8 +137,15 @@ impl LlamaModel {
             // 2. Process through layers (GPU)
             for (layer_idx, layer) in self.layers.iter().enumerate() {
                 hidden = self.forward_layer_gpu(
-                    layer, layer_idx, &hidden, kv_cache, n_heads, head_dim,
-                    n_kv_heads, gpu_ctx,
+                    layer,
+                    layer_idx,
+                    &hidden,
+                    kv_cache,
+                    n_heads,
+                    head_dim,
+                    n_kv_heads,
+                    gpu_ctx,
+                    gpu_weight_buffers,
                 )?;
             }
 
@@ -144,8 +155,12 @@ impl LlamaModel {
 
         // 3. Final norm and output projection (GPU)
         let final_hidden = self.apply_output_norm_gpu(&hidden, gpu_ctx)?;
-        let logits =
-            self.output_projection_gpu(&final_hidden, vocab_size, gpu_ctx)?;
+        let logits = self.output_projection_gpu(
+            &final_hidden,
+            vocab_size,
+            gpu_ctx,
+            gpu_weight_buffers,
+        )?;
 
         Some(logits)
     }
@@ -453,6 +468,10 @@ impl LlamaModel {
         head_dim: usize,
         n_kv_heads: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+        gpu_weight_buffers: &mut std::collections::HashMap<
+            (usize, &'static str),
+            metal::Buffer,
+        >,
     ) -> Option<Vec<f32>> {
         let hidden_size = self.config.hidden_size;
         let pos = kv_cache.seq_len();
@@ -466,19 +485,32 @@ impl LlamaModel {
         )?;
 
         // 2. QKV projections (GPU)
-        let q =
-            self.gemv_gpu(&normed, layer.wq.as_ref()?, hidden_size, gpu_ctx)?;
+        let q = self.gemv_gpu(
+            &normed,
+            layer.wq.as_ref()?,
+            hidden_size,
+            gpu_ctx,
+            gpu_weight_buffers,
+            layer_idx,
+            "wq",
+        )?;
         let k = self.gemv_gpu(
             &normed,
             layer.wk.as_ref()?,
             n_kv_heads * head_dim,
             gpu_ctx,
+            gpu_weight_buffers,
+            layer_idx,
+            "wk",
         )?;
         let v = self.gemv_gpu(
             &normed,
             layer.wv.as_ref()?,
             n_kv_heads * head_dim,
             gpu_ctx,
+            gpu_weight_buffers,
+            layer_idx,
+            "wv",
         )?;
 
         // 3. RoPE (GPU)
@@ -494,8 +526,15 @@ impl LlamaModel {
         )?;
 
         // 5. Output projection (GPU)
-        let attn_proj =
-            self.gemv_gpu(&attn_out, layer.wo.as_ref()?, hidden_size, gpu_ctx)?;
+        let attn_proj = self.gemv_gpu(
+            &attn_out,
+            layer.wo.as_ref()?,
+            hidden_size,
+            gpu_ctx,
+            gpu_weight_buffers,
+            layer_idx,
+            "wo",
+        )?;
 
         // 6. Residual
         let residual: Vec<f32> =
@@ -510,8 +549,14 @@ impl LlamaModel {
         )?;
 
         // 8. FFN (SwiGLU) (GPU)
-        let ffn_out =
-            self.ffn_swiglu_gpu(&ffn_normed, layer, hidden_size, gpu_ctx)?;
+        let ffn_out = self.ffn_swiglu_gpu(
+            &ffn_normed,
+            layer,
+            hidden_size,
+            gpu_ctx,
+            gpu_weight_buffers,
+            layer_idx,
+        )?;
 
         // 9. Residual
         Some(residual.iter().zip(ffn_out.iter()).map(|(r, f)| r + f).collect())
@@ -536,9 +581,19 @@ impl LlamaModel {
         w: &Tensor,
         out_size: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+        gpu_weight_buffers: &mut std::collections::HashMap<
+            (usize, &'static str),
+            metal::Buffer,
+        >,
+        layer_idx: usize,
+        weight_name: &'static str,
     ) -> Option<Vec<f32>> {
         let in_size = x.len();
         let w_bytes = w.bytes();
+
+        // Try to use pre-uploaded buffer
+        let weight_key = (layer_idx, weight_name);
+        let use_cached = gpu_weight_buffers.contains_key(&weight_key);
 
         // Select appropriate MV kernel based on weight dtype
         match w.dtype {
@@ -603,6 +658,66 @@ impl LlamaModel {
                 };
                 gpu_ctx.mv_q8_0_f32(out_size, in_size, weights, x).ok()
             }
+            crate::model::tensor::DataType::Q2_K => {
+                let block_size =
+                    std::mem::size_of::<crate::quant::types::BlockQ2K>();
+                let n_blocks = w_bytes.len() / block_size;
+                let weights: &[crate::quant::types::BlockQ2K] = unsafe {
+                    std::slice::from_raw_parts(
+                        w_bytes.as_ptr() as *const _,
+                        n_blocks,
+                    )
+                };
+                gpu_ctx.mv_q2_k_f32(out_size, in_size, weights, x).ok()
+            }
+            crate::model::tensor::DataType::Q3_K => {
+                let block_size =
+                    std::mem::size_of::<crate::quant::types::BlockQ3K>();
+                let n_blocks = w_bytes.len() / block_size;
+                let weights: &[crate::quant::types::BlockQ3K] = unsafe {
+                    std::slice::from_raw_parts(
+                        w_bytes.as_ptr() as *const _,
+                        n_blocks,
+                    )
+                };
+                gpu_ctx.mv_q3_k_f32(out_size, in_size, weights, x).ok()
+            }
+            crate::model::tensor::DataType::Q4_K => {
+                let block_size =
+                    std::mem::size_of::<crate::quant::types::BlockQ4K>();
+                let n_blocks = w_bytes.len() / block_size;
+                let weights: &[crate::quant::types::BlockQ4K] = unsafe {
+                    std::slice::from_raw_parts(
+                        w_bytes.as_ptr() as *const _,
+                        n_blocks,
+                    )
+                };
+                gpu_ctx.mv_q4_k_f32(out_size, in_size, weights, x).ok()
+            }
+            crate::model::tensor::DataType::Q5_K => {
+                let block_size =
+                    std::mem::size_of::<crate::quant::types::BlockQ5K>();
+                let n_blocks = w_bytes.len() / block_size;
+                let weights: &[crate::quant::types::BlockQ5K] = unsafe {
+                    std::slice::from_raw_parts(
+                        w_bytes.as_ptr() as *const _,
+                        n_blocks,
+                    )
+                };
+                gpu_ctx.mv_q5_k_f32(out_size, in_size, weights, x).ok()
+            }
+            crate::model::tensor::DataType::Q6_K => {
+                let block_size =
+                    std::mem::size_of::<crate::quant::types::BlockQ6K>();
+                let n_blocks = w_bytes.len() / block_size;
+                let weights: &[crate::quant::types::BlockQ6K] = unsafe {
+                    std::slice::from_raw_parts(
+                        w_bytes.as_ptr() as *const _,
+                        n_blocks,
+                    )
+                };
+                gpu_ctx.mv_q6_k_f32(out_size, in_size, weights, x).ok()
+            }
             _ => {
                 // Fallback to CPU for unsupported formats
                 self.gemv(x, w, out_size)
@@ -651,13 +766,33 @@ impl LlamaModel {
         layer: &LlamaLayer,
         hidden_size: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+        gpu_weight_buffers: &mut std::collections::HashMap<
+            (usize, &'static str),
+            metal::Buffer,
+        >,
+        layer_idx: usize,
     ) -> Option<Vec<f32>> {
         let intermediate = hidden_size * 4;
 
         // Gate and Up projections (GPU)
-        let gate =
-            self.gemv_gpu(x, layer.w1.as_ref()?, intermediate, gpu_ctx)?;
-        let up = self.gemv_gpu(x, layer.w3.as_ref()?, intermediate, gpu_ctx)?;
+        let gate = self.gemv_gpu(
+            x,
+            layer.w1.as_ref()?,
+            intermediate,
+            gpu_ctx,
+            gpu_weight_buffers,
+            layer_idx,
+            "w1",
+        )?;
+        let up = self.gemv_gpu(
+            x,
+            layer.w3.as_ref()?,
+            intermediate,
+            gpu_ctx,
+            gpu_weight_buffers,
+            layer_idx,
+            "w3",
+        )?;
 
         // SiLU activation (GPU)
         let silu_gate = gpu_ctx.silu_f32(intermediate, &gate).ok()?;
@@ -667,7 +802,15 @@ impl LlamaModel {
             silu_gate.iter().zip(up.iter()).map(|(g, u)| g * u).collect();
 
         // Down projection (GPU)
-        self.gemv_gpu(&hidden, layer.w2.as_ref()?, hidden_size, gpu_ctx)
+        self.gemv_gpu(
+            &hidden,
+            layer.w2.as_ref()?,
+            hidden_size,
+            gpu_ctx,
+            gpu_weight_buffers,
+            layer_idx,
+            "w2",
+        )
     }
 
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -690,8 +833,22 @@ impl LlamaModel {
         hidden: &[f32],
         vocab_size: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+        gpu_weight_buffers: &mut std::collections::HashMap<
+            (usize, &'static str),
+            metal::Buffer,
+        >,
     ) -> Option<Vec<f32>> {
-        self.gemv_gpu(hidden, self.output.as_ref()?, vocab_size, gpu_ctx)
+        // Output weights are stored at layer index = num_layers
+        let layer_idx = self.layers.len();
+        self.gemv_gpu(
+            hidden,
+            self.output.as_ref()?,
+            vocab_size,
+            gpu_ctx,
+            gpu_weight_buffers,
+            layer_idx,
+            "output",
+        )
     }
 }
 

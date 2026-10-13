@@ -26,6 +26,9 @@ pub struct InferenceContext {
     pub device: Device,
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     gpu_ctx: Option<crate::quant::vec_dot::gpu::metal::MetalContext>,
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    gpu_weight_buffers:
+        std::collections::HashMap<(usize, &'static str), metal::Buffer>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,10 +46,93 @@ impl InferenceContext {
         let model = LlamaModel::from_weights(&store, config.clone());
 
         #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-        let gpu_ctx = if device == Device::Gpu {
-            crate::quant::vec_dot::gpu::metal::MetalContext::new().ok()
+        let (gpu_ctx, gpu_weight_buffers) = if device == Device::Gpu {
+            if let Some(ctx) =
+                crate::quant::vec_dot::gpu::metal::MetalContext::new().ok()
+            {
+                // Pre-upload all weights to GPU
+                let mut buffers = std::collections::HashMap::new();
+
+                // Upload weights for each layer
+                for (layer_idx, layer) in model.layers.iter().enumerate() {
+                    // Upload attention weights
+                    if let Some(ref wq) = layer.wq {
+                        let ptr = wq.bytes().as_ptr() as usize;
+                        let buffer = ctx.device().new_buffer_with_data(
+                            wq.bytes().as_ptr() as *const std::ffi::c_void,
+                            wq.bytes().len() as u64,
+                            metal::MTLResourceOptions::StorageModeShared,
+                        );
+                        buffers.insert((layer_idx, "wq"), buffer);
+                    }
+                    if let Some(ref wk) = layer.wk {
+                        let buffer = ctx.device().new_buffer_with_data(
+                            wk.bytes().as_ptr() as *const std::ffi::c_void,
+                            wk.bytes().len() as u64,
+                            metal::MTLResourceOptions::StorageModeShared,
+                        );
+                        buffers.insert((layer_idx, "wk"), buffer);
+                    }
+                    if let Some(ref wv) = layer.wv {
+                        let buffer = ctx.device().new_buffer_with_data(
+                            wv.bytes().as_ptr() as *const std::ffi::c_void,
+                            wv.bytes().len() as u64,
+                            metal::MTLResourceOptions::StorageModeShared,
+                        );
+                        buffers.insert((layer_idx, "wv"), buffer);
+                    }
+                    if let Some(ref wo) = layer.wo {
+                        let buffer = ctx.device().new_buffer_with_data(
+                            wo.bytes().as_ptr() as *const std::ffi::c_void,
+                            wo.bytes().len() as u64,
+                            metal::MTLResourceOptions::StorageModeShared,
+                        );
+                        buffers.insert((layer_idx, "wo"), buffer);
+                    }
+                    // Upload FFN weights
+                    if let Some(ref w1) = layer.w1 {
+                        let buffer = ctx.device().new_buffer_with_data(
+                            w1.bytes().as_ptr() as *const std::ffi::c_void,
+                            w1.bytes().len() as u64,
+                            metal::MTLResourceOptions::StorageModeShared,
+                        );
+                        buffers.insert((layer_idx, "w1"), buffer);
+                    }
+                    if let Some(ref w2) = layer.w2 {
+                        let buffer = ctx.device().new_buffer_with_data(
+                            w2.bytes().as_ptr() as *const std::ffi::c_void,
+                            w2.bytes().len() as u64,
+                            metal::MTLResourceOptions::StorageModeShared,
+                        );
+                        buffers.insert((layer_idx, "w2"), buffer);
+                    }
+                    if let Some(ref w3) = layer.w3 {
+                        let buffer = ctx.device().new_buffer_with_data(
+                            w3.bytes().as_ptr() as *const std::ffi::c_void,
+                            w3.bytes().len() as u64,
+                            metal::MTLResourceOptions::StorageModeShared,
+                        );
+                        buffers.insert((layer_idx, "w3"), buffer);
+                    }
+                }
+
+                // Upload output weight
+                if let Some(ref output) = model.output {
+                    let layer_idx = model.layers.len();
+                    let buffer = ctx.device().new_buffer_with_data(
+                        output.bytes().as_ptr() as *const std::ffi::c_void,
+                        output.bytes().len() as u64,
+                        metal::MTLResourceOptions::StorageModeShared,
+                    );
+                    buffers.insert((layer_idx, "output"), buffer);
+                }
+
+                (Some(ctx), buffers)
+            } else {
+                (None, std::collections::HashMap::new())
+            }
         } else {
-            None
+            (None, std::collections::HashMap::new())
         };
 
         #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
@@ -58,6 +144,8 @@ impl InferenceContext {
             device,
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
             gpu_ctx,
+            #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+            gpu_weight_buffers,
         })
     }
 
@@ -78,7 +166,7 @@ impl InferenceContext {
 
     /// Run forward pass with appropriate device
     pub fn forward(
-        &self,
+        &mut self,
         tokens: &[u32],
         kv_cache: &mut KVCache,
     ) -> Option<Vec<f32>> {
@@ -87,7 +175,12 @@ impl InferenceContext {
                 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
                 {
                     if let Some(ref gpu_ctx) = self.gpu_ctx {
-                        self.model.forward_gpu(tokens, kv_cache, gpu_ctx)
+                        self.model.forward_gpu(
+                            tokens,
+                            kv_cache,
+                            gpu_ctx,
+                            &mut self.gpu_weight_buffers,
+                        )
                     } else {
                         self.model.forward(tokens, kv_cache)
                     }
