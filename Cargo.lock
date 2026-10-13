@@ -339,6 +339,7 @@ dependencies = [
  "metal",
  "num-traits",
  "num_cpus",
+ "once_cell",
  "rand",
  "serde",
  "serde_json",

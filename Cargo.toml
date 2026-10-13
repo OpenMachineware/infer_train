@@ -11,6 +11,14 @@ path = "tools/inspect_gguf.rs"
 name = "debug-tensor"
 path = "tools/debug_tensor.rs"
 
+[[bin]]
+name = "inspect-tokenizer"
+path = "tools/inspect_tokenizer.rs"
+
+[[bin]]
+name = "test-tokenizer"
+path = "tools/test_tokenizer.rs"
+
 [features]
 default = []
 metal = []
@@ -31,6 +39,7 @@ serde_json = "1.0"
 memmap2 = "0.9"
 thiserror = "2.0"
 log = "0.4"
+once_cell = "1.20"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"

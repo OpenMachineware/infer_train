@@ -9,3 +9,4 @@ pub mod model;
 pub mod ops;
 pub mod platform;
 pub mod quant;
+pub mod tokenize;
