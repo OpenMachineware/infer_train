@@ -4,7 +4,47 @@
 // BPE Tokenizer for GGUF models
 
 use crate::model::gguf::{GgufFile, MetadataValue};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+
+/// Pre-tokenization type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreType {
+    Default,
+    Llama3,
+    DeepSeekLlm,
+    DeepSeekCoder,
+    Gpt2,
+    Qwen2,
+    Qwen35,
+    Tekken,
+    ChatGlm3,
+    ChatGlm4,
+    Starcoder,
+    CommandR,
+    StableLm2,
+    Unknown,
+}
+
+impl PreType {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "default" | "llama-bpe" => PreType::Default,
+            "llama3" => PreType::Llama3,
+            "deepseek-llm" => PreType::DeepSeekLlm,
+            "deepseek-coder" => PreType::DeepSeekCoder,
+            "gpt2" => PreType::Gpt2,
+            "qwen2" => PreType::Qwen2,
+            "qwen35" => PreType::Qwen35,
+            "tekken" => PreType::Tekken,
+            "chatglm3" => PreType::ChatGlm3,
+            "chatglm4" => PreType::ChatGlm4,
+            "starcoder" => PreType::Starcoder,
+            "command-r" => PreType::CommandR,
+            "stablelm2" => PreType::StableLm2,
+            _ => PreType::Unknown,
+        }
+    }
+}
 
 /// BPE Tokenizer loaded from GGUF metadata
 pub struct BpeTokenizer {
@@ -19,6 +59,8 @@ pub struct BpeTokenizer {
     pub eos_token: u32,
     pub unk_token: u32,
     pub pad_token: u32,
+    /// Pre-tokenization type
+    pub pre_type: PreType,
     /// Config
     pub add_bos: bool,
     pub add_eos: bool,
@@ -35,6 +77,7 @@ impl BpeTokenizer {
         pad_token_id: u32,
         add_bos: bool,
         add_eos: bool,
+        pre_type: PreType,
     ) -> Self {
         // Build vocab mapping
         let mut vocab = HashMap::new();
@@ -63,6 +106,7 @@ impl BpeTokenizer {
             eos_token: eos_token_id,
             unk_token: unk_token_id,
             pad_token: pad_token_id,
+            pre_type,
             add_bos,
             add_eos,
         }
@@ -116,6 +160,12 @@ impl BpeTokenizer {
         let add_eos =
             get_bool(meta, "tokenizer.ggml.add_eos_token").unwrap_or(false);
 
+        // Extract pre-tokenization type
+        let pre_type = match meta.get("tokenizer.ggml.pre") {
+            Some(MetadataValue::String(s)) => PreType::from_str(s),
+            _ => PreType::Default,
+        };
+
         Some(BpeTokenizer::new(
             &tokens,
             &merges,
@@ -125,59 +175,67 @@ impl BpeTokenizer {
             pad_token_id,
             add_bos,
             add_eos,
+            pre_type,
         ))
     }
 
     /// Encode text to token IDs
     pub fn encode(&self, text: &str) -> Vec<u32> {
-        // Pre-process: convert to GPT-2 byte encoding
-        let bytes = self.bytes_to_gpt2(text);
+        // Apply pre-tokenization to split text into chunks
+        let chunks = self.pre_tokenize(text);
 
-        // Split into initial tokens (characters in GPT-2 encoding)
-        let mut tokens: Vec<String> =
-            bytes.chars().map(|c| c.to_string()).collect();
+        let mut all_ids = Vec::new();
 
-        // Apply BPE merges iteratively
-        while tokens.len() > 1 {
-            // Find the best merge (lowest rank)
-            let mut best_merge: Option<(usize, usize)> = None;
-            let mut best_rank = usize::MAX;
+        for chunk in chunks {
+            // Convert to GPT-2 byte encoding
+            let bytes = self.bytes_to_gpt2(&chunk);
 
-            for i in 0..tokens.len() - 1 {
-                let key = (tokens[i].clone(), tokens[i + 1].clone());
-                if let Some(&rank) = self.merges.get(&key) {
-                    if rank < best_rank {
-                        best_rank = rank;
-                        best_merge = Some((i, rank));
+            // Split into initial tokens (characters in GPT-2 encoding)
+            let mut tokens: Vec<String> =
+                bytes.chars().map(|c| c.to_string()).collect();
+
+            // Apply BPE merges iteratively
+            while tokens.len() > 1 {
+                // Find the best merge (lowest rank)
+                let mut best_merge: Option<(usize, usize)> = None;
+                let mut best_rank = usize::MAX;
+
+                for i in 0..tokens.len() - 1 {
+                    let key = (tokens[i].clone(), tokens[i + 1].clone());
+                    if let Some(&rank) = self.merges.get(&key) {
+                        if rank < best_rank {
+                            best_rank = rank;
+                            best_merge = Some((i, rank));
+                        }
                     }
+                }
+
+                if let Some((i, _)) = best_merge {
+                    // Apply merge
+                    let merged = tokens[i].clone() + &tokens[i + 1];
+                    tokens.splice(i..=i + 1, std::iter::once(merged));
+                } else {
+                    // No more merges possible
+                    break;
                 }
             }
 
-            if let Some((i, _)) = best_merge {
-                // Apply merge
-                let merged = tokens[i].clone() + &tokens[i + 1];
-                tokens.splice(i..=i + 1, std::iter::once(merged));
-            } else {
-                // No more merges possible
-                break;
+            // Convert to IDs
+            for t in tokens {
+                let id = self.vocab.get(&t).copied().unwrap_or(self.unk_token);
+                all_ids.push(id);
             }
         }
 
-        // Convert to IDs
-        let mut ids: Vec<u32> = tokens
-            .iter()
-            .map(|t| self.vocab.get(t).copied().unwrap_or(self.unk_token))
-            .collect();
-
         // Add special tokens
         if self.add_bos {
-            ids.insert(0, self.bos_token);
+            all_ids.insert(0, self.bos_token);
         }
         if self.add_eos {
-            ids.push(self.eos_token);
+            all_ids.push(self.eos_token);
         }
 
-        ids
+        all_ids
     }
 
     /// Decode token IDs to text
@@ -190,6 +248,62 @@ impl BpeTokenizer {
         }
         // Convert from GPT-2 byte encoding back to UTF-8
         self.gpt2_to_bytes(&bytes)
+    }
+
+    /// Pre-tokenize text into chunks based on pre_type
+    fn pre_tokenize(&self, text: &str) -> Vec<String> {
+        match self.pre_type {
+            PreType::Qwen35 | PreType::Qwen2 => {
+                // Qwen uses regex-based pre-tokenization
+                // Simplified pattern without lookahead
+                use once_cell::sync::Lazy;
+                use regex::Regex;
+
+                static QWEN_REGEX: Lazy<Regex> = Lazy::new(|| {
+                    Regex::new(
+                        r"(?:'[sdmt]|'ll|'ve|'re)|(?:[^\r\n\p{L}\p{N}]?\p{L}+)|(?:\p{N}{1,3})|(?:[^\s\p{L}\p{N}]+)|(?:\s+)",
+                    )
+                    .unwrap()
+                });
+
+                QWEN_REGEX
+                    .find_iter(text)
+                    .map(|m| m.as_str().to_string())
+                    .collect()
+            }
+            PreType::Tekken => {
+                // Tekken pre-tokenization
+                use once_cell::sync::Lazy;
+                use regex::Regex;
+
+                static TEKKEN_REGEX: Lazy<Regex> = Lazy::new(|| {
+                    Regex::new(r"(?:'[sdmt]|'ll|'ve|'re)|(?: ?\p{L}+)|(?: ?\p{N}+)|(?: ?[^\s\p{L}\p{N}]+)|(?:\s+)").unwrap()
+                });
+
+                TEKKEN_REGEX
+                    .find_iter(text)
+                    .map(|m| m.as_str().to_string())
+                    .collect()
+            }
+            PreType::Llama3 => {
+                // Llama3 pre-tokenization
+                use once_cell::sync::Lazy;
+                use regex::Regex;
+
+                static LLAMA3_REGEX: Lazy<Regex> = Lazy::new(|| {
+                    Regex::new(r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|(?:[^\r\n\p{L}\p{N}]?\p{L}+)|(?:\p{N}{1,3})|(?: ?[^\s\p{L}\p{N}]+)|(?:\s+)").unwrap()
+                });
+
+                LLAMA3_REGEX
+                    .find_iter(text)
+                    .map(|m| m.as_str().to_string())
+                    .collect()
+            }
+            _ => {
+                // Default: treat entire text as single chunk
+                vec![text.to_string()]
+            }
+        }
     }
 
     /// Convert text to GPT-2 byte encoding
@@ -300,6 +414,7 @@ mod tests {
             0,
             false,
             false,
+            PreType::Default,
         );
 
         // Space should become 'Ġ' (unicode 288 in GPT-2 encoding)
