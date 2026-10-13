@@ -19,6 +19,30 @@ path = "tools/inspect_tokenizer.rs"
 name = "test-tokenizer"
 path = "tools/test_tokenizer.rs"
 
+[[bin]]
+name = "bench-tokenizer"
+path = "tools/bench_tokenizer.rs"
+
+[[bin]]
+name = "compare-tokenizer"
+path = "tools/compare_tokenizer.rs"
+
+[[bin]]
+name = "debug-pre-tokenize"
+path = "tools/debug_pre_tokenize.rs"
+
+[[bin]]
+name = "debug-bpe"
+path = "tools/debug_bpe.rs"
+
+[[bin]]
+name = "trace-bpe"
+path = "tools/trace_bpe.rs"
+
+[[bin]]
+name = "trace-sequence"
+path = "tools/trace_sequence.rs"
+
 [features]
 default = []
 metal = []
@@ -93,4 +117,8 @@ harness = false
 
 [[bench]]
 name = "kv_cache_bench"
+harness = false
+
+[[bench]]
+name = "tokenizer_bench"
 harness = false
