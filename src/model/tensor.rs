@@ -5,12 +5,17 @@
 
 use std::sync::Arc;
 
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use metal::Buffer;
+
 #[derive(Debug, Clone)]
 pub struct Tensor {
     pub name: String,
     pub shape: Vec<usize>,
     pub dtype: DataType,
     pub data: TensorData,
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub gpu_buffer: std::cell::RefCell<Option<std::rc::Rc<Buffer>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

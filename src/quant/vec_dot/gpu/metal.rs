@@ -99,6 +99,10 @@ pub struct MetalContext {
     mv_weights_ptr: RefCell<usize>, // Track data pointer to detect different tensors
     mv_input_size: RefCell<usize>,
     mv_output_size: RefCell<usize>,
+    // Weight buffer cache: key = data pointer, value = GPU buffer
+    // This allows each weight tensor to have its own cached buffer
+    weight_buffer_cache:
+        RefCell<std::collections::HashMap<usize, std::rc::Rc<Buffer>>>,
     // Cached buffers for GEMM operations
     gemm_weights_buffer: RefCell<Option<Buffer>>,
     gemm_input_buffer: RefCell<Option<Buffer>>,
@@ -1115,12 +1119,34 @@ impl MetalContext {
             gemm_weights_size: RefCell::new(0),
             gemm_input_size: RefCell::new(0),
             gemm_output_size: RefCell::new(0),
+            weight_buffer_cache: RefCell::new(std::collections::HashMap::new()),
         })
     }
 
     /// Get the Metal device
     pub fn device(&self) -> &Device {
         &self.device
+    }
+
+    /// Get or create GPU buffer for a tensor (lazy initialization)
+    pub fn get_or_create_buffer(
+        &self,
+        tensor: &crate::model::tensor::Tensor,
+    ) -> std::rc::Rc<Buffer> {
+        let mut gpu_buffer = tensor.gpu_buffer.borrow_mut();
+
+        if let Some(ref buffer) = *gpu_buffer {
+            std::rc::Rc::clone(buffer)
+        } else {
+            // Create new buffer
+            let buffer = std::rc::Rc::new(self.device.new_buffer_with_data(
+                tensor.bytes().as_ptr() as *const std::ffi::c_void,
+                tensor.bytes().len() as u64,
+                metal::MTLResourceOptions::StorageModeShared,
+            ));
+            *gpu_buffer = Some(std::rc::Rc::clone(&buffer));
+            buffer
+        }
     }
 
     pub fn vec_dot_iq4_nl_q8_0(
@@ -1420,25 +1446,22 @@ impl MetalContext {
 
         // Weights buffer - cache by data pointer (weights are static during inference)
         let weights_buffer = {
-            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
-            let mut size_cell = self.mv_weights_size.borrow_mut();
-            let mut ptr_cell = self.mv_weights_ptr.borrow_mut();
             let data_ptr = weights.as_ptr() as usize;
+            let mut cache = self.weight_buffer_cache.borrow_mut();
 
-            if *size_cell != weights_size || *ptr_cell != data_ptr {
-                // Size or pointer changed, create new buffer with data
-                let buf = self.device.new_buffer_with_data(
-                    weights.as_ptr() as *const std::ffi::c_void,
-                    weights_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = weights_size;
-                *ptr_cell = data_ptr;
-                buf
+            if let Some(buffer) = cache.get(&data_ptr) {
+                // Buffer already exists for this tensor
+                std::rc::Rc::clone(buffer)
             } else {
-                // Same pointer, reuse existing buffer (data already on GPU)
-                buf_cell.as_ref().unwrap().clone()
+                // Create new buffer and cache it
+                let buffer =
+                    std::rc::Rc::new(self.device.new_buffer_with_data(
+                        weights.as_ptr() as *const std::ffi::c_void,
+                        weights_size as u64,
+                        metal::MTLResourceOptions::StorageModeShared,
+                    ));
+                cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
+                buffer
             }
         };
 
@@ -2188,25 +2211,22 @@ impl MetalContext {
 
         // Weights buffer - cache by data pointer (weights are static during inference)
         let weights_buffer = {
-            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
-            let mut size_cell = self.mv_weights_size.borrow_mut();
-            let mut ptr_cell = self.mv_weights_ptr.borrow_mut();
             let data_ptr = weights.as_ptr() as usize;
+            let mut cache = self.weight_buffer_cache.borrow_mut();
 
-            if *size_cell != weights_size || *ptr_cell != data_ptr {
-                // Size or pointer changed, create new buffer with data
-                let buf = self.device.new_buffer_with_data(
-                    weights.as_ptr() as *const std::ffi::c_void,
-                    weights_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = weights_size;
-                *ptr_cell = data_ptr;
-                buf
+            if let Some(buffer) = cache.get(&data_ptr) {
+                // Buffer already exists for this tensor
+                std::rc::Rc::clone(buffer)
             } else {
-                // Same pointer, reuse existing buffer (data already on GPU)
-                buf_cell.as_ref().unwrap().clone()
+                // Create new buffer and cache it
+                let buffer =
+                    std::rc::Rc::new(self.device.new_buffer_with_data(
+                        weights.as_ptr() as *const std::ffi::c_void,
+                        weights_size as u64,
+                        metal::MTLResourceOptions::StorageModeShared,
+                    ));
+                cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
+                buffer
             }
         };
 
@@ -2368,25 +2388,22 @@ impl MetalContext {
 
         // Weights buffer - cache by data pointer (weights are static during inference)
         let weights_buffer = {
-            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
-            let mut size_cell = self.mv_weights_size.borrow_mut();
-            let mut ptr_cell = self.mv_weights_ptr.borrow_mut();
             let data_ptr = weights.as_ptr() as usize;
+            let mut cache = self.weight_buffer_cache.borrow_mut();
 
-            if *size_cell != weights_size || *ptr_cell != data_ptr {
-                // Size or pointer changed, create new buffer with data
-                let buf = self.device.new_buffer_with_data(
-                    weights.as_ptr() as *const std::ffi::c_void,
-                    weights_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = weights_size;
-                *ptr_cell = data_ptr;
-                buf
+            if let Some(buffer) = cache.get(&data_ptr) {
+                // Buffer already exists for this tensor
+                std::rc::Rc::clone(buffer)
             } else {
-                // Same pointer, reuse existing buffer (data already on GPU)
-                buf_cell.as_ref().unwrap().clone()
+                // Create new buffer and cache it
+                let buffer =
+                    std::rc::Rc::new(self.device.new_buffer_with_data(
+                        weights.as_ptr() as *const std::ffi::c_void,
+                        weights_size as u64,
+                        metal::MTLResourceOptions::StorageModeShared,
+                    ));
+                cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
+                buffer
             }
         };
 
@@ -2545,25 +2562,22 @@ impl MetalContext {
 
         // Weights buffer - cache by data pointer (weights are static during inference)
         let weights_buffer = {
-            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
-            let mut size_cell = self.mv_weights_size.borrow_mut();
-            let mut ptr_cell = self.mv_weights_ptr.borrow_mut();
             let data_ptr = weights.as_ptr() as usize;
+            let mut cache = self.weight_buffer_cache.borrow_mut();
 
-            if *size_cell != weights_size || *ptr_cell != data_ptr {
-                // Size or pointer changed, create new buffer with data
-                let buf = self.device.new_buffer_with_data(
-                    weights.as_ptr() as *const std::ffi::c_void,
-                    weights_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = weights_size;
-                *ptr_cell = data_ptr;
-                buf
+            if let Some(buffer) = cache.get(&data_ptr) {
+                // Buffer already exists for this tensor
+                std::rc::Rc::clone(buffer)
             } else {
-                // Same pointer, reuse existing buffer (data already on GPU)
-                buf_cell.as_ref().unwrap().clone()
+                // Create new buffer and cache it
+                let buffer =
+                    std::rc::Rc::new(self.device.new_buffer_with_data(
+                        weights.as_ptr() as *const std::ffi::c_void,
+                        weights_size as u64,
+                        metal::MTLResourceOptions::StorageModeShared,
+                    ));
+                cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
+                buffer
             }
         };
 
