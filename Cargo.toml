@@ -3,6 +3,14 @@ name = "infer_train"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "inspect-gguf"
+path = "tools/inspect_gguf.rs"
+
+[[bin]]
+name = "debug-tensor"
+path = "tools/debug_tensor.rs"
+
 [features]
 default = []
 metal = []
