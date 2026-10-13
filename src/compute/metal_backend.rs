@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-// Metal backend implementation
+// Metal backend implementation using existing GPU kernels
 
-use metal::{Buffer, Device as MetalDevice, MTLResourceOptions};
+use metal::{Buffer, MTLResourceOptions};
 
 use super::backend::{Backend, BackendError, BackendResult};
 use super::device::Device;
@@ -11,41 +11,39 @@ use super::graph::ComputeGraph;
 use super::op::{OpNode, OpType};
 use super::tensor::Tensor;
 use crate::model::tensor::DataType;
+use crate::quant::vec_dot::gpu::metal::MetalContext;
 
-/// Metal backend using existing GPU kernels
+/// Metal backend using existing GPU kernels from MetalContext
 #[derive(Debug)]
 pub struct MetalBackend {
-    device: MetalDevice,
-    command_queue: metal::CommandQueue,
+    ctx: MetalContext,
 }
 
 impl MetalBackend {
     pub fn new() -> BackendResult<Self> {
-        let device = MetalDevice::system_default().ok_or_else(|| {
-            BackendError::AllocFailed("No Metal device found".to_string())
-        })?;
-
-        let command_queue = device.new_command_queue();
-
-        Ok(Self { device, command_queue })
+        let ctx = MetalContext::new().map_err(BackendError::AllocFailed)?;
+        Ok(Self { ctx })
     }
 
     /// Create a Metal buffer
     pub fn create_buffer(&self, size: usize) -> std::rc::Rc<Buffer> {
-        let buffer = self
-            .device
-            .new_buffer(size as u64, MTLResourceOptions::StorageModeShared);
-        std::rc::Rc::new(buffer)
+        self.ctx
+            .device()
+            .new_buffer(size as u64, MTLResourceOptions::StorageModeShared)
     }
 
     /// Create a Metal buffer from data
     pub fn create_buffer_with_data(&self, data: &[u8]) -> std::rc::Rc<Buffer> {
-        let buffer = self.device.new_buffer_with_data(
+        self.ctx.device().new_buffer_with_data(
             data.as_ptr() as *const std::ffi::c_void,
             data.len() as u64,
             MTLResourceOptions::StorageModeShared,
-        );
-        std::rc::Rc::new(buffer)
+        )
+    }
+
+    /// Get reference to the MetalContext
+    pub fn context(&self) -> &MetalContext {
+        &self.ctx
     }
 }
 
@@ -88,16 +86,12 @@ impl Backend for MetalBackend {
         if tensor.dtype == DataType::F32 {
             let f32_data = bytemuck::cast_slice_mut::<u8, f32>(data);
             f32_data.fill(value);
+        } else if value == 0.0 {
+            data.fill(0);
         } else {
-            // For other dtypes, fill with zeros
-            if value == 0.0 {
-                data.fill(0);
-            } else {
-                return Err(BackendError::ExecFailed(
-                    "Can only fill Metal tensors with 0 or f32 values"
-                        .to_string(),
-                ));
-            }
+            return Err(BackendError::ExecFailed(
+                "Can only fill Metal tensors with 0 or f32 values".to_string(),
+            ));
         }
 
         Ok(())
@@ -179,9 +173,7 @@ impl Backend for MetalBackend {
     }
 
     fn synchronize(&self) -> BackendResult<()> {
-        let cmd_buffer = self.command_queue.new_command_buffer();
-        cmd_buffer.commit();
-        cmd_buffer.wait_until_completed();
+        self.ctx.device().new_command_queue().new_command_buffer().commit();
         Ok(())
     }
 
@@ -194,10 +186,12 @@ impl Backend for MetalBackend {
                 | OpType::Rope
                 | OpType::MatVec
                 | OpType::FlashAttn
+                | OpType::Add
+                | OpType::Mul
         )
     }
 
-    fn supports_dtype(&self, dtype: &DataType) -> bool {
+    fn supports_dtype(&self, _dtype: &DataType) -> bool {
         // Metal supports all quantized formats through MV kernels
         true
     }
@@ -246,6 +240,7 @@ impl MetalBackend {
             OpType::MatVec => self.op_matvec(node, inputs_data, graph),
             OpType::FlashAttn => self.op_flash_attn(node, inputs_data, graph),
             OpType::Add => self.op_add(node, inputs_data, graph),
+            OpType::Mul => self.op_mul(node, inputs_data, graph),
             _ => Err(BackendError::OpNotSupported(format!("{}", node.op_type))),
         }
     }
@@ -260,44 +255,220 @@ impl MetalBackend {
         let weight = &inputs[1];
         let eps = node.params.eps.unwrap_or(1e-5);
 
-        // Get data from Metal buffers
-        let input_contents = input.3.contents();
-        let input_f32: &[f32] = bytemuck::cast_slice(unsafe {
-            std::slice::from_raw_parts(
-                input_contents as *const u8,
-                input.1.iter().product::<usize>() * 4,
-            )
-        });
+        let n_rows = input.1.get(1).copied().unwrap_or(1);
+        let n_cols = input.1[0];
 
+        // Use GPU-native method (zero-copy)
+        let output_buffer = self
+            .ctx
+            .rms_norm_f32_gpu(&input.3, &weight.3, n_rows, n_cols, eps)
+            .map_err(BackendError::ExecFailed)?;
+
+        // Create output tensor with the returned GPU buffer
+        let output = Tensor::from_metal_buffer(
+            &node.output,
+            input.1.clone(),
+            DataType::F32,
+            output_buffer,
+        );
+        graph.add_tensor(output);
+
+        Ok(())
+    }
+
+    fn op_softmax(
+        &self,
+        node: &OpNode,
+        inputs: Vec<(String, Vec<usize>, DataType, std::rc::Rc<Buffer>)>,
+        graph: &mut ComputeGraph,
+    ) -> BackendResult<()> {
+        let input = &inputs[0];
+
+        let ncols = input.1[0];
+        let nrows = input.1.get(1).copied().unwrap_or(1);
+
+        // Use GPU-native method (zero-copy)
+        let output_buffer = self
+            .ctx
+            .softmax_f32_fast_gpu(&input.3, nrows, ncols)
+            .map_err(BackendError::ExecFailed)?;
+
+        // Create output tensor with the returned GPU buffer
+        let output = Tensor::from_metal_buffer(
+            &node.output,
+            input.1.clone(),
+            DataType::F32,
+            output_buffer,
+        );
+        graph.add_tensor(output);
+
+        Ok(())
+    }
+
+    fn op_silu(
+        &self,
+        node: &OpNode,
+        inputs: Vec<(String, Vec<usize>, DataType, std::rc::Rc<Buffer>)>,
+        graph: &mut ComputeGraph,
+    ) -> BackendResult<()> {
+        let input = &inputs[0];
+        let n = input.1.iter().product();
+
+        // Use GPU-native method (zero-copy)
+        let output_buffer = self
+            .ctx
+            .silu_f32_gpu(&input.3, n)
+            .map_err(BackendError::ExecFailed)?;
+
+        // Create output tensor with the returned GPU buffer
+        let output = Tensor::from_metal_buffer(
+            &node.output,
+            input.1.clone(),
+            DataType::F32,
+            output_buffer,
+        );
+        graph.add_tensor(output);
+
+        Ok(())
+    }
+
+    fn op_rope(
+        &self,
+        node: &OpNode,
+        inputs: Vec<(String, Vec<usize>, DataType, std::rc::Rc<Buffer>)>,
+        graph: &mut ComputeGraph,
+    ) -> BackendResult<()> {
+        let input = &inputs[0];
+        let pos = node.params.pos.unwrap_or(0);
+
+        let n_dims = input.1[0];
+        let n_heads = input.1.get(1).copied().unwrap_or(1);
+        let n_seqs = input.1.get(2).copied().unwrap_or(1);
+        let freq_base = node.params.freq_base.unwrap_or(10000.0);
+        let freq_scale = node.params.freq_scale.unwrap_or(1.0);
+
+        let pos_vec: Vec<i32> = vec![pos as i32; n_seqs];
+
+        // Use GPU-native method (zero-copy)
+        let output_buffer = self
+            .ctx
+            .rope_neox_f32_gpu(
+                &input.3, &pos_vec, n_seqs, n_heads, n_dims, freq_base,
+                freq_scale,
+            )
+            .map_err(BackendError::ExecFailed)?;
+
+        // Create output tensor with the returned GPU buffer
+        let output = Tensor::from_metal_buffer(
+            &node.output,
+            input.1.clone(),
+            DataType::F32,
+            output_buffer,
+        );
+        graph.add_tensor(output);
+
+        Ok(())
+    }
+
+    fn op_matvec(
+        &self,
+        node: &OpNode,
+        inputs: Vec<(String, Vec<usize>, DataType, std::rc::Rc<Buffer>)>,
+        graph: &mut ComputeGraph,
+    ) -> BackendResult<()> {
+        let weight = &inputs[0];
+        let vec = &inputs[1];
+
+        let m = weight.1[1]; // Output size (columns in column-major)
+        let k = weight.1[0]; // Input size (rows in column-major)
+
+        // Dispatch to appropriate MV kernel based on weight dtype
+        // For now, use CPU-to-GPU methods (weights need caching by pointer)
+        // TODO: Add GPU-native MV methods that accept weight GPU buffers
         let weight_contents = weight.3.contents();
-        let weight_f32: &[f32] = bytemuck::cast_slice(unsafe {
-            std::slice::from_raw_parts(
-                weight_contents as *const u8,
-                weight.1.iter().product::<usize>() * 4,
-            )
+        let vec_contents = vec.3.contents();
+
+        let vec_f32: &[f32] = bytemuck::cast_slice(unsafe {
+            std::slice::from_raw_parts(vec_contents as *const u8, k * 4)
         });
 
-        let hidden_size = input.1[0];
-        let n_tokens = input.1.get(1).copied().unwrap_or(1);
-
-        let mut output_f32 = vec![0.0f32; hidden_size * n_tokens];
-
-        for t in 0..n_tokens {
-            let offset = t * hidden_size;
-            let row = &input_f32[offset..offset + hidden_size];
-
-            let ss: f32 = row.iter().map(|&x| x * x).sum();
-            let rms = (ss / hidden_size as f32 + eps).sqrt();
-            let inv_rms = 1.0 / rms;
-
-            for i in 0..hidden_size {
-                output_f32[offset + i] = row[i] * inv_rms * weight_f32[i];
+        let output_f32 = match weight.2 {
+            DataType::Q4_0 => {
+                let weight_bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        weight_contents as *const u8,
+                        weight.3.length() as usize,
+                    )
+                };
+                self.ctx
+                    .mv_q4_0_f32(m, k, weight_bytes, vec_f32)
+                    .map_err(BackendError::ExecFailed)?
             }
-        }
+            DataType::Q8_0 => {
+                let weight_bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        weight_contents as *const u8,
+                        weight.3.length() as usize,
+                    )
+                };
+                self.ctx
+                    .mv_q8_0_f32(m, k, weight_bytes, vec_f32)
+                    .map_err(BackendError::ExecFailed)?
+            }
+            DataType::Q4_1 => {
+                let weight_bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        weight_contents as *const u8,
+                        weight.3.length() as usize,
+                    )
+                };
+                self.ctx
+                    .mv_q4_1_f32(m, k, weight_bytes, vec_f32)
+                    .map_err(BackendError::ExecFailed)?
+            }
+            DataType::Q5_0 => {
+                let weight_bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        weight_contents as *const u8,
+                        weight.3.length() as usize,
+                    )
+                };
+                self.ctx
+                    .mv_q5_0_f32(m, k, weight_bytes, vec_f32)
+                    .map_err(BackendError::ExecFailed)?
+            }
+            DataType::Q5_1 => {
+                let weight_bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        weight_contents as *const u8,
+                        weight.3.length() as usize,
+                    )
+                };
+                self.ctx
+                    .mv_q5_1_f32(m, k, weight_bytes, vec_f32)
+                    .map_err(BackendError::ExecFailed)?
+            }
+            DataType::IQ4_NL => {
+                let weight_bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        weight_contents as *const u8,
+                        weight.3.length() as usize,
+                    )
+                };
+                self.ctx
+                    .mv_iq4_nl_f32(m, k, weight_bytes, vec_f32)
+                    .map_err(BackendError::ExecFailed)?
+            }
+            _ => {
+                return Err(BackendError::OpNotSupported(format!(
+                    "MatVec for weight dtype {:?}",
+                    weight.2
+                )));
+            }
+        };
 
         // Create output tensor
-        let output =
-            self.alloc_tensor(&node.output, input.1.clone(), DataType::F32)?;
+        let output = self.alloc_tensor(&node.output, vec![m], DataType::F32)?;
         self.copy_to_tensor(
             &mut output.clone(),
             bytemuck::cast_slice(&output_f32),
@@ -307,75 +478,105 @@ impl MetalBackend {
         Ok(())
     }
 
-    fn op_softmax(
-        &self,
-        _node: &OpNode,
-        _inputs: Vec<(String, Vec<usize>, DataType, std::rc::Rc<Buffer>)>,
-        _graph: &mut ComputeGraph,
-    ) -> BackendResult<()> {
-        // TODO: Use Metal softmax kernel
-        Err(BackendError::OpNotSupported(
-            "Metal softmax not yet implemented".to_string(),
-        ))
-    }
-
-    fn op_silu(
-        &self,
-        _node: &OpNode,
-        _inputs: Vec<(String, Vec<usize>, DataType, std::rc::Rc<Buffer>)>,
-        _graph: &mut ComputeGraph,
-    ) -> BackendResult<()> {
-        // TODO: Use Metal SiLU kernel
-        Err(BackendError::OpNotSupported(
-            "Metal SiLU not yet implemented".to_string(),
-        ))
-    }
-
-    fn op_rope(
-        &self,
-        _node: &OpNode,
-        _inputs: Vec<(String, Vec<usize>, DataType, std::rc::Rc<Buffer>)>,
-        _graph: &mut ComputeGraph,
-    ) -> BackendResult<()> {
-        // TODO: Use Metal RoPE kernel
-        Err(BackendError::OpNotSupported(
-            "Metal RoPE not yet implemented".to_string(),
-        ))
-    }
-
-    fn op_matvec(
-        &self,
-        _node: &OpNode,
-        _inputs: Vec<(String, Vec<usize>, DataType, std::rc::Rc<Buffer>)>,
-        _graph: &mut ComputeGraph,
-    ) -> BackendResult<()> {
-        // TODO: Use Metal MV kernels
-        Err(BackendError::OpNotSupported(
-            "Metal MatVec not yet implemented".to_string(),
-        ))
-    }
-
     fn op_flash_attn(
         &self,
         _node: &OpNode,
         _inputs: Vec<(String, Vec<usize>, DataType, std::rc::Rc<Buffer>)>,
         _graph: &mut ComputeGraph,
     ) -> BackendResult<()> {
-        // TODO: Use Metal Flash Attention kernel
+        // TODO: Implement flash attention with MetalContext
         Err(BackendError::OpNotSupported(
-            "Metal FlashAttn not yet implemented".to_string(),
+            "Flash attention not yet integrated with compute graph".to_string(),
         ))
     }
 
     fn op_add(
         &self,
-        _node: &OpNode,
-        _inputs: Vec<(String, Vec<usize>, DataType, std::rc::Rc<Buffer>)>,
-        _graph: &mut ComputeGraph,
+        node: &OpNode,
+        inputs: Vec<(String, Vec<usize>, DataType, std::rc::Rc<Buffer>)>,
+        graph: &mut ComputeGraph,
     ) -> BackendResult<()> {
-        // TODO: Use Metal Add kernel
-        Err(BackendError::OpNotSupported(
-            "Metal Add not yet implemented".to_string(),
-        ))
+        let a = &inputs[0];
+        let b = &inputs[1];
+
+        // Get data from Metal buffers (add is memory-bound, CPU is fine)
+        let a_contents = a.3.contents();
+        let a_f32: &[f32] = bytemuck::cast_slice(unsafe {
+            std::slice::from_raw_parts(
+                a_contents as *const u8,
+                a.1.iter().product::<usize>() * 4,
+            )
+        });
+
+        let b_contents = b.3.contents();
+        let b_f32: &[f32] = bytemuck::cast_slice(unsafe {
+            std::slice::from_raw_parts(
+                b_contents as *const u8,
+                b.1.iter().product::<usize>() * 4,
+            )
+        });
+
+        // Use CPU add (memory-bound operation)
+        let n = a.1.iter().product();
+        let output_f32 = self
+            .ctx
+            .add_f32(n, a_f32, b_f32)
+            .map_err(BackendError::ExecFailed)?;
+
+        // Create output tensor
+        let output =
+            self.alloc_tensor(&node.output, a.1.clone(), DataType::F32)?;
+        self.copy_to_tensor(
+            &mut output.clone(),
+            bytemuck::cast_slice(&output_f32),
+        )?;
+        graph.add_tensor(output);
+
+        Ok(())
+    }
+
+    fn op_mul(
+        &self,
+        node: &OpNode,
+        inputs: Vec<(String, Vec<usize>, DataType, std::rc::Rc<Buffer>)>,
+        graph: &mut ComputeGraph,
+    ) -> BackendResult<()> {
+        let a = &inputs[0];
+        let b = &inputs[1];
+
+        // Get data from Metal buffers (mul is memory-bound, CPU is fine)
+        let a_contents = a.3.contents();
+        let a_f32: &[f32] = bytemuck::cast_slice(unsafe {
+            std::slice::from_raw_parts(
+                a_contents as *const u8,
+                a.1.iter().product::<usize>() * 4,
+            )
+        });
+
+        let b_contents = b.3.contents();
+        let b_f32: &[f32] = bytemuck::cast_slice(unsafe {
+            std::slice::from_raw_parts(
+                b_contents as *const u8,
+                b.1.iter().product::<usize>() * 4,
+            )
+        });
+
+        // Use CPU mul (memory-bound operation)
+        let n = a.1.iter().product();
+        let output_f32 = self
+            .ctx
+            .mul_f32(n, a_f32, b_f32)
+            .map_err(BackendError::ExecFailed)?;
+
+        // Create output tensor
+        let output =
+            self.alloc_tensor(&node.output, a.1.clone(), DataType::F32)?;
+        self.copy_to_tensor(
+            &mut output.clone(),
+            bytemuck::cast_slice(&output_f32),
+        )?;
+        graph.add_tensor(output);
+
+        Ok(())
     }
 }

@@ -1570,6 +1570,123 @@ impl MetalContext {
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
     }
 
+    /// Q4_0 x F32 Matrix-Vector (zero-copy version, returns GPU buffer)
+    pub fn mv_q4_0_f32_gpu(
+        &self,
+        m: usize,
+        k: usize,
+        weights: &[BlockQ4_0],
+        input_buffer: &Buffer,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let nb = k / 32;
+        let nb01 = (nb * std::mem::size_of::<BlockQ4_0>()) as u64;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: i32,
+            ne01: i32,
+            ne02: i32,
+            nb00: u64,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
+        }
+
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            ne02: 1,
+            nb00: 1,
+            nb01,
+            nb02: 0,
+            nb03: 0,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 4,
+            r2: 1,
+            r3: 1,
+        };
+
+        let weights_size = weights.len() * std::mem::size_of::<BlockQ4_0>();
+        let output_size = m * std::mem::size_of::<f32>();
+
+        // Weights buffer - cache by data pointer
+        let weights_buffer = {
+            let data_ptr = weights.as_ptr() as usize;
+            let mut cache = self.weight_buffer_cache.borrow_mut();
+
+            if let Some(buffer) = cache.get(&data_ptr) {
+                std::rc::Rc::clone(buffer)
+            } else {
+                let buffer =
+                    std::rc::Rc::new(self.device.new_buffer_with_data(
+                        weights.as_ptr() as *const std::ffi::c_void,
+                        weights_size as u64,
+                        metal::MTLResourceOptions::StorageModeShared,
+                    ));
+                cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
+                buffer
+            }
+        };
+
+        // Output buffer
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            output_size as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.mv_q4_0_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const MvArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(&weights_buffer), 0);
+        encoder.set_buffer(2, Some(input_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
+
+        const NSG: u64 = 2;
+        const NR0: u64 = 4;
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
+
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
+    }
+
     /// Q1_0 x F32 Matrix-Vector
     pub fn mv_q1_0_f32(
         &self,
@@ -5082,6 +5199,43 @@ impl MetalContext {
         })
     }
 
+    /// RMS Norm (zero-copy GPU version)
+    pub fn rms_norm_f32_gpu(
+        &self,
+        src_buffer: &Buffer,
+        weight_buffer: &Buffer,
+        n_rows: usize,
+        n_cols: usize,
+        eps: f32,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            (n_rows * n_cols * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        let ne00 = n_cols as i32;
+        encoder.set_compute_pipeline_state(&self.rms_norm_pipeline);
+        encoder.set_buffer(0, Some(src_buffer), 0);
+        encoder.set_buffer(1, Some(weight_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(3, 4, &ne00 as *const i32 as *const std::ffi::c_void);
+        encoder.set_bytes(4, 4, &eps as *const f32 as *const std::ffi::c_void);
+
+        let thread_group_size = MTLSize { width: 64, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: n_rows as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
+    }
+
     // ========================================================================
     // Softmax
     // ========================================================================
@@ -5127,6 +5281,42 @@ impl MetalContext {
         Ok(unsafe {
             std::slice::from_raw_parts(output_ptr, n_rows * n_cols).to_vec()
         })
+    }
+
+    /// Softmax (zero-copy GPU version)
+    pub fn softmax_f32_fast_gpu(
+        &self,
+        src_buffer: &Buffer,
+        n_rows: usize,
+        n_cols: usize,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            (n_rows * n_cols * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        let ne00 = n_cols as i32;
+        let ne01 = n_rows as i32;
+        encoder.set_compute_pipeline_state(&self.softmax_fast_pipeline);
+        encoder.set_bytes(0, 4, &ne00 as *const i32 as *const std::ffi::c_void);
+        encoder.set_buffer(1, Some(src_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(3, 4, &ne01 as *const i32 as *const std::ffi::c_void);
+
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: n_rows as u64, height: 1, depth: 1 };
+
+        encoder.set_threadgroup_memory_length(0, 128);
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
     }
 
     // ========================================================================
@@ -5204,6 +5394,70 @@ impl MetalContext {
         })
     }
 
+    /// RoPE (zero-copy GPU version)
+    pub fn rope_neox_f32_gpu(
+        &self,
+        src_buffer: &Buffer,
+        pos: &[i32],
+        n_seqs: usize,
+        n_heads: usize,
+        n_dims: usize,
+        freq_base: f32,
+        freq_scale: f32,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let pos_buffer = self.device.new_buffer_with_data(
+            pos.as_ptr() as *const std::ffi::c_void,
+            (pos.len() * std::mem::size_of::<i32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            (n_seqs * n_heads * n_dims * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let args = RopeArgs {
+            ne00: n_dims as i32,
+            ne01: (n_heads * n_seqs) as i32,
+            ne02: n_seqs as i32,
+            nb00: 4,
+            nb01: (n_dims * 4) as u64,
+            nb02: (n_heads * n_dims * 4) as u64,
+            n_dims: n_dims as i32,
+            n_offs: 0,
+            freq_base,
+            freq_scale,
+            ext_factor: 0.0,
+            attn_factor: 1.0,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            n_ctx_orig: 0,
+        };
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.rope_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<RopeArgs>() as u64,
+            &args as *const RopeArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(src_buffer), 0);
+        encoder.set_buffer(2, Some(&pos_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: n_heads as u64, height: n_seqs as u64, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
+    }
+
     // ========================================================================
     // Activation Functions
     // ========================================================================
@@ -5240,6 +5494,39 @@ impl MetalContext {
 
         let output_ptr = output_buffer.contents() as *const f32;
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, n).to_vec() })
+    }
+
+    /// SiLU (zero-copy GPU version)
+    pub fn silu_f32_gpu(
+        &self,
+        src_buffer: &Buffer,
+        n: usize,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            (n * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.silu_pipeline);
+        encoder.set_buffer(0, Some(src_buffer), 0);
+        encoder.set_buffer(1, Some(&output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: ((n / 4 + 255) / 256) as u64,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
     }
 
     pub fn gelu_f32(&self, n: usize, src: &[f32]) -> Result<Vec<f32>, String> {
