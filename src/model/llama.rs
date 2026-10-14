@@ -1744,7 +1744,8 @@ impl LlamaModel {
         gpu_ctx.add_f32_gpu(&residual_buffer, &ffn_out_buffer, hidden_size).ok()
     }
 
-    /// GEMV with GPU buffers (no CPU transfer)
+    /// GEMV with GPU buffers (no CPU transfer for supported formats)
+    /// For unsupported formats, falls back to CPU (with GPU-CPU transfer)
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     fn gemv_gpu_buffer(
         &self,
@@ -1840,6 +1841,16 @@ impl LlamaModel {
                     input_buffer,
                 )
                 .ok(),
+            // IQ4_NL - supported
+            crate::model::tensor::DataType::IQ4_NL => gpu_ctx
+                .mv_iq4_nl_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            // Unsupported formats - use CPU fallback
             _ => None,
         }
     }
