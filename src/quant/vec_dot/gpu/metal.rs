@@ -1318,7 +1318,7 @@ impl MetalContext {
             metal::MTLResourceOptions::StorageModeShared,
         );
 
-        let _buffer_time = t0.elapsed();
+        let buffer_time = t0.elapsed();
 
         let t1 = std::time::Instant::now();
 
@@ -1331,7 +1331,7 @@ impl MetalContext {
             .new_compute_pipeline_state_with_function(&kernel)
             .map_err(|e| format!("Failed to create pipeline: {}", e))?;
 
-        let _pipeline_time = t1.elapsed();
+        let pipeline_time = t1.elapsed();
 
         let t2 = std::time::Instant::now();
 
@@ -1373,14 +1373,14 @@ impl MetalContext {
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
 
-        let _encode_time = t2.elapsed();
+        let encode_time = t2.elapsed();
 
         let t3 = std::time::Instant::now();
 
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
-        let _gpu_time = t3.elapsed();
+        let gpu_time = t3.elapsed();
 
         // Only log timing in debug builds
         #[cfg(debug_assertions)]
