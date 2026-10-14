@@ -977,6 +977,7 @@ impl LlamaModel {
         // For now, process tokens one at a time
         // TODO: Batch processing
         let token = tokens[0];
+        let pos = 0; // Position for first token
 
         // 1. Embedding lookup - for now use CPU, TODO: GPU embedding
         let hidden = self.embedding_lookup_impl(token)?;
@@ -995,6 +996,7 @@ impl LlamaModel {
                 layer,
                 layer_idx,
                 hidden_tensor,
+                pos,
                 backend,
             )?;
         }
@@ -1023,6 +1025,7 @@ impl LlamaModel {
         layer: &LlamaLayer,
         layer_idx: usize,
         hidden: crate::compute::tensor::Tensor,
+        pos: usize,
         backend: &MetalBackend,
     ) -> Option<crate::compute::tensor::Tensor> {
         let hidden_size = self.config.hidden_size;
@@ -1097,8 +1100,33 @@ impl LlamaModel {
         let actual_n_kv_heads = k_out_size / head_dim;
 
         // === Step 3: RoPE ===
-        // TODO: RoPE needs position parameter - need to pass it through
-        // For now, skip RoPE and use raw Q/K
+        // Apply RoPE to Q and K
+        let mut graph = ComputeGraph::new();
+        graph.add_tensor(q.clone());
+        graph.add_input("q");
+
+        // RoPE expects shape [n_dims, n_heads, n_seqs]
+        // Q shape is [n_heads * head_dim] - reshape to [head_dim, n_heads, 1]
+        let mut rope_params = OpParams::default();
+        rope_params.pos = Some(pos);
+        rope_params.freq_base = Some(self.config.rope_freq_base);
+
+        graph.add_op(
+            OpNode::new(OpType::Rope, vec!["q".into()], "q_rope".to_string())
+                .with_params(rope_params.clone()),
+        );
+        backend.execute(&mut graph).ok()?;
+        let q_rope = graph.get_tensor("q_rope")?.clone();
+
+        let mut graph = ComputeGraph::new();
+        graph.add_tensor(k.clone());
+        graph.add_input("k");
+        graph.add_op(
+            OpNode::new(OpType::Rope, vec!["k".into()], "k_rope".to_string())
+                .with_params(rope_params),
+        );
+        backend.execute(&mut graph).ok()?;
+        let k_rope = graph.get_tensor("k_rope")?.clone();
 
         // === Step 4: Flash Attention ===
         // TODO: Need KV cache integration
@@ -1106,7 +1134,7 @@ impl LlamaModel {
 
         // === Step 5: Output Projection ===
         let mut graph = ComputeGraph::new();
-        graph.add_tensor(q.clone()); // Using Q as placeholder for attention output
+        graph.add_tensor(q_rope.clone()); // Using Q as placeholder for attention output
         graph.add_input("attn_out");
 
         let wo = self.tensor_to_compute(layer.wo.as_ref()?, "wo")?;
