@@ -1,151 +1,408 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-// Backend trait for executing compute graphs
+//! Backend trait for unified execution across devices.
 
-use super::device::Device;
-use super::graph::ComputeGraph;
-use super::tensor::Tensor;
+use std::sync::Arc;
+
+use super::graph::{ComputeGraph, OpType};
+use super::storage::{Device, Storage};
 use crate::model::tensor::DataType;
 
-/// Result type for backend operations
-pub type BackendResult<T> = Result<T, BackendError>;
-
-/// Errors that can occur during backend operations
-#[derive(Debug, Clone)]
-pub enum BackendError {
-    /// Tensor not found
-    TensorNotFound(String),
-    /// Operation not supported
-    OpNotSupported(String),
-    /// Device mismatch
-    DeviceMismatch { expected: Device, actual: Device },
-    /// Shape mismatch
-    ShapeMismatch { expected: Vec<usize>, actual: Vec<usize> },
-    /// Dtype mismatch
-    DtypeMismatch { expected: DataType, actual: DataType },
-    /// Memory allocation failed
-    AllocFailed(String),
-    /// Execution failed
-    ExecFailed(String),
-    /// Invalid operation parameters
-    InvalidParams(String),
+/// Execution context for a backend.
+pub struct ExecutionContext {
+    /// Device being used.
+    pub device: Device,
+    /// KV cache position (for attention).
+    pub seq_len: usize,
+    /// Batch size.
+    pub batch_size: usize,
 }
 
-impl std::fmt::Display for BackendError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BackendError::TensorNotFound(name) => {
-                write!(f, "Tensor not found: {}", name)
-            }
-            BackendError::OpNotSupported(op) => {
-                write!(f, "Operation not supported: {}", op)
-            }
-            BackendError::DeviceMismatch { expected, actual } => {
-                write!(
-                    f,
-                    "Device mismatch: expected {}, got {}",
-                    expected, actual
-                )
-            }
-            BackendError::ShapeMismatch { expected, actual } => {
-                write!(
-                    f,
-                    "Shape mismatch: expected {:?}, got {:?}",
-                    expected, actual
-                )
-            }
-            BackendError::DtypeMismatch { expected, actual } => {
-                write!(
-                    f,
-                    "Dtype mismatch: expected {:?}, got {:?}",
-                    expected, actual
-                )
-            }
-            BackendError::AllocFailed(msg) => {
-                write!(f, "Allocation failed: {}", msg)
-            }
-            BackendError::ExecFailed(msg) => {
-                write!(f, "Execution failed: {}", msg)
-            }
-            BackendError::InvalidParams(msg) => {
-                write!(f, "Invalid parameters: {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for BackendError {}
-
-/// Backend trait for executing operations on a device
-/// Note: Not requiring Send+Sync to allow Rc-based implementations (Metal)
-pub trait Backend: std::fmt::Debug {
-    /// Get the device this backend runs on
+/// Backend trait for tensor operations.
+/// Note: No Send/Sync requirements because MetalContext uses RefCell internally.
+pub trait Backend {
+    /// Get the device type.
     fn device(&self) -> Device;
 
-    /// Allocate a tensor on this backend's device
-    fn alloc_tensor(
+    /// Allocate a tensor on this device.
+    fn alloc_tensor(&self, shape: &[usize], dtype: DataType) -> Storage;
+
+    /// Allocate a tensor with initial data.
+    fn alloc_tensor_with_data(
         &self,
-        name: &str,
-        shape: Vec<usize>,
+        shape: &[usize],
         dtype: DataType,
-    ) -> BackendResult<Tensor>;
-
-    /// Allocate a tensor initialized to zero
-    fn alloc_zeros(
-        &self,
-        name: &str,
-        shape: Vec<usize>,
-        dtype: DataType,
-    ) -> BackendResult<Tensor> {
-        let mut tensor = self.alloc_tensor(name, shape, dtype)?;
-        self.fill_tensor(&mut tensor, 0.0)?;
-        Ok(tensor)
-    }
-
-    /// Fill a tensor with a value
-    fn fill_tensor(&self, tensor: &mut Tensor, value: f32)
-    -> BackendResult<()>;
-
-    /// Copy data to a tensor from CPU memory
-    fn copy_to_tensor(
-        &self,
-        tensor: &mut Tensor,
         data: &[u8],
-    ) -> BackendResult<()>;
+    ) -> Storage;
 
-    /// Copy data from a tensor to CPU memory
-    fn copy_from_tensor(
+    /// Execute a compute graph.
+    /// Returns output tensors by name.
+    fn execute(
         &self,
-        tensor: &Tensor,
-        data: &mut [u8],
-    ) -> BackendResult<()>;
+        graph: &ComputeGraph,
+        ctx: &ExecutionContext,
+    ) -> Result<Vec<Storage>, String>;
 
-    /// Execute a compute graph
-    fn execute(&self, graph: &mut ComputeGraph) -> BackendResult<()>;
+    /// Copy tensor data to CPU.
+    fn copy_to_cpu(&self, storage: &Storage) -> Result<Vec<u8>, String>;
 
-    /// Synchronize (wait for all operations to complete)
-    fn synchronize(&self) -> BackendResult<()>;
+    /// Copy tensor data from CPU.
+    fn copy_from_cpu(
+        &self,
+        data: &[u8],
+        storage: &mut Storage,
+    ) -> Result<(), String>;
 
-    /// Check if an operation is supported
-    fn supports_op(&self, op_type: &super::op::OpType) -> bool;
+    // Primitive operations (for individual op execution)
 
-    /// Check if a data type is supported
-    fn supports_dtype(&self, dtype: &DataType) -> bool;
+    /// RMS normalization.
+    fn rms_norm(
+        &self,
+        input: &Storage,
+        weight: &Storage,
+        output: &mut Storage,
+        eps: f32,
+    ) -> Result<(), String>;
+
+    /// Matrix multiplication: output = input @ weight.
+    /// Weight is quantized, input is F32, output is F32.
+    fn matmul(
+        &self,
+        input: &Storage,
+        weight: &Storage,
+        weight_dtype: DataType,
+        output: &mut Storage,
+    ) -> Result<(), String>;
+
+    /// Flash attention.
+    fn flash_attn(
+        &self,
+        query: &Storage,
+        k_cache: &Storage,
+        v_cache: &Storage,
+        output: &mut Storage,
+        n_heads: usize,
+        head_dim: usize,
+        n_kv_heads: usize,
+        seq_len: usize,
+    ) -> Result<(), String>;
+
+    /// RoPE position encoding.
+    fn rope(
+        &self,
+        input: &Storage,
+        pos: usize,
+        output: &mut Storage,
+        n_heads: usize,
+        head_dim: usize,
+        freq_base: f32,
+    ) -> Result<(), String>;
+
+    /// Element-wise add.
+    fn add(
+        &self,
+        a: &Storage,
+        b: &Storage,
+        output: &mut Storage,
+    ) -> Result<(), String>;
+
+    /// Element-wise multiply.
+    fn mul(
+        &self,
+        a: &Storage,
+        b: &Storage,
+        output: &mut Storage,
+    ) -> Result<(), String>;
+
+    /// SiLU activation.
+    fn silu(&self, input: &Storage, output: &mut Storage)
+    -> Result<(), String>;
 }
 
-/// Backend factory
-pub struct BackendFactory;
+/// CPU backend implementation.
+pub struct CpuBackend {
+    num_threads: usize,
+}
 
-impl BackendFactory {
-    /// Create a backend for the specified device
-    pub fn create(device: Device) -> BackendResult<Box<dyn Backend>> {
-        match device {
-            Device::Cpu => Ok(Box::new(super::cpu_backend::CpuBackend::new())),
+impl CpuBackend {
+    pub fn new(num_threads: usize) -> Self {
+        Self { num_threads }
+    }
+}
+
+impl Backend for CpuBackend {
+    fn device(&self) -> Device {
+        Device::Cpu
+    }
+
+    fn alloc_tensor(&self, shape: &[usize], dtype: DataType) -> Storage {
+        let num_elems: usize = shape.iter().product();
+        let size = num_elems * dtype.block_size() / dtype.elems_per_block();
+        Storage::cpu(vec![0u8; size])
+    }
+
+    fn alloc_tensor_with_data(
+        &self,
+        _shape: &[usize],
+        _dtype: DataType,
+        data: &[u8],
+    ) -> Storage {
+        Storage::cpu(data.to_vec())
+    }
+
+    fn execute(
+        &self,
+        graph: &ComputeGraph,
+        ctx: &ExecutionContext,
+    ) -> Result<Vec<Storage>, String> {
+        // For now, execute ops one by one
+        // TODO: Parallelize independent ops
+        let mut tensor_storage: std::collections::HashMap<String, Storage> =
+            std::collections::HashMap::new();
+
+        // Initialize input tensors
+        for input_name in &graph.inputs {
+            if let Some(tensor) = graph.get_tensor(input_name) {
+                if let Some(storage) = &tensor.storage {
+                    tensor_storage.insert(input_name.clone(), storage.clone());
+                }
+            }
+        }
+
+        // Initialize weight tensors
+        for (name, tensor) in &graph.tensors {
+            if let Some(storage) = &tensor.storage {
+                tensor_storage.insert(name.clone(), storage.clone());
+            }
+        }
+
+        // Execute each operation
+        for node in &graph.nodes {
+            // Get inputs
+            let inputs: Vec<&Storage> = node
+                .inputs
+                .iter()
+                .map(|name| {
+                    tensor_storage
+                        .get(name)
+                        .ok_or_else(|| format!("Tensor '{}' not found", name))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            // Allocate output
+            let output_shape = Self::infer_output_shape(&node.op, &inputs)?;
+            let output_dtype = Self::infer_output_dtype(&node.op, &inputs);
+            let mut output_storage =
+                self.alloc_tensor(&output_shape, output_dtype);
+
+            // Execute operation
+            match &node.op {
+                OpType::RmsNorm { eps } => {
+                    self.rms_norm(
+                        inputs[0],
+                        inputs[1],
+                        &mut output_storage,
+                        *eps,
+                    )?;
+                }
+                OpType::MatMul => {
+                    // Infer weight dtype from second input
+                    let weight_dtype = DataType::F32; // TODO: Get from tensor metadata
+                    self.matmul(
+                        inputs[0],
+                        inputs[1],
+                        weight_dtype,
+                        &mut output_storage,
+                    )?;
+                }
+                OpType::FlashAttn { n_heads, head_dim, n_kv_heads, .. } => {
+                    self.flash_attn(
+                        inputs[0],
+                        inputs[1],
+                        inputs[2],
+                        &mut output_storage,
+                        *n_heads,
+                        *head_dim,
+                        *n_kv_heads,
+                        ctx.seq_len,
+                    )?;
+                }
+                OpType::Add => {
+                    self.add(inputs[0], inputs[1], &mut output_storage)?;
+                }
+                OpType::Mul => {
+                    self.mul(inputs[0], inputs[1], &mut output_storage)?;
+                }
+                OpType::Silu => {
+                    self.silu(inputs[0], &mut output_storage)?;
+                }
+                _ => return Err(format!("Unsupported op: {:?}", node.op)),
+            }
+
+            tensor_storage.insert(node.output.clone(), output_storage);
+        }
+
+        // Collect outputs
+        let outputs: Vec<Storage> = graph
+            .outputs
+            .iter()
+            .map(|name| {
+                tensor_storage
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| format!("Output '{}' not found", name))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(outputs)
+    }
+
+    fn copy_to_cpu(&self, storage: &Storage) -> Result<Vec<u8>, String> {
+        match storage {
+            Storage::Cpu(data) => Ok(data.as_ref().to_vec()),
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-            Device::Metal => {
-                Ok(Box::new(super::metal_backend::MetalBackend::new()?))
+            Storage::Metal(_) => {
+                Err("Cannot copy Metal buffer to CPU on CPU backend"
+                    .to_string())
             }
         }
     }
+
+    fn copy_from_cpu(
+        &self,
+        data: &[u8],
+        storage: &mut Storage,
+    ) -> Result<(), String> {
+        match storage {
+            Storage::Cpu(buf) => {
+                Arc::make_mut(buf).copy_from_slice(data);
+                Ok(())
+            }
+            #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+            Storage::Metal(_) => {
+                Err("Cannot copy to Metal buffer on CPU backend".to_string())
+            }
+        }
+    }
+
+    fn rms_norm(
+        &self,
+        input: &Storage,
+        weight: &Storage,
+        output: &mut Storage,
+        eps: f32,
+    ) -> Result<(), String> {
+        let input_data = input.as_bytes().ok_or("Input not on CPU")?;
+        let weight_data = weight.as_bytes().ok_or("Weight not on CPU")?;
+        let output_data = output.as_bytes().ok_or("Output not on CPU")?;
+
+        // TODO: Implement RMS norm
+        Err("RMS norm not implemented on CPU backend".to_string())
+    }
+
+    fn matmul(
+        &self,
+        _input: &Storage,
+        _weight: &Storage,
+        _weight_dtype: DataType,
+        _output: &mut Storage,
+    ) -> Result<(), String> {
+        // Use existing CPU GEMV/GEMM implementation
+        Err("MatMul not implemented on CPU backend".to_string())
+    }
+
+    fn flash_attn(
+        &self,
+        _query: &Storage,
+        _k_cache: &Storage,
+        _v_cache: &Storage,
+        _output: &mut Storage,
+        _n_heads: usize,
+        _head_dim: usize,
+        _n_kv_heads: usize,
+        _seq_len: usize,
+    ) -> Result<(), String> {
+        // Use existing CPU attention implementation
+        Err("Flash attention not implemented on CPU backend".to_string())
+    }
+
+    fn rope(
+        &self,
+        _input: &Storage,
+        _pos: usize,
+        _output: &mut Storage,
+        _n_heads: usize,
+        _head_dim: usize,
+        _freq_base: f32,
+    ) -> Result<(), String> {
+        Err("RoPE not implemented on CPU backend".to_string())
+    }
+
+    fn add(
+        &self,
+        _a: &Storage,
+        _b: &Storage,
+        _output: &mut Storage,
+    ) -> Result<(), String> {
+        Err("Add not implemented on CPU backend".to_string())
+    }
+
+    fn mul(
+        &self,
+        _a: &Storage,
+        _b: &Storage,
+        _output: &mut Storage,
+    ) -> Result<(), String> {
+        Err("Mul not implemented on CPU backend".to_string())
+    }
+
+    fn silu(
+        &self,
+        _input: &Storage,
+        _output: &mut Storage,
+    ) -> Result<(), String> {
+        Err("SiLU not implemented on CPU backend".to_string())
+    }
 }
+
+impl CpuBackend {
+    fn infer_output_shape(
+        op: &OpType,
+        inputs: &[&Storage],
+    ) -> Result<Vec<usize>, String> {
+        match op {
+            OpType::RmsNorm { .. } => {
+                // Output has same shape as input
+                // TODO: Infer from input
+                Ok(vec![])
+            }
+            OpType::MatMul => {
+                // Output shape: (batch, out_features)
+                Ok(vec![])
+            }
+            OpType::FlashAttn { n_heads, head_dim, .. } => {
+                Ok(vec![*n_heads * head_dim])
+            }
+            OpType::Add | OpType::Mul => {
+                // Same shape as inputs
+                Ok(vec![])
+            }
+            OpType::Silu => Ok(vec![]),
+            _ => Ok(vec![]),
+        }
+    }
+
+    fn infer_output_dtype(op: &OpType, _inputs: &[&Storage]) -> DataType {
+        match op {
+            OpType::MatMul => DataType::F32,
+            OpType::FlashAttn { .. } => DataType::F32,
+            OpType::RmsNorm { .. } => DataType::F32,
+            OpType::Add | OpType::Mul => DataType::F32,
+            OpType::Silu => DataType::F32,
+            _ => DataType::F32,
+        }
+    }
+}
+
+// Note: MetalBackend is in a separate file due to feature gating

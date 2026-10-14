@@ -12,13 +12,13 @@ use crate::model::weights::WeightStore;
 use std::collections::HashMap;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use crate::compute::MetalBackend;
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use crate::compute::backend::Backend;
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use crate::compute::graph::ComputeGraph;
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-use crate::compute::metal_backend::MetalBackend;
-#[cfg(all(target_arch = "aarch64", feature = "metal"))]
-use crate::compute::op::{OpNode, OpParams, OpType};
+use crate::compute::{OpNode, OpType};
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use metal::Buffer;
 
@@ -2357,427 +2357,369 @@ impl LlamaModel {
         }
     }
 
-    /// Forward pass using ComputeGraph (zero-copy GPU inference)
-    /// All tensors stay on GPU, no CPU round-trips during computation
+    /// Forward pass using ComputeGraph architecture (zero-copy GPU inference)
+    /// This is the new architecture that minimizes kernel dispatch overhead
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn forward_graph(
         &self,
         tokens: &[u32],
-        backend: &MetalBackend,
+        kv_cache: &mut crate::inference::KVCacheGPU,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) -> Option<Vec<f32>> {
         if tokens.is_empty() || self.tok_embeddings.is_none() {
             return None;
         }
 
         let hidden_size = self.config.hidden_size;
+        let n_heads = self.config.n_heads;
+        let head_dim = self.config.head_dim;
+        let n_kv_heads = self.config.n_kv_heads;
         let vocab_size = self.config.vocab_size;
 
-        // For now, process tokens one at a time
-        // TODO: Batch processing
-        let token = tokens[0];
-        let pos = 0; // Position for first token
+        // Create MetalBackend
+        let backend = MetalBackend::new(gpu_ctx);
+        let ctx = crate::compute::backend::ExecutionContext {
+            device: crate::compute::storage::Device::Metal,
+            seq_len: kv_cache.seq_len(),
+            batch_size: 1,
+        };
 
-        // 1. Embedding lookup - for now use CPU, TODO: GPU embedding
-        let hidden = self.embedding_lookup_impl(token)?;
+        // Process each token
+        for &token in tokens.iter() {
+            // 1. Embedding lookup (CPU for now)
+            let hidden = self.embedding_lookup_impl(token)?;
+            let hidden_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    hidden.as_ptr() as *const u8,
+                    hidden.len() * std::mem::size_of::<f32>(),
+                )
+            };
 
-        // 2. Build compute graph for layer processing
-        let mut hidden_tensor = backend
-            .alloc_tensor("hidden", vec![hidden_size], DataType::F32)
-            .ok()?;
-        backend
-            .copy_to_tensor(&mut hidden_tensor, bytemuck::cast_slice(&hidden))
-            .ok()?;
+            // Upload to GPU
+            let hidden_storage = backend.alloc_tensor_with_data(
+                &[hidden_size],
+                DataType::F32,
+                hidden_bytes,
+            );
 
-        // Process through layers
-        for (layer_idx, layer) in self.layers.iter().enumerate() {
-            hidden_tensor = self.forward_layer_graph(
-                layer,
-                layer_idx,
-                hidden_tensor,
-                pos,
-                backend,
-            )?;
+            // Build compute graph for this token
+            let mut graph = ComputeGraph::new();
+
+            // Add input hidden state
+            graph.add_tensor(
+                "hidden",
+                vec![hidden_size],
+                DataType::F32,
+                Some(hidden_storage),
+            );
+            graph.add_input("hidden");
+
+            // Process through layers
+            let mut current_hidden = "hidden".to_string();
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                // Add layer weights to graph
+                let norm_name = format!("layer{}_attn_norm", layer_idx);
+                let norm_w = layer.attention_norm.as_ref()?;
+                let norm_storage = gpu_ctx.get_or_create_buffer(norm_w);
+                graph.add_tensor(
+                    &norm_name,
+                    norm_w.shape.clone(),
+                    norm_w.dtype,
+                    Some(crate::compute::storage::Storage::Metal(
+                        std::sync::Arc::new(norm_storage.as_ref().clone()),
+                    )),
+                );
+
+                // RMS Norm
+                let normed_name = format!("layer{}_normed", layer_idx);
+                graph.add_op(
+                    OpType::RmsNorm { eps: 1e-5 },
+                    vec![current_hidden.clone(), norm_name.clone()],
+                    normed_name.clone(),
+                );
+
+                // QKV projections
+                let wq = layer.wq.as_ref()?;
+                let wk = layer.wk.as_ref()?;
+                let wv = layer.wv.as_ref()?;
+
+                let wq_name = format!("layer{}_wq", layer_idx);
+                let wq_storage = gpu_ctx.get_or_create_buffer(wq);
+                graph.add_tensor(
+                    &wq_name,
+                    wq.shape.clone(),
+                    wq.dtype,
+                    Some(crate::compute::storage::Storage::Metal(
+                        std::sync::Arc::new(wq_storage.as_ref().clone()),
+                    )),
+                );
+
+                let wk_name = format!("layer{}_wk", layer_idx);
+                let wk_storage = gpu_ctx.get_or_create_buffer(wk);
+                graph.add_tensor(
+                    &wk_name,
+                    wk.shape.clone(),
+                    wk.dtype,
+                    Some(crate::compute::storage::Storage::Metal(
+                        std::sync::Arc::new(wk_storage.as_ref().clone()),
+                    )),
+                );
+
+                let wv_name = format!("layer{}_wv", layer_idx);
+                let wv_storage = gpu_ctx.get_or_create_buffer(wv);
+                graph.add_tensor(
+                    &wv_name,
+                    wv.shape.clone(),
+                    wv.dtype,
+                    Some(crate::compute::storage::Storage::Metal(
+                        std::sync::Arc::new(wv_storage.as_ref().clone()),
+                    )),
+                );
+
+                // MatMul for Q, K, V
+                let q_name = format!("layer{}_q", layer_idx);
+                let k_name = format!("layer{}_k", layer_idx);
+                let v_name = format!("layer{}_v", layer_idx);
+                graph.add_op(
+                    OpType::MatMul,
+                    vec![normed_name.clone(), wq_name.clone()],
+                    q_name.clone(),
+                );
+                graph.add_op(
+                    OpType::MatMul,
+                    vec![normed_name.clone(), wk_name.clone()],
+                    k_name.clone(),
+                );
+                graph.add_op(
+                    OpType::MatMul,
+                    vec![normed_name.clone(), wv_name.clone()],
+                    v_name.clone(),
+                );
+
+                // RoPE
+                let q_rope_name = format!("layer{}_q_rope", layer_idx);
+                let k_rope_name = format!("layer{}_k_rope", layer_idx);
+                graph.add_op(
+                    OpType::RopeNeox {
+                        n_heads,
+                        head_dim,
+                        rope_freq_base: self.config.rope_freq_base,
+                        rope_freq_scale: 1.0,
+                    },
+                    vec![q_name.clone()],
+                    q_rope_name.clone(),
+                );
+                graph.add_op(
+                    OpType::RopeNeox {
+                        n_heads: n_kv_heads,
+                        head_dim,
+                        rope_freq_base: self.config.rope_freq_base,
+                        rope_freq_scale: 1.0,
+                    },
+                    vec![k_name.clone()],
+                    k_rope_name.clone(),
+                );
+
+                // TODO: KV cache update and Flash Attention
+
+                // Output projection
+                let wo = layer.wo.as_ref()?;
+                let wo_name = format!("layer{}_wo", layer_idx);
+                let wo_storage = gpu_ctx.get_or_create_buffer(wo);
+                graph.add_tensor(
+                    &wo_name,
+                    wo.shape.clone(),
+                    wo.dtype,
+                    Some(crate::compute::storage::Storage::Metal(
+                        std::sync::Arc::new(wo_storage.as_ref().clone()),
+                    )),
+                );
+
+                // For now, skip attention and just use Q as placeholder
+                let attn_out_name = format!("layer{}_attn_out", layer_idx);
+                graph.add_op(
+                    OpType::MatMul,
+                    vec![q_rope_name.clone(), wo_name.clone()],
+                    attn_out_name.clone(),
+                );
+
+                // Residual add
+                let residual_name = format!("layer{}_residual", layer_idx);
+                graph.add_op(
+                    OpType::Add,
+                    vec![current_hidden.clone(), attn_out_name.clone()],
+                    residual_name.clone(),
+                );
+
+                // FFN Norm
+                let ffn_norm_name = format!("layer{}_ffn_norm", layer_idx);
+                let ffn_norm = layer.ffn_norm.as_ref()?;
+                let ffn_norm_storage = gpu_ctx.get_or_create_buffer(ffn_norm);
+                graph.add_tensor(
+                    &ffn_norm_name,
+                    ffn_norm.shape.clone(),
+                    ffn_norm.dtype,
+                    Some(crate::compute::storage::Storage::Metal(
+                        std::sync::Arc::new(ffn_norm_storage.as_ref().clone()),
+                    )),
+                );
+
+                let ffn_normed_name = format!("layer{}_ffn_normed", layer_idx);
+                graph.add_op(
+                    OpType::RmsNorm { eps: 1e-5 },
+                    vec![residual_name.clone(), ffn_norm_name.clone()],
+                    ffn_normed_name.clone(),
+                );
+
+                // FFN (SwiGLU)
+                let w1 = layer.w1.as_ref()?;
+                let w2 = layer.w2.as_ref()?;
+                let w3 = layer.w3.as_ref()?;
+
+                let w1_name = format!("layer{}_w1", layer_idx);
+                let w1_storage = gpu_ctx.get_or_create_buffer(w1);
+                graph.add_tensor(
+                    &w1_name,
+                    w1.shape.clone(),
+                    w1.dtype,
+                    Some(crate::compute::storage::Storage::Metal(
+                        std::sync::Arc::new(w1_storage.as_ref().clone()),
+                    )),
+                );
+
+                let w2_name = format!("layer{}_w2", layer_idx);
+                let w2_storage = gpu_ctx.get_or_create_buffer(w2);
+                graph.add_tensor(
+                    &w2_name,
+                    w2.shape.clone(),
+                    w2.dtype,
+                    Some(crate::compute::storage::Storage::Metal(
+                        std::sync::Arc::new(w2_storage.as_ref().clone()),
+                    )),
+                );
+
+                let w3_name = format!("layer{}_w3", layer_idx);
+                let w3_storage = gpu_ctx.get_or_create_buffer(w3);
+                graph.add_tensor(
+                    &w3_name,
+                    w3.shape.clone(),
+                    w3.dtype,
+                    Some(crate::compute::storage::Storage::Metal(
+                        std::sync::Arc::new(w3_storage.as_ref().clone()),
+                    )),
+                );
+
+                // Gate and up projections
+                let gate_name = format!("layer{}_gate", layer_idx);
+                let up_name = format!("layer{}_up", layer_idx);
+                graph.add_op(
+                    OpType::MatMul,
+                    vec![ffn_normed_name.clone(), w1_name.clone()],
+                    gate_name.clone(),
+                );
+                graph.add_op(
+                    OpType::MatMul,
+                    vec![ffn_normed_name.clone(), w3_name.clone()],
+                    up_name.clone(),
+                );
+
+                // SiLU activation
+                let silu_name = format!("layer{}_silu", layer_idx);
+                graph.add_op(
+                    OpType::Silu,
+                    vec![gate_name.clone()],
+                    silu_name.clone(),
+                );
+
+                // Element-wise mul
+                let hidden_out_name = format!("layer{}_hidden_out", layer_idx);
+                graph.add_op(
+                    OpType::Mul,
+                    vec![silu_name.clone(), up_name.clone()],
+                    hidden_out_name.clone(),
+                );
+
+                // Down projection
+                let ffn_out_name = format!("layer{}_ffn_out", layer_idx);
+                graph.add_op(
+                    OpType::MatMul,
+                    vec![hidden_out_name.clone(), w2_name.clone()],
+                    ffn_out_name.clone(),
+                );
+
+                // Final residual
+                let output_name = format!("layer{}_output", layer_idx);
+                graph.add_op(
+                    OpType::Add,
+                    vec![residual_name.clone(), ffn_out_name.clone()],
+                    output_name.clone(),
+                );
+
+                current_hidden = output_name;
+            }
+
+            // Final norm and output projection
+            let norm_weight = self.norm.as_ref()?;
+            let norm_weight_storage = gpu_ctx.get_or_create_buffer(norm_weight);
+            graph.add_tensor(
+                "final_norm",
+                norm_weight.shape.clone(),
+                norm_weight.dtype,
+                Some(crate::compute::storage::Storage::Metal(
+                    std::sync::Arc::new(norm_weight_storage.as_ref().clone()),
+                )),
+            );
+
+            let final_normed_name = "final_normed".to_string();
+            graph.add_op(
+                OpType::RmsNorm { eps: 1e-5 },
+                vec![current_hidden.clone(), "final_norm".to_string()],
+                final_normed_name.clone(),
+            );
+
+            // Output projection
+            let output_weight = self.output.as_ref()?;
+            let output_storage = gpu_ctx.get_or_create_buffer(output_weight);
+            graph.add_tensor(
+                "output_weight",
+                output_weight.shape.clone(),
+                output_weight.dtype,
+                Some(crate::compute::storage::Storage::Metal(
+                    std::sync::Arc::new(output_storage.as_ref().clone()),
+                )),
+            );
+
+            let logits_name = "logits".to_string();
+            graph.add_op(
+                OpType::MatMul,
+                vec![final_normed_name.clone(), "output_weight".to_string()],
+                logits_name.clone(),
+            );
+
+            // Mark output
+            graph.add_output(&logits_name);
+
+            // Execute graph
+            let outputs = backend.execute(&graph, &ctx).ok()?;
+
+            // Copy result back to CPU
+            let logits_storage = &outputs[0];
+            let logits_bytes = backend.copy_to_cpu(logits_storage).ok()?;
+            let logits: Vec<f32> = unsafe {
+                std::slice::from_raw_parts(
+                    logits_bytes.as_ptr() as *const f32,
+                    logits_bytes.len() / 4,
+                )
+                .to_vec()
+            };
+
+            // Advance KV cache
+            kv_cache.advance();
+
+            return Some(logits);
         }
 
-        // 3. Final norm and output projection
-        let final_hidden =
-            self.apply_output_norm_graph(&hidden_tensor, backend)?;
-        let logits =
-            self.output_projection_graph(&final_hidden, vocab_size, backend)?;
-
-        // 4. Copy result back to CPU
-        let mut logits_data = vec![0.0f32; vocab_size];
-        backend
-            .copy_from_tensor(
-                &logits,
-                bytemuck::cast_slice_mut(&mut logits_data),
-            )
-            .ok()?;
-
-        Some(logits_data)
-    }
-
-    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    fn forward_layer_graph(
-        &self,
-        layer: &LlamaLayer,
-        _layer_idx: usize,
-        hidden: crate::compute::tensor::Tensor,
-        pos: usize,
-        backend: &MetalBackend,
-    ) -> Option<crate::compute::tensor::Tensor> {
-        let hidden_size = self.config.hidden_size;
-        let _n_heads = self.config.n_heads;
-        let head_dim = self.config.head_dim;
-        let _n_kv_heads = self.config.n_kv_heads;
-
-        // === Step 1: Attention Norm ===
-        let mut graph = ComputeGraph::new();
-        graph.add_tensor(hidden.clone());
-        graph.add_input("hidden");
-
-        let attn_norm_w = self
-            .tensor_to_compute(layer.attention_norm.as_ref()?, "attn_norm_w")?;
-        graph.add_tensor(attn_norm_w);
-        graph.add_input("attn_norm_w");
-
-        graph.add_op(OpNode::new(
-            OpType::RMSNorm,
-            vec!["hidden".into(), "attn_norm_w".into()],
-            "normed".to_string(),
-        ));
-
-        backend.execute(&mut graph).ok()?;
-        let normed = graph.get_tensor("normed")?.clone();
-
-        // === Step 2: QKV Projections ===
-        let mut graph = ComputeGraph::new();
-        graph.add_tensor(normed.clone());
-        graph.add_input("normed");
-
-        // Q projection
-        let wq = self.tensor_to_compute(layer.wq.as_ref()?, "wq")?;
-        let q_out_size = wq.shape[1];
-        graph.add_tensor(wq);
-        graph.add_input("wq");
-        graph.add_op(OpNode::new(
-            OpType::MatVec,
-            vec!["wq".into(), "normed".into()],
-            "q".to_string(),
-        ));
-
-        // K projection
-        let wk = self.tensor_to_compute(layer.wk.as_ref()?, "wk")?;
-        let k_out_size = wk.shape[1];
-        graph.add_tensor(wk);
-        graph.add_input("wk");
-        graph.add_op(OpNode::new(
-            OpType::MatVec,
-            vec!["wk".into(), "normed".into()],
-            "k".to_string(),
-        ));
-
-        // V projection
-        let wv = self.tensor_to_compute(layer.wv.as_ref()?, "wv")?;
-        let _v_out_size = wv.shape[1];
-        graph.add_tensor(wv);
-        graph.add_input("wv");
-        graph.add_op(OpNode::new(
-            OpType::MatVec,
-            vec!["wv".into(), "normed".into()],
-            "v".to_string(),
-        ));
-
-        backend.execute(&mut graph).ok()?;
-        let q = graph.get_tensor("q")?.clone();
-        let k = graph.get_tensor("k")?.clone();
-        let _v = graph.get_tensor("v")?.clone();
-
-        // Derive actual n_heads from weight shapes
-        let _actual_n_heads = q_out_size / head_dim;
-        let _actual_n_kv_heads = k_out_size / head_dim;
-
-        // === Step 3: RoPE ===
-        // Apply RoPE to Q and K
-        let mut graph = ComputeGraph::new();
-        graph.add_tensor(q.clone());
-        graph.add_input("q");
-
-        // RoPE expects shape [n_dims, n_heads, n_seqs]
-        // Q shape is [n_heads * head_dim] - reshape to [head_dim, n_heads, 1]
-        let mut rope_params = OpParams::default();
-        rope_params.pos = Some(pos);
-        rope_params.freq_base = Some(self.config.rope_freq_base);
-
-        graph.add_op(
-            OpNode::new(OpType::Rope, vec!["q".into()], "q_rope".to_string())
-                .with_params(rope_params.clone()),
-        );
-        backend.execute(&mut graph).ok()?;
-        let q_rope = graph.get_tensor("q_rope")?.clone();
-
-        let mut graph = ComputeGraph::new();
-        graph.add_tensor(k.clone());
-        graph.add_input("k");
-        graph.add_op(
-            OpNode::new(OpType::Rope, vec!["k".into()], "k_rope".to_string())
-                .with_params(rope_params),
-        );
-        backend.execute(&mut graph).ok()?;
-        let _k_rope = graph.get_tensor("k_rope")?.clone();
-
-        // === Step 4: Flash Attention ===
-        // TODO: Need KV cache integration
-        // For now, use simplified attention
-
-        // === Step 5: Output Projection ===
-        let mut graph = ComputeGraph::new();
-        graph.add_tensor(q_rope.clone()); // Using Q as placeholder for attention output
-        graph.add_input("attn_out");
-
-        let wo = self.tensor_to_compute(layer.wo.as_ref()?, "wo")?;
-        graph.add_tensor(wo);
-        graph.add_input("wo");
-        graph.add_op(OpNode::new(
-            OpType::MatVec,
-            vec!["wo".into(), "attn_out".into()],
-            "attn_proj".to_string(),
-        ));
-
-        backend.execute(&mut graph).ok()?;
-        let attn_proj = graph.get_tensor("attn_proj")?.clone();
-
-        // === Step 6: Residual (GPU) ===
-        let mut graph = ComputeGraph::new();
-        graph.add_tensor(hidden.clone());
-        graph.add_input("hidden");
-        graph.add_tensor(attn_proj.clone());
-        graph.add_input("attn_proj");
-        graph.add_op(OpNode::new(
-            OpType::Add,
-            vec!["hidden".into(), "attn_proj".into()],
-            "residual".to_string(),
-        ));
-        backend.execute(&mut graph).ok()?;
-        let residual = graph.get_tensor("residual")?.clone();
-
-        // === Step 7: FFN Norm ===
-        let mut graph = ComputeGraph::new();
-        graph.add_tensor(residual.clone());
-        graph.add_input("residual");
-
-        let ffn_norm_w =
-            self.tensor_to_compute(layer.ffn_norm.as_ref()?, "ffn_norm_w")?;
-        graph.add_tensor(ffn_norm_w);
-        graph.add_input("ffn_norm_w");
-
-        graph.add_op(OpNode::new(
-            OpType::RMSNorm,
-            vec!["residual".into(), "ffn_norm_w".into()],
-            "ffn_normed".to_string(),
-        ));
-
-        backend.execute(&mut graph).ok()?;
-        let ffn_normed = graph.get_tensor("ffn_normed")?.clone();
-
-        // === Step 8: FFN (SwiGLU) ===
-        let _intermediate = hidden_size * 4;
-
-        let mut graph = ComputeGraph::new();
-        graph.add_tensor(ffn_normed.clone());
-        graph.add_input("ffn_normed");
-
-        // Gate projection
-        let w1 = self.tensor_to_compute(layer.w1.as_ref()?, "w1")?;
-        graph.add_tensor(w1);
-        graph.add_input("w1");
-        graph.add_op(OpNode::new(
-            OpType::MatVec,
-            vec!["w1".into(), "ffn_normed".into()],
-            "gate".to_string(),
-        ));
-
-        // Up projection
-        let w3 = self.tensor_to_compute(layer.w3.as_ref()?, "w3")?;
-        graph.add_tensor(w3);
-        graph.add_input("w3");
-        graph.add_op(OpNode::new(
-            OpType::MatVec,
-            vec!["w3".into(), "ffn_normed".into()],
-            "up".to_string(),
-        ));
-
-        backend.execute(&mut graph).ok()?;
-        let gate = graph.get_tensor("gate")?.clone();
-        let up = graph.get_tensor("up")?.clone();
-
-        // SiLU activation
-        let mut graph = ComputeGraph::new();
-        graph.add_tensor(gate.clone());
-        graph.add_input("gate");
-        graph.add_op(OpNode::new(
-            OpType::Silu,
-            vec!["gate".into()],
-            "silu_gate".to_string(),
-        ));
-        backend.execute(&mut graph).ok()?;
-        let silu_gate = graph.get_tensor("silu_gate")?.clone();
-
-        // Element-wise multiply (GPU)
-        let mut graph = ComputeGraph::new();
-        graph.add_tensor(silu_gate.clone());
-        graph.add_input("silu_gate");
-        graph.add_tensor(up.clone());
-        graph.add_input("up");
-        graph.add_op(OpNode::new(
-            OpType::Mul,
-            vec!["silu_gate".into(), "up".into()],
-            "hidden_out".to_string(),
-        ));
-        backend.execute(&mut graph).ok()?;
-        let hidden_out = graph.get_tensor("hidden_out")?.clone();
-
-        // Down projection
-        let mut graph = ComputeGraph::new();
-        graph.add_tensor(hidden_out.clone());
-        graph.add_input("hidden_out");
-
-        let w2 = self.tensor_to_compute(layer.w2.as_ref()?, "w2")?;
-        graph.add_tensor(w2);
-        graph.add_input("w2");
-        graph.add_op(OpNode::new(
-            OpType::MatVec,
-            vec!["w2".into(), "hidden_out".into()],
-            "ffn_out".to_string(),
-        ));
-
-        backend.execute(&mut graph).ok()?;
-        let ffn_out = graph.get_tensor("ffn_out")?.clone();
-
-        // === Step 9: Final Residual (GPU) ===
-        let mut graph = ComputeGraph::new();
-        graph.add_tensor(residual.clone());
-        graph.add_input("residual");
-        graph.add_tensor(ffn_out.clone());
-        graph.add_input("ffn_out");
-        graph.add_op(OpNode::new(
-            OpType::Add,
-            vec!["residual".into(), "ffn_out".into()],
-            "output".to_string(),
-        ));
-        backend.execute(&mut graph).ok()?;
-        graph.get_tensor("output").cloned()
-    }
-
-    /// Helper to read tensor data as f32
-    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    fn read_tensor_f32(
-        &self,
-        tensor: &crate::compute::tensor::Tensor,
-        backend: &MetalBackend,
-    ) -> Option<Vec<f32>> {
-        let n = tensor.elem_count();
-        let mut data = vec![0.0f32; n];
-        backend
-            .copy_from_tensor(tensor, bytemuck::cast_slice_mut(&mut data))
-            .ok()?;
-        Some(data)
-    }
-
-    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    fn apply_output_norm_graph(
-        &self,
-        hidden: &crate::compute::tensor::Tensor,
-        backend: &MetalBackend,
-    ) -> Option<crate::compute::tensor::Tensor> {
-        let _hidden_size = self.config.hidden_size;
-
-        let mut graph = ComputeGraph::new();
-        graph.add_tensor(hidden.clone());
-        graph.add_input("hidden");
-
-        let weight =
-            self.tensor_to_compute(self.norm.as_ref()?, "norm_weight")?;
-        graph.add_tensor(weight);
-        graph.add_input("norm_weight");
-
-        let norm_op = OpNode::new(
-            OpType::RMSNorm,
-            vec!["hidden".into(), "norm_weight".into()],
-            "normed".to_string(),
-        );
-        graph.add_op(norm_op);
-
-        backend.execute(&mut graph).ok()?;
-        graph.get_tensor("normed").cloned()
-    }
-
-    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    fn output_projection_graph(
-        &self,
-        hidden: &crate::compute::tensor::Tensor,
-        vocab_size: usize,
-        backend: &MetalBackend,
-    ) -> Option<crate::compute::tensor::Tensor> {
-        let mut graph = ComputeGraph::new();
-        graph.add_tensor(hidden.clone());
-        graph.add_input("hidden");
-
-        let weight =
-            self.tensor_to_compute(self.output.as_ref()?, "output_weight")?;
-        graph.add_tensor(weight);
-        graph.add_input("output_weight");
-
-        let matvec_op = OpNode::new(
-            OpType::MatVec,
-            vec!["output_weight".into(), "hidden".into()],
-            "logits".to_string(),
-        );
-        graph.add_op(matvec_op);
-
-        backend.execute(&mut graph).ok()?;
-        let logits = graph.get_tensor("logits")?.clone();
-
-        // Reshape to [vocab_size]
-        Some(crate::compute::tensor::Tensor::new(
-            "logits",
-            vec![vocab_size],
-            DataType::F32,
-            logits.storage.clone(),
-        ))
-    }
-
-    /// Convert model Tensor (with optional GPU buffer) to compute Tensor
-    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    fn tensor_to_compute(
-        &self,
-        tensor: &Tensor,
-        name: &str,
-    ) -> Option<crate::compute::tensor::Tensor> {
-        // Check if GPU buffer exists
-        if let Some(gpu_buffer) = tensor.gpu_buffer.borrow().as_ref() {
-            // Use existing GPU buffer
-            return Some(crate::compute::tensor::Tensor::from_metal_buffer(
-                name,
-                tensor.shape.clone(),
-                tensor.dtype,
-                gpu_buffer.clone(),
-            ));
-        }
-
-        // Upload to GPU via backend
-        let backend = MetalBackend::new().ok()?;
-        let mut compute_tensor = backend
-            .alloc_tensor(name, tensor.shape.clone(), tensor.dtype)
-            .ok()?;
-        backend.copy_to_tensor(&mut compute_tensor, tensor.bytes()).ok()?;
-
-        // Cache the GPU buffer in the model tensor
-        if let Some(buffer) = compute_tensor.as_metal_buffer() {
-            *tensor.gpu_buffer.borrow_mut() = Some(buffer);
-        }
-
-        Some(compute_tensor)
+        None
     }
 }
 

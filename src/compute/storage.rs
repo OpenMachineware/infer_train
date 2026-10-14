@@ -1,148 +1,70 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-// Storage abstraction for cross-device tensor data
+//! Storage abstraction for cross-device tensors.
 
 use std::sync::Arc;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use metal::Buffer;
 
-use super::device::Device;
-
-/// Storage trait for tensor data on different devices
-/// Note: We use StorageEnum instead of dyn Storage to avoid trait object overhead
-pub trait StorageBase: std::fmt::Debug {
-    /// Get the device this storage is on
-    fn device(&self) -> Device;
-
-    /// Get the size in bytes
-    fn size(&self) -> usize;
-}
-
-/// CPU storage using reference-counted byte buffer
-#[derive(Debug)]
-pub struct CpuStorage {
-    pub data: Arc<[u8]>,
-}
-
-impl CpuStorage {
-    pub fn new(data: Vec<u8>) -> Self {
-        Self { data: data.into() }
-    }
-
-    pub fn from_arc(data: Arc<[u8]>) -> Self {
-        Self { data }
-    }
-
-    pub fn zeros(size: usize) -> Self {
-        Self { data: vec![0u8; size].into() }
-    }
-
-    pub fn data(&self) -> &[u8] {
-        &self.data
-    }
-
-    pub fn as_slice<T: bytemuck::Pod>(&self) -> Option<&[T]> {
-        bytemuck::cast_slice(&self.data).into()
-    }
-}
-
-impl StorageBase for CpuStorage {
-    fn device(&self) -> Device {
-        Device::Cpu
-    }
-
-    fn size(&self) -> usize {
-        self.data.len()
-    }
-}
-
-/// Metal storage using Metal buffer
-#[cfg(all(target_arch = "aarch64", feature = "metal"))]
-#[derive(Debug)]
-pub struct MetalStorage {
-    buffer: std::rc::Rc<Buffer>,
-    size: usize,
-}
-
-#[cfg(all(target_arch = "aarch64", feature = "metal"))]
-impl MetalStorage {
-    pub fn new(buffer: std::rc::Rc<Buffer>, size: usize) -> Self {
-        Self { buffer, size }
-    }
-
-    pub fn buffer(&self) -> &Buffer {
-        &self.buffer
-    }
-
-    pub fn buffer_rc(&self) -> std::rc::Rc<Buffer> {
-        self.buffer.clone()
-    }
-}
-
-#[cfg(all(target_arch = "aarch64", feature = "metal"))]
-impl StorageBase for MetalStorage {
-    fn device(&self) -> Device {
-        Device::Metal
-    }
-
-    fn size(&self) -> usize {
-        self.size
-    }
-}
-
-/// Enum storage for convenience (avoids dyn trait overhead)
-/// Note: MetalStorage uses Rc which is not thread-safe, so StorageEnum is not Send/Sync
-#[derive(Debug, Clone)]
-pub enum StorageEnum {
-    Cpu(Arc<CpuStorage>),
+/// Device type for tensor storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Device {
+    Cpu,
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    Metal(Arc<MetalStorage>),
+    Metal,
 }
 
-impl StorageEnum {
+/// Storage backend for tensor data.
+#[derive(Clone, Debug)]
+pub enum Storage {
+    /// CPU heap storage.
+    Cpu(Arc<Box<[u8]>>),
+    /// Metal GPU buffer storage.
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    Metal(Arc<Buffer>),
+}
+
+impl Storage {
+    /// Create CPU storage from bytes.
+    pub fn cpu(data: Vec<u8>) -> Self {
+        Storage::Cpu(Arc::new(data.into_boxed_slice()))
+    }
+
+    /// Get device type.
     pub fn device(&self) -> Device {
         match self {
-            StorageEnum::Cpu(s) => s.device(),
+            Storage::Cpu(_) => Device::Cpu,
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-            StorageEnum::Metal(s) => s.device(),
+            Storage::Metal(_) => Device::Metal,
         }
     }
 
-    pub fn size(&self) -> usize {
-        match self {
-            StorageEnum::Cpu(s) => s.size(),
-            #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-            StorageEnum::Metal(s) => s.size(),
-        }
-    }
-
+    /// Get raw byte slice (CPU only).
     pub fn as_bytes(&self) -> Option<&[u8]> {
         match self {
-            StorageEnum::Cpu(s) => Some(s.data()),
+            Storage::Cpu(data) => Some(data.as_ref()),
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-            StorageEnum::Metal(_) => None,
+            Storage::Metal(_) => None,
         }
     }
 
+    /// Get Metal buffer (Metal only).
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    pub fn as_metal(&self) -> Option<&MetalStorage> {
+    pub fn as_metal_buffer(&self) -> Option<&Buffer> {
         match self {
-            StorageEnum::Metal(s) => Some(s),
-            _ => None,
+            Storage::Cpu(_) => None,
+            Storage::Metal(buffer) => Some(buffer),
         }
     }
 
-    pub fn is_cpu(&self) -> bool {
-        matches!(self, StorageEnum::Cpu(_))
-    }
-
-    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    pub fn is_metal(&self) -> bool {
-        matches!(self, StorageEnum::Metal(_))
+    /// Get storage size in bytes.
+    pub fn size(&self) -> usize {
+        match self {
+            Storage::Cpu(data) => data.len(),
+            #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+            Storage::Metal(buffer) => buffer.length() as usize,
+        }
     }
 }
-
-/// Type alias for storage reference
-pub type StorageRef = Arc<StorageEnum>;
