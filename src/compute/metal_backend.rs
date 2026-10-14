@@ -27,18 +27,20 @@ impl MetalBackend {
 
     /// Create a Metal buffer
     pub fn create_buffer(&self, size: usize) -> std::rc::Rc<Buffer> {
-        self.ctx
-            .device()
-            .new_buffer(size as u64, MTLResourceOptions::StorageModeShared)
+        std::rc::Rc::new(
+            self.ctx
+                .device()
+                .new_buffer(size as u64, MTLResourceOptions::StorageModeShared),
+        )
     }
 
     /// Create a Metal buffer from data
     pub fn create_buffer_with_data(&self, data: &[u8]) -> std::rc::Rc<Buffer> {
-        self.ctx.device().new_buffer_with_data(
+        std::rc::Rc::new(self.ctx.device().new_buffer_with_data(
             data.as_ptr() as *const std::ffi::c_void,
             data.len() as u64,
             MTLResourceOptions::StorageModeShared,
-        )
+        ))
     }
 
     /// Get reference to the MetalContext

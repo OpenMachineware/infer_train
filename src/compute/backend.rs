@@ -78,7 +78,8 @@ impl std::fmt::Display for BackendError {
 impl std::error::Error for BackendError {}
 
 /// Backend trait for executing operations on a device
-pub trait Backend: std::fmt::Debug + Send + Sync {
+/// Note: Not requiring Send+Sync to allow Rc-based implementations (Metal)
+pub trait Backend: std::fmt::Debug {
     /// Get the device this backend runs on
     fn device(&self) -> Device;
 

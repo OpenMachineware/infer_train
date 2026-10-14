@@ -112,6 +112,14 @@ pub struct MetalContext {
     gemm_output_size: RefCell<usize>,
 }
 
+impl std::fmt::Debug for MetalContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MetalContext")
+            .field("device", &self.device.name())
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct RopeArgs {
@@ -5678,6 +5686,8 @@ impl MetalContext {
         let thread_group_count =
             MTLSize { width: n_rows as u64, height: 1, depth: 1 };
 
+        // Allocate threadgroup memory for reduction (32 floats = 128 bytes)
+        encoder.set_threadgroup_memory_length(0, 128);
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
         command_buffer.commit();
@@ -5718,6 +5728,8 @@ impl MetalContext {
         let thread_group_count =
             MTLSize { width: n_rows as u64, height: 1, depth: 1 };
 
+        // Allocate threadgroup memory for reduction (32 floats = 128 bytes)
+        encoder.set_threadgroup_memory_length(0, 128);
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
         command_buffer.commit();

@@ -15,6 +15,7 @@ fn create_test_config() -> ModelConfig {
         n_layers: 2,
         n_heads: 4,
         n_kv_heads: 2,
+        head_dim: 32,
         vocab_size: 1000,
         rope_dim: 32,
         rope_freq_base: 10000.0,

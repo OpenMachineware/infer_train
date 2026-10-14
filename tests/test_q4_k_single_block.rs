@@ -27,12 +27,10 @@ fn main() {
     let input: Vec<f32> = (0..256).map(|i| i as f32 * 0.1).collect();
 
     println!("Block:");
-    println!("  d = {} (f16 bits = {:#04x})", f16::from_bits(block.d), block.d);
-    println!(
-        "  dmin = {} (f16 bits = {:#04x})",
-        f16::from_bits(block.dmin),
-        block.dmin
-    );
+    let d = block.d;
+    let dmin = block.dmin;
+    println!("  d = {} (f16 bits = {:#04x})", f16::from_bits(d), d);
+    println!("  dmin = {} (f16 bits = {:#04x})", f16::from_bits(dmin), dmin);
     println!("  scales = {:?}", block.scales);
     println!("  qs[0..8] = {:02x?}", &block.qs[0..8]);
 
