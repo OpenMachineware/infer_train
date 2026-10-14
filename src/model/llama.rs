@@ -1021,43 +1021,249 @@ impl LlamaModel {
     fn forward_layer_graph(
         &self,
         layer: &LlamaLayer,
-        _layer_idx: usize,
+        layer_idx: usize,
         hidden: crate::compute::tensor::Tensor,
         backend: &MetalBackend,
     ) -> Option<crate::compute::tensor::Tensor> {
         let hidden_size = self.config.hidden_size;
+        let n_heads = self.config.n_heads;
+        let head_dim = self.config.head_dim;
+        let n_kv_heads = self.config.n_kv_heads;
 
-        // Build RMS Norm operation
+        // === Step 1: Attention Norm ===
         let mut graph = ComputeGraph::new();
-
-        // Add input hidden tensor
         graph.add_tensor(hidden.clone());
         graph.add_input("hidden");
 
-        // Add weight tensor (need to convert from model Tensor to compute Tensor)
-        let weight = self
-            .tensor_to_compute(layer.attention_norm.as_ref()?, "norm_weight")?;
-        graph.add_tensor(weight);
-        graph.add_input("norm_weight");
+        let attn_norm_w = self
+            .tensor_to_compute(layer.attention_norm.as_ref()?, "attn_norm_w")?;
+        graph.add_tensor(attn_norm_w);
+        graph.add_input("attn_norm_w");
 
-        // Add RMS Norm op
-        let norm_op = OpNode::new(
+        graph.add_op(OpNode::new(
             OpType::RMSNorm,
-            vec!["hidden".into(), "norm_weight".into()],
+            vec!["hidden".into(), "attn_norm_w".into()],
             "normed".to_string(),
-        );
-        graph.add_op(norm_op);
+        ));
 
-        // Execute
         backend.execute(&mut graph).ok()?;
-
-        // Get result
         let normed = graph.get_tensor("normed")?.clone();
 
-        // TODO: QKV projections, RoPE, Attention, FFN
-        // For now, just return the normed tensor as a placeholder
+        // === Step 2: QKV Projections ===
+        let mut graph = ComputeGraph::new();
+        graph.add_tensor(normed.clone());
+        graph.add_input("normed");
 
-        Some(normed)
+        // Q projection
+        let wq = self.tensor_to_compute(layer.wq.as_ref()?, "wq")?;
+        let q_out_size = wq.shape[1];
+        graph.add_tensor(wq);
+        graph.add_input("wq");
+        graph.add_op(OpNode::new(
+            OpType::MatVec,
+            vec!["wq".into(), "normed".into()],
+            "q".to_string(),
+        ));
+
+        // K projection
+        let wk = self.tensor_to_compute(layer.wk.as_ref()?, "wk")?;
+        let k_out_size = wk.shape[1];
+        graph.add_tensor(wk);
+        graph.add_input("wk");
+        graph.add_op(OpNode::new(
+            OpType::MatVec,
+            vec!["wk".into(), "normed".into()],
+            "k".to_string(),
+        ));
+
+        // V projection
+        let wv = self.tensor_to_compute(layer.wv.as_ref()?, "wv")?;
+        let v_out_size = wv.shape[1];
+        graph.add_tensor(wv);
+        graph.add_input("wv");
+        graph.add_op(OpNode::new(
+            OpType::MatVec,
+            vec!["wv".into(), "normed".into()],
+            "v".to_string(),
+        ));
+
+        backend.execute(&mut graph).ok()?;
+        let q = graph.get_tensor("q")?.clone();
+        let k = graph.get_tensor("k")?.clone();
+        let v = graph.get_tensor("v")?.clone();
+
+        // Derive actual n_heads from weight shapes
+        let actual_n_heads = q_out_size / head_dim;
+        let actual_n_kv_heads = k_out_size / head_dim;
+
+        // === Step 3: RoPE ===
+        // TODO: RoPE needs position parameter - need to pass it through
+        // For now, skip RoPE and use raw Q/K
+
+        // === Step 4: Flash Attention ===
+        // TODO: Need KV cache integration
+        // For now, use simplified attention
+
+        // === Step 5: Output Projection ===
+        let mut graph = ComputeGraph::new();
+        graph.add_tensor(q.clone()); // Using Q as placeholder for attention output
+        graph.add_input("attn_out");
+
+        let wo = self.tensor_to_compute(layer.wo.as_ref()?, "wo")?;
+        graph.add_tensor(wo);
+        graph.add_input("wo");
+        graph.add_op(OpNode::new(
+            OpType::MatVec,
+            vec!["wo".into(), "attn_out".into()],
+            "attn_proj".to_string(),
+        ));
+
+        backend.execute(&mut graph).ok()?;
+        let attn_proj = graph.get_tensor("attn_proj")?.clone();
+
+        // === Step 6: Residual ===
+        // TODO: Add op - for now use CPU
+        let hidden_data = self.read_tensor_f32(&hidden, backend)?;
+        let attn_proj_data = self.read_tensor_f32(&attn_proj, backend)?;
+        let residual: Vec<f32> = hidden_data
+            .iter()
+            .zip(attn_proj_data.iter())
+            .map(|(h, a)| h + a)
+            .collect();
+
+        // === Step 7: FFN Norm ===
+        let mut residual_tensor = backend
+            .alloc_tensor("residual", vec![hidden_size], DataType::F32)
+            .ok()?;
+        backend
+            .copy_to_tensor(
+                &mut residual_tensor,
+                bytemuck::cast_slice(&residual),
+            )
+            .ok()?;
+
+        let mut graph = ComputeGraph::new();
+        graph.add_tensor(residual_tensor.clone());
+        graph.add_input("residual");
+
+        let ffn_norm_w =
+            self.tensor_to_compute(layer.ffn_norm.as_ref()?, "ffn_norm_w")?;
+        graph.add_tensor(ffn_norm_w);
+        graph.add_input("ffn_norm_w");
+
+        graph.add_op(OpNode::new(
+            OpType::RMSNorm,
+            vec!["residual".into(), "ffn_norm_w".into()],
+            "ffn_normed".to_string(),
+        ));
+
+        backend.execute(&mut graph).ok()?;
+        let ffn_normed = graph.get_tensor("ffn_normed")?.clone();
+
+        // === Step 8: FFN (SwiGLU) ===
+        let intermediate = hidden_size * 4;
+
+        let mut graph = ComputeGraph::new();
+        graph.add_tensor(ffn_normed.clone());
+        graph.add_input("ffn_normed");
+
+        // Gate projection
+        let w1 = self.tensor_to_compute(layer.w1.as_ref()?, "w1")?;
+        graph.add_tensor(w1);
+        graph.add_input("w1");
+        graph.add_op(OpNode::new(
+            OpType::MatVec,
+            vec!["w1".into(), "ffn_normed".into()],
+            "gate".to_string(),
+        ));
+
+        // Up projection
+        let w3 = self.tensor_to_compute(layer.w3.as_ref()?, "w3")?;
+        graph.add_tensor(w3);
+        graph.add_input("w3");
+        graph.add_op(OpNode::new(
+            OpType::MatVec,
+            vec!["w3".into(), "ffn_normed".into()],
+            "up".to_string(),
+        ));
+
+        backend.execute(&mut graph).ok()?;
+        let gate = graph.get_tensor("gate")?.clone();
+        let up = graph.get_tensor("up")?.clone();
+
+        // SiLU activation
+        let mut graph = ComputeGraph::new();
+        graph.add_tensor(gate.clone());
+        graph.add_input("gate");
+        graph.add_op(OpNode::new(
+            OpType::Silu,
+            vec!["gate".into()],
+            "silu_gate".to_string(),
+        ));
+        backend.execute(&mut graph).ok()?;
+        let silu_gate = graph.get_tensor("silu_gate")?.clone();
+
+        // Element-wise multiply (CPU for now)
+        let silu_data = self.read_tensor_f32(&silu_gate, backend)?;
+        let up_data = self.read_tensor_f32(&up, backend)?;
+        let hidden_out: Vec<f32> =
+            silu_data.iter().zip(up_data.iter()).map(|(s, u)| s * u).collect();
+
+        let mut hidden_out_tensor = backend
+            .alloc_tensor("hidden_out", vec![intermediate], DataType::F32)
+            .ok()?;
+        backend
+            .copy_to_tensor(
+                &mut hidden_out_tensor,
+                bytemuck::cast_slice(&hidden_out),
+            )
+            .ok()?;
+
+        // Down projection
+        let mut graph = ComputeGraph::new();
+        graph.add_tensor(hidden_out_tensor.clone());
+        graph.add_input("hidden_out");
+
+        let w2 = self.tensor_to_compute(layer.w2.as_ref()?, "w2")?;
+        graph.add_tensor(w2);
+        graph.add_input("w2");
+        graph.add_op(OpNode::new(
+            OpType::MatVec,
+            vec!["w2".into(), "hidden_out".into()],
+            "ffn_out".to_string(),
+        ));
+
+        backend.execute(&mut graph).ok()?;
+        let ffn_out = graph.get_tensor("ffn_out")?.clone();
+
+        // === Step 9: Final Residual ===
+        let ffn_data = self.read_tensor_f32(&ffn_out, backend)?;
+        let final_out: Vec<f32> =
+            residual.iter().zip(ffn_data.iter()).map(|(r, f)| r + f).collect();
+
+        let mut final_tensor = backend
+            .alloc_tensor("output", vec![hidden_size], DataType::F32)
+            .ok()?;
+        backend
+            .copy_to_tensor(&mut final_tensor, bytemuck::cast_slice(&final_out))
+            .ok()?;
+
+        Some(final_tensor)
+    }
+
+    /// Helper to read tensor data as f32
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn read_tensor_f32(
+        &self,
+        tensor: &crate::compute::tensor::Tensor,
+        backend: &MetalBackend,
+    ) -> Option<Vec<f32>> {
+        let n = tensor.elem_count();
+        let mut data = vec![0.0f32; n];
+        backend
+            .copy_from_tensor(tensor, bytemuck::cast_slice_mut(&mut data))
+            .ok()?;
+        Some(data)
     }
 
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
