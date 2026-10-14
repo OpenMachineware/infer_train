@@ -177,6 +177,7 @@ pub fn dequant_q2_k(data: &[u8], out: &mut [f32], count: usize) {
 
 /// Dequantize Q3_K block to F32
 /// Q3_K: 256 elements per block, 110 bytes
+/// 16 sub-blocks of 16 elements each, 3-bit quantization
 pub fn dequant_q3_k(data: &[u8], out: &mut [f32], count: usize) {
     let n_blocks = count.div_ceil(QK_K);
     for block_idx in 0..n_blocks {
@@ -188,46 +189,63 @@ pub fn dequant_q3_k(data: &[u8], out: &mut [f32], count: usize) {
             unsafe { &*(data.as_ptr().add(block_offset) as *const BlockQ3K) };
         let d = f16::from_bits(block.d).to_f32();
 
-        // Q3_K has complex scale and hmask handling
-        // Simplified implementation
-        for j in 0..256 {
-            let idx = block_idx * QK_K + j;
-            if idx >= count {
-                break;
+        // Q3_K: 16 sub-blocks of 16 elements each
+        // scales[12] contains 16 scales (6 bits each), packed as 4 scales per 3 bytes
+        for is in 0..16 {
+            // Extract 6-bit scale from scales[12]
+            let byte_idx = (is / 4) * 3;
+            let bit_offset = (is % 4) * 6;
+            let byte_off = bit_offset / 8;
+            let bit_off = bit_offset % 8;
+
+            let scale = if bit_off <= 2 {
+                ((block.scales[byte_idx + byte_off] as u32 >> bit_off) & 0x3F)
+                    as u8
+            } else {
+                // Spans two bytes
+                (((block.scales[byte_idx + byte_off] as u32 >> bit_off)
+                    | ((block.scales[byte_idx + byte_off + 1] as u32)
+                        << (8 - bit_off)))
+                    & 0x3F) as u8
+            };
+
+            // Scale is 6-bit unsigned, converted to signed by subtracting 32
+            let sc = (scale as f32) - 32.0;
+            let dl = d * sc;
+            let ml = 4.0 * dl; // Offset for negative quant values
+
+            // Process 16 elements of this sub-block
+            for k in 0..16 {
+                let elem_idx = is * 16 + k;
+                let idx = block_idx * QK_K + elem_idx;
+                if idx >= count {
+                    break;
+                }
+
+                // 2 bits from qs
+                let qs_idx = is * 4 + k / 4; // 4 elements per qs byte
+                let qs_bit = (k % 4) * 2;
+                let q = ((block.qs[qs_idx] >> qs_bit) & 0x03) as f32;
+
+                // 1 bit from hmask
+                let hm_idx = is * 2 + k / 8; // 8 elements per hmask byte
+                let hm_bit = k % 8;
+                let hbit = ((block.hmask[hm_idx] >> hm_bit) & 1) as i32;
+
+                // If hbit is set, v = dl * q
+                // If hbit is not set, v = dl * q - ml = dl * (q - 4)
+                let v = dl * q - if hbit == 1 { 0.0 } else { ml };
+
+                out[idx] = v;
             }
-
-            // Extract 3-bit value
-            let byte_idx = j / 4;
-            let bit_offset = (j % 4) * 2;
-            let qs_byte = block.qs[byte_idx.min(block.qs.len() - 1)];
-            let low_bits = ((qs_byte >> bit_offset) & 0x03) as f32;
-
-            // High bit from hmask
-            let hmask_idx = j / 8;
-            let hmask_bit = j % 8;
-            let high_bit = if hmask_idx < block.hmask.len() {
-                ((block.hmask[hmask_idx] >> hmask_bit) & 1) as f32
-            } else {
-                0.0
-            };
-
-            // 3-bit value: 0-7, recentered
-            let val = low_bits + high_bit * 4.0 - 4.0;
-
-            // Scale (simplified - uses average scale)
-            let scale = if j < 128 {
-                (block.scales[j / 16] as f32).max(1.0)
-            } else {
-                (block.scales[8 + (j - 128) / 16] as f32).max(1.0)
-            };
-
-            out[idx] = d * scale * val / 16.0;
         }
     }
 }
 
 /// Dequantize Q6_K block to F32
 /// Q6_K: 256 elements per block, 210 bytes
+/// 16 sub-blocks of 16 elements each, 6-bit quantization
+/// Uses interleaved ql/qh layout
 pub fn dequant_q6_k(data: &[u8], out: &mut [f32], count: usize) {
     let n_blocks = count.div_ceil(QK_K);
     for block_idx in 0..n_blocks {
@@ -239,48 +257,63 @@ pub fn dequant_q6_k(data: &[u8], out: &mut [f32], count: usize) {
             unsafe { &*(data.as_ptr().add(block_offset) as *const BlockQ6K) };
         let d = f16::from_bits(block.d).to_f32();
 
-        // Q6_K: 16 sub-blocks of 16 elements
-        // ql[128]: lower 4 bits
-        // qh[64]: upper 2 bits
-        // scales[16]: per-sub-block scales
-        for j in 0..16 {
-            let sc = block.scales[j] as f32 / 127.0;
+        // Q6_K uses interleaved layout for ql/qh
+        // Treat ql as u16 array for correct addressing
+        let ql16: &[u16] = unsafe {
+            std::slice::from_raw_parts(
+                block.ql.as_ptr() as *const u16,
+                block.ql.len() / 2,
+            )
+        };
+        let qh16: &[u16] = unsafe {
+            std::slice::from_raw_parts(
+                block.qh.as_ptr() as *const u16,
+                block.qh.len() / 2,
+            )
+        };
 
-            for k in 0..16 {
-                let elem_idx = j * 16 + k;
-                let idx = block_idx * QK_K + elem_idx;
-                if idx >= count {
-                    continue;
-                }
+        // Process 16 sub-blocks
+        for il in 0..16 {
+            let sc = block.scales[il] as f32;
+            let dl = d * sc;
+            let ml = 32.0 * dl;
 
-                // Lower 4 bits from ql
-                // Layout: ql[0..63] holds first 128 elements, ql[64..127] holds second 128
-                let ql_idx = if elem_idx < 128 {
-                    (elem_idx / 2) as usize
-                } else {
-                    64 + ((elem_idx - 128) / 2) as usize
-                };
+            // Compute interleaved offsets
+            let ql_offset = 32 * (il / 8) + 16 * ((il / 2) & 1) + 8 * (il & 1);
+            let qh_offset = 16 * (il / 8) + 8 * (il & 1);
 
-                if ql_idx < block.ql.len() {
-                    let ql_byte = block.ql[ql_idx];
-                    let l4 = if elem_idx % 2 == 0 {
-                        (ql_byte & 0x0F) as f32
-                    } else {
-                        ((ql_byte >> 4) & 0x0F) as f32
-                    };
+            let il2 = (il / 2) & 3;
+            let kmask1: u32 = if il2 > 1 {
+                if il2 > 2 { 0xC0C0C0C0 } else { 0x30303030 }
+            } else {
+                if il2 > 0 { 0x0C0C0C0C } else { 0x03030303 }
+            };
+            let kmask2: u32 = if il2 > 1 { 0xF0F0F0F0 } else { 0x0F0F0F0F };
+            let shr_h = if il2 > 2 { 2 } else { 0 };
+            let shl_h = if il2 > 1 { 0 } else { if il2 > 0 { 2 } else { 4 } };
+            let shr_l = if il2 > 1 { 4 } else { 0 };
 
-                    // Upper 2 bits from qh
-                    let qh_idx = (elem_idx / 4) as usize;
-                    let qh_offset = (elem_idx % 4) * 2;
-                    let h2 = if qh_idx < block.qh.len() {
-                        ((block.qh[qh_idx] >> qh_offset) & 0x03) as f32
-                    } else {
-                        0.0
-                    };
+            // Process 4 iterations of 4 elements each
+            for i in 0..4 {
+                let low = (ql16[ql_offset + 2 * i] as u32
+                    | ((ql16[ql_offset + 2 * i + 1] as u32) << 16))
+                    & kmask2;
+                let high = (qh16[qh_offset + 2 * i] as u32
+                    | ((qh16[qh_offset + 2 * i + 1] as u32) << 16))
+                    & kmask1;
+                let q = ((high << shl_h) >> shr_h) | (low >> shr_l);
 
-                    // 6-bit value: 0-63 -> -32 to 31
-                    let val = l4 + h2 * 16.0 - 32.0;
-                    out[idx] = d * sc * val;
+                for b in 0..4 {
+                    let elem_idx = il * 16 + i * 4 + b;
+                    let idx = block_idx * QK_K + elem_idx;
+                    if idx >= count {
+                        continue;
+                    }
+
+                    let qv = ((q >> (b * 8)) & 0xFF) as f32;
+                    // Convert to signed: qv - 32
+                    let v = dl * (qv - 32.0);
+                    out[idx] = v;
                 }
             }
         }

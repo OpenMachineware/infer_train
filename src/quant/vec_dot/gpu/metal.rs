@@ -16,6 +16,63 @@ use metal::{
 use std::cell::RefCell;
 use std::os::raw::c_void;
 
+/// GEMM kernel arguments matching ggml_metal_kargs_mul_mm in mul_mm.metal
+/// Used for matrix-matrix and matrix-vector operations
+#[repr(C)]
+struct GemmArgs {
+    ne00: i32, // K dimension
+    ne02: i32, // batch dimension
+    nb01: u64, // row stride for A (bytes between rows)
+    nb02: u64, // batch stride for A
+    nb03: u64, // batch3 stride for A
+    ne12: i32, // batch dimension for B
+    nb10: u64, // element stride for B (bytes between elements)
+    nb11: u64, // row stride for B (bytes between rows)
+    nb12: u64, // batch stride for B
+    nb13: u64, // batch3 stride for B
+    ne0: i32,  // M dimension (output rows)
+    ne1: i32,  // N dimension (output cols)
+    r2: i16,   // broadcast ratio for batch dimension
+    r3: i16,   // broadcast ratio for batch3 dimension
+}
+
+impl GemmArgs {
+    /// Create args for matrix-vector multiplication (N=1)
+    fn for_mv(m: usize, k: usize, nb01: u64) -> Self {
+        Self {
+            ne00: k as i32,
+            ne02: 1,
+            nb01,
+            nb02: 0,
+            nb03: 0,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            r2: 1,
+            r3: 1,
+        }
+    }
+}
+
+/// K-quant MV kernel arguments (self-written kernels)
+/// Simpler structure than GemmArgs - only needs essential dimensions
+#[repr(C)]
+struct KquantMvArgs {
+    ne00: u32, // K dimension (input size)
+    ne01: u32, // M dimension (output rows)
+    nb01: u64, // Byte stride between rows of weight matrix
+}
+
+impl KquantMvArgs {
+    fn new(m: usize, k: usize, nb01: u64) -> Self {
+        Self { ne00: k as u32, ne01: m as u32, nb01 }
+    }
+}
+
 pub struct MetalContext {
     device: Device,
     queue: CommandQueue,
@@ -25,6 +82,8 @@ pub struct MetalContext {
     mv_iq_tq_library: Library,
     // Self-written GEMM template library (all formats)
     gemm_library: Library,
+    // Self-written K-quant MV library (Q2_K, Q3_K, Q4_K, Q5_K, Q6_K)
+    kquant_mv_library: Library,
     // Cached MV pipelines - Standard Q
     mv_q1_0_pipeline: ComputePipelineState,
     mv_q2_0_pipeline: ComputePipelineState,
@@ -286,6 +345,17 @@ impl MetalContext {
             .new_library_with_source(&gemm_combined, &compile_options)
             .map_err(|e| format!("Failed to compile gemm library: {}", e))?;
 
+        // Compile self-written K-quant MV library (Q2_K, Q3_K, Q4_K, Q5_K, Q6_K)
+        let kquant_mv_source =
+            include_str!("../../../ops/metal/gemv/kquant_mv.metal");
+        let kquant_mv_combined = kquant_mv_source
+            .replace("#include \"../include/blocks.h\"", blocks_h);
+        let kquant_mv_library = device
+            .new_library_with_source(&kquant_mv_combined, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile kquant_mv library: {}", e)
+            })?;
+
         // Compile RMS Norm library
         let rms_norm_source =
             include_str!("../../../ops/metal/ops/rms_norm.metal");
@@ -408,54 +478,39 @@ impl MetalContext {
             .new_compute_pipeline_state_with_function(&mv_q8_0_kernel)
             .map_err(|e| format!("Failed to create Q8_0 pipeline: {}", e))?;
 
-        // Create cached pipelines for K-quant MV (all from template)
-        // Use default specialization: nsg=2, ne12=1, r2=1, r3=1 (single-batch decode)
+        // Create cached pipelines for K-quant MV (using self-written kernels)
+        // Self-written kernels don't use function constants
 
-        let mv_q4_k_kernel = gemm_library
-            .get_function(
-                "kernel_mul_mm_q4_K_f32",
-                Some(create_mv_function_constants(2, 1, 1, 1)),
-            )
+        let mv_q4_k_kernel = kquant_mv_library
+            .get_function("kernel_mul_mv_q4_K_f32", None)
             .map_err(|e| format!("Failed to get Q4_K kernel: {}", e))?;
         let mv_q4_k_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_q4_k_kernel)
             .map_err(|e| format!("Failed to create Q4_K pipeline: {}", e))?;
 
-        let mv_q5_k_kernel = gemm_library
-            .get_function(
-                "kernel_mul_mm_q5_K_f32",
-                Some(create_mv_function_constants(2, 1, 1, 1)),
-            )
+        let mv_q5_k_kernel = kquant_mv_library
+            .get_function("kernel_mul_mv_q5_K_f32", None)
             .map_err(|e| format!("Failed to get Q5_K kernel: {}", e))?;
         let mv_q5_k_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_q5_k_kernel)
             .map_err(|e| format!("Failed to create Q5_K pipeline: {}", e))?;
 
-        let mv_q2_k_kernel = gemm_library
-            .get_function(
-                "kernel_mul_mm_q2_K_f32",
-                Some(create_mv_function_constants(2, 1, 1, 1)),
-            )
+        let mv_q2_k_kernel = kquant_mv_library
+            .get_function("kernel_mul_mv_q2_K_f32", None)
             .map_err(|e| format!("Failed to get Q2_K kernel: {}", e))?;
         let mv_q2_k_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_q2_k_kernel)
             .map_err(|e| format!("Failed to create Q2_K pipeline: {}", e))?;
 
-        let mv_q6_k_kernel = gemm_library
-            .get_function(
-                "kernel_mul_mm_q6_K_f32",
-                Some(create_mv_function_constants(2, 1, 1, 1)),
-            )
+        let mv_q6_k_kernel = kquant_mv_library
+            .get_function("kernel_mul_mv_q6_K_f32", None)
             .map_err(|e| format!("Failed to get Q6_K kernel: {}", e))?;
         let mv_q6_k_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_q6_k_kernel)
             .map_err(|e| format!("Failed to create Q6_K pipeline: {}", e))?;
 
-        let mv_q3_k_kernel = gemm_library
-            .get_function(
-                "kernel_mul_mm_q3_K_f32",
-                Some(create_mv_function_constants(2, 1, 1, 1)),
-            )
+        let mv_q3_k_kernel = kquant_mv_library
+            .get_function("kernel_mul_mv_q3_K_f32", None)
             .map_err(|e| format!("Failed to get Q3_K kernel: {}", e))?;
         let mv_q3_k_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_q3_k_kernel)
@@ -1113,6 +1168,8 @@ impl MetalContext {
             mv_iq_tq_library,
             // Self-written GEMM template library
             gemm_library,
+            // Self-written K-quant MV library
+            kquant_mv_library,
             // MV pipelines - Standard Q
             mv_q1_0_pipeline,
             mv_q2_0_pipeline,
@@ -3623,50 +3680,7 @@ impl MetalContext {
     ) -> Result<std::rc::Rc<Buffer>, String> {
         let nb = k / 256; // QK_K = 256
         let nb01 = (nb * std::mem::size_of::<BlockQ4K>()) as u64;
-
-        #[repr(C)]
-        struct MvArgs {
-            ne00: i32,
-            ne01: i32,
-            ne02: i32,
-            nb00: u64,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne10: i32,
-            ne11: i32,
-            ne12: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            nr0: i32,
-            r2: i16,
-            r3: i16,
-        }
-        let args = MvArgs {
-            ne00: k as i32,
-            ne01: m as i32,
-            ne02: 1,
-            nb00: 1,
-            nb01,
-            nb02: 0,
-            nb03: 0,
-            ne10: k as i32,
-            ne11: 1,
-            ne12: 1,
-            nb10: 4,
-            nb11: k as u64 * 4,
-            nb12: 0,
-            nb13: 0,
-            ne0: m as i32,
-            ne1: 1,
-            nr0: 2,
-            r2: 1,
-            r3: 1,
-        };
+        let args = KquantMvArgs::new(m, k, nb01);
 
         let output_buffer = std::rc::Rc::new(self.device.new_buffer(
             (m * 4) as u64,
@@ -3676,25 +3690,20 @@ impl MetalContext {
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.mv_q4_k_pipeline);
+        // Kernel expects: buffer 0=weights, 1=input, 2=output, 3=args
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
         encoder.set_bytes(
-            0,
-            std::mem::size_of::<MvArgs>() as u64,
-            &args as *const MvArgs as *const std::ffi::c_void,
+            3,
+            std::mem::size_of::<KquantMvArgs>() as u64,
+            &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
-        encoder.set_buffer(1, Some(weights_buffer), 0);
-        encoder.set_buffer(2, Some(input_buffer), 0);
-        encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        const NSG: u64 = 2;
-        const NR0: u64 = 2;
-        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
-
-        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
-        let thread_group_count = MTLSize {
-            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
-            height: 1,
-            depth: 1,
-        };
+        // One row per threadgroup, 32 threads for SIMD reduction
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
@@ -3714,50 +3723,7 @@ impl MetalContext {
     ) -> Result<std::rc::Rc<Buffer>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ5K>()) as u64;
-
-        #[repr(C)]
-        struct MvArgs {
-            ne00: i32,
-            ne01: i32,
-            ne02: i32,
-            nb00: u64,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne10: i32,
-            ne11: i32,
-            ne12: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            nr0: i32,
-            r2: i16,
-            r3: i16,
-        }
-        let args = MvArgs {
-            ne00: k as i32,
-            ne01: m as i32,
-            ne02: 1,
-            nb00: 1,
-            nb01,
-            nb02: 0,
-            nb03: 0,
-            ne10: k as i32,
-            ne11: 1,
-            ne12: 1,
-            nb10: 4,
-            nb11: k as u64 * 4,
-            nb12: 0,
-            nb13: 0,
-            ne0: m as i32,
-            ne1: 1,
-            nr0: 2,
-            r2: 1,
-            r3: 1,
-        };
+        let args = KquantMvArgs::new(m, k, nb01);
 
         let output_buffer = std::rc::Rc::new(self.device.new_buffer(
             (m * 4) as u64,
@@ -3767,25 +3733,20 @@ impl MetalContext {
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.mv_q5_k_pipeline);
+        // Kernel expects: buffer 0=weights, 1=input, 2=output, 3=args
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
         encoder.set_bytes(
-            0,
-            std::mem::size_of::<MvArgs>() as u64,
-            &args as *const MvArgs as *const std::ffi::c_void,
+            3,
+            std::mem::size_of::<KquantMvArgs>() as u64,
+            &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
-        encoder.set_buffer(1, Some(weights_buffer), 0);
-        encoder.set_buffer(2, Some(input_buffer), 0);
-        encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        const NSG: u64 = 2;
-        const NR0: u64 = 2;
-        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
-
-        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
-        let thread_group_count = MTLSize {
-            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
-            height: 1,
-            depth: 1,
-        };
+        // One row per threadgroup, 32 threads for SIMD reduction
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
@@ -3805,48 +3766,7 @@ impl MetalContext {
     ) -> Result<std::rc::Rc<Buffer>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ2K>()) as u64;
-
-        #[repr(C)]
-        struct MvArgs {
-            ne00: i32,
-            ne01: i32,
-            nb00: u64,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne10: i32,
-            ne11: i32,
-            ne12: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            nr0: i32,
-            r2: i16,
-            r3: i16,
-        }
-        let args = MvArgs {
-            ne00: k as i32,
-            ne01: m as i32,
-            nb00: 1,
-            nb01,
-            nb02: 0,
-            nb03: 0,
-            ne10: k as i32,
-            ne11: 1,
-            ne12: 1,
-            nb10: 4,
-            nb11: k as u64 * 4,
-            nb12: 0,
-            nb13: 0,
-            ne0: m as i32,
-            ne1: 1,
-            nr0: 4, // N_R0_Q2_K = 4
-            r2: 1,
-            r3: 1,
-        };
+        let args = KquantMvArgs::new(m, k, nb01);
 
         let output_buffer = std::rc::Rc::new(self.device.new_buffer(
             (m * 4) as u64,
@@ -3856,25 +3776,20 @@ impl MetalContext {
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.mv_q2_k_pipeline);
+        // Kernel expects: buffer 0=weights, 1=input, 2=output, 3=args
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
         encoder.set_bytes(
-            0,
-            std::mem::size_of::<MvArgs>() as u64,
-            &args as *const MvArgs as *const std::ffi::c_void,
+            3,
+            std::mem::size_of::<KquantMvArgs>() as u64,
+            &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
-        encoder.set_buffer(1, Some(weights_buffer), 0);
-        encoder.set_buffer(2, Some(input_buffer), 0);
-        encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        const NSG: u64 = 2;
-        const NR0: u64 = 4; // N_R0_Q2_K = 4
-        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
-
-        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
-        let thread_group_count = MTLSize {
-            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
-            height: 1,
-            depth: 1,
-        };
+        // One row per threadgroup, 32 threads for SIMD reduction
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
@@ -3894,50 +3809,7 @@ impl MetalContext {
     ) -> Result<std::rc::Rc<Buffer>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ6K>()) as u64;
-
-        #[repr(C)]
-        struct MvArgs {
-            ne00: i32,
-            ne01: i32,
-            ne02: i32,
-            nb00: u64,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne10: i32,
-            ne11: i32,
-            ne12: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            nr0: i32,
-            r2: i16,
-            r3: i16,
-        }
-        let args = MvArgs {
-            ne00: k as i32,
-            ne01: m as i32,
-            ne02: 1,
-            nb00: 1,
-            nb01,
-            nb02: 0,
-            nb03: 0,
-            ne10: k as i32,
-            ne11: 1,
-            ne12: 1,
-            nb10: 4,
-            nb11: k as u64 * 4,
-            nb12: 0,
-            nb13: 0,
-            ne0: m as i32,
-            ne1: 1,
-            nr0: 2,
-            r2: 1,
-            r3: 1,
-        };
+        let args = KquantMvArgs::new(m, k, nb01);
 
         let output_buffer = std::rc::Rc::new(self.device.new_buffer(
             (m * 4) as u64,
@@ -3947,25 +3819,20 @@ impl MetalContext {
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.mv_q6_k_pipeline);
+        // Kernel expects: buffer 0=weights, 1=input, 2=output, 3=args
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
         encoder.set_bytes(
-            0,
-            std::mem::size_of::<MvArgs>() as u64,
-            &args as *const MvArgs as *const std::ffi::c_void,
+            3,
+            std::mem::size_of::<KquantMvArgs>() as u64,
+            &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
-        encoder.set_buffer(1, Some(weights_buffer), 0);
-        encoder.set_buffer(2, Some(input_buffer), 0);
-        encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        const NSG: u64 = 2;
-        const NR0: u64 = 2;
-        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
-
-        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
-        let thread_group_count = MTLSize {
-            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
-            height: 1,
-            depth: 1,
-        };
+        // One row per threadgroup, 32 threads for SIMD reduction
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
@@ -3985,50 +3852,7 @@ impl MetalContext {
     ) -> Result<std::rc::Rc<Buffer>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ3K>()) as u64;
-
-        #[repr(C)]
-        struct MvArgs {
-            ne00: i32,
-            ne01: i32,
-            ne02: i32,
-            nb00: u64,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne10: i32,
-            ne11: i32,
-            ne12: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            nr0: i32,
-            r2: i16,
-            r3: i16,
-        }
-        let args = MvArgs {
-            ne00: k as i32,
-            ne01: m as i32,
-            ne02: 1,
-            nb00: 1,
-            nb01,
-            nb02: 0,
-            nb03: 0,
-            ne10: k as i32,
-            ne11: 1,
-            ne12: 1,
-            nb10: 4,
-            nb11: k as u64 * 4,
-            nb12: 0,
-            nb13: 0,
-            ne0: m as i32,
-            ne1: 1,
-            nr0: 2,
-            r2: 1,
-            r3: 1,
-        };
+        let args = KquantMvArgs::new(m, k, nb01);
 
         let output_buffer = std::rc::Rc::new(self.device.new_buffer(
             (m * 4) as u64,
@@ -4038,25 +3862,20 @@ impl MetalContext {
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.mv_q3_k_pipeline);
+        // Kernel expects: buffer 0=weights, 1=input, 2=output, 3=args
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
         encoder.set_bytes(
-            0,
-            std::mem::size_of::<MvArgs>() as u64,
-            &args as *const MvArgs as *const std::ffi::c_void,
+            3,
+            std::mem::size_of::<KquantMvArgs>() as u64,
+            &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
-        encoder.set_buffer(1, Some(weights_buffer), 0);
-        encoder.set_buffer(2, Some(input_buffer), 0);
-        encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        const NSG: u64 = 2;
-        const NR0: u64 = 2;
-        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
-
-        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
-        let thread_group_count = MTLSize {
-            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
-            height: 1,
-            depth: 1,
-        };
+        // One row per threadgroup, 32 threads for SIMD reduction
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
