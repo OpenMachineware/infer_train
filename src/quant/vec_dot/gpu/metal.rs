@@ -84,7 +84,12 @@ pub struct MetalContext {
     gelu_quick_4_pipeline: ComputePipelineState,
     // Flash Attention
     flash_attn_library: Library,
-    flash_attn_f16_pipeline: ComputePipelineState,
+    // F16 decode pipelines for each head_dim (NE=4 variant)
+    flash_decode_f16_32_pipeline: ComputePipelineState,
+    flash_decode_f16_64_pipeline: ComputePipelineState,
+    flash_decode_f16_80_pipeline: ComputePipelineState,
+    flash_decode_f16_128_pipeline: ComputePipelineState,
+    flash_decode_f16_160_pipeline: ComputePipelineState,
     // Quantize
     quantize_library: Library,
     quantize_f16_pipeline: ComputePipelineState,
@@ -324,10 +329,9 @@ impl MetalContext {
                 format!("Failed to compile activation library: {}", e)
             })?;
 
-        // Compile Flash Attention library (standalone with expanded includes)
-        let flash_attn_source = include_str!(
-            "../../../ops/metal/attention/flash_attn_standalone_stub.metal"
-        );
+        // Compile Flash Attention library (vectorized decode kernel)
+        let flash_attn_source =
+            include_str!("../../../ops/metal/attention/flash_decode_vec.metal");
         let flash_attn_library = device
             .new_library_with_source(flash_attn_source, &compile_options)
             .map_err(|e| {
@@ -1010,17 +1014,74 @@ impl MetalContext {
         let gelu_quick_4_pipeline = gelu_quick_pipeline.clone();
 
         // Create Flash Attention pipeline (template specialization, may fail on some Metal versions)
-        let flash_attn_f16_pipeline = match flash_attn_library
-            .get_function("kernel_flash_attn_ext_f16_dk128_dv128", None)
-        {
-            Ok(kernel) => {
-                match device.new_compute_pipeline_state_with_function(&kernel) {
-                    Ok(pipeline) => pipeline,
-                    Err(_) => rms_norm_pipeline.clone(),
-                }
-            }
-            Err(_) => rms_norm_pipeline.clone(),
-        };
+        // Create Flash Attention pipelines for each head_dim
+        let flash_decode_f16_32_kernel = flash_attn_library
+            .get_function("flash_decode_vec_f16_32", None)
+            .map_err(|e| {
+                format!("Failed to get flash_decode_vec_f16_32 kernel: {}", e)
+            })?;
+        let flash_decode_f16_32_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &flash_decode_f16_32_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create flash_decode_f16_32 pipeline: {}", e)
+            })?;
+
+        let flash_decode_f16_64_kernel = flash_attn_library
+            .get_function("flash_decode_vec_f16_64", None)
+            .map_err(|e| {
+                format!("Failed to get flash_decode_vec_f16_64 kernel: {}", e)
+            })?;
+        let flash_decode_f16_64_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &flash_decode_f16_64_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create flash_decode_f16_64 pipeline: {}", e)
+            })?;
+
+        let flash_decode_f16_80_kernel = flash_attn_library
+            .get_function("flash_decode_vec_f16_80", None)
+            .map_err(|e| {
+                format!("Failed to get flash_decode_vec_f16_80 kernel: {}", e)
+            })?;
+        let flash_decode_f16_80_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &flash_decode_f16_80_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create flash_decode_f16_80 pipeline: {}", e)
+            })?;
+
+        let flash_decode_f16_128_kernel = flash_attn_library
+            .get_function("flash_decode_vec_f16", None) // Default name for HEAD_DIM=128
+            .map_err(|e| {
+                format!("Failed to get flash_decode_vec_f16 kernel: {}", e)
+            })?;
+        let flash_decode_f16_128_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &flash_decode_f16_128_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create flash_decode_vec_f16 pipeline: {}", e)
+            })?;
+
+        let flash_decode_f16_160_kernel = flash_attn_library
+            .get_function("flash_decode_vec_f16_160", None)
+            .map_err(|e| {
+                format!("Failed to get flash_decode_vec_f16_160 kernel: {}", e)
+            })?;
+        let flash_decode_f16_160_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &flash_decode_f16_160_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create flash_decode_vec_f16_160 pipeline: {}",
+                    e
+                )
+            })?;
 
         // Create Quantize pipelines
         let quantize_f16_kernel = quantize_library
@@ -1134,7 +1195,11 @@ impl MetalContext {
             gelu_quick_4_pipeline,
             // Flash Attention
             flash_attn_library,
-            flash_attn_f16_pipeline,
+            flash_decode_f16_32_pipeline,
+            flash_decode_f16_64_pipeline,
+            flash_decode_f16_80_pipeline,
+            flash_decode_f16_128_pipeline,
+            flash_decode_f16_160_pipeline,
             // Quantize
             quantize_library,
             quantize_f16_pipeline,
@@ -6194,24 +6259,32 @@ impl MetalContext {
     // ========================================================================
 
     /// Flash Attention for F16 KV cache
-    /// Supports: head_dim=128, GQA (grouped query attention)
+    /// Supports: head_dim 32/64/80/128/160, GQA (grouped query attention)
     pub fn flash_attn_f16(
         &self,
         n_seqs: usize,     // batch size
         n_heads: usize,    // number of query heads
         n_kv_heads: usize, // number of KV heads (for GQA)
-        head_dim: usize,   // head dimension (must be 128)
+        head_dim: usize,   // head dimension (32/64/80/128/160)
         seq_len: usize,    // KV cache length
         q: &[f32],         // query [n_seqs, n_heads, head_dim]
         k: &[u16], // key cache [n_seqs, n_kv_heads, seq_len, head_dim] as F16
         v: &[u16], // value cache [n_seqs, n_kv_heads, seq_len, head_dim] as F16
     ) -> Result<Vec<f32>, String> {
-        if head_dim != 128 {
-            return Err(format!(
-                "Flash Attention only supports head_dim=128, got {}",
-                head_dim
-            ));
-        }
+        // Select pipeline based on head_dim
+        let pipeline = match head_dim {
+            32 => &self.flash_decode_f16_32_pipeline,
+            64 => &self.flash_decode_f16_64_pipeline,
+            80 => &self.flash_decode_f16_80_pipeline,
+            128 => &self.flash_decode_f16_128_pipeline,
+            160 => &self.flash_decode_f16_160_pipeline,
+            _ => {
+                return Err(format!(
+                    "Flash Attention does not support head_dim={}, only 32/64/80/128/160",
+                    head_dim
+                ))
+            }
+        };
 
         let q_buffer = self.device.new_buffer_with_data(
             q.as_ptr() as *const std::ffi::c_void,
@@ -6233,66 +6306,49 @@ impl MetalContext {
             metal::MTLResourceOptions::StorageModeShared,
         );
 
-        let scale = 1.0 / (head_dim as f32).sqrt();
-        let n_heads_per_group = n_heads / n_kv_heads;
-
-        let args = FlashAttnArgs {
-            ne01: 1, // Q rows per head (1 for decode)
-            ne02: n_heads as u32,
-            ne03: n_seqs as u32,
-            ne11: seq_len as u32,
-            ne_12_2: n_kv_heads as u32,
-            ne_12_3: n_seqs as u32,
-            nb01: (head_dim * 4) as u32,
-            nb02: (n_heads * head_dim * 4) as u32,
-            nb03: (n_seqs * n_heads * head_dim * 4) as u32,
-            nb11: (head_dim * 2) as u32,
-            nb12: (seq_len * head_dim * 2) as u32,
-            nb13: (n_seqs * seq_len * head_dim * 2) as u32,
-            nb21: (head_dim * 2) as u32,
-            nb22: (seq_len * head_dim * 2) as u32,
-            nb23: (n_seqs * seq_len * head_dim * 2) as u32,
-            nb31: 0,
-            nb32: 0,
-            nb33: 0,
-            ne32: 0,
-            ne33: 0,
-            scale,
-            max_bias: 0.0,
-            logit_softcap: 0.0,
-            n_head_log2: 0,
-            m0: 0.0,
-            m1: 0.0,
-            nsg: 2,  // 2 simdgroups per threadgroup
-            nwg: 32, // 32 workgroups for parallelization
-        };
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+        let seq_k = seq_len as u32;
 
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
 
-        encoder.set_compute_pipeline_state(&self.flash_attn_f16_pipeline);
+        encoder.set_compute_pipeline_state(pipeline);
+
+        // Buffer 0: seq_k (uint)
         encoder.set_bytes(
             0,
-            std::mem::size_of::<FlashAttnArgs>() as u64,
-            &args as *const FlashAttnArgs as *const std::ffi::c_void,
+            4,
+            &seq_k as *const u32 as *const std::ffi::c_void,
         );
-        encoder.set_buffer(1, Some(&q_buffer), 0);
-        encoder.set_buffer(2, Some(&k_buffer), 0);
-        encoder.set_buffer(3, Some(&v_buffer), 0);
-        encoder.set_buffer(4, None, 0); // mask
-        encoder.set_buffer(5, None, 0); // sinks
-        encoder.set_buffer(6, None, 0); // pad
-        encoder.set_buffer(7, Some(&output_buffer), 0);
 
-        // Threadgroup configuration
-        let thread_group_size = MTLSize { width: 64, height: 1, depth: 1 };
-        let thread_group_count = MTLSize {
-            width: n_heads as u64,
-            height: n_seqs as u64,
-            depth: 32, // 32 workgroups for seq_len parallelization
-        };
+        // Buffer 1: scale (float)
+        encoder.set_bytes(
+            1,
+            4,
+            &scale as *const f32 as *const std::ffi::c_void,
+        );
 
-        encoder.set_threadgroup_memory_length(0, 32768); // 32KB shared memory
+        // Buffer 2: query
+        encoder.set_buffer(2, Some(&q_buffer), 0);
+
+        // Buffer 3: key_cache
+        encoder.set_buffer(3, Some(&k_buffer), 0);
+
+        // Buffer 4: value_cache
+        encoder.set_buffer(4, Some(&v_buffer), 0);
+
+        // Buffer 5: output
+        encoder.set_buffer(5, Some(&output_buffer), 0);
+
+        // Grid: [1, n_heads, n_seqs]
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: 1, height: n_heads as u64, depth: n_seqs as u64 };
+
+        // Threadgroup memory for shared query and scores
+        let shmem_size = head_dim * 4 + 128 + head_dim * 4;
+        encoder.set_threadgroup_memory_length(0, shmem_size as u64);
+
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
         command_buffer.commit();
@@ -6303,6 +6359,7 @@ impl MetalContext {
     }
 
     /// Flash Attention for F16 KV cache (fully zero-copy, GPU buffers)
+    /// Supports head_dim: 32, 64, 80, 128, 160
     pub fn flash_attn_f16_gpu(
         &self,
         n_seqs: usize,
@@ -6314,13 +6371,22 @@ impl MetalContext {
         k_buffer: &Buffer,
         v_buffer: &Buffer,
     ) -> Result<std::rc::Rc<Buffer>, String> {
-        if head_dim != 128 {
-            return Err(format!(
-                "Flash Attention only supports head_dim=128, got {}",
-                head_dim
-            ));
-        }
+        // Select pipeline based on head_dim
+        let pipeline = match head_dim {
+            32 => &self.flash_decode_f16_32_pipeline,
+            64 => &self.flash_decode_f16_64_pipeline,
+            80 => &self.flash_decode_f16_80_pipeline,
+            128 => &self.flash_decode_f16_128_pipeline,
+            160 => &self.flash_decode_f16_160_pipeline,
+            _ => {
+                return Err(format!(
+                    "Flash Attention does not support head_dim={}, only 32/64/80/128/160",
+                    head_dim
+                ))
+            }
+        };
 
+        // Output buffer: [n_seqs, n_heads, head_dim]
         let output_size =
             n_seqs * n_heads * head_dim * std::mem::size_of::<f32>();
         let output_buffer = std::rc::Rc::new(self.device.new_buffer(
@@ -6328,61 +6394,53 @@ impl MetalContext {
             metal::MTLResourceOptions::StorageModeShared,
         ));
 
-        let scale = 1.0 / (head_dim as f32).sqrt();
-
-        let args = FlashAttnArgs {
-            ne01: 1,
-            ne02: n_heads as u32,
-            ne03: n_seqs as u32,
-            ne11: seq_len as u32,
-            ne_12_2: n_kv_heads as u32,
-            ne_12_3: n_seqs as u32,
-            nb01: (head_dim * 4) as u32,
-            nb02: (n_heads * head_dim * 4) as u32,
-            nb03: (n_seqs * n_heads * head_dim * 4) as u32,
-            nb11: (head_dim * 2) as u32,
-            nb12: (seq_len * head_dim * 2) as u32,
-            nb13: (n_seqs * seq_len * head_dim * 2) as u32,
-            nb21: (head_dim * 2) as u32,
-            nb22: (seq_len * head_dim * 2) as u32,
-            nb23: (n_seqs * seq_len * head_dim * 2) as u32,
-            nb31: 0,
-            nb32: 0,
-            nb33: 0,
-            ne32: 0,
-            ne33: 0,
-            scale,
-            max_bias: 0.0,
-            logit_softcap: 0.0,
-            n_head_log2: 0,
-            m0: 0.0,
-            m1: 0.0,
-            nsg: 2,
-            nwg: 32,
-        };
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+        let seq_k = seq_len as u32;
 
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
 
-        encoder.set_compute_pipeline_state(&self.flash_attn_f16_pipeline);
+        encoder.set_compute_pipeline_state(pipeline);
+
+        // Buffer 0: seq_k (uint)
         encoder.set_bytes(
             0,
-            std::mem::size_of::<FlashAttnArgs>() as u64,
-            &args as *const FlashAttnArgs as *const std::ffi::c_void,
+            4,
+            &seq_k as *const u32 as *const std::ffi::c_void,
         );
-        encoder.set_buffer(1, Some(q_buffer), 0);
-        encoder.set_buffer(2, Some(k_buffer), 0);
-        encoder.set_buffer(3, Some(v_buffer), 0);
-        encoder.set_buffer(4, None, 0);
-        encoder.set_buffer(5, None, 0);
-        encoder.set_buffer(6, None, 0);
-        encoder.set_buffer(7, Some(&output_buffer), 0);
 
-        let thread_group_size = MTLSize { width: 64, height: 1, depth: 1 };
+        // Buffer 1: scale (float)
+        encoder.set_bytes(
+            1,
+            4,
+            &scale as *const f32 as *const std::ffi::c_void,
+        );
+
+        // Buffer 2: query
+        encoder.set_buffer(2, Some(q_buffer), 0);
+
+        // Buffer 3: key_cache
+        encoder.set_buffer(3, Some(k_buffer), 0);
+
+        // Buffer 4: value_cache
+        encoder.set_buffer(4, Some(v_buffer), 0);
+
+        // Buffer 5: output
+        encoder.set_buffer(5, Some(&output_buffer), 0);
+
+        // Grid: [1, n_heads, n_seqs]
+        // Each threadgroup handles one (head, batch) pair
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
         let thread_group_count =
-            MTLSize { width: n_heads as u64, height: n_seqs as u64, depth: 32 };
+            MTLSize { width: 1, height: n_heads as u64, depth: n_seqs as u64 };
 
-        encoder.set_threadgroup_memory_length(0, 32768);
+        // Threadgroup memory for shared query and scores
+        // s_query: head_dim/4 float4s = head_dim * 4 bytes
+        // s_scores: C floats where C = (head_dim * C_FACTOR) / 4
+        // For NE=4 kernel: C = 4 * (head_dim / 4) = head_dim for simplicity
+        let shmem_size = head_dim * 4 + 128 + head_dim * 4;
+        encoder.set_threadgroup_memory_length(0, shmem_size as u64);
+
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
         command_buffer.commit();

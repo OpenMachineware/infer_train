@@ -848,15 +848,6 @@ impl LlamaModel {
         seq_len: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) -> Option<Vec<f32>> {
-        // Flash Attention kernel only supports head_dim=128
-        // For other head_dim, fall back to CPU attention
-        if head_dim != 128 {
-            // Fall back to CPU attention
-            return self.attention_cpu_simple(
-                q, kv_cache, layer_idx, n_heads, head_dim, n_kv_heads, seq_len,
-            );
-        }
-
         // Get GPU buffers for K and V
         let k_buffer = kv_cache.k_buffer(layer_idx);
         let v_buffer = kv_cache.v_buffer(layer_idx);
