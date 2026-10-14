@@ -115,10 +115,18 @@ pub struct OpParams {
     pub scale: Option<f32>,
     /// For Rope: position
     pub pos: Option<usize>,
+    /// For Rope: frequency base and scale
+    pub freq_base: Option<f32>,
+    pub freq_scale: Option<f32>,
     /// For FlashAttn: scale, max_bias, softcap
     pub attn_scale: Option<f32>,
     pub max_bias: Option<f32>,
     pub logit_softcap: Option<f32>,
+    /// For FlashAttn: attention dimensions
+    pub n_heads: Option<usize>,
+    pub n_kv_heads: Option<usize>,
+    pub head_dim: Option<usize>,
+    pub seq_len: Option<usize>,
     /// For Reshape: new shape
     pub new_shape: Option<Vec<usize>>,
     /// For Softmax: temperature

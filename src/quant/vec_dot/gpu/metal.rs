@@ -6204,6 +6204,95 @@ impl MetalContext {
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, q.len()).to_vec() })
     }
 
+    /// Flash Attention for F16 KV cache (fully zero-copy, GPU buffers)
+    pub fn flash_attn_f16_gpu(
+        &self,
+        n_seqs: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        seq_len: usize,
+        q_buffer: &Buffer,
+        k_buffer: &Buffer,
+        v_buffer: &Buffer,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        if head_dim != 128 {
+            return Err(format!(
+                "Flash Attention only supports head_dim=128, got {}",
+                head_dim
+            ));
+        }
+
+        let output_size =
+            n_seqs * n_heads * head_dim * std::mem::size_of::<f32>();
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            output_size as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let scale = 1.0 / (head_dim as f32).sqrt();
+
+        let args = FlashAttnArgs {
+            ne01: 1,
+            ne02: n_heads as u32,
+            ne03: n_seqs as u32,
+            ne11: seq_len as u32,
+            ne_12_2: n_kv_heads as u32,
+            ne_12_3: n_seqs as u32,
+            nb01: (head_dim * 4) as u32,
+            nb02: (n_heads * head_dim * 4) as u32,
+            nb03: (n_seqs * n_heads * head_dim * 4) as u32,
+            nb11: (head_dim * 2) as u32,
+            nb12: (seq_len * head_dim * 2) as u32,
+            nb13: (n_seqs * seq_len * head_dim * 2) as u32,
+            nb21: (head_dim * 2) as u32,
+            nb22: (seq_len * head_dim * 2) as u32,
+            nb23: (n_seqs * seq_len * head_dim * 2) as u32,
+            nb31: 0,
+            nb32: 0,
+            nb33: 0,
+            ne32: 0,
+            ne33: 0,
+            scale,
+            max_bias: 0.0,
+            logit_softcap: 0.0,
+            n_head_log2: 0,
+            m0: 0.0,
+            m1: 0.0,
+            nsg: 2,
+            nwg: 32,
+        };
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.flash_attn_f16_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<FlashAttnArgs>() as u64,
+            &args as *const FlashAttnArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(q_buffer), 0);
+        encoder.set_buffer(2, Some(k_buffer), 0);
+        encoder.set_buffer(3, Some(v_buffer), 0);
+        encoder.set_buffer(4, None, 0);
+        encoder.set_buffer(5, None, 0);
+        encoder.set_buffer(6, None, 0);
+        encoder.set_buffer(7, Some(&output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 64, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: n_heads as u64, height: n_seqs as u64, depth: 32 };
+
+        encoder.set_threadgroup_memory_length(0, 32768);
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
+    }
+
     // ========================================================================
     // Quantize
     // ========================================================================

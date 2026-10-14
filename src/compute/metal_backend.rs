@@ -430,14 +430,41 @@ impl MetalBackend {
 
     fn op_flash_attn(
         &self,
-        _node: &OpNode,
-        _inputs: Vec<(String, Vec<usize>, DataType, std::rc::Rc<Buffer>)>,
-        _graph: &mut ComputeGraph,
+        node: &OpNode,
+        inputs: Vec<(String, Vec<usize>, DataType, std::rc::Rc<Buffer>)>,
+        graph: &mut ComputeGraph,
     ) -> BackendResult<()> {
-        // TODO: Implement flash attention with MetalContext
-        Err(BackendError::OpNotSupported(
-            "Flash attention not yet integrated with compute graph".to_string(),
-        ))
+        // inputs: [q, k_cache, v_cache]
+        let q = &inputs[0];
+        let k_cache = &inputs[1];
+        let v_cache = &inputs[2];
+
+        // Get parameters from node
+        let n_heads = node.params.n_heads.unwrap_or(1);
+        let n_kv_heads = node.params.n_kv_heads.unwrap_or(n_heads);
+        let head_dim = node.params.head_dim.unwrap_or(128);
+        let seq_len = node.params.seq_len.unwrap_or(1);
+        let n_seqs = q.1.get(2).copied().unwrap_or(1);
+
+        // Use GPU-native method (zero-copy)
+        let output_buffer = self
+            .ctx
+            .flash_attn_f16_gpu(
+                n_seqs, n_heads, n_kv_heads, head_dim, seq_len, &q.3,
+                &k_cache.3, &v_cache.3,
+            )
+            .map_err(BackendError::ExecFailed)?;
+
+        // Create output tensor with the returned GPU buffer
+        let output = Tensor::from_metal_buffer(
+            &node.output,
+            vec![head_dim, n_heads, n_seqs],
+            DataType::F32,
+            output_buffer,
+        );
+        graph.add_tensor(output);
+
+        Ok(())
     }
 
     fn op_add(
