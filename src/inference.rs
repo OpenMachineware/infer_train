@@ -137,6 +137,21 @@ impl InferenceContext {
         }
     }
 
+    /// Fully GPU-native forward pass (no CPU-GPU transfers for intermediate tensors)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward_gpu_native(&mut self, tokens: &[u32]) -> Option<Vec<f32>> {
+        if let (Some(ref gpu_ctx), Some(ref mut kv_cache)) =
+            (self.gpu_ctx.as_ref(), self.gpu_kv_cache.as_mut())
+        {
+            self.model.forward_gpu_native(tokens, kv_cache, gpu_ctx)
+        } else {
+            self.model.forward(
+                tokens,
+                &mut KVCache::new(&self.config, 2048, KVCacheFormat::F32),
+            )
+        }
+    }
+
     /// Generate tokens from prompt
     pub fn generate(
         &mut self,

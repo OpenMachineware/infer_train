@@ -31,7 +31,7 @@ fn main() {
             println!("\nInput tokens: {:?}", tokens);
 
             let start = std::time::Instant::now();
-            match ctx.forward_gpu_zerocopy(&tokens) {
+            match ctx.forward_gpu_native(&tokens) {
                 Some(logits) => {
                     let elapsed = start.elapsed();
                     let non_zero = logits.iter().filter(|&&v| v != 0.0).count();

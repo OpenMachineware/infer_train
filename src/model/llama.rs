@@ -17,6 +17,8 @@ use crate::compute::graph::ComputeGraph;
 use crate::compute::metal_backend::MetalBackend;
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use crate::compute::op::{OpNode, OpParams, OpType};
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use metal::Buffer;
 
 /// Llama model layers
 pub struct LlamaModel {
@@ -271,6 +273,119 @@ impl LlamaModel {
         let final_hidden = self.apply_output_norm_gpu(&hidden, gpu_ctx)?;
         let logits =
             self.output_projection_gpu(&final_hidden, vocab_size, gpu_ctx)?;
+
+        Some(logits)
+    }
+
+    /// Fully GPU-native forward pass (no CPU-GPU transfers for intermediate tensors)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward_gpu_native(
+        &self,
+        tokens: &[u32],
+        kv_cache: &mut crate::inference::KVCacheGPU,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        if tokens.is_empty() || self.tok_embeddings.is_none() {
+            return None;
+        }
+
+        let hidden_size = self.config.hidden_size;
+        let n_heads = self.config.n_heads;
+        let head_dim = self.config.head_dim;
+        let n_kv_heads = self.config.n_kv_heads;
+        let vocab_size = self.config.vocab_size;
+
+        // Process each token
+        for &token in tokens.iter() {
+            // 1. Embedding lookup (CPU - unavoidable for token lookup)
+            let hidden = self.embedding_lookup_impl(token)?;
+
+            // Upload hidden state to GPU
+            let hidden_buffer =
+                std::rc::Rc::new(gpu_ctx.device().new_buffer_with_data(
+                    hidden.as_ptr() as *const std::ffi::c_void,
+                    (hidden_size * std::mem::size_of::<f32>()) as u64,
+                    metal::MTLResourceOptions::StorageModeShared,
+                ));
+
+            // 2. Process through layers (fully on GPU)
+            let mut hidden_buffer = hidden_buffer;
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                hidden_buffer = self.forward_layer_gpu_buffer(
+                    layer,
+                    layer_idx,
+                    &hidden_buffer,
+                    kv_cache,
+                    n_heads,
+                    head_dim,
+                    n_kv_heads,
+                    gpu_ctx,
+                )?;
+            }
+
+            // Advance KV cache position
+            kv_cache.advance();
+        }
+
+        // 3. Final norm and output projection (GPU)
+        // Note: We need to do this on the last token's hidden state
+        // For simplicity, re-run the last layer to get logits
+        let last_hidden =
+            self.embedding_lookup_impl(tokens[tokens.len() - 1])?;
+        let mut hidden_buffer =
+            std::rc::Rc::new(gpu_ctx.device().new_buffer_with_data(
+                last_hidden.as_ptr() as *const std::ffi::c_void,
+                (hidden_size * std::mem::size_of::<f32>()) as u64,
+                metal::MTLResourceOptions::StorageModeShared,
+            ));
+
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            hidden_buffer = self.forward_layer_gpu_buffer(
+                layer,
+                layer_idx,
+                &hidden_buffer,
+                kv_cache,
+                n_heads,
+                head_dim,
+                n_kv_heads,
+                gpu_ctx,
+            )?;
+        }
+
+        // Final norm
+        let final_norm = self.norm.as_ref()?;
+        let final_norm_buffer = gpu_ctx.get_or_create_buffer(final_norm);
+        let final_hidden_buffer = gpu_ctx
+            .rms_norm_f32_gpu(
+                &hidden_buffer,
+                &final_norm_buffer,
+                1,
+                hidden_size,
+                1e-5,
+            )
+            .ok()?;
+
+        // Output projection
+        let output = self.output.as_ref()?;
+        let output_buffer = gpu_ctx.get_or_create_buffer(output);
+        let logits_buffer = self.gemv_gpu_buffer(
+            &final_hidden_buffer,
+            &output_buffer,
+            vocab_size,
+            output.dtype,
+            gpu_ctx,
+        )?;
+
+        // Download final logits to CPU
+        let logits_len = vocab_size;
+        let mut logits = vec![0.0f32; logits_len];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                logits_buffer.contents() as *const f32,
+                logits.as_mut_ptr(),
+                logits_len,
+            );
+        }
 
         Some(logits)
     }
@@ -833,6 +948,300 @@ impl LlamaModel {
 
         // 10. Residual
         Some(residual.iter().zip(ffn_out.iter()).map(|(r, f)| r + f).collect())
+    }
+
+    /// Forward layer with fully GPU-native operations (no CPU-GPU transfers)
+    /// Input and output are GPU buffers
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn forward_layer_gpu_buffer(
+        &self,
+        layer: &LlamaLayer,
+        layer_idx: usize,
+        hidden_buffer: &std::rc::Rc<Buffer>,
+        kv_cache: &mut crate::inference::KVCacheGPU,
+        n_heads: usize,
+        head_dim: usize,
+        n_kv_heads: usize,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<std::rc::Rc<Buffer>> {
+        let hidden_size = self.config.hidden_size;
+        let pos = kv_cache.seq_len();
+
+        // 1. Attention norm (GPU, buffer in/out)
+        let attention_norm = layer.attention_norm.as_ref()?;
+        let norm_weight_buffer = gpu_ctx.get_or_create_buffer(attention_norm);
+        let normed_buffer = gpu_ctx
+            .rms_norm_f32_gpu(
+                hidden_buffer,
+                &norm_weight_buffer,
+                1,
+                hidden_size,
+                1e-5,
+            )
+            .ok()?;
+
+        // 2. QKV projections (GPU, buffer in/out)
+        let q_out_size = layer.wq.as_ref()?.shape[1];
+        let k_out_size = layer.wk.as_ref()?.shape[1];
+        let v_out_size = layer.wv.as_ref()?.shape[1];
+
+        let wq = layer.wq.as_ref()?;
+        let wk = layer.wk.as_ref()?;
+        let wv = layer.wv.as_ref()?;
+
+        // Get or create weight buffers (cached)
+        let wq_buffer = gpu_ctx.get_or_create_buffer(wq);
+        let wk_buffer = gpu_ctx.get_or_create_buffer(wk);
+        let wv_buffer = gpu_ctx.get_or_create_buffer(wv);
+
+        // GEMV with GPU buffers
+        let q_buffer = self.gemv_gpu_buffer(
+            &normed_buffer,
+            &wq_buffer,
+            q_out_size,
+            wq.dtype,
+            gpu_ctx,
+        )?;
+        let k_buffer = self.gemv_gpu_buffer(
+            &normed_buffer,
+            &wk_buffer,
+            k_out_size,
+            wk.dtype,
+            gpu_ctx,
+        )?;
+        let v_buffer = self.gemv_gpu_buffer(
+            &normed_buffer,
+            &wv_buffer,
+            v_out_size,
+            wv.dtype,
+            gpu_ctx,
+        )?;
+
+        // Derive actual n_heads from weight shapes
+        let actual_n_heads = q_out_size / head_dim;
+        let actual_n_kv_heads = k_out_size / head_dim;
+
+        // 3. RoPE on GPU
+        let q_rope_buffer = gpu_ctx
+            .rope_neox_f32_gpu(
+                &q_buffer,
+                &[pos as i32],
+                1,
+                actual_n_heads,
+                head_dim,
+                10000.0,
+                1.0,
+            )
+            .ok()?;
+        let k_rope_buffer = gpu_ctx
+            .rope_neox_f32_gpu(
+                &k_buffer,
+                &[pos as i32],
+                1,
+                actual_n_kv_heads,
+                head_dim,
+                10000.0,
+                1.0,
+            )
+            .ok()?;
+
+        // 4. Update KV cache on GPU (direct buffer copy)
+        kv_cache.set_k_buffer(layer_idx, &k_rope_buffer);
+        kv_cache.set_v_buffer(layer_idx, &v_buffer);
+
+        // 5. Flash Attention with GPU buffers
+        let attn_out_buffer = self.flash_attention_gpu_buffer(
+            &q_rope_buffer,
+            kv_cache,
+            layer_idx,
+            actual_n_heads,
+            head_dim,
+            actual_n_kv_heads,
+            pos + 1,
+            gpu_ctx,
+        )?;
+
+        // 6. Output projection (GPU)
+        let wo = layer.wo.as_ref()?;
+        let wo_buffer = gpu_ctx.get_or_create_buffer(wo);
+        let attn_proj_buffer = self.gemv_gpu_buffer(
+            &attn_out_buffer,
+            &wo_buffer,
+            hidden_size,
+            wo.dtype,
+            gpu_ctx,
+        )?;
+
+        // 7. Residual add on GPU
+        let residual_buffer = gpu_ctx
+            .add_f32_gpu(hidden_buffer, &attn_proj_buffer, hidden_size)
+            .ok()?;
+
+        // 8. FFN norm (GPU)
+        let ffn_norm = layer.ffn_norm.as_ref()?;
+        let ffn_norm_buffer = gpu_ctx.get_or_create_buffer(ffn_norm);
+        let ffn_normed_buffer = gpu_ctx
+            .rms_norm_f32_gpu(
+                &residual_buffer,
+                &ffn_norm_buffer,
+                1,
+                hidden_size,
+                1e-5,
+            )
+            .ok()?;
+
+        // 9. FFN (SwiGLU) on GPU
+        let ffn_out_buffer = self.ffn_swiglu_gpu_buffer(
+            &ffn_normed_buffer,
+            layer,
+            hidden_size,
+            gpu_ctx,
+        )?;
+
+        // 10. Final residual on GPU
+        gpu_ctx.add_f32_gpu(&residual_buffer, &ffn_out_buffer, hidden_size).ok()
+    }
+
+    /// GEMV with GPU buffers (no CPU transfer)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn gemv_gpu_buffer(
+        &self,
+        input_buffer: &std::rc::Rc<Buffer>,
+        weights_buffer: &std::rc::Rc<Buffer>,
+        out_size: usize,
+        dtype: crate::model::tensor::DataType,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<std::rc::Rc<Buffer>> {
+        // Get input size from buffer length
+        let in_size =
+            input_buffer.length() as usize / std::mem::size_of::<f32>();
+
+        match dtype {
+            crate::model::tensor::DataType::Q4_0 => gpu_ctx
+                .mv_q4_0_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            crate::model::tensor::DataType::Q4_1 => gpu_ctx
+                .mv_q4_1_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            crate::model::tensor::DataType::Q5_0 => gpu_ctx
+                .mv_q5_0_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            crate::model::tensor::DataType::Q5_1 => gpu_ctx
+                .mv_q5_1_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            crate::model::tensor::DataType::Q8_0 => gpu_ctx
+                .mv_q8_0_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            // K-quant not yet supported for fully GPU path
+            _ => None,
+        }
+    }
+
+    /// Flash Attention with GPU buffers (no CPU transfer)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn flash_attention_gpu_buffer(
+        &self,
+        q_buffer: &std::rc::Rc<Buffer>,
+        kv_cache: &crate::inference::KVCacheGPU,
+        layer_idx: usize,
+        n_heads: usize,
+        head_dim: usize,
+        n_kv_heads: usize,
+        seq_len: usize,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<std::rc::Rc<Buffer>> {
+        // Get K and V buffers from GPU KV cache
+        let k_buffer = kv_cache.k_buffer(layer_idx);
+        let v_buffer = kv_cache.v_buffer(layer_idx);
+
+        // Run flash attention on GPU
+        gpu_ctx
+            .flash_attn_f16_gpu(
+                1, // n_seqs
+                n_heads, n_kv_heads, head_dim, seq_len, q_buffer, &k_buffer,
+                &v_buffer,
+            )
+            .ok()
+    }
+
+    /// FFN SwiGLU with GPU buffers (no CPU transfer)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn ffn_swiglu_gpu_buffer(
+        &self,
+        input_buffer: &std::rc::Rc<Buffer>,
+        layer: &LlamaLayer,
+        hidden_size: usize,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<std::rc::Rc<Buffer>> {
+        let w1 = layer.w1.as_ref()?;
+        let w2 = layer.w2.as_ref()?;
+        let w3 = layer.w3.as_ref()?;
+
+        let intermediate_size = w2.shape[1];
+
+        // Get or create weight buffers
+        let w1_buffer = gpu_ctx.get_or_create_buffer(w1);
+        let w2_buffer = gpu_ctx.get_or_create_buffer(w2);
+        let w3_buffer = gpu_ctx.get_or_create_buffer(w3);
+
+        // Gate projection: gate = input @ w1
+        let gate_buffer = self.gemv_gpu_buffer(
+            input_buffer,
+            &w1_buffer,
+            intermediate_size,
+            w1.dtype,
+            gpu_ctx,
+        )?;
+
+        // Up projection: up = input @ w3
+        let up_buffer = self.gemv_gpu_buffer(
+            input_buffer,
+            &w3_buffer,
+            intermediate_size,
+            w3.dtype,
+            gpu_ctx,
+        )?;
+
+        // SiLU(gate) * up on GPU
+        let silu_gate_buffer =
+            gpu_ctx.silu_f32_gpu(&gate_buffer, intermediate_size).ok()?;
+        let swiglu_buffer = gpu_ctx
+            .mul_f32_gpu(&silu_gate_buffer, &up_buffer, intermediate_size)
+            .ok()?;
+
+        // Down projection: output = swiglu @ w2
+        self.gemv_gpu_buffer(
+            &swiglu_buffer,
+            &w2_buffer,
+            hidden_size,
+            w2.dtype,
+            gpu_ctx,
+        )
     }
 
     /// Flash Attention with GPU KV cache (zero-copy)

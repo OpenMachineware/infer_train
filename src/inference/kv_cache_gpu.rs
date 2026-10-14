@@ -247,4 +247,66 @@ impl KVCacheGPU {
     pub fn max_seq(&self) -> usize {
         self.max_seq
     }
+
+    /// Set K from a GPU buffer (copy on GPU)
+    /// This copies the buffer contents to the appropriate position in K cache
+    pub fn set_k_buffer(&mut self, layer: usize, src_buffer: &Rc<Buffer>) {
+        let pos = self.seq_len;
+        if pos >= self.max_seq {
+            return;
+        }
+
+        let dst_buffer = &self.k_buffers[layer];
+
+        // Layout: [n_kv_heads, max_seq, head_dim]
+        // Copy to position `pos` in each head's slice
+        let head_stride = self.max_seq * self.head_dim * 2; // bytes per head
+        let pos_offset = pos * self.head_dim * 2; // offset within a head
+
+        let src_contents = src_buffer.contents() as *const u8;
+        let dst_contents = dst_buffer.contents() as *mut u8;
+
+        // Copy each head's data
+        for h in 0..self.n_kv_heads {
+            let src_offset = h * self.head_dim * 2; // source is [n_kv_heads, head_dim]
+            let dst_offset = h * head_stride + pos_offset;
+
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    src_contents.add(src_offset),
+                    dst_contents.add(dst_offset),
+                    self.head_dim * 2,
+                );
+            }
+        }
+    }
+
+    /// Set V from a GPU buffer (copy on GPU)
+    pub fn set_v_buffer(&mut self, layer: usize, src_buffer: &Rc<Buffer>) {
+        let pos = self.seq_len;
+        if pos >= self.max_seq {
+            return;
+        }
+
+        let dst_buffer = &self.v_buffers[layer];
+
+        let head_stride = self.max_seq * self.head_dim * 2;
+        let pos_offset = pos * self.head_dim * 2;
+
+        let src_contents = src_buffer.contents() as *const u8;
+        let dst_contents = dst_buffer.contents() as *mut u8;
+
+        for h in 0..self.n_kv_heads {
+            let src_offset = h * self.head_dim * 2;
+            let dst_offset = h * head_stride + pos_offset;
+
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    src_contents.add(src_offset),
+                    dst_contents.add(dst_offset),
+                    self.head_dim * 2,
+                );
+            }
+        }
+    }
 }
