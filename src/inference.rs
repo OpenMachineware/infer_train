@@ -34,6 +34,8 @@ pub struct InferenceContext {
     pub device: Device,
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     gpu_ctx: Option<crate::quant::vec_dot::gpu::metal::MetalContext>,
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    gpu_kv_cache: Option<KVCacheGPU>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,10 +56,16 @@ impl InferenceContext {
         let config = model.config.clone();
 
         #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-        let gpu_ctx = if device == Device::Gpu {
-            crate::quant::vec_dot::gpu::metal::MetalContext::new().ok()
+        let (gpu_ctx, gpu_kv_cache) = if device == Device::Gpu {
+            match crate::quant::vec_dot::gpu::metal::MetalContext::new() {
+                Ok(ctx) => {
+                    let kv = KVCacheGPU::new(ctx.device(), &config, 2048);
+                    (Some(ctx), Some(kv))
+                }
+                Err(_) => (None, None),
+            }
         } else {
-            None
+            (None, None)
         };
 
         #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
@@ -69,6 +77,8 @@ impl InferenceContext {
             device,
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
             gpu_ctx,
+            #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+            gpu_kv_cache,
         })
     }
 
@@ -109,6 +119,21 @@ impl InferenceContext {
                 }
             }
             Device::Cpu => self.model.forward(tokens, kv_cache),
+        }
+    }
+
+    /// Run forward pass with GPU KV cache (zero-copy Flash Attention)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward_gpu_zerocopy(&mut self, tokens: &[u32]) -> Option<Vec<f32>> {
+        if let (Some(ref gpu_ctx), Some(ref mut kv_cache)) =
+            (self.gpu_ctx.as_ref(), self.gpu_kv_cache.as_mut())
+        {
+            self.model.forward_gpu_zerocopy(tokens, kv_cache, gpu_ctx)
+        } else {
+            self.model.forward(
+                tokens,
+                &mut KVCache::new(&self.config, 2048, KVCacheFormat::F32),
+            )
         }
     }
 

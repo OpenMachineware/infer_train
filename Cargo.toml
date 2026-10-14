@@ -52,6 +52,10 @@ name = "test-gpu-inference"
 path = "tools/test_gpu_inference.rs"
 
 [[bin]]
+name = "test-gpu-zerocopy"
+path = "tools/test_gpu_zerocopy.rs"
+
+[[bin]]
 name = "debug-nan"
 path = "tools/debug_nan.rs"
 

@@ -848,6 +848,15 @@ impl LlamaModel {
         seq_len: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) -> Option<Vec<f32>> {
+        // Flash Attention kernel only supports head_dim=128
+        // For other head_dim, fall back to CPU attention
+        if head_dim != 128 {
+            // Fall back to CPU attention
+            return self.attention_cpu_simple(
+                q, kv_cache, layer_idx, n_heads, head_dim, n_kv_heads, seq_len,
+            );
+        }
+
         // Get GPU buffers for K and V
         let k_buffer = kv_cache.k_buffer(layer_idx);
         let v_buffer = kv_cache.v_buffer(layer_idx);
@@ -878,6 +887,63 @@ impl LlamaModel {
                 output.as_mut_ptr(),
                 output_len,
             );
+        }
+
+        Some(output)
+    }
+
+    /// Simple CPU attention for fallback (when GPU Flash Attention not supported)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn attention_cpu_simple(
+        &self,
+        q: &[f32],
+        kv_cache: &crate::inference::KVCacheGPU,
+        layer_idx: usize,
+        n_heads: usize,
+        head_dim: usize,
+        n_kv_heads: usize,
+        seq_len: usize,
+    ) -> Option<Vec<f32>> {
+        let scale = 1.0 / (head_dim as f32).sqrt();
+        let n_groups = n_heads / n_kv_heads;
+
+        let mut output = vec![0.0f32; n_heads * head_dim];
+
+        for h in 0..n_heads {
+            let kv_head = h / n_groups;
+
+            // Compute attention scores for this head
+            let mut scores = vec![0.0f32; seq_len];
+            for pos in 0..seq_len {
+                // Get K for this position
+                let k_pos = kv_cache.get_k(layer_idx, pos);
+                let mut score = 0.0f32;
+                for d in 0..head_dim {
+                    let q_idx = h * head_dim + d;
+                    let k_idx = kv_head * head_dim + d;
+                    score += q[q_idx] * k_pos[k_idx];
+                }
+                scores[pos] = score * scale;
+            }
+
+            // Softmax
+            let max_score =
+                scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let sum: f32 = scores.iter().map(|s| (s - max_score).exp()).sum();
+            for s in &mut scores {
+                *s = (*s - max_score).exp() / sum;
+            }
+
+            // Weighted sum of V
+            for d in 0..head_dim {
+                let mut val = 0.0f32;
+                for pos in 0..seq_len {
+                    let v_pos = kv_cache.get_v(layer_idx, pos);
+                    let v_idx = kv_head * head_dim + d;
+                    val += scores[pos] * v_pos[v_idx];
+                }
+                output[h * head_dim + d] = val;
+            }
         }
 
         Some(output)
