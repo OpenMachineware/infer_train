@@ -87,6 +87,30 @@ path = "tools/test_gemm_batch.rs"
 name = "debug-weight-shapes"
 path = "tools/debug_weight_shapes.rs"
 
+[[bin]]
+name = "check-output-tensor"
+path = "tools/check_output_tensor.rs"
+
+[[bin]]
+name = "debug-layer-by-layer"
+path = "tools/debug_layer_by_layer.rs"
+
+[[bin]]
+name = "test-kquant-mv-correctness"
+path = "tests/test_kquant_mv_correctness.rs"
+
+[[bin]]
+name = "test-kquant-mv-quantized"
+path = "tests/test_kquant_mv_quantized.rs"
+
+[[bin]]
+name = "test-kquant-mv-debug"
+path = "tests/test_kquant_mv_debug.rs"
+
+[[bin]]
+name = "kquant-mv-size-comparison"
+path = "benches/kquant_mv_size_comparison.rs"
+
 [features]
 default = []
 metal = []
