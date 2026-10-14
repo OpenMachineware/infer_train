@@ -74,6 +74,8 @@ pub struct MetalContext {
     rope_library: Library,
     rope_pipeline: ComputePipelineState,
     activation_library: Library,
+    add_pipeline: ComputePipelineState,
+    mul_pipeline: ComputePipelineState,
     silu_pipeline: ComputePipelineState,
     silu_4_pipeline: ComputePipelineState,
     gelu_pipeline: ComputePipelineState,
@@ -964,6 +966,20 @@ impl MetalContext {
             .map_err(|e| format!("Failed to create ROPE pipeline: {}", e))?;
 
         // Create Activation pipelines
+        let add_kernel = activation_library
+            .get_function("kernel_add_f32", None)
+            .map_err(|e| format!("Failed to get Add kernel: {}", e))?;
+        let add_pipeline = device
+            .new_compute_pipeline_state_with_function(&add_kernel)
+            .map_err(|e| format!("Failed to create Add pipeline: {}", e))?;
+
+        let mul_kernel = activation_library
+            .get_function("kernel_mul_f32", None)
+            .map_err(|e| format!("Failed to get Mul kernel: {}", e))?;
+        let mul_pipeline = device
+            .new_compute_pipeline_state_with_function(&mul_kernel)
+            .map_err(|e| format!("Failed to create Mul pipeline: {}", e))?;
+
         let silu_kernel = activation_library
             .get_function("kernel_silu_f32_4", None)
             .map_err(|e| format!("Failed to get SiLU kernel: {}", e))?;
@@ -1108,6 +1124,8 @@ impl MetalContext {
             rope_library,
             rope_pipeline,
             activation_library,
+            add_pipeline,
+            mul_pipeline,
             silu_pipeline,
             silu_4_pipeline,
             gelu_pipeline,
@@ -5996,6 +6014,74 @@ impl MetalContext {
 
         let output_ptr = output_buffer.contents() as *const f32;
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, n).to_vec() })
+    }
+
+    // ========================================================================
+    // Binary Operations (GPU-native)
+    // ========================================================================
+
+    /// Add two tensors (zero-copy GPU version)
+    pub fn add_f32_gpu(
+        &self,
+        src0_buffer: &Buffer,
+        src1_buffer: &Buffer,
+        n: usize,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            (n * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.add_pipeline);
+        encoder.set_buffer(0, Some(src0_buffer), 0);
+        encoder.set_buffer(1, Some(src1_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: ((n + 255) / 256) as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
+    }
+
+    /// Multiply two tensors (zero-copy GPU version)
+    pub fn mul_f32_gpu(
+        &self,
+        src0_buffer: &Buffer,
+        src1_buffer: &Buffer,
+        n: usize,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            (n * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.mul_pipeline);
+        encoder.set_buffer(0, Some(src0_buffer), 0);
+        encoder.set_buffer(1, Some(src1_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: ((n + 255) / 256) as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
     }
 
     /// SiLU (zero-copy GPU version)

@@ -1,13 +1,35 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-// Activation functions for GPU
+// Activation functions and element-wise operations for GPU
 #include <metal_stdlib>
 using namespace metal;
 
 constant float GELU_COEF_A     = 0.044715f;
 constant float SQRT_2_OVER_PI  = 0.79788456080286535587989211986876f;
 constant float GELU_QUICK_COEF = -1.702f;
+
+// ========== Element-wise operations ==========
+
+// Add two tensors: dst = src0 + src1
+kernel void kernel_add_f32(
+    device const float* src0 [[buffer(0)]],
+    device const float* src1 [[buffer(1)]],
+    device float* dst [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    dst[gid] = src0[gid] + src1[gid];
+}
+
+// Mul two tensors: dst = src0 * src1
+kernel void kernel_mul_f32(
+    device const float* src0 [[buffer(0)]],
+    device const float* src1 [[buffer(1)]],
+    device float* dst [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    dst[gid] = src0[gid] * src1[gid];
+}
 
 // ========== dispatch_threads kernels (for small sizes) ==========
 // Uses thread_position_in_grid - simpler but slightly slower for large sizes

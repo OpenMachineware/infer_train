@@ -477,38 +477,21 @@ impl MetalBackend {
     ) -> BackendResult<()> {
         let a = &inputs[0];
         let b = &inputs[1];
-
-        // Get data from Metal buffers (add is memory-bound, CPU is fine)
-        let a_contents = a.3.contents();
-        let a_f32: &[f32] = bytemuck::cast_slice(unsafe {
-            std::slice::from_raw_parts(
-                a_contents as *const u8,
-                a.1.iter().product::<usize>() * 4,
-            )
-        });
-
-        let b_contents = b.3.contents();
-        let b_f32: &[f32] = bytemuck::cast_slice(unsafe {
-            std::slice::from_raw_parts(
-                b_contents as *const u8,
-                b.1.iter().product::<usize>() * 4,
-            )
-        });
-
-        // Use CPU add (memory-bound operation)
         let n = a.1.iter().product();
-        let output_f32 = self
+
+        // Use GPU-native method (zero-copy)
+        let output_buffer = self
             .ctx
-            .add_f32(n, a_f32, b_f32)
+            .add_f32_gpu(&a.3, &b.3, n)
             .map_err(BackendError::ExecFailed)?;
 
-        // Create output tensor
-        let output =
-            self.alloc_tensor(&node.output, a.1.clone(), DataType::F32)?;
-        self.copy_to_tensor(
-            &mut output.clone(),
-            bytemuck::cast_slice(&output_f32),
-        )?;
+        // Create output tensor with the returned GPU buffer
+        let output = Tensor::from_metal_buffer(
+            &node.output,
+            a.1.clone(),
+            DataType::F32,
+            output_buffer,
+        );
         graph.add_tensor(output);
 
         Ok(())
@@ -522,38 +505,21 @@ impl MetalBackend {
     ) -> BackendResult<()> {
         let a = &inputs[0];
         let b = &inputs[1];
-
-        // Get data from Metal buffers (mul is memory-bound, CPU is fine)
-        let a_contents = a.3.contents();
-        let a_f32: &[f32] = bytemuck::cast_slice(unsafe {
-            std::slice::from_raw_parts(
-                a_contents as *const u8,
-                a.1.iter().product::<usize>() * 4,
-            )
-        });
-
-        let b_contents = b.3.contents();
-        let b_f32: &[f32] = bytemuck::cast_slice(unsafe {
-            std::slice::from_raw_parts(
-                b_contents as *const u8,
-                b.1.iter().product::<usize>() * 4,
-            )
-        });
-
-        // Use CPU mul (memory-bound operation)
         let n = a.1.iter().product();
-        let output_f32 = self
+
+        // Use GPU-native method (zero-copy)
+        let output_buffer = self
             .ctx
-            .mul_f32(n, a_f32, b_f32)
+            .mul_f32_gpu(&a.3, &b.3, n)
             .map_err(BackendError::ExecFailed)?;
 
-        // Create output tensor
-        let output =
-            self.alloc_tensor(&node.output, a.1.clone(), DataType::F32)?;
-        self.copy_to_tensor(
-            &mut output.clone(),
-            bytemuck::cast_slice(&output_f32),
-        )?;
+        // Create output tensor with the returned GPU buffer
+        let output = Tensor::from_metal_buffer(
+            &node.output,
+            a.1.clone(),
+            DataType::F32,
+            output_buffer,
+        );
         graph.add_tensor(output);
 
         Ok(())

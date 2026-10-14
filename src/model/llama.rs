@@ -1121,29 +1121,23 @@ impl LlamaModel {
         backend.execute(&mut graph).ok()?;
         let attn_proj = graph.get_tensor("attn_proj")?.clone();
 
-        // === Step 6: Residual ===
-        // TODO: Add op - for now use CPU
-        let hidden_data = self.read_tensor_f32(&hidden, backend)?;
-        let attn_proj_data = self.read_tensor_f32(&attn_proj, backend)?;
-        let residual: Vec<f32> = hidden_data
-            .iter()
-            .zip(attn_proj_data.iter())
-            .map(|(h, a)| h + a)
-            .collect();
+        // === Step 6: Residual (GPU) ===
+        let mut graph = ComputeGraph::new();
+        graph.add_tensor(hidden.clone());
+        graph.add_input("hidden");
+        graph.add_tensor(attn_proj.clone());
+        graph.add_input("attn_proj");
+        graph.add_op(OpNode::new(
+            OpType::Add,
+            vec!["hidden".into(), "attn_proj".into()],
+            "residual".to_string(),
+        ));
+        backend.execute(&mut graph).ok()?;
+        let residual = graph.get_tensor("residual")?.clone();
 
         // === Step 7: FFN Norm ===
-        let mut residual_tensor = backend
-            .alloc_tensor("residual", vec![hidden_size], DataType::F32)
-            .ok()?;
-        backend
-            .copy_to_tensor(
-                &mut residual_tensor,
-                bytemuck::cast_slice(&residual),
-            )
-            .ok()?;
-
         let mut graph = ComputeGraph::new();
-        graph.add_tensor(residual_tensor.clone());
+        graph.add_tensor(residual.clone());
         graph.add_input("residual");
 
         let ffn_norm_w =
@@ -1203,25 +1197,23 @@ impl LlamaModel {
         backend.execute(&mut graph).ok()?;
         let silu_gate = graph.get_tensor("silu_gate")?.clone();
 
-        // Element-wise multiply (CPU for now)
-        let silu_data = self.read_tensor_f32(&silu_gate, backend)?;
-        let up_data = self.read_tensor_f32(&up, backend)?;
-        let hidden_out: Vec<f32> =
-            silu_data.iter().zip(up_data.iter()).map(|(s, u)| s * u).collect();
-
-        let mut hidden_out_tensor = backend
-            .alloc_tensor("hidden_out", vec![intermediate], DataType::F32)
-            .ok()?;
-        backend
-            .copy_to_tensor(
-                &mut hidden_out_tensor,
-                bytemuck::cast_slice(&hidden_out),
-            )
-            .ok()?;
+        // Element-wise multiply (GPU)
+        let mut graph = ComputeGraph::new();
+        graph.add_tensor(silu_gate.clone());
+        graph.add_input("silu_gate");
+        graph.add_tensor(up.clone());
+        graph.add_input("up");
+        graph.add_op(OpNode::new(
+            OpType::Mul,
+            vec!["silu_gate".into(), "up".into()],
+            "hidden_out".to_string(),
+        ));
+        backend.execute(&mut graph).ok()?;
+        let hidden_out = graph.get_tensor("hidden_out")?.clone();
 
         // Down projection
         let mut graph = ComputeGraph::new();
-        graph.add_tensor(hidden_out_tensor.clone());
+        graph.add_tensor(hidden_out.clone());
         graph.add_input("hidden_out");
 
         let w2 = self.tensor_to_compute(layer.w2.as_ref()?, "w2")?;
@@ -1236,19 +1228,19 @@ impl LlamaModel {
         backend.execute(&mut graph).ok()?;
         let ffn_out = graph.get_tensor("ffn_out")?.clone();
 
-        // === Step 9: Final Residual ===
-        let ffn_data = self.read_tensor_f32(&ffn_out, backend)?;
-        let final_out: Vec<f32> =
-            residual.iter().zip(ffn_data.iter()).map(|(r, f)| r + f).collect();
-
-        let mut final_tensor = backend
-            .alloc_tensor("output", vec![hidden_size], DataType::F32)
-            .ok()?;
-        backend
-            .copy_to_tensor(&mut final_tensor, bytemuck::cast_slice(&final_out))
-            .ok()?;
-
-        Some(final_tensor)
+        // === Step 9: Final Residual (GPU) ===
+        let mut graph = ComputeGraph::new();
+        graph.add_tensor(residual.clone());
+        graph.add_input("residual");
+        graph.add_tensor(ffn_out.clone());
+        graph.add_input("ffn_out");
+        graph.add_op(OpNode::new(
+            OpType::Add,
+            vec!["residual".into(), "ffn_out".into()],
+            "output".to_string(),
+        ));
+        backend.execute(&mut graph).ok()?;
+        graph.get_tensor("output").cloned()
     }
 
     /// Helper to read tensor data as f32
