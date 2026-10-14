@@ -4,7 +4,7 @@
 // KV Cache performance benchmark: memory, speed, accuracy
 
 use criterion::{
-    black_box, criterion_group, criterion_main, Criterion, Throughput,
+    Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
 use infer_train::inference::kv_cache::{KVCache, KVCacheBase, KVCacheFormat};
 use infer_train::model::config::ModelConfig;
@@ -89,7 +89,9 @@ fn bench_kv_cache(c: &mut Criterion) {
     ];
 
     // Memory usage comparison
-    println!("\n=== KV Cache Memory Usage (32 layers, 1024 seq, 32 heads, 128 dim) ===");
+    println!(
+        "\n=== KV Cache Memory Usage (32 layers, 1024 seq, 32 heads, 128 dim) ==="
+    );
     println!("{:8} {:>15} {:>10}", "Format", "Bytes", "Ratio");
     println!("{:-<8} {:-<15} {:-<10}", "", "", "");
 

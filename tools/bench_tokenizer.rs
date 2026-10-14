@@ -24,11 +24,23 @@ fn main() {
     // Test texts
     let texts = vec![
         ("short_en", "The quick brown fox"),
-        ("medium_en", "The quick brown fox jumps over the lazy dog. This is a longer sentence to test tokenization."),
-        ("long_en", "Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial intelligence concerned with the interactions between computers and human language. It dates back to the 1950s and has evolved significantly with the advent of deep learning."),
+        (
+            "medium_en",
+            "The quick brown fox jumps over the lazy dog. This is a longer sentence to test tokenization.",
+        ),
+        (
+            "long_en",
+            "Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial intelligence concerned with the interactions between computers and human language. It dates back to the 1950s and has evolved significantly with the advent of deep learning.",
+        ),
         ("short_zh", "你好世界"),
-        ("medium_zh", "自然语言处理是人工智能的重要分支，它涉及计算机与人类语言之间的交互。"),
-        ("long_zh", "深度学习是机器学习的一个分支，它试图使用包含复杂结构或由多重非线性变换构成的多个处理层对数据进行高层抽象的算法。深度学习在图像识别、语音识别、自然语言处理等领域取得了显著的成就。"),
+        (
+            "medium_zh",
+            "自然语言处理是人工智能的重要分支，它涉及计算机与人类语言之间的交互。",
+        ),
+        (
+            "long_zh",
+            "深度学习是机器学习的一个分支，它试图使用包含复杂结构或由多重非线性变换构成的多个处理层对数据进行高层抽象的算法。深度学习在图像识别、语音识别、自然语言处理等领域取得了显著的成就。",
+        ),
         ("mixed", "Hello 世界! This is a mixed 中英文 text 测试."),
         ("code", "fn main() {\n    println!(\"Hello, world!\");\n}"),
     ];

@@ -70,7 +70,7 @@ pub fn quantize_q3_k(x: &[f32]) -> Vec<BlockQ3K> {
 
         let mut hmask = [0u8; 32];
         let mut qs = [0u8; 64];
-        let mut scales = [0u8; 12];
+        let scales = [0u8; 12];
 
         // Simplified: use basic pattern
         for j in 0..QK_K {

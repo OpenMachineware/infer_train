@@ -20,7 +20,7 @@ use crate::model::config::ModelConfig;
 use crate::model::llama::LlamaModel;
 use crate::model::tensor::DataType;
 use crate::model::weights::WeightStore;
-use crate::ops::sampling::{sample, SamplingStrategy};
+use crate::ops::sampling::{SamplingStrategy, sample};
 use crate::quant::kv_cache::blocks::QK;
 use crate::quant::types::{
     BlockIQ4NL, BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0,
@@ -144,6 +144,24 @@ impl InferenceContext {
             (self.gpu_ctx.as_ref(), self.gpu_kv_cache.as_mut())
         {
             self.model.forward_gpu_native(tokens, kv_cache, gpu_ctx)
+        } else {
+            self.model.forward(
+                tokens,
+                &mut KVCache::new(&self.config, 2048, KVCacheFormat::F32),
+            )
+        }
+    }
+
+    /// Batch prefill using GPU GEMM (more efficient for multiple tokens)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward_prefill_batch(
+        &mut self,
+        tokens: &[u32],
+    ) -> Option<Vec<f32>> {
+        if let (Some(ref gpu_ctx), Some(ref mut kv_cache)) =
+            (self.gpu_ctx.as_ref(), self.gpu_kv_cache.as_mut())
+        {
+            self.model.forward_prefill_batch(tokens, kv_cache, gpu_ctx)
         } else {
             self.model.forward(
                 tokens,

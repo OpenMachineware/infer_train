@@ -4,6 +4,8 @@
 // GPU capabilities detection
 // Detects GPU type, memory, and supported features
 
+#![allow(dead_code)]
+
 use std::fmt;
 
 /// GPU vendor

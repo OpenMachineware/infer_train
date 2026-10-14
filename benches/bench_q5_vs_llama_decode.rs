@@ -6,7 +6,7 @@
 
 use half::f16;
 use infer_train::quant::kv_cache::{
-    quantize_row_q5_0, quantize_row_q5_1, BlockQ5_0, BlockQ5_1,
+    BlockQ5_0, BlockQ5_1, quantize_row_q5_0, quantize_row_q5_1,
 };
 use metal::*;
 use std::time::Instant;
@@ -55,7 +55,9 @@ fn main() {
         "Config: {} heads, {} head_dim, {} rounds",
         NUM_HEADS, HEAD_DIM, NUM_ROUNDS
     );
-    println!("Using llama.cpp decode kernel (kernel_flash_attn_ext_q5_*), NOT prefill (fa_vec)\n");
+    println!(
+        "Using llama.cpp decode kernel (kernel_flash_attn_ext_q5_*), NOT prefill (fa_vec)\n"
+    );
 
     let formats = ["q5_0", "q5_1"];
     let seq_ks = [256, 512, 1024, 2048];

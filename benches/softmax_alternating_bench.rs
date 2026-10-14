@@ -251,5 +251,7 @@ fn main() {
     println!("\n=== Analysis ===");
     println!("Both contexts use identical kernels and compilation flags.");
     println!("Performance ratio should be ~100% (±3% thermal variance).");
-    println!("Any deviation indicates GPU frequency variation, not algorithmic difference.");
+    println!(
+        "Any deviation indicates GPU frequency variation, not algorithmic difference."
+    );
 }

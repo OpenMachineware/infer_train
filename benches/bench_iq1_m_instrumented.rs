@@ -6,7 +6,7 @@
 
 use infer_train::quant::types::{BlockIQ1M, BlockQ8K, QK_K};
 use infer_train::quant::vec_dot::tables::IQ1S_GRID;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::time::Instant;
 
 const ITERATIONS: usize = 10000;

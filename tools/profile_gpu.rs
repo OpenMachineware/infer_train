@@ -71,7 +71,7 @@ fn main() {
     // Ratio
     println!("\n--- Analysis ---");
     if elapsed.as_nanos() > 0 {
-        let gpu_ns = elapsed.as_nanos();
+        let _gpu_ns = elapsed.as_nanos();
         println!("GPU/CPU ratio: similar performance");
     }
 }

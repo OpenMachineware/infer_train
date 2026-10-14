@@ -5,7 +5,7 @@
 
 use half::f16;
 use infer_train::quant::types::*;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 fn main() {
     println!("=== CPU Implementation Verification ===\n");

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use super::backend::{Backend, BackendError, BackendResult};
 use super::device::Device;
 use super::graph::ComputeGraph;
-use super::op::{OpNode, OpParams, OpType};
+use super::op::{OpNode, OpType};
 use super::storage::{CpuStorage, StorageEnum};
 use super::tensor::Tensor;
 use crate::model::tensor::DataType;

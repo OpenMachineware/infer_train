@@ -513,11 +513,7 @@ pub fn make_qp_quants(
         }
     }
 
-    if suml2 > 0.0 {
-        sumlx / suml2
-    } else {
-        0.0
-    }
+    if suml2 > 0.0 { sumlx / suml2 } else { 0.0 }
 }
 
 // ============================================================================
@@ -697,7 +693,7 @@ pub struct IQ3GridData {
 }
 
 impl IQ3GridData {
-    pub fn new(grid_size: usize, kgrid: &[u16]) -> Self {
+    pub fn new(grid_size: usize, _kgrid: &[u16]) -> Self {
         let kmap_size = 65536; // 2^16 for 16-bit indices
 
         // Use actual grid tables from llama.cpp
@@ -1114,7 +1110,7 @@ pub const IQ3S_GRID: [u32; 512] = [
     0x0f090307, 0x0f090501, 0x0f090b01, 0x0f0b0505, 0x0f0b0905, 0x0f0d0105,
     0x0f0d0703, 0x0f0f0101,
 ]; // kgrid_1bit_2048 for IQ1_S (from llama.cpp line 2911)
-   // Grid for ternary quantization (1-bit per value, 3 states: -1, 0, +1)
+// Grid for ternary quantization (1-bit per value, 3 states: -1, 0, +1)
 pub const KGRID_1BIT_2048: [u16; 2048] = [
     0, 2, 5, 8, 10, 17, 21, 32, 34, 40, 42, 69, 81, 84, 86, 101, 128, 130, 136,
     138, 149, 160, 162, 168, 170, 260, 261, 273, 276, 278, 281, 282, 293, 321,

@@ -3,7 +3,7 @@
 
 // Weight store: tensor manager for model weights
 
-use crate::model::gguf::{tensor_from_gguf, GgufError, GgufFile};
+use crate::model::gguf::{GgufError, GgufFile, tensor_from_gguf};
 use crate::model::tensor::{DataType, Tensor};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -116,9 +116,9 @@ impl WeightStore {
         let parts: Vec<&str> = without_ext.rsplitn(4, '-').collect();
         if parts.len() == 4 {
             // parts: [MMMMM, "of", NNNNN, basename...]
-            if let Ok(total) = parts[0].parse::<usize>() {
+            if let Ok(_total) = parts[0].parse::<usize>() {
                 if parts[1] == "of" {
-                    if let Ok(part_no) = parts[2].parse::<usize>() {
+                    if let Ok(_part_no) = parts[2].parse::<usize>() {
                         let base = parts[3];
                         let dir = path
                             .parent()
@@ -172,6 +172,11 @@ impl WeightStore {
 
     pub fn tensor_names(&self) -> Vec<&String> {
         self.tensors.keys().collect()
+    }
+
+    /// Get iterator over tensor names
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.tensors.keys()
     }
 
     pub fn total_bytes(&self) -> usize {

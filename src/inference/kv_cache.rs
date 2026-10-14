@@ -4,6 +4,8 @@
 // KV Cache: multi-format key-value storage for attention
 // Reference: llama.cpp llama_kv_cache
 
+#![allow(dead_code)]
+
 use crate::model::config::ModelConfig;
 
 /// KV Cache format
@@ -71,11 +73,11 @@ pub trait KVCacheBase {
 }
 
 use crate::quant::kv_cache::{
+    BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, QK,
     dequantize_row_f16, dequantize_row_q4_0, dequantize_row_q4_1,
     dequantize_row_q5_0, dequantize_row_q5_1, dequantize_row_q8_0,
     quantize_row_f16, quantize_row_q4_0, quantize_row_q4_1, quantize_row_q5_0,
-    quantize_row_q5_1, quantize_row_q8_0, BlockQ4_0, BlockQ4_1, BlockQ5_0,
-    BlockQ5_1, BlockQ8_0, QK,
+    quantize_row_q5_1, quantize_row_q8_0,
 };
 
 /// FP32 KV Cache (simplest implementation)

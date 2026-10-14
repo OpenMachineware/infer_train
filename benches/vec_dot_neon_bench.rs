@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use half::{bf16, f16};
 use infer_train::quant::types::{
     BlockIQ1M, BlockIQ1S, BlockIQ2S, BlockIQ2XS, BlockIQ2XXS, BlockIQ3S,
-    BlockIQ3XXS, BlockIQ4NL, BlockIQ4XS, BlockQ2K, BlockQ3K, BlockQ4K,
-    BlockQ4_0, BlockQ4_1, BlockQ5K, BlockQ5_0, BlockQ5_1, BlockQ6K, BlockQ8K,
-    BlockQ8_0, BlockQ8_1, BlockTQ1_0, BlockTQ2_0, QK4_0, QK_K,
+    BlockIQ3XXS, BlockIQ4NL, BlockIQ4XS, BlockQ2K, BlockQ3K, BlockQ4_0,
+    BlockQ4_1, BlockQ4K, BlockQ5_0, BlockQ5_1, BlockQ5K, BlockQ6K, BlockQ8_0,
+    BlockQ8_1, BlockQ8K, BlockTQ1_0, BlockTQ2_0, QK_K, QK4_0,
 };
 use infer_train::quant::vec_dot::arm;
 

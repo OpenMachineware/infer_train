@@ -396,7 +396,17 @@ fn bench_pool_2d(device: &Device, queue: &metal::CommandQueue) {
 
         println!(
             "{}ch {}x{} -> {}x{}, {}x{} s{}: Self {:6.1}us | llama {:6.1}us | {:5.1}%",
-            ic, ih, iw, oh, ow, kh, kw, sh, avg_self / 1000.0, avg_llama / 1000.0, ratio
+            ic,
+            ih,
+            iw,
+            oh,
+            ow,
+            kh,
+            kw,
+            sh,
+            avg_self / 1000.0,
+            avg_llama / 1000.0,
+            ratio
         );
     }
     println!();

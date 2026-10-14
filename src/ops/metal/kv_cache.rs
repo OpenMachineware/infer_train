@@ -3,14 +3,15 @@
 
 // GPU KV Cache for Flash Attention
 
+#![allow(dead_code)]
+
 use metal::{Buffer, Device};
-use std::cell::RefCell;
 
 use crate::model::config::ModelConfig;
 use crate::quant::kv_cache::{
-    quantize_row_f16, quantize_row_q4_0, quantize_row_q4_1, quantize_row_q5_0,
-    quantize_row_q5_1, quantize_row_q8_0, BlockQ4_0, BlockQ4_1, BlockQ5_0,
-    BlockQ5_1, BlockQ8_0, QK,
+    BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, QK,
+    quantize_row_q4_0, quantize_row_q4_1, quantize_row_q5_0, quantize_row_q5_1,
+    quantize_row_q8_0,
 };
 
 /// GPU KV Cache format

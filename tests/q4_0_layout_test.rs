@@ -153,8 +153,19 @@ kernel void test_dequant(device const block_q4_0 * block [[buffer(0)]],
             let val1 = d2 * (q_val & mask1) as f32 + md;
             let idx0 = il * 4 + 2 * i;
             let idx1 = il * 4 + 2 * i + 1;
-            println!("    il={}, i={}: qs_u16[{}]=0x{:04x}, mask0=0x{:04x}, mask1=0x{:04x} -> [{}]={:.3}, [{}]={:.3}",
-                il, i, 2 * (il % 4) + i, q_val, mask0, mask1, idx0, val0, idx1, val1);
+            println!(
+                "    il={}, i={}: qs_u16[{}]=0x{:04x}, mask0=0x{:04x}, mask1=0x{:04x} -> [{}]={:.3}, [{}]={:.3}",
+                il,
+                i,
+                2 * (il % 4) + i,
+                q_val,
+                mask0,
+                mask1,
+                idx0,
+                val0,
+                idx1,
+                val1
+            );
         }
     }
 

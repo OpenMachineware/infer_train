@@ -7,7 +7,7 @@
 use half::f16;
 use infer_train::quant::types::*;
 use infer_train::quant::vec_dot::arm::*;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 // Link to llama.cpp's native implementations
 unsafe extern "C" {

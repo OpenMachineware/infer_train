@@ -5,12 +5,12 @@
 // Compares GPU output against CPU reference implementation
 
 use infer_train::quant::kv_cache::{
+    BlockIQ4NL, BlockQ2K_KV, BlockQ3K_KV, BlockQ4_0, BlockQ4_1, BlockQ4K_KV,
+    BlockQ5_0, BlockQ5_1, BlockQ5K_KV, BlockQ6K_KV, BlockQ8_0,
     quantize_row_iq4_nl, quantize_row_q2_k_kv, quantize_row_q3_k_kv,
     quantize_row_q4_0, quantize_row_q4_1, quantize_row_q4_k_kv,
     quantize_row_q5_0, quantize_row_q5_1, quantize_row_q5_k_kv,
-    quantize_row_q6_k_kv, quantize_row_q8_0, BlockIQ4NL, BlockQ2K_KV,
-    BlockQ3K_KV, BlockQ4K_KV, BlockQ4_0, BlockQ4_1, BlockQ5K_KV, BlockQ5_0,
-    BlockQ5_1, BlockQ6K_KV, BlockQ8_0,
+    quantize_row_q6_k_kv, quantize_row_q8_0,
 };
 use metal::*;
 

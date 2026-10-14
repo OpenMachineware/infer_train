@@ -52,7 +52,7 @@ impl GgufFile {
     pub fn open(path: &str) -> Result<Self, GgufError> {
         let file = File::open(path)?;
         let metadata = file.metadata()?;
-        let len = metadata.len() as usize;
+        let _len = metadata.len() as usize;
 
         let mmap = unsafe { Mmap::map(&file)? };
 

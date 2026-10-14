@@ -2,7 +2,7 @@
 // Copyright 2026 Jia Liu
 
 // Test attention kernel with multiple KV positions
-use infer_train::quant::kv_cache::{quantize_row_q4_0, BlockQ4_0};
+use infer_train::quant::kv_cache::{BlockQ4_0, quantize_row_q4_0};
 use metal::*;
 
 fn main() {

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+#![allow(dead_code)]
+
 use metal::{Buffer, CommandQueue, ComputePipelineState, Device, MTLSize};
 use std::cell::RefCell;
 

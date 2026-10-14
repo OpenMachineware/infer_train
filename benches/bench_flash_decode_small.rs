@@ -5,8 +5,8 @@
 
 use half::f16;
 use infer_train::quant::kv_cache::{
-    quantize_row_q4_0, quantize_row_q4_1, quantize_row_q5_0, quantize_row_q5_1,
-    quantize_row_q8_0, BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0,
+    BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, quantize_row_q4_0,
+    quantize_row_q4_1, quantize_row_q5_0, quantize_row_q5_1, quantize_row_q8_0,
 };
 use metal::*;
 use std::time::Instant;
@@ -58,7 +58,9 @@ fn main() {
     }
 
     println!("\n=== Note ===");
-    println!("Small seq_k may have overhead dominance (kernel launch, synchronization)");
+    println!(
+        "Small seq_k may have overhead dominance (kernel launch, synchronization)"
+    );
     println!("GFLOPS is very low for small seq_k due to fixed overhead");
 }
 

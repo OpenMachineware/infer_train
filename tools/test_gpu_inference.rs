@@ -26,9 +26,21 @@ fn main() {
             println!("✓ Model loaded on GPU");
             println!("  Layers: {}", ctx.layer_count());
             println!("  Params: {}M", ctx.param_count() / 1_000_000);
+            println!(
+                "  Config: vocab={}, hidden={}",
+                ctx.config.vocab_size, ctx.config.hidden_size
+            );
 
             let tokens: Vec<u32> = vec![1, 2, 3];
             println!("\nInput tokens: {:?}", tokens);
+
+            // Check output tensor
+            if let Some(model) = ctx.model().output.as_ref() {
+                println!(
+                    "  Output tensor: dtype={:?}, shape={:?}",
+                    model.dtype, model.shape
+                );
+            }
 
             let start = std::time::Instant::now();
             match ctx.forward_gpu_native(&tokens) {
@@ -86,7 +98,7 @@ fn main() {
 
     // Compare with CPU
     println!("\n=== CPU Inference (for comparison) ===");
-    let mut cpu_ctx = InferenceContext::from_gguf(model_path, Device::Cpu)
+    let cpu_ctx = InferenceContext::from_gguf(model_path, Device::Cpu)
         .expect("Failed to load model on CPU");
 
     println!("✓ Model loaded on CPU");

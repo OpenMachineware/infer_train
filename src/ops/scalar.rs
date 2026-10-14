@@ -4,12 +4,16 @@
 // Scalar operations: SCALE, ADD1
 // Matches llama.cpp's ggml_compute_forward_scale and ggml_compute_forward_add1
 
+#![allow(dead_code)]
+
 #[cfg(target_os = "macos")]
 use std::os::raw::{c_int, c_uint};
 
 #[cfg(target_os = "macos")]
+#[allow(non_camel_case_types)]
 type vDSP_Stride = c_int;
 #[cfg(target_os = "macos")]
+#[allow(non_camel_case_types)]
 type vDSP_Length = c_uint;
 
 #[cfg(target_os = "macos")]

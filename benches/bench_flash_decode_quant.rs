@@ -347,13 +347,13 @@ fn quantize_kv(
 ) -> (Vec<u8>, Vec<u8>) {
     match format {
         "q4_0" => {
-            use infer_train::quant::kv_cache::{quantize_row_q4_0, BlockQ4_0};
+            use infer_train::quant::kv_cache::{BlockQ4_0, quantize_row_q4_0};
             let k = quantize_to_q4_0(k_f32, seq_k, head_dim);
             let v = quantize_to_q4_0(v_f32, seq_k, head_dim);
             (k, v)
         }
         "q8_0" => {
-            use infer_train::quant::kv_cache::{quantize_row_q8_0, BlockQ8_0};
+            use infer_train::quant::kv_cache::{BlockQ8_0, quantize_row_q8_0};
             let k = quantize_to_q8_0(k_f32, seq_k, head_dim);
             let v = quantize_to_q8_0(v_f32, seq_k, head_dim);
             (k, v)
@@ -363,7 +363,7 @@ fn quantize_kv(
 }
 
 fn quantize_to_q4_0(data: &[f32], seq: usize, head_dim: usize) -> Vec<u8> {
-    use infer_train::quant::kv_cache::{quantize_row_q4_0, BlockQ4_0};
+    use infer_train::quant::kv_cache::{BlockQ4_0, quantize_row_q4_0};
     let blocks_per_row = head_dim / 32;
     let mut result = Vec::with_capacity(
         seq * blocks_per_row * std::mem::size_of::<BlockQ4_0>(),
@@ -386,7 +386,7 @@ fn quantize_to_q4_0(data: &[f32], seq: usize, head_dim: usize) -> Vec<u8> {
 }
 
 fn quantize_to_q8_0(data: &[f32], seq: usize, head_dim: usize) -> Vec<u8> {
-    use infer_train::quant::kv_cache::{quantize_row_q8_0, BlockQ8_0};
+    use infer_train::quant::kv_cache::{BlockQ8_0, quantize_row_q8_0};
     let blocks_per_row = head_dim / 32;
     let mut result = Vec::with_capacity(
         seq * blocks_per_row * std::mem::size_of::<BlockQ8_0>(),

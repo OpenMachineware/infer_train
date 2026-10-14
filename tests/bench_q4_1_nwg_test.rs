@@ -4,7 +4,7 @@
 // Test different NWG values for Q4_1
 
 use half::f16;
-use infer_train::quant::kv_cache::{quantize_row_q4_1, BlockQ4_1};
+use infer_train::quant::kv_cache::{BlockQ4_1, quantize_row_q4_1};
 use metal::*;
 use std::time::Instant;
 

@@ -77,7 +77,7 @@ fn main() {
 
     // Compare with CPU
     println!("\n=== CPU Inference (for comparison) ===");
-    let mut cpu_ctx = InferenceContext::from_gguf(model_path, Device::Cpu)
+    let cpu_ctx = InferenceContext::from_gguf(model_path, Device::Cpu)
         .expect("Failed to load CPU");
 
     println!("✓ Model loaded on CPU");

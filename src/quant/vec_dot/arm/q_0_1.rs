@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+#![allow(asm_sub_register)]
+
 use std::arch::aarch64::*;
 
 use crate::quant::types::{

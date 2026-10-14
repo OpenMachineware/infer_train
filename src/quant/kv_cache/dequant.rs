@@ -297,8 +297,8 @@ pub fn dequantize_row_q5_1(x: &[BlockQ5_1], y: &mut [f32]) {
             let xh0 = ((qh >> j) & 1) << 4;
             let xh1 = ((qh >> (j + 16)) & 1) << 4;
 
-            let q0 = ((x[i].qs[j] & 0x0F) as i32 | xh0 as i32);
-            let q1 = (((x[i].qs[j] >> 4) & 0x0F) as i32 | xh1 as i32);
+            let q0 = (x[i].qs[j] & 0x0F) as i32 | xh0 as i32;
+            let q1 = ((x[i].qs[j] >> 4) & 0x0F) as i32 | xh1 as i32;
 
             y[i * QK + j] = q0 as f32 * d + m;
             y[i * QK + j + QK / 2] = q1 as f32 * d + m;

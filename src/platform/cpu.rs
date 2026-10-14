@@ -138,8 +138,6 @@ pub fn detect() -> CpuCapabilities {
 
 #[cfg(target_arch = "aarch64")]
 fn detect_arm() -> CpuCapabilities {
-    use std::arch::aarch64::*;
-
     let mut caps = CpuCapabilities { arch: CpuArch::Arm, ..Default::default() };
 
     // Get CPU info via sysctl on macOS
@@ -164,24 +162,22 @@ fn detect_arm() -> CpuCapabilities {
 
     // Detect features via ID registers (ARMv8.1+)
     // Note: On macOS, these are readable but may require special handling
-    unsafe {
-        // NEON is always available on ARMv8
-        caps.arm.neon = true;
+    // NEON is always available on ARMv8
+    caps.arm.neon = true;
 
-        // Try to detect dotprod via ID_AA64ISAR0_EL1
-        // On Apple M1+, dotprod is always available
-        // For simplicity, assume available on ARMv8
-        caps.arm.dotprod = true; // M1/M2/M3 have dotprod
+    // Try to detect dotprod via ID_AA64ISAR0_EL1
+    // On Apple M1+, dotprod is always available
+    // For simplicity, assume available on ARMv8
+    caps.arm.dotprod = true; // M1/M2/M3 have dotprod
 
-        // FP16 arithmetic - available on M2+
-        // For now, check if we're on a newer Apple Silicon
-        if caps.model.contains("M2")
-            || caps.model.contains("M3")
-            || caps.model.contains("M4")
-        {
-            caps.arm.fp16 = true;
-            caps.arm.bf16 = true;
-        }
+    // FP16 arithmetic - available on M2+
+    // For now, check if we're on a newer Apple Silicon
+    if caps.model.contains("M2")
+        || caps.model.contains("M3")
+        || caps.model.contains("M4")
+    {
+        caps.arm.fp16 = true;
+        caps.arm.bf16 = true;
     }
 
     caps

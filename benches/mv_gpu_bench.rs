@@ -2,7 +2,7 @@
 // Copyright 2026 Jia Liu
 
 use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion,
+    BenchmarkId, Criterion, black_box, criterion_group, criterion_main,
 };
 use half::f16;
 use infer_train::quant::types::{BlockIQ4NL, BlockQ8_0};

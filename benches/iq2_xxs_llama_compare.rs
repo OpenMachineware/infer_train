@@ -57,6 +57,8 @@ fn main() {
     // IQ2_XXS uses 256-element grid with 2-bit encoding
     println!("\nIQ2_XXS block structure:");
     println!("  d = FP16 global scale (2 bytes)");
-    println!("  qs[16] = Packed grid indices + signs + scales (2 bytes per 16 values)");
+    println!(
+        "  qs[16] = Packed grid indices + signs + scales (2 bytes per 16 values)"
+    );
     println!("  Total size = 66 bytes for 256 values (2.0625 bpw)");
 }

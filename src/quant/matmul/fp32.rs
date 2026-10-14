@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+#![allow(dead_code)]
+
 use std::arch::aarch64::*;
 
 /// FP32 GEMM: C = A^T * B

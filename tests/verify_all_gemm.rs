@@ -7,7 +7,7 @@
 use half::f16;
 use infer_train::quant::types::*;
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 fn gen_f32(k: usize, seed: u64) -> Vec<f32> {
     let mut rng = StdRng::seed_from_u64(seed);

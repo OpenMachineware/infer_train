@@ -6,7 +6,6 @@
 use crate::model::config::ModelConfig;
 use crate::model::llama::{LlamaLayer, LlamaModel};
 use crate::model::tensor::DataType;
-use crate::model::weights::WeightStore;
 
 /// Execution device
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

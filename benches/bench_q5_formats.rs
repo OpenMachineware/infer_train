@@ -5,7 +5,7 @@
 
 use half::f16;
 use infer_train::quant::kv_cache::{
-    quantize_row_q5_0, quantize_row_q5_1, BlockQ5_0, BlockQ5_1,
+    BlockQ5_0, BlockQ5_1, quantize_row_q5_0, quantize_row_q5_1,
 };
 use metal::*;
 use std::time::Instant;

@@ -1,7 +1,6 @@
 // Debug F32 weights in Layer 3
 
 use infer_train::inference::{Device, InferenceContext};
-use infer_train::model::llama::LlamaModel;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

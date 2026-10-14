@@ -2,7 +2,7 @@
 // Copyright 2026 Jia Liu
 
 use infer_train::quant::weights::iq_grid::{
-    nearest_int, IQ2GridData, KGRID_2BIT_256,
+    IQ2GridData, KGRID_2BIT_256, nearest_int,
 };
 
 fn main() {

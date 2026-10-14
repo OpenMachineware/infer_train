@@ -18,6 +18,7 @@ pub struct Tensor {
     pub gpu_buffer: std::cell::RefCell<Option<std::rc::Rc<Buffer>>>,
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataType {
     F32,

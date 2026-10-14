@@ -8,7 +8,7 @@ pub fn sample_greedy(logits: &[f32]) -> usize {
     logits
         .iter()
         .enumerate()
-        .filter(|(_, &v)| v.is_finite())
+        .filter(|(_, v)| v.is_finite())
         .max_by(|(_, a), (_, b)| {
             a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
         })

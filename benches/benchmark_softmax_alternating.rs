@@ -164,7 +164,9 @@ fn main() {
     println!(
         "=== Metal Softmax: Alternating Benchmark (Fair Comparison) ===\n"
     );
-    println!("Methodology: A-B-A-B alternating, 500 rounds, eliminates GPU frequency variance\n");
+    println!(
+        "Methodology: A-B-A-B alternating, 500 rounds, eliminates GPU frequency variance\n"
+    );
 
     // Same kernel code for both
     let kernel_code = r#"

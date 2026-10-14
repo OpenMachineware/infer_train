@@ -5,9 +5,6 @@
 
 use half::f16;
 
-#[cfg(target_arch = "aarch64")]
-use super::arm::neon;
-
 /// Type conversion trait
 pub trait FloatType: Copy + Clone {
     fn to_f32(self) -> f32;

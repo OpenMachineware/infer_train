@@ -5,7 +5,7 @@
 
 use infer_train::quant::types::{BlockIQ3XXS, BlockQ8K, QK_K};
 use infer_train::quant::vec_dot::arm::vec_dot_iq3_xxs_q8_k_neon;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 unsafe extern "C" {
     fn llama_vec_dot_iq3_xxs_q8_K(

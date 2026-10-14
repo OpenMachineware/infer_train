@@ -46,8 +46,8 @@ pub fn quantize_tq1_0(x: &[f32]) -> Vec<BlockTQ1_0> {
                     else {
                         0u8
                     }; // 0
-                       // Pack into 3-bit slots (5 values * 3 bits = 15 bits, fits in 2 bytes)
-                       // TQ1_0 uses a special encoding
+                    // Pack into 3-bit slots (5 values * 3 bits = 15 bits, fits in 2 bytes)
+                    // TQ1_0 uses a special encoding
                     byte |= q << k; // Simplified encoding
                 }
             }

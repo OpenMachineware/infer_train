@@ -3,7 +3,7 @@
 
 // End-to-end inference test
 
-use infer_train::inference::{dequant_to_f32, InferenceContext};
+use infer_train::inference::{InferenceContext, dequant_to_f32};
 use infer_train::model::tensor::DataType;
 use infer_train::ops::sampling::SamplingStrategy;
 

@@ -3,7 +3,9 @@
 
 // Llama model architecture definition
 
-use crate::inference::{dequant_to_f32, KVCacheBase};
+#![allow(dead_code)]
+
+use crate::inference::{KVCacheBase, dequant_to_f32};
 use crate::model::config::ModelConfig;
 use crate::model::tensor::{DataType, Tensor};
 use crate::model::weights::WeightStore;
@@ -83,43 +85,53 @@ impl LlamaModel {
                 // GGUF uses column-major: shape = [K, M], where K=input, M=output
                 let q_out_size = wq.shape[1];
                 let k_out_size = wk.shape[1];
-                let hidden_size = model.config.hidden_size;
 
-                // Determine head_dim by finding a divisor that works for both Q and K
-                // and matches the pattern: n_heads * head_dim == hidden_size
-                // Common head_dim values: 32, 64, 128
-                let mut head_dim = 0;
-                for &candidate in &[32, 64, 128, 256] {
+                // Expected GQA ratio from config
+                let config_gqa_ratio =
+                    model.config.n_heads / model.config.n_kv_heads.max(1);
+
+                // Find all valid head_dim candidates and pick the one closest to config
+                let mut best_head_dim = 0;
+                let mut best_n_heads_diff = usize::MAX;
+
+                for &candidate in &[32, 64, 80, 128, 160, 256] {
                     if q_out_size % candidate == 0
                         && k_out_size % candidate == 0
-                        && hidden_size % candidate == 0
                     {
                         let n_heads = q_out_size / candidate;
-                        if n_heads * candidate == hidden_size
-                            || n_heads == hidden_size / candidate
-                        {
-                            head_dim = candidate;
-                            break;
+                        let n_kv_heads = k_out_size / candidate;
+                        // Validate: n_heads should be a multiple of n_kv_heads (GQA ratio)
+                        let gqa_ratio = n_heads / n_kv_heads;
+                        if gqa_ratio == config_gqa_ratio {
+                            // Prefer candidate that gives n_heads closest to config
+                            let n_heads_diff = (n_heads as i32
+                                - model.config.n_heads as i32)
+                                .abs()
+                                as usize;
+                            if n_heads_diff < best_n_heads_diff {
+                                best_head_dim = candidate;
+                                best_n_heads_diff = n_heads_diff;
+                            }
                         }
                     }
                 }
 
-                if head_dim == 0 {
+                if best_head_dim == 0 {
                     // Fall back to config's head_dim
-                    head_dim = hidden_size / model.config.n_heads;
+                    best_head_dim = model.config.head_dim;
                 }
 
-                let actual_n_heads = q_out_size / head_dim;
-                let actual_n_kv_heads = k_out_size / head_dim;
+                let actual_n_heads = q_out_size / best_head_dim;
+                let actual_n_kv_heads = k_out_size / best_head_dim;
 
                 if actual_n_heads != model.config.n_heads
                     || actual_n_kv_heads != model.config.n_kv_heads
-                    || head_dim != model.config.head_dim
+                    || best_head_dim != model.config.head_dim
                 {
                     model.config.n_heads = actual_n_heads;
                     model.config.n_kv_heads = actual_n_kv_heads;
-                    model.config.head_dim = head_dim;
-                    model.config.rope_dim = head_dim; // Also fix rope_dim
+                    model.config.head_dim = best_head_dim;
+                    model.config.rope_dim = best_head_dim; // Also fix rope_dim
                 }
             }
         }
@@ -348,27 +360,609 @@ impl LlamaModel {
 
         // Output projection
         let output = self.output.as_ref()?;
-        let output_buffer = gpu_ctx.get_or_create_buffer(output);
-        let logits_buffer = self.gemv_gpu_buffer(
-            &final_hidden_buffer,
-            &output_buffer,
-            vocab_size,
-            output.dtype,
-            gpu_ctx,
-        )?;
 
-        // Download final logits to CPU
-        let logits_len = vocab_size;
-        let mut logits = vec![0.0f32; logits_len];
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                logits_buffer.contents() as *const f32,
-                logits.as_mut_ptr(),
-                logits_len,
+        // Check if weights are transposed
+        let is_transposed =
+            output.shape.len() == 2 && output.shape[0] == hidden_size;
+
+        let actual_vocab_size = if is_transposed {
+            // Weight is [hidden_size, vocab_size] - transposed
+            output.shape[1]
+        } else {
+            // Weight is [vocab_size, hidden_size] - normal
+            output.shape[0]
+        };
+
+        let logits = if is_transposed {
+            // Transposed weights: fallback to CPU for now
+            // TODO: Implement GPU transposed GEMV
+            let hidden_data: Vec<f32> = unsafe {
+                let ptr = final_hidden_buffer.contents() as *const f32;
+                let len = hidden_size;
+                let mut data = vec![0.0f32; len];
+                std::ptr::copy_nonoverlapping(ptr, data.as_mut_ptr(), len);
+                data
+            };
+            self.gemv_transposed(&hidden_data, output, actual_vocab_size)?
+        } else {
+            // Normal weights: use GPU
+            let output_buffer = gpu_ctx.get_or_create_buffer(output);
+            let logits_buffer = self.gemv_gpu_buffer(
+                &final_hidden_buffer,
+                &output_buffer,
+                actual_vocab_size,
+                output.dtype,
+                gpu_ctx,
+            )?;
+
+            // Download logits to CPU
+            let mut logits = vec![0.0f32; actual_vocab_size];
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    logits_buffer.contents() as *const f32,
+                    logits.as_mut_ptr(),
+                    actual_vocab_size,
+                );
+            }
+            logits
+        };
+
+        Some(logits)
+    }
+
+    /// Batch prefill using GEMM (more efficient for multiple tokens)
+    /// Process all tokens in parallel using batch matrix operations
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward_prefill_batch(
+        &self,
+        tokens: &[u32],
+        kv_cache: &mut crate::inference::KVCacheGPU,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        if tokens.is_empty() || self.tok_embeddings.is_none() {
+            return None;
+        }
+
+        let batch_size = tokens.len();
+        let hidden_size = self.config.hidden_size;
+        let _n_heads = self.config.n_heads;
+        let _head_dim = self.config.head_dim;
+        let _n_kv_heads = self.config.n_kv_heads;
+
+        // 1. Batch embedding lookup: [batch_size, hidden_size]
+        let hidden = self.embedding_lookup_batch(tokens)?;
+
+        // For batch prefill, we use GEMM with N = batch_size
+        // W @ X^T where X is [batch_size, hidden_size]
+        // Result is [batch_size, hidden_size] for each weight
+
+        // Process each layer with batch operations
+        let mut layer_hidden = hidden;
+
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            // 1. Attention norm (broadcast across batch)
+            let attn_norm = layer.attention_norm.as_ref()?;
+            let mut normed = Vec::with_capacity(batch_size * hidden_size);
+            for i in 0..batch_size {
+                let token_hidden =
+                    &layer_hidden[i * hidden_size..(i + 1) * hidden_size];
+                let token_normed =
+                    self.apply_rms_norm(token_hidden, attn_norm, hidden_size)?;
+                normed.extend(token_normed);
+            }
+
+            // 2. QKV projections using GEMM
+            // GGUF weights are column-major: shape = [K, M] where K=input, M=output
+            let wq = layer.wq.as_ref()?;
+            let wk = layer.wk.as_ref()?;
+            let wv = layer.wv.as_ref()?;
+
+            let q_out_size = wq.shape[1]; // n_heads * head_dim
+            let k_out_size = wk.shape[1]; // n_kv_heads * head_dim
+            let v_out_size = wv.shape[1]; // n_kv_heads * head_dim
+
+            // Derive actual head dimensions from weight shapes
+            let actual_head_dim = k_out_size / self.config.n_kv_heads;
+            let actual_n_heads = q_out_size / actual_head_dim;
+            let actual_n_kv_heads = k_out_size / actual_head_dim;
+
+            let q =
+                self.gemm_batch(&normed, wq, q_out_size, batch_size, gpu_ctx)?;
+            let k =
+                self.gemm_batch(&normed, wk, k_out_size, batch_size, gpu_ctx)?;
+            let v =
+                self.gemm_batch(&normed, wv, v_out_size, batch_size, gpu_ctx)?;
+
+            // 3. RoPE (apply to each token)
+            let mut q_rope = Vec::with_capacity(batch_size * q_out_size);
+            let mut k_rope = Vec::with_capacity(batch_size * k_out_size);
+
+            for i in 0..batch_size {
+                let pos = i; // Position in sequence
+                let q_token = &q[i * q_out_size..(i + 1) * q_out_size];
+                let k_token = &k[i * k_out_size..(i + 1) * k_out_size];
+
+                let q_r = self.apply_rope(
+                    q_token,
+                    pos,
+                    actual_n_heads,
+                    actual_head_dim,
+                )?;
+                let k_r = self.apply_rope(
+                    k_token,
+                    pos,
+                    actual_n_kv_heads,
+                    actual_head_dim,
+                )?;
+
+                // Update KV cache for each token (before extending)
+                let v_token = &v[i * v_out_size..(i + 1) * v_out_size];
+                kv_cache.set_k(layer_idx, &k_r);
+                kv_cache.set_v(layer_idx, v_token);
+                kv_cache.advance();
+
+                q_rope.extend(q_r);
+                k_rope.extend(k_r);
+            }
+
+            // 4. Flash attention (process each query against all K,V up to that position)
+            let mut attn_out = Vec::with_capacity(batch_size * hidden_size);
+            for i in 0..batch_size {
+                let q_token = &q_rope[i * q_out_size..(i + 1) * q_out_size];
+                let attn = self.flash_attention_prefill(
+                    q_token,
+                    kv_cache,
+                    layer_idx,
+                    actual_n_heads,
+                    actual_head_dim,
+                    actual_n_kv_heads,
+                    i + 1, // seq_len: positions 0 through i are available
+                )?;
+                attn_out.extend(attn);
+            }
+
+            // 5. Output projection using GEMM
+            let wo = layer.wo.as_ref()?;
+            let attn_proj = self.gemm_batch(
+                &attn_out,
+                wo,
+                hidden_size,
+                batch_size,
+                gpu_ctx,
+            )?;
+
+            // 6. Residual add
+            let residual: Vec<f32> = layer_hidden
+                .iter()
+                .zip(attn_proj.iter())
+                .map(|(h, a)| h + a)
+                .collect();
+
+            // 7. FFN norm (broadcast across batch)
+            let ffn_norm = layer.ffn_norm.as_ref()?;
+            let mut ffn_normed = Vec::with_capacity(batch_size * hidden_size);
+            for i in 0..batch_size {
+                let token_hidden =
+                    &residual[i * hidden_size..(i + 1) * hidden_size];
+                let token_normed =
+                    self.apply_rms_norm(token_hidden, ffn_norm, hidden_size)?;
+                ffn_normed.extend(token_normed);
+            }
+
+            // 8. FFN (SwiGLU) using GEMM
+            let w1 = layer.w1.as_ref()?;
+            let w2 = layer.w2.as_ref()?;
+            let w3 = layer.w3.as_ref()?;
+
+            // FFN weight shapes:
+            // w1 (gate): [hidden_size, intermediate_size]
+            // w3 (up): [hidden_size, intermediate_size]
+            // w2 (down): [intermediate_size, hidden_size]
+            let gate = self.gemm_batch(
+                &ffn_normed,
+                w1,
+                w1.shape[1],
+                batch_size,
+                gpu_ctx,
+            )?;
+            let up = self.gemm_batch(
+                &ffn_normed,
+                w3,
+                w3.shape[1],
+                batch_size,
+                gpu_ctx,
+            )?;
+
+            // SiLU activation
+            let swiglu: Vec<f32> = gate
+                .iter()
+                .zip(up.iter())
+                .map(|(g, u)| {
+                    let silu = g / (1.0 + (-g).exp());
+                    silu * u
+                })
+                .collect();
+
+            let ffn_out =
+                self.gemm_batch(&swiglu, w2, hidden_size, batch_size, gpu_ctx)?;
+
+            // 9. Final residual
+            layer_hidden = residual
+                .iter()
+                .zip(ffn_out.iter())
+                .map(|(r, f)| r + f)
+                .collect();
+        }
+
+        // Final norm and output (only for last token)
+        let final_hidden = &layer_hidden[(batch_size - 1) * hidden_size..];
+        let final_norm = self.norm.as_ref()?;
+        let final_normed =
+            self.apply_rms_norm(final_hidden, final_norm, hidden_size)?;
+
+        let output = self.output.as_ref()?;
+        let logits =
+            self.gemv(&final_normed, output, self.config.vocab_size)?;
+
+        Some(logits)
+    }
+
+    /// Debug version of forward_prefill_batch that checks intermediate values
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward_prefill_batch_debug(
+        &self,
+        tokens: &[u32],
+        kv_cache: &mut crate::inference::KVCacheGPU,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        if tokens.is_empty() || self.tok_embeddings.is_none() {
+            return None;
+        }
+
+        let batch_size = tokens.len();
+        let hidden_size = self.config.hidden_size;
+
+        fn check_stats(name: &str, data: &[f32]) {
+            let num_nan = data.iter().filter(|&&v| v.is_nan()).count();
+            let num_inf = data.iter().filter(|&&v| v.is_infinite()).count();
+            let max = data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let min = data.iter().cloned().fold(f32::INFINITY, f32::min);
+            println!(
+                "  {}: len={}, nan={}, inf={}, range=[{:.4}, {:.4}]",
+                name,
+                data.len(),
+                num_nan,
+                num_inf,
+                min,
+                max
             );
         }
 
+        // 1. Batch embedding lookup
+        let hidden = self.embedding_lookup_batch(tokens)?;
+        check_stats("embeddings", &hidden);
+
+        let mut layer_hidden = hidden;
+
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            println!("\nLayer {}:", layer_idx);
+
+            // 1. Attention norm
+            let attn_norm = layer.attention_norm.as_ref()?;
+            let mut normed = Vec::with_capacity(batch_size * hidden_size);
+            for i in 0..batch_size {
+                let token_hidden =
+                    &layer_hidden[i * hidden_size..(i + 1) * hidden_size];
+                let token_normed =
+                    self.apply_rms_norm(token_hidden, attn_norm, hidden_size)?;
+                normed.extend(token_normed);
+            }
+            check_stats("attn_normed", &normed);
+
+            // 2. QKV projections
+            let wq = layer.wq.as_ref()?;
+            let wk = layer.wk.as_ref()?;
+            let wv = layer.wv.as_ref()?;
+
+            let q_out_size = wq.shape[1];
+            let k_out_size = wk.shape[1];
+            let v_out_size = wv.shape[1];
+
+            let actual_head_dim = k_out_size / self.config.n_kv_heads;
+            let actual_n_heads = q_out_size / actual_head_dim;
+            let actual_n_kv_heads = k_out_size / actual_head_dim;
+
+            let q =
+                self.gemm_batch(&normed, wq, q_out_size, batch_size, gpu_ctx)?;
+            check_stats("q", &q);
+            let k =
+                self.gemm_batch(&normed, wk, k_out_size, batch_size, gpu_ctx)?;
+            check_stats("k", &k);
+            let v =
+                self.gemm_batch(&normed, wv, v_out_size, batch_size, gpu_ctx)?;
+            check_stats("v", &v);
+
+            // 3. RoPE
+            let mut q_rope = Vec::with_capacity(batch_size * q_out_size);
+            let mut k_rope = Vec::with_capacity(batch_size * k_out_size);
+
+            for i in 0..batch_size {
+                let pos = i;
+                let q_token = &q[i * q_out_size..(i + 1) * q_out_size];
+                let k_token = &k[i * k_out_size..(i + 1) * k_out_size];
+
+                let q_r = self.apply_rope(
+                    q_token,
+                    pos,
+                    actual_n_heads,
+                    actual_head_dim,
+                )?;
+                let k_r = self.apply_rope(
+                    k_token,
+                    pos,
+                    actual_n_kv_heads,
+                    actual_head_dim,
+                )?;
+
+                let v_token = &v[i * v_out_size..(i + 1) * v_out_size];
+                kv_cache.set_k(layer_idx, &k_r);
+                kv_cache.set_v(layer_idx, v_token);
+                kv_cache.advance();
+
+                q_rope.extend(q_r);
+                k_rope.extend(k_r);
+            }
+            check_stats("q_rope", &q_rope);
+            check_stats("k_rope", &k_rope);
+
+            // 4. Flash attention
+            let mut attn_out = Vec::with_capacity(batch_size * hidden_size);
+            for i in 0..batch_size {
+                let q_token = &q_rope[i * q_out_size..(i + 1) * q_out_size];
+                let attn = self.flash_attention_prefill(
+                    q_token,
+                    kv_cache,
+                    layer_idx,
+                    actual_n_heads,
+                    actual_head_dim,
+                    actual_n_kv_heads,
+                    i + 1,
+                )?;
+                attn_out.extend(attn);
+            }
+            check_stats("attn_out", &attn_out);
+
+            // 5. Output projection
+            let wo = layer.wo.as_ref()?;
+            let attn_proj = self.gemm_batch(
+                &attn_out,
+                wo,
+                hidden_size,
+                batch_size,
+                gpu_ctx,
+            )?;
+            check_stats("attn_proj", &attn_proj);
+
+            // 6. Residual
+            let residual: Vec<f32> = layer_hidden
+                .iter()
+                .zip(attn_proj.iter())
+                .map(|(h, a)| h + a)
+                .collect();
+            check_stats("residual", &residual);
+
+            // 7. FFN norm
+            let ffn_norm = layer.ffn_norm.as_ref()?;
+            let mut ffn_normed = Vec::with_capacity(batch_size * hidden_size);
+            for i in 0..batch_size {
+                let token_hidden =
+                    &residual[i * hidden_size..(i + 1) * hidden_size];
+                let token_normed =
+                    self.apply_rms_norm(token_hidden, ffn_norm, hidden_size)?;
+                ffn_normed.extend(token_normed);
+            }
+            check_stats("ffn_normed", &ffn_normed);
+
+            // 8. FFN
+            let w1 = layer.w1.as_ref()?;
+            let w2 = layer.w2.as_ref()?;
+            let w3 = layer.w3.as_ref()?;
+
+            // FFN weight shapes:
+            // w1 (gate): [hidden_size, intermediate_size]
+            // w3 (up): [hidden_size, intermediate_size]
+            // w2 (down): [intermediate_size, hidden_size]
+            let gate = self.gemm_batch(
+                &ffn_normed,
+                w1,
+                w1.shape[1],
+                batch_size,
+                gpu_ctx,
+            )?;
+            check_stats("gate", &gate);
+            let up = self.gemm_batch(
+                &ffn_normed,
+                w3,
+                w3.shape[1],
+                batch_size,
+                gpu_ctx,
+            )?;
+            check_stats("up", &up);
+
+            let swiglu: Vec<f32> = gate
+                .iter()
+                .zip(up.iter())
+                .map(|(g, u)| {
+                    let silu = g / (1.0 + (-g).exp());
+                    silu * u
+                })
+                .collect();
+            check_stats("swiglu", &swiglu);
+
+            let ffn_out =
+                self.gemm_batch(&swiglu, w2, hidden_size, batch_size, gpu_ctx)?;
+            check_stats("ffn_out", &ffn_out);
+
+            // 9. Final residual
+            layer_hidden = residual
+                .iter()
+                .zip(ffn_out.iter())
+                .map(|(r, f)| r + f)
+                .collect();
+
+            // Stop after first layer if NaN detected
+            if layer_hidden.iter().any(|&v| v.is_nan()) {
+                println!("  NaN detected after layer {}, stopping", layer_idx);
+                break;
+            }
+        }
+
+        // Final norm and output
+        let final_hidden = &layer_hidden[(batch_size - 1) * hidden_size..];
+        let final_norm = self.norm.as_ref()?;
+        let final_normed =
+            self.apply_rms_norm(final_hidden, final_norm, hidden_size)?;
+        check_stats("final_normed", &final_normed);
+
+        let output = self.output.as_ref()?;
+        let logits =
+            self.gemv(&final_normed, output, self.config.vocab_size)?;
+        check_stats("logits", &logits);
+
         Some(logits)
+    }
+
+    /// GEMM for batch processing: W @ X^T
+    /// x: [batch, k] (input batch)
+    /// w: [m, k] quantized weights
+    /// Returns: [batch, m]
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn gemm_batch(
+        &self,
+        x: &[f32],
+        w: &Tensor,
+        m: usize,
+        batch: usize,
+        _gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        // Derive K from the weight matrix shape
+        // GGUF stores weights in column-major: shape = [K, M]
+        let k = w.shape[0];
+
+        // For now, use sequential GEMV since GEMM template has issues with batch > 1
+        // TODO: Fix GEMM template for batch processing
+        let mut result = Vec::with_capacity(batch * m);
+        for i in 0..batch {
+            let x_token = &x[i * k..(i + 1) * k];
+            let out = self.gemv(x_token, w, m)?;
+            result.extend(out);
+        }
+        Some(result)
+
+        /* Original GEMM code (not working for batch > 1)
+        match w.dtype {
+            crate::model::tensor::DataType::Q4_K => {
+                let weights: &[BlockQ4K] = bytemuck::cast_slice(w.bytes());
+                gpu_ctx.gemm_template_q4_k_f32(m, batch, k, weights, x).ok()
+            }
+            crate::model::tensor::DataType::Q5_K => {
+                let weights: &[BlockQ5K] = bytemuck::cast_slice(w.bytes());
+                gpu_ctx.gemm_template_q5_k_f32(m, batch, k, weights, x).ok()
+            }
+            crate::model::tensor::DataType::Q2_K => {
+                let weights: &[BlockQ2K] = bytemuck::cast_slice(w.bytes());
+                gpu_ctx.gemm_template_q2_k_f32(m, batch, k, weights, x).ok()
+            }
+            crate::model::tensor::DataType::Q3_K => {
+                let weights: &[BlockQ3K] = bytemuck::cast_slice(w.bytes());
+                gpu_ctx.gemm_template_q3_k_f32(m, batch, k, weights, x).ok()
+            }
+            crate::model::tensor::DataType::Q6_K => {
+                let weights: &[BlockQ6K] = bytemuck::cast_slice(w.bytes());
+                gpu_ctx.gemm_template_q6_k_f32(m, batch, k, weights, x).ok()
+            }
+            _ => {
+                // Fallback to sequential GEMV for unsupported formats
+                let mut result = Vec::with_capacity(batch * m);
+                for i in 0..batch {
+                    let x_token = &x[i * k..(i + 1) * k];
+                    let out = self.gemv(x_token, w, m)?;
+                    result.extend(out);
+                }
+                Some(result)
+            }
+        }
+        */
+    }
+
+    /// Flash attention for prefill: query against all KV positions
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn flash_attention_prefill(
+        &self,
+        q: &[f32],
+        kv_cache: &crate::inference::KVCacheGPU,
+        layer_idx: usize,
+        n_heads: usize,
+        head_dim: usize,
+        n_kv_heads: usize,
+        seq_len: usize, // Number of KV positions available
+    ) -> Option<Vec<f32>> {
+        // For non-standard architectures where hidden_size != n_heads * head_dim,
+        // we still need to output the correct size for the attention output
+        let q_out_size = n_heads * head_dim;
+        let mut output = vec![0.0f32; q_out_size];
+        let n_rep = n_heads / n_kv_heads; // GQA
+
+        for h in 0..n_heads {
+            let kv_head = h / n_rep;
+            let scale = 1.0 / (head_dim as f32).sqrt();
+
+            // Get Q for this head
+            let q_start = h * head_dim;
+            let q_head = &q[q_start..q_start + head_dim];
+
+            // Compute attention scores for all KV positions
+            let mut scores: Vec<f32> = Vec::with_capacity(seq_len);
+
+            for pos in 0..seq_len {
+                let k_vals = kv_cache.get_k(layer_idx, pos);
+                let k_start = kv_head * head_dim;
+                let k_head = &k_vals[k_start..k_start + head_dim];
+
+                // QK^T
+                let score: f32 = q_head
+                    .iter()
+                    .zip(k_head.iter())
+                    .map(|(qi, ki)| qi * ki)
+                    .sum::<f32>()
+                    * scale;
+                scores.push(score);
+            }
+
+            // Softmax
+            let max_score =
+                scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let exp_sum: f32 =
+                scores.iter().map(|s| (s - max_score).exp()).sum();
+            let softmax: Vec<f32> = scores
+                .iter()
+                .map(|s| (s - max_score).exp() / exp_sum)
+                .collect();
+
+            // Weighted sum of V
+            for pos in 0..seq_len {
+                let v_vals = kv_cache.get_v(layer_idx, pos);
+                let v_start = kv_head * head_dim;
+                let v_head = &v_vals[v_start..v_start + head_dim];
+                let weight = softmax[pos];
+
+                for (i, &v) in v_head.iter().enumerate() {
+                    output[h * head_dim + i] += weight * v;
+                }
+            }
+        }
+
+        Some(output)
     }
 
     /// Forward pass: tokens → logits (CPU version)
@@ -457,9 +1051,9 @@ impl LlamaModel {
         layer_idx: usize,
         hidden: &[f32],
         kv_cache: &mut crate::inference::KVCache,
-        n_heads: usize,
+        _n_heads: usize,
         head_dim: usize,
-        n_kv_heads: usize,
+        _n_kv_heads: usize,
     ) -> Option<Vec<f32>> {
         let hidden_size = self.config.hidden_size;
         let pos = kv_cache.seq_len();
@@ -785,9 +1379,9 @@ impl LlamaModel {
         layer_idx: usize,
         hidden: &[f32],
         kv_cache: &mut crate::inference::KVCache,
-        n_heads: usize,
+        _n_heads: usize,
         head_dim: usize,
-        n_kv_heads: usize,
+        _n_kv_heads: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) -> Option<Vec<f32>> {
         let hidden_size = self.config.hidden_size;
@@ -869,9 +1463,9 @@ impl LlamaModel {
         layer_idx: usize,
         hidden: &[f32],
         kv_cache: &mut crate::inference::KVCacheGPU,
-        n_heads: usize,
+        _n_heads: usize,
         head_dim: usize,
-        n_kv_heads: usize,
+        _n_kv_heads: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) -> Option<Vec<f32>> {
         let hidden_size = self.config.hidden_size;
@@ -954,9 +1548,9 @@ impl LlamaModel {
         layer_idx: usize,
         hidden_buffer: &std::rc::Rc<Buffer>,
         kv_cache: &mut crate::inference::KVCacheGPU,
-        n_heads: usize,
+        _n_heads: usize,
         head_dim: usize,
-        n_kv_heads: usize,
+        _n_kv_heads: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) -> Option<std::rc::Rc<Buffer>> {
         let hidden_size = self.config.hidden_size;
@@ -1548,7 +2142,7 @@ impl LlamaModel {
         pos: usize,
         n_heads: usize,
         head_dim: usize,
-        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+        _gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) -> Option<Vec<f32>> {
         // For now, use CPU RoPE (RoPE is memory-bound, GPU advantage is small)
         // TODO: Implement GPU RoPE when needed
@@ -1700,15 +2294,15 @@ impl LlamaModel {
     fn forward_layer_graph(
         &self,
         layer: &LlamaLayer,
-        layer_idx: usize,
+        _layer_idx: usize,
         hidden: crate::compute::tensor::Tensor,
         pos: usize,
         backend: &MetalBackend,
     ) -> Option<crate::compute::tensor::Tensor> {
         let hidden_size = self.config.hidden_size;
-        let n_heads = self.config.n_heads;
+        let _n_heads = self.config.n_heads;
         let head_dim = self.config.head_dim;
-        let n_kv_heads = self.config.n_kv_heads;
+        let _n_kv_heads = self.config.n_kv_heads;
 
         // === Step 1: Attention Norm ===
         let mut graph = ComputeGraph::new();
@@ -1758,7 +2352,7 @@ impl LlamaModel {
 
         // V projection
         let wv = self.tensor_to_compute(layer.wv.as_ref()?, "wv")?;
-        let v_out_size = wv.shape[1];
+        let _v_out_size = wv.shape[1];
         graph.add_tensor(wv);
         graph.add_input("wv");
         graph.add_op(OpNode::new(
@@ -1770,11 +2364,11 @@ impl LlamaModel {
         backend.execute(&mut graph).ok()?;
         let q = graph.get_tensor("q")?.clone();
         let k = graph.get_tensor("k")?.clone();
-        let v = graph.get_tensor("v")?.clone();
+        let _v = graph.get_tensor("v")?.clone();
 
         // Derive actual n_heads from weight shapes
-        let actual_n_heads = q_out_size / head_dim;
-        let actual_n_kv_heads = k_out_size / head_dim;
+        let _actual_n_heads = q_out_size / head_dim;
+        let _actual_n_kv_heads = k_out_size / head_dim;
 
         // === Step 3: RoPE ===
         // Apply RoPE to Q and K
@@ -1803,7 +2397,7 @@ impl LlamaModel {
                 .with_params(rope_params),
         );
         backend.execute(&mut graph).ok()?;
-        let k_rope = graph.get_tensor("k_rope")?.clone();
+        let _k_rope = graph.get_tensor("k_rope")?.clone();
 
         // === Step 4: Flash Attention ===
         // TODO: Need KV cache integration
@@ -1860,7 +2454,7 @@ impl LlamaModel {
         let ffn_normed = graph.get_tensor("ffn_normed")?.clone();
 
         // === Step 8: FFN (SwiGLU) ===
-        let intermediate = hidden_size * 4;
+        let _intermediate = hidden_size * 4;
 
         let mut graph = ComputeGraph::new();
         graph.add_tensor(ffn_normed.clone());
@@ -1969,7 +2563,7 @@ impl LlamaModel {
         hidden: &crate::compute::tensor::Tensor,
         backend: &MetalBackend,
     ) -> Option<crate::compute::tensor::Tensor> {
-        let hidden_size = self.config.hidden_size;
+        let _hidden_size = self.config.hidden_size;
 
         let mut graph = ComputeGraph::new();
         graph.add_tensor(hidden.clone());

@@ -5,8 +5,6 @@
 
 use infer_train::model::GgufFile;
 use infer_train::tokenize::BpeTokenizer;
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
 
 fn main() {
     let gguf = GgufFile::open("Qwen3.8-27B-UD-Q5_K_M.gguf").unwrap();
@@ -24,7 +22,7 @@ fn main() {
     let n = chars.len();
 
     // Build initial tokens
-    let mut tokens: Vec<(String, i32, i32)> = chars
+    let tokens: Vec<(String, i32, i32)> = chars
         .iter()
         .enumerate()
         .map(|(i, c)| {

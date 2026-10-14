@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+#![allow(dead_code, non_snake_case)]
+
 use crate::quant::types::{
     BlockIQ1M, BlockIQ1S, BlockIQ2S, BlockIQ2XS, BlockIQ2XXS, BlockIQ3S,
-    BlockIQ3XXS, BlockIQ4NL, BlockIQ4XS, BlockMXFP4, BlockQ1_0, BlockQ2K,
-    BlockQ2_0, BlockQ3K, BlockQ4K, BlockQ4_0, BlockQ4_1, BlockQ5K, BlockQ5_0,
-    BlockQ5_1, BlockQ6K, BlockQ8_0, BlockTQ1_0, BlockTQ2_0,
+    BlockIQ3XXS, BlockIQ4NL, BlockIQ4XS, BlockMXFP4, BlockQ1_0, BlockQ2_0,
+    BlockQ2K, BlockQ3K, BlockQ4_0, BlockQ4_1, BlockQ4K, BlockQ5_0, BlockQ5_1,
+    BlockQ5K, BlockQ6K, BlockQ8_0, BlockTQ1_0, BlockTQ2_0,
 };
 use metal::{
     Buffer, CommandQueue, ComputePipelineState, Device, FunctionConstantValues,
@@ -201,39 +203,25 @@ fn create_mv_function_constants(
 ) -> FunctionConstantValues {
     let cv = FunctionConstantValues::new();
 
-    unsafe {
-        // Set NSG (number of simdgroups)
-        let nsg_ptr: *const c_void = &nsg as *const i16 as *const c_void;
-        cv.set_constant_value_at_index(
-            nsg_ptr,
-            MTLDataType::Short,
-            FC_MUL_MV_NSG,
-        );
+    // Set NSG (number of simdgroups)
+    let nsg_ptr: *const c_void = &nsg as *const i16 as *const c_void;
+    cv.set_constant_value_at_index(nsg_ptr, MTLDataType::Short, FC_MUL_MV_NSG);
 
-        // Set NE12
-        let ne12_ptr: *const c_void = &ne12 as *const i16 as *const c_void;
-        cv.set_constant_value_at_index(
-            ne12_ptr,
-            MTLDataType::Short,
-            FC_MUL_MV_NE12,
-        );
+    // Set NE12
+    let ne12_ptr: *const c_void = &ne12 as *const i16 as *const c_void;
+    cv.set_constant_value_at_index(
+        ne12_ptr,
+        MTLDataType::Short,
+        FC_MUL_MV_NE12,
+    );
 
-        // Set R2
-        let r2_ptr: *const c_void = &r2 as *const i16 as *const c_void;
-        cv.set_constant_value_at_index(
-            r2_ptr,
-            MTLDataType::Short,
-            FC_MUL_MV_R2,
-        );
+    // Set R2
+    let r2_ptr: *const c_void = &r2 as *const i16 as *const c_void;
+    cv.set_constant_value_at_index(r2_ptr, MTLDataType::Short, FC_MUL_MV_R2);
 
-        // Set R3
-        let r3_ptr: *const c_void = &r3 as *const i16 as *const c_void;
-        cv.set_constant_value_at_index(
-            r3_ptr,
-            MTLDataType::Short,
-            FC_MUL_MV_R3,
-        );
-    }
+    // Set R3
+    let r3_ptr: *const c_void = &r3 as *const i16 as *const c_void;
+    cv.set_constant_value_at_index(r3_ptr, MTLDataType::Short, FC_MUL_MV_R3);
 
     cv
 }
@@ -653,38 +641,36 @@ impl MetalContext {
             let constant_values = metal::FunctionConstantValues::new();
             let false_val: bool = false;
             let one_val: i16 = 1;
-            unsafe {
-                constant_values.set_constant_value_at_index(
-                    &false_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Bool,
-                    0,
-                );
-                constant_values.set_constant_value_at_index(
-                    &false_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Bool,
-                    1,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    2,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    3,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    4,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    5,
-                );
-            }
+            constant_values.set_constant_value_at_index(
+                &false_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Bool,
+                0,
+            );
+            constant_values.set_constant_value_at_index(
+                &false_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Bool,
+                1,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                2,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                3,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                4,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                5,
+            );
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q4_K_f32");
             descriptor.set_constant_values(&constant_values);
@@ -705,38 +691,36 @@ impl MetalContext {
             let constant_values = metal::FunctionConstantValues::new();
             let false_val: bool = false;
             let one_val: i16 = 1;
-            unsafe {
-                constant_values.set_constant_value_at_index(
-                    &false_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Bool,
-                    0,
-                );
-                constant_values.set_constant_value_at_index(
-                    &false_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Bool,
-                    1,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    2,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    3,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    4,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    5,
-                );
-            }
+            constant_values.set_constant_value_at_index(
+                &false_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Bool,
+                0,
+            );
+            constant_values.set_constant_value_at_index(
+                &false_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Bool,
+                1,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                2,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                3,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                4,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                5,
+            );
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q2_K_f32");
             descriptor.set_constant_values(&constant_values);
@@ -756,38 +740,36 @@ impl MetalContext {
             let constant_values = metal::FunctionConstantValues::new();
             let false_val: bool = false;
             let one_val: i16 = 1;
-            unsafe {
-                constant_values.set_constant_value_at_index(
-                    &false_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Bool,
-                    0,
-                );
-                constant_values.set_constant_value_at_index(
-                    &false_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Bool,
-                    1,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    2,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    3,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    4,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    5,
-                );
-            }
+            constant_values.set_constant_value_at_index(
+                &false_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Bool,
+                0,
+            );
+            constant_values.set_constant_value_at_index(
+                &false_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Bool,
+                1,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                2,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                3,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                4,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                5,
+            );
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q3_K_f32");
             descriptor.set_constant_values(&constant_values);
@@ -807,38 +789,36 @@ impl MetalContext {
             let constant_values = metal::FunctionConstantValues::new();
             let false_val: bool = false;
             let one_val: i16 = 1;
-            unsafe {
-                constant_values.set_constant_value_at_index(
-                    &false_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Bool,
-                    0,
-                );
-                constant_values.set_constant_value_at_index(
-                    &false_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Bool,
-                    1,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    2,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    3,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    4,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    5,
-                );
-            }
+            constant_values.set_constant_value_at_index(
+                &false_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Bool,
+                0,
+            );
+            constant_values.set_constant_value_at_index(
+                &false_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Bool,
+                1,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                2,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                3,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                4,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                5,
+            );
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q5_K_f32");
             descriptor.set_constant_values(&constant_values);
@@ -858,38 +838,36 @@ impl MetalContext {
             let constant_values = metal::FunctionConstantValues::new();
             let false_val: bool = false;
             let one_val: i16 = 1;
-            unsafe {
-                constant_values.set_constant_value_at_index(
-                    &false_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Bool,
-                    0,
-                );
-                constant_values.set_constant_value_at_index(
-                    &false_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Bool,
-                    1,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    2,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    3,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    4,
-                );
-                constant_values.set_constant_value_at_index(
-                    &one_val as *const _ as *const std::ffi::c_void,
-                    metal::MTLDataType::Short,
-                    5,
-                );
-            }
+            constant_values.set_constant_value_at_index(
+                &false_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Bool,
+                0,
+            );
+            constant_values.set_constant_value_at_index(
+                &false_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Bool,
+                1,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                2,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                3,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                4,
+            );
+            constant_values.set_constant_value_at_index(
+                &one_val as *const _ as *const std::ffi::c_void,
+                metal::MTLDataType::Short,
+                5,
+            );
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q6_K_f32");
             descriptor.set_constant_values(&constant_values);
@@ -5513,7 +5491,7 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ4K>()) as u64;
-        let nb00 = std::mem::size_of::<BlockQ4K>() as u64;
+        let _nb00 = std::mem::size_of::<BlockQ4K>() as u64;
 
         // Use exact struct from llama.cpp's ggml-metal-impl.h
         #[repr(C)]
@@ -6715,12 +6693,12 @@ impl MetalContext {
     /// Supports: head_dim 32/64/80/128/160, GQA (grouped query attention)
     pub fn flash_attn_f16(
         &self,
-        n_seqs: usize,     // batch size
-        n_heads: usize,    // number of query heads
-        n_kv_heads: usize, // number of KV heads (for GQA)
-        head_dim: usize,   // head dimension (32/64/80/128/160)
-        seq_len: usize,    // KV cache length
-        q: &[f32],         // query [n_seqs, n_heads, head_dim]
+        n_seqs: usize,      // batch size
+        n_heads: usize,     // number of query heads
+        _n_kv_heads: usize, // number of KV heads (for GQA)
+        head_dim: usize,    // head dimension (32/64/80/128/160)
+        seq_len: usize,     // KV cache length
+        q: &[f32],          // query [n_seqs, n_heads, head_dim]
         k: &[u16], // key cache [n_seqs, n_kv_heads, seq_len, head_dim] as F16
         v: &[u16], // value cache [n_seqs, n_kv_heads, seq_len, head_dim] as F16
     ) -> Result<Vec<f32>, String> {
@@ -6735,7 +6713,7 @@ impl MetalContext {
                 return Err(format!(
                     "Flash Attention does not support head_dim={}, only 32/64/80/128/160",
                     head_dim
-                ))
+                ));
             }
         };
 
@@ -6817,7 +6795,7 @@ impl MetalContext {
         &self,
         n_seqs: usize,
         n_heads: usize,
-        n_kv_heads: usize,
+        _n_kv_heads: usize,
         head_dim: usize,
         seq_len: usize,
         q_buffer: &Buffer,
@@ -6835,7 +6813,7 @@ impl MetalContext {
                 return Err(format!(
                     "Flash Attention does not support head_dim={}, only 32/64/80/128/160",
                     head_dim
-                ))
+                ));
             }
         };
 
@@ -7060,7 +7038,7 @@ impl MetalContext {
     /// Returns indices of sorted elements in descending order
     pub fn argsort_top_k(
         &self,
-        n: usize,
+        _n: usize,
         src: &[f32],
         k: usize,
     ) -> Result<Vec<i32>, String> {
@@ -7139,12 +7117,20 @@ impl MetalContext {
     // ========================================================================
 
     /// Reduce sum
-    pub fn reduce_sum_f32(&self, n: usize, src: &[f32]) -> Result<f32, String> {
+    pub fn reduce_sum_f32(
+        &self,
+        _n: usize,
+        src: &[f32],
+    ) -> Result<f32, String> {
         Ok(src.iter().sum())
     }
 
     /// Reduce max
-    pub fn reduce_max_f32(&self, n: usize, src: &[f32]) -> Result<f32, String> {
+    pub fn reduce_max_f32(
+        &self,
+        _n: usize,
+        src: &[f32],
+    ) -> Result<f32, String> {
         let max_val = src.iter().cloned().fold(-f32::INFINITY, f32::max);
         Ok(max_val)
     }

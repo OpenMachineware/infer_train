@@ -418,7 +418,7 @@ impl BpeTokenizer {
                 for byte in 0u8..=255u8 {
                     let ch = if (byte >= 33 && byte <= 126)
                         || (byte >= 161 && byte <= 172)
-                        || (byte >= 174 && byte <= 255)
+                        || byte >= 174
                     {
                         byte as char
                     } else {
@@ -445,7 +445,7 @@ impl BpeTokenizer {
                 for byte in 0u8..=255u8 {
                     let ch = if (byte >= 33 && byte <= 126)
                         || (byte >= 161 && byte <= 172)
-                        || (byte >= 174 && byte <= 255)
+                        || byte >= 174
                     {
                         byte as char
                     } else {

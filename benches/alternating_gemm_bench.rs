@@ -7,7 +7,7 @@
 use half::f16;
 use infer_train::quant::types::*;
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::time::Instant;
 
 // Generate FP32 input matrix (K x N)

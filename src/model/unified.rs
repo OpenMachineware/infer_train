@@ -6,7 +6,7 @@
 use crate::model::config::ModelConfig;
 use crate::model::gguf::GgufFile;
 use crate::model::hybrid::HybridMoESsmLayer;
-use crate::model::llama::{LlamaLayer, LlamaModel};
+use crate::model::llama::LlamaLayer;
 use crate::model::mamba::MambaLayer;
 use crate::model::moe::MoeLayer;
 use crate::model::tensor::Tensor;

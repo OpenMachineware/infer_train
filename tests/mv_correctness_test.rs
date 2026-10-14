@@ -41,7 +41,7 @@ fn main() {
     println!("M={}, K={}, N={}", m, k, n);
 
     // Generate random test data
-    use rand::{rngs::StdRng, Rng, SeedableRng};
+    use rand::{Rng, SeedableRng, rngs::StdRng};
     let seed = 42u64;
     let mut rng = StdRng::seed_from_u64(seed);
 

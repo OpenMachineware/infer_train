@@ -7,7 +7,7 @@
 use half::f16;
 use infer_train::quant::types::*;
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 fn generate_q4_k_weights(m: usize, k: usize, seed: u64) -> Vec<BlockQ4K> {
     let nb = k / 256;

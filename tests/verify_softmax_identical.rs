@@ -273,7 +273,9 @@ kernel void kernel_soft_max_f32(
     }
 
     println!("\n=== Expected Result ===");
-    println!("Both contexts use IDENTICAL code, so ratio should be ~100% (±3% thermal variance).");
+    println!(
+        "Both contexts use IDENTICAL code, so ratio should be ~100% (±3% thermal variance)."
+    );
     println!(
         "If ratio is NOT ~100%, there's a problem with the test methodology."
     );

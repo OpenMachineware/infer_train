@@ -207,11 +207,7 @@ impl SoftmaxMetalContext {
                 &self.pipeline_fast
             }
         } else {
-            if use_vec4 {
-                &self.pipeline_vec4
-            } else {
-                &self.pipeline
-            }
+            if use_vec4 { &self.pipeline_vec4 } else { &self.pipeline }
         };
         encoder.set_compute_pipeline_state(pipeline);
 

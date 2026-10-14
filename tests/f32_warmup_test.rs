@@ -7,7 +7,7 @@
 
 use half::f16;
 use metal::{Device, MTLSize};
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::ffi::c_void;
 
 #[repr(C)]

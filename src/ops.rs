@@ -29,9 +29,16 @@ pub mod tensor;
 
 // Re-exports
 pub use attention::*;
-pub use binary::*;
+// Explicit exports from binary to avoid FloatType conflict with dup
+pub use binary::{
+    AddOp, BinaryOp, DivOp, MulOp, SubOp, add_f16, add_f16_f32,
+    add_f16_f32_to_f32, add_f32, binary_broadcast_scalar, binary_scalar,
+    div_f16, div_f32, mul_f16, mul_f16_f32, mul_f16_f32_to_f32, mul_f32,
+    sub_f16, sub_f32,
+};
 pub use conv::*;
-pub use dup::*;
+// Explicit exports from dup to avoid FloatType conflict with binary
+pub use dup::{dup, dup_f16_to_f32, dup_f32_to_f16, dup_same};
 pub use gelu::*;
 pub use moe::*;
 pub use rms_norm::*;

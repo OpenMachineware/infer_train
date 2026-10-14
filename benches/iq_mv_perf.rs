@@ -6,7 +6,7 @@
 use half::f16;
 use infer_train::quant::types::*;
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::time::Instant;
 
 fn gen_f32(k: usize, seed: u64) -> Vec<f32> {

@@ -162,8 +162,8 @@ unsafe fn hgemm_bloc(
     }
 
     // Convert accumulators to F32 and store
-    let a_ptrs = [a0, a1, a2, a3];
-    let b_ptrs = [b0, b1];
+    let _a_ptrs = [a0, a1, a2, a3];
+    let _b_ptrs = [b0, b1];
     let cvs = [cv0, cv1];
     for j in 0..2 {
         if !col_mask[j] {
@@ -338,8 +338,8 @@ unsafe fn hgemm_f32b_bloc(
     }
 
     // Horizontal sum and store
-    let a_ptrs = [a0, a1, a2, a3];
-    let b_ptrs = [b0, b1, b2];
+    let _a_ptrs = [a0, a1, a2, a3];
+    let _b_ptrs = [b0, b1, b2];
     let cvs = [cv0, cv1, cv2];
     for j in 0..3 {
         if !col_mask[j] {

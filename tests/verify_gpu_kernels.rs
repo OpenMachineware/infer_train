@@ -141,11 +141,7 @@ fn generate_f32_input(k: usize) -> Vec<f32> {
 fn calculate_gflops(m: usize, n: usize, k: usize, time_us: f64) -> f64 {
     let ops = 2.0 * m as f64 * n as f64 * k as f64;
     let time_s = time_us / 1_000_000.0;
-    if time_s > 0.0 {
-        ops / time_s / 1_000_000_000.0
-    } else {
-        0.0
-    }
+    if time_s > 0.0 { ops / time_s / 1_000_000_000.0 } else { 0.0 }
 }
 
 fn benchmark_iterations<F>(f: F, iterations: usize) -> Duration

@@ -119,8 +119,9 @@ pub fn binary_broadcast_scalar<S0, S1, D, OP>(
 // ============================================================================
 
 #[cfg(target_os = "macos")]
+#[allow(non_camel_case_types)]
 mod vdsp {
-    use super::*;
+
     use std::os::raw::{c_int, c_uint};
 
     type vDSP_Stride = c_int;

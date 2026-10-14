@@ -4,12 +4,10 @@
 // Attention operator NEON implementations
 // FP16 inline assembly for stable Rust compatibility
 
+#![allow(asm_sub_register)]
+
 use std::arch::aarch64::*;
 use std::arch::asm;
-
-use crate::quant::kv_cache::{
-    BlockIQ4NL, BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, QK,
-};
 
 // ============================================================================
 // FP16 NEON via inline assembly (stable Rust compatible)

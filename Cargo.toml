@@ -1,7 +1,7 @@
 [package]
 name = "infer_train"
-version = "0.1.0"
-edition = "2021"
+version = "0.1.30"
+edition = "2024"
 
 [[bin]]
 name = "inspect-gguf"
@@ -63,13 +63,38 @@ path = "tools/debug_nan.rs"
 name = "profile-gpu"
 path = "tools/profile_gpu.rs"
 
+[[bin]]
+name = "generate"
+path = "tools/generate.rs"
+
+[[bin]]
+name = "debug-nan-gpu"
+path = "tools/debug_nan_gpu.rs"
+
+[[bin]]
+name = "debug-embed-shape"
+path = "tools/debug_embed_shape.rs"
+
+[[bin]]
+name = "debug-nan-detailed"
+path = "tools/debug_nan_detailed.rs"
+
+[[bin]]
+name = "test-gemm-batch"
+path = "tools/test_gemm_batch.rs"
+
+[[bin]]
+name = "debug-weight-shapes"
+path = "tools/debug_weight_shapes.rs"
+
 [features]
 default = []
 metal = []
+cuda = []
+rocm = []
 
 [profile.release]
 opt-level = 3
-target-cpu = "native"
 lto = "thin"
 codegen-units = 1
 

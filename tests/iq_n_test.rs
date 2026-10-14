@@ -5,7 +5,7 @@
 use half::f16;
 use infer_train::quant::types::BlockIQ4NL;
 use metal::{Device, MTLSize};
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::ffi::c_void;
 use std::time::Instant;
 

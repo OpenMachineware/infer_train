@@ -28,7 +28,9 @@ fn main() {
     // Expected llama.cpp output (from iq3_xxs_llama_dump)
     println!("Expected llama.cpp output:");
     println!("  d = 0x1831");
-    println!("  qs[0:12] = 0xca 0xea 0xef 0xa9 0xa9 0xb8 0x28 0x82 0x00 0x00 0x00 0x00");
+    println!(
+        "  qs[0:12] = 0xca 0xea 0xef 0xa9 0xa9 0xb8 0x28 0x82 0x00 0x00 0x00 0x00"
+    );
 
     println!("\nNote: IQ3_XXS quantization not yet implemented in Rust");
     println!("This test verifies the llama.cpp output for future comparison");
@@ -48,6 +50,8 @@ fn main() {
     // IQ3_XXS uses 256-element grid with 3-bit encoding
     println!("\nIQ3_XXS block structure:");
     println!("  d = FP16 global scale (2 bytes)");
-    println!("  qs[96] = Packed grid indices + signs + scales (3 bytes per 8 values)");
+    println!(
+        "  qs[96] = Packed grid indices + signs + scales (3 bytes per 8 values)"
+    );
     println!("  Total size = 98 bytes for 256 values (3.0625 bpw)");
 }

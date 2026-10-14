@@ -4,10 +4,12 @@
 // Attention operator implementation with fused KV dequantization
 // Based on llama.cpp's flash attention mechanism
 
+#![allow(asm_sub_register, dead_code)]
+
 #[cfg(target_arch = "aarch64")]
 use crate::ops::arm::neon::{
-    vaddq_f16_asm, vaddvq_f32_inline, vcvt_f16_from_f32, vcvt_f32_from_f16,
-    vfmaq_f16_asm, vld1_f16_and_cvt_to_f32, vmulq_f16_asm,
+    vaddq_f16_asm, vcvt_f16_from_f32, vcvt_f32_from_f16, vfmaq_f16_asm,
+    vld1_f16_and_cvt_to_f32, vmulq_f16_asm,
 };
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
@@ -785,7 +787,6 @@ fn dequantize_q2_k_kv(
     block: &crate::quant::kv_cache::BlockQ2K_KV,
     out: &mut [f32],
 ) {
-    use crate::quant::kv_cache::BlockQ2K_KV;
     let d = half::f16::from_bits(block.d).to_f32();
     let dmin = half::f16::from_bits(block.dmin).to_f32();
 
@@ -810,7 +811,6 @@ fn dequantize_q3_k_kv(
     block: &crate::quant::kv_cache::BlockQ3K_KV,
     out: &mut [f32],
 ) {
-    use crate::quant::kv_cache::BlockQ3K_KV;
     let d = half::f16::from_bits(block.d).to_f32();
 
     // Q3_K has 8 sub-blocks of 32 elements each
@@ -837,7 +837,6 @@ fn dequantize_q4_k_kv(
     block: &crate::quant::kv_cache::BlockQ4K_KV,
     out: &mut [f32],
 ) {
-    use crate::quant::kv_cache::BlockQ4K_KV;
     let d = half::f16::from_bits(block.d).to_f32();
     let min = half::f16::from_bits(block.dmin).to_f32();
 
@@ -857,7 +856,6 @@ fn dequantize_q5_k_kv(
     block: &crate::quant::kv_cache::BlockQ5K_KV,
     out: &mut [f32],
 ) {
-    use crate::quant::kv_cache::BlockQ5K_KV;
     let d = half::f16::from_bits(block.d).to_f32();
     let min = half::f16::from_bits(block.dmin).to_f32();
 
@@ -880,7 +878,6 @@ fn dequantize_q6_k_kv(
     block: &crate::quant::kv_cache::BlockQ6K_KV,
     out: &mut [f32],
 ) {
-    use crate::quant::kv_cache::BlockQ6K_KV;
     let d = half::f16::from_bits(block.d).to_f32();
 
     // ql[j] = element j (low nibble) | element j+128 (high nibble)
@@ -1755,9 +1752,8 @@ pub unsafe fn dequantize_row_bf16_neon_inline(x: &[u16], y: &mut [f32]) {
 #[cfg(target_arch = "aarch64")]
 use super::attention_fused::{
     quantize_query_to_q8_0, quantize_query_to_q8_1, vec_dot_iq4_nl_q8_0,
-    vec_dot_q4_0_q8_0, vec_dot_q4_1_q8_1, vec_dot_q5_0_q8_0, vec_dot_q5_1_q8_1,
-    vec_dot_q8_0_q8_0, vec_mad_f32_iq4_nl, vec_mad_f32_q4_0, vec_mad_f32_q4_1,
-    vec_mad_f32_q5_0, vec_mad_f32_q5_1, vec_mad_f32_q8_0,
+    vec_dot_q4_0_q8_0, vec_dot_q5_0_q8_0, vec_mad_f32_iq4_nl, vec_mad_f32_q4_0,
+    vec_mad_f32_q4_1, vec_mad_f32_q5_0, vec_mad_f32_q5_1, vec_mad_f32_q8_0,
 };
 
 // ============================================================================

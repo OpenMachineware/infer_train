@@ -4,6 +4,8 @@
 // IQ formats: IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_NL, IQ4_XS
 // Precisely ported from llama.cpp ggml-quants.c
 
+#![allow(dead_code, non_snake_case)]
+
 use crate::quant::types::*;
 use crate::quant::weights::iq_grid::*;
 use half::f16;
@@ -118,11 +120,7 @@ fn make_qp_quants(
         }
     }
 
-    if suml2 > 0.0 {
-        sumlx / suml2
-    } else {
-        1.0 / iscale
-    }
+    if suml2 > 0.0 { sumlx / suml2 } else { 1.0 / iscale }
 }
 
 /// Quantize FP32 to IQ4_NL (simple 4-bit non-linear)
@@ -654,7 +652,7 @@ fn quantize_iq2_xxs_impl(
 
         // Encode scales (llama.cpp lines 3455-3467)
         if max_scale == 0.0 {
-            let mut qs = [0u16; 32];
+            let qs = [0u16; 32];
             blocks.push(BlockIQ2XXS { d: f16::from_f32(0.0).to_bits(), qs });
             continue;
         }
@@ -1408,7 +1406,7 @@ fn quantize_iq2_xs_impl(
 
         // Pack final block (llama.cpp lines 3743-3757)
         if max_scale == 0.0 {
-            let mut block = BlockIQ2XS { d: 0, qs: [0; 32], scales: [0; 8] };
+            let block = BlockIQ2XS { d: 0, qs: [0; 32], scales: [0; 8] };
             blocks.push(block);
             continue;
         }

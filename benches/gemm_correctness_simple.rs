@@ -332,7 +332,7 @@ fn main() {
         let weight_offset = row_block * block_bytes;
         // Scale is at offset 0-1
         let scale = 2.0f32; // We set scale = 2.0 (f16 0x4000)
-                            // Weights are at offset 2-17
+        // Weights are at offset 2-17
         for byte_idx in 0..16 {
             let byte = weights[weight_offset + 2 + byte_idx];
             let lo = (byte & 0x0F) as usize;

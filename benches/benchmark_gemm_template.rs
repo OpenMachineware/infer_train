@@ -37,7 +37,7 @@ fn main() {
             let block = weights_ptr.add(i);
             (*block).d = 0x3C00; // FP16 1.0
             (*block).dmin = 0x0000; // FP16 0.0
-                                    // Set scales to represent value 8
+            // Set scales to represent value 8
             for j in 0..12 {
                 (*block).scales[j] = 8; // scale=8, min=0
             }
@@ -287,13 +287,10 @@ fn gflops(m: usize, k: usize, n: usize, duration: std::time::Duration) -> f64 {
 }
 
 fn compare_outputs(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f32, |max, x| {
-        if x > max {
-            x
-        } else {
-            max
-        }
-    })
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, |max, x| if x > max { x } else { max })
 }
 
 fn test_existing_kernel(

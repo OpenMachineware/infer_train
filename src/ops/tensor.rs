@@ -183,7 +183,7 @@ pub fn pad_f32(
     pad_h: usize,
     pad_w: usize,
 ) {
-    let h_out = h + 2 * pad_h;
+    let _h_out = h + 2 * pad_h;
     let w_out = w + 2 * pad_w;
 
     output.fill(0.0);

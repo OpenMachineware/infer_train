@@ -5,8 +5,8 @@
 // Run: cargo run --release --bin benchmark_rope_cache
 
 use infer_train::ops::rope::{
-    rope_neox, rope_neox_batch_with_cache, rope_neox_with_cache, RopeCache,
-    RopeParams,
+    RopeCache, RopeParams, rope_neox, rope_neox_batch_with_cache,
+    rope_neox_with_cache,
 };
 use std::time::Instant;
 

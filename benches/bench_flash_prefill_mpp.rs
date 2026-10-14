@@ -35,7 +35,9 @@ fn main() {
                 || e.to_string().contains("metal_tensor")
             {
                 eprintln!("MPP tensor API not supported on this macOS version");
-                eprintln!("Note: MPP requires macOS 15.0+ (Sequoia) and Metal SDK 26.0+");
+                eprintln!(
+                    "Note: MPP requires macOS 15.0+ (Sequoia) and Metal SDK 26.0+"
+                );
                 std::process::exit(0);
             }
             eprintln!("Failed to compile: {}", e);

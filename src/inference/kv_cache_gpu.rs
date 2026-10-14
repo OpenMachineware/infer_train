@@ -3,6 +3,8 @@
 
 // GPU KV Cache: Metal buffers for zero-copy flash attention
 
+#![allow(dead_code)]
+
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use metal::{Buffer, MTLResourceOptions};
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]

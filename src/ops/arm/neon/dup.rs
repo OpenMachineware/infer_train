@@ -4,7 +4,6 @@
 // NEON DUP/CPY operations for type conversion
 
 use half::f16;
-use std::arch::aarch64::*;
 
 /// NEON F32 -> F16 conversion
 #[target_feature(enable = "neon")]

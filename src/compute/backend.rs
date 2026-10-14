@@ -105,7 +105,7 @@ pub trait Backend: std::fmt::Debug {
 
     /// Fill a tensor with a value
     fn fill_tensor(&self, tensor: &mut Tensor, value: f32)
-        -> BackendResult<()>;
+    -> BackendResult<()>;
 
     /// Copy data to a tensor from CPU memory
     fn copy_to_tensor(

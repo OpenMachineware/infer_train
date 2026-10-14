@@ -4,7 +4,7 @@
 // MoE (Mixture of Experts) layer definition
 // Used by models like DeepSeek-Coder-V2, Mixtral, etc.
 
-use crate::model::tensor::{DataType, Tensor};
+use crate::model::tensor::Tensor;
 use crate::model::weights::WeightStore;
 
 /// MoE layer with expert routing

@@ -7,7 +7,7 @@
 use half::f16;
 use infer_train::quant::types::*;
 use metal::{Device, MTLSize};
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::ffi::c_void;
 
 const QK_K: usize = 256;

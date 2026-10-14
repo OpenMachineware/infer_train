@@ -6,8 +6,8 @@
 
 use half::f16;
 use infer_train::quant::kv_cache::{
-    quantize_row_q4_0, quantize_row_q4_1, quantize_row_q5_0, quantize_row_q5_1,
-    quantize_row_q8_0, BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0,
+    BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0, quantize_row_q4_0,
+    quantize_row_q4_1, quantize_row_q5_0, quantize_row_q5_1, quantize_row_q8_0,
 };
 use metal::*;
 use std::time::Instant;
@@ -416,19 +416,11 @@ fn bf16_from_f32(x: f32) -> u16 {
 
     if exponent == 0 {
         // Zero or subnormal - round to zero
-        if sign == 0 {
-            0
-        } else {
-            0x8000
-        }
+        if sign == 0 { 0 } else { 0x8000 }
     } else if exponent == 0xFF {
         // Infinity or NaN
         if mantissa == 0 {
-            if sign == 0 {
-                0x7F80
-            } else {
-                0xFF80
-            }
+            if sign == 0 { 0x7F80 } else { 0xFF80 }
         } else {
             // Preserve NaN
             0x7FC0 | (mantissa >> 21) as u16

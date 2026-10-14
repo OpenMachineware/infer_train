@@ -4,7 +4,7 @@
 // Mamba/SSM (State Space Model) layer definition
 // Used by models like Qwen3.8-27B, Jamba, etc.
 
-use crate::model::tensor::{DataType, Tensor};
+use crate::model::tensor::Tensor;
 use crate::model::weights::WeightStore;
 
 /// Mamba/SSM layer with state space model

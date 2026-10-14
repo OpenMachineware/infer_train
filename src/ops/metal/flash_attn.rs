@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+#![allow(dead_code)]
+
 use metal::{
     Buffer, CommandQueue, ComputePipelineState, Device, Library, MTLSize,
 };
@@ -368,7 +370,7 @@ impl FlashAttnMetalContext {
 
         // Calculate parallelization parameters (matching llama.cpp)
         let ncpsg: u32 = 32; // cache items per simdgroup (C parameter in kernel)
-        let mut nwg: u32 = 32; // workgroups
+        let nwg: u32 = 32; // workgroups
         let mut nsg: u32 = 1; // simdgroups per workgroup
 
         // Adjust nsg based on seq_len (matching llama.cpp's logic)

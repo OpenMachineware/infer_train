@@ -361,19 +361,7 @@ kernel void flash_decode_vec_kernel<
 // HEAD_DIM=32 (Qwen series)
 // ============================================================================
 
-// F16 NE=1 for HEAD_DIM=32
-template [[host_name("flash_decode_vec_f16_32_ne1")]]
-kernel void flash_decode_vec_kernel<
-    F16Block, F16Block, float4, half4, half4,
-    1, 1,
-    dequant_f16, dequant_f16,
-    32, 1, 8, 2
->(
-    constant uint&, constant float&, device const float*, device const char*,
-    device const char*, device float*, uint3, ushort
-);
-
-// F16 NE=4 for HEAD_DIM=32
+// F16 NE=4 for HEAD_DIM=32 (NE=1 would create zero-length array)
 template [[host_name("flash_decode_vec_f16_32")]]
 kernel void flash_decode_vec_kernel<
     F16Block, F16Block, float4, half4, half4,
@@ -389,19 +377,7 @@ kernel void flash_decode_vec_kernel<
 // HEAD_DIM=64
 // ============================================================================
 
-// F16 NE=1 for HEAD_DIM=64
-template [[host_name("flash_decode_vec_f16_64_ne1")]]
-kernel void flash_decode_vec_kernel<
-    F16Block, F16Block, float4, half4, half4,
-    1, 1,
-    dequant_f16, dequant_f16,
-    64, 1, 16, 2
->(
-    constant uint&, constant float&, device const float*, device const char*,
-    device const char*, device float*, uint3, ushort
-);
-
-// F16 NE=4 for HEAD_DIM=64
+// F16 NE=4 for HEAD_DIM=64 (NE=1 would create zero-length array)
 template [[host_name("flash_decode_vec_f16_64")]]
 kernel void flash_decode_vec_kernel<
     F16Block, F16Block, float4, half4, half4,
@@ -417,19 +393,7 @@ kernel void flash_decode_vec_kernel<
 // HEAD_DIM=80 (Mistral)
 // ============================================================================
 
-// F16 NE=1 for HEAD_DIM=80 (NL=20)
-template [[host_name("flash_decode_vec_f16_80_ne1")]]
-kernel void flash_decode_vec_kernel<
-    F16Block, F16Block, float4, half4, half4,
-    1, 1,
-    dequant_f16, dequant_f16,
-    80, 1, 20, 2
->(
-    constant uint&, constant float&, device const float*, device const char*,
-    device const char*, device float*, uint3, ushort
-);
-
-// F16 NE=4 for HEAD_DIM=80
+// F16 NE=4 for HEAD_DIM=80 (NE=1 would create zero-length array)
 template [[host_name("flash_decode_vec_f16_80")]]
 kernel void flash_decode_vec_kernel<
     F16Block, F16Block, float4, half4, half4,

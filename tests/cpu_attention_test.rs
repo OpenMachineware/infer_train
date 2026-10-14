@@ -12,8 +12,8 @@ use infer_train::quant::kv_cache::quant::{
     quantize_row_q6_k_kv, quantize_row_q8_0,
 };
 use infer_train::quant::kv_cache::{
-    BlockIQ4NL, BlockQ2K_KV, BlockQ3K_KV, BlockQ4K_KV, BlockQ4_0, BlockQ4_1,
-    BlockQ5K_KV, BlockQ5_0, BlockQ5_1, BlockQ6K_KV, BlockQ8_0, QK, QK_K,
+    BlockIQ4NL, BlockQ2K_KV, BlockQ3K_KV, BlockQ4_0, BlockQ4_1, BlockQ4K_KV,
+    BlockQ5_0, BlockQ5_1, BlockQ5K_KV, BlockQ6K_KV, BlockQ8_0, QK, QK_K,
 };
 use rand::Rng;
 

@@ -7,7 +7,7 @@
 
 use crate::quant::kv_cache::{
     BlockIQ4NL, BlockQ4_0, BlockQ4_1, BlockQ5_0, BlockQ5_1, BlockQ8_0,
-    BlockQ8_1, KVALUES_IQ4NL, QK,
+    BlockQ8_1,
 };
 
 // ============================================================================

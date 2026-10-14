@@ -56,5 +56,7 @@ fn main() {
     println!("Our deviation ~4e-7 is only 3.5x epsilon - very good precision!");
     println!("\nFor comparison:");
     println!("- CPU softmax max diff: 0.00e0 (same algorithm, exact match)");
-    println!("- GPU max deviation: 4.17e-7 (acceptable for GPU parallel computation)");
+    println!(
+        "- GPU max deviation: 4.17e-7 (acceptable for GPU parallel computation)"
+    );
 }

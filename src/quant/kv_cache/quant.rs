@@ -560,11 +560,7 @@ fn best_index_iq4nl(x: f32) -> usize {
         }
     }
 
-    if x - values[lo] < values[hi] - x {
-        lo
-    } else {
-        hi
-    }
+    if x - values[lo] < values[hi] - x { lo } else { hi }
 }
 
 /// Quantize FP32 to IQ4_NL (scalar)
@@ -647,7 +643,7 @@ pub fn quantize_row_q2_k_kv(x: &[f32], y: &mut super::BlockQ2K_KV) {
     // Calculate super-block scale and min
     let max_scale = (amax - amin) / 3.0; // 2-bit has range [0,3]
     let d = if max_scale > 0.0 { max_scale } else { 1.0 };
-    let dmin = amin;
+    let _dmin = amin;
 
     y.d = fp32_to_fp16(d);
     y.dmin = fp32_to_fp16(0.0); // No separate min for simplified version
