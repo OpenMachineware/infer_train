@@ -1157,7 +1157,47 @@ impl LlamaModel {
                     input_buffer,
                 )
                 .ok(),
-            // K-quant not yet supported for fully GPU path
+            // K-quant formats
+            crate::model::tensor::DataType::Q2_K => gpu_ctx
+                .mv_q2_k_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            crate::model::tensor::DataType::Q3_K => gpu_ctx
+                .mv_q3_k_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            crate::model::tensor::DataType::Q4_K => gpu_ctx
+                .mv_q4_k_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            crate::model::tensor::DataType::Q5_K => gpu_ctx
+                .mv_q5_k_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            crate::model::tensor::DataType::Q6_K => gpu_ctx
+                .mv_q6_k_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
             _ => None,
         }
     }
