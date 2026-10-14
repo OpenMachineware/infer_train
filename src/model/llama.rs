@@ -305,7 +305,7 @@ impl LlamaModel {
         let n_heads = self.config.n_heads;
         let head_dim = self.config.head_dim;
         let n_kv_heads = self.config.n_kv_heads;
-        let vocab_size = self.config.vocab_size;
+        let _vocab_size = self.config.vocab_size;
 
         // Process each token, keeping track of the last hidden state
         let mut last_hidden_buffer: Option<std::rc::Rc<metal::Buffer>> = None;
@@ -1243,22 +1243,75 @@ impl LlamaModel {
         out_size: usize,
     ) -> Option<Vec<f32>> {
         let in_size = x.len();
-        let total_elems = w.elem_count();
-        let w_data = dequant_to_f32(w.bytes(), w.dtype, total_elems);
 
-        // Weight shape is [in_size, out_size], so row stride is out_size
-        let row_stride = w.shape[1]; // vocab_size for embeddings
+        // Optimize by processing in blocks for better cache behavior
+        // For Q6_K: block_size = 256
+        let block_size = 256;
 
-        let mut out = vec![0.0f32; out_size];
-        for i in 0..out_size {
-            let mut sum = 0.0f32;
-            for j in 0..in_size {
-                // Weight[j, i] is at position j * row_stride + i
-                sum += w_data[j * row_stride + i] * x[j];
+        match w.dtype {
+            crate::model::tensor::DataType::Q6_K => {
+                // Process blocks without full dequantization
+                let bytes = w.bytes();
+                let block_size_bytes =
+                    std::mem::size_of::<crate::quant::types::BlockQ6K>();
+                let blocks_per_row = out_size / block_size;
+
+                let mut out = vec![0.0f32; out_size];
+
+                // For each input element
+                for j in 0..in_size {
+                    let x_val = x[j];
+
+                    // For each block in this row
+                    for block_idx in 0..blocks_per_row {
+                        let byte_offset =
+                            (j * blocks_per_row + block_idx) * block_size_bytes;
+                        let block_bytes =
+                            &bytes[byte_offset..byte_offset + block_size_bytes];
+                        let block: crate::quant::types::BlockQ6K = unsafe {
+                            std::ptr::read(block_bytes.as_ptr() as *const _)
+                        };
+
+                        // Dequantize the block
+                        let block_vals =
+                            crate::inference::dequant::dequantize_q6_k_block(
+                                &block,
+                            );
+
+                        // Add contribution to 256 outputs
+                        let output_start = block_idx * block_size;
+                        for k in 0..block_size {
+                            out[output_start + k] += block_vals[k] * x_val;
+                        }
+                    }
+                }
+
+                Some(out)
             }
-            out[i] = sum;
+            _ => {
+                // Fallback to full dequantization for other formats
+                let total_elems = w.elem_count();
+                let w_data = crate::inference::dequant_to_f32(
+                    w.bytes(),
+                    w.dtype,
+                    total_elems,
+                );
+
+                // Weight shape is [in_size, out_size], so row stride is out_size
+                let row_stride = w.shape[1]; // vocab_size for embeddings
+
+                let mut out = vec![0.0f32; out_size];
+                for i in 0..out_size {
+                    let mut sum = 0.0f32;
+                    for j in 0..in_size {
+                        // Weight[j, i] is at position j * row_stride + i
+                        sum += w_data[j * row_stride + i] * x[j];
+                    }
+                    out[i] = sum;
+                }
+                Some(out)
+            }
         }
-        Some(out)
     }
 
     fn attention(

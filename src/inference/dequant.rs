@@ -287,6 +287,52 @@ pub fn dequant_q6_k(data: &[u8], out: &mut [f32], count: usize) {
     }
 }
 
+/// Dequantize a single Q6_K block to F32
+/// Returns 256 F32 values
+pub fn dequantize_q6_k_block(block: &BlockQ6K) -> [f32; QK_K] {
+    let mut out = [0.0f32; QK_K];
+    let d = f16::from_bits(block.d).to_f32();
+
+    for j in 0..16 {
+        let sc = block.scales[j] as f32 / 127.0;
+
+        for k in 0..16 {
+            let elem_idx = j * 16 + k;
+
+            // Lower 4 bits from ql
+            let ql_idx = if elem_idx < 128 {
+                (elem_idx / 2) as usize
+            } else {
+                64 + ((elem_idx - 128) / 2) as usize
+            };
+
+            if ql_idx < block.ql.len() {
+                let ql_byte = block.ql[ql_idx];
+                let l4 = if elem_idx % 2 == 0 {
+                    (ql_byte & 0x0F) as f32
+                } else {
+                    ((ql_byte >> 4) & 0x0F) as f32
+                };
+
+                // Upper 2 bits from qh
+                let qh_idx = (elem_idx / 4) as usize;
+                let qh_offset = (elem_idx % 4) * 2;
+                let h2 = if qh_idx < block.qh.len() {
+                    ((block.qh[qh_idx] >> qh_offset) & 0x03) as f32
+                } else {
+                    0.0
+                };
+
+                // 6-bit value: 0-63 -> -32 to 31
+                let val = l4 + h2 * 16.0 - 32.0;
+                out[elem_idx] = d * sc * val;
+            }
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
