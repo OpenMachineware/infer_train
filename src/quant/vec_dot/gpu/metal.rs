@@ -4244,6 +4244,433 @@ impl MetalContext {
         Ok(output_buffer)
     }
 
+    /// IQ4_XS x F32 Matrix-Vector (fully zero-copy, both weights and input as GPU buffers)
+    pub fn mv_iq4_xs_f32_gpu_weights(
+        &self,
+        m: usize,
+        k: usize,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let nb = k / 256; // QK_K = 256
+        let nb01 = (nb * std::mem::size_of::<BlockIQ4XS>()) as u64;
+        const NR0: u64 = 2;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: u32,
+            ne01: u32,
+            nb01: u64,
+        }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            (m * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.mv_iq4_xs_pipeline);
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(
+            3,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const MvArgs as *const std::ffi::c_void,
+        );
+
+        const THREADGROUP_MEM_SIZE: u64 =
+            32 * std::mem::size_of::<f32>() as u64;
+        encoder.set_threadgroup_memory_length(THREADGROUP_MEM_SIZE, 0);
+
+        const NSG: u64 = 2;
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
+
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
+    }
+
+    /// IQ1_S x F32 Matrix-Vector (fully zero-copy, both weights and input as GPU buffers)
+    pub fn mv_iq1_s_f32_gpu_weights(
+        &self,
+        m: usize,
+        k: usize,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockIQ1S>()) as u64;
+        const NR0: u64 = 2;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: u32,
+            ne01: u32,
+            nb01: u64,
+        }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            (m * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.mv_iq1_s_pipeline);
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(
+            3,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const MvArgs as *const std::ffi::c_void,
+        );
+
+        const THREADGROUP_MEM_SIZE: u64 =
+            32 * std::mem::size_of::<f32>() as u64;
+        encoder.set_threadgroup_memory_length(THREADGROUP_MEM_SIZE, 0);
+
+        const NSG: u64 = 2;
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
+
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
+    }
+
+    /// IQ2_XXS x F32 Matrix-Vector (fully zero-copy, both weights and input as GPU buffers)
+    pub fn mv_iq2_xxs_f32_gpu_weights(
+        &self,
+        m: usize,
+        k: usize,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockIQ2XXS>()) as u64;
+        const NR0: u64 = 2;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: u32,
+            ne01: u32,
+            nb01: u64,
+        }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            (m * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.mv_iq2_xxs_pipeline);
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(
+            3,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const MvArgs as *const std::ffi::c_void,
+        );
+
+        const THREADGROUP_MEM_SIZE: u64 =
+            32 * std::mem::size_of::<f32>() as u64;
+        encoder.set_threadgroup_memory_length(THREADGROUP_MEM_SIZE, 0);
+
+        const NSG: u64 = 2;
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
+
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
+    }
+
+    /// IQ2_XS x F32 Matrix-Vector (fully zero-copy, both weights and input as GPU buffers)
+    pub fn mv_iq2_xs_f32_gpu_weights(
+        &self,
+        m: usize,
+        k: usize,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockIQ2XS>()) as u64;
+        const NR0: u64 = 2;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: u32,
+            ne01: u32,
+            nb01: u64,
+        }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            (m * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.mv_iq2_xs_pipeline);
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(
+            3,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const MvArgs as *const std::ffi::c_void,
+        );
+
+        const THREADGROUP_MEM_SIZE: u64 =
+            32 * std::mem::size_of::<f32>() as u64;
+        encoder.set_threadgroup_memory_length(THREADGROUP_MEM_SIZE, 0);
+
+        const NSG: u64 = 2;
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
+
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
+    }
+
+    /// IQ2_S x F32 Matrix-Vector (fully zero-copy, both weights and input as GPU buffers)
+    pub fn mv_iq2_s_f32_gpu_weights(
+        &self,
+        m: usize,
+        k: usize,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockIQ2S>()) as u64;
+        const NR0: u64 = 2;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: u32,
+            ne01: u32,
+            nb01: u64,
+        }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            (m * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.mv_iq2_s_pipeline);
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(
+            3,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const MvArgs as *const std::ffi::c_void,
+        );
+
+        const THREADGROUP_MEM_SIZE: u64 =
+            32 * std::mem::size_of::<f32>() as u64;
+        encoder.set_threadgroup_memory_length(THREADGROUP_MEM_SIZE, 0);
+
+        const NSG: u64 = 2;
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
+
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
+    }
+
+    /// IQ3_XXS x F32 Matrix-Vector (fully zero-copy, both weights and input as GPU buffers)
+    pub fn mv_iq3_xxs_f32_gpu_weights(
+        &self,
+        m: usize,
+        k: usize,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockIQ3XXS>()) as u64;
+        const NR0: u64 = 2;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: u32,
+            ne01: u32,
+            nb01: u64,
+        }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            (m * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.mv_iq3_xxs_pipeline);
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(
+            3,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const MvArgs as *const std::ffi::c_void,
+        );
+
+        const THREADGROUP_MEM_SIZE: u64 =
+            32 * std::mem::size_of::<f32>() as u64;
+        encoder.set_threadgroup_memory_length(THREADGROUP_MEM_SIZE, 0);
+
+        const NSG: u64 = 2;
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
+
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
+    }
+
+    /// IQ3_S x F32 Matrix-Vector (fully zero-copy, both weights and input as GPU buffers)
+    pub fn mv_iq3_s_f32_gpu_weights(
+        &self,
+        m: usize,
+        k: usize,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockIQ3S>()) as u64;
+        const NR0: u64 = 2;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: u32,
+            ne01: u32,
+            nb01: u64,
+        }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            (m * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.mv_iq3_s_pipeline);
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(
+            3,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const MvArgs as *const std::ffi::c_void,
+        );
+
+        const THREADGROUP_MEM_SIZE: u64 =
+            32 * std::mem::size_of::<f32>() as u64;
+        encoder.set_threadgroup_memory_length(THREADGROUP_MEM_SIZE, 0);
+
+        const NSG: u64 = 2;
+        const ROWS_PER_THREADGROUP: u64 = NSG * NR0;
+
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
+    }
+
     /// TQ2_0 x F32 Matrix-Vector (matching llama.cpp kernel)
     pub fn mv_tq2_0_f32(
         &self,

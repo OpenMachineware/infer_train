@@ -1850,6 +1850,69 @@ impl LlamaModel {
                     input_buffer,
                 )
                 .ok(),
+            // IQ4_XS - supported
+            crate::model::tensor::DataType::IQ4_XS => gpu_ctx
+                .mv_iq4_xs_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            // IQ1_S - supported
+            crate::model::tensor::DataType::IQ1_S => gpu_ctx
+                .mv_iq1_s_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            // IQ2_XXS - supported
+            crate::model::tensor::DataType::IQ2_XXS => gpu_ctx
+                .mv_iq2_xxs_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            // IQ2_XS - supported
+            crate::model::tensor::DataType::IQ2_XS => gpu_ctx
+                .mv_iq2_xs_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            // IQ2_S - supported
+            crate::model::tensor::DataType::IQ2_S => gpu_ctx
+                .mv_iq2_s_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            // IQ3_XXS - supported
+            crate::model::tensor::DataType::IQ3_XXS => gpu_ctx
+                .mv_iq3_xxs_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            // IQ3_S - supported
+            crate::model::tensor::DataType::IQ3_S => gpu_ctx
+                .mv_iq3_s_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
             // Unsupported formats - use CPU fallback
             _ => None,
         }
