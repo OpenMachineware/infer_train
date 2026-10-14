@@ -4,8 +4,12 @@
 // Inference runtime: connect model layer with operators
 
 pub mod dequant;
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+pub mod gpu_tensor;
 pub mod kv_cache;
 
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+pub use gpu_tensor::GpuTensor;
 pub use kv_cache::{KVCache, KVCacheBase, KVCacheFormat};
 
 use crate::model::config::ModelConfig;
@@ -40,7 +44,10 @@ impl InferenceContext {
         let gguf =
             crate::model::GgufFile::open(path).map_err(|e| e.to_string())?;
         let config = ModelConfig::from_gguf(&gguf);
-        let model = LlamaModel::from_weights(&store, config.clone());
+        let model = LlamaModel::from_weights(&store, config);
+
+        // Use model's config which may have been updated from actual weight shapes
+        let config = model.config.clone();
 
         #[cfg(all(target_arch = "aarch64", feature = "metal"))]
         let gpu_ctx = if device == Device::Gpu {
@@ -141,6 +148,17 @@ impl InferenceContext {
 
         generated
     }
+
+    /// Get reference to model (for debugging)
+    pub fn model(&self) -> &LlamaModel {
+        &self.model
+    }
+
+    /// Get weight store (for debugging)
+    pub fn weight_store(&self) -> &WeightStore {
+        // We need to store this - for now just return an error
+        unimplemented!("Need to store weight store in InferenceContext")
+    }
 }
 
 /// Dequantize quantized/FP data to F32
@@ -213,6 +231,24 @@ pub fn dequant_to_f32(data: &[u8], dtype: DataType, count: usize) -> Vec<f32> {
         }
         DataType::IQ4_NL => {
             dequant_iq4_nl(data, &mut result, count);
+        }
+        // IQ formats - placeholder implementation
+        // These formats require complex dequantization logic
+        // For now, return zeros to prevent NaN propagation
+        DataType::IQ4_XS
+        | DataType::IQ3_XXS
+        | DataType::IQ3_S
+        | DataType::IQ2_XXS
+        | DataType::IQ2_XS
+        | DataType::IQ2_S
+        | DataType::IQ1_S => {
+            // Placeholder: return zeros for unsupported formats
+            // TODO: Implement proper dequantization for these formats
+            log::warn!(
+                "Dequantization for {:?} not implemented, returning zeros",
+                dtype
+            );
+            // Result is already initialized to zeros
         }
     }
 

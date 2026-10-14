@@ -25,6 +25,13 @@ impl From<GgufDtype> for DataType {
             GgufDtype::Q5_K => DataType::Q5_K,
             GgufDtype::Q6_K => DataType::Q6_K,
             GgufDtype::IQ4_NL => DataType::IQ4_NL,
+            GgufDtype::IQ4_XS => DataType::IQ4_XS,
+            GgufDtype::IQ3_XXS => DataType::IQ3_XXS,
+            GgufDtype::IQ3_S => DataType::IQ3_S,
+            GgufDtype::IQ2_XXS => DataType::IQ2_XXS,
+            GgufDtype::IQ2_XS => DataType::IQ2_XS,
+            GgufDtype::IQ2_S => DataType::IQ2_S,
+            GgufDtype::IQ1_S => DataType::IQ1_S,
             _ => DataType::F32,
         }
     }

@@ -33,6 +33,8 @@ pub struct LlamaLayer {
     pub wk: Option<Tensor>,
     pub wv: Option<Tensor>,
     pub wo: Option<Tensor>,
+    pub q_norm: Option<Tensor>, // Qwen-style Q norm
+    pub k_norm: Option<Tensor>, // Qwen-style K norm
 
     // FFN
     pub ffn_norm: Option<Tensor>,
@@ -61,6 +63,54 @@ impl LlamaModel {
         for i in 0..model.config.n_layers {
             let layer = LlamaLayer::from_weights(store, i);
             model.layers.push(layer);
+        }
+
+        // Fix config n_heads/n_kv_heads from actual weight shapes
+        // GGUF metadata may be incorrect for some models
+        if let Some(first_layer) = model.layers.first() {
+            if let (Some(wq), Some(wk)) = (&first_layer.wq, &first_layer.wk) {
+                // GGUF uses column-major: shape = [K, M], where K=input, M=output
+                let q_out_size = wq.shape[1];
+                let k_out_size = wk.shape[1];
+                let hidden_size = model.config.hidden_size;
+
+                // Determine head_dim by finding a divisor that works for both Q and K
+                // and matches the pattern: n_heads * head_dim == hidden_size
+                // Common head_dim values: 32, 64, 128
+                let mut head_dim = 0;
+                for &candidate in &[32, 64, 128, 256] {
+                    if q_out_size % candidate == 0
+                        && k_out_size % candidate == 0
+                        && hidden_size % candidate == 0
+                    {
+                        let n_heads = q_out_size / candidate;
+                        if n_heads * candidate == hidden_size
+                            || n_heads == hidden_size / candidate
+                        {
+                            head_dim = candidate;
+                            break;
+                        }
+                    }
+                }
+
+                if head_dim == 0 {
+                    // Fall back to config's head_dim
+                    head_dim = hidden_size / model.config.n_heads;
+                }
+
+                let actual_n_heads = q_out_size / head_dim;
+                let actual_n_kv_heads = k_out_size / head_dim;
+
+                if actual_n_heads != model.config.n_heads
+                    || actual_n_kv_heads != model.config.n_kv_heads
+                    || head_dim != model.config.head_dim
+                {
+                    model.config.n_heads = actual_n_heads;
+                    model.config.n_kv_heads = actual_n_kv_heads;
+                    model.config.head_dim = head_dim;
+                    model.config.rope_dim = head_dim; // Also fix rope_dim
+                }
+            }
         }
 
         // Load output norm - try multiple naming conventions
@@ -104,8 +154,28 @@ impl LlamaModel {
     }
 
     /// Public test method for embedding lookup
-    pub fn test_embedding_lookup(&self, token: u32) -> Option<Vec<f32>> {
-        self.embedding_lookup(token)
+    pub fn embedding_lookup(&self, token: u32) -> Option<Vec<f32>> {
+        self.embedding_lookup_impl(token)
+    }
+
+    /// Apply RMS norm (public for debugging)
+    pub fn apply_rms_norm(
+        &self,
+        x: &[f32],
+        weight: &Tensor,
+        size: usize,
+    ) -> Option<Vec<f32>> {
+        self.apply_rms_norm_impl(x, weight, size)
+    }
+
+    /// GEMV operation (public for debugging)
+    pub fn gemv(
+        &self,
+        x: &[f32],
+        w: &Tensor,
+        out_size: usize,
+    ) -> Option<Vec<f32>> {
+        self.gemv_impl(x, w, out_size)
     }
 
     /// Forward pass with GPU context
@@ -122,7 +192,7 @@ impl LlamaModel {
 
         let hidden_size = self.config.hidden_size;
         let n_heads = self.config.n_heads;
-        let head_dim = hidden_size / n_heads;
+        let head_dim = self.config.head_dim;
         let n_kv_heads = self.config.n_kv_heads;
         let vocab_size = self.config.vocab_size;
 
@@ -130,7 +200,7 @@ impl LlamaModel {
         let mut hidden = Vec::with_capacity(hidden_size);
         for &token in tokens.iter() {
             // 1. Embedding lookup (CPU)
-            hidden = self.embedding_lookup(token)?;
+            hidden = self.embedding_lookup_impl(token)?;
 
             // 2. Process through layers (GPU)
             for (layer_idx, layer) in self.layers.iter().enumerate() {
@@ -165,7 +235,7 @@ impl LlamaModel {
 
         let hidden_size = self.config.hidden_size;
         let n_heads = self.config.n_heads;
-        let head_dim = hidden_size / n_heads;
+        let head_dim = self.config.head_dim;
         let n_kv_heads = self.config.n_kv_heads;
         let vocab_size = self.config.vocab_size;
 
@@ -173,7 +243,7 @@ impl LlamaModel {
         let mut hidden = Vec::with_capacity(hidden_size);
         for &token in tokens.iter() {
             // 1. Embedding lookup
-            hidden = self.embedding_lookup(token)?;
+            hidden = self.embedding_lookup_impl(token)?;
 
             // 2. Process through layers
             for (layer_idx, layer) in self.layers.iter().enumerate() {
@@ -194,7 +264,7 @@ impl LlamaModel {
         Some(logits)
     }
 
-    fn embedding_lookup(&self, token: u32) -> Option<Vec<f32>> {
+    fn embedding_lookup_impl(&self, token: u32) -> Option<Vec<f32>> {
         let embed = self.tok_embeddings.as_ref()?;
         let hidden_size = self.config.hidden_size;
         let dtype = embed.dtype;
@@ -232,39 +302,100 @@ impl LlamaModel {
         let pos = kv_cache.seq_len();
 
         // 1. Attention norm
-        let normed = self.apply_rms_norm(
+        let normed = self.apply_rms_norm_impl(
             hidden,
             layer.attention_norm.as_ref()?,
             hidden_size,
         )?;
 
-        // 2. QKV projections
-        let q = self.gemv(&normed, layer.wq.as_ref()?, hidden_size)?;
-        let k =
-            self.gemv(&normed, layer.wk.as_ref()?, n_kv_heads * head_dim)?;
-        let v =
-            self.gemv(&normed, layer.wv.as_ref()?, n_kv_heads * head_dim)?;
+        // 2. QKV projections (use actual weight shapes, not config)
+        let wq = layer.wq.as_ref()?;
+        let wk = layer.wk.as_ref()?;
+        let wv = layer.wv.as_ref()?;
 
-        // 3. RoPE
-        let q_rope = self.apply_rope(&q, pos, n_heads, head_dim)?;
-        let k_rope = self.apply_rope(&k, pos, n_kv_heads, head_dim)?;
+        // GGUF uses column-major: shape = [K, M], where K=input, M=output
+        let q_out_size = wq.shape[1]; // Second dimension is output
+        let k_out_size = wk.shape[1];
+        let v_out_size = wv.shape[1];
 
-        // 4. Attention (updates KV cache)
+        let q = self.gemv_impl(&normed, wq, q_out_size)?;
+        let k = self.gemv_impl(&normed, wk, k_out_size)?;
+        let v = self.gemv_impl(&normed, wv, v_out_size)?;
+
+        // Update n_heads and n_kv_heads based on actual weight shapes
+        let actual_n_heads = q_out_size / head_dim;
+        let actual_n_kv_heads = k_out_size / head_dim;
+
+        // 2.5 Apply Q/K norms (Qwen-style)
+        // Qwen uses separate norms for Q and K after projection
+        if let Some(ref q_norm) = layer.q_norm {
+            // q_norm shape is [head_dim], apply per-head
+            for h in 0..actual_n_heads {
+                let start = h * head_dim;
+                let end = start + head_dim;
+                if end > q.len() {
+                    break;
+                }
+                let q_head = &q[start..end];
+                let normed =
+                    self.apply_rms_norm_impl(q_head, q_norm, head_dim)?;
+                // Copy back - need mutable slice
+                let q_mut = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        q.as_ptr() as *mut f32,
+                        q.len(),
+                    )
+                };
+                q_mut[start..end].copy_from_slice(&normed);
+            }
+        }
+        if let Some(ref k_norm) = layer.k_norm {
+            // k_norm shape is [head_dim], apply per-head
+            for h in 0..actual_n_kv_heads {
+                let start = h * head_dim;
+                let end = start + head_dim;
+                if end > k.len() {
+                    break;
+                }
+                let k_head = &k[start..end];
+                let normed =
+                    self.apply_rms_norm_impl(k_head, k_norm, head_dim)?;
+                let k_mut = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        k.as_ptr() as *mut f32,
+                        k.len(),
+                    )
+                };
+                k_mut[start..end].copy_from_slice(&normed);
+            }
+        }
+
+        // 3. RoPE (use actual n_heads)
+        let q_rope = self.apply_rope(&q, pos, actual_n_heads, head_dim)?;
+        let k_rope = self.apply_rope(&k, pos, actual_n_kv_heads, head_dim)?;
+
+        // 4. Attention (use actual n_heads)
         let attn_out = self.attention(
-            &q_rope, &k_rope, &v, layer_idx, kv_cache, n_heads, head_dim,
-            n_kv_heads,
+            &q_rope,
+            &k_rope,
+            &v,
+            layer_idx,
+            kv_cache,
+            actual_n_heads,
+            head_dim,
+            actual_n_kv_heads,
         )?;
 
         // 5. Output projection
         let attn_proj =
-            self.gemv(&attn_out, layer.wo.as_ref()?, hidden_size)?;
+            self.gemv_impl(&attn_out, layer.wo.as_ref()?, hidden_size)?;
 
         // 6. Residual
         let residual: Vec<f32> =
             hidden.iter().zip(attn_proj.iter()).map(|(h, a)| h + a).collect();
 
         // 7. FFN norm
-        let ffn_normed = self.apply_rms_norm(
+        let ffn_normed = self.apply_rms_norm_impl(
             &residual,
             layer.ffn_norm.as_ref()?,
             hidden_size,
@@ -277,7 +408,7 @@ impl LlamaModel {
         Some(residual.iter().zip(ffn_out.iter()).map(|(r, f)| r + f).collect())
     }
 
-    fn apply_rms_norm(
+    fn apply_rms_norm_impl(
         &self,
         x: &[f32],
         weight: &Tensor,
@@ -325,7 +456,12 @@ impl LlamaModel {
         Some(out)
     }
 
-    fn gemv(&self, x: &[f32], w: &Tensor, out_size: usize) -> Option<Vec<f32>> {
+    fn gemv_impl(
+        &self,
+        x: &[f32],
+        w: &Tensor,
+        out_size: usize,
+    ) -> Option<Vec<f32>> {
         let in_size = x.len();
         let total_elems = in_size * out_size;
         let w_data = dequant_to_f32(w.bytes(), w.dtype, total_elems);
@@ -450,11 +586,11 @@ impl LlamaModel {
             .collect();
 
         // Down projection
-        self.gemv(&hidden, layer.w2.as_ref()?, hidden_size)
+        self.gemv_impl(&hidden, layer.w2.as_ref()?, hidden_size)
     }
 
     fn apply_output_norm(&self, hidden: &[f32]) -> Option<Vec<f32>> {
-        self.apply_rms_norm(
+        self.apply_rms_norm_impl(
             hidden,
             self.norm.as_ref()?,
             self.config.hidden_size,
@@ -503,31 +639,39 @@ impl LlamaModel {
         )?;
 
         // 2. QKV projections (GPU)
+        // Use actual weight shapes, not config (config may be wrong)
+        let q_out_size = layer.wq.as_ref()?.shape[1]; // Column-major: shape = [K, M]
+        let k_out_size = layer.wk.as_ref()?.shape[1];
+        let v_out_size = layer.wv.as_ref()?.shape[1];
+
         let q =
-            self.gemv_gpu(&normed, layer.wq.as_ref()?, hidden_size, gpu_ctx)?;
-        let k = self.gemv_gpu(
-            &normed,
-            layer.wk.as_ref()?,
-            n_kv_heads * head_dim,
-            gpu_ctx,
-        )?;
-        let v = self.gemv_gpu(
-            &normed,
-            layer.wv.as_ref()?,
-            n_kv_heads * head_dim,
-            gpu_ctx,
-        )?;
+            self.gemv_gpu(&normed, layer.wq.as_ref()?, q_out_size, gpu_ctx)?;
+        let k =
+            self.gemv_gpu(&normed, layer.wk.as_ref()?, k_out_size, gpu_ctx)?;
+        let v =
+            self.gemv_gpu(&normed, layer.wv.as_ref()?, v_out_size, gpu_ctx)?;
 
-        // 3. RoPE (GPU)
+        // Derive actual n_heads from weight shapes
+        let actual_n_heads = q_out_size / head_dim;
+        let actual_n_kv_heads = k_out_size / head_dim;
+
+        // 3. RoPE (GPU) - use actual n_heads from weights
         let q_rope =
-            self.apply_rope_gpu(&q, pos, n_heads, head_dim, gpu_ctx)?;
+            self.apply_rope_gpu(&q, pos, actual_n_heads, head_dim, gpu_ctx)?;
         let k_rope =
-            self.apply_rope_gpu(&k, pos, n_kv_heads, head_dim, gpu_ctx)?;
+            self.apply_rope_gpu(&k, pos, actual_n_kv_heads, head_dim, gpu_ctx)?;
 
-        // 4. Attention (GPU - updates KV cache)
+        // 4. Attention (GPU - updates KV cache) - use actual n_heads from weights
         let attn_out = self.attention_gpu(
-            &q_rope, &k_rope, &v, layer_idx, kv_cache, n_heads, head_dim,
-            n_kv_heads, gpu_ctx,
+            &q_rope,
+            &k_rope,
+            &v,
+            layer_idx,
+            kv_cache,
+            actual_n_heads,
+            head_dim,
+            actual_n_kv_heads,
+            gpu_ctx,
         )?;
 
         // 5. Output projection (GPU)
@@ -579,6 +723,10 @@ impl LlamaModel {
 
         // Select appropriate MV kernel based on weight dtype
         match w.dtype {
+            crate::model::tensor::DataType::F32 => {
+                // Fallback to CPU for F32
+                self.gemv(x, w, out_size)
+            }
             crate::model::tensor::DataType::Q4_0 => {
                 // Reinterpret bytes as BlockQ4_0 slice
                 let block_size =
@@ -805,7 +953,6 @@ impl LlamaModel {
 
 impl LlamaLayer {
     pub fn from_weights(store: &WeightStore, layer_idx: usize) -> Self {
-        // Try both Llama-style and Qwen-style naming conventions
         let llama_prefix = format!("layers.{}", layer_idx);
         let qwen_prefix = format!("blk.{}", layer_idx);
 
@@ -841,6 +988,18 @@ impl LlamaLayer {
                 .get(&format!("{}.attention.wo.weight", llama_prefix))
                 .or_else(|| {
                     store.get(&format!("{}.attn_output.weight", qwen_prefix))
+                })
+                .cloned(),
+            q_norm: store
+                .get(&format!("{}.attention.q_norm.weight", llama_prefix))
+                .or_else(|| {
+                    store.get(&format!("{}.attn_q_norm.weight", qwen_prefix))
+                })
+                .cloned(),
+            k_norm: store
+                .get(&format!("{}.attention.k_norm.weight", llama_prefix))
+                .or_else(|| {
+                    store.get(&format!("{}.attn_k_norm.weight", qwen_prefix))
                 })
                 .cloned(),
 

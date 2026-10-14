@@ -162,7 +162,7 @@ pub struct KVCacheQ5_1 {
 
 impl KVCacheF32 {
     pub fn new(config: &ModelConfig, max_seq: usize) -> Self {
-        let head_dim = config.hidden_size / config.n_heads;
+        let head_dim = config.head_dim;
 
         KVCacheF32 {
             k_cache: vec![
@@ -256,7 +256,7 @@ impl KVCacheBase for KVCacheF32 {
 
 impl KVCacheF16 {
     pub fn new(config: &ModelConfig, max_seq: usize) -> Self {
-        let head_dim = config.hidden_size / config.n_heads;
+        let head_dim = config.head_dim;
 
         KVCacheF16 {
             k_cache: vec![
@@ -356,7 +356,7 @@ impl KVCacheBase for KVCacheF16 {
 
 impl KVCacheQ8_0 {
     pub fn new(config: &ModelConfig, max_seq: usize) -> Self {
-        let head_dim = config.hidden_size / config.n_heads;
+        let head_dim = config.head_dim;
         let n_blocks_per_pos = head_dim.div_ceil(QK);
 
         // Initialize with zero blocks
@@ -466,7 +466,7 @@ impl KVCacheBase for KVCacheQ8_0 {
 
 impl KVCacheQ4_0 {
     pub fn new(config: &ModelConfig, max_seq: usize) -> Self {
-        let head_dim = config.hidden_size / config.n_heads;
+        let head_dim = config.head_dim;
         let n_blocks_per_pos = head_dim.div_ceil(QK);
         let zero_block = BlockQ4_0 { d: 0, qs: [0; QK / 2] };
 
@@ -572,7 +572,7 @@ impl KVCacheBase for KVCacheQ4_0 {
 
 impl KVCacheQ4_1 {
     pub fn new(config: &ModelConfig, max_seq: usize) -> Self {
-        let head_dim = config.hidden_size / config.n_heads;
+        let head_dim = config.head_dim;
         let n_blocks_per_pos = head_dim.div_ceil(QK);
         let zero_block = BlockQ4_1 { d: 0, m: 0, qs: [0; QK / 2] };
 
@@ -678,7 +678,7 @@ impl KVCacheBase for KVCacheQ4_1 {
 
 impl KVCacheQ5_0 {
     pub fn new(config: &ModelConfig, max_seq: usize) -> Self {
-        let head_dim = config.hidden_size / config.n_heads;
+        let head_dim = config.head_dim;
         let n_blocks_per_pos = head_dim.div_ceil(QK);
         let zero_block = BlockQ5_0 { d: 0, qh: [0; 4], qs: [0; QK / 2] };
 
@@ -784,7 +784,7 @@ impl KVCacheBase for KVCacheQ5_0 {
 
 impl KVCacheQ5_1 {
     pub fn new(config: &ModelConfig, max_seq: usize) -> Self {
-        let head_dim = config.hidden_size / config.n_heads;
+        let head_dim = config.head_dim;
         let n_blocks_per_pos = head_dim.div_ceil(QK);
         let zero_block = BlockQ5_1 { d: 0, m: 0, qh: [0; 4], qs: [0; QK / 2] };
 

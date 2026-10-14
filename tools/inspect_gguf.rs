@@ -28,33 +28,10 @@ fn main() {
     println!("Tensor count: {}", gguf.tensor_count);
     println!("Data offset: {}", gguf.data_offset);
 
-    println!("\n=== Tensors (first 30) ===");
-    for (i, info) in gguf.tensors.iter().take(30).enumerate() {
-        println!(
-            "{}: {} shape={:?}, dtype={:?}, offset={}",
-            i, info.name, info.dims, info.dtype, info.offset
-        );
-    }
-
-    if gguf.tensors.len() > 30 {
-        println!("... and {} more tensors", gguf.tensors.len() - 30);
-    }
-
-    // Find embedding tensors
-    println!("\n=== Embedding Tensors ===");
+    // Show all tensors that contain "attn_q" or "attn_k"
+    println!("\n=== Attention Q/K Tensors ===");
     for info in gguf.tensors.iter() {
-        if info.name.contains("embed") || info.name.contains("tok_embd") {
-            println!(
-                "{}: shape={:?}, dtype={:?}, offset={}",
-                info.name, info.dims, info.dtype, info.offset
-            );
-        }
-    }
-
-    // Find output/head tensors
-    println!("\n=== Output Tensors ===");
-    for info in gguf.tensors.iter() {
-        if info.name.contains("output") || info.name.contains("lm_head") {
+        if info.name.contains("attn_q") || info.name.contains("attn_k") {
             println!(
                 "{}: shape={:?}, dtype={:?}, offset={}",
                 info.name, info.dims, info.dtype, info.offset

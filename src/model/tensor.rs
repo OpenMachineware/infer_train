@@ -34,6 +34,13 @@ pub enum DataType {
     Q5_K,
     Q6_K,
     IQ4_NL,
+    IQ4_XS,
+    IQ3_XXS,
+    IQ3_S,
+    IQ2_XXS,
+    IQ2_XS,
+    IQ2_S,
+    IQ1_S,
 }
 
 impl DataType {
@@ -54,6 +61,13 @@ impl DataType {
             DataType::Q5_K => 176,
             DataType::Q6_K => 210,
             DataType::IQ4_NL => 18,
+            DataType::IQ4_XS => 136,
+            DataType::IQ3_XXS => 98,
+            DataType::IQ3_S => 110,
+            DataType::IQ2_XXS => 66,
+            DataType::IQ2_XS => 74,
+            DataType::IQ2_S => 82,
+            DataType::IQ1_S => 50,
         }
     }
 
@@ -74,6 +88,13 @@ impl DataType {
             DataType::Q5_K => 256,
             DataType::Q6_K => 256,
             DataType::IQ4_NL => 32,
+            DataType::IQ4_XS => 256,
+            DataType::IQ3_XXS => 256,
+            DataType::IQ3_S => 256,
+            DataType::IQ2_XXS => 256,
+            DataType::IQ2_XS => 256,
+            DataType::IQ2_S => 256,
+            DataType::IQ1_S => 256,
         }
     }
 
@@ -92,6 +113,13 @@ impl DataType {
                 | DataType::Q5_K
                 | DataType::Q6_K
                 | DataType::IQ4_NL
+                | DataType::IQ4_XS
+                | DataType::IQ3_XXS
+                | DataType::IQ3_S
+                | DataType::IQ2_XXS
+                | DataType::IQ2_XS
+                | DataType::IQ2_S
+                | DataType::IQ1_S
         )
     }
 

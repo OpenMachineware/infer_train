@@ -51,6 +51,14 @@ path = "tools/test_long_text.rs"
 name = "test-gpu-inference"
 path = "tools/test_gpu_inference.rs"
 
+[[bin]]
+name = "debug-nan"
+path = "tools/debug_nan.rs"
+
+[[bin]]
+name = "profile-gpu"
+path = "tools/profile_gpu.rs"
+
 [features]
 default = []
 metal = []

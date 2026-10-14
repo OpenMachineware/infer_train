@@ -15,6 +15,7 @@ pub struct ModelConfig {
     pub n_layers: usize,
     pub n_heads: usize,
     pub n_kv_heads: usize,
+    pub head_dim: usize, // Explicit head_dim (derived from weights, not hidden_size/n_heads)
     pub vocab_size: usize,
 
     // RoPE
@@ -100,6 +101,9 @@ impl ModelConfig {
         let eos_token_id =
             get_u64(meta, "general.tokenizer.eos_token_id").unwrap_or(2) as u32;
 
+        // Initial head_dim guess from hidden_size/n_heads (will be fixed from weights)
+        let head_dim = hidden_size / n_heads;
+
         ModelConfig {
             architecture,
             hidden_size,
@@ -107,6 +111,7 @@ impl ModelConfig {
             n_layers,
             n_heads,
             n_kv_heads,
+            head_dim,
             vocab_size,
             rope_dim,
             rope_freq_base,
@@ -116,10 +121,6 @@ impl ModelConfig {
             eos_token_id,
             metadata: meta.clone(),
         }
-    }
-
-    pub fn head_dim(&self) -> usize {
-        self.hidden_size / self.n_heads
     }
 
     pub fn n_groups(&self) -> usize {
