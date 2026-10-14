@@ -9,6 +9,15 @@ use crate::model::tensor::{DataType, Tensor};
 use crate::model::weights::WeightStore;
 use std::collections::HashMap;
 
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use crate::compute::backend::Backend;
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use crate::compute::graph::ComputeGraph;
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use crate::compute::metal_backend::MetalBackend;
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use crate::compute::op::{OpNode, OpParams, OpType};
+
 /// Llama model layers
 pub struct LlamaModel {
     pub config: ModelConfig,
@@ -948,6 +957,203 @@ impl LlamaModel {
             // Weight is [vocab_size, hidden_size] - normal
             self.gemv_gpu(hidden, output, vocab_size, gpu_ctx)
         }
+    }
+
+    /// Forward pass using ComputeGraph (zero-copy GPU inference)
+    /// All tensors stay on GPU, no CPU round-trips during computation
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward_graph(
+        &self,
+        tokens: &[u32],
+        backend: &MetalBackend,
+    ) -> Option<Vec<f32>> {
+        if tokens.is_empty() || self.tok_embeddings.is_none() {
+            return None;
+        }
+
+        let hidden_size = self.config.hidden_size;
+        let vocab_size = self.config.vocab_size;
+
+        // For now, process tokens one at a time
+        // TODO: Batch processing
+        let token = tokens[0];
+
+        // 1. Embedding lookup - for now use CPU, TODO: GPU embedding
+        let hidden = self.embedding_lookup_impl(token)?;
+
+        // 2. Build compute graph for layer processing
+        let mut hidden_tensor = backend
+            .alloc_tensor("hidden", vec![hidden_size], DataType::F32)
+            .ok()?;
+        backend
+            .copy_to_tensor(&mut hidden_tensor, bytemuck::cast_slice(&hidden))
+            .ok()?;
+
+        // Process through layers
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            hidden_tensor = self.forward_layer_graph(
+                layer,
+                layer_idx,
+                hidden_tensor,
+                backend,
+            )?;
+        }
+
+        // 3. Final norm and output projection
+        let final_hidden =
+            self.apply_output_norm_graph(&hidden_tensor, backend)?;
+        let logits =
+            self.output_projection_graph(&final_hidden, vocab_size, backend)?;
+
+        // 4. Copy result back to CPU
+        let mut logits_data = vec![0.0f32; vocab_size];
+        backend
+            .copy_from_tensor(
+                &logits,
+                bytemuck::cast_slice_mut(&mut logits_data),
+            )
+            .ok()?;
+
+        Some(logits_data)
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn forward_layer_graph(
+        &self,
+        layer: &LlamaLayer,
+        _layer_idx: usize,
+        hidden: crate::compute::tensor::Tensor,
+        backend: &MetalBackend,
+    ) -> Option<crate::compute::tensor::Tensor> {
+        let hidden_size = self.config.hidden_size;
+
+        // Build RMS Norm operation
+        let mut graph = ComputeGraph::new();
+
+        // Add input hidden tensor
+        graph.add_tensor(hidden.clone());
+        graph.add_input("hidden");
+
+        // Add weight tensor (need to convert from model Tensor to compute Tensor)
+        let weight = self
+            .tensor_to_compute(layer.attention_norm.as_ref()?, "norm_weight")?;
+        graph.add_tensor(weight);
+        graph.add_input("norm_weight");
+
+        // Add RMS Norm op
+        let norm_op = OpNode::new(
+            OpType::RMSNorm,
+            vec!["hidden".into(), "norm_weight".into()],
+            "normed".to_string(),
+        );
+        graph.add_op(norm_op);
+
+        // Execute
+        backend.execute(&mut graph).ok()?;
+
+        // Get result
+        let normed = graph.get_tensor("normed")?.clone();
+
+        // TODO: QKV projections, RoPE, Attention, FFN
+        // For now, just return the normed tensor as a placeholder
+
+        Some(normed)
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn apply_output_norm_graph(
+        &self,
+        hidden: &crate::compute::tensor::Tensor,
+        backend: &MetalBackend,
+    ) -> Option<crate::compute::tensor::Tensor> {
+        let hidden_size = self.config.hidden_size;
+
+        let mut graph = ComputeGraph::new();
+        graph.add_tensor(hidden.clone());
+        graph.add_input("hidden");
+
+        let weight =
+            self.tensor_to_compute(self.norm.as_ref()?, "norm_weight")?;
+        graph.add_tensor(weight);
+        graph.add_input("norm_weight");
+
+        let norm_op = OpNode::new(
+            OpType::RMSNorm,
+            vec!["hidden".into(), "norm_weight".into()],
+            "normed".to_string(),
+        );
+        graph.add_op(norm_op);
+
+        backend.execute(&mut graph).ok()?;
+        graph.get_tensor("normed").cloned()
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn output_projection_graph(
+        &self,
+        hidden: &crate::compute::tensor::Tensor,
+        vocab_size: usize,
+        backend: &MetalBackend,
+    ) -> Option<crate::compute::tensor::Tensor> {
+        let mut graph = ComputeGraph::new();
+        graph.add_tensor(hidden.clone());
+        graph.add_input("hidden");
+
+        let weight =
+            self.tensor_to_compute(self.output.as_ref()?, "output_weight")?;
+        graph.add_tensor(weight);
+        graph.add_input("output_weight");
+
+        let matvec_op = OpNode::new(
+            OpType::MatVec,
+            vec!["output_weight".into(), "hidden".into()],
+            "logits".to_string(),
+        );
+        graph.add_op(matvec_op);
+
+        backend.execute(&mut graph).ok()?;
+        let logits = graph.get_tensor("logits")?.clone();
+
+        // Reshape to [vocab_size]
+        Some(crate::compute::tensor::Tensor::new(
+            "logits",
+            vec![vocab_size],
+            DataType::F32,
+            logits.storage.clone(),
+        ))
+    }
+
+    /// Convert model Tensor (with optional GPU buffer) to compute Tensor
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn tensor_to_compute(
+        &self,
+        tensor: &Tensor,
+        name: &str,
+    ) -> Option<crate::compute::tensor::Tensor> {
+        // Check if GPU buffer exists
+        if let Some(gpu_buffer) = tensor.gpu_buffer.borrow().as_ref() {
+            // Use existing GPU buffer
+            return Some(crate::compute::tensor::Tensor::from_metal_buffer(
+                name,
+                tensor.shape.clone(),
+                tensor.dtype,
+                gpu_buffer.clone(),
+            ));
+        }
+
+        // Upload to GPU via backend
+        let backend = MetalBackend::new().ok()?;
+        let mut compute_tensor = backend
+            .alloc_tensor(name, tensor.shape.clone(), tensor.dtype)
+            .ok()?;
+        backend.copy_to_tensor(&mut compute_tensor, tensor.bytes()).ok()?;
+
+        // Cache the GPU buffer in the model tensor
+        if let Some(buffer) = compute_tensor.as_metal_buffer() {
+            *tensor.gpu_buffer.borrow_mut() = Some(buffer);
+        }
+
+        Some(compute_tensor)
     }
 }
 
