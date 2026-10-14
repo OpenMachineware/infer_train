@@ -7,10 +7,14 @@ pub mod dequant;
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 pub mod gpu_tensor;
 pub mod kv_cache;
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+pub mod kv_cache_gpu;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 pub use gpu_tensor::GpuTensor;
 pub use kv_cache::{KVCache, KVCacheBase, KVCacheFormat};
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+pub use kv_cache_gpu::KVCacheGPU;
 
 use crate::model::config::ModelConfig;
 use crate::model::llama::LlamaModel;

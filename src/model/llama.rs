@@ -231,6 +231,50 @@ impl LlamaModel {
         Some(logits)
     }
 
+    /// Forward pass with GPU KV cache (zero-copy Flash Attention)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward_gpu_zerocopy(
+        &self,
+        tokens: &[u32],
+        kv_cache: &mut crate::inference::KVCacheGPU,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        if tokens.is_empty() || self.tok_embeddings.is_none() {
+            return None;
+        }
+
+        let hidden_size = self.config.hidden_size;
+        let n_heads = self.config.n_heads;
+        let head_dim = self.config.head_dim;
+        let n_kv_heads = self.config.n_kv_heads;
+        let vocab_size = self.config.vocab_size;
+
+        // Process each token
+        let mut hidden = Vec::with_capacity(hidden_size);
+        for &token in tokens.iter() {
+            // 1. Embedding lookup (CPU)
+            hidden = self.embedding_lookup_impl(token)?;
+
+            // 2. Process through layers (GPU with zero-copy)
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                hidden = self.forward_layer_gpu_zerocopy(
+                    layer, layer_idx, &hidden, kv_cache, n_heads, head_dim,
+                    n_kv_heads, gpu_ctx,
+                )?;
+            }
+
+            // Advance KV cache position
+            kv_cache.advance();
+        }
+
+        // 3. Final norm and output projection (GPU)
+        let final_hidden = self.apply_output_norm_gpu(&hidden, gpu_ctx)?;
+        let logits =
+            self.output_projection_gpu(&final_hidden, vocab_size, gpu_ctx)?;
+
+        Some(logits)
+    }
+
     /// Forward pass: tokens → logits (CPU version)
     /// Returns logits for the last token position
     pub fn forward(
@@ -705,6 +749,138 @@ impl LlamaModel {
 
         // 9. Residual
         Some(residual.iter().zip(ffn_out.iter()).map(|(r, f)| r + f).collect())
+    }
+
+    /// Forward layer with GPU KV cache (zero-copy Flash Attention)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn forward_layer_gpu_zerocopy(
+        &self,
+        layer: &LlamaLayer,
+        layer_idx: usize,
+        hidden: &[f32],
+        kv_cache: &mut crate::inference::KVCacheGPU,
+        n_heads: usize,
+        head_dim: usize,
+        n_kv_heads: usize,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        let hidden_size = self.config.hidden_size;
+        let pos = kv_cache.seq_len();
+
+        // 1. Attention norm (GPU)
+        let normed = self.apply_rms_norm_gpu(
+            hidden,
+            layer.attention_norm.as_ref()?,
+            hidden_size,
+            gpu_ctx,
+        )?;
+
+        // 2. QKV projections (GPU)
+        let q_out_size = layer.wq.as_ref()?.shape[1];
+        let k_out_size = layer.wk.as_ref()?.shape[1];
+        let v_out_size = layer.wv.as_ref()?.shape[1];
+
+        let q =
+            self.gemv_gpu(&normed, layer.wq.as_ref()?, q_out_size, gpu_ctx)?;
+        let k =
+            self.gemv_gpu(&normed, layer.wk.as_ref()?, k_out_size, gpu_ctx)?;
+        let v =
+            self.gemv_gpu(&normed, layer.wv.as_ref()?, v_out_size, gpu_ctx)?;
+
+        // Derive actual n_heads from weight shapes
+        let actual_n_heads = q_out_size / head_dim;
+        let actual_n_kv_heads = k_out_size / head_dim;
+
+        // 3. RoPE (use CPU for now, RoPE is memory-bound)
+        let q_rope = self.apply_rope(&q, pos, actual_n_heads, head_dim)?;
+        let k_rope = self.apply_rope(&k, pos, actual_n_kv_heads, head_dim)?;
+
+        // 4. Update KV cache on GPU
+        kv_cache.set_k(layer_idx, &k_rope);
+        kv_cache.set_v(layer_idx, &v);
+
+        // 5. Flash Attention with GPU KV cache
+        let attn_out = self.flash_attention_gpu(
+            &q_rope,
+            kv_cache,
+            layer_idx,
+            actual_n_heads,
+            head_dim,
+            actual_n_kv_heads,
+            pos + 1, // seq_len after this token
+            gpu_ctx,
+        )?;
+
+        // 6. Output projection (GPU)
+        let attn_proj =
+            self.gemv_gpu(&attn_out, layer.wo.as_ref()?, hidden_size, gpu_ctx)?;
+
+        // 7. Residual
+        let residual: Vec<f32> =
+            hidden.iter().zip(attn_proj.iter()).map(|(h, a)| h + a).collect();
+
+        // 8. FFN norm (GPU)
+        let ffn_normed = self.apply_rms_norm_gpu(
+            &residual,
+            layer.ffn_norm.as_ref()?,
+            hidden_size,
+            gpu_ctx,
+        )?;
+
+        // 9. FFN (SwiGLU) (GPU)
+        let ffn_out =
+            self.ffn_swiglu_gpu(&ffn_normed, layer, hidden_size, gpu_ctx)?;
+
+        // 10. Residual
+        Some(residual.iter().zip(ffn_out.iter()).map(|(r, f)| r + f).collect())
+    }
+
+    /// Flash Attention with GPU KV cache (zero-copy)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn flash_attention_gpu(
+        &self,
+        q: &[f32],
+        kv_cache: &crate::inference::KVCacheGPU,
+        layer_idx: usize,
+        n_heads: usize,
+        head_dim: usize,
+        n_kv_heads: usize,
+        seq_len: usize,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        // Get GPU buffers for K and V
+        let k_buffer = kv_cache.k_buffer(layer_idx);
+        let v_buffer = kv_cache.v_buffer(layer_idx);
+
+        // Create GPU buffer for Q
+        let q_buffer = std::rc::Rc::new(gpu_ctx.device().new_buffer_with_data(
+            q.as_ptr() as *const std::ffi::c_void,
+            (q.len() * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        // Run Flash Attention on GPU
+        let output_buffer = gpu_ctx
+            .flash_attn_f16_gpu(
+                1, // n_seqs (single batch)
+                n_heads, n_kv_heads, head_dim,
+                seq_len, // current sequence length
+                &q_buffer, k_buffer, v_buffer,
+            )
+            .ok()?;
+
+        // Read output back to CPU
+        let output_len = n_heads * head_dim;
+        let mut output = vec![0.0f32; output_len];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                output_buffer.contents() as *const f32,
+                output.as_mut_ptr(),
+                output_len,
+            );
+        }
+
+        Some(output)
     }
 
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
