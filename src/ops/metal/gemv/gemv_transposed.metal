@@ -3,68 +3,81 @@
 
 // Transposed GEMV kernels for quantized formats
 // Handles weights stored as [K, M] (transposed layout)
+// Used for output layer with tied embeddings
 
 #include <metal_stdlib>
 using namespace metal;
 
-#define QK 256
+#define QK_K 256
 
 // Q6_K block: 256 elements, 210 bytes
-struct BlockQ6K {
-    uint8_t ql[128];    // Lower 4 bits
-    uint8_t qh[64];     // Upper 2 bits
-    int8_t scales[16];  // Scales
-    uint16_t d;         // Super-block scale
-};
+// Layout: ql[128] + qh[64] + scales[16] + d[2]
+// Uses interleaved layout for ql/qh
 
 // Dequantize a single element from Q6_K block
-// Returns value at position i (0-255) within the block
+// elem_idx: 0-255 position within the block
 float dequantize_q6_k_elem(
-    device const BlockQ6K& block,
-    uint i
+    device const uint8_t* ql,
+    device const uint8_t* qh,
+    device const int8_t* scales,
+    float d,
+    uint elem_idx
 ) {
-    // Q6_K packs 256 values into:
-    // - ql[128]: low 4 bits of 128 pairs (256 values)
-    // - qh[64]: high 2 bits of 64 groups of 4 (256 values)
-    // - scales[16]: one scale per 16 values (16 groups)
-    // - d: super-block scale
+    // Q6_K: 16 sub-blocks of 16 elements each
+    uint il = elem_idx / 16;  // Which sub-block (0-15)
+    uint k = elem_idx % 16;   // Position within sub-block (0-15)
 
-    uint j = i / 16;  // Which group of 16
-    uint l = i % 16;  // Position within group
+    float sc = scales[il];
+    float dl = d * sc;
 
-    // Get the scale for this group of 16
-    float scale = block.scales[j] / 32.0f;  // Scale normalization
+    // Interleaved layout offsets (from self-written kernel)
+    device const uint16_t* ql16 = (device const uint16_t*)ql;
+    device const uint16_t* qh16 = (device const uint16_t*)qh;
 
-    // Get low 4 bits
-    uint ql_idx = i / 2;  // Which byte in ql
-    uint ql_shift = (i % 2) * 4;  // Which nibble
-    uint8_t ql_val = (block.ql[ql_idx] >> ql_shift) & 0x0F;
+    // Compute offsets
+    uint ql_offset = 32 * (il / 8) + 16 * ((il / 2) & 1) + 8 * (il & 1);
+    uint qh_offset = 16 * (il / 8) + 8 * (il & 1);
 
-    // Get high 2 bits
-    uint qh_idx = i / 4;  // Which byte in qh
-    uint qh_shift = (i % 4) * 2;  // Which 2-bit value
-    uint8_t qh_val = (block.qh[qh_idx] >> qh_shift) & 0x03;
+    // Masks based on (il/2)&3
+    uint il2 = (il / 2) & 3;
+    uint32_t kmask1, kmask2;
+    uint8_t shr_h, shl_h, shr_l;
 
-    // Combine to get 6-bit value (0-63)
-    uint q = (qh_val << 4) | ql_val;
+    if (il2 > 1) {
+        kmask1 = (il2 > 2) ? 0xC0C0C0C0 : 0x30303030;
+        kmask2 = 0xF0F0F0F0;
+        shr_l = 4;
+    } else {
+        kmask1 = (il2 > 0) ? 0x0C0C0C0C : 0x03030303;
+        kmask2 = 0x0F0F0F0F;
+        shr_l = 0;
+    }
+    shr_h = (il2 > 2) ? 2 : 0;
+    shl_h = (il2 > 1) ? 0 : ((il2 > 0) ? 2 : 4);
 
-    // Dequantize: q is in range 0-63, map to signed range
-    // Q6_K uses a specific quantization scheme
-    float val = (float(q) - 32.0f) * scale * float(block.d);
+    // Determine which 4-element group and position within it
+    uint i = k / 4;  // Group index (0-3)
+    uint b = k % 4;  // Position within group (0-3)
 
-    return val;
+    // Get the uint32 from ql and qh
+    uint32_t low = (ql16[ql_offset + 2 * i] | ((uint32_t)ql16[ql_offset + 2 * i + 1] << 16)) & kmask2;
+    uint32_t high = (qh16[qh_offset + 2 * i] | ((uint32_t)qh16[qh_offset + 2 * i + 1] << 16)) & kmask1;
+    uint32_t q = ((high << shl_h) >> shr_h) | (low >> shr_l);
+
+    // Extract the byte for this element
+    uint8_t qv = (q >> (b * 8)) & 0xFF;
+
+    // Convert to signed and scale
+    return dl * (qv - 32.0f);
 }
 
-// Transposed GEMV: y = W^T * x
-// W is stored as [K, M] in Q6_K format
-// Each row of W has (M/QK) blocks
-// To compute y[j], we need to gather element j from each of K blocks
-//
-// For efficiency, we compute multiple y elements in parallel
-// Each threadgroup processes a batch of outputs
+// Transposed GEMV for Q6_K: y = W^T * x
+// W is stored as [K, M] in Q6_K format (transposed for tied embeddings)
+// K = input_size (hidden_size), M = output_size (vocab_size)
+// Each thread computes one output element
 
 kernel void mv_q6_k_f32_transposed(
-    device const BlockQ6K* weights [[buffer(0)]],
+    device const char* weights [[buffer(0)]],
     device const float* input [[buffer(1)]],
     device float* output [[buffer(2)]],
     constant uint& m [[buffer(3)]],  // Output size (vocab_size)
@@ -76,28 +89,49 @@ kernel void mv_q6_k_f32_transposed(
 
     float sum = 0.0f;
 
-    // Number of blocks per row
-    uint blocks_per_row = m / QK;
+    // Q6_K block size is 256
+    uint blocks_per_row = m / QK_K;  // Number of blocks per row
 
-    // For output element tid, we need to sum:
+    // For output element tid, compute:
     // sum = sum over i of W[i, tid] * x[i]
-    // where W is stored as [K, M]
-    //
-    // W[i, tid] is at:
-    // - Row i (in terms of blocks)
-    // - Block tid/QK within that row
-    // - Element tid % QK within that block
+    // W[i, tid] is in block i * blocks_per_row + tid / 256, element tid % 256
 
-    uint tid_block = tid / QK;
-    uint tid_offset = tid % QK;
+    uint tid_block = tid / QK_K;
+    uint tid_elem = tid % QK_K;
+
+    // Block size in bytes: 210
+    const uint block_bytes = 210;
 
     for (uint i = 0; i < k; i++) {
-        // Block index for row i
+        // Block index for row i, column tid
         uint block_idx = i * blocks_per_row + tid_block;
 
-        // Get the element from the block
-        float w_val = dequantize_q6_k_elem(weights[block_idx], tid_offset);
+        // Get block pointer
+        device const char* block_ptr = weights + block_idx * block_bytes;
 
+        // Q6_K structure offsets within block
+        device const uint8_t* ql = (device const uint8_t*)(block_ptr);
+        device const uint8_t* qh = (device const uint8_t*)(block_ptr + 128);
+        device const int8_t* scales = (device const int8_t*)(block_ptr + 192);
+        device const uint16_t* d_ptr = (device const uint16_t*)(block_ptr + 208);
+
+        float d = float(*d_ptr);
+        if (d != 0.0f) {
+            // Convert f16 bits to float
+            // f16: 1 sign, 5 exponent, 10 mantissa
+            uint16_t d_bits = *d_ptr;
+            uint16_t sign = (d_bits >> 15) & 1;
+            uint16_t exp = (d_bits >> 10) & 0x1F;
+            uint16_t mant = d_bits & 0x3FF;
+
+            if (exp == 0) {
+                d = 0.0f;  // Zero or denormal (treat as zero)
+            } else {
+                d = (sign ? -1.0f : 1.0f) * (1.0f + float(mant) / 1024.0f) * pow(2.0f, float(exp) - 15.0f);
+            }
+        }
+
+        float w_val = dequantize_q6_k_elem(ql, qh, scales, d, tid_elem);
         sum += w_val * input[i];
     }
 

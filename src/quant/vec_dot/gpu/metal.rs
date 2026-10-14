@@ -84,6 +84,9 @@ pub struct MetalContext {
     gemm_library: Library,
     // Self-written K-quant MV library (Q2_K, Q3_K, Q4_K, Q5_K, Q6_K)
     kquant_mv_library: Library,
+    // Transposed GEMV library (for output layer with tied embeddings)
+    gemv_transposed_library: Library,
+    mv_q6_k_transposed_pipeline: ComputePipelineState,
     // Cached MV pipelines - Standard Q
     mv_q1_0_pipeline: ComputePipelineState,
     mv_q2_0_pipeline: ComputePipelineState,
@@ -354,6 +357,29 @@ impl MetalContext {
             .new_library_with_source(&kquant_mv_combined, &compile_options)
             .map_err(|e| {
                 format!("Failed to compile kquant_mv library: {}", e)
+            })?;
+
+        // Compile transposed GEMV library (for output layer with tied embeddings)
+        let gemv_transposed_source =
+            include_str!("../../../ops/metal/gemv/gemv_transposed.metal");
+        let gemv_transposed_library = device
+            .new_library_with_source(gemv_transposed_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile gemv_transposed library: {}", e)
+            })?;
+
+        // Create Q6_K transposed MV pipeline
+        let mv_q6_k_transposed_kernel = gemv_transposed_library
+            .get_function("mv_q6_k_f32_transposed", None)
+            .map_err(|e| {
+                format!("Failed to get Q6_K transposed kernel: {}", e)
+            })?;
+        let mv_q6_k_transposed_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &mv_q6_k_transposed_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create Q6_K transposed pipeline: {}", e)
             })?;
 
         // Compile RMS Norm library
@@ -1170,6 +1196,9 @@ impl MetalContext {
             gemm_library,
             // Self-written K-quant MV library
             kquant_mv_library,
+            // Transposed GEMV library and pipeline
+            gemv_transposed_library,
+            mv_q6_k_transposed_pipeline,
             // MV pipelines - Standard Q
             mv_q1_0_pipeline,
             mv_q2_0_pipeline,
@@ -3883,6 +3912,71 @@ impl MetalContext {
         command_buffer.wait_until_completed();
 
         Ok(output_buffer)
+    }
+
+    /// Q6_K transposed Matrix-Vector: y = W^T * x
+    /// W is stored as [K, M] instead of [M, K] (for tied embeddings)
+    /// K = input_size (hidden_size), M = output_size (vocab_size)
+    pub fn mv_q6_k_f32_transposed(
+        &self,
+        m: usize, // Output size (vocab_size)
+        k: usize, // Input size (hidden_size)
+        weights: &[BlockQ6K],
+        input: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        if m % 256 != 0 {
+            return Err(format!(
+                "Transposed MV requires M to be multiple of 256, got {}",
+                m
+            ));
+        }
+
+        let weights_size = weights.len() * std::mem::size_of::<BlockQ6K>();
+        let input_size = input.len() * std::mem::size_of::<f32>();
+        let output_size = m * std::mem::size_of::<f32>();
+
+        let weights_buffer = self.device.new_buffer_with_data(
+            weights.as_ptr() as *const std::ffi::c_void,
+            weights_size as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let input_buffer = self.device.new_buffer_with_data(
+            input.as_ptr() as *const std::ffi::c_void,
+            input_size as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        let output_buffer = self.device.new_buffer(
+            output_size as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.mv_q6_k_transposed_pipeline);
+
+        // Kernel expects: buffer 0=weights, 1=input, 2=output, 3=m, 4=k
+        encoder.set_buffer(0, Some(&weights_buffer), 0);
+        encoder.set_buffer(1, Some(&input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(3, 4, &m as *const usize as *const std::ffi::c_void);
+        encoder.set_bytes(4, 4, &k as *const usize as *const std::ffi::c_void);
+
+        // One thread per output element
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: ((m + 255) / 256) as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // Read output
+        let output_ptr = output_buffer.contents() as *const f32;
+        let output =
+            unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() };
+
+        Ok(output)
     }
 
     /// IQ4_NL x F32 Matrix-Vector (matching llama.cpp kernel)

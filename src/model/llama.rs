@@ -374,16 +374,61 @@ impl LlamaModel {
         };
 
         let logits = if is_transposed {
-            // Transposed weights: fallback to CPU for now
-            // TODO: Implement GPU transposed GEMV
-            let hidden_data: Vec<f32> = unsafe {
-                let ptr = final_hidden_buffer.contents() as *const f32;
-                let len = hidden_size;
-                let mut data = vec![0.0f32; len];
-                std::ptr::copy_nonoverlapping(ptr, data.as_mut_ptr(), len);
-                data
-            };
-            self.gemv_transposed(&hidden_data, output, actual_vocab_size)?
+            // Transposed weights: use GPU transposed GEMV for Q6_K
+            match output.dtype {
+                crate::model::tensor::DataType::Q6_K => {
+                    // Download hidden state to CPU for now (can optimize later)
+                    let hidden_data: Vec<f32> = unsafe {
+                        let ptr = final_hidden_buffer.contents() as *const f32;
+                        let len = hidden_size;
+                        let mut data = vec![0.0f32; len];
+                        std::ptr::copy_nonoverlapping(
+                            ptr,
+                            data.as_mut_ptr(),
+                            len,
+                        );
+                        data
+                    };
+
+                    // Get weights as BlockQ6K slice
+                    let weights: &[crate::quant::types::BlockQ6K] = unsafe {
+                        let ptr = output.bytes().as_ptr()
+                            as *const crate::quant::types::BlockQ6K;
+                        let len = output.bytes().len()
+                            / std::mem::size_of::<crate::quant::types::BlockQ6K>(
+                            );
+                        std::slice::from_raw_parts(ptr, len)
+                    };
+
+                    gpu_ctx
+                        .mv_q6_k_f32_transposed(
+                            actual_vocab_size,
+                            hidden_size,
+                            weights,
+                            &hidden_data,
+                        )
+                        .ok()?
+                }
+                _ => {
+                    // Other formats: fallback to CPU
+                    let hidden_data: Vec<f32> = unsafe {
+                        let ptr = final_hidden_buffer.contents() as *const f32;
+                        let len = hidden_size;
+                        let mut data = vec![0.0f32; len];
+                        std::ptr::copy_nonoverlapping(
+                            ptr,
+                            data.as_mut_ptr(),
+                            len,
+                        );
+                        data
+                    };
+                    self.gemv_transposed(
+                        &hidden_data,
+                        output,
+                        actual_vocab_size,
+                    )?
+                }
+            }
         } else {
             // Normal weights: use GPU
             let output_buffer = gpu_ctx.get_or_create_buffer(output);
@@ -1007,7 +1052,7 @@ impl LlamaModel {
         Some(logits)
     }
 
-    fn embedding_lookup_impl(&self, token: u32) -> Option<Vec<f32>> {
+    pub fn embedding_lookup_impl(&self, token: u32) -> Option<Vec<f32>> {
         let embed = self.tok_embeddings.as_ref()?;
         let hidden_size = self.config.hidden_size;
         let dtype = embed.dtype;
@@ -1045,7 +1090,7 @@ impl LlamaModel {
         Some(result)
     }
 
-    fn forward_layer(
+    pub fn forward_layer(
         &self,
         layer: &LlamaLayer,
         layer_idx: usize,
@@ -1250,42 +1295,27 @@ impl LlamaModel {
 
         match w.dtype {
             crate::model::tensor::DataType::Q6_K => {
-                // Process blocks without full dequantization
-                let bytes = w.bytes();
-                let block_size_bytes =
-                    std::mem::size_of::<crate::quant::types::BlockQ6K>();
-                let blocks_per_row = out_size / block_size;
+                // Fallback to full dequantization for Q6_K
+                // The block layout for transposed matrices is complex and needs careful handling
+                // of partial blocks (when out_size is not a multiple of 256)
+                let total_elems = w.elem_count();
+                let w_data = crate::inference::dequant_to_f32(
+                    w.bytes(),
+                    w.dtype,
+                    total_elems,
+                );
+
+                // Weight shape is [in_size, out_size], so row stride is out_size
+                let row_stride = w.shape[1];
 
                 let mut out = vec![0.0f32; out_size];
-
-                // For each input element
-                for j in 0..in_size {
-                    let x_val = x[j];
-
-                    // For each block in this row
-                    for block_idx in 0..blocks_per_row {
-                        let byte_offset =
-                            (j * blocks_per_row + block_idx) * block_size_bytes;
-                        let block_bytes =
-                            &bytes[byte_offset..byte_offset + block_size_bytes];
-                        let block: crate::quant::types::BlockQ6K = unsafe {
-                            std::ptr::read(block_bytes.as_ptr() as *const _)
-                        };
-
-                        // Dequantize the block
-                        let block_vals =
-                            crate::inference::dequant::dequantize_q6_k_block(
-                                &block,
-                            );
-
-                        // Add contribution to 256 outputs
-                        let output_start = block_idx * block_size;
-                        for k in 0..block_size {
-                            out[output_start + k] += block_vals[k] * x_val;
-                        }
+                for i in 0..out_size {
+                    let mut sum = 0.0f32;
+                    for j in 0..in_size {
+                        sum += w_data[j * row_stride + i] * x[j];
                     }
+                    out[i] = sum;
                 }
-
                 Some(out)
             }
             _ => {
@@ -1595,7 +1625,7 @@ impl LlamaModel {
     /// Forward layer with fully GPU-native operations (no CPU-GPU transfers)
     /// Input and output are GPU buffers
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    fn forward_layer_gpu_buffer(
+    pub fn forward_layer_gpu_buffer(
         &self,
         layer: &LlamaLayer,
         layer_idx: usize,
@@ -1662,6 +1692,38 @@ impl LlamaModel {
         // Derive actual n_heads from weight shapes
         let actual_n_heads = q_out_size / head_dim;
         let actual_n_kv_heads = k_out_size / head_dim;
+
+        // 2.5 Apply Q/K norms (Qwen-style) on GPU
+        // Qwen uses separate norms for Q and K after projection
+        let q_buffer = if let Some(ref q_norm) = layer.q_norm {
+            let q_norm_buffer = gpu_ctx.get_or_create_buffer(q_norm);
+            gpu_ctx
+                .rms_norm_f32_gpu(
+                    &q_buffer,
+                    &q_norm_buffer,
+                    actual_n_heads, // n_rows = n_heads (normalize each head)
+                    head_dim,       // n_cols = head_dim
+                    1e-5,
+                )
+                .ok()?
+        } else {
+            q_buffer
+        };
+
+        let k_buffer = if let Some(ref k_norm) = layer.k_norm {
+            let k_norm_buffer = gpu_ctx.get_or_create_buffer(k_norm);
+            gpu_ctx
+                .rms_norm_f32_gpu(
+                    &k_buffer,
+                    &k_norm_buffer,
+                    actual_n_kv_heads, // n_rows = n_kv_heads
+                    head_dim,          // n_cols = head_dim
+                    1e-5,
+                )
+                .ok()?
+        } else {
+            k_buffer
+        };
 
         // 3. RoPE on GPU
         let q_rope_buffer = gpu_ctx
@@ -1747,7 +1809,7 @@ impl LlamaModel {
     /// GEMV with GPU buffers (no CPU transfer for supported formats)
     /// For unsupported formats, falls back to CPU (with GPU-CPU transfer)
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    fn gemv_gpu_buffer(
+    pub fn gemv_gpu_buffer(
         &self,
         input_buffer: &std::rc::Rc<Buffer>,
         weights_buffer: &std::rc::Rc<Buffer>,
