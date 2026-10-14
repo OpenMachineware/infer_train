@@ -1210,7 +1210,7 @@ impl LlamaModel {
         Some(residual.iter().zip(ffn_out.iter()).map(|(r, f)| r + f).collect())
     }
 
-    fn apply_rms_norm_impl(
+    pub fn apply_rms_norm_impl(
         &self,
         x: &[f32],
         weight: &Tensor,
@@ -1232,7 +1232,7 @@ impl LlamaModel {
         Some(out)
     }
 
-    fn apply_rope(
+    pub fn apply_rope(
         &self,
         x: &[f32],
         pos: usize,
@@ -1258,7 +1258,7 @@ impl LlamaModel {
         Some(out)
     }
 
-    fn gemv_impl(
+    pub fn gemv_impl(
         &self,
         x: &[f32],
         w: &Tensor,
@@ -1269,10 +1269,23 @@ impl LlamaModel {
         let w_data = dequant_to_f32(w.bytes(), w.dtype, total_elems);
 
         let mut out = vec![0.0f32; out_size];
+        // GGUF stores tensors in column-major: shape = [in_size, out_size]
+        // Data layout: column 0 (in_size elements), column 1 (in_size elements), ...
+        // For y = W @ x, we need W stored as [out_size, in_size] in row-major
+        // So we access as: w_data[i + j * out_size] for output i, input j
+        // But wait, GGUF shape is [ne0, ne1] where ne0 is first dim
+        // For a weight matrix, shape is [K, M] where K=input, M=output
+        // So column-major storage: element (j, i) is at j + i * ne0 = j + i * in_size
+        // Therefore, w_data[i * in_size + j] accesses element (j, i)
+        // For GEMV y[i] = sum_j W[i,j] * x[j], we need W[i,j] = w_data[j + i * in_size]
+        // But the current code uses w_data[i * in_size + j] which is W[j,i]
+        // This is the transpose! We need to swap the indices.
         for i in 0..out_size {
             let mut sum = 0.0f32;
             for j in 0..in_size {
-                sum += w_data[i * in_size + j] * x[j];
+                // Correct: w_data[j + i * in_size] for W[i,j]
+                // But if we want to use existing transposed data:
+                sum += w_data[j + i * in_size] * x[j];
             }
             out[i] = sum;
         }
@@ -1344,7 +1357,7 @@ impl LlamaModel {
         }
     }
 
-    fn attention(
+    pub fn attention(
         &self,
         q: &[f32],
         k: &[f32],
@@ -1406,7 +1419,7 @@ impl LlamaModel {
         Some(out)
     }
 
-    fn ffn_swiglu(
+    pub fn ffn_swiglu(
         &self,
         x: &[f32],
         layer: &LlamaLayer,
@@ -1666,26 +1679,23 @@ impl LlamaModel {
         let wk_buffer = gpu_ctx.get_or_create_buffer(wk);
         let wv_buffer = gpu_ctx.get_or_create_buffer(wv);
 
-        // GEMV with GPU buffers
-        let q_buffer = self.gemv_gpu_buffer(
+        // GEMV with GPU buffers, with CPU fallback for unsupported formats
+        let q_buffer = self.gemv_gpu_buffer_with_fallback(
             &normed_buffer,
-            &wq_buffer,
+            wq,
             q_out_size,
-            wq.dtype,
             gpu_ctx,
         )?;
-        let k_buffer = self.gemv_gpu_buffer(
+        let k_buffer = self.gemv_gpu_buffer_with_fallback(
             &normed_buffer,
-            &wk_buffer,
+            wk,
             k_out_size,
-            wk.dtype,
             gpu_ctx,
         )?;
-        let v_buffer = self.gemv_gpu_buffer(
+        let v_buffer = self.gemv_gpu_buffer_with_fallback(
             &normed_buffer,
-            &wv_buffer,
+            wv,
             v_out_size,
-            wv.dtype,
             gpu_ctx,
         )?;
 
@@ -1765,14 +1775,12 @@ impl LlamaModel {
             gpu_ctx,
         )?;
 
-        // 6. Output projection (GPU)
+        // 6. Output projection (GPU with CPU fallback)
         let wo = layer.wo.as_ref()?;
-        let wo_buffer = gpu_ctx.get_or_create_buffer(wo);
-        let attn_proj_buffer = self.gemv_gpu_buffer(
+        let attn_proj_buffer = self.gemv_gpu_buffer_with_fallback(
             &attn_out_buffer,
-            &wo_buffer,
+            wo,
             hidden_size,
-            wo.dtype,
             gpu_ctx,
         )?;
 
@@ -1975,9 +1983,60 @@ impl LlamaModel {
                     input_buffer,
                 )
                 .ok(),
+            // IQ4_XS - GPU kernel broken, return None to use CPU fallback at call site
+            // TODO: Fix GPU kernel
+            crate::model::tensor::DataType::IQ4_XS => None,
             // Unsupported formats - use CPU fallback
             _ => None,
         }
+    }
+
+    /// GEMV with GPU buffers, with CPU fallback for unsupported formats
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn gemv_gpu_buffer_with_fallback(
+        &self,
+        input_buffer: &std::rc::Rc<Buffer>,
+        weight: &Tensor,
+        out_size: usize,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<std::rc::Rc<Buffer>> {
+        let in_size =
+            input_buffer.length() as usize / std::mem::size_of::<f32>();
+        let weights_buffer = gpu_ctx.get_or_create_buffer(weight);
+
+        // Try GPU first
+        if let Some(output) = self.gemv_gpu_buffer(
+            input_buffer,
+            &weights_buffer,
+            out_size,
+            weight.dtype,
+            gpu_ctx,
+        ) {
+            return Some(output);
+        }
+
+        // CPU fallback: download input, compute on CPU, upload output
+        let mut input_data = vec![0.0f32; in_size];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                input_buffer.contents() as *const f32,
+                input_data.as_mut_ptr(),
+                in_size,
+            );
+        }
+
+        // CPU GEMV
+        let output = self.gemv(&input_data, weight, out_size)?;
+
+        // Upload to GPU
+        let output_buffer =
+            std::rc::Rc::new(gpu_ctx.device().new_buffer_with_data(
+                output.as_ptr() as *const std::ffi::c_void,
+                (out_size * std::mem::size_of::<f32>()) as u64,
+                metal::MTLResourceOptions::StorageModeShared,
+            ));
+
+        Some(output_buffer)
     }
 
     /// Flash Attention with GPU buffers (no CPU transfer)
@@ -2007,7 +2066,7 @@ impl LlamaModel {
             .ok()
     }
 
-    /// FFN SwiGLU with GPU buffers (no CPU transfer)
+    /// FFN SwiGLU with GPU buffers (with CPU fallback for unsupported formats)
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     fn ffn_swiglu_gpu_buffer(
         &self,
@@ -2022,26 +2081,19 @@ impl LlamaModel {
 
         let intermediate_size = w2.shape[1];
 
-        // Get or create weight buffers
-        let w1_buffer = gpu_ctx.get_or_create_buffer(w1);
-        let w2_buffer = gpu_ctx.get_or_create_buffer(w2);
-        let w3_buffer = gpu_ctx.get_or_create_buffer(w3);
-
-        // Gate projection: gate = input @ w1
-        let gate_buffer = self.gemv_gpu_buffer(
+        // Gate projection: gate = input @ w1 (with CPU fallback)
+        let gate_buffer = self.gemv_gpu_buffer_with_fallback(
             input_buffer,
-            &w1_buffer,
+            w1,
             intermediate_size,
-            w1.dtype,
             gpu_ctx,
         )?;
 
-        // Up projection: up = input @ w3
-        let up_buffer = self.gemv_gpu_buffer(
+        // Up projection: up = input @ w3 (with CPU fallback)
+        let up_buffer = self.gemv_gpu_buffer_with_fallback(
             input_buffer,
-            &w3_buffer,
+            w3,
             intermediate_size,
-            w3.dtype,
             gpu_ctx,
         )?;
 
@@ -2052,12 +2104,11 @@ impl LlamaModel {
             .mul_f32_gpu(&silu_gate_buffer, &up_buffer, intermediate_size)
             .ok()?;
 
-        // Down projection: output = swiglu @ w2
-        self.gemv_gpu_buffer(
+        // Down projection: output = swiglu @ w2 (with CPU fallback)
+        self.gemv_gpu_buffer_with_fallback(
             &swiglu_buffer,
-            &w2_buffer,
+            w2,
             hidden_size,
-            w2.dtype,
             gpu_ctx,
         )
     }

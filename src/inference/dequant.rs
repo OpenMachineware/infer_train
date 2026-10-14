@@ -87,6 +87,7 @@ pub fn dequant_q5_k(data: &[u8], out: &mut [f32], count: usize) {
         let dmin = f16::from_bits(block.dmin).to_f32();
 
         // Process 8 sub-blocks of 32 elements each
+        // Following llama.cpp: scales are used in pairs for 64-element groups
         for j in 0..8 {
             let (sc, min) = get_scale_min_k4(j, 0, &block.scales);
             let dl = d * sc;
@@ -98,32 +99,39 @@ pub fn dequant_q5_k(data: &[u8], out: &mut [f32], count: usize) {
                 let v1_low = ((byte >> 4) & 0x0F) as f32;
 
                 // High bit from qh
+                // llama.cpp: qh[k] bit j contains high bit for element j*32+k
+                // The qh byte is indexed by k (position within 32-element group)
+                // The bit within that byte is j (which 32-element group)
+                let h0 = if k < block.qh.len() {
+                    ((block.qh[k] >> j) & 1) as f32 * 16.0
+                } else {
+                    0.0
+                };
+
+                // For v1, the element is j*32+k+16, so the position within group is k+16
+                // But qh is indexed 0..31, so k+16 maps to qh[k+16] if k < 16
+                // Actually, llama.cpp processes two 32-element groups together with same qh[l]
+                // Let's re-index: element j*32+k+16 has position (k+16) within the block
+                // But that's not right either...
+                //
+                // Actually looking at llama.cpp more carefully:
+                // for (int l = 0; l < 32; ++l) *y++ = d1 * ((ql[l] & 0xF) + (qh[l] & u1 ? 16 : 0)) - m1;
+                // The ql[l] extracts low 4 bits, and qh[l] & u1 checks bit 0 (u1=1 for first group)
+                // for the second 32: ql[l] >> 4 extracts high 4 bits, qh[l] & u2 checks bit 1 (u2=2)
+                //
+                // So for my j*32+k position:
+                // - k is 0..15, we're looking at low 4 bits and high 4 bits separately
+                // - For v0_low (low 4 bits): element is j*32+k, qh byte is k, bit is j
+                // - For v1_low (high 4 bits): element is j*32+k+16, qh byte is k+16, bit is j
+                //   But wait, k+16 is 16..31, so qh[k+16] should work
+                let h1 = if k + 16 < block.qh.len() {
+                    ((block.qh[k + 16] >> j) & 1) as f32 * 16.0
+                } else {
+                    0.0
+                };
+
                 let idx0 = block_idx * QK_K + j * 32 + k;
                 let idx1 = block_idx * QK_K + j * 32 + k + 16;
-
-                let h0 = if idx0 < count {
-                    let qh_idx = idx0 / 8;
-                    let qh_bit = idx0 % 8;
-                    if qh_idx < block.qh.len() {
-                        ((block.qh[qh_idx] >> qh_bit) & 1) as f32 * 16.0
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                };
-
-                let h1 = if idx1 < count {
-                    let qh_idx = idx1 / 8;
-                    let qh_bit = idx1 % 8;
-                    if qh_idx < block.qh.len() {
-                        ((block.qh[qh_idx] >> qh_bit) & 1) as f32 * 16.0
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                };
 
                 if idx0 < count {
                     out[idx0] = dl * (v0_low + h0) - ml;
