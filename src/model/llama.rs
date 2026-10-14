@@ -295,7 +295,9 @@ impl LlamaModel {
         let n_kv_heads = self.config.n_kv_heads;
         let vocab_size = self.config.vocab_size;
 
-        // Process each token
+        // Process each token, keeping track of the last hidden state
+        let mut last_hidden_buffer: Option<std::rc::Rc<metal::Buffer>> = None;
+
         for &token in tokens.iter() {
             // 1. Embedding lookup (CPU - unavoidable for token lookup)
             let hidden = self.embedding_lookup_impl(token)?;
@@ -323,36 +325,15 @@ impl LlamaModel {
                 )?;
             }
 
+            // Save the last hidden buffer
+            last_hidden_buffer = Some(hidden_buffer);
+
             // Advance KV cache position
             kv_cache.advance();
         }
 
         // 3. Final norm and output projection (GPU)
-        // Note: We need to do this on the last token's hidden state
-        // For simplicity, re-run the last layer to get logits
-        let last_hidden =
-            self.embedding_lookup_impl(tokens[tokens.len() - 1])?;
-        let mut hidden_buffer =
-            std::rc::Rc::new(gpu_ctx.device().new_buffer_with_data(
-                last_hidden.as_ptr() as *const std::ffi::c_void,
-                (hidden_size * std::mem::size_of::<f32>()) as u64,
-                metal::MTLResourceOptions::StorageModeShared,
-            ));
-
-        for (layer_idx, layer) in self.layers.iter().enumerate() {
-            hidden_buffer = self.forward_layer_gpu_buffer(
-                layer,
-                layer_idx,
-                &hidden_buffer,
-                kv_cache,
-                n_heads,
-                head_dim,
-                n_kv_heads,
-                gpu_ctx,
-            )?;
-        }
-
-        // Final norm
+        let hidden_buffer = last_hidden_buffer?;
         let final_norm = self.norm.as_ref()?;
         let final_norm_buffer = gpu_ctx.get_or_create_buffer(final_norm);
         let final_hidden_buffer = gpu_ctx
@@ -454,6 +435,20 @@ impl LlamaModel {
 
         let data = &bytes[offset..offset + bytes_per_row];
         Some(dequant_to_f32(data, dtype, hidden_size))
+    }
+
+    /// Batch embedding lookup for prefill
+    /// Returns [batch_size, hidden_size] in row-major order
+    fn embedding_lookup_batch(&self, tokens: &[u32]) -> Option<Vec<f32>> {
+        let hidden_size = self.config.hidden_size;
+        let mut result = Vec::with_capacity(tokens.len() * hidden_size);
+
+        for &token in tokens {
+            let embedding = self.embedding_lookup_impl(token)?;
+            result.extend(embedding);
+        }
+
+        Some(result)
     }
 
     fn forward_layer(
