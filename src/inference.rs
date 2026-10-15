@@ -33,9 +33,9 @@ pub struct InferenceContext {
     pub model: LlamaModel,
     pub device: Device,
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    gpu_ctx: Option<crate::quant::vec_dot::gpu::metal::MetalContext>,
+    pub gpu_ctx: Option<crate::quant::vec_dot::gpu::metal::MetalContext>,
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    gpu_kv_cache: Option<KVCacheGPU>,
+    pub gpu_kv_cache: Option<KVCacheGPU>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +62,10 @@ impl InferenceContext {
                     let kv = KVCacheGPU::new(ctx.device(), &config, 2048);
                     (Some(ctx), Some(kv))
                 }
-                Err(_) => (None, None),
+                Err(e) => {
+                    eprintln!("MetalContext::new() failed: {}", e);
+                    (None, None)
+                }
             }
         } else {
             (None, None)

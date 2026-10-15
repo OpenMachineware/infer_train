@@ -388,8 +388,6 @@ kernel void kernel_mul_mv_iq4_xs_f32(
 
     device const block_iq4_xs * x = (device const block_iq4_xs *)(src0 + first_row * args.nb01);
 
-    const int nb = args.ne00/QK_K;  // number of blocks in K dimension
-
     const short ix = tiisg/16;  // 0 or 1
     const short it = tiisg%16;  // 0...15
     const short ib = it/2;

@@ -90,11 +90,15 @@ fn main() {
         } else {
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
             {
-                decode_logits = ctx
-                    .forward_gpu_native(&[
-                        current_tokens[current_tokens.len() - 1]
-                    ])
-                    .expect("Decode failed");
+                decode_logits = match ctx.forward_gpu_native(&[
+                    current_tokens[current_tokens.len() - 1]
+                ]) {
+                    Some(l) => l,
+                    None => {
+                        eprintln!("\nDecode failed at token {}", i);
+                        break;
+                    }
+                };
                 &decode_logits
             }
             #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]

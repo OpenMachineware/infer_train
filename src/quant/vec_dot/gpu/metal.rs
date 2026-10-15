@@ -718,6 +718,13 @@ impl MetalContext {
 
         // Create templated GEMM pipelines (from llama.cpp)
         // Requires function constant specialization
+        // Function constant IDs (from mul_mm.metal):
+        //   700: FC_mul_mm_bc_inp (bool)
+        //   701: FC_mul_mm_bc_out (bool)
+        //   702: FC_mul_mm_ne12 (short)
+        //   703: FC_mul_mm_ne13 (short)
+        //   704: FC_mul_mm_r2 (short)
+        //   705: FC_mul_mm_r3 (short)
         let gemm_template_q4_k_kernel = {
             let constant_values = metal::FunctionConstantValues::new();
             let false_val: bool = false;
@@ -725,32 +732,32 @@ impl MetalContext {
             constant_values.set_constant_value_at_index(
                 &false_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Bool,
-                0,
+                700,
             );
             constant_values.set_constant_value_at_index(
                 &false_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Bool,
-                1,
+                701,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                2,
+                702,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                3,
+                703,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                4,
+                704,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                5,
+                705,
             );
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q4_K_f32");
@@ -775,32 +782,32 @@ impl MetalContext {
             constant_values.set_constant_value_at_index(
                 &false_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Bool,
-                0,
+                700,
             );
             constant_values.set_constant_value_at_index(
                 &false_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Bool,
-                1,
+                701,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                2,
+                702,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                3,
+                703,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                4,
+                704,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                5,
+                705,
             );
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q2_K_f32");
@@ -824,32 +831,32 @@ impl MetalContext {
             constant_values.set_constant_value_at_index(
                 &false_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Bool,
-                0,
+                700,
             );
             constant_values.set_constant_value_at_index(
                 &false_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Bool,
-                1,
+                701,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                2,
+                702,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                3,
+                703,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                4,
+                704,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                5,
+                705,
             );
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q3_K_f32");
@@ -873,32 +880,32 @@ impl MetalContext {
             constant_values.set_constant_value_at_index(
                 &false_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Bool,
-                0,
+                700,
             );
             constant_values.set_constant_value_at_index(
                 &false_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Bool,
-                1,
+                701,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                2,
+                702,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                3,
+                703,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                4,
+                704,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                5,
+                705,
             );
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q5_K_f32");
@@ -922,32 +929,32 @@ impl MetalContext {
             constant_values.set_constant_value_at_index(
                 &false_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Bool,
-                0,
+                700,
             );
             constant_values.set_constant_value_at_index(
                 &false_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Bool,
-                1,
+                701,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                2,
+                702,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                3,
+                703,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                4,
+                704,
             );
             constant_values.set_constant_value_at_index(
                 &one_val as *const _ as *const std::ffi::c_void,
                 metal::MTLDataType::Short,
-                5,
+                705,
             );
             let descriptor = metal::FunctionDescriptor::new();
             descriptor.set_name("kernel_mul_mm_q6_K_f32");
@@ -3924,13 +3931,6 @@ impl MetalContext {
         weights: &[BlockQ6K],
         input: &[f32],
     ) -> Result<Vec<f32>, String> {
-        if m % 256 != 0 {
-            return Err(format!(
-                "Transposed MV requires M to be multiple of 256, got {}",
-                m
-            ));
-        }
-
         let weights_size = weights.len() * std::mem::size_of::<BlockQ6K>();
         let input_size = input.len() * std::mem::size_of::<f32>();
         let output_size = m * std::mem::size_of::<f32>();
@@ -5854,14 +5854,14 @@ impl MetalContext {
 
         let args = GemmArgs {
             ne00: k as i32,
-            ne02: 1,
+            ne02: 1, // Weights have no batch dim
             nb01,
             nb02: 0,
             nb03: 0,
-            ne12: 1,
+            ne12: n as i32,       // Input batch dimension
             nb10: 2,              // FP16 element size
             nb11: (k * 2) as u64, // K * sizeof(FP16)
-            nb12: 0,
+            nb12: (k * 2) as u64, // Batch stride for input: K elements per batch
             nb13: 0,
             ne0: m as i32,
             ne1: n as i32,
@@ -5941,61 +5941,42 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ2K>()) as u64;
-        let nb00 = std::mem::size_of::<BlockQ2K>() as u64;
+        let _nb00 = std::mem::size_of::<BlockQ2K>() as u64;
 
+        // Use exact struct from llama.cpp's ggml-metal-impl.h
         #[repr(C)]
         struct GemmArgs {
-            ne00: i32,
-            ne01: i32,
-            ne02: i32,
-            ne03: i32,
-            nb00: u64,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne10: i32,
-            ne11: i32,
-            ne12: i32,
-            ne13: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            ne2: i32,
-            ne3: i32,
-            nb0: u64,
-            nb1: u64,
-            nb2: u64,
-            nb3: u64,
+            ne00: i32, // K
+            ne02: i32, // batch dim (1 for simple case)
+            nb01: u64, // stride for A rows
+            nb02: u64, // batch stride (0 for simple case)
+            nb03: u64, // batch3 stride (0)
+            ne12: i32, // batch dim for B
+            nb10: u64, // element stride for B (2 for FP16)
+            nb11: u64, // row stride for B (K * 2)
+            nb12: u64, // batch stride for input
+            nb13: u64, // batch3 stride (0)
+            ne0: i32,  // M (output rows)
+            ne1: i32,  // N (output cols)
+            r2: i16,   // broadcast ratio (1)
+            r3: i16,   // broadcast ratio (1)
         }
 
         let args = GemmArgs {
             ne00: k as i32,
-            ne01: m as i32,
-            ne02: 1,
-            ne03: 1,
-            nb00,
+            ne02: 1, // Weights have no batch dim
             nb01,
             nb02: 0,
             nb03: 0,
-            ne10: k as i32,
-            ne11: n as i32,
-            ne12: 1,
-            ne13: 1,
-            nb10: 2,
-            nb11: (k * 2) as u64,
-            nb12: 0,
-            nb13: 0, // FP16: element stride=2, row stride=K*2
+            ne12: n as i32,       // Input batch dimension
+            nb10: 2,              // FP16 element size
+            nb11: (k * 2) as u64, // K * sizeof(FP16)
+            nb12: (k * 2) as u64, // Batch stride for input: K elements per batch
+            nb13: 0,
             ne0: m as i32,
             ne1: n as i32,
-            ne2: 1,
-            ne3: 1, // ne0=M (rows), ne1=N (cols)
-            nb0: 4,
-            nb1: (n * 4) as u64,
-            nb2: 0,
-            nb3: 0, // row stride = N * sizeof(f32)
+            r2: 1,
+            r3: 1,
         };
 
         let weights_size = weights.len() * std::mem::size_of::<BlockQ2K>();
@@ -6064,61 +6045,42 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ3K>()) as u64;
-        let nb00 = std::mem::size_of::<BlockQ3K>() as u64;
+        let _nb00 = std::mem::size_of::<BlockQ3K>() as u64;
 
+        // Use exact struct from llama.cpp's ggml-metal-impl.h
         #[repr(C)]
         struct GemmArgs {
-            ne00: i32,
-            ne01: i32,
-            ne02: i32,
-            ne03: i32,
-            nb00: u64,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne10: i32,
-            ne11: i32,
-            ne12: i32,
-            ne13: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            ne2: i32,
-            ne3: i32,
-            nb0: u64,
-            nb1: u64,
-            nb2: u64,
-            nb3: u64,
+            ne00: i32, // K
+            ne02: i32, // batch dim (1 for simple case)
+            nb01: u64, // stride for A rows
+            nb02: u64, // batch stride (0 for simple case)
+            nb03: u64, // batch3 stride (0)
+            ne12: i32, // batch dim for B
+            nb10: u64, // element stride for B (2 for FP16)
+            nb11: u64, // row stride for B (K * 2)
+            nb12: u64, // batch stride for input
+            nb13: u64, // batch3 stride (0)
+            ne0: i32,  // M (output rows)
+            ne1: i32,  // N (output cols)
+            r2: i16,   // broadcast ratio (1)
+            r3: i16,   // broadcast ratio (1)
         }
 
         let args = GemmArgs {
             ne00: k as i32,
-            ne01: m as i32,
-            ne02: 1,
-            ne03: 1,
-            nb00,
+            ne02: 1, // Weights have no batch dim
             nb01,
             nb02: 0,
             nb03: 0,
-            ne10: k as i32,
-            ne11: n as i32,
-            ne12: 1,
-            ne13: 1,
-            nb10: 2,
-            nb11: (k * 2) as u64,
-            nb12: 0,
-            nb13: 0, // FP16: element stride=2, row stride=K*2
+            ne12: n as i32,       // Input batch dimension
+            nb10: 2,              // FP16 element size
+            nb11: (k * 2) as u64, // K * sizeof(FP16)
+            nb12: (k * 2) as u64, // Batch stride for input: K elements per batch
+            nb13: 0,
             ne0: m as i32,
             ne1: n as i32,
-            ne2: 1,
-            ne3: 1, // ne0=M (rows), ne1=N (cols)
-            nb0: 4,
-            nb1: (n * 4) as u64,
-            nb2: 0,
-            nb3: 0, // row stride = N * sizeof(f32)
+            r2: 1,
+            r3: 1,
         };
 
         let weights_size = weights.len() * std::mem::size_of::<BlockQ3K>();
@@ -6187,61 +6149,42 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ5K>()) as u64;
-        let nb00 = std::mem::size_of::<BlockQ5K>() as u64;
+        let _nb00 = std::mem::size_of::<BlockQ5K>() as u64;
 
+        // Use exact struct from llama.cpp's ggml-metal-impl.h
         #[repr(C)]
         struct GemmArgs {
-            ne00: i32,
-            ne01: i32,
-            ne02: i32,
-            ne03: i32,
-            nb00: u64,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne10: i32,
-            ne11: i32,
-            ne12: i32,
-            ne13: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            ne2: i32,
-            ne3: i32,
-            nb0: u64,
-            nb1: u64,
-            nb2: u64,
-            nb3: u64,
+            ne00: i32, // K
+            ne02: i32, // batch dim (1 for simple case)
+            nb01: u64, // stride for A rows
+            nb02: u64, // batch stride (0 for simple case)
+            nb03: u64, // batch3 stride (0)
+            ne12: i32, // batch dim for B
+            nb10: u64, // element stride for B (2 for FP16)
+            nb11: u64, // row stride for B (K * 2)
+            nb12: u64, // batch stride for input
+            nb13: u64, // batch3 stride (0)
+            ne0: i32,  // M (output rows)
+            ne1: i32,  // N (output cols)
+            r2: i16,   // broadcast ratio (1)
+            r3: i16,   // broadcast ratio (1)
         }
 
         let args = GemmArgs {
             ne00: k as i32,
-            ne01: m as i32,
-            ne02: 1,
-            ne03: 1,
-            nb00,
+            ne02: 1, // Weights have no batch dim
             nb01,
             nb02: 0,
             nb03: 0,
-            ne10: k as i32,
-            ne11: n as i32,
-            ne12: 1,
-            ne13: 1,
-            nb10: 2,
-            nb11: (k * 2) as u64,
-            nb12: 0,
-            nb13: 0, // FP16: element stride=2, row stride=K*2
+            ne12: n as i32,       // Input batch dimension
+            nb10: 2,              // FP16 element size
+            nb11: (k * 2) as u64, // K * sizeof(FP16)
+            nb12: (k * 2) as u64, // Batch stride for input: K elements per batch
+            nb13: 0,
             ne0: m as i32,
             ne1: n as i32,
-            ne2: 1,
-            ne3: 1, // ne0=M (rows), ne1=N (cols)
-            nb0: 4,
-            nb1: (n * 4) as u64,
-            nb2: 0,
-            nb3: 0, // row stride = N * sizeof(f32)
+            r2: 1,
+            r3: 1,
         };
 
         let weights_size = weights.len() * std::mem::size_of::<BlockQ5K>();
@@ -6310,61 +6253,42 @@ impl MetalContext {
     ) -> Result<Vec<f32>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ6K>()) as u64;
-        let nb00 = std::mem::size_of::<BlockQ6K>() as u64;
+        let _nb00 = std::mem::size_of::<BlockQ6K>() as u64;
 
+        // Use exact struct from llama.cpp's ggml-metal-impl.h
         #[repr(C)]
         struct GemmArgs {
-            ne00: i32,
-            ne01: i32,
-            ne02: i32,
-            ne03: i32,
-            nb00: u64,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne10: i32,
-            ne11: i32,
-            ne12: i32,
-            ne13: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            ne2: i32,
-            ne3: i32,
-            nb0: u64,
-            nb1: u64,
-            nb2: u64,
-            nb3: u64,
+            ne00: i32, // K
+            ne02: i32, // batch dim (1 for simple case)
+            nb01: u64, // stride for A rows
+            nb02: u64, // batch stride (0 for simple case)
+            nb03: u64, // batch3 stride (0)
+            ne12: i32, // batch dim for B
+            nb10: u64, // element stride for B (2 for FP16)
+            nb11: u64, // row stride for B (K * 2)
+            nb12: u64, // batch stride for input
+            nb13: u64, // batch3 stride (0)
+            ne0: i32,  // M (output rows)
+            ne1: i32,  // N (output cols)
+            r2: i16,   // broadcast ratio (1)
+            r3: i16,   // broadcast ratio (1)
         }
 
         let args = GemmArgs {
             ne00: k as i32,
-            ne01: m as i32,
-            ne02: 1,
-            ne03: 1,
-            nb00,
+            ne02: 1, // Weights have no batch dim
             nb01,
             nb02: 0,
             nb03: 0,
-            ne10: k as i32,
-            ne11: n as i32,
-            ne12: 1,
-            ne13: 1,
-            nb10: 2,
-            nb11: (k * 2) as u64,
-            nb12: 0,
-            nb13: 0, // FP16: element stride=2, row stride=K*2
+            ne12: n as i32,       // Input batch dimension
+            nb10: 2,              // FP16 element size
+            nb11: (k * 2) as u64, // K * sizeof(FP16)
+            nb12: (k * 2) as u64, // Batch stride for input: K elements per batch
+            nb13: 0,
             ne0: m as i32,
             ne1: n as i32,
-            ne2: 1,
-            ne3: 1, // ne0=M (rows), ne1=N (cols)
-            nb0: 4,
-            nb1: (n * 4) as u64,
-            nb2: 0,
-            nb3: 0, // row stride = N * sizeof(f32)
+            r2: 1,
+            r3: 1,
         };
 
         let weights_size = weights.len() * std::mem::size_of::<BlockQ6K>();

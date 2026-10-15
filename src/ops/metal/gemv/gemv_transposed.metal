@@ -90,7 +90,8 @@ kernel void mv_q6_k_f32_transposed(
     float sum = 0.0f;
 
     // Q6_K block size is 256
-    uint blocks_per_row = m / QK_K;  // Number of blocks per row
+    // Use ceiling division for blocks_per_row to handle non-multiple-of-256 vocab sizes
+    uint blocks_per_row = (m + QK_K - 1) / QK_K;  // Number of blocks per row (ceiling)
 
     // For output element tid, compute:
     // sum = sum over i of W[i, tid] * x[i]
@@ -115,20 +116,15 @@ kernel void mv_q6_k_f32_transposed(
         device const int8_t* scales = (device const int8_t*)(block_ptr + 192);
         device const uint16_t* d_ptr = (device const uint16_t*)(block_ptr + 208);
 
-        float d = float(*d_ptr);
-        if (d != 0.0f) {
-            // Convert f16 bits to float
-            // f16: 1 sign, 5 exponent, 10 mantissa
-            uint16_t d_bits = *d_ptr;
-            uint16_t sign = (d_bits >> 15) & 1;
-            uint16_t exp = (d_bits >> 10) & 0x1F;
-            uint16_t mant = d_bits & 0x3FF;
+        // Read f16 scale
+        float d = 0.0f;
+        uint16_t d_bits = *d_ptr;
+        uint16_t sign = (d_bits >> 15) & 1;
+        uint16_t exp = (d_bits >> 10) & 0x1F;
+        uint16_t mant = d_bits & 0x3FF;
 
-            if (exp == 0) {
-                d = 0.0f;  // Zero or denormal (treat as zero)
-            } else {
-                d = (sign ? -1.0f : 1.0f) * (1.0f + float(mant) / 1024.0f) * pow(2.0f, float(exp) - 15.0f);
-            }
+        if (exp != 0) {
+            d = (sign ? -1.0f : 1.0f) * (1.0f + float(mant) / 1024.0f) * pow(2.0f, float(exp) - 15.0f);
         }
 
         float w_val = dequantize_q6_k_elem(ql, qh, scales, d, tid_elem);

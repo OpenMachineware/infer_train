@@ -575,61 +575,33 @@ impl LlamaModel {
         };
 
         let logits = if is_transposed {
-            // Transposed weights: use GPU transposed GEMV for Q6_K
-            match output.dtype {
-                crate::model::tensor::DataType::Q6_K => {
-                    // Download hidden state to CPU for now (can optimize later)
-                    let hidden_data: Vec<f32> = unsafe {
-                        let ptr = final_hidden_buffer.contents() as *const f32;
-                        let len = hidden_size;
-                        let mut data = vec![0.0f32; len];
-                        std::ptr::copy_nonoverlapping(
-                            ptr,
-                            data.as_mut_ptr(),
-                            len,
-                        );
-                        data
-                    };
+            // Transposed weights: use GPU transposed GEMV
+            // Download hidden state to CPU (needed for transposed kernel)
+            let hidden_data: Vec<f32> = unsafe {
+                let ptr = final_hidden_buffer.contents() as *const f32;
+                let len = hidden_size;
+                let mut data = vec![0.0f32; len];
+                std::ptr::copy_nonoverlapping(ptr, data.as_mut_ptr(), len);
+                data
+            };
 
-                    // Get weights as BlockQ6K slice
-                    let weights: &[crate::quant::types::BlockQ6K] = unsafe {
-                        let ptr = output.bytes().as_ptr()
-                            as *const crate::quant::types::BlockQ6K;
-                        let len = output.bytes().len()
-                            / std::mem::size_of::<crate::quant::types::BlockQ6K>(
-                            );
-                        std::slice::from_raw_parts(ptr, len)
-                    };
+            // Get weights as BlockQ6K slice
+            let weights: &[crate::quant::types::BlockQ6K] = unsafe {
+                let ptr = output.bytes().as_ptr()
+                    as *const crate::quant::types::BlockQ6K;
+                let len = output.bytes().len()
+                    / std::mem::size_of::<crate::quant::types::BlockQ6K>();
+                std::slice::from_raw_parts(ptr, len)
+            };
 
-                    gpu_ctx
-                        .mv_q6_k_f32_transposed(
-                            actual_vocab_size,
-                            hidden_size,
-                            weights,
-                            &hidden_data,
-                        )
-                        .ok()?
-                }
-                _ => {
-                    // Other formats: fallback to CPU
-                    let hidden_data: Vec<f32> = unsafe {
-                        let ptr = final_hidden_buffer.contents() as *const f32;
-                        let len = hidden_size;
-                        let mut data = vec![0.0f32; len];
-                        std::ptr::copy_nonoverlapping(
-                            ptr,
-                            data.as_mut_ptr(),
-                            len,
-                        );
-                        data
-                    };
-                    self.gemv_transposed(
-                        &hidden_data,
-                        output,
-                        actual_vocab_size,
-                    )?
-                }
-            }
+            gpu_ctx
+                .mv_q6_k_f32_transposed(
+                    actual_vocab_size,
+                    hidden_size,
+                    weights,
+                    &hidden_data,
+                )
+                .ok()?
         } else {
             // Normal weights: use GPU
             let output_buffer = gpu_ctx.get_or_create_buffer(output);
@@ -686,6 +658,9 @@ impl LlamaModel {
         let mut layer_hidden = hidden;
 
         for (layer_idx, layer) in self.layers.iter().enumerate() {
+            // Reset KV cache position for this layer
+            kv_cache.reset_seq_len();
+
             // 1. Attention norm (broadcast across batch)
             let attn_norm = layer.attention_norm.as_ref()?;
             let mut normed = Vec::with_capacity(batch_size * hidden_size);
@@ -919,6 +894,9 @@ impl LlamaModel {
         for (layer_idx, layer) in self.layers.iter().enumerate() {
             println!("\nLayer {}:", layer_idx);
 
+            // Reset KV cache position for this layer
+            kv_cache.reset_seq_len();
+
             // 1. Attention norm
             let attn_norm = layer.attention_norm.as_ref()?;
             let mut normed = Vec::with_capacity(batch_size * hidden_size);
@@ -1115,14 +1093,45 @@ impl LlamaModel {
         w: &Tensor,
         m: usize,
         batch: usize,
-        _gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) -> Option<Vec<f32>> {
         // Derive K from the weight matrix shape
         // GGUF stores weights in column-major: shape = [K, M]
         let k = w.shape[0];
 
-        // For now, use sequential GEMV since GEMM template has issues with batch > 1
-        // TODO: Fix GEMM template for batch processing
+        // Try GPU GEMM first, fallback to CPU if it fails
+        let gpu_result = match w.dtype {
+            crate::model::tensor::DataType::Q4_K => {
+                let weights: &[crate::quant::types::BlockQ4K] =
+                    bytemuck::cast_slice(w.bytes());
+                gpu_ctx.gemm_template_q4_k_f32(m, batch, k, weights, x).ok()
+            }
+            crate::model::tensor::DataType::Q5_K => {
+                let weights: &[crate::quant::types::BlockQ5K] =
+                    bytemuck::cast_slice(w.bytes());
+                gpu_ctx.gemm_template_q5_k_f32(m, batch, k, weights, x).ok()
+            }
+            crate::model::tensor::DataType::Q6_K => {
+                let weights: &[crate::quant::types::BlockQ6K] =
+                    bytemuck::cast_slice(w.bytes());
+                gpu_ctx.gemm_template_q6_k_f32(m, batch, k, weights, x).ok()
+            }
+            _ => None,
+        };
+
+        // Check if GPU result is valid (no NaN)
+        if let Some(ref output) = gpu_result {
+            let has_nan = output.iter().any(|&v| v.is_nan());
+            if !has_nan {
+                return gpu_result;
+            }
+            eprintln!(
+                "[GEMM] GPU returned NaN, falling back to CPU (M={}, N={}, K={}, dtype={:?})",
+                m, batch, k, w.dtype
+            );
+        }
+
+        // Fallback to sequential CPU GEMV
         let mut result = Vec::with_capacity(batch * m);
         for i in 0..batch {
             let x_token = &x[i * k..(i + 1) * k];
@@ -1130,41 +1139,6 @@ impl LlamaModel {
             result.extend(out);
         }
         Some(result)
-
-        /* Original GEMM code (not working for batch > 1)
-        match w.dtype {
-            crate::model::tensor::DataType::Q4_K => {
-                let weights: &[BlockQ4K] = bytemuck::cast_slice(w.bytes());
-                gpu_ctx.gemm_template_q4_k_f32(m, batch, k, weights, x).ok()
-            }
-            crate::model::tensor::DataType::Q5_K => {
-                let weights: &[BlockQ5K] = bytemuck::cast_slice(w.bytes());
-                gpu_ctx.gemm_template_q5_k_f32(m, batch, k, weights, x).ok()
-            }
-            crate::model::tensor::DataType::Q2_K => {
-                let weights: &[BlockQ2K] = bytemuck::cast_slice(w.bytes());
-                gpu_ctx.gemm_template_q2_k_f32(m, batch, k, weights, x).ok()
-            }
-            crate::model::tensor::DataType::Q3_K => {
-                let weights: &[BlockQ3K] = bytemuck::cast_slice(w.bytes());
-                gpu_ctx.gemm_template_q3_k_f32(m, batch, k, weights, x).ok()
-            }
-            crate::model::tensor::DataType::Q6_K => {
-                let weights: &[BlockQ6K] = bytemuck::cast_slice(w.bytes());
-                gpu_ctx.gemm_template_q6_k_f32(m, batch, k, weights, x).ok()
-            }
-            _ => {
-                // Fallback to sequential GEMV for unsupported formats
-                let mut result = Vec::with_capacity(batch * m);
-                for i in 0..batch {
-                    let x_token = &x[i * k..(i + 1) * k];
-                    let out = self.gemv(x_token, w, m)?;
-                    result.extend(out);
-                }
-                Some(result)
-            }
-        }
-        */
     }
 
     /// Flash attention for prefill: query against all KV positions
@@ -1296,11 +1270,19 @@ impl LlamaModel {
         let offset = token * bytes_per_row;
 
         if offset + bytes_per_row > bytes.len() {
+            eprintln!(
+                "Embedding lookup failed: token {} (offset {}) exceeds embedding matrix (len {})",
+                token,
+                offset + bytes_per_row,
+                bytes.len()
+            );
             return None;
         }
 
         let data = &bytes[offset..offset + bytes_per_row];
-        Some(dequant_to_f32(data, dtype, hidden_size))
+
+        let result = dequant_to_f32(data, dtype, hidden_size);
+        Some(result)
     }
 
     /// Batch embedding lookup for prefill

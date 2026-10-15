@@ -8,6 +8,7 @@ it-server
 it-cli
 
 *.gguf
+devstral-fix.jinja
 *.metallib
 *.air
 *.bak

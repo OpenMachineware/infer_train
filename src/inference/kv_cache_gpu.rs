@@ -87,6 +87,11 @@ impl KVCacheGPU {
         self.seq_len += 1;
     }
 
+    /// Reset sequence length to 0 (for starting a new layer)
+    pub fn reset_seq_len(&mut self) {
+        self.seq_len = 0;
+    }
+
     /// Clear cache
     pub fn clear(&mut self) {
         self.seq_len = 0;

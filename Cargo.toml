@@ -123,6 +123,22 @@ path = "tests/test_transposed_gemv.rs"
 name = "debug-gpu-inference"
 path = "tools/debug_gpu_inference.rs"
 
+[[bin]]
+name = "trace-gemv"
+path = "tools/trace_gemv.rs"
+
+[[bin]]
+name = "test-q6k-gemm"
+path = "tools/test_q6k_gemm.rs"
+
+[[bin]]
+name = "debug-batch-forward"
+path = "tools/debug_batch_forward.rs"
+
+[[bin]]
+name = "debug-gemm"
+path = "tools/debug_gemm.rs"
+
 [features]
 default = []
 metal = []
