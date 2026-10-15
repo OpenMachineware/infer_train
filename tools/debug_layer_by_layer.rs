@@ -78,6 +78,35 @@ fn main() {
 
     let mut cpu_hidden = hidden.clone();
     for (layer_idx, layer) in model.layers.iter().enumerate() {
+        // For layer 1, print MoE-specific info
+        if layer_idx == 1 {
+            println!("\n=== Layer 1 MoE Debug ===");
+            println!("Has MoE: {}", layer.ffn_gate_exps.is_some());
+            if let Some(gate_inp) = &layer.ffn_gate_inp {
+                println!("gate_inp shape: {:?}", gate_inp.shape);
+                // Print first few routing scores
+                let weight: &[f32] = bytemuck::cast_slice(gate_inp.bytes());
+                println!(
+                    "gate_inp first 10 weights per expert 0: {:?}",
+                    &weight[0..10]
+                );
+            }
+            if let Some(gate_exps) = &layer.ffn_gate_exps {
+                println!(
+                    "gate_exps shape: {:?}, dtype: {:?}",
+                    gate_exps.shape, gate_exps.dtype
+                );
+                println!("gate_exps bytes len: {}", gate_exps.bytes().len());
+            }
+            if let Some(down_exps) = &layer.ffn_down_exps {
+                println!(
+                    "down_exps shape: {:?}, dtype: {:?}",
+                    down_exps.shape, down_exps.dtype
+                );
+            }
+            println!("n_experts_used: {}", config.n_experts_used);
+        }
+
         cpu_hidden = model
             .forward_layer(
                 layer,
@@ -88,14 +117,10 @@ fn main() {
                 config.head_dim,
                 config.n_kv_heads,
             )
-            .unwrap();
+            .expect(&format!("Layer {} forward failed", layer_idx));
 
-        // Only print first 5 and last 3 layers
-        if layer_idx < 5 || layer_idx >= model.layers.len() - 3 {
-            stats(&format!("layer {} out", layer_idx), &cpu_hidden);
-        } else if layer_idx == 5 {
-            println!("  ... (skipping middle layers)");
-        }
+        // Print all layers
+        stats(&format!("layer {} out", layer_idx), &cpu_hidden);
     }
 
     // GPU forward (if available)

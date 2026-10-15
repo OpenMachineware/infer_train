@@ -112,10 +112,47 @@ fn main() {
         }
     }
 
+    // Show all tensors for layer 1 and 2 (MoE layers)
+    println!("\n=== Layer 1 All Tensors ===");
+    for info in gguf.tensors.iter() {
+        if info.name.starts_with("blk.1.") {
+            println!(
+                "{}: shape={:?}, dtype={:?}, offset={}",
+                info.name, info.dims, info.dtype, info.offset
+            );
+        }
+    }
+
+    println!("\n=== Layer 2 All Tensors ===");
+    for info in gguf.tensors.iter() {
+        if info.name.starts_with("blk.2.") {
+            println!(
+                "{}: shape={:?}, dtype={:?}, offset={}",
+                info.name, info.dims, info.dtype, info.offset
+            );
+        }
+    }
+
     // Show all tensors for layer 3 (full attention layer)
     println!("\n=== Layer 3 All Tensors ===");
     for info in gguf.tensors.iter() {
         if info.name.starts_with("blk.3.") {
+            println!(
+                "{}: shape={:?}, dtype={:?}, offset={}",
+                info.name, info.dims, info.dtype, info.offset
+            );
+        }
+    }
+
+    // Show MoE-related tensors
+    println!("\n=== MoE-related Tensors ===");
+    for info in gguf.tensors.iter() {
+        if info.name.contains("exp")
+            || info.name.contains("ffn_gate_inp")
+            || info.name.contains("ffn_down_exps")
+            || info.name.contains("ffn_gate_exps")
+            || info.name.contains("ffn_up_exps")
+        {
             println!(
                 "{}: shape={:?}, dtype={:?}, offset={}",
                 info.name, info.dims, info.dtype, info.offset

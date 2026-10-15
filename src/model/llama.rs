@@ -438,16 +438,16 @@ impl LlamaModel {
     ) -> Option<Vec<f32>> {
         // 1. Compute routing scores
         let routing_scores = if let Some(gate_inp) = &layer.ffn_gate_inp {
-            // gate_inp: [n_experts, hidden_size]
-            let n_experts = gate_inp.shape[0];
+            // gate_inp: [hidden_size, n_experts]
+            let n_experts = gate_inp.shape[1];
             let mut scores = vec![0.0f32; n_experts];
 
-            // Compute routing scores: hidden @ gate_inp^T
+            // Compute routing scores: hidden @ gate_inp
+            // gate_inp is [hidden_size, n_experts], so hidden @ gate_inp gives [n_experts]
+            let weight: &[f32] = bytemuck::cast_slice(gate_inp.bytes());
             for e in 0..n_experts {
-                let weight: &[f32] = bytemuck::cast_slice(gate_inp.bytes());
-                let offset = e * hidden_size;
                 for i in 0..hidden_size {
-                    scores[e] += hidden[i] * weight[offset + i];
+                    scores[e] += hidden[i] * weight[i * n_experts + e];
                 }
             }
 
@@ -473,33 +473,76 @@ impl LlamaModel {
         let top_k: Vec<(usize, f32)> =
             expert_indices.into_iter().take(n_experts_used).collect();
 
+        // Renormalize top-k routing scores
+        let sum_weights: f32 = top_k.iter().map(|(_, w)| w).sum();
+        let top_k: Vec<(usize, f32)> = if sum_weights > 0.0 {
+            top_k.into_iter().map(|(i, w)| (i, w / sum_weights)).collect()
+        } else {
+            top_k
+        };
+
         // 3. Compute routed expert outputs
         let mut routed_output = vec![0.0f32; hidden_size];
 
         if let (Some(gate_exps), Some(up_exps), Some(down_exps)) =
             (&layer.ffn_gate_exps, &layer.ffn_up_exps, &layer.ffn_down_exps)
         {
-            let expert_intermediate_size = gate_exps.shape[1];
+            let intermediate_size = gate_exps.shape[1];
             let n_experts = gate_exps.shape[2];
 
-            for (expert_idx, routing_weight) in &top_k {
-                // Get expert weights
-                // gate_exps: [hidden_size, expert_intermediate_size, n_experts]
-                // We need to extract weights for this specific expert
+            // Dequantize the 3D tensors ONCE (this is the key optimization)
+            // Shape: [out_features, in_features, n_experts]
+            // For gate_exps: [intermediate_size, hidden_size, n_experts]
+            let gate_dequant = dequant_to_f32(
+                gate_exps.bytes(),
+                gate_exps.dtype,
+                intermediate_size * hidden_size * n_experts,
+            );
+            let up_dequant = dequant_to_f32(
+                up_exps.bytes(),
+                up_exps.dtype,
+                intermediate_size * hidden_size * n_experts,
+            );
+            let down_dequant = dequant_to_f32(
+                down_exps.bytes(),
+                down_exps.dtype,
+                hidden_size * intermediate_size * n_experts,
+            );
 
-                // Compute expert output (SwiGLU)
-                let expert_gate = self.compute_expert_gate(
+            for (expert_idx, routing_weight) in &top_k {
+                // Compute expert output using pre-dequantized weights
+                let expert_gate = self.gemv_dequant_expert(
                     hidden,
-                    gate_exps,
-                    up_exps,
+                    &gate_dequant,
                     *expert_idx,
-                    expert_intermediate_size,
+                    intermediate_size,
+                    hidden_size,
+                    n_experts,
                 )?;
-                let expert_down = self.compute_expert_down(
-                    &expert_gate,
-                    down_exps,
+                let expert_up = self.gemv_dequant_expert(
+                    hidden,
+                    &up_dequant,
+                    *expert_idx,
+                    intermediate_size,
+                    hidden_size,
+                    n_experts,
+                )?;
+
+                // SwiGLU
+                let mut hidden_ffn = vec![0.0f32; intermediate_size];
+                for i in 0..intermediate_size {
+                    let silu = expert_up[i] / (1.0 + (-expert_up[i]).exp());
+                    hidden_ffn[i] = expert_gate[i] * silu;
+                }
+
+                // Down projection
+                let expert_down = self.gemv_dequant_expert(
+                    &hidden_ffn,
+                    &down_dequant,
                     *expert_idx,
                     hidden_size,
+                    intermediate_size,
+                    n_experts,
                 )?;
 
                 // Add weighted output
@@ -520,6 +563,31 @@ impl LlamaModel {
         }
 
         Some(final_output)
+    }
+
+    /// GEMV with pre-dequantized expert weights (interleaved format)
+    fn gemv_dequant_expert(
+        &self,
+        x: &[f32],
+        dequant_weights: &[f32],
+        expert_idx: usize,
+        out_size: usize,
+        in_size: usize,
+        n_experts: usize,
+    ) -> Option<Vec<f32>> {
+        let mut out = vec![0.0f32; out_size];
+
+        for i in 0..out_size {
+            let mut sum = 0.0f32;
+            for j in 0..in_size {
+                // Index for W[i, j, expert_idx]: i * in_size * n_experts + j * n_experts + expert_idx
+                let idx = i * in_size * n_experts + j * n_experts + expert_idx;
+                sum += dequant_weights[idx] * x[j];
+            }
+            out[i] = sum;
+        }
+
+        Some(out)
     }
 
     /// Compute shared expert FFN (always used)
@@ -559,22 +627,33 @@ impl LlamaModel {
         expert_idx: usize,
         intermediate_size: usize,
     ) -> Option<Vec<f32>> {
-        // For Q4_K quantized expert weights, we need to compute the expert output
-        // This is a simplified version - full implementation would handle quantized weights properly
+        // 3D tensor shape: [out_features, in_features, n_experts]
+        // For MoE, experts are interleaved, so we need to extract the correct slices
+        //
+        // For quantized formats, the data is stored per-row with interleaved experts:
+        // Row 0: [expert0_block0, expert1_block0, ..., expert63_block0, expert0_block1, ...]
+        // Row 1: ...
+        //
+        // We compute GEMV directly by iterating over rows and extracting expert weights
 
-        // gate_exps and up_exps are quantized weights for all experts
-        // We need to select the weights for the specific expert
+        let hidden_size = hidden.len();
+        let n_experts = gate_exps.shape[2];
 
-        // For now, use a placeholder that works with F32 weights
-        // TODO: Handle quantized expert weights properly
-
-        let gate_expert = self.get_expert_weights(gate_exps, expert_idx)?;
-        let up_expert = self.get_expert_weights(up_exps, expert_idx)?;
-
-        // Compute gate and up
-        let gate_out =
-            self.gemv_impl(hidden, &gate_expert, intermediate_size)?;
-        let up_out = self.gemv_impl(hidden, &up_expert, intermediate_size)?;
+        // Compute gate and up using interleaved expert weights
+        let gate_out = self.gemv_expert(
+            hidden,
+            gate_exps,
+            expert_idx,
+            intermediate_size,
+            n_experts,
+        )?;
+        let up_out = self.gemv_expert(
+            hidden,
+            up_exps,
+            expert_idx,
+            intermediate_size,
+            n_experts,
+        )?;
 
         // SwiGLU
         let mut hidden_ffn = vec![0.0f32; intermediate_size];
@@ -594,8 +673,90 @@ impl LlamaModel {
         expert_idx: usize,
         hidden_size: usize,
     ) -> Option<Vec<f32>> {
-        let down_expert = self.get_expert_weights(down_exps, expert_idx)?;
-        self.gemv_impl(hidden_ffn, &down_expert, hidden_size)
+        let intermediate_size = hidden_ffn.len();
+        let n_experts = down_exps.shape[2];
+        self.gemv_expert(
+            hidden_ffn,
+            down_exps,
+            expert_idx,
+            hidden_size,
+            n_experts,
+        )
+    }
+
+    /// GEMV for interleaved expert weights
+    /// Expert weights tensor shape: [out_features, in_features, n_experts]
+    /// Each row has weights for all experts, interleaved
+    fn gemv_expert(
+        &self,
+        x: &[f32],
+        weights: &Tensor,
+        expert_idx: usize,
+        out_size: usize,
+        n_experts: usize,
+    ) -> Option<Vec<f32>> {
+        let in_size = x.len();
+        let mut out = vec![0.0f32; out_size];
+
+        // For each output row, we need to compute: out[i] = sum_j W[i,j,expert_idx] * x[j]
+        // The weights for row i, expert expert_idx are stored in the interleaved format
+
+        match weights.dtype {
+            DataType::F32 => {
+                // F32: each element is 4 bytes
+                let data: &[f32] = bytemuck::cast_slice(weights.bytes());
+                for i in 0..out_size {
+                    let mut sum = 0.0f32;
+                    for j in 0..in_size {
+                        // Index for W[i, j, expert_idx]: i * in_size * n_experts + j * n_experts + expert_idx
+                        let idx = i * in_size * n_experts
+                            + j * n_experts
+                            + expert_idx;
+                        sum += data[idx] * x[j];
+                    }
+                    out[i] = sum;
+                }
+            }
+            DataType::F16 => {
+                let data: &[u16] = bytemuck::cast_slice(weights.bytes());
+                for i in 0..out_size {
+                    let mut sum = 0.0f32;
+                    for j in 0..in_size {
+                        let idx = i * in_size * n_experts
+                            + j * n_experts
+                            + expert_idx;
+                        let f16_val = half::f16::from_bits(data[idx]);
+                        sum += f16_val.to_f32() * x[j];
+                    }
+                    out[i] = sum;
+                }
+            }
+            // For quantized formats, we need a different approach
+            // The quantization is per-block within each expert's weights
+            // For now, use a simplified approach that dequantizes the whole tensor
+            _ => {
+                // Dequantize the entire 3D tensor and then extract expert weights
+                // This is inefficient but correct
+                let total_elems = out_size * in_size * n_experts;
+                let dequant =
+                    dequant_to_f32(weights.bytes(), weights.dtype, total_elems);
+
+                for i in 0..out_size {
+                    let mut sum = 0.0f32;
+                    for j in 0..in_size {
+                        let idx = i * in_size * n_experts
+                            + j * n_experts
+                            + expert_idx;
+                        if idx < dequant.len() {
+                            sum += dequant[idx] * x[j];
+                        }
+                    }
+                    out[i] = sum;
+                }
+            }
+        }
+
+        Some(out)
     }
 
     /// Extract expert weights from a 3D tensor
@@ -1570,8 +1731,11 @@ impl LlamaModel {
             head_dim
         };
 
+        // For MLA, Q's head_dim is also different from config.head_dim
+        let q_head_dim = q_out_size / self.config.n_heads;
+
         // Update n_heads and n_kv_heads based on actual weight shapes
-        let actual_n_heads = q_out_size / head_dim;
+        let actual_n_heads = self.config.n_heads;
         let actual_n_kv_heads = k_out_size / k_head_dim;
 
         // For standard attention, apply Q/K norms (Qwen-style)
@@ -1627,12 +1791,10 @@ impl LlamaModel {
         // For standard attention: apply RoPE to full Q and K
         // For MLA: Q gets full RoPE, K only applies RoPE to the rope part
         let q_rope = if layer.attn_kv_a_mqa.is_some() {
-            // MLA: RoPE dimension is qk_rope_head_dim, not head_dim
-            // Q has different structure - need to check how Q is organized
-            // For DeepSeek MLA, Q head_dim is q_out_size / n_heads
-            self.apply_rope(&q, pos, actual_n_heads, head_dim)?
+            // MLA: Q's head_dim is q_head_dim (192 for DeepSeek)
+            self.apply_rope(&q, pos, actual_n_heads, q_head_dim)?
         } else {
-            self.apply_rope(&q, pos, actual_n_heads, head_dim)?
+            self.apply_rope(&q, pos, actual_n_heads, q_head_dim)?
         };
 
         let k_rope = if layer.attn_kv_a_mqa.is_some() {
@@ -1667,7 +1829,7 @@ impl LlamaModel {
         let actual_head_dim = if layer.attn_kv_a_mqa.is_some() {
             self.config.key_length
         } else {
-            head_dim
+            q_head_dim
         };
 
         // 4. Attention (use actual n_heads and head_dim)
@@ -1678,7 +1840,7 @@ impl LlamaModel {
             layer_idx,
             kv_cache,
             actual_n_heads,
-            actual_head_dim,
+            q_head_dim,
             actual_n_kv_heads,
         )?;
 
@@ -1697,8 +1859,8 @@ impl LlamaModel {
             hidden_size,
         )?;
 
-        // 8. FFN (SwiGLU)
-        let ffn_out = self.ffn_swiglu(&ffn_normed, layer, hidden_size)?;
+        // 8. FFN (SwiGLU or MoE)
+        let ffn_out = self.compute_ffn(layer, &ffn_normed, hidden_size)?;
 
         // 9. Residual
         Some(residual.iter().zip(ffn_out.iter()).map(|(r, f)| r + f).collect())
