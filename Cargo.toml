@@ -143,6 +143,10 @@ path = "tools/debug_gemm.rs"
 name = "debug-mla-layer"
 path = "tools/debug_mla_layer.rs"
 
+[[bin]]
+name = "ssm-perf"
+path = "benches/ssm_perf.rs"
+
 [features]
 default = []
 metal = []

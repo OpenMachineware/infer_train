@@ -8013,10 +8013,19 @@ impl MetalContext {
             &n_tok_u32 as *const u32 as *const c_void,
         );
 
-        // Grid: (n_tok, d_inner)
-        let grid_size =
-            MTLSize { width: n_tok as u64, height: d_inner as u64, depth: 1 };
-        let threadgroup_size = MTLSize { width: 1, height: 64, depth: 1 };
+        // Grid: (d_inner, d_state)
+        // Each thread processes one (d_inner, state_idx) pair
+        // Threadgroup size should be at least d_state for SIMD reduction
+        let grid_size = MTLSize {
+            width: d_inner as u64,
+            height: 16, // d_state = 16
+            depth: 1,
+        };
+        let threadgroup_size = MTLSize {
+            width: 1,
+            height: 16, // One SIMD group per d_inner
+            depth: 1,
+        };
 
         encoder.dispatch_threads(grid_size, threadgroup_size);
         encoder.end_encoding();
