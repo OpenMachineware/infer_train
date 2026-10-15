@@ -160,6 +160,10 @@ pub struct MetalContext {
     quantize_f16_4_pipeline: ComputePipelineState,
     quantize_q4_0_pipeline: ComputePipelineState,
     quantize_q8_0_pipeline: ComputePipelineState,
+    // SSM (State Space Model)
+    ssm_library: Library,
+    ssm_conv1d_d4_pipeline: ComputePipelineState,
+    ssm_scan_d16_pipeline: ComputePipelineState,
     // Cached buffers for MV operations
     // Once created with data, reuse without copy
     mv_weights_buffer: RefCell<Option<Buffer>>,
@@ -1192,6 +1196,37 @@ impl MetalContext {
                 format!("Failed to create Quantize Q8_0 pipeline: {}", e)
             })?;
 
+        // Compile SSM library (State Space Model kernels)
+        let ssm_conv_source =
+            include_str!("../../../ops/metal/ops/ssm_conv.metal");
+        let ssm_scan_source =
+            include_str!("../../../ops/metal/ops/ssm_scan.metal");
+        let ssm_combined = format!("{}\n{}", ssm_conv_source, ssm_scan_source);
+        let ssm_library = device
+            .new_library_with_source(&ssm_combined, &compile_options)
+            .map_err(|e| format!("Failed to compile SSM library: {}", e))?;
+
+        // Create SSM Conv1D pipeline (d_conv=4 for Qwen3.8)
+        let ssm_conv1d_d4_kernel =
+            ssm_library.get_function("ssm_conv1d_d4_f32", None).map_err(
+                |e| format!("Failed to get SSM Conv1D D4 kernel: {}", e),
+            )?;
+        let ssm_conv1d_d4_pipeline = device
+            .new_compute_pipeline_state_with_function(&ssm_conv1d_d4_kernel)
+            .map_err(|e| {
+                format!("Failed to create SSM Conv1D D4 pipeline: {}", e)
+            })?;
+
+        // Create SSM Scan pipelines
+        let ssm_scan_d16_kernel = ssm_library
+            .get_function("ssm_scan_d16_f32", None)
+            .map_err(|e| format!("Failed to get SSM Scan D16 kernel: {}", e))?;
+        let ssm_scan_d16_pipeline = device
+            .new_compute_pipeline_state_with_function(&ssm_scan_d16_kernel)
+            .map_err(|e| {
+                format!("Failed to create SSM Scan D16 pipeline: {}", e)
+            })?;
+
         Ok(Self {
             device,
             queue,
@@ -1277,6 +1312,10 @@ impl MetalContext {
             quantize_f16_4_pipeline,
             quantize_q4_0_pipeline,
             quantize_q8_0_pipeline,
+            // SSM
+            ssm_library,
+            ssm_conv1d_d4_pipeline,
+            ssm_scan_d16_pipeline,
             // MV buffers
             mv_weights_buffer: RefCell::new(None),
             mv_input_buffer: RefCell::new(None),
@@ -7705,5 +7744,292 @@ impl MetalContext {
         }
 
         Ok(output)
+    }
+
+    // ========================================================================
+    // SSM (State Space Model) Operators
+    // ========================================================================
+
+    /// SSM Conv1D: 1D convolution for state space models
+    /// Input x: [d_inner, n_tok + d_conv - 1]
+    /// Weight w: [d_inner, d_conv]
+    /// Bias: [d_inner] (optional)
+    /// Output y: [d_inner, n_tok]
+    pub fn ssm_conv1d_d4(
+        &self,
+        x: &[f32],
+        w: &[f32],
+        bias: Option<&[f32]>,
+        d_inner: usize,
+        n_tok: usize,
+    ) -> Result<Vec<f32>, String> {
+        let d_conv = 4;
+        let x_size = d_inner * (n_tok + d_conv - 1);
+        let w_size = d_inner * d_conv;
+
+        if x.len() != x_size {
+            return Err(format!(
+                "SSM Conv1D: x size mismatch, expected {}, got {}",
+                x_size,
+                x.len()
+            ));
+        }
+        if w.len() != w_size {
+            return Err(format!(
+                "SSM Conv1D: w size mismatch, expected {}, got {}",
+                w_size,
+                w.len()
+            ));
+        }
+        if let Some(b) = bias {
+            if b.len() != d_inner {
+                return Err(format!(
+                    "SSM Conv1D: bias size mismatch, expected {}, got {}",
+                    d_inner,
+                    b.len()
+                ));
+            }
+        }
+
+        // Create buffers
+        let x_buffer = self.device.new_buffer_with_data(
+            x.as_ptr() as *const c_void,
+            (x_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let w_buffer = self.device.new_buffer_with_data(
+            w.as_ptr() as *const c_void,
+            (w_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let bias_buffer = if let Some(b) = bias {
+            Some(self.device.new_buffer_with_data(
+                b.as_ptr() as *const c_void,
+                (d_inner * std::mem::size_of::<f32>()) as u64,
+                metal::MTLResourceOptions::StorageModeShared,
+            ))
+        } else {
+            None
+        };
+
+        let y_size = d_inner * n_tok;
+        let y_buffer = self.device.new_buffer(
+            (y_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        // Create command buffer and encoder
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.ssm_conv1d_d4_pipeline);
+        encoder.set_buffer(0, Some(&x_buffer), 0);
+        encoder.set_buffer(1, Some(&w_buffer), 0);
+        if let Some(ref b) = bias_buffer {
+            encoder.set_buffer(2, Some(b), 0);
+        } else {
+            encoder.set_buffer(2, None, 0);
+        }
+        encoder.set_buffer(3, Some(&y_buffer), 0);
+        let d_inner_u32 = d_inner as u32;
+        let n_tok_u32 = n_tok as u32;
+        encoder.set_bytes(
+            4,
+            std::mem::size_of::<u32>() as u64,
+            &d_inner_u32 as *const u32 as *const c_void,
+        );
+        encoder.set_bytes(
+            5,
+            std::mem::size_of::<u32>() as u64,
+            &n_tok_u32 as *const u32 as *const c_void,
+        );
+
+        // Grid: (n_tok, d_inner)
+        let grid_size =
+            MTLSize { width: n_tok as u64, height: d_inner as u64, depth: 1 };
+        let threadgroup_size = MTLSize { width: 16, height: 16, depth: 1 };
+
+        encoder.dispatch_threads(grid_size, threadgroup_size);
+        encoder.end_encoding();
+
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // Read result
+        let y_ptr = y_buffer.contents() as *const f32;
+        let y_slice = unsafe { std::slice::from_raw_parts(y_ptr, y_size) };
+        Ok(y_slice.to_vec())
+    }
+
+    /// SSM Scan: Recurrent state update for state space models
+    /// Input x: [d_inner, n_tok]
+    /// dt: [d_inner, n_tok]
+    /// A: [d_inner, d_state]
+    /// B: [d_state, n_tok]
+    /// C: [d_state, n_tok]
+    /// s0: [d_inner, d_state] (initial state, optional)
+    /// Output y: [d_inner, n_tok], s: [d_inner, d_state]
+    pub fn ssm_scan_d16(
+        &self,
+        x: &[f32],
+        dt: &[f32],
+        a: &[f32],
+        b: &[f32],
+        c: &[f32],
+        s0: Option<&[f32]>,
+        d_inner: usize,
+        n_tok: usize,
+    ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        let d_state = 16;
+        let x_size = d_inner * n_tok;
+        let a_size = d_inner * d_state;
+        let bc_size = d_state * n_tok;
+
+        if x.len() != x_size {
+            return Err(format!(
+                "SSM Scan: x size mismatch, expected {}, got {}",
+                x_size,
+                x.len()
+            ));
+        }
+        if dt.len() != x_size {
+            return Err(format!(
+                "SSM Scan: dt size mismatch, expected {}, got {}",
+                x_size,
+                dt.len()
+            ));
+        }
+        if a.len() != a_size {
+            return Err(format!(
+                "SSM Scan: A size mismatch, expected {}, got {}",
+                a_size,
+                a.len()
+            ));
+        }
+        if b.len() != bc_size {
+            return Err(format!(
+                "SSM Scan: B size mismatch, expected {}, got {}",
+                bc_size,
+                b.len()
+            ));
+        }
+        if c.len() != bc_size {
+            return Err(format!(
+                "SSM Scan: C size mismatch, expected {}, got {}",
+                bc_size,
+                c.len()
+            ));
+        }
+        if let Some(s) = s0 {
+            if s.len() != a_size {
+                return Err(format!(
+                    "SSM Scan: s0 size mismatch, expected {}, got {}",
+                    a_size,
+                    s.len()
+                ));
+            }
+        }
+
+        // Create buffers
+        let x_buffer = self.device.new_buffer_with_data(
+            x.as_ptr() as *const c_void,
+            (x_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let dt_buffer = self.device.new_buffer_with_data(
+            dt.as_ptr() as *const c_void,
+            (x_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let a_buffer = self.device.new_buffer_with_data(
+            a.as_ptr() as *const c_void,
+            (a_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let b_buffer = self.device.new_buffer_with_data(
+            b.as_ptr() as *const c_void,
+            (bc_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let c_buffer = self.device.new_buffer_with_data(
+            c.as_ptr() as *const c_void,
+            (bc_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let s0_buffer = if let Some(s) = s0 {
+            Some(self.device.new_buffer_with_data(
+                s.as_ptr() as *const c_void,
+                (a_size * std::mem::size_of::<f32>()) as u64,
+                metal::MTLResourceOptions::StorageModeShared,
+            ))
+        } else {
+            None
+        };
+
+        let y_buffer = self.device.new_buffer(
+            (x_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let s_buffer = self.device.new_buffer(
+            (a_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        // Create command buffer and encoder
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.ssm_scan_d16_pipeline);
+        encoder.set_buffer(0, Some(&x_buffer), 0);
+        encoder.set_buffer(1, Some(&dt_buffer), 0);
+        encoder.set_buffer(2, Some(&a_buffer), 0);
+        encoder.set_buffer(3, Some(&b_buffer), 0);
+        encoder.set_buffer(4, Some(&c_buffer), 0);
+        if let Some(ref s) = s0_buffer {
+            encoder.set_buffer(5, Some(s), 0);
+        } else {
+            encoder.set_buffer(5, None, 0);
+        }
+        encoder.set_buffer(6, Some(&y_buffer), 0);
+        encoder.set_buffer(7, Some(&s_buffer), 0);
+        let d_inner_u32 = d_inner as u32;
+        let n_tok_u32 = n_tok as u32;
+        encoder.set_bytes(
+            8,
+            std::mem::size_of::<u32>() as u64,
+            &d_inner_u32 as *const u32 as *const c_void,
+        );
+        encoder.set_bytes(
+            9,
+            std::mem::size_of::<u32>() as u64,
+            &n_tok_u32 as *const u32 as *const c_void,
+        );
+
+        // Grid: (n_tok, d_inner)
+        let grid_size =
+            MTLSize { width: n_tok as u64, height: d_inner as u64, depth: 1 };
+        let threadgroup_size = MTLSize { width: 1, height: 64, depth: 1 };
+
+        encoder.dispatch_threads(grid_size, threadgroup_size);
+        encoder.end_encoding();
+
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // Read results
+        let y_ptr = y_buffer.contents() as *const f32;
+        let s_ptr = s_buffer.contents() as *const f32;
+        let y_slice = unsafe { std::slice::from_raw_parts(y_ptr, x_size) };
+        let s_slice = unsafe { std::slice::from_raw_parts(s_ptr, a_size) };
+
+        Ok((y_slice.to_vec(), s_slice.to_vec()))
     }
 }
