@@ -82,12 +82,13 @@ use crate::quant::kv_cache::{
 
 /// FP32 KV Cache (simplest implementation)
 pub struct KVCacheF32 {
-    k_cache: Vec<Vec<Vec<Vec<f32>>>>, // [n_layers, n_kv_heads, max_seq, head_dim]
-    v_cache: Vec<Vec<Vec<Vec<f32>>>>,
+    k_cache: Vec<Vec<Vec<Vec<f32>>>>, // [n_layers, n_kv_heads, max_seq, k_head_dim]
+    v_cache: Vec<Vec<Vec<Vec<f32>>>>, // [n_layers, n_kv_heads, max_seq, v_head_dim]
     seq_len: usize,
     n_layers: usize,
     n_kv_heads: usize,
-    head_dim: usize,
+    k_head_dim: usize, // Key dimension per head (key_length for MLA)
+    v_head_dim: usize, // Value dimension per head (value_length for MLA)
     max_seq: usize,
 }
 
@@ -164,19 +165,31 @@ pub struct KVCacheQ5_1 {
 
 impl KVCacheF32 {
     pub fn new(config: &ModelConfig, max_seq: usize) -> Self {
-        let head_dim = config.head_dim;
+        // For MLA (Multi-head Latent Attention), K and V have different dimensions
+        // K uses key_length, V uses value_length
+        // For standard attention, both use head_dim
+        let k_head_dim = if config.key_length > 0 {
+            config.key_length // MLA uses key_length
+        } else {
+            config.head_dim
+        };
+        let v_head_dim = if config.value_length > 0 {
+            config.value_length // MLA uses value_length
+        } else {
+            config.head_dim
+        };
 
         KVCacheF32 {
             k_cache: vec![
                 vec![
-                    vec![vec![0.0; head_dim]; max_seq];
+                    vec![vec![0.0; k_head_dim]; max_seq];
                     config.n_kv_heads
                 ];
                 config.n_layers
             ],
             v_cache: vec![
                 vec![
-                    vec![vec![0.0; head_dim]; max_seq];
+                    vec![vec![0.0; v_head_dim]; max_seq];
                     config.n_kv_heads
                 ];
                 config.n_layers
@@ -184,7 +197,8 @@ impl KVCacheF32 {
             seq_len: 0,
             n_layers: config.n_layers,
             n_kv_heads: config.n_kv_heads,
-            head_dim,
+            k_head_dim: k_head_dim,
+            v_head_dim: v_head_dim,
             max_seq,
         }
     }
@@ -227,9 +241,14 @@ impl KVCacheBase for KVCacheF32 {
         head_dim: usize,
     ) {
         // K is [n_kv_heads * head_dim], store at position seq_len
+        // For MLA, head_dim = key_length
         for head in 0..n_kv_heads {
             let src_start = head * head_dim;
             let src_end = src_start + head_dim;
+            // Resize cache entry if needed
+            if self.k_cache[layer][head][self.seq_len].len() != head_dim {
+                self.k_cache[layer][head][self.seq_len] = vec![0.0; head_dim];
+            }
             self.k_cache[layer][head][self.seq_len]
                 .copy_from_slice(&k[src_start..src_end]);
         }
@@ -243,9 +262,14 @@ impl KVCacheBase for KVCacheF32 {
         head_dim: usize,
     ) {
         // V is [n_kv_heads * head_dim], store at position seq_len
+        // For MLA, head_dim = value_length
         for head in 0..n_kv_heads {
             let src_start = head * head_dim;
             let src_end = src_start + head_dim;
+            // Resize cache entry if needed
+            if self.v_cache[layer][head][self.seq_len].len() != head_dim {
+                self.v_cache[layer][head][self.seq_len] = vec![0.0; head_dim];
+            }
             self.v_cache[layer][head][self.seq_len]
                 .copy_from_slice(&v[src_start..src_end]);
         }

@@ -288,25 +288,102 @@ impl LlamaModel {
             return Some((q, k, v, q_out_size, k_out_size, v_out_size));
         }
 
-        // Try MQA (DeepSeek-Coder-V2-style)
-        // MQA uses attn_kv_a_mqa for KV and attn_q for Q
-        if let (Some(wq), Some(kv_a)) = (&layer.wq, &layer.attn_kv_a_mqa) {
+        // Try MQA (DeepSeek-Coder-V2-style MLA)
+        // Multi-head Latent Attention uses low-rank compression for KV
+        // Flow:
+        // 1. Q = hidden @ attn_q
+        // 2. KV_A = hidden @ attn_kv_a_mqa → [kv_lora_rank + qk_rope_head_dim]
+        //    - KV_A[:kv_lora_rank] = compressed KV latent
+        //    - KV_A[kv_lora_rank:] = key RoPE latent
+        // 3. KV_A_normed = RMSNorm(KV_A[:kv_lora_rank], attn_kv_a_norm)
+        // 4. KV = KV_A_normed @ attn_kv_b → [n_kv_heads * (qk_nope_head_dim + value_length)]
+        // 5. K = concat(KV_A[kv_lora_rank:], KV[:n_kv_heads * qk_nope_head_dim]) per head
+        // 6. V = KV[n_kv_heads * qk_nope_head_dim:]
+        if let (Some(wq), Some(kv_a), Some(kv_b), Some(kv_a_norm)) = (
+            &layer.wq,
+            &layer.attn_kv_a_mqa,
+            &layer.attn_kv_b,
+            &layer.attn_kv_a_norm,
+        ) {
             let q_out_size = wq.shape[1];
-            // kv_a shape is [hidden, kv_a_size] where kv_a_size includes compressed KV
-            let kv_a_out_size = kv_a.shape[1];
+            let kv_a_out_size = kv_a.shape[1]; // kv_lora_rank + qk_rope_head_dim
+            let kv_b_out_size = kv_b.shape[1]; // n_kv_heads * (qk_nope_head_dim + value_length)
 
+            // 1. Q projection
             let q = self.gemv_impl(hidden, wq, q_out_size)?;
+
+            // 2. KV_A projection (compressed)
             let kv_a_proj = self.gemv_impl(hidden, kv_a, kv_a_out_size)?;
 
-            // For MQA, kv_a is compressed. We need to decode it.
-            // This is simplified - real implementation needs proper dequantization
-            // For now, use kv_a_proj as both k and v (placeholder)
-            let k_out_size = n_kv_heads * head_dim;
-            let v_out_size = n_kv_heads * head_dim;
-            let k = kv_a_proj[0..k_out_size.min(kv_a_out_size)].to_vec();
-            let v = kv_a_proj[0..v_out_size.min(kv_a_out_size)].to_vec();
+            // 3. KV_A normalization (RMSNorm on the first kv_lora_rank elements)
+            let kv_lora_rank = self.config.kv_lora_rank;
+            let qk_rope_head_dim = self.config.qk_rope_head_dim;
+            if kv_lora_rank == 0
+                || kv_lora_rank + qk_rope_head_dim > kv_a_out_size
+            {
+                return None;
+            }
 
-            return Some((q, k, v, q_out_size, k_out_size, v_out_size));
+            // RMSNorm on kv_a[:kv_lora_rank]
+            let norm_data: &[f32] = bytemuck::cast_slice(kv_a_norm.bytes());
+            let eps = self.config.rms_norm_eps;
+
+            // Compute RMS
+            let mut ss = 0.0f32;
+            for i in 0..kv_lora_rank {
+                ss += kv_a_proj[i] * kv_a_proj[i];
+            }
+            ss /= kv_lora_rank as f32;
+            let rms = 1.0 / (ss + eps).sqrt();
+
+            // Normalize and scale
+            let kv_a_normed: Vec<f32> = kv_a_proj[0..kv_lora_rank]
+                .iter()
+                .zip(norm_data.iter())
+                .map(|(x, w)| x * rms * w)
+                .collect();
+
+            // 4. KV_B projection (decompress to full KV)
+            // kv_b shape: [kv_lora_rank, n_kv_heads * (qk_nope_head_dim + value_length)]
+            let kv = self.gemv_impl(&kv_a_normed, kv_b, kv_b_out_size)?;
+
+            // 5. Construct K and V
+            // qk_nope_head_dim = key_length - qk_rope_head_dim
+            let key_length = self.config.key_length;
+            let value_length = self.config.value_length;
+            let qk_nope_head_dim = key_length - qk_rope_head_dim;
+
+            // The RoPE part of the key is shared across all heads
+            let k_rope =
+                &kv_a_proj[kv_lora_rank..kv_lora_rank + qk_rope_head_dim];
+
+            // The non-RoPE part of the key and value come from kv
+            // kv layout: [k_nope_head_0, ..., k_nope_head_n, v_head_0, ..., v_head_n]
+            let k_nope_size = n_kv_heads * qk_nope_head_dim;
+            let v_size = n_kv_heads * value_length;
+
+            // Construct K: for each head, concat(k_rope, k_nope[head])
+            let mut k = Vec::with_capacity(n_kv_heads * key_length);
+            for head in 0..n_kv_heads {
+                // Add RoPE part (shared)
+                k.extend_from_slice(k_rope);
+                // Add non-RoPE part (per-head)
+                let nope_start = head * qk_nope_head_dim;
+                let nope_end = (head + 1) * qk_nope_head_dim;
+                k.extend_from_slice(&kv[nope_start..nope_end]);
+            }
+
+            // V is the remaining part
+            let v = kv[k_nope_size..k_nope_size + v_size].to_vec();
+
+            return Some((
+                q,
+                k,
+                v,
+                q_out_size,
+                n_kv_heads * key_length,
+                v_size,
+            ));
         }
 
         None
@@ -1465,7 +1542,7 @@ impl LlamaModel {
         kv_cache: &mut crate::inference::KVCache,
         _n_heads: usize,
         head_dim: usize,
-        _n_kv_heads: usize,
+        n_kv_heads: usize,
     ) -> Option<Vec<f32>> {
         let hidden_size = self.config.hidden_size;
         let pos = kv_cache.seq_len();
@@ -1477,93 +1554,123 @@ impl LlamaModel {
             hidden_size,
         )?;
 
-        // 2. QKV projections (use actual weight shapes, not config)
-        let wq = layer.wq.as_ref()?;
-        let wk = layer.wk.as_ref()?;
-        let wv = layer.wv.as_ref()?;
+        // 2. QKV projections (support standard and MQA architectures)
+        let (q, k, v, q_out_size, k_out_size, v_out_size) = self.get_qkv_proj(
+            layer,
+            &normed,
+            self.config.n_heads,
+            n_kv_heads,
+            head_dim,
+        )?;
 
-        // GGUF uses column-major: shape = [K, M], where K=input, M=output
-        let q_out_size = wq.shape[1]; // Second dimension is output
-        let k_out_size = wk.shape[1];
-        let v_out_size = wv.shape[1];
-
-        let mut q = self.gemv_impl(&normed, wq, q_out_size)?;
-        let mut k = self.gemv_impl(&normed, wk, k_out_size)?;
-        let mut v = self.gemv_impl(&normed, wv, v_out_size)?;
-
-        // Add biases if present
-        if let Some(bq) = &layer.bq {
-            let bias_data: &[f32] = bytemuck::cast_slice(bq.bytes());
-            for i in 0..q_out_size.min(bias_data.len()) {
-                q[i] += bias_data[i];
-            }
-        }
-        if let Some(bk) = &layer.bk {
-            let bias_data: &[f32] = bytemuck::cast_slice(bk.bytes());
-            for i in 0..k_out_size.min(bias_data.len()) {
-                k[i] += bias_data[i];
-            }
-        }
-        if let Some(bv) = &layer.bv {
-            let bias_data: &[f32] = bytemuck::cast_slice(bv.bytes());
-            for i in 0..v_out_size.min(bias_data.len()) {
-                v[i] += bias_data[i];
-            }
-        }
+        // For MLA, the head_dim for K/V is different from Q
+        let k_head_dim = if layer.attn_kv_a_mqa.is_some() {
+            self.config.key_length
+        } else {
+            head_dim
+        };
 
         // Update n_heads and n_kv_heads based on actual weight shapes
         let actual_n_heads = q_out_size / head_dim;
-        let actual_n_kv_heads = k_out_size / head_dim;
+        let actual_n_kv_heads = k_out_size / k_head_dim;
 
-        // 2.5 Apply Q/K norms (Qwen-style)
-        // Qwen uses separate norms for Q and K after projection
-        if let Some(ref q_norm) = layer.q_norm {
-            // q_norm shape is [head_dim], apply per-head
-            for h in 0..actual_n_heads {
-                let start = h * head_dim;
-                let end = start + head_dim;
-                if end > q.len() {
-                    break;
+        // For standard attention, apply Q/K norms (Qwen-style)
+        // For MQA, norms are already applied in compute_qkv
+        let mut q = q;
+        let mut k = k;
+        if layer.wk.is_some() {
+            // Standard attention - apply Q/K norms if present
+            if let Some(ref q_norm) = layer.q_norm {
+                // q_norm shape is [head_dim], apply per-head
+                for h in 0..actual_n_heads {
+                    let start = h * head_dim;
+                    let end = start + head_dim;
+                    if end > q.len() {
+                        break;
+                    }
+                    let q_head = &q[start..end];
+                    let normed =
+                        self.apply_rms_norm_impl(q_head, q_norm, head_dim)?;
+                    // Copy back - need mutable slice
+                    let q_mut = unsafe {
+                        std::slice::from_raw_parts_mut(
+                            q.as_ptr() as *mut f32,
+                            q.len(),
+                        )
+                    };
+                    q_mut[start..end].copy_from_slice(&normed);
                 }
-                let q_head = &q[start..end];
-                let normed =
-                    self.apply_rms_norm_impl(q_head, q_norm, head_dim)?;
-                // Copy back - need mutable slice
-                let q_mut = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        q.as_ptr() as *mut f32,
-                        q.len(),
-                    )
-                };
-                q_mut[start..end].copy_from_slice(&normed);
+            }
+            if let Some(ref k_norm) = layer.k_norm {
+                // k_norm shape is [head_dim], apply per-head
+                for h in 0..actual_n_kv_heads {
+                    let start = h * head_dim;
+                    let end = start + head_dim;
+                    if end > k.len() {
+                        break;
+                    }
+                    let k_head = &k[start..end];
+                    let normed =
+                        self.apply_rms_norm_impl(k_head, k_norm, head_dim)?;
+                    let k_mut = unsafe {
+                        std::slice::from_raw_parts_mut(
+                            k.as_ptr() as *mut f32,
+                            k.len(),
+                        )
+                    };
+                    k_mut[start..end].copy_from_slice(&normed);
+                }
             }
         }
-        if let Some(ref k_norm) = layer.k_norm {
-            // k_norm shape is [head_dim], apply per-head
+
+        // 3. RoPE
+        // For standard attention: apply RoPE to full Q and K
+        // For MLA: Q gets full RoPE, K only applies RoPE to the rope part
+        let q_rope = if layer.attn_kv_a_mqa.is_some() {
+            // MLA: RoPE dimension is qk_rope_head_dim, not head_dim
+            // Q has different structure - need to check how Q is organized
+            // For DeepSeek MLA, Q head_dim is q_out_size / n_heads
+            self.apply_rope(&q, pos, actual_n_heads, head_dim)?
+        } else {
+            self.apply_rope(&q, pos, actual_n_heads, head_dim)?
+        };
+
+        let k_rope = if layer.attn_kv_a_mqa.is_some() {
+            // MLA: Only apply RoPE to the rope part of K
+            // K structure per head: [qk_rope_head_dim (rope), qk_nope_head_dim (non-rope)]
+            let qk_rope_head_dim = self.config.qk_rope_head_dim;
+            let key_length = self.config.key_length;
+
+            // Apply RoPE only to the rope part of each head
+            let mut k_with_rope = Vec::with_capacity(k.len());
             for h in 0..actual_n_kv_heads {
-                let start = h * head_dim;
-                let end = start + head_dim;
-                if end > k.len() {
-                    break;
-                }
-                let k_head = &k[start..end];
-                let normed =
-                    self.apply_rms_norm_impl(k_head, k_norm, head_dim)?;
-                let k_mut = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        k.as_ptr() as *mut f32,
-                        k.len(),
-                    )
-                };
-                k_mut[start..end].copy_from_slice(&normed);
+                let head_start = h * key_length;
+                let rope_end = head_start + qk_rope_head_dim;
+                let nope_end = head_start + key_length;
+
+                // Apply RoPE to rope part
+                let k_rope_head = &k[head_start..rope_end];
+                let rope_applied =
+                    self.apply_rope(k_rope_head, pos, 1, qk_rope_head_dim)?;
+                k_with_rope.extend(rope_applied);
+
+                // Copy non-rope part unchanged
+                k_with_rope.extend_from_slice(&k[rope_end..nope_end]);
             }
-        }
+            k_with_rope
+        } else {
+            self.apply_rope(&k, pos, actual_n_kv_heads, head_dim)?
+        };
 
-        // 3. RoPE (use actual n_heads)
-        let q_rope = self.apply_rope(&q, pos, actual_n_heads, head_dim)?;
-        let k_rope = self.apply_rope(&k, pos, actual_n_kv_heads, head_dim)?;
+        // For MLA, use key_length as head_dim for both Q and K
+        // In MLA, Q is projected to qk_head_dim (key_length), not standard head_dim
+        let actual_head_dim = if layer.attn_kv_a_mqa.is_some() {
+            self.config.key_length
+        } else {
+            head_dim
+        };
 
-        // 4. Attention (use actual n_heads)
+        // 4. Attention (use actual n_heads and head_dim)
         let attn_out = self.attention(
             &q_rope,
             &k_rope,
@@ -1571,7 +1678,7 @@ impl LlamaModel {
             layer_idx,
             kv_cache,
             actual_n_heads,
-            head_dim,
+            actual_head_dim,
             actual_n_kv_heads,
         )?;
 
@@ -1747,14 +1854,22 @@ impl LlamaModel {
         head_dim: usize,
         n_kv_heads: usize,
     ) -> Option<Vec<f32>> {
+        // For MLA, K and V have different dimensions
+        // k_head_dim = key_length, v_head_dim = value_length
+        // For standard attention, both use head_dim
+        let k_head_dim = k.len() / n_kv_heads;
+        let v_head_dim = v.len() / n_kv_heads;
+
         // Store K, V in cache (will be stored at current seq_len position)
-        kv_cache.set_k(layer_idx, k, n_kv_heads, head_dim);
-        kv_cache.set_v(layer_idx, v, n_kv_heads, head_dim);
+        kv_cache.set_k(layer_idx, k, n_kv_heads, k_head_dim);
+        kv_cache.set_v(layer_idx, v, n_kv_heads, v_head_dim);
 
         let seq_len = kv_cache.seq_len() + 1; // +1 because we just added
+        // Use v_head_dim for output dimension, not k_head_dim
+        let v_head_dim = v.len() / n_kv_heads;
         let scale = 1.0f32 / (head_dim as f32).sqrt();
 
-        let mut out = vec![0.0f32; n_heads * head_dim];
+        let mut out = vec![0.0f32; n_heads * v_head_dim];
 
         // For each query head
         for h in 0..n_heads {
@@ -1785,13 +1900,13 @@ impl LlamaModel {
             }
 
             // Weighted sum of V
-            for d in 0..head_dim {
+            for d in 0..v_head_dim {
                 let mut sum = 0.0f32;
                 for s in 0..seq_len {
                     let v_s = kv_cache.get_v(layer_idx, kv_head, s);
                     sum += scores[s] * v_s[d];
                 }
-                out[h * head_dim + d] = sum;
+                out[h * v_head_dim + d] = sum;
             }
         }
 

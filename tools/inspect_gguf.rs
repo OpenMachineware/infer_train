@@ -58,6 +58,20 @@ fn main() {
         "mistral3.embedding_length",
         "mistral3.feed_forward_length",
         "mistral3.rope.dimension_count",
+        // DeepSeek
+        "deepseek2.attention.head_count",
+        "deepseek2.attention.head_count_kv",
+        "deepseek2.attention.key_length",
+        "deepseek2.attention.value_length",
+        "deepseek2.attention.kv_lora_rank",
+        "deepseek2.block_count",
+        "deepseek2.embedding_length",
+        "deepseek2.feed_forward_length",
+        "deepseek2.expert_count",
+        "deepseek2.expert_used_count",
+        "deepseek2.expert_shared_count",
+        "deepseek2.expert_feed_forward_length",
+        "deepseek2.rope.dimension_count",
     ];
     for key in &keys {
         if let Some(value) = gguf.metadata.get(*key) {

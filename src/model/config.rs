@@ -24,6 +24,12 @@ pub struct ModelConfig {
     pub n_experts_shared: usize, // Number of shared experts
     pub expert_intermediate_size: usize, // Intermediate size for each expert
 
+    // DeepSeek MQA (Multi-Query Attention)
+    pub kv_lora_rank: usize, // KV LoRA rank (compressed KV dimension)
+    pub qk_rope_head_dim: usize, // QK RoPE dimension per head (stored in kv_a_mqa)
+    pub key_length: usize, // Key length after decompression (total qk_head_dim)
+    pub value_length: usize, // Value length after decompression
+
     // RoPE
     pub rope_dim: usize,
     pub rope_freq_base: f32,
@@ -121,6 +127,21 @@ impl ModelConfig {
             get_u64(&arch_meta, "expert_feed_forward_length")
                 .unwrap_or(intermediate_size as u64) as usize;
 
+        // DeepSeek MQA parameters
+        let kv_lora_rank =
+            get_u64(&arch_meta, "attention.kv_lora_rank").unwrap_or(0) as usize;
+        let key_length = get_u64(&arch_meta, "attention.key_length")
+            .unwrap_or(head_dim as u64) as usize;
+        let value_length = get_u64(&arch_meta, "attention.value_length")
+            .unwrap_or(head_dim as u64) as usize;
+        // qk_rope_head_dim is derived from rope_dim for DeepSeek models
+        // For MLA, kv_a_mqa output = kv_lora_rank + qk_rope_head_dim
+        let qk_rope_head_dim = if kv_lora_rank > 0 {
+            rope_dim // DeepSeek uses rope_dim for the RoPE part of QK
+        } else {
+            0
+        };
+
         ModelConfig {
             architecture,
             hidden_size,
@@ -134,6 +155,10 @@ impl ModelConfig {
             n_experts_used,
             n_experts_shared,
             expert_intermediate_size,
+            kv_lora_rank,
+            qk_rope_head_dim,
+            key_length,
+            value_length,
             rope_dim,
             rope_freq_base,
             rms_norm_eps,
