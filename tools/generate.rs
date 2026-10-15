@@ -47,9 +47,21 @@ fn main() {
     println!("\n=== Prefill (batch) ===");
     let start_prefill = Instant::now();
 
+    // Check if model uses MQA (DeepSeek) - use CPU fallback for now
+    let is_mqa = ctx.config.architecture == "deepseek2";
+
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    let logits =
-        ctx.forward_prefill_batch(&prompt_tokens).expect("Prefill failed");
+    let logits = if is_mqa {
+        println!("Using CPU fallback for MQA architecture");
+        let mut kv_cache = infer_train::inference::KVCache::new(
+            &ctx.config,
+            prompt_tokens.len() + max_tokens,
+            infer_train::inference::KVCacheFormat::F32,
+        );
+        ctx.forward(&prompt_tokens, &mut kv_cache).expect("Prefill failed")
+    } else {
+        ctx.forward_prefill_batch(&prompt_tokens).expect("Prefill failed")
+    };
 
     #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
     let logits = {

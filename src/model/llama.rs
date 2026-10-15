@@ -359,9 +359,99 @@ impl LlamaModel {
         hidden: &[f32],
         hidden_size: usize,
     ) -> Option<Vec<f32>> {
-        // For now, use shared expert only (simplified implementation)
-        // Full MoE would need expert routing via ffn_gate_inp
+        // 1. Compute routing scores
+        let routing_scores = if let Some(gate_inp) = &layer.ffn_gate_inp {
+            // gate_inp: [n_experts, hidden_size]
+            let n_experts = gate_inp.shape[0];
+            let mut scores = vec![0.0f32; n_experts];
 
+            // Compute routing scores: hidden @ gate_inp^T
+            for e in 0..n_experts {
+                let weight: &[f32] = bytemuck::cast_slice(gate_inp.bytes());
+                let offset = e * hidden_size;
+                for i in 0..hidden_size {
+                    scores[e] += hidden[i] * weight[offset + i];
+                }
+            }
+
+            // Softmax
+            let max_score =
+                scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let sum: f32 = scores.iter().map(|s| (s - max_score).exp()).sum();
+            for s in &mut scores {
+                *s = ((*s - max_score).exp()) / sum;
+            }
+
+            scores
+        } else {
+            // No routing, just use shared expert
+            return self.compute_shared_expert(layer, hidden, hidden_size);
+        };
+
+        // 2. Select top-k experts
+        let n_experts_used = self.config.n_experts_used;
+        let mut expert_indices: Vec<(usize, f32)> =
+            routing_scores.iter().enumerate().map(|(i, &s)| (i, s)).collect();
+        expert_indices.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let top_k: Vec<(usize, f32)> =
+            expert_indices.into_iter().take(n_experts_used).collect();
+
+        // 3. Compute routed expert outputs
+        let mut routed_output = vec![0.0f32; hidden_size];
+
+        if let (Some(gate_exps), Some(up_exps), Some(down_exps)) =
+            (&layer.ffn_gate_exps, &layer.ffn_up_exps, &layer.ffn_down_exps)
+        {
+            let expert_intermediate_size = gate_exps.shape[1];
+            let n_experts = gate_exps.shape[2];
+
+            for (expert_idx, routing_weight) in &top_k {
+                // Get expert weights
+                // gate_exps: [hidden_size, expert_intermediate_size, n_experts]
+                // We need to extract weights for this specific expert
+
+                // Compute expert output (SwiGLU)
+                let expert_gate = self.compute_expert_gate(
+                    hidden,
+                    gate_exps,
+                    up_exps,
+                    *expert_idx,
+                    expert_intermediate_size,
+                )?;
+                let expert_down = self.compute_expert_down(
+                    &expert_gate,
+                    down_exps,
+                    *expert_idx,
+                    hidden_size,
+                )?;
+
+                // Add weighted output
+                for i in 0..hidden_size {
+                    routed_output[i] += routing_weight * expert_down[i];
+                }
+            }
+        }
+
+        // 4. Compute shared expert output
+        let shared_output =
+            self.compute_shared_expert(layer, hidden, hidden_size)?;
+
+        // 5. Combine routed + shared outputs
+        let mut final_output = vec![0.0f32; hidden_size];
+        for i in 0..hidden_size {
+            final_output[i] = routed_output[i] + shared_output[i];
+        }
+
+        Some(final_output)
+    }
+
+    /// Compute shared expert FFN (always used)
+    fn compute_shared_expert(
+        &self,
+        layer: &LlamaLayer,
+        hidden: &[f32],
+        hidden_size: usize,
+    ) -> Option<Vec<f32>> {
         if let (Some(gate), Some(up), Some(down)) =
             (&layer.ffn_gate_shexp, &layer.ffn_up_shexp, &layer.ffn_down_shexp)
         {
@@ -377,29 +467,97 @@ impl LlamaModel {
                 hidden_ffn[i] = gate_out[i] * silu;
             }
 
-            let output = self.gemv_impl(&hidden_ffn, down, hidden_size);
-            return output;
+            self.gemv_impl(&hidden_ffn, down, hidden_size)
+        } else {
+            Some(vec![0.0f32; hidden_size])
+        }
+    }
+
+    /// Compute expert gate + up projection
+    fn compute_expert_gate(
+        &self,
+        hidden: &[f32],
+        gate_exps: &Tensor,
+        up_exps: &Tensor,
+        expert_idx: usize,
+        intermediate_size: usize,
+    ) -> Option<Vec<f32>> {
+        // For Q4_K quantized expert weights, we need to compute the expert output
+        // This is a simplified version - full implementation would handle quantized weights properly
+
+        // gate_exps and up_exps are quantized weights for all experts
+        // We need to select the weights for the specific expert
+
+        // For now, use a placeholder that works with F32 weights
+        // TODO: Handle quantized expert weights properly
+
+        let gate_expert = self.get_expert_weights(gate_exps, expert_idx)?;
+        let up_expert = self.get_expert_weights(up_exps, expert_idx)?;
+
+        // Compute gate and up
+        let gate_out =
+            self.gemv_impl(hidden, &gate_expert, intermediate_size)?;
+        let up_out = self.gemv_impl(hidden, &up_expert, intermediate_size)?;
+
+        // SwiGLU
+        let mut hidden_ffn = vec![0.0f32; intermediate_size];
+        for i in 0..intermediate_size {
+            let silu = up_out[i] / (1.0 + (-up_out[i]).exp());
+            hidden_ffn[i] = gate_out[i] * silu;
         }
 
-        // Fallback: use standard FFN if no MoE weights found
-        if let (Some(w1), Some(w2), Some(w3)) =
-            (&layer.w1, &layer.w2, &layer.w3)
-        {
-            let intermediate_size = w1.shape[1];
-            let gate = self.gemv_impl(hidden, w1, intermediate_size)?;
-            let up = self.gemv_impl(hidden, w3, intermediate_size)?;
+        Some(hidden_ffn)
+    }
 
-            let mut hidden_ffn = vec![0.0f32; intermediate_size];
-            for i in 0..intermediate_size {
-                let silu = up[i] / (1.0 + (-up[i]).exp());
-                hidden_ffn[i] = gate[i] * silu;
-            }
+    /// Compute expert down projection
+    fn compute_expert_down(
+        &self,
+        hidden_ffn: &[f32],
+        down_exps: &Tensor,
+        expert_idx: usize,
+        hidden_size: usize,
+    ) -> Option<Vec<f32>> {
+        let down_expert = self.get_expert_weights(down_exps, expert_idx)?;
+        self.gemv_impl(hidden_ffn, &down_expert, hidden_size)
+    }
 
-            let output = self.gemv_impl(&hidden_ffn, w2, hidden_size);
-            return output;
+    /// Extract expert weights from a 3D tensor
+    fn get_expert_weights(
+        &self,
+        weights: &Tensor,
+        expert_idx: usize,
+    ) -> Option<Tensor> {
+        // The expert weights tensor has shape [out_features, in_features, n_experts]
+        // We need to extract a 2D slice for the specific expert
+
+        let shape = &weights.shape;
+        let out_features = shape[0];
+        let in_features = shape[1];
+        let n_experts = shape.get(2).copied().unwrap_or(1);
+
+        if expert_idx >= n_experts {
+            return None;
         }
 
-        None
+        // Calculate the byte offset for this expert
+        let bytes_per_expert =
+            weights.dtype.bytes_for_elems(out_features * in_features);
+        let offset = expert_idx * bytes_per_expert;
+
+        // Create a new tensor view for this expert
+        Some(Tensor {
+            name: format!("{}_expert_{}", weights.name, expert_idx),
+            shape: vec![out_features, in_features],
+            dtype: weights.dtype,
+            data: crate::model::tensor::TensorData::Owned(
+                weights
+                    .bytes()
+                    .get(offset..offset + bytes_per_expert)?
+                    .to_vec(),
+            ),
+            #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+            gpu_buffer: std::cell::RefCell::new(None),
+        })
     }
 
     /// Forward pass with GPU context

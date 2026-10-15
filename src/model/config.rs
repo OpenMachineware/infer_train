@@ -18,6 +18,12 @@ pub struct ModelConfig {
     pub head_dim: usize, // Explicit head_dim (derived from weights, not hidden_size/n_heads)
     pub vocab_size: usize,
 
+    // MoE (Mixture of Experts)
+    pub n_experts: usize,        // Total number of experts
+    pub n_experts_used: usize,   // Number of experts used per token (top-k)
+    pub n_experts_shared: usize, // Number of shared experts
+    pub expert_intermediate_size: usize, // Intermediate size for each expert
+
     // RoPE
     pub rope_dim: usize,
     pub rope_freq_base: f32,
@@ -104,6 +110,17 @@ impl ModelConfig {
         // Initial head_dim guess from hidden_size/n_heads (will be fixed from weights)
         let head_dim = hidden_size / n_heads;
 
+        // MoE parameters (DeepSeek, Qwen-MoE, etc.)
+        let n_experts =
+            get_u64(&arch_meta, "expert_count").unwrap_or(0) as usize;
+        let n_experts_used =
+            get_u64(&arch_meta, "expert_used_count").unwrap_or(0) as usize;
+        let n_experts_shared =
+            get_u64(&arch_meta, "expert_shared_count").unwrap_or(0) as usize;
+        let expert_intermediate_size =
+            get_u64(&arch_meta, "expert_feed_forward_length")
+                .unwrap_or(intermediate_size as u64) as usize;
+
         ModelConfig {
             architecture,
             hidden_size,
@@ -113,6 +130,10 @@ impl ModelConfig {
             n_kv_heads,
             head_dim,
             vocab_size,
+            n_experts,
+            n_experts_used,
+            n_experts_shared,
+            expert_intermediate_size,
             rope_dim,
             rope_freq_base,
             rms_norm_eps,
