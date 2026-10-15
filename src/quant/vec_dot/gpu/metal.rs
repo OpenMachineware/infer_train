@@ -7272,7 +7272,23 @@ impl MetalContext {
             MTLSize { width: 1, height: n_heads as u64, depth: n_seqs as u64 };
 
         // Threadgroup memory for shared query and scores
-        let shmem_size = head_dim * 4 + 128 + head_dim * 4;
+        // Threadgroup memory:
+        // s_query: float4[32] = 512 bytes (fixed size, kernel uses HEAD_DIM/4 elements)
+        // s_scores: float[C] where C varies by HEAD_DIM
+        //   HEAD_DIM=32: C=8, s_scores=32 bytes
+        //   HEAD_DIM=64: C=16, s_scores=64 bytes
+        //   HEAD_DIM=80: C=20, s_scores=80 bytes
+        //   HEAD_DIM=128: C=32, s_scores=128 bytes
+        //   HEAD_DIM=160: C=40, s_scores=160 bytes
+        let c_per_iter = match head_dim {
+            32 => 8,
+            64 => 16,
+            80 => 20,
+            128 => 32,
+            160 => 40,
+            _ => 32,
+        };
+        let shmem_size = 512 + c_per_iter * 4; // s_query (fixed 512) + s_scores (C floats)
         encoder.set_threadgroup_memory_length(0, shmem_size as u64);
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
@@ -7293,6 +7309,7 @@ impl MetalContext {
         _n_kv_heads: usize,
         head_dim: usize,
         seq_len: usize,
+        kv_stride: usize, // max_seq for KV cache layout
         q_buffer: &Buffer,
         k_buffer: &Buffer,
         v_buffer: &Buffer,
@@ -7322,6 +7339,7 @@ impl MetalContext {
 
         let scale = 1.0f32 / (head_dim as f32).sqrt();
         let seq_k = seq_len as u32;
+        let kv_stride_u32 = kv_stride as u32;
 
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
@@ -7335,24 +7353,31 @@ impl MetalContext {
             &seq_k as *const u32 as *const std::ffi::c_void,
         );
 
-        // Buffer 1: scale (float)
+        // Buffer 1: kv_stride (uint) - max_seq for KV cache layout
         encoder.set_bytes(
             1,
+            4,
+            &kv_stride_u32 as *const u32 as *const std::ffi::c_void,
+        );
+
+        // Buffer 2: scale (float)
+        encoder.set_bytes(
+            2,
             4,
             &scale as *const f32 as *const std::ffi::c_void,
         );
 
-        // Buffer 2: query
-        encoder.set_buffer(2, Some(q_buffer), 0);
+        // Buffer 3: query
+        encoder.set_buffer(3, Some(q_buffer), 0);
 
-        // Buffer 3: key_cache
-        encoder.set_buffer(3, Some(k_buffer), 0);
+        // Buffer 4: key_cache
+        encoder.set_buffer(4, Some(k_buffer), 0);
 
-        // Buffer 4: value_cache
-        encoder.set_buffer(4, Some(v_buffer), 0);
+        // Buffer 5: value_cache
+        encoder.set_buffer(5, Some(v_buffer), 0);
 
-        // Buffer 5: output
-        encoder.set_buffer(5, Some(&output_buffer), 0);
+        // Buffer 6: output
+        encoder.set_buffer(6, Some(&output_buffer), 0);
 
         // Grid: [1, n_heads, n_seqs]
         // Each threadgroup handles one (head, batch) pair
@@ -7361,10 +7386,22 @@ impl MetalContext {
             MTLSize { width: 1, height: n_heads as u64, depth: n_seqs as u64 };
 
         // Threadgroup memory for shared query and scores
-        // s_query: head_dim/4 float4s = head_dim * 4 bytes
-        // s_scores: C floats where C = (head_dim * C_FACTOR) / 4
-        // For NE=4 kernel: C = 4 * (head_dim / 4) = head_dim for simplicity
-        let shmem_size = head_dim * 4 + 128 + head_dim * 4;
+        // s_query: float4[32] = 512 bytes (fixed size, kernel uses HEAD_DIM/4 elements)
+        // s_scores: float[C] where C varies by HEAD_DIM
+        //   HEAD_DIM=32: C=8, s_scores=32 bytes
+        //   HEAD_DIM=64: C=16, s_scores=64 bytes
+        //   HEAD_DIM=80: C=20, s_scores=80 bytes
+        //   HEAD_DIM=128: C=32, s_scores=128 bytes
+        //   HEAD_DIM=160: C=40, s_scores=160 bytes
+        let c_per_iter = match head_dim {
+            32 => 8,
+            64 => 16,
+            80 => 20,
+            128 => 32,
+            160 => 40,
+            _ => 32,
+        };
+        let shmem_size = 512 + c_per_iter * 4; // s_query (fixed 512) + s_scores (C floats)
         encoder.set_threadgroup_memory_length(0, shmem_size as u64);
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);

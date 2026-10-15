@@ -283,12 +283,19 @@ mod metal_backend {
                             .as_metal_buffer()
                             .ok_or("V cache not on Metal")?;
 
+                        // Compute kv_stride (max_seq) from buffer size
+                        // Buffer layout: [n_kv_heads, max_seq, head_dim] as F16
+                        // buffer_length = n_kv_heads * max_seq * head_dim * 2
+                        let kv_stride = (k_buffer.length() as usize)
+                            / (n_kv_heads * head_dim * 2);
+
                         let output_buffer = self.ctx.flash_attn_f16_gpu(
                             1,
                             *n_heads,
                             *n_kv_heads,
                             *head_dim,
                             ctx.seq_len,
+                            kv_stride,
                             query_buffer,
                             k_buffer,
                             v_buffer,
@@ -573,12 +580,17 @@ mod metal_backend {
             let v_buffer =
                 v_cache.as_metal_buffer().ok_or("V cache not on Metal")?;
 
+            // Compute kv_stride (max_seq) from buffer size
+            let kv_stride =
+                (k_buffer.length() as usize) / (n_kv_heads * head_dim * 2);
+
             let _result = self.ctx.flash_attn_f16_gpu(
                 1, // n_seqs
                 n_heads,
                 n_kv_heads,
                 head_dim,
                 seq_len,
+                kv_stride,
                 query_buffer,
                 k_buffer,
                 v_buffer,

@@ -2711,13 +2711,14 @@ impl LlamaModel {
         // Get K and V buffers from GPU KV cache
         let k_buffer = kv_cache.k_buffer(layer_idx);
         let v_buffer = kv_cache.v_buffer(layer_idx);
+        let kv_stride = kv_cache.max_seq();
 
         // Run flash attention on GPU
         gpu_ctx
             .flash_attn_f16_gpu(
                 1, // n_seqs
-                n_heads, n_kv_heads, head_dim, seq_len, q_buffer, &k_buffer,
-                &v_buffer,
+                n_heads, n_kv_heads, head_dim, seq_len, kv_stride, q_buffer,
+                &k_buffer, &v_buffer,
             )
             .ok()
     }
@@ -2785,6 +2786,7 @@ impl LlamaModel {
         // Get GPU buffers for K and V
         let k_buffer = kv_cache.k_buffer(layer_idx);
         let v_buffer = kv_cache.v_buffer(layer_idx);
+        let kv_stride = kv_cache.max_seq();
 
         // Create GPU buffer for Q
         let q_buffer = std::rc::Rc::new(gpu_ctx.device().new_buffer_with_data(
@@ -2798,7 +2800,8 @@ impl LlamaModel {
             .flash_attn_f16_gpu(
                 1, // n_seqs (single batch)
                 n_heads, n_kv_heads, head_dim,
-                seq_len, // current sequence length
+                seq_len,   // current sequence length
+                kv_stride, // max_seq for KV cache layout
                 &q_buffer, k_buffer, v_buffer,
             )
             .ok()?;

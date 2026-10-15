@@ -107,12 +107,13 @@ template<
     int ELEM_SIZE>                      // Element size in bytes (2 for half, 4 for float)
 
 kernel void flash_decode_vec_kernel(
-    constant uint& seq_k [[buffer(0)]],
-    constant float& scale [[buffer(1)]],
-    device const float* query [[buffer(2)]],
-    device const char* key_cache [[buffer(3)]],
-    device const char* value_cache [[buffer(4)]],
-    device float* output [[buffer(5)]],
+    constant uint& seq_k [[buffer(0)]],         // Actual sequence length
+    constant uint& kv_stride [[buffer(1)]],     // KV cache stride (max_seq)
+    constant float& scale [[buffer(2)]],
+    device const float* query [[buffer(3)]],
+    device const char* key_cache [[buffer(4)]],
+    device const char* value_cache [[buffer(5)]],
+    device float* output [[buffer(6)]],
     uint3 gid [[threadgroup_position_in_grid]],
     ushort tiisg [[thread_index_in_simdgroup]])
 {
@@ -167,9 +168,9 @@ kernel void flash_decode_vec_kernel(
     constexpr bool IS_DIRECT_V = (DEQUANT_LANES_V == 1);
 
     // Pointer to key cache for this head
-    // Note: stride calculation uses ELEM_SIZE for correct byte offset
-    device const char* k_head = key_cache + head * HEAD_DIM * seq_k * ELEM_SIZE;
-    device const char* v_head = value_cache + head * HEAD_DIM * seq_k * ELEM_SIZE;
+    // Use kv_stride (max_seq) for head offset, not seq_k
+    device const char* k_head = key_cache + head * kv_stride * HEAD_DIM * ELEM_SIZE;
+    device const char* v_head = value_cache + head * kv_stride * HEAD_DIM * ELEM_SIZE;
 
     // Shared memory for scores - declare once outside the loop
     threadgroup float s_scores[C];
@@ -341,7 +342,7 @@ kernel void flash_decode_vec_kernel<
     dequant_f16, dequant_f16,
     128, 1, 32, 2
 >(
-    constant uint&, constant float&, device const float*, device const char*,
+    constant uint&, constant uint&, constant float&, device const float*, device const char*,
     device const char*, device float*, uint3, ushort
 );
 
@@ -353,7 +354,7 @@ kernel void flash_decode_vec_kernel<
     dequant_f16, dequant_f16,
     128, 4, 32, 2
 >(
-    constant uint&, constant float&, device const float*, device const char*,
+    constant uint&, constant uint&, constant float&, device const float*, device const char*,
     device const char*, device float*, uint3, ushort
 );
 
@@ -369,7 +370,7 @@ kernel void flash_decode_vec_kernel<
     dequant_f16, dequant_f16,
     32, 4, 8, 2
 >(
-    constant uint&, constant float&, device const float*, device const char*,
+    constant uint&, constant uint&, constant float&, device const float*, device const char*,
     device const char*, device float*, uint3, ushort
 );
 
@@ -385,7 +386,7 @@ kernel void flash_decode_vec_kernel<
     dequant_f16, dequant_f16,
     64, 4, 16, 2
 >(
-    constant uint&, constant float&, device const float*, device const char*,
+    constant uint&, constant uint&, constant float&, device const float*, device const char*,
     device const char*, device float*, uint3, ushort
 );
 
@@ -401,7 +402,7 @@ kernel void flash_decode_vec_kernel<
     dequant_f16, dequant_f16,
     80, 4, 20, 2
 >(
-    constant uint&, constant float&, device const float*, device const char*,
+    constant uint&, constant uint&, constant float&, device const float*, device const char*,
     device const char*, device float*, uint3, ushort
 );
 
@@ -417,7 +418,7 @@ kernel void flash_decode_vec_kernel<
     dequant_f16, dequant_f16,
     160, 1, 40, 2
 >(
-    constant uint&, constant float&, device const float*, device const char*,
+    constant uint&, constant uint&, constant float&, device const float*, device const char*,
     device const char*, device float*, uint3, ushort
 );
 
@@ -429,7 +430,7 @@ kernel void flash_decode_vec_kernel<
     dequant_f16, dequant_f16,
     160, 4, 40, 2
 >(
-    constant uint&, constant float&, device const float*, device const char*,
+    constant uint&, constant uint&, constant float&, device const float*, device const char*,
     device const char*, device float*, uint3, ushort
 );
 
@@ -445,6 +446,6 @@ kernel void flash_decode_vec_kernel<
     dequant_q4_0, dequant_q4_0,
     128, 4, 32, 1
 >(
-    constant uint&, constant float&, device const float*, device const char*,
+    constant uint&, constant uint&, constant float&, device const float*, device const char*,
     device const char*, device float*, uint3, ushort
 );
