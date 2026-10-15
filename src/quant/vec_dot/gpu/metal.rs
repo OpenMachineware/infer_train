@@ -6355,8 +6355,15 @@ impl MetalContext {
         weights: &[BlockQ4K],
         input: &[f32],
     ) -> Result<Vec<f32>, String> {
-        if n == 1 {
-            self.mv_q4_k_f32(m, k, weights, input)
+        // GEMM template requires N >= 32, use sequential MV otherwise
+        if n < 32 {
+            let mut result = Vec::with_capacity(n * m);
+            for i in 0..n {
+                let x_token = &input[i * k..(i + 1) * k];
+                let out = self.mv_q4_k_f32(m, k, weights, x_token)?;
+                result.extend(out);
+            }
+            Ok(result)
         } else {
             self.gemm_template_q4_k_f32(m, n, k, weights, input)
         }
@@ -6370,8 +6377,15 @@ impl MetalContext {
         weights: &[BlockQ2K],
         input: &[f32],
     ) -> Result<Vec<f32>, String> {
-        if n == 1 {
-            self.mv_q2_k_f32(m, k, weights, input)
+        // GEMM template requires N >= 32, use sequential MV otherwise
+        if n < 32 {
+            let mut result = Vec::with_capacity(n * m);
+            for i in 0..n {
+                let x_token = &input[i * k..(i + 1) * k];
+                let out = self.mv_q2_k_f32(m, k, weights, x_token)?;
+                result.extend(out);
+            }
+            Ok(result)
         } else {
             self.gemm_template_q2_k_f32(m, n, k, weights, input)
         }
@@ -6385,8 +6399,15 @@ impl MetalContext {
         weights: &[BlockQ3K],
         input: &[f32],
     ) -> Result<Vec<f32>, String> {
-        if n == 1 {
-            self.mv_q3_k_f32(m, k, weights, input)
+        // GEMM template requires N >= 32, use sequential MV otherwise
+        if n < 32 {
+            let mut result = Vec::with_capacity(n * m);
+            for i in 0..n {
+                let x_token = &input[i * k..(i + 1) * k];
+                let out = self.mv_q3_k_f32(m, k, weights, x_token)?;
+                result.extend(out);
+            }
+            Ok(result)
         } else {
             self.gemm_template_q3_k_f32(m, n, k, weights, input)
         }
@@ -6400,8 +6421,15 @@ impl MetalContext {
         weights: &[BlockQ5K],
         input: &[f32],
     ) -> Result<Vec<f32>, String> {
-        if n == 1 {
-            self.mv_q5_k_f32(m, k, weights, input)
+        // GEMM template requires N >= 32, use sequential MV otherwise
+        if n < 32 {
+            let mut result = Vec::with_capacity(n * m);
+            for i in 0..n {
+                let x_token = &input[i * k..(i + 1) * k];
+                let out = self.mv_q5_k_f32(m, k, weights, x_token)?;
+                result.extend(out);
+            }
+            Ok(result)
         } else {
             self.gemm_template_q5_k_f32(m, n, k, weights, input)
         }
@@ -6415,8 +6443,15 @@ impl MetalContext {
         weights: &[BlockQ6K],
         input: &[f32],
     ) -> Result<Vec<f32>, String> {
-        if n == 1 {
-            self.mv_q6_k_f32(m, k, weights, input)
+        // GEMM template requires N >= 32, use sequential MV otherwise
+        if n < 32 {
+            let mut result = Vec::with_capacity(n * m);
+            for i in 0..n {
+                let x_token = &input[i * k..(i + 1) * k];
+                let out = self.mv_q6_k_f32(m, k, weights, x_token)?;
+                result.extend(out);
+            }
+            Ok(result)
         } else {
             self.gemm_template_q6_k_f32(m, n, k, weights, input)
         }

@@ -1099,22 +1099,22 @@ impl LlamaModel {
         // GGUF stores weights in column-major: shape = [K, M]
         let k = w.shape[0];
 
-        // Try GPU GEMM first, fallback to CPU if it fails
+        // Use matmul_q*_k_f32 which dispatches to MV for N=1, GEMM for N>=32
         let gpu_result = match w.dtype {
             crate::model::tensor::DataType::Q4_K => {
                 let weights: &[crate::quant::types::BlockQ4K] =
                     bytemuck::cast_slice(w.bytes());
-                gpu_ctx.gemm_template_q4_k_f32(m, batch, k, weights, x).ok()
+                gpu_ctx.matmul_q4_k_f32(m, batch, k, weights, x).ok()
             }
             crate::model::tensor::DataType::Q5_K => {
                 let weights: &[crate::quant::types::BlockQ5K] =
                     bytemuck::cast_slice(w.bytes());
-                gpu_ctx.gemm_template_q5_k_f32(m, batch, k, weights, x).ok()
+                gpu_ctx.matmul_q5_k_f32(m, batch, k, weights, x).ok()
             }
             crate::model::tensor::DataType::Q6_K => {
                 let weights: &[crate::quant::types::BlockQ6K] =
                     bytemuck::cast_slice(w.bytes());
-                gpu_ctx.gemm_template_q6_k_f32(m, batch, k, weights, x).ok()
+                gpu_ctx.matmul_q6_k_f32(m, batch, k, weights, x).ok()
             }
             _ => None,
         };
