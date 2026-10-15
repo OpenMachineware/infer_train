@@ -43,7 +43,18 @@ fn main() {
             }
 
             let start = std::time::Instant::now();
-            match ctx.forward_gpu_native(&tokens) {
+
+            #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+            let result = ctx.forward_gpu_native(&tokens);
+
+            #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+            let result = {
+                let mut kv_cache =
+                    KVCache::new(&ctx.config, 16, KVCacheFormat::F32);
+                ctx.forward(&tokens, &mut kv_cache)
+            };
+
+            match result {
                 Some(logits) => {
                     let elapsed = start.elapsed();
                     let non_zero = logits.iter().filter(|&&v| v != 0.0).count();

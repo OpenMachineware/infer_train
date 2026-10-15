@@ -294,11 +294,13 @@ pub fn dequant_to_f32(data: &[u8], dtype: DataType, count: usize) -> Vec<f32> {
         DataType::IQ4_NL => {
             dequant_iq4_nl(data, &mut result, count);
         }
+        DataType::IQ4_XS => {
+            dequant_iq4_xs(data, &mut result, count);
+        }
         // IQ formats - placeholder implementation
         // These formats require complex dequantization logic
         // For now, return zeros to prevent NaN propagation
-        DataType::IQ4_XS
-        | DataType::IQ3_XXS
+        DataType::IQ3_XXS
         | DataType::IQ3_S
         | DataType::IQ2_XXS
         | DataType::IQ2_XS
@@ -491,10 +493,60 @@ fn dequant_iq4_nl(data: &[u8], out: &mut [f32], count: usize) {
             let out_idx0 = i * QK + j;
             let out_idx1 = i * QK + j + QK / 2;
             if out_idx0 < count {
-                out[out_idx0] = KVALUES[idx0] * d / 127.0;
+                out[out_idx0] = KVALUES[idx0] * d;
             }
             if out_idx1 < count {
-                out[out_idx1] = KVALUES[idx1] * d / 127.0;
+                out[out_idx1] = KVALUES[idx1] * d;
+            }
+        }
+    }
+}
+
+fn dequant_iq4_xs(data: &[u8], out: &mut [f32], count: usize) {
+    use crate::quant::types::BlockIQ4XS;
+    const QK_K: usize = 256;
+
+    // IQ4_NL grid values (kvalues_iq4nl from llama.cpp)
+    const KVALUES: [f32; 16] = [
+        -127.0, -104.0, -83.0, -65.0, -49.0, -35.0, -22.0, -10.0, 1.0, 13.0,
+        25.0, 38.0, 53.0, 69.0, 89.0, 113.0,
+    ];
+
+    let n_blocks = count.div_ceil(QK_K);
+    for block_idx in 0..n_blocks {
+        let block_offset = block_idx * std::mem::size_of::<BlockIQ4XS>();
+        if block_offset + std::mem::size_of::<BlockIQ4XS>() > data.len() {
+            break;
+        }
+        let block: &BlockIQ4XS =
+            unsafe { &*(data.as_ptr().add(block_offset) as *const BlockIQ4XS) };
+
+        let d = f16::from_bits(block.d).to_f32();
+
+        // Process 8 sub-blocks of 32 elements each
+        // Following llama.cpp: QK_K/32 = 8 sub-blocks
+        for ib in 0..8 {
+            // Extract scale for this sub-block (6-bit value from scales_l + scales_h)
+            // ls = ((scales_l[ib/2] >> 4*(ib%2)) & 0xf) | (((scales_h >> 2*ib) & 3) << 4)
+            let ls = ((block.scales_l[ib / 2] >> (4 * (ib % 2))) & 0xF) as i32
+                | ((((block.scales_h >> (2 * ib)) & 3) << 4) as i32);
+            let dl = d * (ls - 32) as f32;
+
+            // Each sub-block has 32 elements stored in 16 bytes
+            for j in 0..16 {
+                let byte = block.qs[ib * 16 + j];
+                let idx0 = (byte & 0x0F) as usize;
+                let idx1 = ((byte >> 4) & 0x0F) as usize;
+
+                let out_idx0 = block_idx * QK_K + ib * 32 + j;
+                let out_idx1 = block_idx * QK_K + ib * 32 + j + 16;
+
+                if out_idx0 < count {
+                    out[out_idx0] = KVALUES[idx0] * dl;
+                }
+                if out_idx1 < count {
+                    out[out_idx1] = KVALUES[idx1] * dl;
+                }
             }
         }
     }

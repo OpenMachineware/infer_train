@@ -388,7 +388,7 @@ kernel void kernel_mul_mv_iq4_xs_f32(
 
     device const block_iq4_xs * x = (device const block_iq4_xs *)(src0 + first_row * args.nb01);
 
-    const int ns01 = args.nb01/2;  // Byte stride / sizeof(block)
+    const int nb = args.ne00/QK_K;  // number of blocks in K dimension
 
     const short ix = tiisg/16;  // 0 or 1
     const short it = tiisg%16;  // 0...15
@@ -405,7 +405,7 @@ kernel void kernel_mul_mv_iq4_xs_f32(
 
     float4 qf1, qf2;
 
-    for (int ibl = ix; ibl < nb && ibl < ns01; ibl += 2) {
+    for (int ibl = ix; ibl < nb; ibl += 2) {
         device const float4 * y4 = (device const float4 *)yb;
         yl[0] = y4[0];
         yl[1] = y4[4];
@@ -413,8 +413,8 @@ kernel void kernel_mul_mv_iq4_xs_f32(
         yl[3] = y4[5];
 
         FOR_UNROLL (short row = 0; row < NR0; ++row) {
-            device const block_iq4_xs & xb = x[row*ns01 + ibl];
-            device const uint32_t * q4 = (device const uint32_t *)(xb.qs + 16*ib + 8*il);
+            device const block_iq4_xs & xb = x[row*nb + ibl];
+            device const uint32_t * q4 = (device const uint32_t *)(xb.qs + 16*ib);
 
             float4 acc1 = {0.f}, acc2 = {0.f};
 

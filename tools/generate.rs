@@ -43,11 +43,24 @@ fn main() {
     println!("\nPrompt: \"{}\"", prompt);
     println!("Tokens: {} ({:?})", prompt_tokens.len(), prompt_tokens);
 
-    // Prefill using batch GEMM
+    // Prefill using batch GEMM (GPU) or CPU forward
     println!("\n=== Prefill (batch) ===");
     let start_prefill = Instant::now();
+
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     let logits =
         ctx.forward_prefill_batch(&prompt_tokens).expect("Prefill failed");
+
+    #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+    let logits = {
+        let mut kv_cache = infer_train::inference::KVCache::new(
+            &ctx.config,
+            prompt_tokens.len() + max_tokens,
+            infer_train::inference::KVCacheFormat::F32,
+        );
+        ctx.forward(&prompt_tokens, &mut kv_cache).expect("Prefill failed")
+    };
+
     let prefill_time = start_prefill.elapsed();
     println!("Prefill time: {:?}", prefill_time);
     println!(
@@ -61,16 +74,39 @@ fn main() {
     let mut current_tokens = prompt_tokens.clone();
     let start_gen = Instant::now();
 
+    // Create KV cache for CPU fallback
+    #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+    let mut kv_cache = infer_train::inference::KVCache::new(
+        &ctx.config,
+        prompt_tokens.len() + max_tokens,
+        infer_train::inference::KVCacheFormat::F32,
+    );
+
     for i in 0..max_tokens {
         // Get logits for last token
         let decode_logits;
         let logits = if i == 0 {
             &logits
         } else {
-            decode_logits = ctx
-                .forward_gpu_native(&[current_tokens[current_tokens.len() - 1]])
-                .expect("Decode failed");
-            &decode_logits
+            #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+            {
+                decode_logits = ctx
+                    .forward_gpu_native(&[
+                        current_tokens[current_tokens.len() - 1]
+                    ])
+                    .expect("Decode failed");
+                &decode_logits
+            }
+            #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+            {
+                decode_logits = ctx
+                    .forward(
+                        &[current_tokens[current_tokens.len() - 1]],
+                        &mut kv_cache,
+                    )
+                    .expect("Decode failed");
+                &decode_logits
+            }
         };
 
         // Sample next token

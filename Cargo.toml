@@ -96,6 +96,10 @@ name = "debug-layer-by-layer"
 path = "tools/debug_layer_by_layer.rs"
 
 [[bin]]
+name = "debug-layer-ops"
+path = "tools/debug_layer_ops.rs"
+
+[[bin]]
 name = "test-kquant-mv-correctness"
 path = "tests/test_kquant_mv_correctness.rs"
 
@@ -114,6 +118,10 @@ path = "benches/kquant_mv_size_comparison.rs"
 [[bin]]
 name = "test-transposed-gemv"
 path = "tests/test_transposed_gemv.rs"
+
+[[bin]]
+name = "debug-gpu-inference"
+path = "tools/debug_gpu_inference.rs"
 
 [features]
 default = []

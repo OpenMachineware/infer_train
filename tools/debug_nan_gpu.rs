@@ -53,8 +53,16 @@ fn main() {
     let mut ctx = InferenceContext::from_gguf(MODEL_PATH, Device::Gpu)
         .expect("Failed to load GPU context");
 
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     let logits_gpu =
         ctx.forward_prefill_batch(&tokens).expect("GPU forward failed");
+
+    #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+    let logits_gpu = {
+        let mut kv_cache = KVCache::new(&ctx.config, 16, KVCacheFormat::F32);
+        ctx.forward(&tokens, &mut kv_cache).expect("GPU forward failed")
+    };
+
     let num_nan_gpu = logits_gpu.iter().filter(|&&v| v.is_nan()).count();
     let max_gpu = logits_gpu.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let min_gpu = logits_gpu.iter().cloned().fold(f32::INFINITY, f32::min);

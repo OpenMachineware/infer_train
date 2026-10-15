@@ -272,7 +272,7 @@ fn main() {
 
     // Load and inline self-written shader
     let my_shader_base = include_str!("../src/ops/metal/gemm/mul_mm.metal");
-    let my_ggml_common = include_str!("../src/ops/metal/blocks.h");
+    let my_ggml_common = include_str!("../src/ops/metal/include/blocks.h");
 
     // Build complete shader with all tables from blocks.h
     let ggml_common_with_metal =
