@@ -147,6 +147,30 @@ path = "tools/debug_mla_layer.rs"
 name = "ssm-perf"
 path = "benches/ssm_perf.rs"
 
+[[bin]]
+name = "ssm-llama-compare"
+path = "benches/ssm_llama_compare.rs"
+
+[[bin]]
+name = "ssd-perf-isolated"
+path = "benches/ssd_perf_isolated.rs"
+
+[[bin]]
+name = "ssd-llama-direct"
+path = "benches/ssd_llama_direct.rs"
+
+[[bin]]
+name = "ssd-mma-compare"
+path = "benches/ssd_mma_compare.rs"
+
+[[bin]]
+name = "ssm-scan-compare"
+path = "benches/ssm_scan_compare.rs"
+
+[[bin]]
+name = "conv1d-direct-compare"
+path = "benches/conv1d_direct_compare.rs"
+
 [features]
 default = []
 metal = []

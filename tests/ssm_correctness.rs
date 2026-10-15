@@ -397,6 +397,175 @@ mod gpu_tests {
             max_s_rel
         );
     }
+
+    #[cfg(feature = "metal")]
+    #[test]
+    fn test_ssm_scan_ssd_gpu() {
+        use infer_train::quant::vec_dot::gpu::metal::MetalContext;
+
+        // SSD kernel is specialized for d_inner=HD=64, CS=64
+        let d_inner = 64;
+        let d_state = 64;
+        let n_tok = 128; // Multiple chunks of 64
+
+        // Memory layout for SSD:
+        // x: [n_tok, HD] - token-major
+        // dt: [n_tok] - one value per token
+        // A: single scalar
+        // B: [n_tok, d_state] - token-major
+        // C: [n_tok, d_state] - token-major
+
+        // Generate test data in correct layout
+        let mut x = Vec::with_capacity(n_tok * d_inner);
+        let mut dt = Vec::with_capacity(n_tok);
+        let a = vec![-0.1f32]; // Single scalar
+        let mut b = Vec::with_capacity(n_tok * d_state);
+        let mut c = Vec::with_capacity(n_tok * d_state);
+
+        // x: [n_tok, HD]
+        for t in 0..n_tok {
+            for ch in 0..d_inner {
+                x.push((t as f32 * 0.01 + ch as f32 * 0.001) - 0.5);
+            }
+        }
+
+        // dt: [n_tok]
+        for t in 0..n_tok {
+            dt.push((t as f32 * 0.001).abs() + 0.001);
+        }
+
+        // B, C: [n_tok, d_state]
+        for t in 0..n_tok {
+            for n in 0..d_state {
+                b.push((t as f32 * 0.01 + n as f32 * 0.001) - 0.3);
+                c.push((t as f32 * 0.01 + n as f32 * 0.001) - 0.3);
+            }
+        }
+
+        // Convert to CPU reference layout:
+        // x_cpu: [d_inner, n_tok]
+        // dt_cpu: [d_inner, n_tok] (broadcast dt to each channel)
+        // a_cpu: [d_inner, d_state] (broadcast a to all)
+        // b_cpu: [d_state, n_tok]
+        // c_cpu: [d_state, n_tok]
+        let mut x_cpu = vec![0.0f32; d_inner * n_tok];
+        let mut dt_cpu = vec![0.0f32; d_inner * n_tok];
+        let a_cpu = vec![-0.1f32; d_inner * d_state];
+        let mut b_cpu = vec![0.0f32; d_state * n_tok];
+        let mut c_cpu = vec![0.0f32; d_state * n_tok];
+
+        // Transpose x: [n_tok, HD] -> [d_inner, n_tok]
+        for t in 0..n_tok {
+            for ch in 0..d_inner {
+                x_cpu[ch * n_tok + t] = x[t * d_inner + ch];
+            }
+        }
+
+        // Broadcast dt
+        for t in 0..n_tok {
+            for ch in 0..d_inner {
+                dt_cpu[ch * n_tok + t] = dt[t];
+            }
+        }
+
+        // Transpose B, C: [n_tok, d_state] -> [d_state, n_tok]
+        for t in 0..n_tok {
+            for n in 0..d_state {
+                b_cpu[n * n_tok + t] = b[t * d_state + n];
+                c_cpu[n * n_tok + t] = c[t * d_state + n];
+            }
+        }
+
+        // CPU reference
+        let (y_cpu, s_cpu) = ssm_scan_cpu(
+            &x_cpu, &dt_cpu, &a_cpu, &b_cpu, &c_cpu, None, d_inner, d_state,
+            n_tok,
+        );
+
+        // GPU computation
+        let ctx = MetalContext::new().expect("Failed to create Metal context");
+        let (y_gpu, s_gpu) = ctx
+            .ssm_scan_ssd(&x, &dt, &a, &b, &c, None, d_inner, n_tok, d_state)
+            .expect("GPU SSD Scan failed");
+
+        // Convert GPU output back: y_gpu is [n_tok, HD], convert to [d_inner, n_tok] for comparison
+        let mut y_gpu_transposed = vec![0.0f32; d_inner * n_tok];
+        for t in 0..n_tok {
+            for ch in 0..d_inner {
+                y_gpu_transposed[ch * n_tok + t] = y_gpu[t * d_inner + ch];
+            }
+        }
+
+        // Verify sizes match
+        assert_eq!(y_cpu.len(), y_gpu_transposed.len(), "Y size mismatch");
+        assert_eq!(s_cpu.len(), s_gpu.len(), "S size mismatch");
+
+        // Debug: print first few values
+        println!("GPU output (first 8 y values, token-major):");
+        for i in 0..8.min(y_gpu.len()) {
+            println!(
+                "  y_gpu[t={}, ch={}] = {}",
+                i / d_inner,
+                i % d_inner,
+                y_gpu[i]
+            );
+        }
+        println!("GPU output transposed (first 8 y values, channel-major):");
+        for i in 0..8.min(y_gpu_transposed.len()) {
+            println!(
+                "  y_gpu_tr[ch={}, t={}] = {}",
+                i / n_tok,
+                i % n_tok,
+                y_gpu_transposed[i]
+            );
+        }
+        println!("CPU output (first 8 y values, channel-major):");
+        for i in 0..8.min(y_cpu.len()) {
+            println!(
+                "  y_cpu[ch={}, t={}] = {}",
+                i / n_tok,
+                i % n_tok,
+                y_cpu[i]
+            );
+        }
+
+        // Compare results
+        let mut max_y_diff = 0.0f32;
+        let mut max_y_rel = 0.0f32;
+        for i in 0..y_cpu.len() {
+            let diff = (y_cpu[i] - y_gpu_transposed[i]).abs();
+            let rel = diff / y_cpu[i].abs().max(1e-10);
+            max_y_diff = max_y_diff.max(diff);
+            max_y_rel = max_y_rel.max(rel);
+        }
+
+        let mut max_s_diff = 0.0f32;
+        let mut max_s_rel = 0.0f32;
+        for i in 0..s_cpu.len() {
+            let diff = (s_cpu[i] - s_gpu[i]).abs();
+            let rel = diff / s_cpu[i].abs().max(1e-10);
+            max_s_diff = max_s_diff.max(diff);
+            max_s_rel = max_s_rel.max(rel);
+        }
+
+        println!(
+            "SSD Scan GPU vs CPU: y_max_diff={}, y_max_rel={}, s_max_diff={}, s_max_rel={}",
+            max_y_diff, max_y_rel, max_s_diff, max_s_rel
+        );
+
+        // Allow small floating point differences
+        // SSD uses matrix operations which may have slightly different accumulation order
+        assert!(
+            max_y_rel < 1e-2,
+            "GPU Y result differs from CPU: max_rel={}",
+            max_y_rel
+        );
+        assert!(
+            max_s_rel < 1e-2,
+            "GPU S result differs from CPU: max_rel={}",
+            max_s_rel
+        );
+    }
 }
 
 #[cfg(not(target_arch = "aarch64"))]

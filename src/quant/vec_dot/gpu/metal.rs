@@ -164,6 +164,16 @@ pub struct MetalContext {
     ssm_library: Library,
     ssm_conv1d_d4_pipeline: ComputePipelineState,
     ssm_scan_d16_pipeline: ComputePipelineState,
+    ssm_scan_ssd_pipeline: ComputePipelineState,
+    ssm_scan_ssd_mma_pipeline: ComputePipelineState,
+    // Conv1D batched pipelines for different batch sizes
+    ssm_conv1d_d4_batched_256_pipeline: ComputePipelineState,
+    ssm_conv1d_d4_batched_128_pipeline: ComputePipelineState,
+    ssm_conv1d_d4_batched_64_pipeline: ComputePipelineState,
+    ssm_conv1d_d4_batched_32_pipeline: ComputePipelineState,
+    ssm_conv1d_d4_batched_16_pipeline: ComputePipelineState,
+    ssm_conv1d_d4_batched_8_pipeline: ComputePipelineState,
+    ssm_conv1d_d4_batched_2_pipeline: ComputePipelineState,
     // Cached buffers for MV operations
     // Once created with data, reuse without copy
     mv_weights_buffer: RefCell<Option<Buffer>>,
@@ -1201,7 +1211,12 @@ impl MetalContext {
             include_str!("../../../ops/metal/ops/ssm_conv.metal");
         let ssm_scan_source =
             include_str!("../../../ops/metal/ops/ssm_scan.metal");
-        let ssm_combined = format!("{}\n{}", ssm_conv_source, ssm_scan_source);
+        let ssd_optimized_source =
+            include_str!("../../../ops/metal/ops/ssd_optimized.metal");
+        let ssm_combined = format!(
+            "{}\n{}\n{}",
+            ssm_conv_source, ssm_scan_source, ssd_optimized_source
+        );
         let ssm_library = device
             .new_library_with_source(&ssm_combined, &compile_options)
             .map_err(|e| format!("Failed to compile SSM library: {}", e))?;
@@ -1217,6 +1232,96 @@ impl MetalContext {
                 format!("Failed to create SSM Conv1D D4 pipeline: {}", e)
             })?;
 
+        // Create Conv1D batched pipelines for different batch sizes
+        let ssm_conv1d_d4_batched_256_kernel = ssm_library
+            .get_function("ssm_conv1d_d4_batched_256", None)
+            .map_err(|e| {
+                format!("Failed to get Conv1D batched 256 kernel: {}", e)
+            })?;
+        let ssm_conv1d_d4_batched_256_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &ssm_conv1d_d4_batched_256_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create Conv1D batched 256 pipeline: {}", e)
+            })?;
+
+        let ssm_conv1d_d4_batched_128_kernel = ssm_library
+            .get_function("ssm_conv1d_d4_batched_128", None)
+            .map_err(|e| {
+                format!("Failed to get Conv1D batched 128 kernel: {}", e)
+            })?;
+        let ssm_conv1d_d4_batched_128_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &ssm_conv1d_d4_batched_128_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create Conv1D batched 128 pipeline: {}", e)
+            })?;
+
+        let ssm_conv1d_d4_batched_64_kernel = ssm_library
+            .get_function("ssm_conv1d_d4_batched_64", None)
+            .map_err(|e| {
+                format!("Failed to get Conv1D batched 64 kernel: {}", e)
+            })?;
+        let ssm_conv1d_d4_batched_64_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &ssm_conv1d_d4_batched_64_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create Conv1D batched 64 pipeline: {}", e)
+            })?;
+
+        let ssm_conv1d_d4_batched_32_kernel = ssm_library
+            .get_function("ssm_conv1d_d4_batched_32", None)
+            .map_err(|e| {
+                format!("Failed to get Conv1D batched 32 kernel: {}", e)
+            })?;
+        let ssm_conv1d_d4_batched_32_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &ssm_conv1d_d4_batched_32_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create Conv1D batched 32 pipeline: {}", e)
+            })?;
+
+        let ssm_conv1d_d4_batched_16_kernel = ssm_library
+            .get_function("ssm_conv1d_d4_batched_16", None)
+            .map_err(|e| {
+                format!("Failed to get Conv1D batched 16 kernel: {}", e)
+            })?;
+        let ssm_conv1d_d4_batched_16_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &ssm_conv1d_d4_batched_16_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create Conv1D batched 16 pipeline: {}", e)
+            })?;
+
+        let ssm_conv1d_d4_batched_8_kernel =
+            ssm_library.get_function("ssm_conv1d_d4_batched_8", None).map_err(
+                |e| format!("Failed to get Conv1D batched 8 kernel: {}", e),
+            )?;
+        let ssm_conv1d_d4_batched_8_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &ssm_conv1d_d4_batched_8_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create Conv1D batched 8 pipeline: {}", e)
+            })?;
+
+        let ssm_conv1d_d4_batched_2_kernel =
+            ssm_library.get_function("ssm_conv1d_d4_batched_2", None).map_err(
+                |e| format!("Failed to get Conv1D batched 2 kernel: {}", e),
+            )?;
+        let ssm_conv1d_d4_batched_2_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &ssm_conv1d_d4_batched_2_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create Conv1D batched 2 pipeline: {}", e)
+            })?;
+
         // Create SSM Scan pipelines
         let ssm_scan_d16_kernel = ssm_library
             .get_function("ssm_scan_d16_f32", None)
@@ -1226,6 +1331,24 @@ impl MetalContext {
             .map_err(|e| {
                 format!("Failed to create SSM Scan D16 pipeline: {}", e)
             })?;
+
+        // Create SSM SSD pipeline (State Space Duality for long sequences)
+        let ssm_scan_ssd_kernel = ssm_library
+            .get_function("ssm_scan_ssd_f32", None)
+            .map_err(|e| format!("Failed to get SSM Scan SSD kernel: {}", e))?;
+        let ssm_scan_ssd_pipeline = device
+            .new_compute_pipeline_state_with_function(&ssm_scan_ssd_kernel)
+            .map_err(|e| {
+                format!("Failed to create SSM Scan SSD pipeline: {}", e)
+            })?;
+
+        // Create SSD MMA pipeline (optimized with simdgroup matrix operations)
+        let ssm_scan_ssd_mma_kernel = ssm_library
+            .get_function("kernel_ssm_scan_ssd_mma", None)
+            .map_err(|e| format!("Failed to get SSD MMA kernel: {}", e))?;
+        let ssm_scan_ssd_mma_pipeline = device
+            .new_compute_pipeline_state_with_function(&ssm_scan_ssd_mma_kernel)
+            .map_err(|e| format!("Failed to create SSD MMA pipeline: {}", e))?;
 
         Ok(Self {
             device,
@@ -1315,7 +1438,16 @@ impl MetalContext {
             // SSM
             ssm_library,
             ssm_conv1d_d4_pipeline,
+            ssm_conv1d_d4_batched_256_pipeline,
+            ssm_conv1d_d4_batched_128_pipeline,
+            ssm_conv1d_d4_batched_64_pipeline,
+            ssm_conv1d_d4_batched_32_pipeline,
+            ssm_conv1d_d4_batched_16_pipeline,
+            ssm_conv1d_d4_batched_8_pipeline,
+            ssm_conv1d_d4_batched_2_pipeline,
             ssm_scan_d16_pipeline,
+            ssm_scan_ssd_pipeline,
+            ssm_scan_ssd_mma_pipeline,
             // MV buffers
             mv_weights_buffer: RefCell::new(None),
             mv_input_buffer: RefCell::new(None),
@@ -1338,6 +1470,31 @@ impl MetalContext {
     /// Get the Metal device
     pub fn device(&self) -> &Device {
         &self.device
+    }
+
+    pub fn queue(&self) -> &CommandQueue {
+        &self.queue
+    }
+
+    /// Get Conv1D batched pipeline for specific batch size
+    pub fn ssm_conv1d_d4_batched_pipeline(
+        &self,
+        batch_size: usize,
+    ) -> &ComputePipelineState {
+        match batch_size {
+            256 => &self.ssm_conv1d_d4_batched_256_pipeline,
+            128 => &self.ssm_conv1d_d4_batched_128_pipeline,
+            64 => &self.ssm_conv1d_d4_batched_64_pipeline,
+            32 => &self.ssm_conv1d_d4_batched_32_pipeline,
+            16 => &self.ssm_conv1d_d4_batched_16_pipeline,
+            8 => &self.ssm_conv1d_d4_batched_8_pipeline,
+            _ => &self.ssm_conv1d_d4_batched_2_pipeline,
+        }
+    }
+
+    /// Get SSD MMA pipeline
+    pub fn ssm_scan_ssd_mma_pipeline(&self) -> &ComputePipelineState {
+        &self.ssm_scan_ssd_mma_pipeline
     }
 
     /// Get or create GPU buffer for a tensor (lazy initialization)
@@ -7846,12 +8003,56 @@ impl MetalContext {
             &n_tok_u32 as *const u32 as *const c_void,
         );
 
-        // Grid: (n_tok, d_inner)
-        let grid_size =
-            MTLSize { width: n_tok as u64, height: d_inner as u64, depth: 1 };
-        let threadgroup_size = MTLSize { width: 16, height: 16, depth: 1 };
+        // Use batched kernel for prefill (n_tok > 1)
+        if n_tok > 1 {
+            // Determine batch size (power of 2, up to 256)
+            let batch_size = if n_tok > 128 {
+                256u16
+            } else if n_tok > 64 {
+                128u16
+            } else if n_tok > 32 {
+                64u16
+            } else if n_tok > 16 {
+                32u16
+            } else if n_tok > 8 {
+                16u16
+            } else if n_tok > 4 {
+                8u16
+            } else {
+                2u16
+            };
 
-        encoder.dispatch_threads(grid_size, threadgroup_size);
+            let n_token_batches =
+                (n_tok + batch_size as usize - 1) / batch_size as usize;
+
+            // Use specialized pipeline for this batch size
+            encoder.set_compute_pipeline_state(
+                self.ssm_conv1d_d4_batched_pipeline(batch_size as usize),
+            );
+
+            // Grid: (d_inner rows, token batches, 1 sequence)
+            let grid_size = MTLSize {
+                width: d_inner as u64,
+                height: n_token_batches as u64,
+                depth: 1,
+            };
+            let threadgroup_size =
+                MTLSize { width: batch_size as u64, height: 1, depth: 1 };
+
+            encoder.dispatch_thread_groups(grid_size, threadgroup_size);
+        } else {
+            // Small case: use non-batched kernel
+            encoder.set_compute_pipeline_state(&self.ssm_conv1d_d4_pipeline);
+
+            let grid_size = MTLSize {
+                width: n_tok as u64,
+                height: d_inner as u64,
+                depth: 1,
+            };
+            let threadgroup_size = MTLSize { width: 16, height: 16, depth: 1 };
+
+            encoder.dispatch_threads(grid_size, threadgroup_size);
+        }
         encoder.end_encoding();
 
         command_buffer.commit();
@@ -7973,35 +8174,45 @@ impl MetalContext {
             None
         };
 
-        let y_buffer = self.device.new_buffer(
-            (x_size * std::mem::size_of::<f32>()) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        );
-
-        let s_buffer = self.device.new_buffer(
-            (a_size * std::mem::size_of::<f32>()) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        );
-
         // Create command buffer and encoder
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
 
+        // Create combined output buffer for y + s_out (kernel expects single dst buffer)
+        let output_buffer = self.device.new_buffer(
+            ((x_size + a_size) * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        // Buffer layout matching kernel:
+        // 0: s0 (initial state)
+        // 1: x (input)
+        // 2: dt (delta time)
+        // 3: A (decay parameter)
+        // 4: B (input projection)
+        // 5: C (output projection)
+        // 6: dst (y output + s_out final state)
         encoder.set_compute_pipeline_state(&self.ssm_scan_d16_pipeline);
-        encoder.set_buffer(0, Some(&x_buffer), 0);
-        encoder.set_buffer(1, Some(&dt_buffer), 0);
-        encoder.set_buffer(2, Some(&a_buffer), 0);
-        encoder.set_buffer(3, Some(&b_buffer), 0);
-        encoder.set_buffer(4, Some(&c_buffer), 0);
         if let Some(ref s) = s0_buffer {
-            encoder.set_buffer(5, Some(s), 0);
+            encoder.set_buffer(0, Some(s), 0);
         } else {
-            encoder.set_buffer(5, None, 0);
+            encoder.set_buffer(0, None, 0);
         }
-        encoder.set_buffer(6, Some(&y_buffer), 0);
-        encoder.set_buffer(7, Some(&s_buffer), 0);
+        encoder.set_buffer(1, Some(&x_buffer), 0);
+        encoder.set_buffer(2, Some(&dt_buffer), 0);
+        encoder.set_buffer(3, Some(&a_buffer), 0);
+        encoder.set_buffer(4, Some(&b_buffer), 0);
+        encoder.set_buffer(5, Some(&c_buffer), 0);
+        encoder.set_buffer(6, Some(&output_buffer), 0);
+
+        let d_state_u32 = 16u32;
         let d_inner_u32 = d_inner as u32;
         let n_tok_u32 = n_tok as u32;
+        encoder.set_bytes(
+            7,
+            std::mem::size_of::<u32>() as u64,
+            &d_state_u32 as *const u32 as *const c_void,
+        );
         encoder.set_bytes(
             8,
             std::mem::size_of::<u32>() as u64,
@@ -8013,19 +8224,223 @@ impl MetalContext {
             &n_tok_u32 as *const u32 as *const c_void,
         );
 
-        // Grid: (d_inner, d_state)
-        // Each thread processes one (d_inner, state_idx) pair
-        // Threadgroup size should be at least d_state for SIMD reduction
+        // Threadgroup-based dispatch matching kernel
+        // One threadgroup per sgptg d_inner elements
+        // Each threadgroup has sgptg * 32 threads
+        // Each SIMD group (32 threads) handles one d_inner element
+        let sgptg: u64 = 4; // simdgroups per threadgroup
+        let n_simdwidth: u64 = 32;
+        let n_inner_groups = (d_inner as u64 + sgptg - 1) / sgptg;
+        let threadgroup_mem = (sgptg * n_simdwidth + sgptg * 2) * 4; // shared_sums + shared_x_dt + shared_dA
+        encoder.set_threadgroup_memory_length(0, threadgroup_mem);
+
+        let grid_size = MTLSize { width: n_inner_groups, height: 1, depth: 1 };
+        let threadgroup_size =
+            MTLSize { width: sgptg * n_simdwidth, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(grid_size, threadgroup_size);
+        encoder.end_encoding();
+
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // Read results from combined output buffer
+        // Layout: [y (d_inner * n_tok), s_out (d_inner * d_state)]
+        let output_ptr = output_buffer.contents() as *const f32;
+        let y_slice = unsafe { std::slice::from_raw_parts(output_ptr, x_size) };
+        let s_slice = unsafe {
+            std::slice::from_raw_parts(output_ptr.add(x_size), a_size)
+        };
+
+        Ok((y_slice.to_vec(), s_slice.to_vec()))
+    }
+
+    /// SSD (State Space Duality) scan for long sequences
+    /// Uses matrix multiply-accumulate for efficient parallel processing
+    /// Specialized for: CS=64, HD=64 (Mamba-2)
+    /// Memory layout (token-major for efficiency):
+    /// x: [n_tok, HD] - token-major
+    /// dt: [n_tok] - one value per token
+    /// A: single scalar
+    /// B: [n_tok, d_state] - token-major
+    /// C: [n_tok, d_state] - token-major
+    /// s0: [HD, d_state] (initial state)
+    /// Output y: [n_tok, HD], s: [HD, d_state]
+    pub fn ssm_scan_ssd(
+        &self,
+        x: &[f32],
+        dt: &[f32],
+        a: &[f32],
+        b: &[f32],
+        c: &[f32],
+        s0: Option<&[f32]>,
+        d_inner: usize,
+        n_tok: usize,
+        d_state: usize,
+    ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        const HD: usize = 64; // Head Dim (must match d_inner for SSD)
+
+        if d_inner != HD {
+            return Err(format!(
+                "SSD: d_inner must be {} (head dim), got {}",
+                HD, d_inner
+            ));
+        }
+
+        // Memory layout: token-major for x, B, C
+        let x_size = n_tok * d_inner; // [n_tok, HD]
+        let bc_size = n_tok * d_state; // [n_tok, d_state]
+
+        if x.len() != x_size {
+            return Err(format!(
+                "SSD: x size mismatch, expected [n_tok={}, HD={}] = {}, got {}",
+                n_tok,
+                d_inner,
+                x_size,
+                x.len()
+            ));
+        }
+        if dt.len() != n_tok {
+            return Err(format!(
+                "SSD: dt size mismatch, expected [n_tok={}] = {}, got {}",
+                n_tok,
+                n_tok,
+                dt.len()
+            ));
+        }
+        if a.len() != 1 {
+            return Err(format!(
+                "SSD: A size mismatch, expected 1 (scalar), got {}",
+                a.len()
+            ));
+        }
+        if b.len() != bc_size {
+            return Err(format!(
+                "SSD: B size mismatch, expected [n_tok={}, d_state={}] = {}, got {}",
+                n_tok,
+                d_state,
+                bc_size,
+                b.len()
+            ));
+        }
+        if c.len() != bc_size {
+            return Err(format!(
+                "SSD: C size mismatch, expected [n_tok={}, d_state={}] = {}, got {}",
+                n_tok,
+                d_state,
+                bc_size,
+                c.len()
+            ));
+        }
+        if let Some(s) = s0 {
+            if s.len() != d_inner * d_state {
+                return Err(format!(
+                    "SSD: s0 size mismatch, expected [HD={}, d_state={}] = {}, got {}",
+                    d_inner,
+                    d_state,
+                    d_inner * d_state,
+                    s.len()
+                ));
+            }
+        }
+
+        // Create buffers
+        let x_buffer = self.device.new_buffer_with_data(
+            x.as_ptr() as *const c_void,
+            (x_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let dt_buffer = self.device.new_buffer_with_data(
+            dt.as_ptr() as *const c_void,
+            (n_tok * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let a_buffer = self.device.new_buffer_with_data(
+            a.as_ptr() as *const c_void,
+            std::mem::size_of::<f32>() as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let b_buffer = self.device.new_buffer_with_data(
+            b.as_ptr() as *const c_void,
+            (bc_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let c_buffer = self.device.new_buffer_with_data(
+            c.as_ptr() as *const c_void,
+            (bc_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let s0_buffer = if let Some(s) = s0 {
+            self.device.new_buffer_with_data(
+                s.as_ptr() as *const c_void,
+                (d_inner * d_state * std::mem::size_of::<f32>()) as u64,
+                metal::MTLResourceOptions::StorageModeShared,
+            )
+        } else {
+            // Create zero-initialized buffer for initial state
+            let buf = self.device.new_buffer(
+                (d_inner * d_state * std::mem::size_of::<f32>()) as u64,
+                metal::MTLResourceOptions::StorageModeShared,
+            );
+            // Zero the buffer
+            let ptr = buf.contents() as *mut f32;
+            for i in 0..(d_inner * d_state) {
+                unsafe {
+                    *ptr.add(i) = 0.0f32;
+                }
+            }
+            buf
+        };
+
+        let y_buffer = self.device.new_buffer(
+            (x_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let s_buffer = self.device.new_buffer(
+            (d_inner * d_state * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        // Create command buffer and encoder
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.ssm_scan_ssd_pipeline);
+        encoder.set_buffer(0, Some(&x_buffer), 0);
+        encoder.set_buffer(1, Some(&dt_buffer), 0);
+        encoder.set_buffer(2, Some(&a_buffer), 0);
+        encoder.set_buffer(3, Some(&b_buffer), 0);
+        encoder.set_buffer(4, Some(&c_buffer), 0);
+        encoder.set_buffer(5, Some(&s0_buffer), 0);
+        encoder.set_buffer(6, Some(&y_buffer), 0);
+        encoder.set_buffer(7, Some(&s_buffer), 0);
+        let d_state_u32 = d_state as u32;
+        let n_tok_u32 = n_tok as u32;
+        encoder.set_bytes(
+            8,
+            std::mem::size_of::<u32>() as u64,
+            &d_state_u32 as *const u32 as *const c_void,
+        );
+        encoder.set_bytes(
+            9,
+            std::mem::size_of::<u32>() as u64,
+            &n_tok_u32 as *const u32 as *const c_void,
+        );
+
+        // Grid: 1 threadgroup per (head, sequence) - processes chunks of 64 tokens
+        // For now, single head and sequence
         let grid_size = MTLSize {
-            width: d_inner as u64,
-            height: 16, // d_state = 16
+            width: 64, // One thread per channel (HD=64)
+            height: 1,
             depth: 1,
         };
-        let threadgroup_size = MTLSize {
-            width: 1,
-            height: 16, // One SIMD group per d_inner
-            depth: 1,
-        };
+        let threadgroup_size = MTLSize { width: 64, height: 1, depth: 1 };
 
         encoder.dispatch_threads(grid_size, threadgroup_size);
         encoder.end_encoding();
@@ -8037,7 +8452,224 @@ impl MetalContext {
         let y_ptr = y_buffer.contents() as *const f32;
         let s_ptr = s_buffer.contents() as *const f32;
         let y_slice = unsafe { std::slice::from_raw_parts(y_ptr, x_size) };
-        let s_slice = unsafe { std::slice::from_raw_parts(s_ptr, a_size) };
+        let s_slice =
+            unsafe { std::slice::from_raw_parts(s_ptr, d_inner * d_state) };
+
+        Ok((y_slice.to_vec(), s_slice.to_vec()))
+    }
+
+    /// SSD (State Space Duality) scan with simdgroup MMA optimization
+    /// Uses Metal's matrix multiply-accelerate for parallel scan
+    /// Designed for Mamba-2: d_state=64, head_dim=64
+    pub fn ssm_scan_ssd_mma(
+        &self,
+        x: &[f32],
+        dt: &[f32],
+        a: &[f32],
+        b: &[f32],
+        c: &[f32],
+        s0: Option<&[f32]>,
+        head_dim: usize,
+        n_tok: usize,
+        d_state: usize,
+        n_head: usize,
+    ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        const HD: usize = 64; // Head Dim
+        const CS: usize = 64; // Chunk size (64 fits in 32KB threadgroup memory)
+
+        if head_dim != HD {
+            return Err(format!(
+                "SSD MMA: head_dim must be {} (head dim), got {}",
+                HD, head_dim
+            ));
+        }
+
+        // Memory layout: token-major for x, B, C
+        let x_size = n_tok * head_dim; // [n_tok, HD]
+        let bc_size = n_tok * d_state; // [n_tok, d_state]
+        let state_size = head_dim * d_state; // [HD, d_state]
+        let y_size = n_tok * n_head * head_dim;
+
+        if x.len() != x_size {
+            return Err(format!(
+                "SSD MMA: x size mismatch, expected [n_tok={}, HD={}] = {}, got {}",
+                n_tok,
+                head_dim,
+                x_size,
+                x.len()
+            ));
+        }
+        if dt.len() != n_tok {
+            return Err(format!(
+                "SSD MMA: dt size mismatch, expected [n_tok={}] = {}, got {}",
+                n_tok,
+                n_tok,
+                dt.len()
+            ));
+        }
+        if a.len() != 1 {
+            return Err(format!(
+                "SSD MMA: A size mismatch, expected 1 (scalar), got {}",
+                a.len()
+            ));
+        }
+        if b.len() != bc_size {
+            return Err(format!(
+                "SSD MMA: B size mismatch, expected [n_tok={}, d_state={}] = {}, got {}",
+                n_tok,
+                d_state,
+                bc_size,
+                b.len()
+            ));
+        }
+        if c.len() != bc_size {
+            return Err(format!(
+                "SSD MMA: C size mismatch, expected [n_tok={}, d_state={}] = {}, got {}",
+                n_tok,
+                d_state,
+                bc_size,
+                c.len()
+            ));
+        }
+
+        // Create buffers
+        let s0_buffer = if let Some(s) = s0 {
+            self.device.new_buffer_with_data(
+                s.as_ptr() as *const c_void,
+                (state_size * std::mem::size_of::<f32>()) as u64,
+                metal::MTLResourceOptions::StorageModeShared,
+            )
+        } else {
+            let buf = self.device.new_buffer(
+                (state_size * std::mem::size_of::<f32>()) as u64,
+                metal::MTLResourceOptions::StorageModeShared,
+            );
+            let ptr = buf.contents() as *mut f32;
+            for i in 0..state_size {
+                unsafe { *ptr.add(i) = 0.0f32 };
+            }
+            buf
+        };
+
+        let x_buffer = self.device.new_buffer_with_data(
+            x.as_ptr() as *const c_void,
+            (x_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let dt_buffer = self.device.new_buffer_with_data(
+            dt.as_ptr() as *const c_void,
+            (n_tok * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let a_buffer = self.device.new_buffer_with_data(
+            a.as_ptr() as *const c_void,
+            std::mem::size_of::<f32>() as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let b_buffer = self.device.new_buffer_with_data(
+            b.as_ptr() as *const c_void,
+            (bc_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let c_buffer = self.device.new_buffer_with_data(
+            c.as_ptr() as *const c_void,
+            (bc_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        // Output: y + s_out concatenated
+        let output_size = y_size + state_size;
+        let output_buffer = self.device.new_buffer(
+            (output_size * std::mem::size_of::<f32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        // Threadgroup memory size calculation for CS=64:
+        // acs[CS] + exp_acs[CS] + state_decay[CS] + dtx[CS*HD] + sam[NSG*TC*CS] + tiles[NSG*2*TC*TC]
+        // = 64 + 64 + 64 + 64*64 + 4*8*64 + 4*2*64 = 192 + 4096 + 2048 + 512 = 6848 floats = 27.4 KB
+        // Fits under 32KB Metal threadgroup memory limit
+        let threadgroup_memory_size =
+            (CS * 3 + CS * HD + 4 * 8 * CS + 4 * 2 * 64) * 4; // bytes
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.ssm_scan_ssd_mma_pipeline);
+        encoder.set_buffer(0, Some(&s0_buffer), 0); // src0 (s0)
+        encoder.set_buffer(1, Some(&x_buffer), 0); // src1 (x)
+        encoder.set_buffer(2, Some(&dt_buffer), 0); // src2 (dt)
+        encoder.set_buffer(3, Some(&a_buffer), 0); // src3 (A)
+        encoder.set_buffer(4, Some(&b_buffer), 0); // src4 (B)
+        encoder.set_buffer(5, Some(&c_buffer), 0); // src5 (C)
+        // src6 (ids) - not used for now
+        encoder.set_buffer(7, Some(&output_buffer), 0); // dst (y + s_out)
+
+        // Set constants
+        let d_state_u32 = d_state as u32;
+        let head_dim_u32 = head_dim as u32;
+        let n_head_u32 = n_head as u32;
+        let n_tok_u32 = n_tok as u32;
+        let n_seqs_u32 = 1u32;
+
+        encoder.set_bytes(
+            8,
+            std::mem::size_of::<u32>() as u64,
+            &d_state_u32 as *const u32 as *const c_void,
+        );
+        encoder.set_bytes(
+            9,
+            std::mem::size_of::<u32>() as u64,
+            &head_dim_u32 as *const u32 as *const c_void,
+        );
+        encoder.set_bytes(
+            10,
+            std::mem::size_of::<u32>() as u64,
+            &n_head_u32 as *const u32 as *const c_void,
+        );
+        encoder.set_bytes(
+            11,
+            std::mem::size_of::<u32>() as u64,
+            &n_tok_u32 as *const u32 as *const c_void,
+        );
+        encoder.set_bytes(
+            12,
+            std::mem::size_of::<u32>() as u64,
+            &n_seqs_u32 as *const u32 as *const c_void,
+        );
+
+        // Set threadgroup memory size
+        encoder
+            .set_threadgroup_memory_length(0, threadgroup_memory_size as u64);
+
+        // Grid: one threadgroup per (head, sequence)
+        // Threadgroup size: NSG * 32 = 128 threads
+        let grid_size = MTLSize {
+            width: 1,              // Not used
+            height: n_head as u64, // One threadgroup per head
+            depth: 1,              // One sequence
+        };
+        let threadgroup_size = MTLSize {
+            width: 128, // NSG * 32
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(grid_size, threadgroup_size);
+        encoder.end_encoding();
+
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // Read results
+        let output_ptr = output_buffer.contents() as *const f32;
+        let y_slice = unsafe { std::slice::from_raw_parts(output_ptr, y_size) };
+        let s_slice = unsafe {
+            std::slice::from_raw_parts(output_ptr.add(y_size), state_size)
+        };
 
         Ok((y_slice.to_vec(), s_slice.to_vec()))
     }
