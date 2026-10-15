@@ -468,15 +468,238 @@ impl Model {
         }
     }
 
-    /// Forward pass for Hybrid MoE + SSM layer
+    /// Forward pass for Hybrid MoE + SSM layer (Qwen3.6-35B architecture)
     fn forward_hybrid_layer(
         &self,
         hidden: &[f32],
         layer: &HybridMoESsmLayer,
     ) -> Option<Vec<f32>> {
-        // Similar to Mamba layer but with MoE FFN
-        // TODO: Implement
-        None
+        let hidden_size = self.config.hidden_size;
+
+        // 1. Attention norm
+        let normed = if let Some(attn_norm) = &layer.attention_norm {
+            self.apply_rms_norm(hidden, attn_norm, hidden_size)?
+        } else {
+            hidden.to_vec()
+        };
+
+        // 2. Attention (SSM-style fused QKV)
+        let attn_proj = if let Some(attn_qkv) = &layer.attn_qkv {
+            let qkv_out_size = attn_qkv.shape[1];
+            let qkv = self.gemv(&normed, attn_qkv, qkv_out_size)?;
+
+            // Split Q, K, V
+            let n_heads = self.config.n_heads;
+            let n_kv_heads = self.config.n_kv_heads;
+            let head_dim = if self.config.key_length > 0 {
+                self.config.key_length
+            } else {
+                self.config.head_dim
+            };
+
+            let q_size = n_heads * head_dim;
+            let k_size = n_kv_heads * head_dim;
+            let v_size = n_kv_heads * self.config.value_length;
+
+            let q = &qkv[0..q_size];
+            let k = &qkv[q_size..q_size + k_size];
+            let v = &qkv[q_size + k_size..q_size + k_size + v_size];
+
+            // RoPE
+            let pos = 0;
+            let q_rope = self.apply_rope(q, pos, n_heads, head_dim)?;
+            let k_rope = self.apply_rope(k, pos, n_kv_heads, head_dim)?;
+
+            // Attention
+            let attn_out = self.attention(
+                &q_rope, &k_rope, &v, n_heads, head_dim, n_kv_heads,
+            )?;
+
+            // Output projection via attn_gate
+            if let Some(attn_gate) = &layer.attn_gate {
+                let gate_out =
+                    self.gemv(&normed, attn_gate, attn_gate.shape[1])?;
+                let attn_size = attn_out.len();
+                let gate_size = gate_out.len();
+
+                if attn_size == gate_size {
+                    gate_out
+                        .iter()
+                        .zip(attn_out.iter())
+                        .map(|(g, a)| {
+                            let gate = 1.0 / (1.0 + (-g).exp());
+                            gate * a
+                        })
+                        .collect()
+                } else {
+                    gate_out
+                }
+            } else if let Some(wo) = &layer.wo {
+                self.gemv(&attn_out, wo, hidden_size)?
+            } else {
+                attn_out
+            }
+        } else {
+            // No attention, just pass through
+            normed.clone()
+        };
+
+        // 3. Residual from attention
+        let residual: Vec<f32> = if attn_proj.len() == hidden_size {
+            hidden.iter().zip(attn_proj.iter()).map(|(h, a)| h + a).collect()
+        } else {
+            hidden.to_vec()
+        };
+
+        // 4. Post-attention norm
+        let post_normed = if let Some(post_norm) = &layer.post_attention_norm {
+            self.apply_rms_norm(&residual, post_norm, hidden_size)?
+        } else {
+            residual.clone()
+        };
+
+        // 5. MoE FFN (if present)
+        let ffn_out = if layer.is_moe() {
+            self.compute_hybrid_moe(&post_normed, layer, hidden_size)?
+        } else {
+            vec![0.0f32; hidden_size]
+        };
+
+        // 6. SSM (if present) - simplified for now
+        let ssm_out = if layer.is_ssm() {
+            if let Some(ssm_out_weight) = &layer.ssm_out {
+                self.gemv(&post_normed, ssm_out_weight, hidden_size)?
+            } else {
+                vec![0.0f32; hidden_size]
+            }
+        } else {
+            vec![0.0f32; hidden_size]
+        };
+
+        // 7. Combine: residual + MoE + SSM
+        let combined: Vec<f32> = residual
+            .iter()
+            .zip(ffn_out.iter().zip(ssm_out.iter()))
+            .map(|(r, (f, s))| r + f + s)
+            .collect();
+
+        Some(combined)
+    }
+
+    /// Compute MoE FFN for hybrid layer
+    fn compute_hybrid_moe(
+        &self,
+        hidden: &[f32],
+        layer: &HybridMoESsmLayer,
+        hidden_size: usize,
+    ) -> Option<Vec<f32>> {
+        let gate_inp = layer.ffn_gate_inp.as_ref()?;
+        let gate_up_exps = layer.ffn_gate_up_exps.as_ref()?;
+        let down_exps = layer.ffn_down_exps.as_ref()?;
+
+        // Shared expert weights
+        let gate_shexp = layer.ffn_gate_shexp.as_ref();
+        let down_shexp = layer.ffn_down_shexp.as_ref();
+
+        // 1. Expert routing scores
+        let n_experts = gate_inp.shape[1];
+        let routing = self.gemv(hidden, gate_inp, n_experts)?;
+
+        // 2. Top-k expert selection
+        let n_experts_used = self.config.n_experts_used.min(n_experts);
+        let mut expert_scores: Vec<(usize, f32)> =
+            (0..n_experts).map(|i| (i, routing[i])).collect();
+        expert_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let top_experts: Vec<(usize, f32)> =
+            expert_scores[..n_experts_used].to_vec();
+
+        // 3. Renormalize expert weights
+        let sum_weights: f32 = top_experts.iter().map(|(_, s)| s.abs()).sum();
+        let top_experts: Vec<(usize, f32)> = if sum_weights > 0.0 {
+            top_experts
+                .iter()
+                .map(|(i, s)| (*i, s.abs() / sum_weights))
+                .collect()
+        } else {
+            top_experts
+        };
+
+        // 4. Expert FFN computation
+        let intermediate_size = down_exps.shape[0];
+        let mut output = vec![0.0f32; hidden_size];
+
+        // Pre-dequantize expert weights once (expensive operation)
+        let gate_up_data = crate::inference::dequant_to_f32(
+            gate_up_exps.bytes(),
+            gate_up_exps.dtype,
+            hidden_size * intermediate_size * n_experts,
+        );
+        let down_data = crate::inference::dequant_to_f32(
+            down_exps.bytes(),
+            down_exps.dtype,
+            intermediate_size * hidden_size * n_experts,
+        );
+
+        // Process each selected expert
+        for (expert_idx, weight) in &top_experts {
+            // Extract expert weights from interleaved 3D tensor
+            // gate_up_exps shape: [hidden_size, intermediate_size, n_experts]
+            let expert_intermediate = intermediate_size;
+
+            // Expert computation: gate * up (SwiGLU)
+            let mut expert_hidden = vec![0.0f32; expert_intermediate];
+            for i in 0..expert_intermediate {
+                // gate and up are interleaved: [gate0, up0, gate1, up1, ...]
+                let gate_offset =
+                    expert_idx * hidden_size * expert_intermediate
+                        + i * hidden_size;
+                let up_offset =
+                    gate_offset + (expert_intermediate / 2) * hidden_size;
+
+                let mut gate_sum = 0.0f32;
+                let mut up_sum = 0.0f32;
+                for j in 0..hidden_size {
+                    gate_sum += gate_up_data[gate_offset + j] * hidden[j];
+                    up_sum += gate_up_data[up_offset + j] * hidden[j];
+                }
+                let silu = up_sum / (1.0 + (-up_sum).exp());
+                expert_hidden[i] = gate_sum * silu;
+            }
+
+            // Down projection
+            for i in 0..hidden_size {
+                let mut sum = 0.0f32;
+                for j in 0..intermediate_size {
+                    let down_offset =
+                        expert_idx * intermediate_size * hidden_size
+                            + j * hidden_size;
+                    sum += down_data[down_offset + i] * expert_hidden[j];
+                }
+                output[i] += sum * weight;
+            }
+        }
+
+        // 5. Shared expert (if present)
+        if let (Some(gate_shexp), Some(down_shexp)) = (gate_shexp, down_shexp) {
+            let shexp_intermediate = gate_shexp.shape[1];
+            let gate_out = self.gemv(hidden, gate_shexp, shexp_intermediate)?;
+
+            // Apply SiLU to gate output
+            let mut shexp_hidden = vec![0.0f32; shexp_intermediate];
+            for i in 0..shexp_intermediate {
+                shexp_hidden[i] = gate_out[i] / (1.0 + (-gate_out[i]).exp());
+            }
+
+            let shexp_out =
+                self.gemv(&shexp_hidden, down_shexp, hidden_size)?;
+
+            // Add to output
+            for i in 0..hidden_size {
+                output[i] += shexp_out[i];
+            }
+        }
+
+        Some(output)
     }
 
     // Helper methods
