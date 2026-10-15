@@ -74,6 +74,7 @@ pub fn dequant_q4_k(data: &[u8], out: &mut [f32], count: usize) {
 /// Dequantize Q5_K block to F32
 /// Q5_K: 256 elements per block, 176 bytes
 /// 8 sub-blocks of 32 elements each with 5-bit values
+/// Layout matches NEON implementation: qh bits are reused across groups
 pub fn dequant_q5_k(data: &[u8], out: &mut [f32], count: usize) {
     let n_blocks = count.div_ceil(QK_K);
     for block_idx in 0..n_blocks {
@@ -86,58 +87,108 @@ pub fn dequant_q5_k(data: &[u8], out: &mut [f32], count: usize) {
         let d = f16::from_bits(block.d).to_f32();
         let dmin = f16::from_bits(block.dmin).to_f32();
 
-        // Process 8 sub-blocks of 32 elements each
-        // Following llama.cpp: scales are used in pairs for 64-element groups
-        for j in 0..8 {
-            let (sc, min) = get_scale_min_k4(j, 0, &block.scales);
-            let dl = d * sc;
-            let ml = dmin * min;
+        // Decode scales from 12-byte packed format (same as Q4_K)
+        // utmp[0..4] after decode: scales[0..3], scales[4..7], mins[0..3]
+        const KMASK1: u32 = 0x3f3f3f3f;
+        const KMASK2: u32 = 0x0f0f0f0f;
+        const KMASK3: u32 = 0x03030303;
 
+        let mut utmp = [0u32; 4];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                block.scales.as_ptr(),
+                utmp.as_mut_ptr() as *mut u8,
+                12,
+            );
+        }
+
+        // Extract mins to utmp[3] before modifying
+        utmp[3] = ((utmp[2] >> 4) & KMASK2) | (((utmp[1] >> 6) & KMASK3) << 4);
+        // Extract scales
+        let uaux = utmp[1] & KMASK1;
+        utmp[1] = (utmp[2] & KMASK2) | (((utmp[0] >> 6) & KMASK3) << 4);
+        utmp[2] = uaux;
+        utmp[0] &= KMASK1;
+
+        // Now: utmp[0] = scales[0..3], utmp[1] = scales[4..7], utmp[3] = mins[0..3]
+        let scales_bytes: [u8; 16] = unsafe { std::mem::transmute(utmp) };
+        // scales[0..8] at positions 0..7, mins[0..4] at positions 8..11
+
+        // Process in NEON-compatible pattern: 4 iterations of 64 elements each
+        // Each iteration uses 2 scales for 4 groups of 16 elements
+        // But dequant needs 8 scales for 8 groups of 32 elements
+        // Map: iteration iter 0..4, group g 0..3 within iteration
+        // Scale index: scale_idx = iter * 2 + g / 2 (each scale covers 2 groups)
+        // Element: iter * 64 + g * 16 + k
+
+        for iter in 0..4 {
+            // Each iteration processes 64 elements
+            // Bit selection: iter 0 uses bit 0, iter 1 uses bit 1, etc.
+            // But wait, NEON uses bit 0 and bit 1 within the SAME iteration!
+            // Let me re-examine NEON more carefully.
+
+            // NEON uses:
+            // - q5h_0: bit 0 from qhbits.0
+            // - q5h_1: bit 0 from qhbits.1
+            // - q5h_2: bit 1 from qhbits.0
+            // - q5h_3: bit 1 from qhbits.1
+            // These are used for elements:
+            // - q5bytes_0: qs low nibbles, qh bit 0
+            // - q5bytes_1: qs low nibbles (offset 16), qh bit 0
+            // - q5bytes_2: qs high nibbles, qh bit 1
+            // - q5bytes_3: qs high nibbles (offset 16), qh bit 1
+
+            // So within one iteration of 64 elements:
+            // Elements 0..15: qs[iter*32 + k] low, qh[k] bit 0
+            // Elements 16..31: qs[iter*32 + 16 + k] low, qh[16 + k] bit 0
+            // Elements 32..47: qs[iter*32 + k] high, qh[k] bit 1
+            // Elements 48..63: qs[iter*32 + 16 + k] high, qh[16 + k] bit 1
+
+            // Scale usage: scales[iter * 2] for first 32, scales[iter * 2 + 1] for second 32
+            let scale0 = scales_bytes[iter * 2] as f32;
+            let scale1 = scales_bytes[iter * 2 + 1] as f32;
+            let min0 = scales_bytes[8 + iter / 2] as f32; // mins packed differently
+            let min1 = min0;
+
+            let dl0 = d * scale0;
+            let ml0 = dmin * min0;
+            let dl1 = d * scale1;
+            let ml1 = dmin * min1;
+
+            // Process 16 elements per group
             for k in 0..16 {
-                let byte = block.qs[j * 16 + k];
-                let v0_low = (byte & 0x0F) as f32;
-                let v1_low = ((byte >> 4) & 0x0F) as f32;
-
-                // High bit from qh
-                // llama.cpp: qh[k] bit j contains high bit for element j*32+k
-                // The qh byte is indexed by k (position within 32-element group)
-                // The bit within that byte is j (which 32-element group)
-                let h0 = if k < block.qh.len() {
-                    ((block.qh[k] >> j) & 1) as f32 * 16.0
-                } else {
-                    0.0
-                };
-
-                // For v1, the element is j*32+k+16, so the position within group is k+16
-                // But qh is indexed 0..31, so k+16 maps to qh[k+16] if k < 16
-                // Actually, llama.cpp processes two 32-element groups together with same qh[l]
-                // Let's re-index: element j*32+k+16 has position (k+16) within the block
-                // But that's not right either...
-                //
-                // Actually looking at llama.cpp more carefully:
-                // for (int l = 0; l < 32; ++l) *y++ = d1 * ((ql[l] & 0xF) + (qh[l] & u1 ? 16 : 0)) - m1;
-                // The ql[l] extracts low 4 bits, and qh[l] & u1 checks bit 0 (u1=1 for first group)
-                // for the second 32: ql[l] >> 4 extracts high 4 bits, qh[l] & u2 checks bit 1 (u2=2)
-                //
-                // So for my j*32+k position:
-                // - k is 0..15, we're looking at low 4 bits and high 4 bits separately
-                // - For v0_low (low 4 bits): element is j*32+k, qh byte is k, bit is j
-                // - For v1_low (high 4 bits): element is j*32+k+16, qh byte is k+16, bit is j
-                //   But wait, k+16 is 16..31, so qh[k+16] should work
-                let h1 = if k + 16 < block.qh.len() {
-                    ((block.qh[k + 16] >> j) & 1) as f32 * 16.0
-                } else {
-                    0.0
-                };
-
-                let idx0 = block_idx * QK_K + j * 32 + k;
-                let idx1 = block_idx * QK_K + j * 32 + k + 16;
-
+                // Group 0: qs low nibbles, qh bit 0
+                let qs0 = block.qs[iter * 32 + k];
+                let low0 = (qs0 & 0x0F) as f32;
+                let h0 = ((block.qh[k] >> 0) & 1) as f32 * 16.0;
+                let idx0 = block_idx * QK_K + iter * 64 + k;
                 if idx0 < count {
-                    out[idx0] = dl * (v0_low + h0) - ml;
+                    out[idx0] = dl0 * (low0 + h0) - ml0;
                 }
+
+                // Group 1: qs low nibbles offset, qh bit 0
+                let qs1 = block.qs[iter * 32 + 16 + k];
+                let low1 = (qs1 & 0x0F) as f32;
+                let h1 = ((block.qh[16 + k] >> 0) & 1) as f32 * 16.0;
+                let idx1 = block_idx * QK_K + iter * 64 + 16 + k;
                 if idx1 < count {
-                    out[idx1] = dl * (v1_low + h1) - ml;
+                    out[idx1] = dl0 * (low1 + h1) - ml0; // Same scale as group 0
+                }
+
+                // Group 2: qs high nibbles, qh bit 1
+                let high0 = ((qs0 >> 4) & 0x0F) as f32;
+                let h2 = ((block.qh[k] >> 1) & 1) as f32 * 16.0;
+                let idx2 = block_idx * QK_K + iter * 64 + 32 + k;
+                if idx2 < count {
+                    out[idx2] = dl1 * (high0 + h2) - ml1;
+                }
+
+                // Group 3: qs high nibbles offset, qh bit 1
+                let high1 = ((qs1 >> 4) & 0x0F) as f32;
+                let h3 = ((block.qh[16 + k] >> 1) & 1) as f32 * 16.0;
+                let idx3 = block_idx * QK_K + iter * 64 + 48 + k;
+                if idx3 < count {
+                    out[idx3] = dl1 * (high1 + h3) - ml1;
                 }
             }
         }

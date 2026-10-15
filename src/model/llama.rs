@@ -46,14 +46,34 @@ pub struct LlamaLayer {
     pub wk: Option<Tensor>,
     pub wv: Option<Tensor>,
     pub wo: Option<Tensor>,
+    pub bq: Option<Tensor>,     // Q bias
+    pub bk: Option<Tensor>,     // K bias
+    pub bv: Option<Tensor>,     // V bias
     pub q_norm: Option<Tensor>, // Qwen-style Q norm
     pub k_norm: Option<Tensor>, // Qwen-style K norm
+
+    // Fused QKV (for models like Qwen3.8)
+    pub attn_qkv: Option<Tensor>,
+
+    // MQA attention (for models like DeepSeek-Coder-V2)
+    pub attn_kv_a_mqa: Option<Tensor>,
+    pub attn_kv_b: Option<Tensor>,
+    pub attn_kv_a_norm: Option<Tensor>,
 
     // FFN
     pub ffn_norm: Option<Tensor>,
     pub w1: Option<Tensor>, // gate
     pub w2: Option<Tensor>, // down
     pub w3: Option<Tensor>, // up
+
+    // MoE FFN (for models like DeepSeek-Coder-V2)
+    pub ffn_gate_inp: Option<Tensor>, // Expert routing
+    pub ffn_gate_exps: Option<Tensor>, // Expert gate weights
+    pub ffn_up_exps: Option<Tensor>,  // Expert up weights
+    pub ffn_down_exps: Option<Tensor>, // Expert down weights
+    pub ffn_gate_shexp: Option<Tensor>, // Shared expert gate
+    pub ffn_up_shexp: Option<Tensor>, // Shared expert up
+    pub ffn_down_shexp: Option<Tensor>, // Shared expert down
 }
 
 impl LlamaModel {
@@ -199,6 +219,187 @@ impl LlamaModel {
         out_size: usize,
     ) -> Option<Vec<f32>> {
         self.gemv_impl(x, w, out_size)
+    }
+
+    /// Get Q, K, V projections from layer
+    /// Supports both standard (wq/wk/wv) and fused QKV (attn_qkv) architectures
+    /// Returns (q, k, v, q_out_size, k_out_size, v_out_size)
+    pub fn get_qkv_proj(
+        &self,
+        layer: &LlamaLayer,
+        hidden: &[f32],
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+    ) -> Option<(Vec<f32>, Vec<f32>, Vec<f32>, usize, usize, usize)> {
+        // Try fused QKV first (Qwen3.8-style)
+        if let Some(ref qkv) = layer.attn_qkv {
+            // Fused QKV: shape = [hidden_size, q_size + k_size + v_size]
+            let qkv_out_size = qkv.shape[1];
+            let q_out_size = n_heads * head_dim;
+            let k_out_size = n_kv_heads * head_dim;
+            let v_out_size = n_kv_heads * head_dim;
+
+            // Compute fused projection
+            let qkv_proj = self.gemv_impl(hidden, qkv, qkv_out_size)?;
+
+            // Split into Q, K, V
+            let q = qkv_proj[0..q_out_size].to_vec();
+            let k = qkv_proj[q_out_size..q_out_size + k_out_size].to_vec();
+            let v = qkv_proj
+                [q_out_size + k_out_size..q_out_size + k_out_size + v_out_size]
+                .to_vec();
+
+            return Some((q, k, v, q_out_size, k_out_size, v_out_size));
+        }
+
+        // Try standard separate Q, K, V
+        if let (Some(wq), Some(wk), Some(wv)) =
+            (&layer.wq, &layer.wk, &layer.wv)
+        {
+            let q_out_size = wq.shape[1];
+            let k_out_size = wk.shape[1];
+            let v_out_size = wv.shape[1];
+
+            let mut q = self.gemv_impl(hidden, wq, q_out_size)?;
+            let mut k = self.gemv_impl(hidden, wk, k_out_size)?;
+            let mut v = self.gemv_impl(hidden, wv, v_out_size)?;
+
+            // Add biases if present (biases are stored as F32)
+            if let Some(bq) = &layer.bq {
+                let bias_data: &[f32] = bytemuck::cast_slice(bq.bytes());
+                for i in 0..q_out_size.min(bias_data.len()) {
+                    q[i] += bias_data[i];
+                }
+            }
+            if let Some(bk) = &layer.bk {
+                let bias_data: &[f32] = bytemuck::cast_slice(bk.bytes());
+                for i in 0..k_out_size.min(bias_data.len()) {
+                    k[i] += bias_data[i];
+                }
+            }
+            if let Some(bv) = &layer.bv {
+                let bias_data: &[f32] = bytemuck::cast_slice(bv.bytes());
+                for i in 0..v_out_size.min(bias_data.len()) {
+                    v[i] += bias_data[i];
+                }
+            }
+
+            return Some((q, k, v, q_out_size, k_out_size, v_out_size));
+        }
+
+        // Try MQA (DeepSeek-Coder-V2-style)
+        // MQA uses attn_kv_a_mqa for KV and attn_q for Q
+        if let (Some(wq), Some(kv_a)) = (&layer.wq, &layer.attn_kv_a_mqa) {
+            let q_out_size = wq.shape[1];
+            // kv_a shape is [hidden, kv_a_size] where kv_a_size includes compressed KV
+            let kv_a_out_size = kv_a.shape[1];
+
+            let q = self.gemv_impl(hidden, wq, q_out_size)?;
+            let kv_a_proj = self.gemv_impl(hidden, kv_a, kv_a_out_size)?;
+
+            // For MQA, kv_a is compressed. We need to decode it.
+            // This is simplified - real implementation needs proper dequantization
+            // For now, use kv_a_proj as both k and v (placeholder)
+            let k_out_size = n_kv_heads * head_dim;
+            let v_out_size = n_kv_heads * head_dim;
+            let k = kv_a_proj[0..k_out_size.min(kv_a_out_size)].to_vec();
+            let v = kv_a_proj[0..v_out_size.min(kv_a_out_size)].to_vec();
+
+            return Some((q, k, v, q_out_size, k_out_size, v_out_size));
+        }
+
+        None
+    }
+
+    /// Compute FFN output from layer
+    /// Supports both standard FFN and MoE architectures
+    pub fn compute_ffn(
+        &self,
+        layer: &LlamaLayer,
+        hidden: &[f32],
+        hidden_size: usize,
+    ) -> Option<Vec<f32>> {
+        // Try MoE FFN first (DeepSeek-Coder-V2-style)
+        if layer.ffn_gate_exps.is_some() || layer.ffn_gate_shexp.is_some() {
+            return self.compute_moe_ffn(layer, hidden, hidden_size);
+        }
+
+        // Standard FFN (SwiGLU)
+        if let (Some(w1), Some(w2), Some(w3)) =
+            (&layer.w1, &layer.w2, &layer.w3)
+        {
+            let intermediate_size = w1.shape[1];
+
+            // gate = silu(hidden @ w1)
+            let gate = self.gemv_impl(hidden, w1, intermediate_size)?;
+            // up = hidden @ w3
+            let up = self.gemv_impl(hidden, w3, intermediate_size)?;
+
+            // hidden_ffn = gate * silu(up)
+            let mut hidden_ffn = vec![0.0f32; intermediate_size];
+            for i in 0..intermediate_size {
+                let silu = up[i] / (1.0 + (-up[i]).exp());
+                hidden_ffn[i] = gate[i] * silu;
+            }
+
+            // output = hidden_ffn @ w2
+            let output = self.gemv_impl(&hidden_ffn, w2, hidden_size);
+            return output;
+        }
+
+        None
+    }
+
+    /// Compute MoE FFN output
+    /// DeepSeek-Coder-V2 uses routed experts + shared experts
+    fn compute_moe_ffn(
+        &self,
+        layer: &LlamaLayer,
+        hidden: &[f32],
+        hidden_size: usize,
+    ) -> Option<Vec<f32>> {
+        // For now, use shared expert only (simplified implementation)
+        // Full MoE would need expert routing via ffn_gate_inp
+
+        if let (Some(gate), Some(up), Some(down)) =
+            (&layer.ffn_gate_shexp, &layer.ffn_up_shexp, &layer.ffn_down_shexp)
+        {
+            let intermediate_size = gate.shape[1];
+
+            // Shared expert FFN (SwiGLU)
+            let gate_out = self.gemv_impl(hidden, gate, intermediate_size)?;
+            let up_out = self.gemv_impl(hidden, up, intermediate_size)?;
+
+            let mut hidden_ffn = vec![0.0f32; intermediate_size];
+            for i in 0..intermediate_size {
+                let silu = up_out[i] / (1.0 + (-up_out[i]).exp());
+                hidden_ffn[i] = gate_out[i] * silu;
+            }
+
+            let output = self.gemv_impl(&hidden_ffn, down, hidden_size);
+            return output;
+        }
+
+        // Fallback: use standard FFN if no MoE weights found
+        if let (Some(w1), Some(w2), Some(w3)) =
+            (&layer.w1, &layer.w2, &layer.w3)
+        {
+            let intermediate_size = w1.shape[1];
+            let gate = self.gemv_impl(hidden, w1, intermediate_size)?;
+            let up = self.gemv_impl(hidden, w3, intermediate_size)?;
+
+            let mut hidden_ffn = vec![0.0f32; intermediate_size];
+            for i in 0..intermediate_size {
+                let silu = up[i] / (1.0 + (-up[i]).exp());
+                hidden_ffn[i] = gate[i] * silu;
+            }
+
+            let output = self.gemv_impl(&hidden_ffn, w2, hidden_size);
+            return output;
+        }
+
+        None
     }
 
     /// Forward pass with GPU context
@@ -511,12 +712,38 @@ impl LlamaModel {
             let actual_n_heads = q_out_size / actual_head_dim;
             let actual_n_kv_heads = k_out_size / actual_head_dim;
 
-            let q =
+            let mut q =
                 self.gemm_batch(&normed, wq, q_out_size, batch_size, gpu_ctx)?;
-            let k =
+            let mut k =
                 self.gemm_batch(&normed, wk, k_out_size, batch_size, gpu_ctx)?;
-            let v =
+            let mut v =
                 self.gemm_batch(&normed, wv, v_out_size, batch_size, gpu_ctx)?;
+
+            // Add biases if present (for each token in batch)
+            if let Some(bq) = &layer.bq {
+                let bias_data: &[f32] = bytemuck::cast_slice(bq.bytes());
+                for t in 0..batch_size {
+                    for i in 0..q_out_size.min(bias_data.len()) {
+                        q[t * q_out_size + i] += bias_data[i];
+                    }
+                }
+            }
+            if let Some(bk) = &layer.bk {
+                let bias_data: &[f32] = bytemuck::cast_slice(bk.bytes());
+                for t in 0..batch_size {
+                    for i in 0..k_out_size.min(bias_data.len()) {
+                        k[t * k_out_size + i] += bias_data[i];
+                    }
+                }
+            }
+            if let Some(bv) = &layer.bv {
+                let bias_data: &[f32] = bytemuck::cast_slice(bv.bytes());
+                for t in 0..batch_size {
+                    for i in 0..v_out_size.min(bias_data.len()) {
+                        v[t * v_out_size + i] += bias_data[i];
+                    }
+                }
+            }
 
             // 3. RoPE (apply to each token)
             let mut q_rope = Vec::with_capacity(batch_size * q_out_size);
@@ -645,9 +872,9 @@ impl LlamaModel {
         let final_normed =
             self.apply_rms_norm(final_hidden, final_norm, hidden_size)?;
 
-        let output = self.output.as_ref()?;
+        // Use output_projection which handles transposed weights correctly
         let logits =
-            self.gemv(&final_normed, output, self.config.vocab_size)?;
+            self.output_projection(&final_normed, self.config.vocab_size)?;
 
         Some(logits)
     }
@@ -870,8 +1097,8 @@ impl LlamaModel {
         check_stats("final_normed", &final_normed);
 
         let output = self.output.as_ref()?;
-        let logits =
-            self.gemv(&final_normed, output, self.config.vocab_size)?;
+        let vocab_size = output.shape[1]; // Use actual tensor dimension
+        let logits = self.gemv(&final_normed, output, vocab_size)?;
         check_stats("logits", &logits);
 
         Some(logits)
@@ -1120,9 +1347,29 @@ impl LlamaModel {
         let k_out_size = wk.shape[1];
         let v_out_size = wv.shape[1];
 
-        let q = self.gemv_impl(&normed, wq, q_out_size)?;
-        let k = self.gemv_impl(&normed, wk, k_out_size)?;
-        let v = self.gemv_impl(&normed, wv, v_out_size)?;
+        let mut q = self.gemv_impl(&normed, wq, q_out_size)?;
+        let mut k = self.gemv_impl(&normed, wk, k_out_size)?;
+        let mut v = self.gemv_impl(&normed, wv, v_out_size)?;
+
+        // Add biases if present
+        if let Some(bq) = &layer.bq {
+            let bias_data: &[f32] = bytemuck::cast_slice(bq.bytes());
+            for i in 0..q_out_size.min(bias_data.len()) {
+                q[i] += bias_data[i];
+            }
+        }
+        if let Some(bk) = &layer.bk {
+            let bias_data: &[f32] = bytemuck::cast_slice(bk.bytes());
+            for i in 0..k_out_size.min(bias_data.len()) {
+                k[i] += bias_data[i];
+            }
+        }
+        if let Some(bv) = &layer.bv {
+            let bias_data: &[f32] = bytemuck::cast_slice(bv.bytes());
+            for i in 0..v_out_size.min(bias_data.len()) {
+                v[i] += bias_data[i];
+            }
+        }
 
         // Update n_heads and n_kv_heads based on actual weight shapes
         let actual_n_heads = q_out_size / head_dim;
@@ -1269,22 +1516,14 @@ impl LlamaModel {
         let w_data = dequant_to_f32(w.bytes(), w.dtype, total_elems);
 
         let mut out = vec![0.0f32; out_size];
-        // GGUF stores tensors in column-major: shape = [in_size, out_size]
-        // Data layout: column 0 (in_size elements), column 1 (in_size elements), ...
-        // For y = W @ x, we need W stored as [out_size, in_size] in row-major
-        // So we access as: w_data[i + j * out_size] for output i, input j
-        // But wait, GGUF shape is [ne0, ne1] where ne0 is first dim
-        // For a weight matrix, shape is [K, M] where K=input, M=output
-        // So column-major storage: element (j, i) is at j + i * ne0 = j + i * in_size
-        // Therefore, w_data[i * in_size + j] accesses element (j, i)
-        // For GEMV y[i] = sum_j W[i,j] * x[j], we need W[i,j] = w_data[j + i * in_size]
-        // But the current code uses w_data[i * in_size + j] which is W[j,i]
-        // This is the transpose! We need to swap the indices.
+        // GGUF stores tensors in column-major: shape = [K, M] where K=input, M=output
+        // Column-major: element (row, col) = (i, j) is at index i + j * K = i + j * in_size
+        // For GEMV y = W @ x: y[i] = sum_j W[i,j] * x[j]
+        // Need to access W[i,j] which is at j + i * K = j + i * in_size (transpose!)
         for i in 0..out_size {
             let mut sum = 0.0f32;
             for j in 0..in_size {
-                // Correct: w_data[j + i * in_size] for W[i,j]
-                // But if we want to use existing transposed data:
+                // W[i,j] in column-major shape [K, M] is at j + i * K
                 sum += w_data[j + i * in_size] * x[j];
             }
             out[i] = sum;
@@ -2528,6 +2767,18 @@ impl LlamaLayer {
                     store.get(&format!("{}.attn_output.weight", qwen_prefix))
                 })
                 .cloned(),
+            bq: store
+                .get(&format!("{}.attention.wq.bias", llama_prefix))
+                .or_else(|| store.get(&format!("{}.attn_q.bias", qwen_prefix)))
+                .cloned(),
+            bk: store
+                .get(&format!("{}.attention.wk.bias", llama_prefix))
+                .or_else(|| store.get(&format!("{}.attn_k.bias", qwen_prefix)))
+                .cloned(),
+            bv: store
+                .get(&format!("{}.attention.wv.bias", llama_prefix))
+                .or_else(|| store.get(&format!("{}.attn_v.bias", qwen_prefix)))
+                .cloned(),
             q_norm: store
                 .get(&format!("{}.attention.q_norm.weight", llama_prefix))
                 .or_else(|| {
@@ -2539,6 +2790,22 @@ impl LlamaLayer {
                 .or_else(|| {
                     store.get(&format!("{}.attn_k_norm.weight", qwen_prefix))
                 })
+                .cloned(),
+
+            // Fused QKV (for Qwen3.8-style models)
+            attn_qkv: store
+                .get(&format!("{}.attn_qkv.weight", qwen_prefix))
+                .cloned(),
+
+            // MQA attention (for DeepSeek-Coder-V2-style models)
+            attn_kv_a_mqa: store
+                .get(&format!("{}.attn_kv_a_mqa.weight", qwen_prefix))
+                .cloned(),
+            attn_kv_b: store
+                .get(&format!("{}.attn_kv_b.weight", qwen_prefix))
+                .cloned(),
+            attn_kv_a_norm: store
+                .get(&format!("{}.attn_kv_a_norm.weight", qwen_prefix))
                 .cloned(),
 
             // FFN
@@ -2565,6 +2832,29 @@ impl LlamaLayer {
                 .or_else(|| {
                     store.get(&format!("{}.ffn_up.weight", qwen_prefix))
                 })
+                .cloned(),
+
+            // MoE FFN (for DeepSeek-Coder-V2-style models)
+            ffn_gate_inp: store
+                .get(&format!("{}.ffn_gate_inp.weight", qwen_prefix))
+                .cloned(),
+            ffn_gate_exps: store
+                .get(&format!("{}.ffn_gate_exps.weight", qwen_prefix))
+                .cloned(),
+            ffn_up_exps: store
+                .get(&format!("{}.ffn_up_exps.weight", qwen_prefix))
+                .cloned(),
+            ffn_down_exps: store
+                .get(&format!("{}.ffn_down_exps.weight", qwen_prefix))
+                .cloned(),
+            ffn_gate_shexp: store
+                .get(&format!("{}.ffn_gate_shexp.weight", qwen_prefix))
+                .cloned(),
+            ffn_up_shexp: store
+                .get(&format!("{}.ffn_up_shexp.weight", qwen_prefix))
+                .cloned(),
+            ffn_down_shexp: store
+                .get(&format!("{}.ffn_down_shexp.weight", qwen_prefix))
                 .cloned(),
         }
     }

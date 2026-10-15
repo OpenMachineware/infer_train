@@ -147,7 +147,9 @@ impl BpeTokenizer {
         };
 
         // Extract special token IDs
-        let bos_token_id = get_u32(meta, "tokenizer.ggml.bos_token_id")?;
+        // BOS token may not be present for all models (e.g., Qwen)
+        let bos_token_id =
+            get_u32(meta, "tokenizer.ggml.bos_token_id").unwrap_or(0);
         let eos_token_id = get_u32(meta, "tokenizer.ggml.eos_token_id")?;
         let unk_token_id =
             get_u32(meta, "tokenizer.ggml.unknown_token_id").unwrap_or(0);

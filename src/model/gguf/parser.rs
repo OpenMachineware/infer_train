@@ -151,6 +151,15 @@ impl GgufFile {
             GgufDtype::Q4_K => (elem_count / 256) * 144,
             GgufDtype::Q5_K => (elem_count / 256) * 176,
             GgufDtype::Q6_K => (elem_count / 256) * 210,
+            // IQ formats
+            GgufDtype::IQ4_NL => (elem_count / 32) * 18,
+            GgufDtype::IQ4_XS => (elem_count / 256) * 136,
+            GgufDtype::IQ3_XXS => (elem_count / 256) * 98,
+            GgufDtype::IQ3_S => (elem_count / 256) * 110,
+            GgufDtype::IQ2_XXS => (elem_count / 256) * 66,
+            GgufDtype::IQ2_XS => (elem_count / 256) * 74,
+            GgufDtype::IQ2_S => (elem_count / 256) * 82,
+            GgufDtype::IQ1_S => (elem_count / 256) * 50,
             _ => elem_count * 4,
         };
         // For FP types, bytes_per_elem is the size; for quantized, it's already calculated
