@@ -139,6 +139,10 @@ path = "tools/debug_batch_forward.rs"
 name = "debug-gemm"
 path = "tools/debug_gemm.rs"
 
+[[bin]]
+name = "debug-mla-layer"
+path = "tools/debug_mla_layer.rs"
+
 [features]
 default = []
 metal = []
