@@ -303,3 +303,7 @@ path = "benches/f16_gemv_bench.rs"
 [[bin]]
 name = "f16-gemv-roofline"
 path = "benches/f16_gemv_roofline.rs"
+
+[[bin]]
+name = "f16-gemv-adaptive-bench"
+path = "tools/f16_gemv_adaptive_bench.rs"

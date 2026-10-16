@@ -90,7 +90,9 @@ pub struct MetalContext {
     mv_q6_k_transposed_pipeline: ComputePipelineState,
     // F16 GEMV library (for transposed output layer with F16 weights)
     mv_f16_library: Library,
-    mv_f16_pipeline: ComputePipelineState,
+    mv_f16_short_pipeline: ComputePipelineState,
+    mv_f16_medium_pipeline: ComputePipelineState,
+    mv_f16_large_pipeline: ComputePipelineState,
     // Cached MV pipelines - Standard Q
     mv_q1_0_pipeline: ComputePipelineState,
     mv_q2_0_pipeline: ComputePipelineState,
@@ -404,23 +406,47 @@ impl MetalContext {
                 format!("Failed to create Q6_K transposed pipeline: {}", e)
             })?;
 
-        // Compile F16 GEMV library (for transposed output layer)
+        // Compile F16 GEMV library (problem-size adaptive kernels)
         let mv_f16_source =
-            include_str!("../../../ops/metal/gemv/mul_mv_f16.metal");
+            include_str!("../../../ops/metal/gemv/mul_mv_f16_adaptive.metal");
         let mv_f16_library = device
             .new_library_with_source(mv_f16_source, &compile_options)
             .map_err(|e| {
                 format!("Failed to compile F16 GEMV library: {}", e)
             })?;
 
-        // Create F16 GEMV pipeline (use simd-optimized version)
-        let mv_f16_kernel = mv_f16_library
-            .get_function("kernel_mul_mv_f16_f32_simd", None)
-            .map_err(|e| format!("Failed to get F16 GEMV kernel: {}", e))?;
-        let mv_f16_pipeline = device
-            .new_compute_pipeline_state_with_function(&mv_f16_kernel)
+        // Create three pipelines for different K ranges
+        let mv_f16_short_kernel = mv_f16_library
+            .get_function("kernel_mul_mv_f16_f32_short", None)
             .map_err(|e| {
-                format!("Failed to create F16 GEMV pipeline: {}", e)
+                format!("Failed to get F16 GEMV short kernel: {}", e)
+            })?;
+        let mv_f16_short_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_f16_short_kernel)
+            .map_err(|e| {
+                format!("Failed to create F16 GEMV short pipeline: {}", e)
+            })?;
+
+        let mv_f16_medium_kernel = mv_f16_library
+            .get_function("kernel_mul_mv_f16_f32_medium", None)
+            .map_err(|e| {
+                format!("Failed to get F16 GEMV medium kernel: {}", e)
+            })?;
+        let mv_f16_medium_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_f16_medium_kernel)
+            .map_err(|e| {
+                format!("Failed to create F16 GEMV medium pipeline: {}", e)
+            })?;
+
+        let mv_f16_large_kernel = mv_f16_library
+            .get_function("kernel_mul_mv_f16_f32_large", None)
+            .map_err(|e| {
+                format!("Failed to get F16 GEMV large kernel: {}", e)
+            })?;
+        let mv_f16_large_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_f16_large_kernel)
+            .map_err(|e| {
+                format!("Failed to create F16 GEMV large pipeline: {}", e)
             })?;
 
         // Compile RMS Norm library
@@ -1426,9 +1452,11 @@ impl MetalContext {
             // Transposed GEMV library and pipeline
             gemv_transposed_library,
             mv_q6_k_transposed_pipeline,
-            // F16 GEMV library and pipeline
+            // F16 GEMV library and pipelines
             mv_f16_library,
-            mv_f16_pipeline,
+            mv_f16_short_pipeline,
+            mv_f16_medium_pipeline,
+            mv_f16_large_pipeline,
             // MV pipelines - Standard Q
             mv_q1_0_pipeline,
             mv_q2_0_pipeline,
@@ -4699,22 +4727,79 @@ impl MetalContext {
 
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&self.mv_f16_pipeline);
 
-        // Kernel expects: buffer 0=weights, 1=input, 2=output, 3=m, 4=k
-        encoder.set_buffer(0, Some(weights_buffer), 0);
-        encoder.set_buffer(1, Some(input_buffer), 0);
-        encoder.set_buffer(2, Some(&output_buffer), 0);
-        encoder.set_bytes(3, 4, &m as *const usize as *const std::ffi::c_void);
-        encoder.set_bytes(4, 4, &k as *const usize as *const std::ffi::c_void);
+        // Select kernel based on K value (problem-size adaptive)
+        // - K < 1024: short kernel (single thread per row)
+        // - 1024 <= K < 4096: medium kernel (NR0=2, simdgroup cooperation)
+        // - K >= 4096: large kernel (NR0=2, float4 vectorization)
+        if k < 1024 {
+            // Short kernel: each thread processes one row
+            encoder.set_compute_pipeline_state(&self.mv_f16_short_pipeline);
+            let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+            let thread_group_count = MTLSize {
+                width: ((m + 255) / 256) as u64,
+                height: 1,
+                depth: 1,
+            };
+            encoder.set_buffer(0, Some(weights_buffer), 0);
+            encoder.set_buffer(1, Some(input_buffer), 0);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            encoder.set_bytes(
+                3,
+                4,
+                &m as *const usize as *const std::ffi::c_void,
+            );
+            encoder.set_bytes(
+                4,
+                4,
+                &k as *const usize as *const std::ffi::c_void,
+            );
+            encoder
+                .dispatch_thread_groups(thread_group_count, thread_group_size);
+        } else if k < 4096 {
+            // Medium kernel: each threadgroup processes 2 rows (NR0=2)
+            encoder.set_compute_pipeline_state(&self.mv_f16_medium_pipeline);
+            let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+            let thread_group_count =
+                MTLSize { width: ((m + 1) / 2) as u64, height: 1, depth: 1 };
+            encoder.set_buffer(0, Some(weights_buffer), 0);
+            encoder.set_buffer(1, Some(input_buffer), 0);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            encoder.set_bytes(
+                3,
+                4,
+                &m as *const usize as *const std::ffi::c_void,
+            );
+            encoder.set_bytes(
+                4,
+                4,
+                &k as *const usize as *const std::ffi::c_void,
+            );
+            encoder
+                .dispatch_thread_groups(thread_group_count, thread_group_size);
+        } else {
+            // Large kernel: each threadgroup processes 2 rows
+            encoder.set_compute_pipeline_state(&self.mv_f16_large_pipeline);
+            let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+            let thread_group_count =
+                MTLSize { width: ((m + 1) / 2) as u64, height: 1, depth: 1 };
+            encoder.set_buffer(0, Some(weights_buffer), 0);
+            encoder.set_buffer(1, Some(input_buffer), 0);
+            encoder.set_buffer(2, Some(&output_buffer), 0);
+            encoder.set_bytes(
+                3,
+                4,
+                &m as *const usize as *const std::ffi::c_void,
+            );
+            encoder.set_bytes(
+                4,
+                4,
+                &k as *const usize as *const std::ffi::c_void,
+            );
+            encoder
+                .dispatch_thread_groups(thread_group_count, thread_group_size);
+        }
 
-        // Use simdgroup: each threadgroup handles one row
-        // Threadgroup size = 32 (one simdgroup)
-        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
-        let thread_group_count =
-            MTLSize { width: m as u64, height: 1, depth: 1 };
-
-        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
