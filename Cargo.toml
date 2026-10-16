@@ -108,6 +108,10 @@ name = "test-kquant-mv-quantized"
 path = "tests/test_kquant_mv_quantized.rs"
 
 [[bin]]
+name = "test-kv-update-gpu"
+path = "tests/test_kv_update_gpu.rs"
+
+[[bin]]
 name = "test-kquant-mv-debug"
 path = "tests/test_kquant_mv_debug.rs"
 

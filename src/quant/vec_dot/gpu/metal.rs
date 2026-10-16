@@ -450,6 +450,12 @@ impl MetalContext {
                 format!("Failed to compile quantize library: {}", e)
             })?;
 
+        // Compile KV Update library (F32->F16 for KV cache)
+        // Note: KV update kernels already exist in ops/kv_update.metal
+        // We use the existing implementation which includes:
+        // - kv_update_f32_to_f16 for K cache
+        // - kv_update_v_f32_to_f16 for V cache
+
         // Create cached pipeline for Q4_0 MV (from template)
         // Q4_0 kernel also requires function constants
         let mv_q4_0_kernel = gemm_library
