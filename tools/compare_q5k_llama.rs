@@ -165,8 +165,8 @@ void kernel_mul_mm_q5_K_f32_impl(
     float yl[16];
     float yh[16];
 
-    const short tid = tiisg/2;
-    const short ix  = tiisg%2;
+    const short tid = tiisg/4;
+    const short ix  = tiisg%4;
     const short iq  = tid/4;
     const short ir  = tid%4;
 
@@ -273,12 +273,12 @@ kernel void kernel_mul_mm_q5_K_f32(
             }
         };
 
-    // Load self-written shader
-    let my_source = include_str!("../src/ops/metal/gemm/mul_mm.metal");
+    // Load self-written shader (Q5_K GEMV kernel)
+    let my_source = include_str!("../src/ops/metal/gemv/kquant_mv.metal");
     let my_lib =
         match device.new_library_with_source(my_source, &compile_options) {
             Ok(lib) => {
-                println!("Self-written shader compiled");
+                println!("Self-written Q5_K GEMV shader compiled");
                 lib
             }
             Err(e) => {
@@ -304,208 +304,229 @@ kernel void kernel_mul_mm_q5_K_f32(
 
     println!("Pipelines created.\n");
 
-    // Test dimensions
-    let m = 1024;
-    let k = 4096;
-    let n = 1;
-    let nb = k / 256;
+    // Test with multiple sizes
+    let test_sizes = vec![
+        (128, 4096),
+        (256, 4096),
+        (512, 4096),
+        (1024, 4096),
+        (2048, 4096),
+        (4096, 4096),
+    ];
 
-    // Generate Q5_K weights
-    let weights: Vec<BlockQ5K> = (0..m * nb)
-        .map(|i| {
-            let mut qs = [0u8; 128];
-            let mut qh = [0u8; 32];
-            let mut scales = [0u8; 12];
-            for j in 0..128 {
-                qs[j] = ((i * 23 + j * 17) % 256) as u8;
-            }
-            for j in 0..32 {
-                qh[j] = ((i * 19 + j * 13) % 256) as u8;
-            }
-            for j in 0..12 {
-                scales[j] = ((i * 17 + j * 11) % 64) as u8;
-            }
-            BlockQ5K {
-                d: f16::from_f32(0.5 + (i % 10) as f32 * 0.1).to_bits(),
-                dmin: f16::from_f32(0.0).to_bits(),
-                scales,
-                qh,
-                qs,
-            }
-        })
-        .collect();
+    for &(m, k) in &test_sizes {
+        println!("\n=== Matrix {} × {} ===", m, k);
+        let n = 1;
+        let nb = k / 256;
 
-    let input: Vec<f32> = (0..k).map(|i| ((i % 100) as f32) * 0.01).collect();
+        // Generate Q5_K weights
+        let weights: Vec<BlockQ5K> = (0..m * nb)
+            .map(|i| {
+                let mut qs = [0u8; 128];
+                let mut qh = [0u8; 32];
+                let mut scales = [0u8; 12];
+                for j in 0..128 {
+                    qs[j] = ((i * 23 + j * 17) % 256) as u8;
+                }
+                for j in 0..32 {
+                    qh[j] = ((i * 19 + j * 13) % 256) as u8;
+                }
+                for j in 0..12 {
+                    scales[j] = ((i * 17 + j * 11) % 64) as u8;
+                }
+                BlockQ5K {
+                    d: f16::from_f32(0.5 + (i % 10) as f32 * 0.1).to_bits(),
+                    dmin: f16::from_f32(0.0).to_bits(),
+                    scales,
+                    qh,
+                    qs,
+                }
+            })
+            .collect();
 
-    // Create buffers
-    let weights_buf = device.new_buffer_with_data(
-        weights.as_ptr() as *const _,
-        (m * nb * std::mem::size_of::<BlockQ5K>()) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
+        let input: Vec<f32> =
+            (0..k).map(|i| ((i % 100) as f32) * 0.01).collect();
 
-    let input_buf = device.new_buffer_with_data(
-        input.as_ptr() as *const _,
-        (k * std::mem::size_of::<f32>()) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
-
-    let llama_output_buf = device.new_buffer(
-        (m * std::mem::size_of::<f32>()) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
-
-    let my_output_buf = device.new_buffer(
-        (m * std::mem::size_of::<f32>()) as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
-
-    let args = MulMVArgs {
-        ne00: k as i32,
-        ne01: m as i32,
-        ne02: 1,
-        nb00: 1,
-        nb01: (nb * std::mem::size_of::<BlockQ5K>()) as u64,
-        nb02: 0,
-        nb03: 0,
-        ne10: k as i32,
-        ne11: n as i32,
-        ne12: 1,
-        nb10: 4,
-        nb11: (k * 4) as u64,
-        nb12: 0,
-        nb13: 0,
-        ne0: m as i32,
-        ne1: n as i32,
-        nr0: 2,
-        r2: 1,
-        r3: 1,
-    };
-
-    let args_buf = device.new_buffer_with_data(
-        &args as *const _ as *const _,
-        std::mem::size_of::<MulMVArgs>() as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
-
-    // Run llama.cpp kernel
-    let cmd_buffer = queue.new_command_buffer();
-    let encoder = cmd_buffer.new_compute_command_encoder();
-    encoder.set_compute_pipeline_state(&llama_pipeline);
-    encoder.set_buffer(0, Some(&args_buf), 0);
-    encoder.set_buffer(1, Some(&weights_buf), 0);
-    encoder.set_buffer(2, Some(&input_buf), 0);
-    encoder.set_buffer(3, Some(&llama_output_buf), 0);
-
-    // For Q5_K, nr0=1, so we need m threadgroups to process all m rows
-    let thread_groups = MTLSize::new(m as u64, n as u64, 1);
-    let thread_group_size = MTLSize::new(32, 1, 1);
-    encoder.dispatch_thread_groups(thread_groups, thread_group_size);
-    encoder.end_encoding();
-    cmd_buffer.commit();
-    cmd_buffer.wait_until_completed();
-
-    // Run self-written kernel
-    let cmd_buffer = queue.new_command_buffer();
-    let encoder = cmd_buffer.new_compute_command_encoder();
-    encoder.set_compute_pipeline_state(&my_pipeline);
-    encoder.set_buffer(0, Some(&args_buf), 0);
-    encoder.set_buffer(1, Some(&weights_buf), 0);
-    encoder.set_buffer(2, Some(&input_buf), 0);
-    encoder.set_buffer(3, Some(&my_output_buf), 0);
-    encoder.dispatch_thread_groups(thread_groups, thread_group_size);
-    encoder.end_encoding();
-    cmd_buffer.commit();
-    cmd_buffer.wait_until_completed();
-
-    // Compare results
-    let llama_output = unsafe {
-        std::slice::from_raw_parts(llama_output_buf.contents() as *const f32, m)
-    };
-    let my_output = unsafe {
-        std::slice::from_raw_parts(my_output_buf.contents() as *const f32, m)
-    };
-
-    let mut correct_count = 0;
-    let mut max_rel_err = 0.0f32;
-    for i in 0..m {
-        let rel_err = if llama_output[i] != 0.0 {
-            (my_output[i] - llama_output[i]).abs() / llama_output[i].abs()
-        } else {
-            my_output[i].abs()
-        };
-        if rel_err < 0.01 {
-            correct_count += 1;
-        }
-        if rel_err > max_rel_err {
-            max_rel_err = rel_err;
-        }
-    }
-
-    println!(
-        "Correctness: {}/{} ({:.1}%)",
-        correct_count,
-        m,
-        correct_count as f32 / m as f32 * 100.0
-    );
-    println!("Max relative error: {:.6}", max_rel_err);
-
-    if correct_count == m {
-        println!("✓ 100% correct! Running performance test...\n");
-
-        let iterations = 1000;
-
-        // Benchmark llama.cpp
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let cmd_buffer = queue.new_command_buffer();
-            let encoder = cmd_buffer.new_compute_command_encoder();
-            encoder.set_compute_pipeline_state(&llama_pipeline);
-            encoder.set_buffer(0, Some(&args_buf), 0);
-            encoder.set_buffer(1, Some(&weights_buf), 0);
-            encoder.set_buffer(2, Some(&input_buf), 0);
-            encoder.set_buffer(3, Some(&llama_output_buf), 0);
-            encoder.dispatch_thread_groups(thread_groups, thread_group_size);
-            encoder.end_encoding();
-            cmd_buffer.commit();
-            cmd_buffer.wait_until_completed();
-        }
-        let llama_time = start.elapsed().as_micros() as f64 / iterations as f64;
-
-        // Benchmark self-written
-        let start = Instant::now();
-        for _ in 0..iterations {
-            let cmd_buffer = queue.new_command_buffer();
-            let encoder = cmd_buffer.new_compute_command_encoder();
-            encoder.set_compute_pipeline_state(&my_pipeline);
-            encoder.set_buffer(0, Some(&args_buf), 0);
-            encoder.set_buffer(1, Some(&weights_buf), 0);
-            encoder.set_buffer(2, Some(&input_buf), 0);
-            encoder.set_buffer(3, Some(&my_output_buf), 0);
-            encoder.dispatch_thread_groups(thread_groups, thread_group_size);
-            encoder.end_encoding();
-            cmd_buffer.commit();
-            cmd_buffer.wait_until_completed();
-        }
-        let my_time = start.elapsed().as_micros() as f64 / iterations as f64;
-
-        println!("llama.cpp:   {:.2} µs", llama_time);
-        println!("self-written: {:.2} µs", my_time);
-        println!(
-            "Ratio:        {:.1}% of llama.cpp",
-            llama_time / my_time * 100.0
+        // Create buffers
+        let weights_buf = device.new_buffer_with_data(
+            weights.as_ptr() as *const _,
+            (m * nb * std::mem::size_of::<BlockQ5K>()) as u64,
+            MTLResourceOptions::StorageModeShared,
         );
-    } else {
-        println!("✗ Correctness test failed");
-        println!("First 10 results:");
-        for i in 0..10 {
+
+        let input_buf = device.new_buffer_with_data(
+            input.as_ptr() as *const _,
+            (k * std::mem::size_of::<f32>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+
+        let llama_output_buf = device.new_buffer(
+            (m * std::mem::size_of::<f32>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+
+        let my_output_buf = device.new_buffer(
+            (m * std::mem::size_of::<f32>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+
+        let args = MulMVArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            ne02: 1,
+            nb00: 1,
+            nb01: (nb * std::mem::size_of::<BlockQ5K>()) as u64,
+            nb02: 0,
+            nb03: 0,
+            ne10: k as i32,
+            ne11: n as i32,
+            ne12: 1,
+            nb10: 4,
+            nb11: (k * 4) as u64,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: n as i32,
+            nr0: 2,
+            r2: 1,
+            r3: 1,
+        };
+
+        let args_buf = device.new_buffer_with_data(
+            &args as *const _ as *const _,
+            std::mem::size_of::<MulMVArgs>() as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+
+        // Run llama.cpp kernel
+        let cmd_buffer = queue.new_command_buffer();
+        let encoder = cmd_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&llama_pipeline);
+        encoder.set_buffer(0, Some(&args_buf), 0);
+        encoder.set_buffer(1, Some(&weights_buf), 0);
+        encoder.set_buffer(2, Some(&input_buf), 0);
+        encoder.set_buffer(3, Some(&llama_output_buf), 0);
+
+        // For Q5_K, nr0=1, so we need m threadgroups to process all m rows
+        let thread_groups = MTLSize::new(m as u64, n as u64, 1);
+        let thread_group_size = MTLSize::new(32, 1, 1);
+        encoder.dispatch_thread_groups(thread_groups, thread_group_size);
+        encoder.end_encoding();
+        cmd_buffer.commit();
+        cmd_buffer.wait_until_completed();
+
+        // Run self-written kernel
+        let cmd_buffer = queue.new_command_buffer();
+        let encoder = cmd_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&my_pipeline);
+        encoder.set_buffer(0, Some(&args_buf), 0);
+        encoder.set_buffer(1, Some(&weights_buf), 0);
+        encoder.set_buffer(2, Some(&input_buf), 0);
+        encoder.set_buffer(3, Some(&my_output_buf), 0);
+        encoder.dispatch_thread_groups(thread_groups, thread_group_size);
+        encoder.end_encoding();
+        cmd_buffer.commit();
+        cmd_buffer.wait_until_completed();
+
+        // Compare results
+        let llama_output = unsafe {
+            std::slice::from_raw_parts(
+                llama_output_buf.contents() as *const f32,
+                m,
+            )
+        };
+        let my_output = unsafe {
+            std::slice::from_raw_parts(
+                my_output_buf.contents() as *const f32,
+                m,
+            )
+        };
+
+        let mut correct_count = 0;
+        let mut max_rel_err = 0.0f32;
+        for i in 0..m {
+            let rel_err = if llama_output[i] != 0.0 {
+                (my_output[i] - llama_output[i]).abs() / llama_output[i].abs()
+            } else {
+                my_output[i].abs()
+            };
+            if rel_err < 0.01 {
+                correct_count += 1;
+            }
+            if rel_err > max_rel_err {
+                max_rel_err = rel_err;
+            }
+        }
+
+        println!(
+            "Correctness: {}/{} ({:.1}%)",
+            correct_count,
+            m,
+            correct_count as f32 / m as f32 * 100.0
+        );
+        println!("Max relative error: {:.6}", max_rel_err);
+
+        if correct_count == m {
+            println!("✓ 100% correct! Running performance test...\n");
+
+            let iterations = 1000;
+
+            // Benchmark llama.cpp
+            let start = Instant::now();
+            for _ in 0..iterations {
+                let cmd_buffer = queue.new_command_buffer();
+                let encoder = cmd_buffer.new_compute_command_encoder();
+                encoder.set_compute_pipeline_state(&llama_pipeline);
+                encoder.set_buffer(0, Some(&args_buf), 0);
+                encoder.set_buffer(1, Some(&weights_buf), 0);
+                encoder.set_buffer(2, Some(&input_buf), 0);
+                encoder.set_buffer(3, Some(&llama_output_buf), 0);
+                encoder
+                    .dispatch_thread_groups(thread_groups, thread_group_size);
+                encoder.end_encoding();
+                cmd_buffer.commit();
+                cmd_buffer.wait_until_completed();
+            }
+            let llama_time =
+                start.elapsed().as_micros() as f64 / iterations as f64;
+
+            // Benchmark self-written
+            let start = Instant::now();
+            for _ in 0..iterations {
+                let cmd_buffer = queue.new_command_buffer();
+                let encoder = cmd_buffer.new_compute_command_encoder();
+                encoder.set_compute_pipeline_state(&my_pipeline);
+                encoder.set_buffer(0, Some(&args_buf), 0);
+                encoder.set_buffer(1, Some(&weights_buf), 0);
+                encoder.set_buffer(2, Some(&input_buf), 0);
+                encoder.set_buffer(3, Some(&my_output_buf), 0);
+                encoder
+                    .dispatch_thread_groups(thread_groups, thread_group_size);
+                encoder.end_encoding();
+                cmd_buffer.commit();
+                cmd_buffer.wait_until_completed();
+            }
+            let my_time =
+                start.elapsed().as_micros() as f64 / iterations as f64;
+
+            println!("llama.cpp:   {:.2} µs", llama_time);
+            println!("self-written: {:.2} µs", my_time);
             println!(
-                "  [{}] llama.cpp={:.6}, self={:.6}, err={:.6}",
-                i,
-                llama_output[i],
-                my_output[i],
-                (my_output[i] - llama_output[i]).abs()
+                "Ratio:        {:.1}% of llama.cpp",
+                llama_time / my_time * 100.0
             );
+        } else {
+            println!("✗ Correctness test failed");
+            println!("First 10 results:");
+            for i in 0..10 {
+                println!(
+                    "  [{}] llama.cpp={:.6}, self={:.6}, err={:.6}",
+                    i,
+                    llama_output[i],
+                    my_output[i],
+                    (my_output[i] - llama_output[i]).abs()
+                );
+            }
         }
     }
 }

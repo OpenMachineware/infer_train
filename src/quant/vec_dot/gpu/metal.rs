@@ -3728,51 +3728,15 @@ impl MetalContext {
         let nb = k / 256; // QK_K = 256
         let nb01 = (nb * std::mem::size_of::<BlockQ5K>()) as u64; // Byte stride per row
 
-        // Args structure matching llama.cpp's ggml_metal_kargs_mul_mv
+        // Simple args structure matching kernel's kquant_mv_args
         #[repr(C)]
-        struct MvArgs {
-            ne00: i32,
-            ne01: i32,
-            ne02: i32,
-            nb00: u64,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne10: i32,
-            ne11: i32,
-            ne12: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            nr0: i32,
-            r2: i16,
-            r3: i16,
+        struct KquantMvArgs {
+            ne00: u32, // K dimension
+            ne01: u32, // M dimension
+            nb01: u64, // Byte stride
         }
 
-        let args = MvArgs {
-            ne00: k as i32,
-            ne01: m as i32,
-            ne02: 1,
-            nb00: 1,
-            nb01,
-            nb02: 0,
-            nb03: 0,
-            ne10: k as i32,
-            ne11: 1,
-            ne12: 1,
-            nb10: 4,
-            nb11: k as u64 * 4,
-            nb12: 0,
-            nb13: 0,
-            ne0: m as i32,
-            ne1: 1,
-            nr0: 1,
-            r2: 1,
-            r3: 1, // N_R0_Q5_K = 1
-        };
+        let args = KquantMvArgs { ne00: k as u32, ne01: m as u32, nb01 };
 
         // Get or create cached buffers (NO data copy on repeated calls with same size)
         let weights_size = weights.len() * std::mem::size_of::<BlockQ5K>();
@@ -3852,33 +3816,25 @@ impl MetalContext {
         let encoder = command_buffer.new_compute_command_encoder();
 
         encoder.set_compute_pipeline_state(&self.mv_q5_k_pipeline);
-        // Template kernel signature: (args, src0, src1, dst)
-        // Index 0: args struct
-        // Index 1: src0 (weights)
-        // Index 2: src1 (input)
-        // Index 3: dst (output)
+        // Kernel signature: buffer(0)=weights, 1=input, 2=output, 3=args
+        encoder.set_buffer(0, Some(&weights_buffer), 0);
+        encoder.set_buffer(1, Some(&input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
         encoder.set_bytes(
-            0,
-            std::mem::size_of::<MvArgs>() as u64,
-            &args as *const MvArgs as *const std::ffi::c_void,
+            3,
+            std::mem::size_of::<KquantMvArgs>() as u64,
+            &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
-        encoder.set_buffer(1, Some(&weights_buffer), 0);
-        encoder.set_buffer(2, Some(&input_buffer), 0);
-        encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        // Thread group configuration matching llama.cpp EXACTLY
-        // Q5_K: N_R0 = 1, NSG = 2
-        const NSG: u64 = 2;
-        const NR0: u64 = 1; // N_R0_Q5_K = 1
-        const ROWS_PER_THREADGROUP: u64 = NSG * NR0; // 2
-
+        // Thread group configuration - Simple version (1 row per threadgroup)
+        // Step 1: Correctness first
         let thread_group_size = MTLSize {
-            width: 32,
-            height: NSG, // 2D: Y = 2 for 2 SIMD groups
+            width: 32, // 1 SIMD group
+            height: 1,
             depth: 1,
         };
         let thread_group_count = MTLSize {
-            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
+            width: m as u64, // 1 threadgroup per row
             height: 1,
             depth: 1,
         };

@@ -283,3 +283,7 @@ path = "tools/debug_batched.rs"
 [[bin]]
 name = "q5k-gemv-perf"
 path = "benches/q5k_gemv_perf.rs"
+
+[[bin]]
+name = "compare-q5k-llama"
+path = "tools/compare_q5k_llama.rs"
