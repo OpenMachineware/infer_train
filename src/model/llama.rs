@@ -2639,9 +2639,6 @@ impl LlamaModel {
                     input_buffer,
                 )
                 .ok(),
-            // IQ4_XS - GPU kernel broken, return None to use CPU fallback at call site
-            // TODO: Fix GPU kernel
-            crate::model::tensor::DataType::IQ4_XS => None,
             // Unsupported formats - use CPU fallback
             _ => None,
         }
