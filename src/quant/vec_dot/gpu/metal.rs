@@ -1473,6 +1473,10 @@ impl MetalContext {
         &self.device
     }
 
+    pub fn add_pipeline(&self) -> &ComputePipelineState {
+        &self.add_pipeline
+    }
+
     pub fn queue(&self) -> &CommandQueue {
         &self.queue
     }

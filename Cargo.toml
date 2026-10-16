@@ -152,6 +152,14 @@ name = "bench-gemv-dispatch"
 path = "tools/bench_gemv_dispatch.rs"
 
 [[bin]]
+name = "measure-dispatch-breakdown"
+path = "tools/measure_dispatch_breakdown.rs"
+
+[[bin]]
+name = "test-batched-dispatch"
+path = "tools/test_batched_dispatch.rs"
+
+[[bin]]
 name = "ssm-perf"
 path = "benches/ssm_perf.rs"
 
