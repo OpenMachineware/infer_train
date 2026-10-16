@@ -279,3 +279,7 @@ path = "tools/debug_model.rs"
 [[bin]]
 name = "debug-batched"
 path = "tools/debug_batched.rs"
+
+[[bin]]
+name = "q5k-gemv-perf"
+path = "benches/q5k_gemv_perf.rs"

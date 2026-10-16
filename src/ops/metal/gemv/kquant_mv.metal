@@ -352,7 +352,7 @@ static inline struct q5_k_scales decode_q5_k_scales(device const uchar * scales)
 }
 
 // ============================================================================
-// Q5_K Matrix-Vector Multiplication
+// Q5_K Matrix-Vector Multiplication (Optimized)
 // Block: 256 elements, 176 bytes
 // Layout: d[2] + dmin[2] + scales[12] + qh[32] + qs[128]
 // 8 sub-blocks of 32 elements each, 5-bit quantization
@@ -366,77 +366,84 @@ kernel void kernel_mul_mv_q5_K_f32(
     uint3 tgpig [[threadgroup_position_in_grid]],
     ushort tiisg [[thread_index_in_simdgroup]])
 {
-    const int row = tgpig.x;  // Each threadgroup handles one row
+    const int row = tgpig.x;
     if (row >= (int)args.ne01) return;
 
-    const int nb = args.ne00 / QK_K;  // Number of blocks per row
-
+    const int nb = args.ne00 / QK_K;
     float sumf = 0.0f;
 
-    // Get pointer to the weights for this row
     device const char * row_ptr = src0 + row * args.nb01;
     device const block_q5_K * blocks = (device const block_q5_K *)row_ptr;
 
-    // Each thread processes blocks at stride N_SIMDWIDTH
+    // Process blocks with stride
     for (int ib = tiisg; ib < nb; ib += N_SIMDWIDTH) {
         device const block_q5_K * block = blocks + ib;
         device const float * y = src1 + ib * QK_K;
 
+        // Load scales/d/dmin once
         uint16_t d_bits = *((device const uint16_t*)(&block->d));
         uint16_t dmin_bits = *((device const uint16_t*)(&block->dmin));
         float d = f16_bits_to_f32(d_bits);
         float dmin = f16_bits_to_f32(dmin_bits);
 
-        // Decode Q5_K scales: 8 scales + 4 mins
-        struct q5_k_scales decoded = decode_q5_k_scales(block->scales);
+        // Decode scales inline (avoid function call overhead)
+        // Read 12 bytes as 3 uint32
+        uint s0 = block->scales[0] | (block->scales[1] << 8) | (block->scales[2] << 16) | (block->scales[3] << 24);
+        uint s1 = block->scales[4] | (block->scales[5] << 8) | (block->scales[6] << 16) | (block->scales[7] << 24);
+        uint s2 = block->scales[8] | (block->scales[9] << 8) | (block->scales[10] << 16) | (block->scales[11] << 24);
 
-        // Q5_K: 256 elements per block
-        // Use 4 iterations of 64 elements each (matches CPU NEON pattern)
-        for (int iter = 0; iter < 4; iter++) {
-            // Get scales for this iteration
-            float scale0 = decoded.scales[iter * 2];
-            float scale1 = decoded.scales[iter * 2 + 1];
-            float min0 = decoded.mins[iter / 2];  // mins are shared: [0] for iter 0,1; [1] for iter 2,3
+        // Extract scales (6-bit values)
+        const uint KMASK1 = 0x3f3f3f3f;
+        const uint KMASK2 = 0x0f0f0f0f;
+        const uint KMASK3 = 0x03030303;
 
-            float dl0 = d * scale0;
-            float ml0 = dmin * min0;
-            float dl1 = d * scale1;
-            float ml1 = dmin * min0;  // Same min for both scales
+        uint mins = ((s2 >> 4) & KMASK2) | (((s1 >> 6) & KMASK3) << 4);
+        uint uaux = s1 & KMASK1;
+        uint scales1 = (s2 & KMASK2) | (((s0 >> 6) & KMASK3) << 4);
+        uint scales0 = s0 & KMASK1;
 
-            // Process 64 elements per iteration
-            // Groups 0-1: low nibbles, bit 0 of qh
-            // Groups 2-3: high nibbles, bit 1 of qh
+        // Load qs and qh pointers
+        device const uchar * qs = block->qs;
+        device const uchar * qh = block->qh;
+
+        // Process 4 iterations with unrolling
+        FOR_UNROLL(int iter = 0; iter < 4; iter++) {
+            // Extract scales for this iteration
+            float sc0 = (scales0 >> ((iter * 2) * 8)) & 0x3F;
+            float sc1 = (scales0 >> ((iter * 2 + 1) * 8)) & 0x3F;
+            if (iter >= 2) {
+                sc0 = (scales1 >> (((iter - 2) * 2) * 8)) & 0x3F;
+                sc1 = (scales1 >> ((((iter - 2) * 2) + 1) * 8)) & 0x3F;
+            }
+            float minv = (uaux >> ((iter / 2) * 8)) & 0x3F;
+
+            float dl0 = d * sc0;
+            float ml0 = dmin * minv;
+            float dl1 = d * sc1;
+
+            // Process 16 elements
             for (int k = 0; k < 16; k++) {
-                // Group 0: qs[iter*32 + k] low nibble, qh[k] bit 0
-                uchar qs0 = block->qs[iter * 32 + k];
-                float low0 = (qs0 & 0x0F);
-                float h0 = ((block->qh[k] >> 0) & 1) * 16.0f;
-                float q0 = low0 + h0;
+                uchar qs0 = qs[iter * 32 + k];
+                uchar qs1 = qs[iter * 32 + 16 + k];
+                uchar qh0 = qh[k];
+                uchar qh1 = qh[16 + k];
+
+                // Extract quantized values (4-bit + 1-bit high)
+                float q0 = (qs0 & 0x0F) + ((qh0 & 1) * 16.0f);
+                float q1 = (qs1 & 0x0F) + ((qh1 & 1) * 16.0f);
+                float q2 = ((qs0 >> 4) & 0x0F) + (((qh0 >> 1) & 1) * 16.0f);
+                float q3 = ((qs1 >> 4) & 0x0F) + (((qh1 >> 1) & 1) * 16.0f);
+
+                // Multiply-accumulate
                 sumf += (dl0 * q0 - ml0) * y[iter * 64 + k];
-
-                // Group 1: qs[iter*32 + 16 + k] low nibble, qh[16+k] bit 0
-                uchar qs1 = block->qs[iter * 32 + 16 + k];
-                float low1 = (qs1 & 0x0F);
-                float h1 = ((block->qh[16 + k] >> 0) & 1) * 16.0f;
-                float q1 = low1 + h1;
                 sumf += (dl0 * q1 - ml0) * y[iter * 64 + 16 + k];
-
-                // Group 2: qs[iter*32 + k] high nibble, qh[k] bit 1
-                float high0 = ((qs0 >> 4) & 0x0F);
-                float h2 = ((block->qh[k] >> 1) & 1) * 16.0f;
-                float q2 = high0 + h2;
-                sumf += (dl1 * q2 - ml1) * y[iter * 64 + 32 + k];
-
-                // Group 3: qs[iter*32 + 16 + k] high nibble, qh[16+k] bit 1
-                float high1 = ((qs1 >> 4) & 0x0F);
-                float h3 = ((block->qh[16 + k] >> 1) & 1) * 16.0f;
-                float q3 = high1 + h3;
-                sumf += (dl1 * q3 - ml1) * y[iter * 64 + 48 + k];
+                sumf += (dl1 * q2 - ml0) * y[iter * 64 + 32 + k];
+                sumf += (dl1 * q3 - ml0) * y[iter * 64 + 48 + k];
             }
         }
     }
 
-    // SIMD reduction across threads
+    // SIMD reduction
     float sum_all = simd_sum(sumf);
     if (tiisg == 0) {
         dst[row] = sum_all;
