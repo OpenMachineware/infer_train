@@ -155,6 +155,21 @@ impl InferenceContext {
         }
     }
 
+    /// Run forward pass with batched GPU encoding (reduced dispatch overhead)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward_gpu_batched(&mut self, tokens: &[u32]) -> Option<Vec<f32>> {
+        if let (Some(ref gpu_ctx), Some(ref mut kv_cache)) =
+            (self.gpu_ctx.as_ref(), self.gpu_kv_cache.as_mut())
+        {
+            self.model.forward_gpu_native_batched(tokens, kv_cache, gpu_ctx)
+        } else {
+            self.model.forward(
+                tokens,
+                &mut KVCache::new(&self.config, 2048, KVCacheFormat::F32),
+            )
+        }
+    }
+
     /// Batch prefill using GPU GEMM (more efficient for multiple tokens)
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn forward_prefill_batch(

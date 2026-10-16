@@ -2470,6 +2470,284 @@ impl LlamaModel {
         gpu_ctx.add_f32_gpu(&residual_buffer, &ffn_out_buffer, hidden_size).ok()
     }
 
+    /// Forward pass with batched GPU encoding
+    /// Creates one command buffer for all operations to minimize dispatch overhead
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward_gpu_native_batched(
+        &self,
+        tokens: &[u32],
+        kv_cache: &mut crate::inference::KVCacheGPU,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        if tokens.is_empty() || self.tok_embeddings.is_none() {
+            return None;
+        }
+
+        let hidden_size = self.config.hidden_size;
+        let device = gpu_ctx.device();
+        let queue = gpu_ctx.queue();
+
+        // Create single command buffer for all operations
+        let command_buffer = queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        // Process each token
+        let mut last_hidden_buffer: Option<std::rc::Rc<Buffer>> = None;
+
+        for &token in tokens.iter() {
+            // 1. Embedding lookup (CPU)
+            let hidden = self.embedding_lookup_impl(token)?;
+
+            // Upload to GPU
+            let hidden_buffer = std::rc::Rc::new(device.new_buffer_with_data(
+                hidden.as_ptr() as *const std::ffi::c_void,
+                (hidden_size * 4) as u64,
+                metal::MTLResourceOptions::StorageModeShared,
+            ));
+
+            // 2. Process through layers
+            let mut hidden_buffer = hidden_buffer;
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                // Use batched forward for this layer
+                hidden_buffer = self.forward_layer_gpu_encode(
+                    layer,
+                    layer_idx,
+                    &hidden_buffer,
+                    kv_cache,
+                    gpu_ctx,
+                    encoder, // encoder is already a reference
+                    device,
+                )?;
+            }
+
+            last_hidden_buffer = Some(hidden_buffer);
+            kv_cache.advance();
+        }
+
+        // 3. Final norm and output projection
+        let hidden_buffer = last_hidden_buffer?;
+        let final_norm = self.norm.as_ref()?;
+        let final_norm_buffer = gpu_ctx.get_or_create_buffer(final_norm);
+        let final_hidden_buffer = std::rc::Rc::new(device.new_buffer(
+            (hidden_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+        gpu_ctx.rms_norm_encode(
+            encoder, // encoder is already a reference
+            &hidden_buffer,
+            &final_norm_buffer,
+            &final_hidden_buffer,
+            1,
+            hidden_size,
+            1e-5,
+        );
+
+        // Output projection (use immediate mode for now)
+        // End encoding and commit the batch
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // Output projection
+        let output = self.output.as_ref()?;
+        let output_buffer = gpu_ctx.get_or_create_buffer(output);
+        let vocab_size = output.shape[0];
+        let logits_buffer = self.gemv_gpu_buffer(
+            &final_hidden_buffer,
+            &output_buffer,
+            vocab_size,
+            output.dtype,
+            gpu_ctx,
+        )?;
+
+        // Download logits
+        let mut logits = vec![0.0f32; vocab_size];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                logits_buffer.contents() as *const f32,
+                logits.as_mut_ptr(),
+                vocab_size,
+            );
+        }
+
+        Some(logits)
+    }
+
+    /// Forward one layer with batched encoding
+    /// Uses a hybrid approach: GEMV in immediate mode, other ops batched
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn forward_layer_gpu_encode(
+        &self,
+        layer: &LlamaLayer,
+        layer_idx: usize,
+        hidden_buffer: &std::rc::Rc<Buffer>,
+        kv_cache: &mut crate::inference::KVCacheGPU,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+        encoder: &metal::ComputeCommandEncoderRef,
+        device: &metal::Device,
+    ) -> Option<std::rc::Rc<Buffer>> {
+        let hidden_size = self.config.hidden_size;
+        let pos = kv_cache.seq_len();
+        let head_dim = self.config.head_dim;
+
+        // Get layer weights
+        let attention_norm = layer.attention_norm.as_ref()?;
+        let wq = layer.wq.as_ref()?;
+        let wk = layer.wk.as_ref()?;
+        let wv = layer.wv.as_ref()?;
+        let wo = layer.wo.as_ref()?;
+        let ffn_norm = layer.ffn_norm.as_ref()?;
+
+        let q_out_size = wq.shape[1];
+        let k_out_size = wk.shape[1];
+        let v_out_size = wv.shape[1];
+        let actual_n_heads = q_out_size / head_dim;
+        let actual_n_kv_heads = k_out_size / head_dim;
+
+        // ====================================================================
+        // Phase 1: GEMV operations (immediate mode - individual commits)
+        // ====================================================================
+        // These have high dispatch overhead, but we can't batch across layers
+        // because of dependencies (output of one is input to next)
+
+        // 1. Attention norm -> QKV projections
+        let norm_weight_buffer = gpu_ctx.get_or_create_buffer(attention_norm);
+        let normed_buffer = gpu_ctx
+            .rms_norm_f32_gpu(
+                hidden_buffer,
+                &norm_weight_buffer,
+                1,
+                hidden_size,
+                1e-5,
+            )
+            .ok()?;
+
+        let q_buffer = self.gemv_gpu_buffer_with_fallback(
+            &normed_buffer,
+            wq,
+            q_out_size,
+            gpu_ctx,
+        )?;
+        let k_buffer = self.gemv_gpu_buffer_with_fallback(
+            &normed_buffer,
+            wk,
+            k_out_size,
+            gpu_ctx,
+        )?;
+        let v_buffer = self.gemv_gpu_buffer_with_fallback(
+            &normed_buffer,
+            wv,
+            v_out_size,
+            gpu_ctx,
+        )?;
+
+        // 2. RoPE (immediate for now, can be batched later)
+        let q_rope_buffer = gpu_ctx
+            .rope_neox_f32_gpu(
+                &q_buffer,
+                &[pos as i32],
+                1,
+                actual_n_heads,
+                head_dim,
+                10000.0,
+                1.0,
+            )
+            .ok()?;
+        let k_rope_buffer = gpu_ctx
+            .rope_neox_f32_gpu(
+                &k_buffer,
+                &[pos as i32],
+                1,
+                actual_n_kv_heads,
+                head_dim,
+                10000.0,
+                1.0,
+            )
+            .ok()?;
+
+        // 3. Update KV cache
+        kv_cache.set_k_buffer(layer_idx, &k_rope_buffer);
+        kv_cache.set_v_buffer(layer_idx, &v_buffer);
+
+        // 4. Flash attention (immediate for now)
+        let attn_out_buffer = self.flash_attention_gpu_buffer(
+            &q_rope_buffer,
+            kv_cache,
+            layer_idx,
+            actual_n_heads,
+            head_dim,
+            actual_n_kv_heads,
+            pos + 1,
+            gpu_ctx,
+        )?;
+
+        // 5. Output projection
+        let attn_proj_buffer = self.gemv_gpu_buffer_with_fallback(
+            &attn_out_buffer,
+            wo,
+            hidden_size,
+            gpu_ctx,
+        )?;
+
+        // ====================================================================
+        // Phase 2: Batched operations (shared command buffer)
+        // ====================================================================
+
+        // 6. Residual add
+        let residual_buffer = std::rc::Rc::new(device.new_buffer(
+            (hidden_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+        gpu_ctx.add_encode(
+            encoder,
+            hidden_buffer,
+            &attn_proj_buffer,
+            &residual_buffer,
+            hidden_size,
+        );
+
+        // 7. FFN norm
+        let ffn_norm_buffer = gpu_ctx.get_or_create_buffer(ffn_norm);
+        let ffn_normed_buffer = std::rc::Rc::new(device.new_buffer(
+            (hidden_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+        gpu_ctx.rms_norm_encode(
+            encoder,
+            &residual_buffer,
+            &ffn_norm_buffer,
+            &ffn_normed_buffer,
+            1,
+            hidden_size,
+            1e-5,
+        );
+
+        // 8. FFN (gate, up, SiLU, mul, down)
+        // For now, use immediate mode for FFN GEMVs
+        // Full implementation would batch these too
+        let ffn_out_buffer = self.ffn_swiglu_gpu_buffer(
+            &ffn_normed_buffer,
+            layer,
+            hidden_size,
+            gpu_ctx,
+        )?;
+
+        // 9. Final residual add
+        let final_buffer = std::rc::Rc::new(device.new_buffer(
+            (hidden_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+        gpu_ctx.add_encode(
+            encoder,
+            &residual_buffer,
+            &ffn_out_buffer,
+            &final_buffer,
+            hidden_size,
+        );
+
+        Some(final_buffer)
+    }
+
     /// GEMV with GPU buffers (no CPU transfer for supported formats)
     /// For unsupported formats, falls back to CPU (with GPU-CPU transfer)
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]

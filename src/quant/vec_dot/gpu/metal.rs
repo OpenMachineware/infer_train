@@ -11,8 +11,8 @@ use crate::quant::types::{
 };
 use metal::{
     Buffer, CommandBuffer, CommandQueue, ComputeCommandEncoder,
-    ComputePipelineState, Device, FunctionConstantValues, Library, MTLDataType,
-    MTLSize, NSUInteger,
+    ComputeCommandEncoderRef, ComputePipelineState, Device,
+    FunctionConstantValues, Library, MTLDataType, MTLSize, NSUInteger,
 };
 use std::cell::RefCell;
 use std::os::raw::c_void;
@@ -2143,6 +2143,116 @@ impl MetalContext {
         command_buffer.wait_until_completed();
 
         Ok(output_buffer)
+    }
+
+    /// Q4_0 MV (batched, encode into shared encoder)
+    pub fn mv_q4_0_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+    ) {
+        let nb = k / 32;
+        let nb01 = (nb * std::mem::size_of::<BlockQ4_0>()) as u64;
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: i32,
+            ne01: i32,
+            ne02: i32,
+            nb00: u64,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
+        }
+
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            ne02: 1,
+            nb00: 1,
+            nb01,
+            nb02: 0,
+            nb03: 0,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 4,
+            r2: 1,
+            r3: 1,
+        };
+
+        encoder.set_compute_pipeline_state(&self.mv_q4_0_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const MvArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(weights_buffer), 0);
+        encoder.set_buffer(2, Some(input_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+
+        const NSG: u64 = 2;
+        const ROWS_PER_THREADGROUP: u64 = NSG * 4;
+
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Generic MV encode that dispatches based on dtype
+    /// Returns true if successful, false if format not supported
+    pub fn mv_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+        dtype: crate::model::tensor::DataType,
+    ) -> bool {
+        match dtype {
+            crate::model::tensor::DataType::Q4_0 => {
+                self.mv_q4_0_encode(
+                    encoder,
+                    weights_buffer,
+                    input_buffer,
+                    output_buffer,
+                    m,
+                    k,
+                );
+                true
+            }
+            // Add more formats as needed
+            _ => false,
+        }
     }
 
     /// Q1_0 x F32 Matrix-Vector
@@ -6751,6 +6861,94 @@ impl MetalContext {
         Ok(output_buffer)
     }
 
+    /// RMS Norm (batched, encode into shared encoder)
+    pub fn rms_norm_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        src_buffer: &Buffer,
+        weight_buffer: &Buffer,
+        output_buffer: &Buffer,
+        n_rows: usize,
+        n_cols: usize,
+        eps: f32,
+    ) {
+        let ne00 = n_cols as i32;
+        encoder.set_compute_pipeline_state(&self.rms_norm_pipeline);
+        encoder.set_buffer(0, Some(src_buffer), 0);
+        encoder.set_buffer(1, Some(weight_buffer), 0);
+        encoder.set_buffer(2, Some(output_buffer), 0);
+        encoder.set_bytes(3, 4, &ne00 as *const i32 as *const std::ffi::c_void);
+        encoder.set_bytes(4, 4, &eps as *const f32 as *const std::ffi::c_void);
+
+        let thread_group_size = MTLSize { width: 64, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: n_rows as u64, height: 1, depth: 1 };
+
+        encoder.set_threadgroup_memory_length(0, 128);
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Add (batched, encode into shared encoder)
+    pub fn add_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        a_buffer: &Buffer,
+        b_buffer: &Buffer,
+        output_buffer: &Buffer,
+        n: usize,
+    ) {
+        encoder.set_compute_pipeline_state(&self.add_pipeline);
+        encoder.set_buffer(0, Some(a_buffer), 0);
+        encoder.set_buffer(1, Some(b_buffer), 0);
+        encoder.set_buffer(2, Some(output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: (n as u64 + 255) / 256, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// SiLU (batched, encode into shared encoder)
+    pub fn silu_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        src_buffer: &Buffer,
+        output_buffer: &Buffer,
+        n: usize,
+    ) {
+        encoder.set_compute_pipeline_state(&self.silu_pipeline);
+        encoder.set_buffer(0, Some(src_buffer), 0);
+        encoder.set_buffer(1, Some(output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: (n as u64 + 255) / 256, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Mul (batched, encode into shared encoder)
+    pub fn mul_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        a_buffer: &Buffer,
+        b_buffer: &Buffer,
+        output_buffer: &Buffer,
+        n: usize,
+    ) {
+        encoder.set_compute_pipeline_state(&self.mul_pipeline);
+        encoder.set_buffer(0, Some(a_buffer), 0);
+        encoder.set_buffer(1, Some(b_buffer), 0);
+        encoder.set_buffer(2, Some(output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: (n as u64 + 255) / 256, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
     // ========================================================================
     // Softmax
     // ========================================================================
@@ -8713,5 +8911,138 @@ impl MetalContext {
         };
 
         Ok((y_slice.to_vec(), s_slice.to_vec()))
+    }
+
+    // ========================================================================
+    // Batched Encode Methods (for command buffer batching)
+    // ========================================================================
+
+    /// RoPE (batched, encode into shared encoder)
+    pub fn rope_neox_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        src_buffer: &Buffer,
+        pos: &[i32],
+        n_seqs: usize,
+        n_heads: usize,
+        n_dims: usize,
+        freq_base: f32,
+        freq_scale: f32,
+        output_buffer: &Buffer,
+    ) {
+        let pos_buffer = self.device.new_buffer_with_data(
+            pos.as_ptr() as *const std::ffi::c_void,
+            (pos.len() * std::mem::size_of::<i32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let args = RopeArgs {
+            ne00: n_dims as i32,
+            ne01: (n_heads * n_seqs) as i32,
+            ne02: n_seqs as i32,
+            nb00: 4,
+            nb01: (n_dims * 4) as u64,
+            nb02: (n_heads * n_dims * 4) as u64,
+            n_dims: n_dims as i32,
+            n_offs: 0,
+            freq_base,
+            freq_scale,
+            ext_factor: 0.0,
+            attn_factor: 1.0,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            n_ctx_orig: 0,
+        };
+
+        encoder.set_compute_pipeline_state(&self.rope_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<RopeArgs>() as u64,
+            &args as *const RopeArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(src_buffer), 0);
+        encoder.set_buffer(2, Some(&pos_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: n_heads as u64, height: n_seqs as u64, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        // Do NOT end_encoding() or commit() - let caller handle that
+    }
+
+    /// Flash Attention for F16 KV cache (batched, encode into shared encoder)
+    pub fn flash_attn_f16_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        n_seqs: usize,
+        n_heads: usize,
+        _n_kv_heads: usize,
+        head_dim: usize,
+        seq_len: usize,
+        kv_stride: usize,
+        q_buffer: &Buffer,
+        k_buffer: &Buffer,
+        v_buffer: &Buffer,
+        output_buffer: &Buffer,
+    ) {
+        let pipeline = match head_dim {
+            32 => &self.flash_decode_f16_32_pipeline,
+            64 => &self.flash_decode_f16_64_pipeline,
+            80 => &self.flash_decode_f16_80_pipeline,
+            128 => &self.flash_decode_f16_128_pipeline,
+            160 => &self.flash_decode_f16_160_pipeline,
+            _ => {
+                eprintln!(
+                    "Flash Attention does not support head_dim={}",
+                    head_dim
+                );
+                return;
+            }
+        };
+
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+        let seq_k = seq_len as u32;
+        let kv_stride_u32 = kv_stride as u32;
+
+        encoder.set_compute_pipeline_state(pipeline);
+        encoder.set_bytes(
+            0,
+            4,
+            &seq_k as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            1,
+            4,
+            &kv_stride_u32 as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            2,
+            4,
+            &scale as *const f32 as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(3, Some(q_buffer), 0);
+        encoder.set_buffer(4, Some(k_buffer), 0);
+        encoder.set_buffer(5, Some(v_buffer), 0);
+        encoder.set_buffer(6, Some(output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: 1, height: n_heads as u64, depth: n_seqs as u64 };
+
+        let c_per_iter = match head_dim {
+            32 => 8,
+            64 => 16,
+            80 => 20,
+            128 => 32,
+            160 => 40,
+            _ => 32,
+        };
+        let shmem_size = 512 + c_per_iter * 4;
+        encoder.set_threadgroup_memory_length(0, shmem_size as u64);
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        // Do NOT end_encoding() or commit() - let caller handle that
     }
 }
