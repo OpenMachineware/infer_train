@@ -295,3 +295,11 @@ path = "tools/compare_q5k_llama.rs"
 [[bin]]
 name = "stability-test"
 path = "tools/stability_test.rs"
+
+[[bin]]
+name = "f16-gemv-bench"
+path = "benches/f16_gemv_bench.rs"
+
+[[bin]]
+name = "f16-gemv-roofline"
+path = "benches/f16_gemv_roofline.rs"
