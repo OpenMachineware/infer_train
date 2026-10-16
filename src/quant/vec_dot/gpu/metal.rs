@@ -2299,6 +2299,23 @@ impl MetalContext {
                 k,
                 dtype,
             ),
+            // IQ formats
+            crate::model::tensor::DataType::IQ4_XS
+            | crate::model::tensor::DataType::IQ1_S
+            | crate::model::tensor::DataType::IQ2_XXS
+            | crate::model::tensor::DataType::IQ2_XS
+            | crate::model::tensor::DataType::IQ2_S
+            | crate::model::tensor::DataType::IQ3_XXS
+            | crate::model::tensor::DataType::IQ3_S
+            | crate::model::tensor::DataType::IQ4_NL => self.mv_iq_encode(
+                encoder,
+                weights_buffer,
+                input_buffer,
+                output_buffer,
+                m,
+                k,
+                dtype,
+            ),
             // Add more formats as needed
             _ => false,
         }
@@ -2472,6 +2489,93 @@ impl MetalContext {
         let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
         let thread_group_count =
             MTLSize { width: m as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        true
+    }
+
+    /// IQ format MV encode (IQ4_XS, IQ1_S, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_NL)
+    fn mv_iq_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+        dtype: crate::model::tensor::DataType,
+    ) -> bool {
+        let nb = k / 256; // QK_K = 256 for all IQ formats
+
+        // Block sizes and NR0 values differ by format
+        let (nb01, nr0, pipeline) = match dtype {
+            crate::model::tensor::DataType::IQ4_XS => {
+                let nb01 = (nb * std::mem::size_of::<BlockIQ4XS>()) as u64;
+                (nb01, 2, &self.mv_iq4_xs_pipeline)
+            }
+            crate::model::tensor::DataType::IQ1_S => {
+                let nb01 = (nb * std::mem::size_of::<BlockIQ1S>()) as u64;
+                (nb01, 2, &self.mv_iq1_s_pipeline)
+            }
+            crate::model::tensor::DataType::IQ2_XXS => {
+                let nb01 = (nb * std::mem::size_of::<BlockIQ2XXS>()) as u64;
+                (nb01, 2, &self.mv_iq2_xxs_pipeline)
+            }
+            crate::model::tensor::DataType::IQ2_XS => {
+                let nb01 = (nb * std::mem::size_of::<BlockIQ2XS>()) as u64;
+                (nb01, 2, &self.mv_iq2_xs_pipeline)
+            }
+            crate::model::tensor::DataType::IQ2_S => {
+                let nb01 = (nb * std::mem::size_of::<BlockIQ2S>()) as u64;
+                (nb01, 2, &self.mv_iq2_s_pipeline)
+            }
+            crate::model::tensor::DataType::IQ3_XXS => {
+                let nb01 = (nb * std::mem::size_of::<BlockIQ3XXS>()) as u64;
+                (nb01, 2, &self.mv_iq3_xxs_pipeline)
+            }
+            crate::model::tensor::DataType::IQ3_S => {
+                let nb01 = (nb * std::mem::size_of::<BlockIQ3S>()) as u64;
+                (nb01, 2, &self.mv_iq3_s_pipeline)
+            }
+            crate::model::tensor::DataType::IQ4_NL => {
+                let nb01 = (nb * std::mem::size_of::<BlockIQ4NL>()) as u64;
+                (nb01, 2, &self.mv_iq4_nl_pipeline)
+            }
+            _ => return false,
+        };
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: u32,
+            ne01: u32,
+            nb01: u64,
+        }
+
+        let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+
+        encoder.set_compute_pipeline_state(pipeline);
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(output_buffer), 0);
+        encoder.set_bytes(
+            3,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const MvArgs as *const std::ffi::c_void,
+        );
+
+        const THREADGROUP_MEM_SIZE: u64 =
+            32 * std::mem::size_of::<f32>() as u64;
+        encoder.set_threadgroup_memory_length(THREADGROUP_MEM_SIZE, 0);
+
+        const NSG: u64 = 2;
+        let rows_per_threadgroup = NSG * nr0;
+
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: (m as u64 + rows_per_threadgroup - 1) / rows_per_threadgroup,
+            height: 1,
+            depth: 1,
+        };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         true
@@ -4510,6 +4614,45 @@ impl MetalContext {
             unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() };
 
         Ok(output)
+    }
+
+    /// Q6_K transposed Matrix-Vector with GPU buffers (zero-copy)
+    /// W is stored as [K, M] instead of [M, K] (for tied embeddings)
+    pub fn mv_q6_k_f32_transposed_gpu_weights(
+        &self,
+        m: usize, // Output size (vocab_size)
+        k: usize, // Input size (hidden_size)
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let output_size = m * std::mem::size_of::<f32>();
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            output_size as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.mv_q6_k_transposed_pipeline);
+
+        // Kernel expects: buffer 0=weights, 1=input, 2=output, 3=m, 4=k
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
+        encoder.set_bytes(3, 4, &m as *const usize as *const std::ffi::c_void);
+        encoder.set_bytes(4, 4, &k as *const usize as *const std::ffi::c_void);
+
+        // One thread per output element
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: ((m + 255) / 256) as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
     }
 
     /// IQ4_NL x F32 Matrix-Vector (matching llama.cpp kernel)

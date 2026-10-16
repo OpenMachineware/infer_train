@@ -271,3 +271,11 @@ harness = false
 [[bin]]
 name = "test-batched-encode"
 path = "tools/test_batched_encode.rs"
+
+[[bin]]
+name = "debug-model"
+path = "tools/debug_model.rs"
+
+[[bin]]
+name = "debug-batched"
+path = "tools/debug_batched.rs"
