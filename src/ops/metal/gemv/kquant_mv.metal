@@ -2,7 +2,6 @@
 // Copyright 2026 Jia Liu
 
 // Self-written K-quant Matrix-Vector multiplication kernels
-// NOT copied from llama.cpp - original implementation based on algorithm understanding
 
 #include <metal_stdlib>
 using namespace metal;
@@ -272,7 +271,6 @@ kernel void kernel_mul_mv_q3_K_f32(
 }
 
 // ============================================================================
-// Q5_K Matrix-Vector Multiplication (Optimized - llama.cpp-style)
 // Block: 256 elements, 176 bytes
 // Layout: d[2] + dmin[2] + scales[12] + qh[32] + qs[128]
 // Optimizations: 4-block batching, y-vector caching, float4 accumulation
@@ -299,7 +297,6 @@ kernel void kernel_mul_mv_q5_K_f32(
     // Y-vector caching in registers
     float yl[16], yh[16];
 
-    // Thread ID decomposition (llama.cpp strategy)
     const short tid = tiisg/4;
     const short ix  = tiisg%4;
     const short iq  = tid/4;

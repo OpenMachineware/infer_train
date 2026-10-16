@@ -149,7 +149,6 @@ pub unsafe fn vec_dot_q4_k_q8_k_neon(
         let d = y_i.d * fp16_to_fp32(x_i.d);
         let dmin = y_i.d * fp16_to_fp32(x_i.dmin);
 
-        // Calculate min correction first (matching llama.cpp order)
         let q8sums = vpaddq_s16(
             vld1q_s16(y_i.bsums.as_ptr()),
             vld1q_s16(y_i.bsums.as_ptr().add(8)),
@@ -176,7 +175,6 @@ pub unsafe fn vec_dot_q4_k_q8_k_neon(
         utmp[1] = (utmp[2] & KMASK2) | (((utmp[0] >> 6) & KMASK3) << 4);
         utmp[0] &= KMASK1;
 
-        // Calculate min using vmull_s16 (matching llama.cpp)
         let mins = vreinterpretq_s16_u16(vmovl_u8(vreinterpret_u8_u32(mins8)));
         let prod = vaddq_s32(
             vmull_s16(vget_low_s16(q8sums), vget_low_s16(mins)),
@@ -187,7 +185,6 @@ pub unsafe fn vec_dot_q4_k_q8_k_neon(
         // Get scales from utmp
         let scales = utmp.as_ptr() as *const u8;
 
-        // Process 256 elements - matching llama.cpp pointer update pattern
         let mut q4 = x_i.qs.as_ptr();
         let mut q8 = y_i.qs.as_ptr();
 
@@ -195,7 +192,6 @@ pub unsafe fn vec_dot_q4_k_q8_k_neon(
         let mut sumi2 = 0i32;
 
         for j in 0..4 {
-            // Load and immediately advance pointers (llama.cpp pattern)
             let q4bits = vld1q_u8_x2(q4);
             q4 = q4.add(32);
 

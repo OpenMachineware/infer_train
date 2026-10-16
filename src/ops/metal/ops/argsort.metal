@@ -101,7 +101,6 @@ kernel void argsort_sort(
     }
 
     // Write top-k results
-    // Calculate correct output index (must match llama.cpp layout)
     const int ib = gid.x / p.n_rows;  // batch index
     const int i0 = ib * p.top_k;       // base offset for this batch
 

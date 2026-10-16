@@ -205,7 +205,6 @@ pub fn quantize_row_q8_1(x: &[f32], y: &mut [BlockQ8_1]) {
         }
 
         y[i].d = fp32_to_fp16(d);
-        // s = d * sum(q_i) = sum of dequantized values (matches llama.cpp)
         y[i].s = fp32_to_fp16(sum as f32 * d);
     }
 }
@@ -216,7 +215,6 @@ pub fn quantize_row_q8_1(x: &[f32], y: &mut [BlockQ8_1]) {
 
 /// Quantize FP32 to Q4_0 (scalar)
 /// Q4_0: block of 32 values, each stored as 4-bit nibbles
-/// llama.cpp formula: d = max_val / -8, where max_val has largest abs
 pub fn quantize_row_q4_0(x: &[f32], y: &mut [BlockQ4_0]) {
     assert!(x.len() % QK == 0);
     let nb = x.len() / QK;
@@ -235,14 +233,12 @@ pub fn quantize_row_q4_0(x: &[f32], y: &mut [BlockQ4_0]) {
             }
         }
 
-        // llama.cpp formula: d = max_val / -8
         let d = max_val / -8.0;
         let id = if d != 0.0 { 1.0 / d } else { 0.0 };
 
         y[i].d = fp32_to_fp16(d);
 
         // Pack 2 4-bit values into 1 byte
-        // llama.cpp layout: low nibbles from x[0..15], high nibbles from x[16..31]
         for j in 0..QK / 2 {
             let q0 = ((x_block[j] * id + 8.5).min(15.0)) as u32;
             let q1 = ((x_block[j + QK / 2] * id + 8.5).min(15.0)) as u32;
@@ -286,7 +282,6 @@ pub fn quantize_row_q4_1(x: &[f32], y: &mut [BlockQ4_1]) {
         y[i].m = fp32_to_fp16(min);
 
         // Pack 2 4-bit values into 1 byte
-        // llama.cpp layout: low nibbles from x[0..15], high nibbles from x[16..31]
         for j in 0..QK / 2 {
             let q0 = ((x_block[j] - min) * id).round() as i32;
             let q1 = ((x_block[j + QK / 2] - min) * id).round() as i32;
@@ -301,7 +296,6 @@ pub fn quantize_row_q4_1(x: &[f32], y: &mut [BlockQ4_1]) {
 
 /// Quantize FP32 to Q5_0 (scalar)
 /// Q5_0: block of 32 values with 5-bit quantization
-/// llama.cpp formula: d = max_val / -16, where max_val has largest abs
 pub fn quantize_row_q5_0(x: &[f32], y: &mut [BlockQ5_0]) {
     assert!(x.len() % QK == 0);
     let nb = x.len() / QK;
@@ -320,14 +314,12 @@ pub fn quantize_row_q5_0(x: &[f32], y: &mut [BlockQ5_0]) {
             }
         }
 
-        // llama.cpp formula: d = max_val / -16
         let d = max_val / -16.0;
         let id = if d != 0.0 { 1.0 / d } else { 0.0 };
 
         y[i].d = fp32_to_fp16(d);
 
         // Pack 5-bit values: low 4 bits in qs, high bit in qh
-        // llama.cpp layout: low nibbles from x[0..15], high nibbles from x[16..31]
         let mut qh = 0u32;
         for j in 0..QK / 2 {
             let q0 = ((x_block[j] * id + 16.5).min(31.0)) as u32;

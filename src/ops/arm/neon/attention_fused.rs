@@ -2,7 +2,6 @@
 // Copyright 2026 Jia Liu
 
 // Fused vec_dot and vec_mad for KV cache quantization formats
-// Following llama.cpp's approach: quantize Q to Q8_0, then use Q8_0 × Qn_0 NEON fused vec_dot
 // This enables hardware INT8 dot product acceleration (SDOT instruction)
 
 use std::arch::aarch64::*;
@@ -455,7 +454,6 @@ static TABLE_B2B_1_Q5_0: [u64; 256] = {
 };
 
 /// Fused vec_mad: y += weight * V (Q5_0 format)
-/// Optimized: use lookup table for qh bit expansion (matches llama.cpp exactly)
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_q5_0(
     y: &mut [f32],
@@ -480,7 +478,6 @@ pub unsafe fn vec_mad_f32_q5_0(
         let qsl = vreinterpretq_s8_u8(vandq_u8(qs, m4b));
         let qsh = vreinterpretq_s8_u8(vshrq_n_u8(qs, 4));
 
-        // Extract 5th bit via lookup table (use memcpy like llama.cpp)
         let mut qh: u32 = 0;
         std::ptr::copy_nonoverlapping(
             block.qh.as_ptr(),
@@ -566,7 +563,6 @@ pub unsafe fn vec_mad_f32_q5_0(
 }
 
 /// Fused vec_mad: y += weight * V (Q5_1 format)
-/// Optimized: NEON for parallel unpack + accumulation (matches llama.cpp approach)
 #[target_feature(enable = "neon")]
 pub unsafe fn vec_mad_f32_q5_1(
     y: &mut [f32],

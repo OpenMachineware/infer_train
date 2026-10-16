@@ -4,7 +4,6 @@
 // Flash Decode Vectorized Kernel
 // Implements high-performance decode attention based on proven design principles
 //
-// Key design principles learned from llama.cpp:
 // - NE=4: Each SIMD group processes 4 cache items in parallel per iteration
 // - C=32: Total cache items per iteration across the SIMD group
 // - 2D thread layout: tx for head_dim, ty for cache items
@@ -117,7 +116,6 @@ kernel void flash_decode_vec_kernel(
     uint3 gid [[threadgroup_position_in_grid]],
     ushort tiisg [[thread_index_in_simdgroup]])
 {
-    // Thread layout (key insight from llama.cpp)
     // 32 threads total
     // tx: 0-7 for head_dim dimension (8 threads)
     // ty: 0-3 for cache item dimension (4 groups)
@@ -186,7 +184,6 @@ kernel void flash_decode_vec_kernel(
             mqk[cc] = 0.0f;
         }
 
-        // Key insight from llama.cpp: pre-compute base pointer for iteration start
         // Then use strided reads inside the loop
         if (IS_DIRECT_K) {
             // Pre-compute base pointer for iteration start
@@ -243,7 +240,6 @@ kernel void flash_decode_vec_kernel(
         }
 
         // Store scores to shared memory
-        // Key insight from llama.cpp: store mqk[tx] at position NE*tx + ty
         // This maps each thread's score to the correct cache item position
         const int score_idx = NE * tx + ty;
         const int cache_idx_for_score = ic + score_idx;
@@ -282,7 +278,6 @@ kernel void flash_decode_vec_kernel(
 
         simdgroup_barrier(mem_flags::mem_threadgroup);
 
-        // V Accumulation - llama.cpp style: pre-compute base pointer with stride
         // Key insight: instead of each thread computing its own cache_idx and pointer,
         // compute the base pointer for iteration start, then use strided reads
         const float weight = s_scores[tiisg];
@@ -333,7 +328,6 @@ kernel void flash_decode_vec_kernel(
 
 // Template instantiations
 
-// F16 NE=1 variant (matches llama.cpp default for HEAD_DIM=128)
 // For NE=1, each thread processes 1 cache item, NL=32
 template [[host_name("flash_decode_vec_f16_ne1")]]
 kernel void flash_decode_vec_kernel<

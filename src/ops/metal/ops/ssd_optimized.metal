@@ -1,13 +1,11 @@
 // SSD (State Space Duality) Optimized Kernel
 // Uses Metal simdgroup matrix multiply-accelerate (MMA) for parallel scan
-// Algorithm design based on llama.cpp, self-written implementation
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
 #include <metal_stdlib>
 using namespace metal;
 
-// Constants matching llama.cpp
 constant constexpr short SSD_CS  = 64;  // Chunk size (tokens per chunk)
 constant constexpr short SSD_TC  = 8;   // Tile size (8x8 matrix tiles)
 constant constexpr short SSD_HD  = 64;  // Head dimension for Mamba-2
@@ -47,7 +45,6 @@ kernel void kernel_ssm_scan_ssd_mma(
     constexpr short HD = SSD_HD;
     constexpr short NSG = SSD_NSG;
 
-    // Shared memory layout (matching llama.cpp):
     // acs/exp(acs)/state-decay vectors, dtX[CS][HD], four private SAM row tiles [8][CS],
     // and two 8x8 scratch tiles per simdgroup. Total: 26.75 KiB.
     threadgroup float* shared_acs = shared;
@@ -67,7 +64,6 @@ kernel void kernel_ssm_scan_ssd_mma(
     const int32_t nr = head_dim;
     const int32_t n_t = n_seq_tokens;
 
-    // Data layout (matching llama.cpp):
     // x: [n_t, n_head, head_dim] with stride ns12 = n_head * head_dim
     // dt: [n_t, n_head] with stride ns21 = n_head
     // A: [n_head] scalar per head
@@ -98,7 +94,6 @@ kernel void kernel_ssm_scan_ssd_mma(
     // Process tokens in chunks of CS
     for (int32_t t0 = 0; t0 < n_t; t0 += CS) {
         // Step 1: Pre-compute dtx = x * softplus(dt) for all tokens in chunk
-        // Parallel load across all threads (matching llama.cpp)
         for (int32_t idx = tiitg; idx < CS * HD; idx += NSG * N_SIMDWIDTH) {
             const int32_t t = idx / HD;
             const int32_t c = idx % HD;
@@ -115,7 +110,6 @@ kernel void kernel_ssm_scan_ssd_mma(
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // Cumulative sum (only thread 0 does this, matching llama.cpp)
         if (tiitg == 0) {
             float acc = 0.0f;
             for (short t = 0; t < CS; ++t) {
@@ -125,7 +119,6 @@ kernel void kernel_ssm_scan_ssd_mma(
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // Step 3: Compute exp_acs and state_decay (matching llama.cpp)
         if (tiitg < CS) {
             shared_exp_acs[tiitg] = exp(shared_acs[tiitg]);
             shared_state_decay[tiitg] = exp(shared_acs[CS - 1] - shared_acs[tiitg]);
@@ -137,7 +130,6 @@ kernel void kernel_ssm_scan_ssd_mma(
 
         // Step 4: Build SAM (State Accumulator Matrix) using MMA
         // SAM[i,j] = C[i] * B[j] * exp(acs[i] - acs[j]) for j <= i
-        // Each SIMD group builds one 8x64 row tile (matching llama.cpp)
 
         for (short ib = sgitg; ib < CS / TC; ib += NSG) {
             // For each column block jb <= ib (lower triangular)
@@ -161,7 +153,6 @@ kernel void kernel_ssm_scan_ssd_mma(
                 simdgroup_barrier(mem_flags::mem_threadgroup);
 
                 // Apply decay scaling: SAM[i,j] *= exp(acs[i] - acs[j]) for j <= i
-                // (matching llama.cpp)
                 for (short e = tiisg; e < TC * TC; e += N_SIMDWIDTH) {
                     const short ri = e / TC;
                     const short rj = e % TC;
@@ -199,7 +190,6 @@ kernel void kernel_ssm_scan_ssd_mma(
                 simdgroup_store(y_inter, tile1, TC);
                 simdgroup_barrier(mem_flags::mem_threadgroup);
 
-                // y = y_diag + exp_acs * y_inter (matching llama.cpp)
                 for (short e = tiisg; e < TC * TC; e += N_SIMDWIDTH) {
                     const short ri = e / TC;
                     const short ci = e % TC;
@@ -211,7 +201,6 @@ kernel void kernel_ssm_scan_ssd_mma(
             }
         }
 
-        // Step 6: Update state for next chunk (matching llama.cpp exactly)
         threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
 
         const float chunk_decay = exp(shared_acs[CS - 1]);

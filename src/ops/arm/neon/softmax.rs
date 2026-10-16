@@ -6,7 +6,6 @@
 use std::arch::aarch64::*;
 
 /// NEON SIMD softmax
-/// Uses the same exp approximation as llama.cpp's ggml_v_expf
 #[target_feature(enable = "neon")]
 pub unsafe fn softmax_f32(x: &[f32], y: &mut [f32]) -> f32 {
     assert_eq!(x.len(), y.len());
@@ -77,7 +76,6 @@ pub unsafe fn softmax_f32(x: &[f32], y: &mut [f32]) -> f32 {
     sum
 }
 
-/// NEON exp approximation from llama.cpp's ggml_v_expf
 /// Uses Payne-Hanek polynomial approximation
 #[target_feature(enable = "neon")]
 #[inline]
@@ -106,7 +104,6 @@ pub unsafe fn exp(x: float32x4_t) -> float32x4_t {
     let c = vcagtq_f32(n, vdupq_n_f32(126.0f32));
 
     // Polynomial approximation: exp(b) ≈ 1 + b + b^2/2! + b^3/3! + ...
-    // Using Horner's method with coefficients from llama.cpp
     let u = vmulq_f32(b, b);
     let j = vfmaq_f32(
         vmulq_f32(vdupq_n_f32(0.9999990463256836), b),

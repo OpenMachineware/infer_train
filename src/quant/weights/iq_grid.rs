@@ -17,7 +17,6 @@ pub fn nearest_int(x: f32) -> i32 {
     (x + 0.5_f32.copysign(x)) as i32
 }
 
-// kgrid_2bit_256 for IQ2_XXS (from llama.cpp ggml-quants.c)
 // Each u16 encodes 8 2-bit l values (indices 0,1,2 for levels 1,3,5)
 pub const KGRID_2BIT_256: [u16; 256] = [
     0, 2, 5, 8, 10, 17, 20, 32, 34, 40, 42, 65, 68, 80, 88, 97, 100, 128, 130,
@@ -420,9 +419,7 @@ pub fn decode_iq3_grid(grid_val: u16) -> [i8; 4] {
     result
 }
 
-/// make_qp_quants from llama.cpp (lines 1076-1147)
 /// Finds optimal quantization levels and scale
-/// L is uint8_t in llama.cpp, output values are 0..nmax
 pub fn make_qp_quants(
     n: usize,
     nmax: i32,
@@ -532,18 +529,14 @@ impl IQ2GridData {
         let kmap_size = 65536; // 2^16 for 16-bit indices
 
         // Build grid from kgrid: each u16 encodes 8 2-bit l values
-        // IMPORTANT: Following llama.cpp exactly!
         // - Quantization uses dynamically constructed grid with values 1, 3, 5 (from 2*l + 1)
         // - Dequantization uses static grid iq2xxs_grid with values 8, 25, 43
-        // - There's a ~4-7.5% discrepancy between the two, which llama.cpp accepts
-        // - We must match llama.cpp's approach exactly for compatibility
         let mut grid = vec![0u64; grid_size];
         for k in 0..grid_size {
             let mut val: u64 = 0;
             for i in 0..8 {
                 let l = ((kgrid[k] >> (2 * i)) & 0x3) as i8;
                 // Use quantization grid values: 1, 3, 5 for l = 0, 1, 2
-                // This matches llama.cpp's kgrid_q2xs exactly
                 let q = match l {
                     0 => 1,
                     1 => 3,
@@ -657,7 +650,6 @@ impl IQ2GridData {
             let mut d2 = 0.0f32;
             for i in 0..8 {
                 let q = pg[i] as f32;
-                // Matching llama.cpp: diff = scale*q - xval[i]
                 let diff = scale * q - xval[i];
                 d2 += weight[i] * diff * diff;
             }
@@ -696,7 +688,6 @@ impl IQ3GridData {
     pub fn new(grid_size: usize, _kgrid: &[u16]) -> Self {
         let kmap_size = 65536; // 2^16 for 16-bit indices
 
-        // Use actual grid tables from llama.cpp
         // grid_size=256 -> IQ3_XXS with values 4, 12, 20, 28, 36, 44, 52, 62
         // grid_size=512 -> IQ3_S with values 1, 3, 5, 7, 9, 11, 13, 15
         let mut grid = vec![0u32; grid_size];
@@ -970,7 +961,6 @@ pub const KGRID_256_IQ3: [u16; 256] = [
     3904, 3906, 3924, 3992,
 ];
 
-// IQ3_XXS grid: actual grid values from llama.cpp
 // Values: 4, 12, 20, 28, 36, 44, 52, 62 (formula: 4 + 8*l for l=0..7)
 // Each u32 packs 4 int8_t values
 pub const IQ3XXS_GRID: [u32; 256] = [
@@ -1019,7 +1009,6 @@ pub const IQ3XXS_GRID: [u32; 256] = [
     0x3e2c0404, 0x3e2c0414, 0x3e2c1424, 0x3e341c04,
 ];
 
-// IQ3_S grid: actual grid values from llama.cpp
 // Values: 1, 3, 5, 7, 9, 11, 13, 15 (formula: 2*l + 1 for l=0..7)
 // Each u32 packs 4 int8_t values
 pub const IQ3S_GRID: [u32; 512] = [
@@ -1109,7 +1098,8 @@ pub const IQ3S_GRID: [u32; 512] = [
     0x0f070105, 0x0f070705, 0x0f07070b, 0x0f070b07, 0x0f090103, 0x0f09010b,
     0x0f090307, 0x0f090501, 0x0f090b01, 0x0f0b0505, 0x0f0b0905, 0x0f0d0105,
     0x0f0d0703, 0x0f0f0101,
-]; // kgrid_1bit_2048 for IQ1_S (from llama.cpp line 2911)
+];
+
 // Grid for ternary quantization (1-bit per value, 3 states: -1, 0, +1)
 pub const KGRID_1BIT_2048: [u16; 2048] = [
     0, 2, 5, 8, 10, 17, 21, 32, 34, 40, 42, 69, 81, 84, 86, 101, 128, 130, 136,

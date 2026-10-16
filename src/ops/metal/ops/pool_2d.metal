@@ -12,7 +12,6 @@ using namespace metal;
 #define MAX_VAL(x, y) ((x) > (y) ? (x) : (y))
 #define MIN_VAL(x, y) ((x) < (y) ? (x) : (y))
 
-// Parameter struct - format matches llama.cpp for API compatibility
 struct Pool2DArgs {
     int k0;   int k1;   int s0;   int s1;
     int p0;   int p1;

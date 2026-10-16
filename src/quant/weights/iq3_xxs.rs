@@ -2,7 +2,6 @@
 // Copyright 2026 Jia Liu
 
 // IQ3_XXS, IQ3_S, IQ1_S, IQ1_M quantization implementations
-// Ported from llama.cpp ggml-quants.c
 
 use crate::quant::types::*;
 use crate::quant::weights::iq_grid::*;
@@ -39,7 +38,6 @@ pub fn quantize_iq3_xxs(
         let mut q3 = [0u32; 2]; // 2 u32 values for storing packed data
         let mut max_scale = 0.0f32;
 
-        // Compute sigma2 (llama.cpp uses 2*sumx2/QK_K for IQ3)
         let sumx2: f32 = xbl.iter().map(|v| v * v).sum();
         let sigma2 = 2.0 * sumx2 / QK_K as f32;
 

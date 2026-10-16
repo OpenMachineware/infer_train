@@ -3,7 +3,6 @@
 
 // Flash Decode Multi-Workgroup Kernel
 // Implements parallel KV cache processing across multiple workgroups
-// Based on llama.cpp's strided processing design
 //
 // Key design principles:
 // - NWG workgroups process different chunks in parallel
@@ -55,10 +54,8 @@ struct BF16Block {
     bfloat values[4];
 };
 
-// Dequantization functions - optimized to match llama.cpp
 template<typename T4>
 inline void dequant_q4_0(device const Q4_0Block* block, int lane, thread T4& result) {
-    // Match llama.cpp's approach: use float for intermediate values
     device const uint16_t* qs = ((device const uint16_t*)block) + 1;
     const int il = lane;
 
@@ -76,7 +73,6 @@ inline void dequant_q4_0(device const Q4_0Block* block, int lane, thread T4& res
 
 template<typename T4>
 inline void dequant_q4_1(device const Q4_1Block* block, int lane, thread T4& result) {
-    // Match llama.cpp's approach: use float for intermediate values
     device const uint16_t* qs = ((device const uint16_t*)block) + 2;
     const int il = lane;
 
@@ -94,7 +90,6 @@ inline void dequant_q4_1(device const Q4_1Block* block, int lane, thread T4& res
 
 template<typename T4>
 inline void dequant_q5_0(device const Q5_0Block* block, int lane, thread T4& result) {
-    // Match llama.cpp's approach: use float for intermediate values
     device const uint16_t* qs = ((device const uint16_t*)block) + 3;
     const int il = lane;
 
@@ -124,7 +119,6 @@ inline void dequant_q5_0(device const Q5_0Block* block, int lane, thread T4& res
 
 template<typename T4>
 inline void dequant_q5_1(device const Q5_1Block* block, int lane, thread T4& result) {
-    // Match llama.cpp's approach: use float for intermediate values
     device const uint16_t* qs = ((device const uint16_t*)block) + 3;
     const int il = lane;
 
@@ -154,7 +148,6 @@ inline void dequant_q5_1(device const Q5_1Block* block, int lane, thread T4& res
 
 template<typename T4>
 inline void dequant_q8_0(device const Q8_0Block* block, int lane, thread T4& result) {
-    // Match llama.cpp's approach: use float for intermediate values
     const float d = block->d;
     const int idx = lane % 8;
 
@@ -256,7 +249,6 @@ kernel void flash_decode_multi_wg_partial(
 
     // Strided loop over KV cache
     // Each workgroup starts at different position and strides by NWG
-    // Similar to llama.cpp: for (int ic0 = iwg; ic0 < seq_k/C; ic0 += NWG)
 
     constexpr bool IS_DIRECT_K = (DEQUANT_LANES_K == 1);
     constexpr bool IS_DIRECT_V = (DEQUANT_LANES_V == 1);
@@ -702,7 +694,6 @@ kernel void flash_decode_multi_wg_partial<
 );
 
 // ============================================================================
-// C=64 variants (matching llama.cpp chunk size)
 // ============================================================================
 
 // F16 C=64 NWG=8

@@ -2,7 +2,6 @@
 // Copyright 2026 Jia Liu
 
 // Dequantize functions for GPU attention
-// Based on llama.cpp's dequantize.h
 
 #pragma once
 

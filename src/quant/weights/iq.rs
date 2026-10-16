@@ -2,7 +2,6 @@
 // Copyright 2026 Jia Liu
 
 // IQ formats: IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_NL, IQ4_XS
-// Precisely ported from llama.cpp ggml-quants.c
 
 #![allow(dead_code, non_snake_case)]
 
@@ -12,16 +11,11 @@ use half::f16;
 
 const QK_K: usize = 256;
 const GROUP_MAX_EPS: f32 = 1e-6;
-const GROUP_MAX_EPS_IQ3_XXS: f32 = 1e-4; // From llama.cpp line 4032
-const GROUP_MAX_EPS_IQ2_S: f32 = 1e-4; // From llama.cpp line 5176
-const GROUP_MAX_EPS_IQ1_S: f32 = 1e-5; // From llama.cpp line 4561
 
-/// Helper to round to nearest integer (llama.cpp uses nearbyintf)
 fn nearest_int(x: f32) -> i32 {
     x.round() as i32
 }
 
-/// make_qp_quants from llama.cpp lines 1076-1135
 /// Finds optimal quantization for n values with range [0, nmax]
 /// Returns scale such that q = scale * L[i]
 fn make_qp_quants(
@@ -293,12 +287,8 @@ pub fn quantize_iq4_xs(x: &[f32]) -> Vec<BlockIQ4XS> {
 }
 
 // ============================================================================
-// IQ2_XXS - Precise port from llama.cpp lines 3294-3469
 // ============================================================================
 
-const KMAX_Q: i32 = 3; // llama.cpp line 3308
-
-/// Quantize FP32 to IQ2_XXS (matching llama.cpp exactly)
 pub fn quantize_iq2_xxs(
     x: &[f32],
     quant_weights: Option<&[f32]>,
@@ -320,6 +310,9 @@ fn quantize_iq2_xxs_impl(
     quant_weights: Option<&[f32]>,
     dump_path: Option<&str>,
 ) -> Vec<BlockIQ2XXS> {
+    const KMAX_Q: i32 = 3;
+    const KMAX_Q_IQ2_XS: i32 = 3;
+
     assert!(x.len() % QK_K == 0);
     let nb = x.len() / QK_K;
     let mut blocks = Vec::with_capacity(nb);
@@ -353,7 +346,6 @@ fn quantize_iq2_xxs_impl(
         let mut q2 = [0u32; 2 * (QK_K / 32)];
         let mut max_scale = 0.0f32;
 
-        // Compute sigma2 for the block (llama.cpp line 3332-3333)
         let sumx2: f32 = xbl.iter().map(|v| v * v).sum();
         let sigma2 = sumx2 / QK_K as f32;
 
@@ -372,7 +364,6 @@ fn quantize_iq2_xxs_impl(
             let xb = &xbl[ib * 32..(ib + 1) * 32];
             let qw = &quant_weights_slice[ib * 32..(ib + 1) * 32];
 
-            // Compute quantization weights (llama.cpp line 3338)
             let mut weight = [0.0f32; 32];
             let mut waux = [0.0f32; 32];
             for i in 0..32 {
@@ -398,7 +389,6 @@ fn quantize_iq2_xxs_impl(
                 }
             }
 
-            // Extract signs and absolute values (llama.cpp lines 3340-3361)
             let mut xval = [0.0f32; 32];
             let mut block_signs = [0u8; 4];
 
@@ -459,14 +449,12 @@ fn quantize_iq2_xxs_impl(
                 }
             }
 
-            // Find max (llama.cpp lines 3362-3368)
             let max = xval.iter().cloned().fold(0.0f32, f32::max);
             if max < GROUP_MAX_EPS {
                 scales[ib] = 0.0;
                 continue;
             }
 
-            // Initial scale using make_qp_quants (llama.cpp line 3369)
             let mut l = [0u8; 32];
             let scale = make_qp_quants(32, KMAX_Q + 1, &xval, &mut l, &weight);
             let eff_max = scale * KMAX_Q as f32;
@@ -494,7 +482,6 @@ fn quantize_iq2_xxs_impl(
                 continue;
             }
 
-            // Main scale optimization loop (llama.cpp lines 3377-3404)
             let mut best = 0.0f32;
             let mut l_final = [0i8; 32];
 
@@ -543,7 +530,6 @@ fn quantize_iq2_xxs_impl(
                 }
             }
 
-            // Off-grid handling (llama.cpp lines 3405-3430)
             let mut scale = 0.0f32;
             if best > 0.0 {
                 // First compute scale from the optimization loop result
@@ -561,7 +547,6 @@ fn quantize_iq2_xxs_impl(
                     scale = sumqx / sumq2;
                 }
 
-                // If scale is valid, refine L values (llama.cpp lines 3406-3420)
                 if scale > 0.0 {
                     let id = 1.0 / scale;
                     for k in 0..4 {
@@ -591,7 +576,6 @@ fn quantize_iq2_xxs_impl(
                         }
                     }
 
-                    // Recompute scale after refinement (llama.cpp lines 3422-3429)
                     let sumqx: f32 = (0..32)
                         .map(|i| {
                             weight[i]
@@ -624,7 +608,6 @@ fn quantize_iq2_xxs_impl(
                 }
             }
 
-            // Handle negative scale (llama.cpp lines 3431-3436)
             if scale < 0.0 {
                 scale = -scale;
                 for k in 0..4 {
@@ -632,7 +615,6 @@ fn quantize_iq2_xxs_impl(
                 }
             }
 
-            // Pack grid indices and signs (llama.cpp lines 3437-3448)
             for k in 0..4 {
                 let mut u: u16 = 0;
                 for i in 0..8 {
@@ -650,7 +632,6 @@ fn quantize_iq2_xxs_impl(
             max_scale = max_scale.max(scale);
         }
 
-        // Encode scales (llama.cpp lines 3455-3467)
         if max_scale == 0.0 {
             let qs = [0u16; 32];
             blocks.push(BlockIQ2XXS { d: f16::from_f32(0.0).to_bits(), qs });
@@ -677,7 +658,6 @@ fn quantize_iq2_xxs_impl(
     blocks
 }
 
-/// Find best neighbor for IQ2 (matching llama.cpp iq2_find_best_neighbor)
 fn find_best_neighbor_iq2(
     neighbors: &[u16],
     grid: &[u64],
@@ -763,7 +743,6 @@ fn quantize_iq2_s_impl(
         let mut scales = [0.0f32; QK_K / 16];
         let mut max_scale = 0.0f32;
 
-        // Compute sigma2 for the block (llama.cpp line 5277-5278)
         let sumx2: f32 = xbl.iter().map(|v| v * v).sum();
         let sigma2 = 2.0 * sumx2 / QK_K as f32;
 
@@ -1126,6 +1105,8 @@ fn quantize_iq2_xs_impl(
     quant_weights: Option<&[f32]>,
     dump_path: Option<&str>,
 ) -> Vec<BlockIQ2XS> {
+    const KMAX_Q_IQ2_XS: i32 = 3;
+
     assert!(x.len() % QK_K == 0);
     let nb = x.len() / QK_K;
     let mut blocks = Vec::with_capacity(nb);
@@ -1145,8 +1126,6 @@ fn quantize_iq2_xs_impl(
     // Initialize grid data
     let grid_data = IQ2GridData::new(512, &KGRID_2BIT_512, 2);
 
-    const KMAX_Q_IQ2_XS: i32 = 3; // From llama.cpp line 3574
-
     for ibl in 0..nb {
         let xbl = &x[ibl * QK_K..(ibl + 1) * QK_K];
 
@@ -1161,7 +1140,6 @@ fn quantize_iq2_xs_impl(
         let mut q2 = [0u16; 2 * (QK_K / 16)]; // 2 values per 16-element sub-block
         let mut max_scale = 0.0f32;
 
-        // Compute sigma2 for the block (llama.cpp line 3600-3602)
         let sumx2: f32 = xbl.iter().map(|v| v * v).sum();
         let sigma2 = sumx2 / QK_K as f32;
 
@@ -1175,12 +1153,10 @@ fn quantize_iq2_xs_impl(
             }
         }
 
-        // Process each sub-block of 16 values (llama.cpp line 3614)
         for ib in 0..QK_K / 16 {
             let xb = &xbl[ib * 16..(ib + 1) * 16];
             let qw = &quant_weights_slice[ib * 16..(ib + 1) * 16];
 
-            // Compute quantization weights (llama.cpp line 3617-3618)
             let mut weight = [0.0f32; 16];
             let mut waux = [0.0f32; 16];
             for i in 0..16 {
@@ -1206,7 +1182,6 @@ fn quantize_iq2_xs_impl(
                 }
             }
 
-            // Extract signs and absolute values (llama.cpp lines 3631-3652)
             let mut xval = [0.0f32; 16];
             let mut block_signs = [0u8; 2];
 
@@ -1264,7 +1239,6 @@ fn quantize_iq2_xs_impl(
                 }
             }
 
-            // Find max (llama.cpp lines 3653-3659)
             let max = xval.iter().cloned().fold(0.0f32, f32::max);
             let mut l = [0i8; 16];
             if max < GROUP_MAX_EPS {
@@ -1272,7 +1246,6 @@ fn quantize_iq2_xs_impl(
                 continue;
             }
 
-            // Scale optimization loop (llama.cpp lines 3660-3693)
             let mut best = 0.0f32;
             let mut scale = max / (2 * KMAX_Q_IQ2_XS - 1) as f32;
             let mut is_on_grid = [true; 2];
@@ -1327,7 +1300,6 @@ fn quantize_iq2_xs_impl(
                 }
             }
 
-            // Off-grid refinement (llama.cpp lines 3694-3721)
             let mut n_not_ongrid = 0;
             for k in 0..2 {
                 if !is_on_grid[k] {
@@ -1374,7 +1346,6 @@ fn quantize_iq2_xs_impl(
                 }
             }
 
-            // Handle negative scale (llama.cpp lines 3722-3725)
             if scale < 0.0 {
                 scale = -scale;
                 for k in 0..2 {
@@ -1382,7 +1353,6 @@ fn quantize_iq2_xs_impl(
                 }
             }
 
-            // Pack grid indices and signs (llama.cpp lines 3726-3737)
             for k in 0..2 {
                 let mut u: u16 = 0;
                 for i in 0..8 {
@@ -1404,7 +1374,6 @@ fn quantize_iq2_xs_impl(
             max_scale = max_scale.max(scale);
         }
 
-        // Pack final block (llama.cpp lines 3743-3757)
         if max_scale == 0.0 {
             let block = BlockIQ2XS { d: 0, qs: [0; 32], scales: [0; 8] };
             blocks.push(block);
@@ -1443,10 +1412,8 @@ fn quantize_iq2_xs_impl(
 }
 
 // ============================================================================
-// IQ3_XXS - Precise port from llama.cpp lines 4064-4290
 // ============================================================================
 
-/// Quantize FP32 to IQ3_XXS (matching llama.cpp exactly)
 pub fn quantize_iq3_xxs(
     x: &[f32],
     quant_weights: Option<&[f32]>,
@@ -1682,7 +1649,7 @@ pub fn quantize_iq3_xxs(
             continue;
         }
 
-        let d = max_scale / 31.0 * 1.0125; // Fudge factor from llama.cpp
+        let d = max_scale / 31.0;
         let id = 1.0 / d;
         let mut block =
             BlockIQ3XXS { d: f16::from_f32(d).to_bits(), qs: [0; 96] };
@@ -1708,7 +1675,6 @@ pub fn quantize_iq3_xxs(
     blocks
 }
 
-/// Quantize FP32 to IQ3_S (matching llama.cpp exactly)
 /// Uses 512-element grid, 32-element sub-blocks
 /// Block layout: d(2) + qs(64) + qh(8) + signs(32) + scales(4) = 110 bytes
 pub fn quantize_iq3_s(
@@ -1935,7 +1901,7 @@ pub fn quantize_iq3_s(
         }
 
         // Pack final block
-        let d = max_scale / 31.0 * 1.033; // Fudge factor from llama.cpp
+        let d = max_scale / 31.0;
         block.d = f16::from_f32(d).to_bits();
         let id = 1.0 / d;
 
@@ -1955,7 +1921,6 @@ pub fn quantize_iq3_s(
 }
 
 /// Quantize FP32 to IQ1_S (simplified implementation for GPU kernel verification)
-/// Uses llama.cpp-generated data for testing
 pub fn quantize_iq1_s(
     _x: &[f32],
     _quant_weights: Option<&[f32]>,
@@ -1966,7 +1931,6 @@ pub fn quantize_iq1_s(
 }
 
 /// Quantize FP32 to IQ1_M (simplified implementation for GPU kernel verification)
-/// Uses llama.cpp-generated data for testing
 pub fn quantize_iq1_m(
     _x: &[f32],
     _quant_weights: Option<&[f32]>,

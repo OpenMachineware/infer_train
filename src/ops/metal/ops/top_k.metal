@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-// TOP_K Metal kernel - Matches llama.cpp implementation exactly
 // Algorithm: Histogram-based radix selection + atomic output
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -9,7 +8,6 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// Convert float to sortable uint (same as llama.cpp ggml_top_k_f2ui)
 static uint ggml_top_k_f2ui(float x) {
     uint y = as_type<uint>(x);
     if ((y & 0x80000000u) != 0u) {
@@ -20,7 +18,6 @@ static uint ggml_top_k_f2ui(float x) {
     return y;
 }
 
-// Struct matching llama.cpp exactly
 struct ggml_metal_kargs_top_k {
     int32_t ne00;   // number of columns (elements per row)
     int32_t ne01;   // number of rows

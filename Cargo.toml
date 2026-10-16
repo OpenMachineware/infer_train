@@ -307,3 +307,19 @@ path = "benches/f16_gemv_roofline.rs"
 [[bin]]
 name = "f16-gemv-adaptive-bench"
 path = "tools/f16_gemv_adaptive_bench.rs"
+
+[[bin]]
+name = "f16-gemv-correctness-test"
+path = "benches/f16_gemv_correctness_test.rs"
+
+[[bin]]
+name = "f16-gemv-short-correctness"
+path = "benches/f16_gemv_short_correctness.rs"
+
+[[bin]]
+name = "f16-gemv-short-perf"
+path = "benches/f16_gemv_short_perf.rs"
+
+[[bin]]
+name = "f16-gemv-vs-llama-native"
+path = "benches/f16_gemv_vs_llama_native.rs"

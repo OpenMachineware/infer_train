@@ -161,7 +161,6 @@ impl RmsNormMetalContext {
             &eps as *const f32 as *const std::ffi::c_void,
         );
 
-        // Calculate threadgroup size - match llama.cpp's pattern
         // For vec4 kernel, use hidden_dim/4; for scalar, use hidden_dim
         let ne00_t = if use_vec4 { hidden_dim / 4 } else { hidden_dim };
         let max_threads_per_group =

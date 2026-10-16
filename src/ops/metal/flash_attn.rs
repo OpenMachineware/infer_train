@@ -116,7 +116,6 @@ impl FlashAttnMetalContext {
             )?;
 
         // Create function constants for vec kernel (decode case)
-        // Using llama.cpp's constant indices (FC_FLASH_ATTN_EXT_VEC = 1000)
         // FC_FLASH_ATTN_EXT_VEC + 0 = has_mask
         // FC_FLASH_ATTN_EXT_VEC + 1 = has_sinks
         // FC_FLASH_ATTN_EXT_VEC + 2 = has_bias
@@ -362,18 +361,15 @@ impl FlashAttnMetalContext {
             }
         }
 
-        // Setup arguments (matching llama.cpp's layout)
         // Q layout for decode: [n_heads, head_dim] with ne01=1, ne02=n_heads
         // The test passes q as a flat [n_heads * head_dim] array
         // Strides: nb01 = head_dim * 4, nb02 = head_dim * 4, nb03 = n_heads * head_dim * 4
         let ne01 = 1; // Single query for decode (not n_heads!)
 
-        // Calculate parallelization parameters (matching llama.cpp)
         let ncpsg: u32 = 32; // cache items per simdgroup (C parameter in kernel)
         let nwg: u32 = 32; // workgroups
         let mut nsg: u32 = 1; // simdgroups per workgroup
 
-        // Adjust nsg based on seq_len (matching llama.cpp's logic)
         // Double nsg while 2*nwg*nsg*ncpsg < seq_len and nsg < 4
         while 2 * nwg * nsg * ncpsg < seq_len && nsg < 4 {
             nsg *= 2;
@@ -439,7 +435,6 @@ impl FlashAttnMetalContext {
         // buffer 7: dst
         encoder.set_buffer(7, Some(&dst_buffer), 0);
 
-        // Calculate grid and threadgroup sizes (matching llama.cpp's parallelization)
         // Grid: [(ne01 + Q - 1) / Q, ne02, ne03 * nwg]
         // For decode: ne01=1, Q=1, ne02=n_heads, ne03=1
         // Grid becomes: [1, n_heads, nwg]
@@ -455,7 +450,6 @@ impl FlashAttnMetalContext {
             MTLSize { width: (32 * args.nsg) as u64, height: 1, depth: 1 };
 
         // Allocate threadgroup memory
-        // Shared memory layout (matches llama.cpp):
         // For C=32, NE=1:
         // - sq4:  Q * PK * sizeof(half)  = 1 * 128 * 2 = 256 bytes
         // - ss:   NSG * SH * sizeof(float) where SH = 4*Q*C = 4*1*32 = 128 floats = 512 bytes

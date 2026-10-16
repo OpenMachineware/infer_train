@@ -1,5 +1,4 @@
 // Optimized SSM Scan kernel for Mamba architecture
-// Uses shared memory batching like llama.cpp for better performance
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 

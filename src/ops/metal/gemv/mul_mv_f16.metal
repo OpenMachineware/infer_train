@@ -40,7 +40,6 @@ kernel void kernel_mul_mv_f16_f32(
 }
 
 // Optimized F16 GEMV using simdgroup for better performance
-// Similar to llama.cpp's approach but self-written
 // Uses simdgroup to process multiple elements in parallel
 
 #define SIMD_SIZE 32

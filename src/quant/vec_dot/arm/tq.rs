@@ -30,7 +30,6 @@ unsafe fn vdotq_s32_manual(
 }
 
 /// TQ2_0 × Q8_K vector dot product (NEON implementation)
-/// Match llama.cpp's algorithm exactly: individual vld1q_s8 loads, single loop structure
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn vec_dot_tq2_0_q8_k_neon(
     n: usize,
@@ -50,12 +49,10 @@ pub unsafe fn vec_dot_tq2_0_q8_k_neon(
         let mut sumi1 = vdupq_n_s32(0);
 
         // Process 64 bytes of Q2 in two iterations (j=0 and j=32)
-        // Match llama.cpp's loop structure exactly
         for j in (0..64).step_by(32) {
             let qx0 = vld1q_u8(q2.add(j));
             let qx1 = vld1q_u8(q2.add(j + 16));
 
-            // Shift and mask - match llama.cpp's order
             let qx2 = vshrq_n_u8(qx0, 2);
             let qx3 = vshrq_n_u8(qx1, 2);
             let qx4 = vshrq_n_u8(qx0, 4);
@@ -72,7 +69,6 @@ pub unsafe fn vec_dot_tq2_0_q8_k_neon(
             let sqx6 = vreinterpretq_s8_u8(vandq_u8(qx6, m3));
             let sqx7 = vreinterpretq_s8_u8(vandq_u8(qx7, m3));
 
-            // Load Q8 values - match llama.cpp's individual loads
             // Offset: j*4 + offset
             let qy0 = vld1q_s8(q8.add(j * 4));
             let qy1 = vld1q_s8(q8.add(j * 4 + 16));

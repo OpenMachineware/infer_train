@@ -2,7 +2,6 @@
 // Copyright 2026 Jia Liu
 
 // KV Cache: multi-format key-value storage for attention
-// Reference: llama.cpp llama_kv_cache
 
 #![allow(dead_code)]
 

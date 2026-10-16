@@ -3,7 +3,6 @@
 
 //! Compute graph infrastructure for unified CPU/GPU execution.
 //!
-//! This module provides a llama.cpp-style architecture:
 //! - Storage abstraction for CPU/Metal backends
 //! - ComputeGraph for operation scheduling
 //! - Backend trait for execution

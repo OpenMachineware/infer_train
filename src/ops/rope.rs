@@ -2,7 +2,6 @@
 // Copyright 2026 Jia Liu
 
 // RoPE (Rotary Position Embedding) with precomputed cache
-// Matches llama.cpp's ggml_compute_forward_rope
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RopeType {
@@ -54,7 +53,6 @@ impl RopeCache {
         Self { cos_sin: vec![0.0; n_dims], n_dims, last_pos: -1 }
     }
 
-    /// Initialize cache for a position (matches llama.cpp's ggml_rope_cache_init)
     pub fn init(&mut self, pos: usize, params: &RopeParams) {
         if self.last_pos == pos as i64 {
             return; // Cache already valid
@@ -117,7 +115,6 @@ fn rope_yarn_ramp(low: f32, high: f32, i0: i64) -> f32 {
     1.0 - 1.0_f32.min(0.0_f32.max(y))
 }
 
-// Compute cos and sin with YaRN (matches llama.cpp's rope_yarn)
 #[inline]
 fn rope_yarn(
     theta_extrap: f32,
@@ -141,7 +138,6 @@ fn rope_yarn(
     (theta.cos() * scale, theta.sin() * scale)
 }
 
-/// RoPE NeoX with precomputed cache (matches llama.cpp's rotate_pairs)
 pub fn rope_neox_with_cache(cache: &RopeCache, src: &[f32], dst: &mut [f32]) {
     let n_dims_half = cache.n_dims / 2;
 
@@ -177,7 +173,6 @@ pub fn rope_neox_batch_with_cache(
     let params_adjusted = RopeParams { n_dims, ..params.clone() };
 
     for (i, &pos) in positions.iter().enumerate() {
-        // Only init cache if position changed (matches llama.cpp's last_i2 check)
         if last_pos != pos as i64 {
             cache.init(pos as usize, &params_adjusted);
             last_pos = pos as i64;
@@ -192,7 +187,6 @@ pub fn rope_neox_batch_with_cache(
 
 // Legacy functions without cache (kept for compatibility)
 
-// Main RoPE NeoX - scalar implementation matching llama.cpp
 pub fn rope_neox(
     src: &[f32],
     dst: &mut [f32],

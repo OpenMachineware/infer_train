@@ -2,8 +2,6 @@
 // Copyright 2026 Jia Liu
 
 // FP16 lookup tables for activation functions
-// Matches llama.cpp's ggml_table_gelu_f16 and ggml_table_gelu_quick_f16
-// Tables are initialized at runtime, same as llama.cpp
 
 use half::f16;
 use std::sync::OnceLock;
@@ -67,7 +65,6 @@ pub fn gelu_f32_table(x: &[f32], dst: &mut [f32]) {
     }
 }
 
-/// GELU for F16 input - direct table lookup (no conversion, matches llama.cpp)
 pub fn gelu_f16_table(x: &[f16], dst: &mut [f16]) {
     let table = get_gelu_table();
     let n = x.len().min(dst.len());
@@ -89,7 +86,6 @@ pub fn gelu_quick_f32_table(x: &[f32], dst: &mut [f32]) {
     }
 }
 
-/// GELU-Quick for F16 input - direct table lookup (no conversion, matches llama.cpp)
 pub fn gelu_quick_f16_table(x: &[f16], dst: &mut [f16]) {
     let table = get_gelu_quick_table();
     let n = x.len().min(dst.len());

@@ -87,7 +87,6 @@ pub fn dequant_q5_k(data: &[u8], out: &mut [f32], count: usize) {
         let d = f16::from_bits(block.d).to_f32();
         let dmin = f16::from_bits(block.dmin).to_f32();
 
-        // Helper function to extract scale and min (matching llama.cpp's get_scale_min_k4)
         fn get_scale_min_k4(j: usize, q: &[u8; 12]) -> (f32, f32) {
             let (d, m) = if j < 4 {
                 (q[j] & 63, q[j + 4] & 63)
@@ -99,7 +98,6 @@ pub fn dequant_q5_k(data: &[u8], out: &mut [f32], count: usize) {
             (d as f32, m as f32)
         }
 
-        // Process 4 iterations of 64 elements each (matching llama.cpp reference)
         // u1 and u2 shift left by 2 each iteration to select different qh bits
         let mut u1: u8 = 1;
         let mut u2: u8 = 2;
@@ -107,7 +105,6 @@ pub fn dequant_q5_k(data: &[u8], out: &mut [f32], count: usize) {
         let mut is: usize = 0;
 
         for _j in 0..4 {
-            // Get scales for this 64-element chunk (using llama.cpp's get_scale_min_k4)
             let (scale0, min0) = get_scale_min_k4(is, &block.scales);
             let (scale1, min1) = get_scale_min_k4(is + 1, &block.scales);
 

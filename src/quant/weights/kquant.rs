@@ -2,7 +2,6 @@
 // Copyright 2026 Jia Liu
 
 // K-quant formats: Q2_K, Q3_K, Q4_K, Q5_K, Q6_K
-// Based on llama.cpp's quantization
 
 use crate::quant::types::*;
 use half::f16;
@@ -224,7 +223,6 @@ pub fn quantize_q6_k(x: &[f32]) -> Vec<BlockQ6K> {
         let mut ql = [0u8; 128];
         let mut qh = [0u8; 64];
 
-        // Pack according to llama.cpp pattern:
         // Process in chunks of 128 values
         // Each chunk: ql[0..63] and qh[0..31], then ql[64..127] and qh[32..63]
         for chunk in 0..2 {

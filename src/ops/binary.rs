@@ -2,8 +2,6 @@
 // Copyright 2026 Jia Liu
 
 // Binary operations: ADD, SUB, MUL, DIV
-// Matches llama.cpp's binary-ops.cpp template approach
-// On macOS, uses vDSP (Accelerate) for F32 - same as llama.cpp
 
 use half::f16;
 
@@ -115,7 +113,6 @@ pub fn binary_broadcast_scalar<S0, S1, D, OP>(
 }
 
 // ============================================================================
-// macOS: Use vDSP (Accelerate) - same as llama.cpp
 // ============================================================================
 
 #[cfg(target_os = "macos")]
@@ -284,7 +281,6 @@ pub fn div_f32(src0: &[f32], src1: &[f32], dst: &mut [f32]) {
 }
 
 // ============================================================================
-// F16 binary operations - scalar (same as llama.cpp)
 // ============================================================================
 
 pub fn add_f16(src0: &[f16], src1: &[f16], dst: &mut [f16]) {

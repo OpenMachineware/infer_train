@@ -144,7 +144,6 @@ kernel void kernel_mul_mv_iq4_nl_f32(
 }
 
 // ===== TQ2_0 kernel =====
-// Based on llama.cpp mul_mv.metal kernel_mul_mv_tq2_0_f32_impl
 #define N_R0_TQ2_0 2
 #define N_SG_TQ2_0 2
 
@@ -357,7 +356,6 @@ kernel void kernel_mul_mv_tq1_0_f32(
 }
 
 // ===== IQ4_XS kernel =====
-// Based on llama.cpp mul_mv.metal kernel_mul_mv_iq4_xs_f32_impl
 #define N_R0_IQ4_XS 2
 
 struct block_iq4_xs {

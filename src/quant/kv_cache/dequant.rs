@@ -131,7 +131,6 @@ pub fn dequantize_row_q8_0_neon(x: &[BlockQ8_0], y: &mut [f32]) {
     let nb = x.len();
     assert!(y.len() >= nb * QK);
 
-    // Use scalar for small data - matches llama.cpp exactly
     if nb < 128 {
         for i in 0..nb {
             let d = fp16_to_fp32(x[i].d);
@@ -257,7 +256,6 @@ pub fn dequantize_row_q5_0(x: &[BlockQ5_0], y: &mut [f32]) {
             | ((block.qh[2] as u32) << 16)
             | ((block.qh[3] as u32) << 24);
 
-        // llama.cpp layout: low nibbles go to positions 0-15, high nibbles to 16-31
         for j in 0..QK / 2 {
             // Extract 5th bits
             let xh0 = ((qh >> j) & 1) << 4;

@@ -194,7 +194,6 @@ void dequantize_q8_0_t4(device const block_q8_0 *xb, short il, thread type4 & re
     reg = (type4) (float4(qs[il]) * d);
 }
 
-// IQ4_NL lookup table (from llama.cpp)
 constant float kvalues_iq4nl[16] = {
     -127.0, -104.0, -83.0, -65.0, -49.0, -35.0, -22.0, -10.0,
     1.0, 13.0, 25.0, 38.0, 53.0, 69.0, 89.0, 113.0
@@ -1051,7 +1050,6 @@ kernel void flash_decode_attention_adaptive<block_q8_0, block_q8_0, float4, dequ
     threadgroup float *, uint3, ushort3, ushort, ushort);
 
 // ============================================================================
-// Multi-workgroup Decode kernel: matches llama.cpp's approach
 // Uses NWG=32 workgroups, NSG=2 SIMD groups per workgroup
 // Partial results are combined via reduction kernel
 // ============================================================================

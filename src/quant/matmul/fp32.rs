@@ -11,7 +11,6 @@ use std::arch::aarch64::*;
 /// - B: [n, k] in row-major (ldb = k)
 /// - C: [n, m] in row-major (ldc = m)
 ///
-/// Uses tinyBLAS approach from llama.cpp: block tiling with FMLA
 #[target_feature(enable = "neon")]
 pub unsafe fn sgemm(
     a: &[f32],
@@ -38,7 +37,6 @@ pub unsafe fn sgemm(
     // Block tiling parameters for ARM NEON (16 registers)
     // RM = 4 (rows per block), RN = 3 (cols per block)
     // This uses 4*3 + 4 + 3 = 19 > 16 registers, so we need careful scheduling
-    // Actually llama.cpp uses RN=3 with accumulator reuse
 
     const RM: usize = 4; // Process 4 rows at a time
     const RN: usize = 3; // Process 3 columns at a time
@@ -156,7 +154,6 @@ pub unsafe fn sgemm_optimized(
         return;
     }
 
-    // llama.cpp's tinyBLAS uses accumulator vectors that persist across k iterations
     // This is the key optimization: accumulate in SIMD registers
 
     const RM: usize = 4;
@@ -232,7 +229,6 @@ unsafe fn gemm_bloc_optimized(
         j0 + 2 < j1, // j2 valid?
     ];
 
-    // Initialize accumulators - use fixed 3x4 layout matching llama.cpp
     let mut cv0 = [
         vdupq_n_f32(0.0),
         vdupq_n_f32(0.0),

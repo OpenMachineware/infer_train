@@ -524,7 +524,6 @@ fn dequant_iq4_xs(data: &[u8], out: &mut [f32], count: usize) {
     use crate::quant::types::BlockIQ4XS;
     const QK_K: usize = 256;
 
-    // IQ4_NL grid values (kvalues_iq4nl from llama.cpp)
     const KVALUES: [f32; 16] = [
         -127.0, -104.0, -83.0, -65.0, -49.0, -35.0, -22.0, -10.0, 1.0, 13.0,
         25.0, 38.0, 53.0, 69.0, 89.0, 113.0,
@@ -542,7 +541,6 @@ fn dequant_iq4_xs(data: &[u8], out: &mut [f32], count: usize) {
         let d = f16::from_bits(block.d).to_f32();
 
         // Process 8 sub-blocks of 32 elements each
-        // Following llama.cpp: QK_K/32 = 8 sub-blocks
         for ib in 0..8 {
             // Extract scale for this sub-block (6-bit value from scales_l + scales_h)
             // ls = ((scales_l[ib/2] >> 4*(ib%2)) & 0xf) | (((scales_h >> 2*ib) & 3) << 4)

@@ -5,7 +5,6 @@
 
 use std::arch::aarch64::*;
 
-// Constants for exp approximation (from llama.cpp)
 const EXP_R: f32 = 12582912.0;
 const EXP_C1: f32 = 1.442695;
 const EXP_POLY_0: f32 = 0.9999998;

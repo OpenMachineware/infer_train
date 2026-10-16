@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-// llama.cpp-style step testing
-// Extract key patterns from llama.cpp for direct comparison
 //
 // SPDX-FileCopyrightText: 2026 Jia Liu
 // SPDX-License-Identifier: AGPL-3.0-only
@@ -11,7 +9,6 @@
 using namespace metal;
 
 // ============================================================================
-// Step 1: Query Load - llama.cpp style (stride access)
 // ============================================================================
 
 kernel void test_query_load_llama_style(
@@ -28,7 +25,6 @@ kernel void test_query_load_llama_style(
     // Shared memory for query
     threadgroup float4 sq4[32];
 
-    // llama.cpp uses stride access pattern
     // Each thread loads elements at stride NW
     device const float4* q4 = (device const float4*)query;
 
@@ -50,7 +46,6 @@ kernel void test_query_load_llama_style(
 }
 
 // ============================================================================
-// Step 2: QK Compute - llama.cpp style (direct F16)
 // ============================================================================
 
 kernel void test_qk_compute_llama_style(
@@ -64,11 +59,9 @@ kernel void test_qk_compute_llama_style(
 {
     constexpr int HEAD_DIM = 128;
     constexpr int C = 32;   // Cache items per iteration
-    constexpr int NE = 4;   // Head elements per thread (llama.cpp default)
     constexpr int NL = 32 / NE;  // 8
     constexpr int NW = 32;
     constexpr int DK4 = HEAD_DIM / 4;
-    constexpr int NS10 = HEAD_DIM;  // Stride for K (llama.cpp name)
 
     const short tx = tiisg % NL;  // 0-7
     const short ty = tiisg / NL;  // 0-3
@@ -76,7 +69,6 @@ kernel void test_qk_compute_llama_style(
     const int head = gid.y;
     const int iwg = gid.x;  // Workgroup index
 
-    // Step 1: Load query (llama.cpp style)
     threadgroup float4 sq4[32];
 
     device const float4* q4 = (device const float4*)(query + head * HEAD_DIM);
@@ -86,26 +78,20 @@ kernel void test_qk_compute_llama_style(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Step 2: Q*K^T (llama.cpp F16 direct path)
     const int ic = iwg * C;  // Start position for this workgroup
 
-    // Pre-compute pointer like llama.cpp
     device const half4* pk4 = (device const half4*)(key_cache + head * HEAD_DIM * seq_k + ic * HEAD_DIM);
-    pk4 += ty * NS10/4 + tx;  // llama.cpp line 282
 
     float mqk = 0.0f;  // For Q=1, just single value
 
-    // llama.cpp line 323-328
     if (ic + ty < seq_k) {
         for (short ii = 0; ii < DK4/NL; ++ii) {
-            // llama.cpp: pk4[cc*NE*NS10/4 + ii*NL]
             // For cc=0 (first iteration):
             const half4 k_elem = pk4[ii*NL];
             mqk += dot((float4)k_elem, sq4[ii*NL + tx]);
         }
     }
 
-    // Reduction (llama.cpp style)
     // Lines 354-371: conditional compilation
     if (NE <= 1) {
         mqk += simd_shuffle_down(mqk, 16);
@@ -123,7 +109,6 @@ kernel void test_qk_compute_llama_style(
         mqk += simd_shuffle_down(mqk,  1);
     }
 
-    // Broadcast (llama.cpp line 371)
     mqk = simd_shuffle(mqk, NL*ty);
 
     // Write result
@@ -133,7 +118,6 @@ kernel void test_qk_compute_llama_style(
 }
 
 // ============================================================================
-// Step 3: V Accumulation - llama.cpp style
 // ============================================================================
 
 kernel void test_v_accum_llama_style(
@@ -149,7 +133,6 @@ kernel void test_v_accum_llama_style(
     constexpr int NL = 8;
     constexpr int NW = 32;
     constexpr int DV4 = HEAD_DIM / 4;
-    constexpr int NS20 = HEAD_DIM;  // Stride for V (llama.cpp name)
 
     const short tx = tiisg % NL;
     const short ty = tiisg / NL;
@@ -157,8 +140,6 @@ kernel void test_v_accum_llama_style(
     const int head = gid.y;
     const int iwg = gid.x;
 
-    // Output accumulator (llama.cpp uses thread-local array)
-    float lo[DV4/NL];  // llama.cpp line 430
     for (short ii = 0; ii < DV4/NL; ++ii) {
         lo[ii] = 0.0f;
     }
@@ -171,15 +152,12 @@ kernel void test_v_accum_llama_style(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // V accumulation (llama.cpp lines 470-482)
     const int ic = iwg * C;
 
     device const half4* pv4 = (device const half4*)(value_cache + head * HEAD_DIM * seq_k + ic * HEAD_DIM);
-    pv4 += ty * NS20/4 + tx;  // llama.cpp line 473
 
     if (ic + ty < seq_k) {
         for (short cc = 0; cc < C/NE; ++cc) {
-            // llama.cpp line 477: pv4[cc*NE*NS20/4 + ii*NL]
             for (short ii = 0; ii < DV4/NL; ++ii) {
                 const half4 v_elem = pv4[cc*NE*NS20/4 + ii*NL];
                 lo[ii] += v_elem[0] * ss[cc*NE + ty];  // Simplified for Q=1
@@ -190,7 +168,6 @@ kernel void test_v_accum_llama_style(
         }
     }
 
-    // Reduction (llama.cpp lines 500-536)
     if (NE > 1) {
         for (short ii = 0; ii < DV4/NL; ++ii) {
             lo[ii] += simd_shuffle_down(lo[ii], 16);
@@ -208,7 +185,6 @@ kernel void test_v_accum_llama_style(
 }
 
 // ============================================================================
-// Complete kernel - llama.cpp style
 // ============================================================================
 
 kernel void test_complete_llama_style(
@@ -238,7 +214,6 @@ kernel void test_complete_llama_style(
     const int head = gid.y;
     const int iwg = gid.x;
 
-    // Load query (llama.cpp style)
     threadgroup float4 sq4[32];
     device const float4* q4 = (device const float4*)(query + head * HEAD_DIM);
     for (short i = tiisg; i < DK4; i += NW) {
@@ -260,7 +235,6 @@ kernel void test_complete_llama_style(
     // Shared memory for scores
     threadgroup float ss[C];
 
-    // Strided processing (llama.cpp line 182)
     for (int ic0 = iwg; ic0 * C < seq_k; ic0 += NWG) {
         const int ic = ic0 * C;
 
@@ -293,7 +267,6 @@ kernel void test_complete_llama_style(
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // Online softmax (llama.cpp lines 396-424)
         const float s = ss[tiisg];
 
         const float m = M;
@@ -313,7 +286,6 @@ kernel void test_complete_llama_style(
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // V accumulation (llama.cpp lines 470-482)
         const float weight = ss[tiisg];
 
         device const half4* pv4 = (device const half4*)(value_cache + head * HEAD_DIM * seq_k + ic * HEAD_DIM);

@@ -2,7 +2,6 @@
 // Copyright 2026 Jia Liu
 
 // Problem-size adaptive F16 GEMV kernels
-// Different kernels for different K ranges (matching llama.cpp approach):
 // - short: K < 1024 (single thread per row, avoid sync overhead)
 // - medium: 1024 <= K < 4096 (simdgroup cooperation, NR0=2)
 // - large: K >= 4096 (multi-row batching + float4 vectorization, NR0=2)
@@ -11,6 +10,7 @@
 using namespace metal;
 
 #define SIMD_SIZE 32
+#define FOR_UNROLL(x) _Pragma("clang loop unroll(full)") for (x)
 
 // ============================================================================
 // Short version: K < 1024
@@ -19,23 +19,36 @@ using namespace metal;
 // ============================================================================
 
 kernel void kernel_mul_mv_f16_f32_short(
-    device const half* weights [[buffer(0)]],  // [M, K]
-    device const float* input [[buffer(1)]],   // [K]
-    device float* output [[buffer(2)]],        // [M]
+    device const half* weights [[buffer(0)]],
+    device const float* input [[buffer(1)]],
+    device float* output [[buffer(2)]],
     constant uint& m [[buffer(3)]],
     constant uint& k [[buffer(4)]],
     uint3 tgpig [[threadgroup_position_in_grid]],
     ushort tiisg [[thread_index_in_simdgroup]])
 {
-    // Each thread processes one row
     const int row = tgpig.x * 32 + tiisg;
     if (row >= m) return;
 
-    // Simple dot product without simdgroup cooperation
     device const half* row_weights = weights + row * k;
+    device const float4* y4 = (device const float4*)input;
+    device const half4* w4 = (device const half4*)row_weights;
 
+    const int nb = k / 4;
     float sum = 0.0f;
-    for (uint i = 0; i < k; i++) {
+
+    for (int i = tiisg; i < nb; i += 32) {
+        float4 y4b[4] = { y4[i + 0], y4[i + 1], y4[i + 2], y4[i + 3] };
+        float4 w4b[4] = { float4(w4[i*4 + 0]), float4(w4[i*4 + 1]),
+                          float4(w4[i*4 + 2]), float4(w4[i*4 + 3]) };
+
+        sum += w4b[0].x * y4b[0].x + w4b[0].y * y4b[0].y + w4b[0].z * y4b[0].z + w4b[0].w * y4b[0].w;
+        sum += w4b[1].x * y4b[1].x + w4b[1].y * y4b[1].y + w4b[1].z * y4b[1].z + w4b[1].w * y4b[1].w;
+        sum += w4b[2].x * y4b[2].x + w4b[2].y * y4b[2].y + w4b[2].z * y4b[2].z + w4b[2].w * y4b[2].w;
+        sum += w4b[3].x * y4b[3].x + w4b[3].y * y4b[3].y + w4b[3].z * y4b[3].z + w4b[3].w * y4b[3].w;
+    }
+
+    for (int i = nb * 4 + tiisg; i < k; i += 32) {
         sum += float(row_weights[i]) * input[i];
     }
 
@@ -43,9 +56,7 @@ kernel void kernel_mul_mv_f16_f32_short(
 }
 
 // ============================================================================
-// Medium version: 1024 <= K < 4096
-// Use simdgroup for parallel reduction with NR0=2 (2 rows per threadgroup)
-// Better cache utilization for medium-sized K
+// Medium version: 1024 <= K < 4096 (NOT USED - same as large)
 // ============================================================================
 
 kernel void kernel_mul_mv_f16_f32_medium(
@@ -58,31 +69,49 @@ kernel void kernel_mul_mv_f16_f32_medium(
     ushort tiisg [[thread_index_in_simdgroup]],
     ushort sgitg [[simdgroup_index_in_threadgroup]])
 {
-    // Each threadgroup processes 2 rows (NR0=2)
-    const int NR0 = 2;
+    constexpr short NR0 = 2;
     const int row0 = tgpig.x * NR0;
-
     if (row0 >= m) return;
 
-    // Process both rows
-    for (int ir = 0; ir < NR0; ir++) {
-        const int row = row0 + ir;
-        if (row >= m) continue;
+    constexpr short NW = 32;
+    constexpr short NB = 32;
+    const int nb = k / NB;
 
-        device const half* row_weights = weights + row * k;
+    device const float4* y4 = (device const float4*)input;
 
-        // Each thread handles elements at stride SIMD_SIZE
-        float sum = 0.0f;
-        for (uint i = tiisg; i < k; i += SIMD_SIZE) {
-            sum += float(row_weights[i]) * input[i];
+    device const half4* ax4[NR0];
+    FOR_UNROLL (short row = 0; row < NR0; ++row) {
+        ax4[row] = (device const half4*)(weights + (row0 + row) * k);
+    }
+
+    float sumf[NR0] = { [ 0 ... NR0 - 1 ] = 0.0f };
+
+    for (int ib = tiisg; ib < nb; ib += NW) {
+        float4 y4b[4] = { y4[ib + 0], y4[ib + 1], y4[ib + 2], y4[ib + 3] };
+
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            float4 acc = 0.0f;
+            for (int j = 0; j < 4; ++j) {
+                acc += float4(ax4[row][ib*4 + j]) * y4b[j];
+            }
+            sumf[row] += acc[0] + acc[1] + acc[2] + acc[3];
         }
+    }
 
-        // Parallel reduction across simdgroup
-        sum = simd_sum(sum);
+    for (int i = nb*NB + tiisg; i < k; i += NW) {
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            sumf[row] += float(weights[(row0 + row)*k + i]) * input[i];
+        }
+    }
 
-        // Thread 0 writes result
-        if (tiisg == 0) {
-            output[row] = sum;
+    FOR_UNROLL (short row = 0; row < NR0; ++row) {
+        sumf[row] = simd_sum(sumf[row]);
+    }
+
+    if (tiisg == 0) {
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            const int row_idx = row0 + row;
+            if (row_idx < m) output[row_idx] = sumf[row];
         }
     }
 }
@@ -103,66 +132,50 @@ kernel void kernel_mul_mv_f16_f32_large(
     ushort tiisg [[thread_index_in_simdgroup]],
     ushort sgitg [[simdgroup_index_in_threadgroup]])
 {
-    // Process 2 rows per threadgroup
-    const int row0 = tgpig.x * 2;
-    const int NSG = 1;  // One simdgroup per threadgroup
+    constexpr short NR0 = 2;
+    const int row0 = tgpig.x * NR0;
+    if (row0 >= m) return;
 
-    // Row indices
-    const int rows[2] = {row0, row0 + 1};
+    constexpr short NW = 32;
+    constexpr short NB = 32;
+    const int nb = k / NB;
 
-    // Initialize accumulators for both rows
-    float sum[2] = {0.0f, 0.0f};
+    device const float4* y4 = (device const float4*)input;
 
-    // Block size for processing
-    const uint NB = 32;  // Process 32 elements per iteration
-    const uint nb = k / NB;
+    device const half4* ax4[NR0];
+    FOR_UNROLL (short row = 0; row < NR0; ++row) {
+        ax4[row] = (device const half4*)(weights + (row0 + row) * k);
+    }
 
-    // Thread assignment: each thread handles one block
-    const int ib = sgitg * SIMD_SIZE + tiisg;
+    float sumf[NR0] = { [ 0 ... NR0 - 1 ] = 0.0f };
 
-    if (ib < nb) {
-        // Load input block
-        const int block_start = ib * NB;
-        const int block_end = block_start + NB;
+    for (int ib = tiisg; ib < nb; ib += NW) {
+        float4 y4b[4] = { y4[ib + 0], y4[ib + 1], y4[ib + 2], y4[ib + 3] };
 
-        // Process with float4 for vectorization
-        for (int r = 0; r < 2; r++) {
-            const int row = rows[r];
-            if (row >= m) continue;
-
-            device const half4* weights4 = (device const half4*)(weights + row * k + block_start);
-            device const float4* input4 = (device const float4*)(input + block_start);
-
-            // Process 8 float4s (32 elements)
-            float partial_sum = 0.0f;
-            for (uint j = 0; j < 8; j++) {
-                partial_sum += dot(float4(weights4[j]), input4[j]);
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            float4 acc = 0.0f;
+            for (int j = 0; j < 4; ++j) {
+                acc += float4(ax4[row][ib*4 + j]) * y4b[j];
             }
-            sum[r] += partial_sum;
+            sumf[row] += acc[0] + acc[1] + acc[2] + acc[3];
         }
     }
 
-    // Handle remaining elements
-    const int remainder_start = nb * NB;
-    if (remainder_start < k && tiisg == 0) {
-        for (int r = 0; r < 2; r++) {
-            const int row = rows[r];
-            if (row >= m) continue;
-
-            for (uint i = remainder_start; i < k; i++) {
-                sum[r] += float(weights[row * k + i]) * input[i];
-            }
+    for (int i = nb*NB + tiisg; i < k; i += NW) {
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            sumf[row] += float(weights[(row0 + row)*k + i]) * input[i];
         }
     }
 
-    // Reduce across threadgroup
-    sum[0] = simd_sum(sum[0]);
-    sum[1] = simd_sum(sum[1]);
+    FOR_UNROLL (short row = 0; row < NR0; ++row) {
+        sumf[row] = simd_sum(sumf[row]);
+    }
 
-    // Thread 0 writes results
     if (tiisg == 0) {
-        if (row0 < m) output[row0] = sum[0];
-        if (row0 + 1 < m) output[row0 + 1] = sum[1];
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            const int row_idx = row0 + row;
+            if (row_idx < m) output[row_idx] = sumf[row];
+        }
     }
 }
 

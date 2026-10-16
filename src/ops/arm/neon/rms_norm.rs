@@ -30,7 +30,6 @@ pub unsafe fn rms_norm_f32(
             sum_vec = vmlaq_f32(sum_vec, v, v);
         }
 
-        // Accumulate in f64 for precision (matches llama.cpp)
         let mut sum_sq: f64 = vaddvq_f32(sum_vec) as f64;
 
         // Handle remainder

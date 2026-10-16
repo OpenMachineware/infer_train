@@ -2,7 +2,6 @@
 // Copyright 2026 Jia Liu
 
 // Self-contained GEMM kernel for all formats
-// Independent implementation, NOT copied from llama.cpp
 
 #include <metal_stdlib>
 using namespace metal;
@@ -36,7 +35,6 @@ constexpr constant static uint8_t ksigns_iq2xs[128] = {
 
 // Block structures are defined in blocks.h via GGML_COMMON_DECL_METAL
 
-// Kernel argument structure (matching llama.cpp's ggml_metal_kargs_mul_mm)
 struct ggml_metal_kargs_mul_mm {
     int32_t  ne00;   // K dimension
     int32_t  ne02;   // batch dimension
@@ -88,7 +86,6 @@ struct ggml_metal_kargs_mul_mm_id {
     int16_t  r3;
 };
 
-// Function constants for specialization (must match llama.cpp's FC_MUL_MM = 700)
 // These allow the Metal compiler to optimize at pipeline creation time
 constant bool  FC_mul_mm_bc_inp [[function_constant(700)]];
 constant bool  FC_mul_mm_bc_out [[function_constant(701)]];
@@ -124,7 +121,6 @@ static inline float decode_e8m0_scale(uint8_t e) {
     return exp2(float(e) - 127.f);
 }
 
-// Alias for llama.cpp compatibility
 static inline float e8m0_to_fp32(uint8_t e) {
     return decode_e8m0_scale(e);
 }
@@ -146,7 +142,6 @@ void dequantize_f16(device const half4x4 * src, short il, thread type4x4 & reg) 
     reg = (type4x4)(*src);
 }
 
-// Dequantize functions (from llama.cpp)
 template <typename type4x4>
 void dequantize_q4_K(device const block_q4_K * xb, short il, thread type4x4 & reg) {
     device const uchar * q = xb->qs;
@@ -270,7 +265,6 @@ void dequantize_q6_K(device const block_q6_K *xb, short il, thread type4x4 & reg
     }
 }
 
-// Standard Q dequantize functions (from llama.cpp dequantize.h)
 // Q4_0: 4-bit values with scale, symmetric quantization
 template <typename type4x4>
 void dequantize_q4_0(device const block_q4_0 * xb, short il, thread type4x4 & reg) {
@@ -464,7 +458,6 @@ void dequantize_iq4_nl(device const block_iq4_nl *xb, short il, thread type4x4 &
     }
 }
 
-// GEMM kernel template (from llama.cpp)
 template<
     typename S0, typename S0_4x4, typename S0_8x8,
     typename S1, typename S1_2x4, typename S1_8x8,

@@ -22,7 +22,6 @@ static KVALUES_IQ4NL: [i8; 16] =
 
 const QK4_NL: usize = 32;
 
-/// Helper to create uint32x4_t from 4 scalar values (matches llama.cpp ggml_vld1q_u32)
 #[target_feature(enable = "neon")]
 pub(crate) unsafe fn vld1q_u32_from_scalars(
     w: u32,
@@ -72,14 +71,12 @@ pub unsafe fn vec_dot_iq4_nl_q8_0_neon(
 
     let mut sum = 0.0f32;
 
-    // Use pointers to match llama.cpp's load pattern
     let mut x_ptr = x.as_ptr();
     let mut y_ptr = y.as_ptr();
     let x_end = x_ptr.add(nb);
 
     // Process 2 blocks at a time
     while x_ptr.add(2) <= x_end {
-        // Load Q4 bits - match llama.cpp's load pattern
         let q4bits_0 = vld1q_u8((*x_ptr).qs.as_ptr());
         let q4bits_1 = vld1q_u8((*x_ptr.add(1)).qs.as_ptr());
 
@@ -104,7 +101,6 @@ pub unsafe fn vec_dot_iq4_nl_q8_0_neon(
             q8b_1.1,
         );
 
-        // Load FP16 scales AFTER dot products - match llama.cpp's schedule
         let d0 = fp16_to_fp32((*x_ptr).d) * fp16_to_fp32((*y_ptr).d);
         let d1 =
             fp16_to_fp32((*x_ptr.add(1)).d) * fp16_to_fp32((*y_ptr.add(1)).d);
@@ -257,7 +253,6 @@ pub unsafe fn vec_dot_iq3_s_q8_k_neon(
     let nb = n / QK_K;
     let vzero = vdupq_n_s32(0);
 
-    // Masks for sign processing (matching llama.cpp k_mask1, k_mask2)
     static K_MASK1_0: [u8; 16] = [
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
         0x0c, 0x0d, 0x0e, 0x0f,
@@ -615,7 +610,6 @@ pub unsafe fn vec_dot_iq1_m_q8_k_neon(
                 [*qh.add(0), *qh.add(1), *qh.add(2), *qh.add(3)];
             qh = qh.add(4);
 
-            // Compute grid indices - match llama.cpp's inline computation
             let idx: [usize; 8] = [
                 (qs_vals[0] as usize)
                     | (((qh_vals[0] as u32) << 8) & 0x700) as usize,
@@ -690,7 +684,6 @@ pub unsafe fn vec_dot_iq1_m_q8_k_neon(
             let aux32 = ((qh32 >> 3) & 0x01010101) | ((qh32 >> 6) & 0x02020202);
             let aux8 = aux32.to_le_bytes();
 
-            // Load delta vectors using indexed memory access (match llama.cpp)
             let delta_0 = *deltas.as_ptr().add(aux8[0] as usize);
             let delta_1 = *deltas.as_ptr().add(aux8[1] as usize);
             let delta_2 = *deltas.as_ptr().add(aux8[2] as usize);

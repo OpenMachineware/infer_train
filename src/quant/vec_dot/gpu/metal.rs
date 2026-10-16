@@ -91,8 +91,8 @@ pub struct MetalContext {
     // F16 GEMV library (for transposed output layer with F16 weights)
     mv_f16_library: Library,
     mv_f16_short_pipeline: ComputePipelineState,
-    mv_f16_medium_pipeline: ComputePipelineState,
-    mv_f16_large_pipeline: ComputePipelineState,
+    mv_f16_basic_pipeline: ComputePipelineState,
+    mv_f16_4_pipeline: ComputePipelineState,
     // Cached MV pipelines - Standard Q
     mv_q1_0_pipeline: ComputePipelineState,
     mv_q2_0_pipeline: ComputePipelineState,
@@ -126,7 +126,6 @@ pub struct MetalContext {
     mv_iq2_s_split1_pipeline: ComputePipelineState,
     mv_iq3_xxs_split1_pipeline: ComputePipelineState,
     mv_iq3_s_split1_pipeline: ComputePipelineState,
-    // Templated GEMM pipelines (from llama.cpp)
     gemm_template_q4_k_pipeline: ComputePipelineState,
     gemm_template_q2_k_pipeline: ComputePipelineState,
     gemm_template_q3_k_pipeline: ComputePipelineState,
@@ -268,7 +267,6 @@ struct FlashAttnArgs {
     nwg: u32,
 }
 
-/// Function constant indices for MV kernels (from llama.cpp)
 const FC_MUL_MV_NSG: NSUInteger = 600;
 const FC_MUL_MV_NXPSG: NSUInteger = 601;
 const FC_MUL_MV_NE12: NSUInteger = 602;
@@ -319,7 +317,6 @@ impl MetalContext {
         let queue = device.new_command_queue();
 
         // Set optimization level for Metal shader compilation
-        // Enable fast math for better GPU performance (matches llama.cpp approach)
         let compile_options = metal::CompileOptions::new();
         compile_options.set_fast_math_enabled(true);
         // Note: metal-rs 0.31 doesn't expose set_optimization_level directly
@@ -406,16 +403,15 @@ impl MetalContext {
                 format!("Failed to create Q6_K transposed pipeline: {}", e)
             })?;
 
-        // Compile F16 GEMV library (problem-size adaptive kernels)
-        let mv_f16_source =
-            include_str!("../../../ops/metal/gemv/mul_mv_f16_adaptive.metal");
+        let mv_f16_kernels_source =
+            include_str!("../../../ops/metal/gemv/mul_mv_f16_kernels.metal");
         let mv_f16_library = device
-            .new_library_with_source(mv_f16_source, &compile_options)
+            .new_library_with_source(mv_f16_kernels_source, &compile_options)
             .map_err(|e| {
                 format!("Failed to compile F16 GEMV library: {}", e)
             })?;
 
-        // Create three pipelines for different K ranges
+        // Create three pipelines
         let mv_f16_short_kernel = mv_f16_library
             .get_function("kernel_mul_mv_f16_f32_short", None)
             .map_err(|e| {
@@ -427,26 +423,24 @@ impl MetalContext {
                 format!("Failed to create F16 GEMV short pipeline: {}", e)
             })?;
 
-        let mv_f16_medium_kernel = mv_f16_library
-            .get_function("kernel_mul_mv_f16_f32_medium", None)
+        let mv_f16_basic_kernel = mv_f16_library
+            .get_function("kernel_mul_mv_f16_f32", None)
             .map_err(|e| {
-                format!("Failed to get F16 GEMV medium kernel: {}", e)
+                format!("Failed to get F16 GEMV basic kernel: {}", e)
             })?;
-        let mv_f16_medium_pipeline = device
-            .new_compute_pipeline_state_with_function(&mv_f16_medium_kernel)
+        let mv_f16_basic_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_f16_basic_kernel)
             .map_err(|e| {
-                format!("Failed to create F16 GEMV medium pipeline: {}", e)
+                format!("Failed to create F16 GEMV basic pipeline: {}", e)
             })?;
 
-        let mv_f16_large_kernel = mv_f16_library
-            .get_function("kernel_mul_mv_f16_f32_large", None)
+        let mv_f16_4_kernel = mv_f16_library
+            .get_function("kernel_mul_mv_f16_f32_4", None)
+            .map_err(|e| format!("Failed to get F16 GEMV _4 kernel: {}", e))?;
+        let mv_f16_4_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_f16_4_kernel)
             .map_err(|e| {
-                format!("Failed to get F16 GEMV large kernel: {}", e)
-            })?;
-        let mv_f16_large_pipeline = device
-            .new_compute_pipeline_state_with_function(&mv_f16_large_kernel)
-            .map_err(|e| {
-                format!("Failed to create F16 GEMV large pipeline: {}", e)
+                format!("Failed to create F16 GEMV _4 pipeline: {}", e)
             })?;
 
         // Compile RMS Norm library
@@ -789,7 +783,6 @@ impl MetalContext {
             .new_compute_pipeline_state_with_function(&mv_mxfp4_kernel)
             .map_err(|e| format!("Failed to create MXFP4 pipeline: {}", e))?;
 
-        // Create templated GEMM pipelines (from llama.cpp)
         // Requires function constant specialization
         // Function constant IDs (from mul_mm.metal):
         //   700: FC_mul_mm_bc_inp (bool)
@@ -1455,8 +1448,8 @@ impl MetalContext {
             // F16 GEMV library and pipelines
             mv_f16_library,
             mv_f16_short_pipeline,
-            mv_f16_medium_pipeline,
-            mv_f16_large_pipeline,
+            mv_f16_basic_pipeline,
+            mv_f16_4_pipeline,
             // MV pipelines - Standard Q
             mv_q1_0_pipeline,
             mv_q2_0_pipeline,
@@ -1743,7 +1736,6 @@ impl MetalContext {
             &(nb as u32) as *const u32 as *const std::ffi::c_void,
         );
 
-        // Thread group configuration matching llama.cpp
         // NSG = 2 SIMD groups per threadgroup, each SIMD group has 32 threads
         // Each SIMD group processes NR0 = 4 rows
         // Total: 2 * 32 = 64 threads, processing 2 * 4 = 8 rows per threadgroup
@@ -1852,7 +1844,6 @@ impl MetalContext {
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
     }
 
-    /// Q4_0 x F32 Matrix-Vector (matching llama.cpp kernel)
     pub fn mv_q4_0_f32(
         &self,
         m: usize,
@@ -1863,7 +1854,6 @@ impl MetalContext {
         let nb = k / 32;
         let nb01 = (nb * std::mem::size_of::<BlockQ4_0>()) as u64; // Byte stride per row
 
-        // Args structure matching llama.cpp's ggml_metal_kargs_mul_mv
         #[repr(C)]
         struct MvArgs {
             ne00: i32,
@@ -2002,7 +1992,6 @@ impl MetalContext {
         encoder.set_buffer(2, Some(&input_buffer), 0);
         encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        // Thread group configuration matching llama.cpp EXACTLY
         // Q4_0: N_R0 = 4, NSG = 2
         const NSG: u64 = 2;
         const NR0: u64 = 4; // N_R0_Q4_0 = 4
@@ -3599,7 +3588,6 @@ impl MetalContext {
         Ok(output_buffer)
     }
 
-    /// Q4_K x F32 Matrix-Vector (matching llama.cpp kernel exactly)
     pub fn mv_q4_k_f32(
         &self,
         m: usize,
@@ -3610,7 +3598,6 @@ impl MetalContext {
         let nb = k / 256; // QK_K = 256
         let nb01 = (nb * std::mem::size_of::<BlockQ4K>()) as u64; // Byte stride per row
 
-        // Args structure matching llama.cpp's ggml_metal_kargs_mul_mv
         #[repr(C)]
         struct MvArgs {
             ne00: i32,
@@ -3749,7 +3736,6 @@ impl MetalContext {
         encoder.set_buffer(2, Some(&input_buffer), 0);
         encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        // Thread group configuration matching llama.cpp EXACTLY
         // Q4_K: N_R0 = 2, NSG = 2
         const NSG: u64 = 2;
         const NR0: u64 = 2; // N_R0_Q4_K = 2
@@ -3776,7 +3762,6 @@ impl MetalContext {
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
     }
 
-    /// Q5_K x F32 Matrix-Vector (matching llama.cpp kernel exactly)
     pub fn mv_q5_k_f32(
         &self,
         m: usize,
@@ -3908,7 +3893,6 @@ impl MetalContext {
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
     }
 
-    /// Q2_K x F32 Matrix-Vector (matching llama.cpp kernel exactly)
     pub fn mv_q2_k_f32(
         &self,
         m: usize,
@@ -3919,7 +3903,6 @@ impl MetalContext {
         let nb = k / 256; // QK_K = 256
         let nb01 = (nb * std::mem::size_of::<BlockQ2K>()) as u64; // Byte stride per row
 
-        // Args structure matching llama.cpp's ggml_metal_kargs_mul_mv
         #[repr(C)]
         struct MvArgs {
             ne00: i32,
@@ -4055,8 +4038,6 @@ impl MetalContext {
         encoder.set_buffer(2, Some(&input_buffer), 0);
         encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        // Thread group configuration matching llama.cpp EXACTLY
-        // For K-quant types, llama.cpp uses:
         //   threadgroup_count = ((ne01 + nr0*nsg - 1)/(nr0*nsg)), 1, 1
         //   threads_per_threadgroup = (32, nsg, 1)
         // Q2_K: N_R0 = 4, NSG = 2
@@ -4085,7 +4066,6 @@ impl MetalContext {
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
     }
 
-    /// Q6_K x F32 Matrix-Vector (matching llama.cpp kernel)
     pub fn mv_q6_k_f32(
         &self,
         m: usize,
@@ -4096,7 +4076,6 @@ impl MetalContext {
         let nb = k / 256; // QK_K = 256
         let nb01 = (nb * std::mem::size_of::<BlockQ6K>()) as u64; // Byte stride per row
 
-        // Args structure matching llama.cpp's ggml_metal_kargs_mul_mv
         #[repr(C)]
         struct MvArgs {
             ne00: i32,
@@ -4217,7 +4196,6 @@ impl MetalContext {
         encoder.set_buffer(2, Some(&input_buffer), 0);
         encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        // Thread group configuration matching llama.cpp EXACTLY
         // Q6_K: N_R0 = 2, NSG = 2
         const NSG: u64 = 2;
         const NR0: u64 = 2; // N_R0_Q6_K = 2
@@ -4240,7 +4218,6 @@ impl MetalContext {
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
     }
 
-    /// Q3_K x F32 Matrix-Vector (matching llama.cpp kernel)
     pub fn mv_q3_k_f32(
         &self,
         m: usize,
@@ -4251,7 +4228,6 @@ impl MetalContext {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ3K>()) as u64;
 
-        // Args structure matching llama.cpp's ggml_metal_kargs_mul_mv
         #[repr(C)]
         struct MvArgs {
             ne00: i32,
@@ -4372,7 +4348,6 @@ impl MetalContext {
         encoder.set_buffer(2, Some(&input_buffer), 0);
         encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        // Thread group configuration matching llama.cpp EXACTLY
         // Q3_K: N_R0 = 2, NSG = 2
         const NSG: u64 = 2;
         const NR0: u64 = 2; // N_R0_Q3_K = 2
@@ -4728,73 +4703,123 @@ impl MetalContext {
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
 
-        // Select kernel based on K value (problem-size adaptive)
-        // - K < 1024: short kernel (single thread per row)
-        // - 1024 <= K < 4096: medium kernel (NR0=2, simdgroup cooperation)
-        // - K >= 4096: large kernel (NR0=2, float4 vectorization)
-        if k < 1024 {
-            // Short kernel: each thread processes one row
+        // Parameter struct matching mul_mv_args
+        #[repr(C)]
+        struct MvArgs {
+            ne00: i32, // K
+            ne01: i32, // M (rows)
+            ne02: i32,
+            nb00: u64,
+            nb01: u64, // row stride
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32, // NR0 (2 for normal kernels, 32 for short)
+            r2: i16,
+            r3: i16,
+            nsg: i16,        // Number of simdgroups
+            ne12_batch: i16, // batch dimension
+        }
+
+        if k < 32 {
+            // Short kernel: nsg=1, nr0=32, each thread processes one row
             encoder.set_compute_pipeline_state(&self.mv_f16_short_pipeline);
-            let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
-            let thread_group_count = MTLSize {
-                width: ((m + 255) / 256) as u64,
-                height: 1,
-                depth: 1,
+
+            let args = MvArgs {
+                ne00: k as i32,
+                ne01: m as i32,
+                ne02: 1,
+                nb00: 2, // sizeof(half)
+                nb01: (k * 2) as u64,
+                nb02: 0,
+                nb03: 0,
+                ne10: k as i32,
+                ne11: 1,
+                ne12: 1,
+                nb10: 4, // sizeof(float)
+                nb11: (k * 4) as u64,
+                nb12: 0,
+                nb13: 0,
+                ne0: m as i32,
+                ne1: 1,
+                nr0: 32,
+                r2: 1,
+                r3: 1,
+                nsg: 1, // NSG=1 for short kernel
+                ne12_batch: 1,
             };
-            encoder.set_buffer(0, Some(weights_buffer), 0);
-            encoder.set_buffer(1, Some(input_buffer), 0);
-            encoder.set_buffer(2, Some(&output_buffer), 0);
-            encoder.set_bytes(
-                3,
-                4,
-                &m as *const usize as *const std::ffi::c_void,
-            );
-            encoder.set_bytes(
-                4,
-                4,
-                &k as *const usize as *const std::ffi::c_void,
-            );
-            encoder
-                .dispatch_thread_groups(thread_group_count, thread_group_size);
-        } else if k < 4096 {
-            // Medium kernel: each threadgroup processes 2 rows (NR0=2)
-            encoder.set_compute_pipeline_state(&self.mv_f16_medium_pipeline);
+
             let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
             let thread_group_count =
-                MTLSize { width: ((m + 1) / 2) as u64, height: 1, depth: 1 };
+                MTLSize { width: ((m + 31) / 32) as u64, height: 1, depth: 1 };
+
             encoder.set_buffer(0, Some(weights_buffer), 0);
             encoder.set_buffer(1, Some(input_buffer), 0);
             encoder.set_buffer(2, Some(&output_buffer), 0);
             encoder.set_bytes(
                 3,
-                4,
-                &m as *const usize as *const std::ffi::c_void,
-            );
-            encoder.set_bytes(
-                4,
-                4,
-                &k as *const usize as *const std::ffi::c_void,
+                std::mem::size_of::<MvArgs>() as u64,
+                &args as *const MvArgs as *const std::ffi::c_void,
             );
             encoder
                 .dispatch_thread_groups(thread_group_count, thread_group_size);
         } else {
-            // Large kernel: each threadgroup processes 2 rows
-            encoder.set_compute_pipeline_state(&self.mv_f16_large_pipeline);
-            let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+            let nsg = std::cmp::min(4, (k + 127) / 128);
+            let use_4 = k % 4 == 0; // Use float4 version if K % 4 == 0
+
+            let pipeline = if use_4 {
+                &self.mv_f16_4_pipeline
+            } else {
+                &self.mv_f16_basic_pipeline
+            };
+
+            encoder.set_compute_pipeline_state(pipeline);
+
+            let args = MvArgs {
+                ne00: k as i32,
+                ne01: m as i32,
+                ne02: 1,
+                nb00: 2,
+                nb01: (k * 2) as u64,
+                nb02: 0,
+                nb03: 0,
+                ne10: k as i32,
+                ne11: 1,
+                ne12: 1,
+                nb10: 4,
+                nb11: (k * 4) as u64,
+                nb12: 0,
+                nb13: 0,
+                ne0: m as i32,
+                ne1: 1,
+                nr0: 2, // NR0=2 for normal kernels
+                r2: 1,
+                r3: 1,
+                nsg: nsg as i16, // NSG from calculation
+                ne12_batch: 1,
+            };
+
+            // NSG simdgroups = NSG * 32 threads
+            let thread_group_size =
+                MTLSize { width: (nsg * 32) as u64, height: 1, depth: 1 };
             let thread_group_count =
                 MTLSize { width: ((m + 1) / 2) as u64, height: 1, depth: 1 };
+
             encoder.set_buffer(0, Some(weights_buffer), 0);
             encoder.set_buffer(1, Some(input_buffer), 0);
             encoder.set_buffer(2, Some(&output_buffer), 0);
             encoder.set_bytes(
                 3,
-                4,
-                &m as *const usize as *const std::ffi::c_void,
-            );
-            encoder.set_bytes(
-                4,
-                4,
-                &k as *const usize as *const std::ffi::c_void,
+                std::mem::size_of::<MvArgs>() as u64,
+                &args as *const MvArgs as *const std::ffi::c_void,
             );
             encoder
                 .dispatch_thread_groups(thread_group_count, thread_group_size);
@@ -4807,7 +4832,6 @@ impl MetalContext {
         Ok(output_buffer)
     }
 
-    /// IQ4_NL x F32 Matrix-Vector (matching llama.cpp kernel)
     pub fn mv_iq4_nl_f32(
         &self,
         m: usize,
@@ -5412,7 +5436,6 @@ impl MetalContext {
         Ok(output_buffer)
     }
 
-    /// TQ2_0 x F32 Matrix-Vector (matching llama.cpp kernel)
     pub fn mv_tq2_0_f32(
         &self,
         m: usize,
@@ -5523,7 +5546,6 @@ impl MetalContext {
         Ok(unsafe { std::slice::from_raw_parts(output_ptr, m).to_vec() })
     }
 
-    /// IQ4_XS x F32 Matrix-Vector (matching llama.cpp kernel)
     pub fn mv_iq4_xs_f32(
         &self,
         m: usize,
@@ -6644,10 +6666,8 @@ impl MetalContext {
         })
     }
 
-    // ===== Templated GEMM Methods (from llama.cpp) =====
     // These use the kernel_mul_mm template with dequantize functions
 
-    /// Templated Q4_K × F32 GEMM (using llama.cpp kernel_mul_mm)
     /// Note: Output is in column-major format (column * M + row)
     pub fn gemm_template_q4_k_f32(
         &self,
@@ -6661,7 +6681,6 @@ impl MetalContext {
         let nb01 = (nb * std::mem::size_of::<BlockQ4K>()) as u64;
         let _nb00 = std::mem::size_of::<BlockQ4K>() as u64;
 
-        // Use exact struct from llama.cpp's ggml-metal-impl.h
         #[repr(C)]
         struct GemmArgs {
             ne00: i32, // K
@@ -6732,10 +6751,8 @@ impl MetalContext {
         encoder.set_buffer(2, Some(&input_buffer), 0);
         encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        // Allocate threadgroup memory (8KB as per llama.cpp)
         encoder.set_threadgroup_memory_length(0, 8192);
 
-        // Threadgroup configuration from llama.cpp
         // For quantized types: threadgroup is 32xnsg, grid is (M/nr0*nsg) x (N/nr1)
         // This groups multiple simdgroups per threadgroup for better efficiency
         const NR0: u64 = 64;
@@ -6771,7 +6788,6 @@ impl MetalContext {
         let nb01 = (nb * std::mem::size_of::<BlockQ2K>()) as u64;
         let _nb00 = std::mem::size_of::<BlockQ2K>() as u64;
 
-        // Use exact struct from llama.cpp's ggml-metal-impl.h
         #[repr(C)]
         struct GemmArgs {
             ne00: i32, // K
@@ -6842,10 +6858,8 @@ impl MetalContext {
         encoder.set_buffer(2, Some(&input_buffer), 0);
         encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        // Allocate threadgroup memory (8KB as per llama.cpp)
         encoder.set_threadgroup_memory_length(0, 8192);
 
-        // Threadgroup configuration from llama.cpp
         let thread_group_size = MTLSize { width: 128, height: 1, depth: 1 };
         let thread_group_count = MTLSize {
             width: ((n + 31) / 32) as u64,
@@ -6875,7 +6889,6 @@ impl MetalContext {
         let nb01 = (nb * std::mem::size_of::<BlockQ3K>()) as u64;
         let _nb00 = std::mem::size_of::<BlockQ3K>() as u64;
 
-        // Use exact struct from llama.cpp's ggml-metal-impl.h
         #[repr(C)]
         struct GemmArgs {
             ne00: i32, // K
@@ -6946,10 +6959,8 @@ impl MetalContext {
         encoder.set_buffer(2, Some(&input_buffer), 0);
         encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        // Allocate threadgroup memory (8KB as per llama.cpp)
         encoder.set_threadgroup_memory_length(0, 8192);
 
-        // Threadgroup configuration from llama.cpp
         let thread_group_size = MTLSize { width: 128, height: 1, depth: 1 };
         let thread_group_count = MTLSize {
             width: ((n + 31) / 32) as u64,
@@ -6979,7 +6990,6 @@ impl MetalContext {
         let nb01 = (nb * std::mem::size_of::<BlockQ5K>()) as u64;
         let _nb00 = std::mem::size_of::<BlockQ5K>() as u64;
 
-        // Use exact struct from llama.cpp's ggml-metal-impl.h
         #[repr(C)]
         struct GemmArgs {
             ne00: i32, // K
@@ -7050,10 +7060,8 @@ impl MetalContext {
         encoder.set_buffer(2, Some(&input_buffer), 0);
         encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        // Allocate threadgroup memory (8KB as per llama.cpp)
         encoder.set_threadgroup_memory_length(0, 8192);
 
-        // Threadgroup configuration from llama.cpp
         let thread_group_size = MTLSize { width: 128, height: 1, depth: 1 };
         let thread_group_count = MTLSize {
             width: ((n + 31) / 32) as u64,
@@ -7083,7 +7091,6 @@ impl MetalContext {
         let nb01 = (nb * std::mem::size_of::<BlockQ6K>()) as u64;
         let _nb00 = std::mem::size_of::<BlockQ6K>() as u64;
 
-        // Use exact struct from llama.cpp's ggml-metal-impl.h
         #[repr(C)]
         struct GemmArgs {
             ne00: i32, // K
@@ -7154,10 +7161,8 @@ impl MetalContext {
         encoder.set_buffer(2, Some(&input_buffer), 0);
         encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        // Allocate threadgroup memory (8KB as per llama.cpp)
         encoder.set_threadgroup_memory_length(0, 8192);
 
-        // Threadgroup configuration from llama.cpp
         let thread_group_size = MTLSize { width: 128, height: 1, depth: 1 };
         let thread_group_count = MTLSize {
             width: ((n + 31) / 32) as u64,

@@ -96,7 +96,6 @@ pub unsafe fn vec_dot_q4_0_q8_0_neon(
         );
 
         // Convert to f32 - interleave with FP16 scale conversion to avoid FP port contention
-        // Match llama.cpp pipeline: scvtf p0 -> fcvt scales -> scvtf p1 -> fmla
         let p_0_f32 = vcvtq_f32_s32(p_0); // First scvtf
         let d0 = fp16_to_fp32(x0.d) * fp16_to_fp32(y0.d); // Interleave: FP16 conversion
         let p_1_f32 = vcvtq_f32_s32(p_1); // Second scvtf (separated by FP16 work)
@@ -372,7 +371,6 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(
         let y0 = &*y_ptr.add(ib);
         let y1 = &*y_ptr.add(ib + 1);
 
-        // Extract 5th bit FIRST (hide memory latency) - match llama.cpp order
         let qh0 = u32::from_le_bytes(x0.qh);
         let qh1 = u32::from_le_bytes(x1.qh);
 
@@ -397,7 +395,6 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(
         let qhl1 = vld1q_s8(tmp1.as_ptr() as *const i8);
         let qhh1 = vld1q_s8(tmp1.as_ptr().add(2) as *const i8);
 
-        // Load 4-bit quants AFTER table lookups (match llama.cpp order)
         let v0_0 = vld1q_u8(x0.qs.as_ptr());
         let v0_1 = vld1q_u8(x1.qs.as_ptr());
 
@@ -419,7 +416,6 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(
         let v1_1l = vld1q_s8(y1.qs.as_ptr());
         let v1_1h = vld1q_s8(y1.qs.as_ptr().add(16));
 
-        // Dot product - match llama.cpp: vaddq_s32(vdotq, vdotq) for ILP
         let p_0 = vaddq_s32(
             vdotq_s32_manual(vdupq_n_s32(0), v0_0lf, v1_0l),
             vdotq_s32_manual(vdupq_n_s32(0), v0_0hf, v1_0h),
@@ -429,7 +425,6 @@ pub unsafe fn vec_dot_q5_0_q8_0_neon(
             vdotq_s32_manual(vdupq_n_s32(0), v0_1hf, v1_1h),
         );
 
-        // Match llama.cpp exactly: compute scale inline in FMLA
         sumv0 = vfmaq_n_f32(
             sumv0,
             vcvtq_f32_s32(p_0),
@@ -497,11 +492,9 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(
         let y0 = &*y_ptr.add(ib);
         let y1 = &*y_ptr.add(ib + 1);
 
-        // Add min * sum term - use separate accumulators like llama.cpp
         summs0 += fp16_to_fp32(x0.m) * fp16_to_fp32(y0.s);
         summs1 += fp16_to_fp32(x1.m) * fp16_to_fp32(y1.s);
 
-        // Extract 5th bit FIRST (hide memory latency) - match llama.cpp order
         let qh0 = u32::from_le_bytes(x0.qh);
         let qh1 = u32::from_le_bytes(x1.qh);
 
@@ -525,7 +518,6 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(
         let qhl1 = vld1q_s8(tmp1.as_ptr() as *const i8);
         let qhh1 = vld1q_s8(tmp1.as_ptr().add(2) as *const i8);
 
-        // Load 4-bit quants AFTER table lookups (match llama.cpp order)
         let v0_0 = vld1q_u8(x0.qs.as_ptr());
         let v0_1 = vld1q_u8(x1.qs.as_ptr());
 
@@ -547,7 +539,6 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(
         let v1_1l = vld1q_s8(y1.qs.as_ptr());
         let v1_1h = vld1q_s8(y1.qs.as_ptr().add(16));
 
-        // Dot product - match llama.cpp: vaddq_s32(vdotq, vdotq) for ILP
         let p_0 = vaddq_s32(
             vdotq_s32_manual(vdupq_n_s32(0), v0_0lf, v1_0l),
             vdotq_s32_manual(vdupq_n_s32(0), v0_0hf, v1_0h),
@@ -557,7 +548,6 @@ pub unsafe fn vec_dot_q5_1_q8_1_neon(
             vdotq_s32_manual(vdupq_n_s32(0), v0_1hf, v1_1h),
         );
 
-        // Match llama.cpp exactly: compute scale inline in FMLA
         sumv0 = vfmaq_n_f32(
             sumv0,
             vcvtq_f32_s32(p_0),

@@ -2,7 +2,6 @@
 // Copyright 2026 Jia Liu
 
 // Attention operator implementation with fused KV dequantization
-// Based on llama.cpp's flash attention mechanism
 
 #![allow(asm_sub_register, dead_code)]
 
@@ -1140,7 +1139,6 @@ unsafe fn load_pair_f16(ptr: *const u16) -> (uint16x8_t, uint16x8_t) {
 }
 
 /// FP16 × FP16 dot product using single inline asm block
-/// Single optimization unit to match llama.cpp's compiler optimization
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
@@ -1353,7 +1351,6 @@ pub unsafe fn decode_attention_f16_neon(
             let mut q_ptr = q_head.as_ptr();
             let mut k_ptr = k_row.as_ptr();
 
-            // Pre-increment for llama.cpp addressing
             q_ptr = q_ptr.add(16);
             k_ptr = k_ptr.add(16);
 
