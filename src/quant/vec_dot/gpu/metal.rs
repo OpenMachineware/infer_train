@@ -2250,9 +2250,231 @@ impl MetalContext {
                 );
                 true
             }
+            crate::model::tensor::DataType::Q4_1 => self.mv_standard_q_encode(
+                encoder,
+                weights_buffer,
+                input_buffer,
+                output_buffer,
+                m,
+                k,
+                dtype,
+            ),
+            crate::model::tensor::DataType::Q5_0 => self.mv_standard_q_encode(
+                encoder,
+                weights_buffer,
+                input_buffer,
+                output_buffer,
+                m,
+                k,
+                dtype,
+            ),
+            crate::model::tensor::DataType::Q5_1 => self.mv_standard_q_encode(
+                encoder,
+                weights_buffer,
+                input_buffer,
+                output_buffer,
+                m,
+                k,
+                dtype,
+            ),
+            crate::model::tensor::DataType::Q8_0 => self.mv_standard_q_encode(
+                encoder,
+                weights_buffer,
+                input_buffer,
+                output_buffer,
+                m,
+                k,
+                dtype,
+            ),
+            crate::model::tensor::DataType::Q4_K
+            | crate::model::tensor::DataType::Q5_K
+            | crate::model::tensor::DataType::Q2_K
+            | crate::model::tensor::DataType::Q6_K
+            | crate::model::tensor::DataType::Q3_K => self.mv_kquant_encode(
+                encoder,
+                weights_buffer,
+                input_buffer,
+                output_buffer,
+                m,
+                k,
+                dtype,
+            ),
             // Add more formats as needed
             _ => false,
         }
+    }
+
+    /// Standard Q format MV encode (Q4_1, Q5_0, Q5_1, Q8_0)
+    fn mv_standard_q_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+        dtype: crate::model::tensor::DataType,
+    ) -> bool {
+        let (block_size, pipeline) = match dtype {
+            crate::model::tensor::DataType::Q4_1 => {
+                (32, &self.mv_q4_1_pipeline)
+            }
+            crate::model::tensor::DataType::Q5_0 => {
+                (32, &self.mv_q5_0_pipeline)
+            }
+            crate::model::tensor::DataType::Q5_1 => {
+                (32, &self.mv_q5_1_pipeline)
+            }
+            crate::model::tensor::DataType::Q8_0 => {
+                (32, &self.mv_q8_0_pipeline)
+            }
+            _ => return false,
+        };
+
+        let nb = k / block_size;
+        let nb01 = match dtype {
+            crate::model::tensor::DataType::Q4_1 => {
+                (nb * std::mem::size_of::<BlockQ4_1>()) as u64
+            }
+            crate::model::tensor::DataType::Q5_0 => {
+                (nb * std::mem::size_of::<BlockQ5_0>()) as u64
+            }
+            crate::model::tensor::DataType::Q5_1 => {
+                (nb * std::mem::size_of::<BlockQ5_1>()) as u64
+            }
+            crate::model::tensor::DataType::Q8_0 => {
+                (nb * std::mem::size_of::<BlockQ8_0>()) as u64
+            }
+            _ => return false,
+        };
+
+        #[repr(C)]
+        struct MvArgs {
+            ne00: i32,
+            ne01: i32,
+            ne02: i32,
+            nb00: u64,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32,
+            r2: i16,
+            r3: i16,
+        }
+
+        let args = MvArgs {
+            ne00: k as i32,
+            ne01: m as i32,
+            ne02: 1,
+            nb00: 1,
+            nb01,
+            nb02: 0,
+            nb03: 0,
+            ne10: k as i32,
+            ne11: 1,
+            ne12: 1,
+            nb10: 4,
+            nb11: k as u64 * 4,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: 1,
+            nr0: 4,
+            r2: 1,
+            r3: 1,
+        };
+
+        encoder.set_compute_pipeline_state(pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<MvArgs>() as u64,
+            &args as *const MvArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(weights_buffer), 0);
+        encoder.set_buffer(2, Some(input_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+
+        const NSG: u64 = 2;
+        const ROWS_PER_THREADGROUP: u64 = NSG * 4;
+
+        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        true
+    }
+
+    /// K-quant family MV encode (shared implementation)
+    fn mv_kquant_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+        dtype: crate::model::tensor::DataType,
+    ) -> bool {
+        let nb = k / 256;
+        let nb01 = match dtype {
+            crate::model::tensor::DataType::Q4_K => {
+                (nb * std::mem::size_of::<BlockQ4K>()) as u64
+            }
+            crate::model::tensor::DataType::Q5_K => {
+                (nb * std::mem::size_of::<BlockQ5K>()) as u64
+            }
+            crate::model::tensor::DataType::Q2_K => {
+                (nb * std::mem::size_of::<BlockQ2K>()) as u64
+            }
+            crate::model::tensor::DataType::Q6_K => {
+                (nb * std::mem::size_of::<BlockQ6K>()) as u64
+            }
+            crate::model::tensor::DataType::Q3_K => {
+                (nb * std::mem::size_of::<BlockQ3K>()) as u64
+            }
+            _ => return false,
+        };
+
+        let args = KquantMvArgs::new(m, k, nb01);
+
+        let pipeline = match dtype {
+            crate::model::tensor::DataType::Q4_K => &self.mv_q4_k_pipeline,
+            crate::model::tensor::DataType::Q5_K => &self.mv_q5_k_pipeline,
+            crate::model::tensor::DataType::Q2_K => &self.mv_q2_k_pipeline,
+            crate::model::tensor::DataType::Q6_K => &self.mv_q6_k_pipeline,
+            crate::model::tensor::DataType::Q3_K => &self.mv_q3_k_pipeline,
+            _ => return false,
+        };
+
+        encoder.set_compute_pipeline_state(pipeline);
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(output_buffer), 0);
+        encoder.set_bytes(
+            3,
+            std::mem::size_of::<KquantMvArgs>() as u64,
+            &args as *const KquantMvArgs as *const std::ffi::c_void,
+        );
+
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        true
     }
 
     /// Q1_0 x F32 Matrix-Vector

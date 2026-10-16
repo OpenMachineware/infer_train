@@ -267,3 +267,7 @@ harness = false
 [[bench]]
 name = "tokenizer_bench"
 harness = false
+
+[[bin]]
+name = "test-batched-encode"
+path = "tools/test_batched_encode.rs"
