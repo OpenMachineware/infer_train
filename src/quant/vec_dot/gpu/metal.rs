@@ -4772,10 +4772,15 @@ impl MetalContext {
             encoder
                 .dispatch_thread_groups(thread_group_count, thread_group_size);
         } else {
-            let nsg = std::cmp::min(4, (k + 127) / 128);
+            let use_4 = k % 4 == 0; // Use float4 version if K % 4 == 0
 
-            // Always use basic kernel for now (_4 kernel has algorithm issues)
-            encoder.set_compute_pipeline_state(&self.mv_f16_basic_pipeline);
+            let pipeline = if use_4 {
+                &self.mv_f16_4_pipeline
+            } else {
+                &self.mv_f16_basic_pipeline
+            };
+
+            encoder.set_compute_pipeline_state(pipeline);
 
             let args = MvArgs {
                 ne00: k as i32,
@@ -4794,18 +4799,12 @@ impl MetalContext {
                 nb13: 0,
                 ne0: m as i32,
                 ne1: 1,
-                nr0: 2, // NR0=2 for normal kernels
+                nr0: 2,
                 r2: 1,
                 r3: 1,
-                nsg: nsg as i16, // NSG from calculation
+                nsg: 1, // NSG not used in simplified kernels
                 ne12_batch: 1,
             };
-
-            // NSG simdgroups = NSG * 32 threads
-            let thread_group_size =
-                MTLSize { width: (nsg * 32) as u64, height: 1, depth: 1 };
-            let thread_group_count =
-                MTLSize { width: ((m + 1) / 2) as u64, height: 1, depth: 1 };
 
             encoder.set_bytes(
                 0,
@@ -4816,9 +4815,10 @@ impl MetalContext {
             encoder.set_buffer(2, Some(input_buffer), 0);
             encoder.set_buffer(3, Some(&output_buffer), 0);
 
-            // Threadgroup memory for reduction: NW * NR0 * sizeof(float) = 32 * 2 * 4 = 256 bytes
-            const THREADGROUP_MEM_SIZE: u64 = 32 * 2 * 4;
-            encoder.set_threadgroup_memory_length(0, THREADGROUP_MEM_SIZE);
+            // Simplified dispatch: one simdgroup per threadgroup
+            let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+            let thread_group_count =
+                MTLSize { width: ((m + 1) / 2) as u64, height: 1, depth: 1 };
 
             encoder
                 .dispatch_thread_groups(thread_group_count, thread_group_size);

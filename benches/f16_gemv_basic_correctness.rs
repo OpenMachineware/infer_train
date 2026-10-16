@@ -159,19 +159,24 @@ fn main() {
             .map(|(e, r)| (e - r).abs())
             .fold(0.0f32, |a, b| a.max(b));
 
+        let max_value =
+            expected.iter().map(|v| v.abs()).fold(0.0f32, |a, b| a.max(b));
+        let relative_error = max_error / max_value;
+
         println!(
-            "K={:3} Expected: [{:.2}, {:.2}, {:.2}, {:.2}]",
+            "K={:4} Expected: [{:.2}, {:.2}, {:.2}, {:.2}]",
             k, expected[0], expected[1], expected[2], expected[3]
         );
         println!(
-            "K={:3} GPU:      [{:.2}, {:.2}, {:.2}, {:.2}]  error: {:.6}  {}",
+            "K={:4} GPU:      [{:.2}, {:.2}, {:.2}, {:.2}]  abs_err: {:.6}  rel_err: {:.6}%  {}",
             k,
             result[0],
             result[1],
             result[2],
             result[3],
             max_error,
-            if max_error < 0.1 { "✓ PASS" } else { "✗ FAIL" }
+            relative_error * 100.0,
+            if relative_error < 0.001 { "✓ PASS" } else { "✗ FAIL" }
         );
     }
 }
