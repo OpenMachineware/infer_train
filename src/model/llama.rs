@@ -2574,7 +2574,7 @@ impl LlamaModel {
     }
 
     /// Forward one layer with batched encoding
-    /// Uses a hybrid approach: GEMV in immediate mode, other ops batched
+    /// All operations are encoded into the shared encoder for batching
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     fn forward_layer_gpu_encode(
         &self,
@@ -2605,99 +2605,191 @@ impl LlamaModel {
         let actual_n_kv_heads = k_out_size / head_dim;
 
         // ====================================================================
-        // Phase 1: GEMV operations (immediate mode - individual commits)
+        // Create all output buffers upfront
         // ====================================================================
-        // These have high dispatch overhead, but we can't batch across layers
-        // because of dependencies (output of one is input to next)
 
-        // 1. Attention norm -> QKV projections
-        let norm_weight_buffer = gpu_ctx.get_or_create_buffer(attention_norm);
-        let normed_buffer = gpu_ctx
-            .rms_norm_f32_gpu(
-                hidden_buffer,
-                &norm_weight_buffer,
-                1,
-                hidden_size,
-                1e-5,
-            )
-            .ok()?;
+        // 1. Attention norm output
+        let normed_buffer = std::rc::Rc::new(device.new_buffer(
+            (hidden_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
 
-        let q_buffer = self.gemv_gpu_buffer_with_fallback(
-            &normed_buffer,
-            wq,
-            q_out_size,
-            gpu_ctx,
-        )?;
-        let k_buffer = self.gemv_gpu_buffer_with_fallback(
-            &normed_buffer,
-            wk,
-            k_out_size,
-            gpu_ctx,
-        )?;
-        let v_buffer = self.gemv_gpu_buffer_with_fallback(
-            &normed_buffer,
-            wv,
-            v_out_size,
-            gpu_ctx,
-        )?;
+        // 2. QKV outputs
+        let q_buffer = std::rc::Rc::new(device.new_buffer(
+            (q_out_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+        let k_buffer = std::rc::Rc::new(device.new_buffer(
+            (k_out_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+        let v_buffer = std::rc::Rc::new(device.new_buffer(
+            (v_out_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
 
-        // 2. RoPE (immediate for now, can be batched later)
-        let q_rope_buffer = gpu_ctx
-            .rope_neox_f32_gpu(
-                &q_buffer,
-                &[pos as i32],
-                1,
-                actual_n_heads,
-                head_dim,
-                10000.0,
-                1.0,
-            )
-            .ok()?;
-        let k_rope_buffer = gpu_ctx
-            .rope_neox_f32_gpu(
-                &k_buffer,
-                &[pos as i32],
-                1,
-                actual_n_kv_heads,
-                head_dim,
-                10000.0,
-                1.0,
-            )
-            .ok()?;
+        // 3. RoPE outputs
+        let q_rope_buffer = std::rc::Rc::new(device.new_buffer(
+            (q_out_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+        let k_rope_buffer = std::rc::Rc::new(device.new_buffer(
+            (k_out_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
 
-        // 3. Update KV cache
-        kv_cache.set_k_buffer(layer_idx, &k_rope_buffer);
-        kv_cache.set_v_buffer(layer_idx, &v_buffer);
-
-        // 4. Flash attention (immediate for now)
-        let attn_out_buffer = self.flash_attention_gpu_buffer(
-            &q_rope_buffer,
-            kv_cache,
-            layer_idx,
-            actual_n_heads,
-            head_dim,
-            actual_n_kv_heads,
-            pos + 1,
-            gpu_ctx,
-        )?;
+        // 4. Flash attention output
+        let attn_out_buffer = std::rc::Rc::new(device.new_buffer(
+            (q_out_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
 
         // 5. Output projection
-        let attn_proj_buffer = self.gemv_gpu_buffer_with_fallback(
-            &attn_out_buffer,
-            wo,
-            hidden_size,
-            gpu_ctx,
-        )?;
-
-        // ====================================================================
-        // Phase 2: Batched operations (shared command buffer)
-        // ====================================================================
+        let attn_proj_buffer = std::rc::Rc::new(device.new_buffer(
+            (hidden_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
 
         // 6. Residual add
         let residual_buffer = std::rc::Rc::new(device.new_buffer(
             (hidden_size * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
+
+        // 7. FFN norm output
+        let ffn_normed_buffer = std::rc::Rc::new(device.new_buffer(
+            (hidden_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        // 8. FFN intermediate outputs (for SwiGLU)
+        let intermediate_size =
+            layer.w1.as_ref().map(|w| w.shape[1]).unwrap_or(0);
+        let gate_buffer = std::rc::Rc::new(device.new_buffer(
+            (intermediate_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+        let up_buffer = std::rc::Rc::new(device.new_buffer(
+            (intermediate_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+        let silu_buffer = std::rc::Rc::new(device.new_buffer(
+            (intermediate_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+        let hidden_ffn_buffer = std::rc::Rc::new(device.new_buffer(
+            (intermediate_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+        let ffn_out_buffer = std::rc::Rc::new(device.new_buffer(
+            (hidden_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        // 9. Final output
+        let final_buffer = std::rc::Rc::new(device.new_buffer(
+            (hidden_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        // ====================================================================
+        // Encode all operations into shared encoder
+        // ====================================================================
+
+        // 1. Attention norm
+        let norm_weight_buffer = gpu_ctx.get_or_create_buffer(attention_norm);
+        gpu_ctx.rms_norm_encode(
+            encoder,
+            hidden_buffer,
+            &norm_weight_buffer,
+            &normed_buffer,
+            1,
+            hidden_size,
+            1e-5,
+        );
+
+        // 2. QKV projections
+        self.gemv_encode(
+            encoder,
+            &normed_buffer,
+            wq,
+            q_out_size,
+            gpu_ctx,
+            &q_buffer,
+        )?;
+        self.gemv_encode(
+            encoder,
+            &normed_buffer,
+            wk,
+            k_out_size,
+            gpu_ctx,
+            &k_buffer,
+        )?;
+        self.gemv_encode(
+            encoder,
+            &normed_buffer,
+            wv,
+            v_out_size,
+            gpu_ctx,
+            &v_buffer,
+        )?;
+
+        // 3. RoPE
+        gpu_ctx.rope_neox_encode(
+            encoder,
+            &q_buffer,
+            &[pos as i32],
+            1,
+            actual_n_heads,
+            head_dim,
+            10000.0,
+            1.0,
+            &q_rope_buffer,
+        );
+        gpu_ctx.rope_neox_encode(
+            encoder,
+            &k_buffer,
+            &[pos as i32],
+            1,
+            actual_n_kv_heads,
+            head_dim,
+            10000.0,
+            1.0,
+            &k_rope_buffer,
+        );
+
+        // 4. Update KV cache (this is a memory copy, not a kernel)
+        // We need to do this after the encoder commits
+        // For now, we'll handle it outside this method
+
+        // 5. Flash attention
+        let k_cache = kv_cache.k_buffer(layer_idx);
+        let v_cache = kv_cache.v_buffer(layer_idx);
+        gpu_ctx.flash_attn_f16_encode(
+            encoder,
+            1,
+            actual_n_heads,
+            actual_n_kv_heads,
+            head_dim,
+            pos + 1,
+            kv_cache.max_seq(),
+            &q_rope_buffer,
+            k_cache,
+            v_cache,
+            &attn_out_buffer,
+        );
+
+        // 6. Output projection
+        self.gemv_encode(
+            encoder,
+            &attn_out_buffer,
+            wo,
+            hidden_size,
+            gpu_ctx,
+            &attn_proj_buffer,
+        )?;
+
+        // 7. Residual add
         gpu_ctx.add_encode(
             encoder,
             hidden_buffer,
@@ -2706,12 +2798,8 @@ impl LlamaModel {
             hidden_size,
         );
 
-        // 7. FFN norm
+        // 8. FFN norm
         let ffn_norm_buffer = gpu_ctx.get_or_create_buffer(ffn_norm);
-        let ffn_normed_buffer = std::rc::Rc::new(device.new_buffer(
-            (hidden_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
         gpu_ctx.rms_norm_encode(
             encoder,
             &residual_buffer,
@@ -2722,21 +2810,54 @@ impl LlamaModel {
             1e-5,
         );
 
-        // 8. FFN (gate, up, SiLU, mul, down)
-        // For now, use immediate mode for FFN GEMVs
-        // Full implementation would batch these too
-        let ffn_out_buffer = self.ffn_swiglu_gpu_buffer(
+        // 9. FFN (gate, up, SiLU, mul, down)
+        let w1 = layer.w1.as_ref()?;
+        let w2 = layer.w2.as_ref()?;
+        let w3 = layer.w3.as_ref()?;
+
+        self.gemv_encode(
+            encoder,
             &ffn_normed_buffer,
-            layer,
-            hidden_size,
+            w1,
+            intermediate_size,
             gpu_ctx,
+            &gate_buffer,
+        )?;
+        self.gemv_encode(
+            encoder,
+            &ffn_normed_buffer,
+            w3,
+            intermediate_size,
+            gpu_ctx,
+            &up_buffer,
         )?;
 
-        // 9. Final residual add
-        let final_buffer = std::rc::Rc::new(device.new_buffer(
-            (hidden_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
+        // SiLU(gate) * up
+        gpu_ctx.silu_encode(
+            encoder,
+            &gate_buffer,
+            &silu_buffer,
+            intermediate_size,
+        );
+        gpu_ctx.mul_encode(
+            encoder,
+            &silu_buffer,
+            &up_buffer,
+            &hidden_ffn_buffer,
+            intermediate_size,
+        );
+
+        // Down projection
+        self.gemv_encode(
+            encoder,
+            &hidden_ffn_buffer,
+            w2,
+            hidden_size,
+            gpu_ctx,
+            &ffn_out_buffer,
+        )?;
+
+        // 10. Final residual add
         gpu_ctx.add_encode(
             encoder,
             &residual_buffer,
@@ -2745,7 +2866,41 @@ impl LlamaModel {
             hidden_size,
         );
 
+        // Update KV cache after encoding
+        // We need to copy k_rope_buffer and v_buffer to KV cache
+        kv_cache.set_k_buffer(layer_idx, &k_rope_buffer);
+        kv_cache.set_v_buffer(layer_idx, &v_buffer);
+
         Some(final_buffer)
+    }
+
+    /// GEMV with encode into shared encoder (for batched forward pass)
+    /// Returns the output buffer, or None if format not supported
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn gemv_encode(
+        &self,
+        encoder: &metal::ComputeCommandEncoderRef,
+        input_buffer: &std::rc::Rc<Buffer>,
+        weight: &crate::model::tensor::Tensor,
+        out_size: usize,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+        output_buffer: &std::rc::Rc<Buffer>,
+    ) -> Option<()> {
+        let in_size =
+            input_buffer.length() as usize / std::mem::size_of::<f32>();
+        let weights_buffer = gpu_ctx.get_or_create_buffer(weight);
+
+        let success = gpu_ctx.mv_encode(
+            encoder,
+            &weights_buffer,
+            input_buffer,
+            output_buffer,
+            out_size,
+            in_size,
+            weight.dtype,
+        );
+
+        if success { Some(()) } else { None }
     }
 
     /// GEMV with GPU buffers (no CPU transfer for supported formats)
