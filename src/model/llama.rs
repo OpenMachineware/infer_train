@@ -2501,20 +2501,27 @@ impl LlamaModel {
                 metal::MTLResourceOptions::StorageModeShared,
             ));
 
-            // 2. Process through layers
+            // 2. Process through layers with SINGLE command buffer
+            let command_buffer = queue.new_command_buffer();
+            let encoder = command_buffer.new_compute_command_encoder();
+
             let mut hidden_buffer = hidden_buffer;
             for (layer_idx, layer) in self.layers.iter().enumerate() {
-                // Use batched forward for this layer
+                // Encode layer operations into shared encoder (no commit!)
                 hidden_buffer = self.forward_layer_gpu_encode(
                     layer,
                     layer_idx,
                     &hidden_buffer,
                     kv_cache,
                     gpu_ctx,
-                    queue,
                     device,
+                    encoder,
                 )?;
             }
+
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
 
             last_hidden_buffer = Some(hidden_buffer);
             kv_cache.advance();
@@ -2626,8 +2633,8 @@ impl LlamaModel {
         hidden_buffer: &std::rc::Rc<Buffer>,
         kv_cache: &mut crate::inference::KVCacheGPU,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
-        queue: &metal::CommandQueue,
         device: &metal::Device,
+        encoder: &metal::ComputeCommandEncoderRef,
     ) -> Option<std::rc::Rc<Buffer>> {
         let hidden_size = self.config.hidden_size;
         let pos = kv_cache.seq_len();
@@ -2656,20 +2663,49 @@ impl LlamaModel {
             (hidden_size * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
+        // Zero the buffer to ensure consistent initial state
+        unsafe {
+            std::ptr::write_bytes(
+                normed_buffer.contents() as *mut u8,
+                0,
+                normed_buffer.length() as usize,
+            );
+        }
 
         // 2. QKV outputs
         let q_buffer = std::rc::Rc::new(device.new_buffer(
             (q_out_size * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
+        unsafe {
+            std::ptr::write_bytes(
+                q_buffer.contents() as *mut u8,
+                0,
+                q_buffer.length() as usize,
+            );
+        }
         let k_buffer = std::rc::Rc::new(device.new_buffer(
             (k_out_size * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
+        unsafe {
+            std::ptr::write_bytes(
+                k_buffer.contents() as *mut u8,
+                0,
+                k_buffer.length() as usize,
+            );
+        }
         let v_buffer = std::rc::Rc::new(device.new_buffer(
             (v_out_size * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
+        unsafe {
+            std::ptr::write_bytes(
+                v_buffer.contents() as *mut u8,
+                0,
+                v_buffer.length() as usize,
+            );
+        }
 
         // 3. RoPE outputs
         let q_rope_buffer = std::rc::Rc::new(device.new_buffer(
@@ -2736,208 +2772,223 @@ impl LlamaModel {
         ));
 
         // ====================================================================
-        // Encode operations in two phases: before and after KV cache update
+        // Encode all operations into shared encoder (no commit!)
         // ====================================================================
 
-        // Phase 1: Attention norm, QKV, RoPE
-        {
-            let command_buffer = queue.new_command_buffer();
-            let encoder = command_buffer.new_compute_command_encoder();
+        // 1. Attention norm
+        let norm_weight_buffer = gpu_ctx.get_or_create_buffer(attention_norm);
+        gpu_ctx.rms_norm_encode(
+            encoder,
+            hidden_buffer,
+            &norm_weight_buffer,
+            &normed_buffer,
+            1,
+            hidden_size,
+            1e-5,
+        );
 
-            // 1. Attention norm
-            let norm_weight_buffer =
-                gpu_ctx.get_or_create_buffer(attention_norm);
-            gpu_ctx.rms_norm_encode(
-                encoder,
-                hidden_buffer,
-                &norm_weight_buffer,
-                &normed_buffer,
-                1,
-                hidden_size,
-                1e-5,
-            );
-
-            // 2. QKV projections
-            self.gemv_encode(
+        // 2. QKV projections
+        if self
+            .gemv_encode(
                 encoder,
                 &normed_buffer,
                 wq,
                 q_out_size,
                 gpu_ctx,
                 &q_buffer,
-            )?;
-            self.gemv_encode(
+            )
+            .is_none()
+        {
+            eprintln!(
+                "[DEBUG] Layer {}: Q projection failed for dtype {:?}",
+                layer_idx, wq.dtype
+            );
+            return None;
+        }
+        if self
+            .gemv_encode(
                 encoder,
                 &normed_buffer,
                 wk,
                 k_out_size,
                 gpu_ctx,
                 &k_buffer,
-            )?;
-            self.gemv_encode(
+            )
+            .is_none()
+        {
+            eprintln!(
+                "[DEBUG] Layer {}: K projection failed for dtype {:?}",
+                layer_idx, wk.dtype
+            );
+            return None;
+        }
+        if self
+            .gemv_encode(
                 encoder,
                 &normed_buffer,
                 wv,
                 v_out_size,
                 gpu_ctx,
                 &v_buffer,
-            )?;
-
-            // 3. RoPE
-            gpu_ctx.rope_neox_encode(
-                encoder,
-                &q_buffer,
-                &[pos as i32],
-                1,
-                actual_n_heads,
-                head_dim,
-                10000.0,
-                1.0,
-                &q_rope_buffer,
-            );
-            gpu_ctx.rope_neox_encode(
-                encoder,
-                &k_buffer,
-                &[pos as i32],
-                1,
-                actual_n_kv_heads,
-                head_dim,
-                10000.0,
-                1.0,
-                &k_rope_buffer,
-            );
-
-            encoder.end_encoding();
-            command_buffer.commit();
-            command_buffer.wait_until_completed();
-        }
-
-        // Update KV cache (CPU side)
-        let k_rope_data: Vec<f32> = unsafe {
-            let ptr = k_rope_buffer.contents() as *const f32;
-            std::slice::from_raw_parts(ptr, k_out_size).to_vec()
-        };
-        let v_data: Vec<f32> = unsafe {
-            let ptr = v_buffer.contents() as *const f32;
-            std::slice::from_raw_parts(ptr, v_out_size).to_vec()
-        };
-        kv_cache.set_k(layer_idx, &k_rope_data);
-        kv_cache.set_v(layer_idx, &v_data);
-
-        // Phase 2: Flash attention, output projection, FFN
+            )
+            .is_none()
         {
-            let command_buffer = queue.new_command_buffer();
-            let encoder = command_buffer.new_compute_command_encoder();
-
-            // 5. Flash attention
-            let k_cache = kv_cache.k_buffer(layer_idx);
-            let v_cache = kv_cache.v_buffer(layer_idx);
-            gpu_ctx.flash_attn_f16_encode(
-                encoder,
-                1,
-                actual_n_heads,
-                actual_n_kv_heads,
-                head_dim,
-                pos + 1,
-                kv_cache.max_seq(),
-                &q_rope_buffer,
-                k_cache,
-                v_cache,
-                &attn_out_buffer,
+            eprintln!(
+                "[DEBUG] Layer {}: V projection failed for dtype {:?}",
+                layer_idx, wv.dtype
             );
-
-            // 6. Output projection
-            self.gemv_encode(
-                encoder,
-                &attn_out_buffer,
-                wo,
-                hidden_size,
-                gpu_ctx,
-                &attn_proj_buffer,
-            )?;
-
-            // 7. Residual add
-            gpu_ctx.add_encode(
-                encoder,
-                hidden_buffer,
-                &attn_proj_buffer,
-                &residual_buffer,
-                hidden_size,
-            );
-
-            // 8. FFN norm
-            let ffn_norm_buffer = gpu_ctx.get_or_create_buffer(ffn_norm);
-            gpu_ctx.rms_norm_encode(
-                encoder,
-                &residual_buffer,
-                &ffn_norm_buffer,
-                &ffn_normed_buffer,
-                1,
-                hidden_size,
-                1e-5,
-            );
-
-            // 9. FFN (gate, up, SiLU, mul, down)
-            let w1 = layer.w1.as_ref()?;
-            let w2 = layer.w2.as_ref()?;
-            let w3 = layer.w3.as_ref()?;
-
-            self.gemv_encode(
-                encoder,
-                &ffn_normed_buffer,
-                w1,
-                intermediate_size,
-                gpu_ctx,
-                &gate_buffer,
-            )?;
-            self.gemv_encode(
-                encoder,
-                &ffn_normed_buffer,
-                w3,
-                intermediate_size,
-                gpu_ctx,
-                &up_buffer,
-            )?;
-
-            // SiLU(gate) * up
-            gpu_ctx.silu_encode(
-                encoder,
-                &gate_buffer,
-                &silu_buffer,
-                intermediate_size,
-            );
-            gpu_ctx.mul_encode(
-                encoder,
-                &silu_buffer,
-                &up_buffer,
-                &hidden_ffn_buffer,
-                intermediate_size,
-            );
-
-            // Down projection
-            self.gemv_encode(
-                encoder,
-                &hidden_ffn_buffer,
-                w2,
-                hidden_size,
-                gpu_ctx,
-                &ffn_out_buffer,
-            )?;
-
-            // 10. Final residual add
-            gpu_ctx.add_encode(
-                encoder,
-                &residual_buffer,
-                &ffn_out_buffer,
-                &final_buffer,
-                hidden_size,
-            );
-
-            encoder.end_encoding();
-            command_buffer.commit();
-            command_buffer.wait_until_completed();
+            return None;
         }
 
+        // 3. RoPE
+        gpu_ctx.rope_neox_encode(
+            encoder,
+            &q_buffer,
+            &[pos as i32],
+            1,
+            actual_n_heads,
+            head_dim,
+            10000.0,
+            1.0,
+            &q_rope_buffer,
+        );
+        gpu_ctx.rope_neox_encode(
+            encoder,
+            &k_buffer,
+            &[pos as i32],
+            1,
+            actual_n_kv_heads,
+            head_dim,
+            10000.0,
+            1.0,
+            &k_rope_buffer,
+        );
+
+        // 4. Update KV cache using GPU kernel
+        let k_cache = kv_cache.k_buffer(layer_idx);
+        let v_cache = kv_cache.v_buffer(layer_idx);
+        gpu_ctx.kv_update_k_encode(
+            encoder,
+            &k_rope_buffer,
+            k_cache,
+            pos,
+            kv_cache.max_seq(),
+            actual_n_kv_heads,
+            head_dim,
+        );
+        gpu_ctx.kv_update_v_encode(
+            encoder,
+            &v_buffer,
+            v_cache,
+            pos,
+            kv_cache.max_seq(),
+            actual_n_kv_heads,
+            head_dim,
+        );
+
+        // 5. Flash attention
+        gpu_ctx.flash_attn_f16_encode(
+            encoder,
+            1,
+            actual_n_heads,
+            actual_n_kv_heads,
+            head_dim,
+            pos + 1,
+            kv_cache.max_seq(),
+            &q_rope_buffer,
+            k_cache,
+            v_cache,
+            &attn_out_buffer,
+        );
+
+        // 6. Output projection
+        self.gemv_encode(
+            encoder,
+            &attn_out_buffer,
+            wo,
+            hidden_size,
+            gpu_ctx,
+            &attn_proj_buffer,
+        )?;
+
+        // 7. Residual add
+        gpu_ctx.add_encode(
+            encoder,
+            hidden_buffer,
+            &attn_proj_buffer,
+            &residual_buffer,
+            hidden_size,
+        );
+
+        // 8. FFN norm
+        let ffn_norm_buffer = gpu_ctx.get_or_create_buffer(ffn_norm);
+        gpu_ctx.rms_norm_encode(
+            encoder,
+            &residual_buffer,
+            &ffn_norm_buffer,
+            &ffn_normed_buffer,
+            1,
+            hidden_size,
+            1e-5,
+        );
+
+        // 9. FFN (gate, up, SiLU, mul, down)
+        let w1 = layer.w1.as_ref()?;
+        let w2 = layer.w2.as_ref()?;
+        let w3 = layer.w3.as_ref()?;
+
+        self.gemv_encode(
+            encoder,
+            &ffn_normed_buffer,
+            w1,
+            intermediate_size,
+            gpu_ctx,
+            &gate_buffer,
+        )?;
+        self.gemv_encode(
+            encoder,
+            &ffn_normed_buffer,
+            w3,
+            intermediate_size,
+            gpu_ctx,
+            &up_buffer,
+        )?;
+
+        // SiLU(gate) * up
+        gpu_ctx.silu_encode(
+            encoder,
+            &gate_buffer,
+            &silu_buffer,
+            intermediate_size,
+        );
+        gpu_ctx.mul_encode(
+            encoder,
+            &silu_buffer,
+            &up_buffer,
+            &hidden_ffn_buffer,
+            intermediate_size,
+        );
+
+        // Down projection
+        self.gemv_encode(
+            encoder,
+            &hidden_ffn_buffer,
+            w2,
+            hidden_size,
+            gpu_ctx,
+            &ffn_out_buffer,
+        )?;
+
+        // 10. Final residual add
+        gpu_ctx.add_encode(
+            encoder,
+            &residual_buffer,
+            &ffn_out_buffer,
+            &final_buffer,
+            hidden_size,
+        );
+
+        // No commit here - caller handles single commit for all layers
         Some(final_buffer)
     }
 
@@ -2955,6 +3006,7 @@ impl LlamaModel {
     ) -> Option<()> {
         let in_size =
             input_buffer.length() as usize / std::mem::size_of::<f32>();
+
         let weights_buffer = gpu_ctx.get_or_create_buffer(weight);
 
         let success = gpu_ctx.mv_encode(

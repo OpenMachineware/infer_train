@@ -175,6 +175,10 @@ pub struct MetalContext {
     ssm_conv1d_d4_batched_16_pipeline: ComputePipelineState,
     ssm_conv1d_d4_batched_8_pipeline: ComputePipelineState,
     ssm_conv1d_d4_batched_2_pipeline: ComputePipelineState,
+    // KV Cache Update (F32 -> F16 with strided write)
+    kv_update_library: Library,
+    kv_update_k_pipeline: ComputePipelineState,
+    kv_update_v_pipeline: ComputePipelineState,
     // Cached buffers for MV operations
     // Once created with data, reuse without copy
     mv_weights_buffer: RefCell<Option<Buffer>>,
@@ -1351,6 +1355,35 @@ impl MetalContext {
             .new_compute_pipeline_state_with_function(&ssm_scan_ssd_mma_kernel)
             .map_err(|e| format!("Failed to create SSD MMA pipeline: {}", e))?;
 
+        // Compile KV update library (F32 -> F16 with strided write)
+        let kv_update_source =
+            include_str!("../../../ops/metal/ops/kv_update.metal");
+        let kv_update_library = device
+            .new_library_with_source(kv_update_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile kv_update library: {}", e)
+            })?;
+
+        // Create KV update K pipeline
+        let kv_update_k_kernel = kv_update_library
+            .get_function("kv_update_f32_to_f16", None)
+            .map_err(|e| format!("Failed to get KV update K kernel: {}", e))?;
+        let kv_update_k_pipeline = device
+            .new_compute_pipeline_state_with_function(&kv_update_k_kernel)
+            .map_err(|e| {
+                format!("Failed to create KV update K pipeline: {}", e)
+            })?;
+
+        // Create KV update V pipeline
+        let kv_update_v_kernel = kv_update_library
+            .get_function("kv_update_v_f32_to_f16", None)
+            .map_err(|e| format!("Failed to get KV update V kernel: {}", e))?;
+        let kv_update_v_pipeline = device
+            .new_compute_pipeline_state_with_function(&kv_update_v_kernel)
+            .map_err(|e| {
+                format!("Failed to create KV update V pipeline: {}", e)
+            })?;
+
         Ok(Self {
             device,
             queue,
@@ -1449,6 +1482,10 @@ impl MetalContext {
             ssm_scan_d16_pipeline,
             ssm_scan_ssd_pipeline,
             ssm_scan_ssd_mma_pipeline,
+            // KV Cache Update
+            kv_update_library,
+            kv_update_k_pipeline,
+            kv_update_v_pipeline,
             // MV buffers
             mv_weights_buffer: RefCell::new(None),
             mv_input_buffer: RefCell::new(None),
@@ -7310,6 +7347,104 @@ impl MetalContext {
         let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
         let thread_group_count =
             MTLSize { width: (n as u64 + 255) / 256, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    // ========================================================================
+    // KV Cache Update (F32 -> F16 with strided write)
+    // ========================================================================
+
+    /// Update K cache: Convert F32 to F16 and write to strided position
+    /// src: F32 buffer [n_kv_heads * head_dim]
+    /// dst: F16 KV cache [n_kv_heads, max_seq, head_dim]
+    pub fn kv_update_k_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        src_buffer: &Buffer,
+        dst_buffer: &Buffer,
+        pos: usize,
+        max_seq: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+    ) {
+        encoder.set_compute_pipeline_state(&self.kv_update_k_pipeline);
+        encoder.set_buffer(0, Some(src_buffer), 0);
+        encoder.set_buffer(1, Some(dst_buffer), 0);
+        encoder.set_bytes(
+            2,
+            4,
+            &(pos as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            3,
+            4,
+            &(max_seq as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            4,
+            4,
+            &(n_kv_heads as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            5,
+            4,
+            &(head_dim as u32) as *const u32 as *const std::ffi::c_void,
+        );
+
+        let total_elements = n_kv_heads * head_dim;
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: ((total_elements as u64 + 255) / 256),
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Update V cache: Convert F32 to F16 and write to strided position
+    pub fn kv_update_v_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        src_buffer: &Buffer,
+        dst_buffer: &Buffer,
+        pos: usize,
+        max_seq: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+    ) {
+        encoder.set_compute_pipeline_state(&self.kv_update_v_pipeline);
+        encoder.set_buffer(0, Some(src_buffer), 0);
+        encoder.set_buffer(1, Some(dst_buffer), 0);
+        encoder.set_bytes(
+            2,
+            4,
+            &(pos as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            3,
+            4,
+            &(max_seq as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            4,
+            4,
+            &(n_kv_heads as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            5,
+            4,
+            &(head_dim as u32) as *const u32 as *const std::ffi::c_void,
+        );
+
+        let total_elements = n_kv_heads * head_dim;
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: ((total_elements as u64 + 255) / 256),
+            height: 1,
+            depth: 1,
+        };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     }

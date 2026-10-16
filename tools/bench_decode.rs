@@ -16,8 +16,8 @@ fn main() {
     let model_path = &args[1];
     println!("Model: {}", model_path);
 
-    // GPU decode benchmark
-    println!("\n=== GPU Decode Benchmark ===");
+    // GPU decode benchmark with batched encoding
+    println!("\n=== GPU Decode Benchmark (Batched) ===");
     let mut gpu_ctx = InferenceContext::from_gguf(model_path, Device::Gpu)
         .expect("Failed to load GPU model");
     println!(
@@ -31,8 +31,55 @@ fn main() {
     let prompt_tokens: Vec<u32> = vec![1];
     let prefill_start = std::time::Instant::now();
     let mut logits =
-        gpu_ctx.forward_gpu_zerocopy(&prompt_tokens).expect("Prefill failed");
+        gpu_ctx.forward_gpu_batched(&prompt_tokens).expect("Prefill failed");
     let prefill_time = prefill_start.elapsed();
+
+    // Debug: check logits
+    let min = logits.iter().cloned().fold(f32::INFINITY, f32::min);
+    let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let sum: f32 = logits.iter().sum();
+    let nan_count = logits.iter().filter(|&&x| x.is_nan()).count();
+    let zero_count = logits.iter().filter(|&&x| x == 0.0).count();
+    println!(
+        "Logits: len={}, min={:.4}, max={:.4}, mean={:.4}, nan={}, zero={}",
+        logits.len(),
+        min,
+        max,
+        sum / logits.len() as f32,
+        nan_count,
+        zero_count
+    );
+
+    // If all zeros, try CPU forward to compare
+    if zero_count == logits.len() {
+        println!("\nWARNING: All logits are zero! Testing CPU forward...");
+        let cpu_ctx = InferenceContext::from_gguf(model_path, Device::Cpu)
+            .expect("Failed to load CPU model");
+        let config = cpu_ctx.config.clone();
+        let mut kv_cache = KVCache::new(&config, 100, KVCacheFormat::F32);
+        let cpu_logits = cpu_ctx
+            .model
+            .forward(&prompt_tokens, &mut kv_cache)
+            .expect("CPU forward failed");
+        let cpu_min = cpu_logits.iter().cloned().fold(f32::INFINITY, f32::min);
+        let cpu_max =
+            cpu_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let cpu_sum: f32 = cpu_logits.iter().sum();
+        let cpu_top = cpu_logits
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        println!(
+            "CPU logits: min={:.4}, max={:.4}, mean={:.4}, top_token={}",
+            cpu_min,
+            cpu_max,
+            cpu_sum / cpu_logits.len() as f32,
+            cpu_top
+        );
+    }
+
     println!("Prefill: {} ms", prefill_time.as_millis());
 
     // Sample first token from prefill output
@@ -54,7 +101,7 @@ fn main() {
         let start = std::time::Instant::now();
         // Pass ONLY the newly generated token
         logits =
-            gpu_ctx.forward_gpu_zerocopy(&[next_token]).expect("Decode failed");
+            gpu_ctx.forward_gpu_batched(&[next_token]).expect("Decode failed");
         let elapsed = start.elapsed();
         total_time += elapsed;
 

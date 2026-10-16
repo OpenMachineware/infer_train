@@ -29,14 +29,14 @@ struct kquant_mv_args {
 static inline uchar2 get_scale_min_k4(int j, int k, device const uchar * scales) {
     if (j < 4) {
         // Lower 6 bits of scales[j+k] and scales[j+4+k]
-        return uchar2(uchar(scales[j+0+k] & 63), uchar(scales[j+4+k] & 63));
+        return uchar2(uchar(scales[j+k] & 63), uchar(scales[j+4+k] & 63));
     } else {
         // For j >= 4, scales are packed differently
         // scale: lower 4 bits of scales[j+4+k] combined with upper 2 bits of scales[j-4+k]
         // min: upper 4 bits of scales[j+4+k] combined with upper 2 bits of scales[j+k]
         return uchar2(
             uchar((scales[j+4+k] & 0x0F) | ((scales[j-4+k] & 0xC0) >> 2)),
-            uchar((scales[j+4+k] >> 4) | ((scales[j-0+k] & 0xC0) >> 2))
+            uchar((scales[j+4+k] >> 4) | ((scales[j+k] & 0xC0) >> 2))
         );
     }
 }
