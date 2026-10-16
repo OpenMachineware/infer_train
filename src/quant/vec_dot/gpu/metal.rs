@@ -10,8 +10,9 @@ use crate::quant::types::{
     BlockQ5K, BlockQ6K, BlockQ8_0, BlockTQ1_0, BlockTQ2_0,
 };
 use metal::{
-    Buffer, CommandQueue, ComputePipelineState, Device, FunctionConstantValues,
-    Library, MTLDataType, MTLSize, NSUInteger,
+    Buffer, CommandBuffer, CommandQueue, ComputeCommandEncoder,
+    ComputePipelineState, Device, FunctionConstantValues, Library, MTLDataType,
+    MTLSize, NSUInteger,
 };
 use std::cell::RefCell;
 use std::os::raw::c_void;
@@ -6722,10 +6723,10 @@ impl MetalContext {
             metal::MTLResourceOptions::StorageModeShared,
         ));
 
+        let ne00 = n_cols as i32;
         let command_buffer = self.queue.new_command_buffer();
         let encoder = command_buffer.new_compute_command_encoder();
 
-        let ne00 = n_cols as i32;
         encoder.set_compute_pipeline_state(&self.rms_norm_pipeline);
         encoder.set_buffer(0, Some(src_buffer), 0);
         encoder.set_buffer(1, Some(weight_buffer), 0);
@@ -6737,7 +6738,6 @@ impl MetalContext {
         let thread_group_count =
             MTLSize { width: n_rows as u64, height: 1, depth: 1 };
 
-        // Allocate threadgroup memory for reduction (32 floats = 128 bytes)
         encoder.set_threadgroup_memory_length(0, 128);
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
