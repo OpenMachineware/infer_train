@@ -291,3 +291,7 @@ path = "benches/q5k_gemv_perf.rs"
 [[bin]]
 name = "compare-q5k-llama"
 path = "tools/compare_q5k_llama.rs"
+
+[[bin]]
+name = "stability-test"
+path = "tools/stability_test.rs"

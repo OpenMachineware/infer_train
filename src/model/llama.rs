@@ -1068,13 +1068,11 @@ impl LlamaModel {
                 )
                 .ok()?
         } else {
-            // Normal weights: use GPU
-            let output_buffer = gpu_ctx.get_or_create_buffer(output);
-            let logits_buffer = self.gemv_gpu_buffer(
+            // Normal weights: use GPU with CPU fallback for unsupported formats (like F16)
+            let logits_buffer = self.gemv_gpu_buffer_with_fallback(
                 &final_hidden_buffer,
-                &output_buffer,
+                output,
                 actual_vocab_size,
-                output.dtype,
                 gpu_ctx,
             )?;
 
@@ -3236,6 +3234,15 @@ impl LlamaModel {
             // IQ3_S - supported
             crate::model::tensor::DataType::IQ3_S => gpu_ctx
                 .mv_iq3_s_f32_gpu_weights(
+                    out_size,
+                    in_size,
+                    weights_buffer,
+                    input_buffer,
+                )
+                .ok(),
+            // F16 - supported (for transposed output layer)
+            crate::model::tensor::DataType::F16 => gpu_ctx
+                .mv_f16_f32_gpu_weights(
                     out_size,
                     in_size,
                     weights_buffer,
