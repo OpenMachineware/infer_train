@@ -2560,43 +2560,18 @@ impl LlamaModel {
         // Detect if weight is transposed [hidden_size, vocab_size]
         // vs normal [vocab_size, hidden_size]
         if output.shape.len() == 2 && output.shape[0] == hidden_size {
-            // Transposed weight
+            // Transposed weight - use CPU fallback for stability
+            // GPU transposed kernel is complex and can cause system hangs
             let vocab_size = output.shape[1];
-            let output_buffer = gpu_ctx.get_or_create_buffer(output);
-
-            // Use GPU transposed MV for Q6_K
-            if output.dtype == crate::model::tensor::DataType::Q6_K {
-                let logits_buffer = gpu_ctx
-                    .mv_q6_k_f32_transposed_gpu_weights(
-                        vocab_size,
-                        hidden_size,
-                        &output_buffer,
-                        &final_hidden_buffer,
-                    )
-                    .ok()?;
-
-                // Download logits
-                let mut logits = vec![0.0f32; vocab_size];
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        logits_buffer.contents() as *const f32,
-                        logits.as_mut_ptr(),
-                        vocab_size,
-                    );
-                }
-                Some(logits)
-            } else {
-                // Fallback to CPU for other formats
-                let mut hidden = vec![0.0f32; hidden_size];
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        final_hidden_buffer.contents() as *const f32,
-                        hidden.as_mut_ptr(),
-                        hidden_size,
-                    );
-                }
-                self.gemv_transposed(&hidden, output, vocab_size)
+            let mut hidden = vec![0.0f32; hidden_size];
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    final_hidden_buffer.contents() as *const f32,
+                    hidden.as_mut_ptr(),
+                    hidden_size,
+                );
             }
+            self.gemv_transposed(&hidden, output, vocab_size)
         } else {
             // Normal weight - use GPU gemv
             let vocab_size = output.shape[0];
@@ -3007,19 +2982,24 @@ impl LlamaModel {
         let in_size =
             input_buffer.length() as usize / std::mem::size_of::<f32>();
 
-        let weights_buffer = gpu_ctx.get_or_create_buffer(weight);
-
-        let success = gpu_ctx.mv_encode(
-            encoder,
-            &weights_buffer,
-            input_buffer,
-            output_buffer,
-            out_size,
-            in_size,
-            weight.dtype,
-        );
-
-        if success { Some(()) } else { None }
+        // GPU GEMV kernels need further debugging for correctness
+        // Use CPU fallback to ensure system stability
+        let input_data: Vec<f32> = unsafe {
+            std::slice::from_raw_parts(
+                input_buffer.contents() as *const f32,
+                in_size,
+            )
+            .to_vec()
+        };
+        let result = self.gemv_impl(&input_data, weight, out_size)?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                result.as_ptr() as *const std::ffi::c_void,
+                output_buffer.contents() as *mut std::ffi::c_void,
+                out_size * std::mem::size_of::<f32>(),
+            );
+        }
+        Some(())
     }
 
     /// GEMV with GPU buffers (no CPU transfer for supported formats)
