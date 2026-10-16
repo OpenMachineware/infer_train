@@ -4761,27 +4761,21 @@ impl MetalContext {
             let thread_group_count =
                 MTLSize { width: ((m + 31) / 32) as u64, height: 1, depth: 1 };
 
-            encoder.set_buffer(0, Some(weights_buffer), 0);
-            encoder.set_buffer(1, Some(input_buffer), 0);
-            encoder.set_buffer(2, Some(&output_buffer), 0);
             encoder.set_bytes(
-                3,
+                0,
                 std::mem::size_of::<MvArgs>() as u64,
                 &args as *const MvArgs as *const std::ffi::c_void,
             );
+            encoder.set_buffer(1, Some(weights_buffer), 0);
+            encoder.set_buffer(2, Some(input_buffer), 0);
+            encoder.set_buffer(3, Some(&output_buffer), 0);
             encoder
                 .dispatch_thread_groups(thread_group_count, thread_group_size);
         } else {
             let nsg = std::cmp::min(4, (k + 127) / 128);
-            let use_4 = k % 4 == 0; // Use float4 version if K % 4 == 0
 
-            let pipeline = if use_4 {
-                &self.mv_f16_4_pipeline
-            } else {
-                &self.mv_f16_basic_pipeline
-            };
-
-            encoder.set_compute_pipeline_state(pipeline);
+            // Always use basic kernel for now (_4 kernel has algorithm issues)
+            encoder.set_compute_pipeline_state(&self.mv_f16_basic_pipeline);
 
             let args = MvArgs {
                 ne00: k as i32,
@@ -4813,14 +4807,19 @@ impl MetalContext {
             let thread_group_count =
                 MTLSize { width: ((m + 1) / 2) as u64, height: 1, depth: 1 };
 
-            encoder.set_buffer(0, Some(weights_buffer), 0);
-            encoder.set_buffer(1, Some(input_buffer), 0);
-            encoder.set_buffer(2, Some(&output_buffer), 0);
             encoder.set_bytes(
-                3,
+                0,
                 std::mem::size_of::<MvArgs>() as u64,
                 &args as *const MvArgs as *const std::ffi::c_void,
             );
+            encoder.set_buffer(1, Some(weights_buffer), 0);
+            encoder.set_buffer(2, Some(input_buffer), 0);
+            encoder.set_buffer(3, Some(&output_buffer), 0);
+
+            // Threadgroup memory for reduction: NW * NR0 * sizeof(float) = 32 * 2 * 4 = 256 bytes
+            const THREADGROUP_MEM_SIZE: u64 = 32 * 2 * 4;
+            encoder.set_threadgroup_memory_length(0, THREADGROUP_MEM_SIZE);
+
             encoder
                 .dispatch_thread_groups(thread_group_count, thread_group_size);
         }
