@@ -7,7 +7,7 @@
 
 use crate::inference::{KVCacheBase, dequant_to_f32};
 use crate::model::config::ModelConfig;
-use crate::model::tensor::{DataType, Tensor};
+use crate::model::tensor::{DataType, Tensor, TensorData};
 use crate::model::weights::WeightStore;
 use std::collections::HashMap;
 
@@ -170,7 +170,76 @@ impl LlamaModel {
             .cloned()
             .or_else(|| model.tok_embeddings.clone()); // Tied embeddings
 
+        // Transpose output layer if needed (GGUF stores output weights transposed)
+        // This enables using standard GEMV kernel instead of transposed kernel
+        model.transpose_output_layer();
+
         model
+    }
+
+    /// Transpose output layer weights if stored in transposed format
+    /// GGUF stores output weights as [hidden_size, vocab_size] (column-major)
+    /// We transpose to [vocab_size, hidden_size] for standard GEMV
+    fn transpose_output_layer(&mut self) {
+        let output = match &mut self.output {
+            Some(t) => t,
+            None => return,
+        };
+
+        // Check if weights are transposed: shape = [hidden_size, vocab_size]
+        let hidden_size = self.config.hidden_size;
+        if output.shape.len() != 2 || output.shape[0] != hidden_size {
+            // Not transposed or wrong shape, nothing to do
+            return;
+        }
+
+        let vocab_size = output.shape[1];
+        println!(
+            "Transposing output layer: [{}, {}] -> [{}, {}]",
+            hidden_size, vocab_size, vocab_size, hidden_size
+        );
+
+        // Dequantize to F32
+        let total_elems = hidden_size * vocab_size;
+        let data_f32 =
+            dequant_to_f32(output.bytes(), output.dtype, total_elems);
+
+        // Transpose: column-major [H, V] -> row-major [V, H]
+        let mut transposed = vec![0.0f32; total_elems];
+        for v in 0..vocab_size {
+            for h in 0..hidden_size {
+                // Original: column-major [H, V] -> index = h + v * H
+                // Transposed: row-major [V, H] -> index = v * H + h
+                transposed[v * hidden_size + h] = data_f32[h + v * hidden_size];
+            }
+        }
+
+        // Convert to F16 and store
+        let data_f16: Vec<u16> = transposed
+            .iter()
+            .map(|&v| half::f16::from_f32(v).to_bits())
+            .collect();
+
+        // Update tensor
+        output.shape = vec![vocab_size, hidden_size];
+        output.dtype = DataType::F16;
+        output.data = TensorData::Owned(
+            unsafe {
+                std::slice::from_raw_parts(
+                    data_f16.as_ptr() as *const u8,
+                    data_f16.len() * 2,
+                )
+            }
+            .to_vec(),
+        );
+
+        // Clear any cached GPU buffer
+        #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+        {
+            *output.gpu_buffer.borrow_mut() = None;
+        }
+
+        println!("Output layer transposed successfully");
     }
 
     pub fn layer_count(&self) -> usize {
@@ -2559,9 +2628,11 @@ impl LlamaModel {
 
         // Detect if weight is transposed [hidden_size, vocab_size]
         // vs normal [vocab_size, hidden_size]
+        // Note: transpose_output_layer() should have converted to normal format
+        // But keep fallback for safety
         if output.shape.len() == 2 && output.shape[0] == hidden_size {
             // Transposed weight - use CPU fallback for stability
-            // GPU transposed kernel is complex and can cause system hangs
+            // This path should rarely be taken if transpose worked
             let vocab_size = output.shape[1];
             let mut hidden = vec![0.0f32; hidden_size];
             unsafe {
