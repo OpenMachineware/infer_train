@@ -2620,6 +2620,11 @@ impl LlamaModel {
 
         // 4. Output projection (still in same command buffer)
         let output = self.output.as_ref()?;
+        eprintln!(
+            "[DEBUG] Output layer: shape={:?}, dtype={:?}",
+            output.shape, output.dtype
+        );
+
         let vocab_size =
             if output.shape.len() == 2 && output.shape[1] == hidden_size {
                 // Transposed: [vocab_size, hidden_size]
@@ -2628,6 +2633,8 @@ impl LlamaModel {
                 // Normal: [hidden_size, vocab_size] or [vocab_size]
                 output.shape[0]
             };
+
+        eprintln!("[DEBUG] Vocab size: {}", vocab_size);
 
         // Check if output dtype is supported for GPU encoding
         let supported_for_gpu = matches!(
@@ -2682,6 +2689,19 @@ impl LlamaModel {
                     hidden_size,
                 );
             }
+
+            // Debug: check hidden values
+            let num_nan = hidden.iter().filter(|&&v| v.is_nan()).count();
+            let num_zero = hidden.iter().filter(|&&v| v == 0.0).count();
+            eprintln!(
+                "[DEBUG] Final hidden: {} values, {} NaN, {} zero, range [{:.4}, {:.4}]",
+                hidden.len(),
+                num_nan,
+                num_zero,
+                hidden.iter().cloned().fold(f32::INFINITY, f32::min),
+                hidden.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+            );
+
             return self.gemv_transposed(&hidden, output, vocab_size);
         } else {
             // Normal weight - encode into shared encoder

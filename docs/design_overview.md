@@ -14,6 +14,225 @@ This separation enables systematic optimization across all backends.
 
 ---
 
+## Core Architecture
+
+### Three-Layer Design
+
+The inference engine is organized into three distinct layers, each with clear responsibilities:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Layer 3: Forward Orchestrator                          │
+│  - Architecture detection (Standard/MQA/FusedQKV)       │
+│  - Path selection (GPU vs CPU fallback)                 │
+│  - Expert scheduling (local/remote)                     │
+│  - Top-level forward coordination                       │
+└─────────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────┐
+│  Layer 2: Operation Executor                            │
+│  - GEMV with auto GPU/CPU fallback                      │
+│  - Attention (standard/MQA/fused) dispatcher            │
+│  - FFN (SwiGLU/MLP) dispatcher                          │
+│  - Output projection with transposed detection          │
+│  - Multi-backend support (CPU/GPU/Remote)               │
+└─────────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────┐
+│  Layer 1: Buffer Manager                                │
+│  - Unified buffer pool (create once, reuse across tokens)│
+│  - Buffer location tracking (Local GPU/Remote/CPU)      │
+│  - Transfer queue for heterogeneous memory              │
+│  - KV cache management (GPU kernels for F32→F16)        │
+│  - Prefetch policy for expert scheduling                │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Layer Responsibilities
+
+#### Layer 1: Buffer Manager
+
+**Core Responsibility**: Manage memory locations and data movement.
+
+```rust
+enum BufferLocation {
+    Local(Rc<Buffer>),        // GPU VRAM
+    Remote(RemoteHandle),     // Storage node (AI Max or remote)
+    Host(Box<[u8]>),          // CPU memory
+}
+
+pub struct BufferManager {
+    device: MTLDevice,
+    registry: HashMap<BufferId, BufferLocation>,
+    local_cache: HashMap<BufferId, Rc<Buffer>>,
+    transfer_queue: TransferQueue,
+}
+
+impl BufferManager {
+    // Core interface
+    fn get_or_load(&mut self, id: BufferId) -> Rc<Buffer>;
+    fn prefetch(&mut self, ids: &[BufferId]);
+    fn pin(&mut self, id: BufferId);      // Keep in local cache
+    fn unpin(&mut self, id: BufferId);    // Allow eviction
+}
+```
+
+**Key Features**:
+- Location-aware: Tracks where each tensor resides
+- Transfer queue: Manages async data movement between devices
+- Prefetch support: Predicts next-layer needs for smoother execution
+- Single-user fast path: Direct access for local inference
+
+#### Layer 2: Operation Executor
+
+**Core Responsibility**: Execute compute operations across backends.
+
+```rust
+enum ComputeDevice {
+    LocalGpu,
+    RemoteGpu,
+    Cpu,
+}
+
+pub struct OperationExecutor {
+    device: ComputeDevice,
+    buffer_mgr: Arc<Mutex<BufferManager>>,
+}
+
+impl OperationExecutor {
+    // Async execution with cross-device dependencies
+    fn execute_async(
+        &mut self,
+        op: &Op,
+        inputs: &[BufferId],
+        output: BufferId,
+    ) -> impl Future<Output = Rc<Buffer>>;
+
+    // Synchronous convenience method
+    fn execute(&mut self, op: &Op, inputs: &[BufferId], output: BufferId) -> Rc<Buffer>;
+}
+```
+
+**Key Features**:
+- Multi-backend: CPU (NEON/AVX2), GPU (Metal/CUDA/ROCm), Remote
+- Cross-device sync: Handles data dependencies across devices
+- Format support: All quantization formats (Q4_K, Q5_K, etc.)
+- Fallback logic: Automatic CPU fallback for unsupported formats
+
+#### Layer 3: Forward Orchestrator
+
+**Core Responsibility**: Coordinate forward pass execution and expert scheduling.
+
+```rust
+pub struct ForwardOrchestrator {
+    buffer_mgr: Arc<Mutex<BufferManager>>,
+    executor: OperationExecutor,
+    scheduler: ExpertScheduler,
+    model: Arc<LlamaModel>,
+}
+
+pub trait ExpertScheduler {
+    fn should_prefetch(&self, expert_id: u32) -> bool;
+    fn eviction_candidate(&self) -> Option<BufferId>;
+    fn update_stats(&mut self, expert_id: u32, access_time: Instant);
+}
+```
+
+**Key Features**:
+- Architecture detection: Standard/MQA/MLA/FusedQKV
+- Path selection: GPU-first with CPU fallback for unsupported architectures
+- Expert scheduling: Static partitioning or dynamic replacement (LRU)
+- KV cache lifecycle: Manages cache growth and cleanup
+
+### Design Principles
+
+#### Zero-Cost Abstraction
+
+```rust
+// ✅ Use enums for zero-cost dispatch via monomorphization
+enum Executor {
+    GPU(GPUContext),
+    CPU,
+}
+
+impl Executor {
+    #[inline]
+    fn gemv(&self, ...) -> Vec<f32> {
+        match self {
+            GPU(ctx) => ctx.gemv_gpu(...),
+            CPU => self.gemv_cpu(...),
+        }
+    }
+}
+```
+
+#### Separation of Concerns
+
+- **Buffer Manager**: Knows WHERE data is, not HOW to compute
+- **Operation Executor**: Knows HOW to compute, not WHERE data comes from
+- **Forward Orchestrator**: Knows WHAT to compute, delegates the rest
+
+#### Performance-Critical Paths Stay Fast
+
+```rust
+// GPU kernels (60-80% of execution time) unchanged by refactoring
+gpu_ctx.flash_attn_f16_encode(...);
+gpu_ctx.mv_q4_k_encode(...);
+```
+
+---
+
+## Module Organization
+
+```
+src/
+  orchestrator/           # Layer 3: Forward coordination
+    forward.rs            # Main forward pass orchestrator
+    architecture.rs       # Architecture detection (Standard/MQA/MLA)
+    scheduler.rs          # Expert scheduling (static/dynamic)
+    kv_lifecycle.rs       # KV cache management
+
+  executor/               # Layer 2: Operation execution
+    mod.rs                # Executor trait and dispatcher
+    gemv.rs               # GEMV with GPU/CPU fallback
+    attention.rs          # Attention variants (standard/MQA/fused)
+    ffn.rs                # FFN variants (SwiGLU/MLP)
+    output.rs             # Output projection (transposed detection)
+    cpu.rs                # CPU backend (NEON/AVX2)
+    gpu.rs                # GPU backend (Metal/CUDA/ROCm)
+    remote.rs             # Remote execution (future)
+
+  buffer/                 # Layer 1: Memory management
+    manager.rs            # Buffer pool and location tracking
+    location.rs           # BufferLocation enum
+    transfer.rs           # Transfer queue for heterogeneity
+    prefetch.rs           # Prefetch policy
+    kv_cache.rs           # KV cache GPU management
+
+  dag/                    # DAG construction and optimization
+    builder.rs            # Model architecture → DAG
+    optimizer.rs          # Platform-independent fusion
+    executor.rs           # DAG traversal and dispatch
+
+  model/                  # GGUF parsing, model architectures
+    gguf.rs               # File format parser
+    weights.rs            # Weight storage
+    llama.rs              # Llama architecture
+    moe.rs                # MoE layers
+    mamba.rs              # Mamba/SSM layers
+
+  quant/                  # Quantization types and kernels
+    k_quant.rs            # K-quant family (Q2_K-Q6_K)
+    iq_quant.rs           # IQ series
+    standard.rs           # Q4_0, Q4_1, Q5_0, Q5_1, Q8_0
+
+  platform/               # CPU/GPU feature detection
+    cpu.rs                # ARM/x86 detection
+    gpu.rs                # Metal/CUDA/ROCm detection
+```
+
+---
+
 ## Optimization Strategy
 
 ### Three-Phase Approach
@@ -60,60 +279,69 @@ llama.cpp does per-backend fusion (limited gains). Our approach:
 - **GPU**: CUDA (NVIDIA), ROCm (AMD)
 - **CPU**: SVE (ARMv9)
 
+### Heterogeneous Architectures
+
+The three-layer design supports future heterogeneous deployments:
+
+#### Scenario 1: Separate Machines (PC + AI Max)
+
+**Topology**:
+- Compute node: Consumer GPU (high FLOPS, limited VRAM)
+- Storage node: AMD AI Max (large unified memory, lower FLOPS)
+- Communication: Network (1-10ms latency, ~3GB/s USB4) or PCIe
+
+**Use Case**: MoE models with more experts than fit in GPU VRAM.
+
+**Buffer Manager Role**:
+- Tracks expert locations (local GPU vs remote)
+- Manages transfer queue for expert loading
+- Prefetch strategy based on token prediction
+
+#### Scenario 2: Single Machine (AI Max motherboard + GPU card)
+
+**Topology**:
+- AMD AI Max motherboard with unified memory
+- Consumer GPU card via PCIe or special interconnect
+- Communication: Memory-VRAM direct (potentially 16-32GB/s)
+
+**Advantage**: Lower latency, higher bandwidth for expert swapping.
+
+**Buffer Manager Role**:
+- Same as Scenario 1, but with faster transfers
+- Potential for finer-grained expert scheduling
+
+#### Expert Scheduling Strategy
+
+For MoE models (e.g., DeepSeek-V3 with 256 experts, ~250MB each in Q4_K):
+
+**Static Partitioning**:
+- Analyze historical access patterns
+- Pin most-used experts in GPU VRAM
+- Store remaining experts in remote memory
+
+**Dynamic Replacement**:
+- LRU-based eviction when VRAM full
+- Prefetch predicted experts based on current token
+- Latency budget: Must complete transfer before expert needed
+
+**Buffer Manager Abstraction**:
+```rust
+impl BufferManager {
+    fn ensure_available(&mut self, expert_id: u32) -> Rc<Buffer> {
+        if let Some(buf) = self.local_cache.get(&expert_id) {
+            return buf.clone();
+        }
+        // Trigger transfer, possibly evict another expert
+        self.transfer_and_evict(expert_id)
+    }
+}
+```
+
 ### Feature Detection
 
 - Detect CPU features at startup: arch, vendor, SIMD capabilities
 - Detect GPU features at startup: vendor, memory, supported operations
 - Zero runtime overhead: selection happens once at init
-
----
-
-## Core Architecture
-
-```
-┌─────────────────────────────────────────┐
-│        InferenceEngine (Rust)           │
-├─────────────────────────────────────────┤
-│  Model Loader (GGUF Parser)             │
-│  DAG Builder (Architecture → Graph)     │
-│  DAG Executor (Traverse + Dispatch)     │
-├─────────────────────────────────────────┤
-│  CPU Kernels (NEON/AVX2/Scalar)         │
-│  GPU Kernels (Metal/CUDA/ROCm)          │
-│  Unified Memory Manager                 │
-├─────────────────────────────────────────┤
-│  Single-User Fast Path                  │ ← Zero overhead
-│  Multi-User Batch Path                  │ ← vLLM features
-└─────────────────────────────────────────┘
-```
-
----
-
-## Module Organization
-
-```
-src/
-  platform/         # CPU/GPU feature detection
-    cpu.rs          # ARM/x86 detection
-    gpu.rs          # Metal/CUDA/ROCm detection
-  dag/              # NEW: DAG construction and optimization
-    builder.rs      # Model architecture → DAG
-    optimizer.rs    # Platform-independent fusion
-    executor.rs     # DAG traversal and dispatch
-  ops/              # Operator implementations
-    arm/            # ARM CPU operators
-    x86/            # x86 CPU operators
-    metal/          # Metal GPU operators
-    cuda/           # CUDA operators (future)
-    common/         # Shared utilities
-  model/            # GGUF parsing, model architectures
-    gguf.rs         # File format parser
-    weights.rs      # Weight storage
-    llama.rs        # Llama architecture
-    moe.rs          # MoE layers
-    mamba.rs        # Mamba/SSM layers
-  quant/            # Quantization types
-```
 
 ---
 
@@ -127,7 +355,7 @@ src/
 - Standard: Q4_0, Q4_1, Q5_0, Q5_1, Q8_0
 - Attention, Norm, Top-K, Argsort: 100%+
 
-**GPU Kernels (Metal)**: ⚠️ Debugging
+**GPU Kernels (Metal)**: 🔧 Debugging
 - MV/GEMM: All 23 formats implemented, performance bugs pending
 - Flash Attention: Decode (107 GFLOPS), Prefill (1106 GFLOPS)
 - Operators: RMS_NORM, SOFTMAX, ROPE, etc.
@@ -141,6 +369,11 @@ src/
 - Current: 1.09 t/s (CPU fallback for stability)
 - Target: 167 t/s (llama.cpp baseline)
 - Blockers: GPU GEMV kernel bugs, command buffer batching
+
+**Architecture Refactoring**: 📋 Planned
+- Three-layer design finalized
+- Heterogeneous support designed into Layer 1
+- Implementation starting with Buffer Manager
 
 ---
 
@@ -171,18 +404,69 @@ src/
 | CUDA | Tensor cores, cooperative groups | +5% |
 | ROCm | Wavefront operations | +5% |
 
+### Quantization Advantage
+
+| Quantization | VRAM Reduction | Concurrent Users |
+|--------------|----------------|------------------|
+| FP16 | 1x (baseline) | 1x |
+| Q8_0 | 2x | 2x |
+| Q5_K | 3.2x | 3x |
+| Q4_K | 4x | 4x |
+
+**Server Market Strategy**: Q4_K can run 4x more concurrent requests than FP16, enabling higher throughput at lower cost.
+
 ---
 
 ## Next Steps
 
-1. **Fix GPU kernel bugs** (GEMV, KV update, command buffer batching)
-2. **Achieve baseline performance** (167 t/s on 7B Q4_K)
-3. **Implement DAG builder** (separate execution planning from execution)
-4. **Add platform-independent fusion** (DAG optimizer)
-5. **Add backend-specific fusion** (Metal optimizer)
+### Phase 1: Fix Immediate Issues (P0)
+
+1. **Fix GPU kernel bugs**
+   - GEMV correctness for all quantization formats
+   - KV cache update kernel validation
+   - Command buffer batching
+
+2. **Achieve baseline performance**
+   - Target: 167 t/s on 7B Q4_K
+   - GPU must be faster than CPU (≥10%)
+
+3. **Validate architecture coverage**
+   - Standard LLaMA ✅
+   - MQA/MLA (DeepSeek) - CPU fallback
+   - Fused QKV (Qwen)
+
+### Phase 2: Architecture Refactoring (P1)
+
+1. **Implement Layer 1: Buffer Manager**
+   - Unified buffer pool with reuse
+   - Buffer location tracking
+   - Transfer queue interface (future heterogeneity)
+   - Expected speedup: 5-10%
+
+2. **Implement Layer 2: Operation Executor**
+   - Consolidate GPU/CPU fallback logic
+   - Multi-backend interface
+
+3. **Implement Layer 3: Forward Orchestrator**
+   - Architecture detection in single place
+   - Expert scheduler interface (future MoE)
+
+### Phase 3: DAG-Based Optimization (P2)
+
+1. **Implement DAG Builder**
+   - Model architecture → compute graph
+   - Separate execution planning from execution
+
+2. **Add Platform-Independent Fusion**
+   - SiLU + Mul, Residual inlining
+   - Expected speedup: +20%
+
+3. **Add Backend-Specific Fusion**
+   - Metal-specific optimizations
+   - Expected speedup: +5%
 
 ---
 
 **Created**: 2026-09-22
-**Updated**: 2026-10-16
-**Status**: Phase 1 (Baseline) - Debugging GPU kernels
+**Updated**: 2026-10-17
+**Status**: Phase 1 (Baseline) - Architecture refactoring planned
