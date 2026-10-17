@@ -391,3 +391,7 @@ path = "tools/test_gemm_perf.rs"
 [[bin]]
 name = "test-buffer-manager"
 path = "tools/test_buffer_manager.rs"
+
+[[bin]]
+name = "test-buffer-manager-correctness"
+path = "tools/test_buffer_manager_correctness.rs"

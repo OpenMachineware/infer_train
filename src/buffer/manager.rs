@@ -332,6 +332,7 @@ impl BufferManager {
                 }
                 let buf = self.host_pool.get(size);
                 self.host_cache.insert(id, buf.clone());
+                self.registry.insert(id, BufferLocation::Host(buf.clone()));
                 BufferRef::Cpu(buf)
             }
         }
@@ -348,6 +349,38 @@ impl BufferManager {
         _to: ComputeDevice,
     ) {
         // No-op on non-Metal platforms
+    }
+
+    pub fn pin(&mut self, id: BufferId) {
+        self.pinned.insert(id, true);
+    }
+
+    pub fn unpin(&mut self, id: BufferId) {
+        self.pinned.remove(&id);
+    }
+
+    pub fn is_pinned(&self, id: &BufferId) -> bool {
+        self.pinned.contains_key(id)
+    }
+
+    pub fn evict(&mut self) {
+        // Evict CPU buffers
+        let to_evict_host: Vec<BufferId> = self
+            .host_cache
+            .keys()
+            .filter(|id| !self.pinned.contains_key(id))
+            .cloned()
+            .collect();
+
+        for id in to_evict_host {
+            if let Some(buf) = self.host_cache.remove(&id) {
+                self.host_pool.release(buf);
+                // Update registry
+                if let Some(location) = self.registry.get_mut(&id) {
+                    *location = BufferLocation::Remote { size: 0, offset: 0 };
+                }
+            }
+        }
     }
 
     pub fn stats(&self) -> BufferManagerStats {
