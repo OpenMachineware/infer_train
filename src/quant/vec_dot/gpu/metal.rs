@@ -4782,11 +4782,11 @@ impl MetalContext {
 
             encoder.set_compute_pipeline_state(pipeline);
 
-            // Use multi-simdgroup for medium K, single for very large K
-            let nsg: i16 = if use_4 && k >= 512 && k < 2048 {
-                2 // Optimal for K=512
+            // Match llama.cpp NSG formula: min(4, (K+127)/128)
+            let nsg: i16 = if use_4 {
+                std::cmp::min(4, (k + 127) / 128) as i16
             } else {
-                1 // Single-simdgroup better for K<512 and K>=2048
+                1
             };
 
             let args = MvArgs {
