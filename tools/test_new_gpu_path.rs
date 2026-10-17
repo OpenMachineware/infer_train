@@ -6,6 +6,7 @@
 use infer_train::inference::{Device, InferenceContext};
 use infer_train::model::GgufFile;
 use infer_train::tokenize::BpeTokenizer;
+use std::rc::Rc;
 use std::time::Instant;
 
 fn main() {

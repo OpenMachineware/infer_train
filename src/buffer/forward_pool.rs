@@ -51,7 +51,7 @@ impl ForwardBufferPool {
 
     /// Get a buffer of the specified size
     ///
-    /// First tries to reuse from the pool, then creates a new buffer.
+    /// Creates new buffer or reuses from pool. Always zeros the buffer.
     /// The buffer is kept alive in this pool until the forward pass completes.
     pub fn get(&mut self, size: usize) -> Rc<Buffer> {
         // Round up to power of 2 for better reuse
@@ -64,16 +64,32 @@ impl ForwardBufferPool {
                 pool.iter().position(|b| b.length() as usize >= size_class)
             {
                 let buf = pool.remove(idx);
+                // Zero reused buffer to ensure clean state
+                unsafe {
+                    std::ptr::write_bytes(
+                        buf.contents() as *mut u8,
+                        0,
+                        buf.length() as usize,
+                    );
+                }
                 self.buffers.push(buf.clone());
                 return buf;
             }
         }
 
-        // Create new buffer
+        // Create new buffer (Metal doesn't zero new buffers)
         let buf = Rc::new(self.device.new_buffer(
             size_class as u64,
             MTLResourceOptions::StorageModeShared,
         ));
+        // Zero new buffer too
+        unsafe {
+            std::ptr::write_bytes(
+                buf.contents() as *mut u8,
+                0,
+                buf.length() as usize,
+            );
+        }
         self.buffers.push(buf.clone());
         buf
     }

@@ -160,6 +160,38 @@ name = "test-new-gpu-path"
 path = "tools/test_new_gpu_path.rs"
 
 [[bin]]
+name = "test-single-layer-debug"
+path = "tools/test_single_layer_debug.rs"
+
+[[bin]]
+name = "test-sequential-layers"
+path = "tools/test_sequential_layers.rs"
+
+[[bin]]
+name = "test-minimal-chain"
+path = "tools/test_minimal_chain.rs"
+
+[[bin]]
+name = "test-chain-forward"
+path = "tools/test_chain_forward.rs"
+
+[[bin]]
+name = "test-buffer-debug"
+path = "tools/test_buffer_debug.rs"
+
+[[bin]]
+name = "test-layer1-input"
+path = "tools/test_layer1_input.rs"
+
+[[bin]]
+name = "test-trace-operations"
+path = "tools/test_trace_operations.rs"
+
+[[bin]]
+name = "test-exact-pattern"
+path = "tools/test_exact_pattern.rs"
+
+[[bin]]
 name = "test-forward-pool"
 path = "tools/test_forward_pool.rs"
 
@@ -419,3 +451,35 @@ path = "tools/test_operation_executor.rs"
 [[bin]]
 name = "test-layer-integration"
 path = "tools/test_layer_integration.rs"
+
+[[bin]]
+name = "test-gpu-forward-detailed"
+path = "tools/test_gpu_forward_detailed.rs"
+
+[[bin]]
+name = "test-gpu-final-hidden"
+path = "tools/test_gpu_final_hidden.rs"
+
+[[bin]]
+name = "test-rms-norm"
+path = "tools/test_rms_norm.rs"
+
+[[bin]]
+name = "test-n-layers"
+path = "tools/test_n_layers.rs"
+
+[[bin]]
+name = "test-layer1"
+path = "tools/test_layer1.rs"
+
+[[bin]]
+name = "test-buffer-conflict"
+path = "tools/test_buffer_conflict.rs"
+
+[[bin]]
+name = "test-kv-cache-update"
+path = "tools/test_kv_cache_update.rs"
+
+[[bin]]
+name = "test-kv-dims"
+path = "tools/test_kv_dims.rs"

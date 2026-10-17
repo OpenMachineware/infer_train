@@ -2676,10 +2676,7 @@ impl LlamaModel {
             command_buffer.commit();
             command_buffer.wait_until_completed();
 
-            // Forward pools are dropped here, releasing buffers
-            drop(forward_pools);
-            drop(final_pool);
-
+            // Read final_hidden BEFORE dropping pools (buffer still alive)
             let mut hidden = vec![0.0f32; hidden_size];
             unsafe {
                 std::ptr::copy_nonoverlapping(
@@ -2689,8 +2686,30 @@ impl LlamaModel {
                 );
             }
 
+            // Debug: check hidden values
+            let num_nan = hidden.iter().filter(|&&v| v.is_nan()).count();
+            let num_zero = hidden.iter().filter(|&&v| v == 0.0).count();
+            eprintln!(
+                "[DEBUG] Hidden buffer before output projection: {} NaN, {} zero, first 5: {:?}",
+                num_nan,
+                num_zero,
+                &hidden[..5.min(hidden.len())]
+            );
+
+            // Now drop forward pools, releasing buffers
+            drop(forward_pools);
+            drop(final_pool);
+
             if output.shape.len() == 2 && output.shape[1] == hidden_size {
-                return self.gemv_transposed(&hidden, output, vocab_size);
+                let result = self.gemv_transposed(&hidden, output, vocab_size);
+                eprintln!(
+                    "[DEBUG] gemv_transposed result: first 5: {:?}",
+                    &result
+                        .as_ref()
+                        .map(|r| r[..5.min(r.len())].to_vec())
+                        .unwrap_or_default()
+                );
+                return result;
             } else {
                 return self.gemv(&hidden, output, vocab_size);
             }
@@ -2718,11 +2737,7 @@ impl LlamaModel {
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
-        // Forward pools are dropped here, releasing all buffers to reuse pool
-        drop(forward_pools);
-        drop(final_pool);
-
-        // Download logits
+        // Download logits BEFORE dropping pools (buffers still alive)
         let mut logits = vec![0.0f32; vocab_size];
         unsafe {
             std::ptr::copy_nonoverlapping(
@@ -2731,6 +2746,10 @@ impl LlamaModel {
                 vocab_size,
             );
         }
+
+        // Now drop forward pools, releasing all buffers to reuse pool
+        drop(forward_pools);
+        drop(final_pool);
 
         Some(logits)
     }
@@ -2751,6 +2770,9 @@ impl LlamaModel {
         let hidden_size = self.config.hidden_size;
         let pos = kv_cache.seq_len();
         let head_dim = self.config.head_dim;
+
+        // Register the input buffer to keep it alive during GPU execution
+        let hidden_buffer = forward_pool.register(hidden_buffer.clone());
 
         // Get layer weights
         let attention_norm = layer.attention_norm.as_ref()?;
@@ -2779,32 +2801,32 @@ impl LlamaModel {
         let v_buffer = forward_pool.get_zeroed(v_out_size * 4);
 
         // 3. RoPE outputs
-        let q_rope_buffer = forward_pool.get(q_out_size * 4);
-        let k_rope_buffer = forward_pool.get(k_out_size * 4);
+        let q_rope_buffer = forward_pool.get_zeroed(q_out_size * 4);
+        let k_rope_buffer = forward_pool.get_zeroed(k_out_size * 4);
 
         // 4. Flash attention output
-        let attn_out_buffer = forward_pool.get(q_out_size * 4);
+        let attn_out_buffer = forward_pool.get_zeroed(q_out_size * 4);
 
         // 5. Output projection
-        let attn_proj_buffer = forward_pool.get(hidden_size * 4);
+        let attn_proj_buffer = forward_pool.get_zeroed(hidden_size * 4);
 
         // 6. Residual add
-        let residual_buffer = forward_pool.get(hidden_size * 4);
+        let residual_buffer = forward_pool.get_zeroed(hidden_size * 4);
 
         // 7. FFN norm output
-        let ffn_normed_buffer = forward_pool.get(hidden_size * 4);
+        let ffn_normed_buffer = forward_pool.get_zeroed(hidden_size * 4);
 
         // 8. FFN intermediate outputs (for SwiGLU)
         let intermediate_size =
             layer.w1.as_ref().map(|w| w.shape[1]).unwrap_or(0);
-        let gate_buffer = forward_pool.get(intermediate_size * 4);
-        let up_buffer = forward_pool.get(intermediate_size * 4);
-        let silu_buffer = forward_pool.get(intermediate_size * 4);
-        let hidden_ffn_buffer = forward_pool.get(intermediate_size * 4);
-        let ffn_out_buffer = forward_pool.get(hidden_size * 4);
+        let gate_buffer = forward_pool.get_zeroed(intermediate_size * 4);
+        let up_buffer = forward_pool.get_zeroed(intermediate_size * 4);
+        let silu_buffer = forward_pool.get_zeroed(intermediate_size * 4);
+        let hidden_ffn_buffer = forward_pool.get_zeroed(intermediate_size * 4);
+        let ffn_out_buffer = forward_pool.get_zeroed(hidden_size * 4);
 
         // 9. Final output
-        let final_buffer = forward_pool.get(hidden_size * 4);
+        let final_buffer = forward_pool.get_zeroed(hidden_size * 4);
 
         // ====================================================================
         // Encode all operations into shared encoder (no commit!)
@@ -2814,7 +2836,7 @@ impl LlamaModel {
         let norm_weight_buffer = gpu_ctx.get_or_create_buffer(attention_norm);
         gpu_ctx.rms_norm_encode(
             encoder,
-            hidden_buffer,
+            &hidden_buffer,
             &norm_weight_buffer,
             &normed_buffer,
             1,
@@ -2917,6 +2939,13 @@ impl LlamaModel {
             head_dim,
         );
 
+        // Memory barrier to ensure KV cache writes are visible to Flash Attention
+        use metal::ResourceRef;
+        encoder.memory_barrier_with_resources(&[
+            k_cache.as_ref() as &ResourceRef,
+            v_cache.as_ref() as &ResourceRef,
+        ]);
+
         // 5. Flash attention
         gpu_ctx.flash_attn_f16_encode(
             encoder,
@@ -2945,7 +2974,7 @@ impl LlamaModel {
         // 7. Residual add
         gpu_ctx.add_encode(
             encoder,
-            hidden_buffer,
+            &hidden_buffer,
             &attn_proj_buffer,
             &residual_buffer,
             hidden_size,
