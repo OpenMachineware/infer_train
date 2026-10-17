@@ -437,10 +437,19 @@ impl MetalContext {
             })?;
 
         // Create separate pipelines for each NSG value
+        // Create pipelines with function constants (matching llama.cpp approach)
+        // NSG=1
+        let mut fc_nsg1 = metal::FunctionConstantValues::new();
+        let nsg1: i16 = 1;
+        fc_nsg1.set_constant_value_at_index(
+            &nsg1 as *const i16 as *const std::ffi::c_void,
+            metal::MTLDataType::Short,
+            600, // FC_MUL_MV base index
+        );
         let mv_f16_4_nsg1_kernel = mv_f16_library
-            .get_function("kernel_mul_mv_f16_f32_4_nsg1", None)
+            .get_function("kernel_mul_mv_f16_f32_4", Some(fc_nsg1))
             .map_err(|e| {
-                format!("Failed to get F16 GEMV _4_nsg1 kernel: {}", e)
+                format!("Failed to get F16 GEMV _4 kernel with NSG=1: {}", e)
             })?;
         let mv_f16_4_nsg1_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_f16_4_nsg1_kernel)
@@ -448,10 +457,18 @@ impl MetalContext {
                 format!("Failed to create F16 GEMV _4_nsg1 pipeline: {}", e)
             })?;
 
+        // NSG=2
+        let mut fc_nsg2 = metal::FunctionConstantValues::new();
+        let nsg2: i16 = 2;
+        fc_nsg2.set_constant_value_at_index(
+            &nsg2 as *const i16 as *const std::ffi::c_void,
+            metal::MTLDataType::Short,
+            600,
+        );
         let mv_f16_4_nsg2_kernel = mv_f16_library
-            .get_function("kernel_mul_mv_f16_f32_4_nsg2", None)
+            .get_function("kernel_mul_mv_f16_f32_4", Some(fc_nsg2))
             .map_err(|e| {
-                format!("Failed to get F16 GEMV _4_nsg2 kernel: {}", e)
+                format!("Failed to get F16 GEMV _4 kernel with NSG=2: {}", e)
             })?;
         let mv_f16_4_nsg2_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_f16_4_nsg2_kernel)
@@ -459,10 +476,18 @@ impl MetalContext {
                 format!("Failed to create F16 GEMV _4_nsg2 pipeline: {}", e)
             })?;
 
+        // NSG=4
+        let mut fc_nsg4 = metal::FunctionConstantValues::new();
+        let nsg4: i16 = 4;
+        fc_nsg4.set_constant_value_at_index(
+            &nsg4 as *const i16 as *const std::ffi::c_void,
+            metal::MTLDataType::Short,
+            600,
+        );
         let mv_f16_4_nsg4_kernel = mv_f16_library
-            .get_function("kernel_mul_mv_f16_f32_4_nsg4", None)
+            .get_function("kernel_mul_mv_f16_f32_4", Some(fc_nsg4))
             .map_err(|e| {
-                format!("Failed to get F16 GEMV _4_nsg4 kernel: {}", e)
+                format!("Failed to get F16 GEMV _4 kernel with NSG=4: {}", e)
             })?;
         let mv_f16_4_nsg4_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_f16_4_nsg4_kernel)

@@ -9,6 +9,10 @@ using namespace metal;
 #define FOR_UNROLL(x) _Pragma("clang loop unroll(full)") for (x)
 #define N_SIMDWIDTH 32
 
+// Function constants for runtime kernel specialization
+// Base index 600 matches llama.cpp convention
+constant short FC_mul_mv_nsg [[function_constant(600)]];
+
 // Parameter struct for matrix-vector multiplication
 typedef struct {
     int32_t  ne00;  // K
@@ -179,8 +183,7 @@ kernel void kernel_mul_mv_f16_f32(
 // Exact match of llama.cpp implementation
 // ============================================================================
 
-template<short NSG>
-kernel void kernel_mul_mv_f16_f32_4_nsg(
+kernel void kernel_mul_mv_f16_f32_4(
         constant mul_mv_args & args,
         device const char * src0,
         device const char * src1,
@@ -189,6 +192,8 @@ kernel void kernel_mul_mv_f16_f32_4_nsg(
         uint3  tgpig[[threadgroup_position_in_grid]],
         ushort tiisg[[thread_index_in_simdgroup]],
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    const short NSG = FC_mul_mv_nsg;  // Use function constant instead of template
+
     constexpr short NR0 = 2;
     constexpr short NW = N_SIMDWIDTH;  // 32
     constexpr short NB  = 32;  // Block size in elements
@@ -258,12 +263,3 @@ kernel void kernel_mul_mv_f16_f32_4_nsg(
     device float * dst_f32 = (device float *) dst + (uint64_t)r1*args.ne0;
     helper_mv_reduce_and_write<NR0>(dst_f32, sumf, r0, args.ne01, tiisg, sgitg, shmem);
 }
-
-// Instantiate for different NSG values
-typedef decltype(kernel_mul_mv_f16_f32_4_nsg<1>) mul_mv_4_nsg1_t;
-typedef decltype(kernel_mul_mv_f16_f32_4_nsg<2>) mul_mv_4_nsg2_t;
-typedef decltype(kernel_mul_mv_f16_f32_4_nsg<4>) mul_mv_4_nsg4_t;
-
-template [[host_name("kernel_mul_mv_f16_f32_4_nsg1")]] kernel mul_mv_4_nsg1_t kernel_mul_mv_f16_f32_4_nsg<1>;
-template [[host_name("kernel_mul_mv_f16_f32_4_nsg2")]] kernel mul_mv_4_nsg2_t kernel_mul_mv_f16_f32_4_nsg<2>;
-template [[host_name("kernel_mul_mv_f16_f32_4_nsg4")]] kernel mul_mv_4_nsg4_t kernel_mul_mv_f16_f32_4_nsg<4>;
