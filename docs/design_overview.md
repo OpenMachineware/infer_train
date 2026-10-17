@@ -78,10 +78,56 @@ impl BufferManager {
 ```
 
 **Key Features**:
-- Location-aware: Tracks where each tensor resides
+- Location-aware: Tracks where each tensor resides (GPU VRAM / CPU Memory / Remote)
+- CPU buffer management: Manages host memory for CPU fallback operations
+- Transfer interface: Moves data between GPU and CPU as needed
 - Transfer queue: Manages async data movement between devices
 - Prefetch support: Predicts next-layer needs for smoother execution
 - Single-user fast path: Direct access for local inference
+
+**CPU Support Details**:
+
+```rust
+impl BufferManager {
+    /// Get buffer on specific device (GPU or CPU)
+    pub fn get_or_load_on(&mut self, id: BufferId, size: usize, device: ComputeDevice) -> BufferRef {
+        match device {
+            ComputeDevice::Cpu => {
+                // CPU buffer pool for fallback operations
+                self.host_pool.get(size)
+            }
+            ComputeDevice::LocalGpu => {
+                // Existing GPU logic
+                self.get_or_load(id, size)
+            }
+        }
+    }
+
+    /// Transfer buffer between devices
+    pub fn transfer(&mut self, id: BufferId, from: ComputeDevice, to: ComputeDevice) {
+        // GPU -> CPU: Copy from Metal buffer to host memory
+        // CPU -> GPU: Upload to Metal buffer
+    }
+
+    /// Get buffer location
+    pub fn get_location(&self, id: &BufferId) -> Option<&BufferLocation> {
+        self.registry.get(id)
+    }
+}
+
+/// Unified buffer reference
+pub enum BufferRef {
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    Gpu(Rc<Buffer>),
+    Cpu(Box<[u8]>),
+}
+```
+
+**Use Cases**:
+1. **Pure CPU inference**: All buffers in `host_pool`, no GPU usage
+2. **GPU-first with CPU fallback**: Most operations on GPU, unsupported formats fall back to CPU
+3. **Mixed execution**: Some layers on GPU, some on CPU (e.g., MQA architectures)
+4. **Data transfer**: Automatically move data when operation needs it on different device
 
 #### Layer 2: Operation Executor
 
