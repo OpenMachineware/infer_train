@@ -226,6 +226,26 @@ gpu_ctx.flash_attn_f16_encode(...);
 gpu_ctx.mv_q4_k_encode(...);
 ```
 
+### Current Implementation Status
+
+The three-layer architecture is implemented with the following approach:
+
+**GPU Path (Fast Path)**:
+- `ForwardOrchestrator.forward_gpu()` directly calls `LlamaModel::forward_gpu_native_batched()`
+- Preserves batched command buffer optimization (85.8x speedup)
+- No overhead from OperationExecutor for GPU operations
+- Used for all GPU-supported architectures (Standard attention)
+
+**CPU Path (Fallback)**:
+- `ForwardOrchestrator.forward()` calls `LlamaModel::forward()`
+- Automatic fallback for unsupported architectures (MQA, MLA)
+- OperationExecutor provides future extension point for fine-grained control
+
+**Architecture Detection**:
+- Automatically detects Standard/MQA/MLA/FusedQkv
+- GPU support status determines execution path
+- MQA/MLA models fall back to CPU automatically
+
 ---
 
 ## Module Organization

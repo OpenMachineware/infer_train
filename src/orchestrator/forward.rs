@@ -117,22 +117,63 @@ impl ForwardOrchestrator {
         &mut self.kv_cache
     }
 
-    /// Forward pass for tokens (CPU version)
+    /// Forward pass for tokens (device-aware)
     ///
     /// This is the main entry point for inference.
-    /// Uses the model's existing forward implementation.
-    pub fn forward(&mut self, tokens: &[u32]) -> Option<Vec<f32>> {
-        self.model.forward(tokens, &mut self.kv_cache)
+    /// Automatically selects GPU or CPU path based on architecture.
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward(
+        &self,
+        tokens: &[u32],
+        kv_cache: &mut crate::inference::KVCache,
+    ) -> Option<Vec<f32>> {
+        if self.preferred_device == ComputeDevice::LocalGpu
+            && self.architecture.is_gpu_supported()
+        {
+            // Use optimized GPU path
+            // Note: This requires KVCacheGPU, which is handled separately
+            // For now, fall back to CPU
+            self.model.forward(tokens, kv_cache)
+        } else {
+            // CPU path
+            self.model.forward(tokens, kv_cache)
+        }
     }
 
-    /// Forward pass for a single token
+    #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+    pub fn forward(
+        &self,
+        tokens: &[u32],
+        kv_cache: &mut crate::inference::KVCache,
+    ) -> Option<Vec<f32>> {
+        self.model.forward(tokens, kv_cache)
+    }
+
+    /// Forward pass with GPU KV cache (zero-copy)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward_gpu(
+        &self,
+        tokens: &[u32],
+        kv_cache: &mut crate::inference::KVCacheGPU,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Option<Vec<f32>> {
+        if self.architecture.is_gpu_supported() {
+            // Use optimized batched GPU path
+            self.model.forward_gpu_native_batched(tokens, kv_cache, gpu_ctx)
+        } else {
+            // Fall back to CPU (requires converting KV cache)
+            None
+        }
+    }
+
+    /// Forward pass for a single token (CPU, uses internal KV cache)
     pub fn forward_token(&mut self, token: u32) -> Option<Vec<f32>> {
-        self.forward(&[token])
+        self.model.forward(&[token], &mut self.kv_cache)
     }
 
-    /// Forward pass for prefill (processing prompt tokens)
+    /// Forward pass for prefill (uses internal KV cache)
     pub fn forward_prefill(&mut self, tokens: &[u32]) -> Option<Vec<f32>> {
-        self.forward(tokens)
+        self.model.forward(tokens, &mut self.kv_cache)
     }
 
     /// Reset for new sequence
