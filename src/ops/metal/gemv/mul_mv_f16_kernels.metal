@@ -175,7 +175,7 @@ kernel void kernel_mul_mv_f16_f32(
 }
 
 // ============================================================================
-// 3. Optimized version: float4 with block processing (K % 4 == 0)
+// 3. Optimized version: float4 with strided processing (K % 4 == 0)
 // ============================================================================
 kernel void kernel_mul_mv_f16_f32_4(
         constant mul_mv_args & args,
@@ -193,38 +193,27 @@ kernel void kernel_mul_mv_f16_f32_4(
     // Cast to float4 pointers for vectorized access
     device const float4 * y4 = (device const float4 *) (src1 + r1 * args.nb11);
     device const half4 * ax4[NR0];
-    for (short row = 0; row < NR0; ++row) {
+    FOR_UNROLL (short row = 0; row < NR0; ++row) {
         ax4[row] = (device const half4 *) (src0 + (r0 + row) * args.nb01);
     }
 
-    float sumf[NR0] = { 0.f, 0.f };
+    float sumf[NR0] = { [ 0 ... NR0 - 1 ] = 0.0f };
 
-    const int nb = args.ne00 / 32;  // Number of 32-element blocks
+    const int nb = args.ne00 / 4;  // Number of float4 vectors
 
-    // Process blocks in strided fashion
-    // Each block has 32 elements = 8 float4 vectors
-    // Process 2 groups of 4 float4 (16 elements each)
+    // Process float4 vectors in strided fashion
     for (int ib = tiisg; ib < nb; ib += NW) {
-        // First group of 4 float4 vectors
-        float4 y4b_0[4] = { y4[ib*8 + 0], y4[ib*8 + 1], y4[ib*8 + 2], y4[ib*8 + 3] };
-        // Second group of 4 float4 vectors
-        float4 y4b_1[4] = { y4[ib*8 + 4], y4[ib*8 + 5], y4[ib*8 + 6], y4[ib*8 + 7] };
+        float4 yv = y4[ib];
 
-        // Compute dot products for both rows
-        for (short row = 0; row < NR0; ++row) {
-            float4 acc0 = 0.0f;
-            float4 acc1 = 0.0f;
-            for (int j = 0; j < 4; ++j) {
-                acc0 += float4(ax4[row][ib*8 + j]) * y4b_0[j];
-                acc1 += float4(ax4[row][ib*8 + 4 + j]) * y4b_1[j];
-            }
-            sumf[row] += acc0[0] + acc0[1] + acc0[2] + acc0[3];
-            sumf[row] += acc1[0] + acc1[1] + acc1[2] + acc1[3];
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            float4 wv = float4(ax4[row][ib]);
+            float4 prod = wv * yv;
+            sumf[row] += prod[0] + prod[1] + prod[2] + prod[3];
         }
     }
 
     // Reduce within simdgroup
-    for (short row = 0; row < NR0; ++row) {
+    FOR_UNROLL (short row = 0; row < NR0; ++row) {
         sumf[row] = simd_sum(sumf[row]);
     }
 
@@ -232,7 +221,7 @@ kernel void kernel_mul_mv_f16_f32_4(
     device float * dst_f32 = (device float *) dst + (uint64_t)r1 * args.ne0;
 
     if (tiisg == 0) {
-        for (short row = 0; row < NR0; ++row) {
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
             if (r0 + row < args.ne01) {
                 dst_f32[r0 + row] = sumf[row];
             }
