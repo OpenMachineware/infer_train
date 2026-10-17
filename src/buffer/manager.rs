@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+use std::cell::UnsafeCell;
 use std::collections::HashMap;
-
-#[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use std::rc::Rc;
 
 use super::{BufferId, BufferLocation, BufferPool, BufferPoolHost, BufferRef};
@@ -47,7 +46,8 @@ pub struct BufferManager {
     host_pool: BufferPoolHost,
 
     /// CPU buffer cache
-    host_cache: HashMap<BufferId, Box<[u8]>>,
+    /// Uses Rc<UnsafeCell> for shared ownership with interior mutability
+    host_cache: HashMap<BufferId, Rc<UnsafeCell<Box<[u8]>>>>,
 
     /// Pinned buffers (should not be evicted)
     /// Used for frequently accessed weights (e.g., embedding, output layer)
@@ -182,8 +182,12 @@ impl BufferManager {
 
     /// Register a pre-existing CPU buffer
     pub fn register_host(&mut self, id: BufferId, buffer: Box<[u8]>) {
-        self.registry.insert(id, BufferLocation::Host(buffer.clone()));
-        self.host_cache.insert(id, buffer);
+        let rc_buf = Rc::new(UnsafeCell::new(buffer));
+        self.registry.insert(
+            id,
+            BufferLocation::Host(unsafe { (*rc_buf.get()).clone() }),
+        );
+        self.host_cache.insert(id, rc_buf);
     }
 
     /// Get current buffer location
@@ -275,7 +279,10 @@ impl BufferManager {
 
         for id in to_evict_host {
             if let Some(buf) = self.host_cache.remove(&id) {
-                self.host_pool.release(buf);
+                // Extract inner Box from Rc (only works if we have exclusive access)
+                if let Some(inner) = Rc::try_unwrap(buf).ok() {
+                    self.host_pool.release(inner.into_inner());
+                }
                 // Update registry
                 if let Some(location) = self.registry.get_mut(&id) {
                     *location = BufferLocation::Remote { size: 0, offset: 0 };
@@ -331,9 +338,13 @@ impl BufferManager {
                     return BufferRef::Cpu(buf.clone());
                 }
                 let buf = self.host_pool.get(size);
-                self.host_cache.insert(id, buf.clone());
-                self.registry.insert(id, BufferLocation::Host(buf.clone()));
-                BufferRef::Cpu(buf)
+                let rc_buf = Rc::new(UnsafeCell::new(buf));
+                self.host_cache.insert(id, rc_buf.clone());
+                self.registry.insert(
+                    id,
+                    BufferLocation::Host(unsafe { (*rc_buf.get()).clone() }),
+                );
+                BufferRef::Cpu(rc_buf)
             }
         }
     }
@@ -374,7 +385,10 @@ impl BufferManager {
 
         for id in to_evict_host {
             if let Some(buf) = self.host_cache.remove(&id) {
-                self.host_pool.release(buf);
+                // Extract inner Box from Rc (only works if we have exclusive access)
+                if let Some(inner) = Rc::try_unwrap(buf).ok() {
+                    self.host_pool.release(inner.into_inner());
+                }
                 // Update registry
                 if let Some(location) = self.registry.get_mut(&id) {
                     *location = BufferLocation::Remote { size: 0, offset: 0 };

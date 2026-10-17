@@ -4,7 +4,7 @@
 // Comprehensive correctness test for BufferManager (Layer 1)
 
 use infer_train::buffer::{
-    BufferId, BufferLocation, BufferManager, BufferRef, ComputeDevice,
+    BufferId, BufferLocation, BufferManager, ComputeDevice,
 };
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -77,18 +77,27 @@ fn test_cpu_buffer_lifecycle(manager: &mut BufferManager) {
     // Create buffer via get_or_load_on
     let id1 = BufferId::new(2001);
     let buf1 = manager.get_or_load_on(id1, 2048, ComputeDevice::Cpu);
-    match &buf1 {
-        BufferRef::Cpu(data) => {
-            assert_eq!(data.len(), 2048, "CPU buffer size should match");
-        }
-        #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-        BufferRef::Gpu(_) => panic!("Expected CPU buffer, got GPU"),
-    }
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    assert_eq!(
+        buf1.as_cpu().unwrap().len(),
+        2048,
+        "CPU buffer size should match"
+    );
+    #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+    assert_eq!(buf1.as_cpu().len(), 2048, "CPU buffer size should match");
 
     // Retrieve same buffer
     let buf1_again = manager.get_or_load_on(id1, 2048, ComputeDevice::Cpu);
-    assert!(
-        matches!((&buf1, &buf1_again), (BufferRef::Cpu(a), BufferRef::Cpu(b)) if a.len() == b.len()),
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    assert_eq!(
+        buf1.as_cpu().unwrap().len(),
+        buf1_again.as_cpu().unwrap().len(),
+        "Same CPU buffer should be returned"
+    );
+    #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+    assert_eq!(
+        buf1.as_cpu().len(),
+        buf1_again.as_cpu().len(),
         "Same CPU buffer should be returned"
     );
 

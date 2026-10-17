@@ -10,6 +10,7 @@ pub mod executor;
 pub mod inference;
 pub mod model;
 pub mod ops;
+pub mod orchestrator;
 pub mod platform;
 pub mod quant;
 pub mod tokenize;

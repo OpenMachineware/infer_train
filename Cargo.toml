@@ -399,3 +399,7 @@ path = "tools/test_buffer_manager_correctness.rs"
 [[bin]]
 name = "test-operation-executor"
 path = "tools/test_operation_executor.rs"
+
+[[bin]]
+name = "test-layer-integration"
+path = "tools/test_layer_integration.rs"
