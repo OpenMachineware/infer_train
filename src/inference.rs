@@ -143,6 +143,15 @@ impl InferenceContext {
     /// Fully GPU-native forward pass (no CPU-GPU transfers for intermediate tensors)
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn forward_gpu_native(&mut self, tokens: &[u32]) -> Option<Vec<f32>> {
+        // Fall back to CPU for MQA/MLA architecture (not yet supported on GPU)
+        if self.model.uses_mqa() {
+            eprintln!("[DEBUG] Model uses MQA/MLA, falling back to CPU");
+            return self.model.forward(
+                tokens,
+                &mut KVCache::new(&self.config, 2048, KVCacheFormat::F32),
+            );
+        }
+
         if let (Some(ref gpu_ctx), Some(ref mut kv_cache)) =
             (self.gpu_ctx.as_ref(), self.gpu_kv_cache.as_mut())
         {
@@ -158,6 +167,14 @@ impl InferenceContext {
     /// Run forward pass with batched GPU encoding (reduced dispatch overhead)
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn forward_gpu_batched(&mut self, tokens: &[u32]) -> Option<Vec<f32>> {
+        // Fall back to CPU for MQA/MLA architecture (not yet supported on GPU)
+        if self.model.uses_mqa() {
+            return self.model.forward(
+                tokens,
+                &mut KVCache::new(&self.config, 2048, KVCacheFormat::F32),
+            );
+        }
+
         if let (Some(ref gpu_ctx), Some(ref mut kv_cache)) =
             (self.gpu_ctx.as_ref(), self.gpu_kv_cache.as_mut())
         {

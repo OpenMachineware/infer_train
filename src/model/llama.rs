@@ -37,6 +37,15 @@ pub struct LlamaModel {
     pub output: Option<Tensor>,
 }
 
+impl LlamaModel {
+    /// Check if model uses MQA/MLA architecture (not yet supported on GPU)
+    pub fn uses_mqa(&self) -> bool {
+        self.layers.iter().any(|layer| {
+            layer.attn_kv_a_mqa.is_some() || layer.attn_kv_b.is_some()
+        })
+    }
+}
+
 pub struct LlamaLayer {
     pub layer_idx: usize,
 
@@ -2618,6 +2627,38 @@ impl LlamaModel {
                 output.shape[0] // Normal
             };
 
+        // Check if output dtype is supported for GPU encoding
+        let supported_for_gpu = matches!(
+            output.dtype,
+            crate::model::tensor::DataType::Q4_0
+                | crate::model::tensor::DataType::Q4_1
+                | crate::model::tensor::DataType::Q5_0
+                | crate::model::tensor::DataType::Q5_1
+                | crate::model::tensor::DataType::Q8_0
+                | crate::model::tensor::DataType::Q4_K
+                | crate::model::tensor::DataType::Q5_K
+                | crate::model::tensor::DataType::Q2_K
+                | crate::model::tensor::DataType::Q6_K
+                | crate::model::tensor::DataType::Q3_K
+        );
+
+        if !supported_for_gpu {
+            // Fallback to CPU for unsupported formats (e.g., F16)
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+
+            let mut hidden = vec![0.0f32; hidden_size];
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    final_hidden_buffer.contents() as *const f32,
+                    hidden.as_mut_ptr(),
+                    hidden_size,
+                );
+            }
+            return self.gemv(&hidden, output, vocab_size);
+        }
+
         let logits_buffer = std::rc::Rc::new(device.new_buffer(
             (vocab_size * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
@@ -3061,23 +3102,25 @@ impl LlamaModel {
         let in_size =
             input_buffer.length() as usize / std::mem::size_of::<f32>();
 
-        // GPU GEMV kernels need further debugging for correctness
-        // Use CPU fallback to ensure system stability
-        let input_data: Vec<f32> = unsafe {
-            std::slice::from_raw_parts(
-                input_buffer.contents() as *const f32,
-                in_size,
-            )
-            .to_vec()
-        };
-        let result = self.gemv_impl(&input_data, weight, out_size)?;
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                result.as_ptr() as *const std::ffi::c_void,
-                output_buffer.contents() as *mut std::ffi::c_void,
-                out_size * std::mem::size_of::<f32>(),
+        // Use GPU kernel for encoding into shared command buffer
+        let weight_buffer = gpu_ctx.get_or_create_buffer(weight);
+
+        if !gpu_ctx.mv_encode(
+            encoder,
+            &weight_buffer,
+            input_buffer,
+            output_buffer,
+            out_size,
+            in_size,
+            weight.dtype,
+        ) {
+            eprintln!(
+                "[WARN] GEMV dtype {:?} not supported for GPU encode",
+                weight.dtype
             );
+            return None;
         }
+
         Some(())
     }
 

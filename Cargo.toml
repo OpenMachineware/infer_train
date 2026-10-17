@@ -144,6 +144,34 @@ name = "debug-gemm"
 path = "tools/debug_gemm.rs"
 
 [[bin]]
+name = "test-new-gpu-path"
+path = "tools/test_new_gpu_path.rs"
+
+[[bin]]
+name = "test-gpu-layer0"
+path = "tools/test_gpu_layer0.rs"
+
+[[bin]]
+name = "test-gpu-q-proj"
+path = "tools/test_gpu_q_proj.rs"
+
+[[bin]]
+name = "test-gpu-rope"
+path = "tools/test_gpu_rope.rs"
+
+[[bin]]
+name = "test-gpu-kv-update"
+path = "tools/test_gpu_kv_update.rs"
+
+[[bin]]
+name = "test-kv-update-simple"
+path = "tools/test_kv_update_simple.rs"
+
+[[bin]]
+name = "debug-gpu-forward"
+path = "tools/debug_gpu_forward.rs"
+
+[[bin]]
 name = "debug-mla-layer"
 path = "tools/debug_mla_layer.rs"
 
