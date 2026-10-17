@@ -56,6 +56,10 @@ name = "test-gpu-single-layer"
 path = "tools/test_gpu_single_layer.rs"
 
 [[bin]]
+name = "test-gpu-forward-debug"
+path = "tools/test_gpu_forward_debug.rs"
+
+[[bin]]
 name = "test-perf"
 path = "tools/test_perf.rs"
 

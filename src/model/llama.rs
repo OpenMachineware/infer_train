@@ -2755,7 +2755,7 @@ impl LlamaModel {
     /// Forward one layer with batched encoding
     /// All operations are encoded into the shared encoder for batching
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    fn forward_layer_gpu_encode(
+    pub fn forward_layer_gpu_encode(
         &self,
         layer: &LlamaLayer,
         layer_idx: usize,
