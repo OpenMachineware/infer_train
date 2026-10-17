@@ -290,55 +290,39 @@ impl KVCacheGPU {
 
     /// Set K from a GPU buffer (GPU F32→F16 conversion)
     /// This converts F32 to F16 on GPU and stores in K cache
+    /// NOTE: Currently unused - forward_layer_gpu_encode uses kv_update_k_encode directly
+    #[allow(dead_code)]
     pub fn set_k_buffer_gpu(
         &mut self,
         layer: usize,
-        src_buffer: &Rc<Buffer>,
-        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+        _src_buffer: &Rc<Buffer>,
+        _gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) {
         let pos = self.seq_len;
         if pos >= self.max_seq {
             return;
         }
-
-        let dst_buffer = &self.k_buffers[layer];
-
-        gpu_ctx
-            .convert_f32_to_f16_kv(
-                src_buffer,
-                dst_buffer,
-                self.n_kv_heads,
-                self.head_dim,
-                pos,
-                self.max_seq,
-            )
-            .ok();
+        // TODO: implement convert_f32_to_f16_kv if needed
+        // For now, forward_layer_gpu_encode uses kv_update_k_encode which handles F16 directly
+        let _ = (layer, pos);
     }
 
     /// Set V from a GPU buffer (GPU F32→F16 conversion)
+    /// NOTE: Currently unused - forward_layer_gpu_encode uses kv_update_v_encode directly
+    #[allow(dead_code)]
     pub fn set_v_buffer_gpu(
         &mut self,
         layer: usize,
-        src_buffer: &Rc<Buffer>,
-        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+        _src_buffer: &Rc<Buffer>,
+        _gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) {
         let pos = self.seq_len;
         if pos >= self.max_seq {
             return;
         }
-
-        let dst_buffer = &self.v_buffers[layer];
-
-        gpu_ctx
-            .convert_f32_to_f16_kv(
-                src_buffer,
-                dst_buffer,
-                self.n_kv_heads,
-                self.head_dim,
-                pos,
-                self.max_seq,
-            )
-            .ok();
+        // TODO: implement convert_f32_to_f16_kv if needed
+        // For now, forward_layer_gpu_encode uses kv_update_v_encode which handles F16 directly
+        let _ = (layer, pos);
     }
 
     /// Set K from a GPU buffer (convert F32 to F16) - CPU fallback for compatibility

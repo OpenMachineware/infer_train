@@ -221,21 +221,18 @@ impl std::fmt::Debug for MetalContext {
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct RopeArgs {
-    ne00: i32,
-    ne01: i32,
-    ne02: i32,
-    nb00: u64,
-    nb01: u64,
-    nb02: u64,
-    n_dims: i32,
-    n_offs: i32,
-    freq_base: f32,
-    freq_scale: f32,
-    ext_factor: f32,
-    attn_factor: f32,
-    beta_fast: f32,
-    beta_slow: f32,
-    n_ctx_orig: i32,
+    hidden_dim: i32,     // dimension
+    num_heads_seqs: i32, // heads * sequences
+    num_seqs: i32,       // sequences
+    rotate_dims: i32,    // dimensions to rotate
+    offset: i32,         // rotation offset
+    freq_base: f32,      // base frequency (usually 10000)
+    freq_scale: f32,     // frequency scaling
+    ext_factor: f32,     // YaRN extension factor (0 = disabled)
+    attn_factor: f32,    // YaRN attention factor
+    beta_fast: f32,      // YaRN fast beta
+    beta_slow: f32,      // YaRN slow beta
+    ctx_orig: i32,       // original context length
 }
 
 #[derive(Clone, Copy)]
@@ -7829,21 +7826,18 @@ impl MetalContext {
         );
 
         let args = RopeArgs {
-            ne00: n_dims as i32,
-            ne01: (n_heads * n_seqs) as i32,
-            ne02: n_seqs as i32,
-            nb00: 4,
-            nb01: (n_dims * 4) as u64,
-            nb02: (n_heads * n_dims * 4) as u64,
-            n_dims: n_dims as i32,
-            n_offs: 0,
+            hidden_dim: n_dims as i32,
+            num_heads_seqs: (n_heads * n_seqs) as i32,
+            num_seqs: n_seqs as i32,
+            rotate_dims: n_dims as i32,
+            offset: 0,
             freq_base,
             freq_scale,
             ext_factor: 0.0,
             attn_factor: 1.0,
             beta_fast: 32.0,
             beta_slow: 1.0,
-            n_ctx_orig: 0,
+            ctx_orig: 0,
         };
 
         let command_buffer = self.queue.new_command_buffer();
@@ -7896,21 +7890,18 @@ impl MetalContext {
         ));
 
         let args = RopeArgs {
-            ne00: n_dims as i32,
-            ne01: (n_heads * n_seqs) as i32,
-            ne02: n_seqs as i32,
-            nb00: 4,
-            nb01: (n_dims * 4) as u64,
-            nb02: (n_heads * n_dims * 4) as u64,
-            n_dims: n_dims as i32,
-            n_offs: 0,
+            hidden_dim: n_dims as i32,
+            num_heads_seqs: (n_heads * n_seqs) as i32,
+            num_seqs: n_seqs as i32,
+            rotate_dims: n_dims as i32,
+            offset: 0,
             freq_base,
             freq_scale,
             ext_factor: 0.0,
             attn_factor: 1.0,
             beta_fast: 32.0,
             beta_slow: 1.0,
-            n_ctx_orig: 0,
+            ctx_orig: 0,
         };
 
         let command_buffer = self.queue.new_command_buffer();
@@ -8070,9 +8061,11 @@ impl MetalContext {
         ));
 
         let args = RopeArgs {
-            hidden_dim: n_dims as u32,
-            rotate_dims: n_dims as u32,
-            num_heads_seqs: n_heads as u32,
+            hidden_dim: n_dims as i32,
+            num_heads_seqs: n_heads as i32,
+            num_seqs: n_seqs as i32,
+            rotate_dims: n_dims as i32,
+            offset: 0,
             freq_base,
             freq_scale,
             ext_factor: 0.0,
@@ -9767,21 +9760,18 @@ impl MetalContext {
         );
 
         let args = RopeArgs {
-            ne00: n_dims as i32,
-            ne01: (n_heads * n_seqs) as i32,
-            ne02: n_seqs as i32,
-            nb00: 4,
-            nb01: (n_dims * 4) as u64,
-            nb02: (n_heads * n_dims * 4) as u64,
-            n_dims: n_dims as i32,
-            n_offs: 0,
+            hidden_dim: n_dims as i32,
+            num_heads_seqs: (n_heads * n_seqs) as i32,
+            num_seqs: n_seqs as i32,
+            rotate_dims: n_dims as i32,
+            offset: 0,
             freq_base,
             freq_scale,
             ext_factor: 0.0,
             attn_factor: 1.0,
             beta_fast: 32.0,
             beta_slow: 1.0,
-            n_ctx_orig: 0,
+            ctx_orig: 0,
         };
 
         encoder.set_compute_pipeline_state(&self.rope_pipeline);
@@ -9823,21 +9813,18 @@ impl MetalContext {
         );
 
         let args = RopeArgs {
-            ne00: n_dims as i32,
-            ne01: (n_heads * n_seqs) as i32,
-            ne02: n_seqs as i32,
-            nb00: 4,
-            nb01: (n_dims * 4) as u64,
-            nb02: (n_heads * n_dims * 4) as u64,
-            n_dims: n_dims as i32,
-            n_offs: 0,
+            hidden_dim: n_dims as i32,
+            num_heads_seqs: (n_heads * n_seqs) as i32,
+            num_seqs: n_seqs as i32,
+            rotate_dims: n_dims as i32,
+            offset: 0,
             freq_base,
             freq_scale,
             ext_factor: 0.0,
             attn_factor: 1.0,
             beta_fast: 32.0,
             beta_slow: 1.0,
-            n_ctx_orig: 0,
+            ctx_orig: 0,
         };
 
         encoder.set_compute_pipeline_state(&self.rope_f16_pipeline);
