@@ -192,6 +192,50 @@ name = "test-exact-pattern"
 path = "tools/test_exact_pattern.rs"
 
 [[bin]]
+name = "test-ffn-only"
+path = "tools/test_ffn_only.rs"
+
+[[bin]]
+name = "test-attention-only"
+path = "tools/test_attention_only.rs"
+
+[[bin]]
+name = "test-buffer-reuse"
+path = "tools/test_buffer_reuse.rs"
+
+[[bin]]
+name = "test-layer0-buffer"
+path = "tools/test_layer0_buffer.rs"
+
+[[bin]]
+name = "test-register-issue"
+path = "tools/test_register_issue.rs"
+
+[[bin]]
+name = "test-cpu-layer0"
+path = "tools/test_cpu_layer0.rs"
+
+[[bin]]
+name = "test-layer-by-layer"
+path = "tools/test_layer_by_layer.rs"
+
+[[bin]]
+name = "test-layer1-kcache"
+path = "tools/test_layer1_kcache.rs"
+
+[[bin]]
+name = "test-buffer-pointers"
+path = "tools/test_buffer_pointers.rs"
+
+[[bin]]
+name = "test-layer-chain-debug"
+path = "tools/test_layer_chain_debug.rs"
+
+[[bin]]
+name = "test-layer0-nan-source"
+path = "tools/test_layer0_nan_source.rs"
+
+[[bin]]
 name = "test-forward-pool"
 path = "tools/test_forward_pool.rs"
 

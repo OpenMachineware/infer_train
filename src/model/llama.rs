@@ -3048,6 +3048,11 @@ impl LlamaModel {
             hidden_size,
         );
 
+        // Memory barrier to ensure final output is visible to next layer
+        encoder.memory_barrier_with_resources(&[
+            final_buffer.as_ref() as &ResourceRef
+        ]);
+
         // No commit here - caller handles single commit for all layers
         Some(final_buffer)
     }
