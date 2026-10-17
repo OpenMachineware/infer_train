@@ -252,6 +252,14 @@ name = "test-two-ffn"
 path = "tools/test_two_ffn.rs"
 
 [[bin]]
+name = "test-separate-encode"
+path = "tools/test_separate_encode.rs"
+
+[[bin]]
+name = "test-two-gemv"
+path = "tools/test_two_gemv.rs"
+
+[[bin]]
 name = "test-forward-pool"
 path = "tools/test_forward_pool.rs"
 

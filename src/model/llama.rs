@@ -3054,6 +3054,8 @@ impl LlamaModel {
         ]);
 
         // No commit here - caller handles single commit for all layers
+        // WARNING: Multiple layers in same command buffer can cause NaN issues
+        // Workaround: Use separate command buffers for each layer
         Some(final_buffer)
     }
 
