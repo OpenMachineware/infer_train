@@ -343,19 +343,3 @@ path = "benches/f16_gemv_vs_llama_native.rs"
 [[bin]]
 name = "f16-gemv-vs-llama-real"
 path = "benches/f16_gemv_vs_llama_real.rs"
-
-[[bin]]
-name = "debug-output-layer"
-path = "tools/debug_output_layer.rs"
-
-[[bin]]
-name = "test-f16-gemv-direct"
-path = "tools/test_f16_gemv_direct.rs"
-
-[[bin]]
-name = "debug-gpu-step-by-step"
-path = "tools/debug_gpu_step_by_step.rs"
-
-[[bin]]
-name = "debug-forward-nan"
-path = "tools/debug_forward_nan.rs"
