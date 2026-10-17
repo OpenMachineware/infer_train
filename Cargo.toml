@@ -253,8 +253,8 @@ name = "mv_q4_k_bench"
 harness = false
 
 [[bin]]
-name = "f16-gemv-debug-rows"
-path = "benches/f16_gemv_debug_rows.rs"
+name = "f16-gemv-basic-vs-short"
+path = "benches/f16_gemv_basic_vs_short.rs"
 
 [[bench]]
 name = "gpu_kernel_comparison"
