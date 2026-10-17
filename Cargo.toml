@@ -236,6 +236,22 @@ name = "test-layer0-nan-source"
 path = "tools/test_layer0_nan_source.rs"
 
 [[bin]]
+name = "test-two-layers-manual"
+path = "tools/test_two_layers_manual.rs"
+
+[[bin]]
+name = "test-many-kernels"
+path = "tools/test_many_kernels.rs"
+
+[[bin]]
+name = "test-two-flash-attn"
+path = "tools/test_two_flash_attn.rs"
+
+[[bin]]
+name = "test-two-ffn"
+path = "tools/test_two_ffn.rs"
+
+[[bin]]
 name = "test-forward-pool"
 path = "tools/test_forward_pool.rs"
 
