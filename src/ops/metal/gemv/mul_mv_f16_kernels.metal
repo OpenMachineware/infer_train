@@ -176,8 +176,11 @@ kernel void kernel_mul_mv_f16_f32(
 
 // ============================================================================
 // 3. Optimized version: float4 with multi-simdgroup cooperation (K % 4 == 0)
+// Separate kernels for different NSG values for optimal performance
 // ============================================================================
-kernel void kernel_mul_mv_f16_f32_4(
+
+template<short NSG>
+kernel void kernel_mul_mv_f16_f32_4_nsg(
         constant mul_mv_args & args,
         device const char * src0,
         device const char * src1,
@@ -194,7 +197,6 @@ kernel void kernel_mul_mv_f16_f32_4(
 
     const int r0 = tgpig.x * NR0;
     const int r1 = tgpig.y;
-    const int nsg = args.nsg;
 
     // Number of 32-element blocks
     const int nb_blocks = args.ne00 / NB;
@@ -224,7 +226,7 @@ kernel void kernel_mul_mv_f16_f32_4(
     float4 yl4[NF4];
 
     // Iterate over blocks with cooperative stride
-    for (int ib = ib0; ib < nb_blocks; ib += nsg * NF) {
+    for (int ib = ib0; ib < nb_blocks; ib += NSG * NF) {
         // Load y values: 4 float4 vectors from position (ib*NB + il*NF)/4
         device const float4 * yb4 = y4 + (ib * NB + il * NF) / 4;
         FOR_UNROLL (short i = 0; i < NF4; ++i) {
@@ -244,7 +246,7 @@ kernel void kernel_mul_mv_f16_f32_4(
 
     // Handle tail elements
     const int tail_start = nb_blocks * NB;
-    for (int i = tail_start + sgitg * NW + tiisg; i < args.ne00; i += NW * nsg) {
+    for (int i = tail_start + sgitg * NW + tiisg; i < args.ne00; i += NW * NSG) {
         FOR_UNROLL (short row = 0; row < NR0; ++row) {
             sumf[row] += (float)ax[row][i] * y[i];
         }
@@ -254,3 +256,12 @@ kernel void kernel_mul_mv_f16_f32_4(
     device float * dst_f32 = (device float *) dst + (uint64_t)r1 * args.ne0;
     helper_mv_reduce_and_write<NR0>(dst_f32, sumf, r0, args.ne01, tiisg, sgitg, shmem);
 }
+
+// Instantiate for different NSG values
+typedef decltype(kernel_mul_mv_f16_f32_4_nsg<1>) mul_mv_4_nsg1_t;
+typedef decltype(kernel_mul_mv_f16_f32_4_nsg<2>) mul_mv_4_nsg2_t;
+typedef decltype(kernel_mul_mv_f16_f32_4_nsg<4>) mul_mv_4_nsg4_t;
+
+template [[host_name("kernel_mul_mv_f16_f32_4_nsg1")]] kernel mul_mv_4_nsg1_t kernel_mul_mv_f16_f32_4_nsg<1>;
+template [[host_name("kernel_mul_mv_f16_f32_4_nsg2")]] kernel mul_mv_4_nsg2_t kernel_mul_mv_f16_f32_4_nsg<2>;
+template [[host_name("kernel_mul_mv_f16_f32_4_nsg4")]] kernel mul_mv_4_nsg4_t kernel_mul_mv_f16_f32_4_nsg<4>;

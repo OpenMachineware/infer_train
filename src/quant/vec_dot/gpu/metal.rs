@@ -92,7 +92,9 @@ pub struct MetalContext {
     mv_f16_library: Library,
     mv_f16_short_pipeline: ComputePipelineState,
     mv_f16_basic_pipeline: ComputePipelineState,
-    mv_f16_4_pipeline: ComputePipelineState,
+    mv_f16_4_nsg1_pipeline: ComputePipelineState,
+    mv_f16_4_nsg2_pipeline: ComputePipelineState,
+    mv_f16_4_nsg4_pipeline: ComputePipelineState,
     // Cached MV pipelines - Standard Q
     mv_q1_0_pipeline: ComputePipelineState,
     mv_q2_0_pipeline: ComputePipelineState,
@@ -434,13 +436,38 @@ impl MetalContext {
                 format!("Failed to create F16 GEMV basic pipeline: {}", e)
             })?;
 
-        let mv_f16_4_kernel = mv_f16_library
-            .get_function("kernel_mul_mv_f16_f32_4", None)
-            .map_err(|e| format!("Failed to get F16 GEMV _4 kernel: {}", e))?;
-        let mv_f16_4_pipeline = device
-            .new_compute_pipeline_state_with_function(&mv_f16_4_kernel)
+        // Create separate pipelines for each NSG value
+        let mv_f16_4_nsg1_kernel = mv_f16_library
+            .get_function("kernel_mul_mv_f16_f32_4_nsg1", None)
             .map_err(|e| {
-                format!("Failed to create F16 GEMV _4 pipeline: {}", e)
+                format!("Failed to get F16 GEMV _4_nsg1 kernel: {}", e)
+            })?;
+        let mv_f16_4_nsg1_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_f16_4_nsg1_kernel)
+            .map_err(|e| {
+                format!("Failed to create F16 GEMV _4_nsg1 pipeline: {}", e)
+            })?;
+
+        let mv_f16_4_nsg2_kernel = mv_f16_library
+            .get_function("kernel_mul_mv_f16_f32_4_nsg2", None)
+            .map_err(|e| {
+                format!("Failed to get F16 GEMV _4_nsg2 kernel: {}", e)
+            })?;
+        let mv_f16_4_nsg2_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_f16_4_nsg2_kernel)
+            .map_err(|e| {
+                format!("Failed to create F16 GEMV _4_nsg2 pipeline: {}", e)
+            })?;
+
+        let mv_f16_4_nsg4_kernel = mv_f16_library
+            .get_function("kernel_mul_mv_f16_f32_4_nsg4", None)
+            .map_err(|e| {
+                format!("Failed to get F16 GEMV _4_nsg4 kernel: {}", e)
+            })?;
+        let mv_f16_4_nsg4_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_f16_4_nsg4_kernel)
+            .map_err(|e| {
+                format!("Failed to create F16 GEMV _4_nsg4 pipeline: {}", e)
             })?;
 
         // Compile RMS Norm library
@@ -1449,7 +1476,9 @@ impl MetalContext {
             mv_f16_library,
             mv_f16_short_pipeline,
             mv_f16_basic_pipeline,
-            mv_f16_4_pipeline,
+            mv_f16_4_nsg1_pipeline,
+            mv_f16_4_nsg2_pipeline,
+            mv_f16_4_nsg4_pipeline,
             // MV pipelines - Standard Q
             mv_q1_0_pipeline,
             mv_q2_0_pipeline,
@@ -4774,8 +4803,15 @@ impl MetalContext {
         } else {
             let use_4 = k % 4 == 0; // Use float4 version if K % 4 == 0
 
+            // Match llama.cpp NSG formula: min(4, (K+127)/128)
+            let nsg = if use_4 { std::cmp::min(4, (k + 127) / 128) } else { 1 };
+
             let pipeline = if use_4 {
-                &self.mv_f16_4_pipeline
+                match nsg {
+                    1 => &self.mv_f16_4_nsg1_pipeline,
+                    2 => &self.mv_f16_4_nsg2_pipeline,
+                    _ => &self.mv_f16_4_nsg4_pipeline, // 4 or larger
+                }
             } else {
                 &self.mv_f16_basic_pipeline
             };
@@ -4809,7 +4845,7 @@ impl MetalContext {
                 nr0: 2,
                 r2: 1,
                 r3: 1,
-                nsg,
+                nsg: nsg as i16, // Store in args for reference
                 ne12_batch: 1,
             };
 

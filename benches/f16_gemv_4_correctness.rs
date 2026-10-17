@@ -18,12 +18,27 @@ fn main() {
         .new_library_with_source(source, &compile_options)
         .expect("Failed to compile");
 
-    let kernel = library
-        .get_function("kernel_mul_mv_f16_f32_4", None)
-        .expect("Failed to get kernel");
-    let pipeline = device
-        .new_compute_pipeline_state_with_function(&kernel)
-        .expect("Failed to create pipeline");
+    // Compile all NSG-specific kernels
+    let kernel_nsg1 = library
+        .get_function("kernel_mul_mv_f16_f32_4_nsg1", None)
+        .expect("Failed to get nsg1 kernel");
+    let pipeline_nsg1 = device
+        .new_compute_pipeline_state_with_function(&kernel_nsg1)
+        .expect("Failed to create nsg1 pipeline");
+
+    let kernel_nsg2 = library
+        .get_function("kernel_mul_mv_f16_f32_4_nsg2", None)
+        .expect("Failed to get nsg2 kernel");
+    let pipeline_nsg2 = device
+        .new_compute_pipeline_state_with_function(&kernel_nsg2)
+        .expect("Failed to create nsg2 pipeline");
+
+    let kernel_nsg4 = library
+        .get_function("kernel_mul_mv_f16_f32_4_nsg4", None)
+        .expect("Failed to get nsg4 kernel");
+    let pipeline_nsg4 = device
+        .new_compute_pipeline_state_with_function(&kernel_nsg4)
+        .expect("Failed to create nsg4 pipeline");
 
     // Test K values that are >= 32 and divisible by 4
     let test_sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096];
@@ -62,9 +77,19 @@ fn main() {
             metal::MTLResourceOptions::StorageModeShared,
         );
 
+        // Compute NSG for this K
+        let nsg = std::cmp::min(4, (k + 127) / 128);
+
+        // Select pipeline based on nsg
+        let pipeline = match nsg {
+            1 => &pipeline_nsg1,
+            2 => &pipeline_nsg2,
+            _ => &pipeline_nsg4,
+        };
+
         let cmd = queue.new_command_buffer();
         let enc = cmd.new_compute_command_encoder();
-        enc.set_compute_pipeline_state(&pipeline);
+        enc.set_compute_pipeline_state(pipeline);
 
         // Set args struct
         #[repr(C)]
@@ -93,7 +118,6 @@ fn main() {
             ne12_batch: i16,
         }
 
-        let nsg = std::cmp::min(4, (k + 127) / 128);
         let args = MvArgs {
             ne00: k as i32,
             ne01: m as i32,
