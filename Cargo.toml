@@ -395,3 +395,7 @@ path = "tools/test_buffer_manager.rs"
 [[bin]]
 name = "test-buffer-manager-correctness"
 path = "tools/test_buffer_manager_correctness.rs"
+
+[[bin]]
+name = "test-operation-executor"
+path = "tools/test_operation_executor.rs"

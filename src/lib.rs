@@ -6,6 +6,7 @@
 
 pub mod buffer;
 pub mod compute;
+pub mod executor;
 pub mod inference;
 pub mod model;
 pub mod ops;
