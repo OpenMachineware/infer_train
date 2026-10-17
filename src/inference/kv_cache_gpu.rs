@@ -255,7 +255,93 @@ impl KVCacheGPU {
         self.max_seq
     }
 
-    /// Set K from a GPU buffer (convert F32 to F16)
+    /// Set K from an F16 GPU buffer (direct copy, no conversion)
+    /// For use with RoPE F16 output
+    pub fn set_k_buffer_f16(&mut self, layer: usize, src_buffer: &Rc<Buffer>) {
+        let pos = self.seq_len;
+        if pos >= self.max_seq {
+            return;
+        }
+
+        let dst_buffer = &self.k_buffers[layer];
+
+        // Layout: [n_kv_heads, max_seq, head_dim]
+        // Copy F16 data directly to position `pos` in each head's slice
+        let head_stride = self.max_seq * self.head_dim * 2; // F16 bytes per head
+        let pos_offset = pos * self.head_dim * 2; // offset within a head (F16)
+
+        let src_contents = src_buffer.contents() as *const u8; // F16 source
+        let dst_contents = dst_buffer.contents() as *mut u8;
+
+        // Copy each head's data
+        for h in 0..self.n_kv_heads {
+            let src_offset = h * self.head_dim * 2; // source is [n_kv_heads, head_dim] in F16
+            let dst_offset = h * head_stride + pos_offset;
+
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    src_contents.add(src_offset),
+                    dst_contents.add(dst_offset),
+                    self.head_dim * 2, // F16 bytes
+                );
+            }
+        }
+    }
+
+    /// Set K from a GPU buffer (GPU F32→F16 conversion)
+    /// This converts F32 to F16 on GPU and stores in K cache
+    pub fn set_k_buffer_gpu(
+        &mut self,
+        layer: usize,
+        src_buffer: &Rc<Buffer>,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) {
+        let pos = self.seq_len;
+        if pos >= self.max_seq {
+            return;
+        }
+
+        let dst_buffer = &self.k_buffers[layer];
+
+        gpu_ctx
+            .convert_f32_to_f16_kv(
+                src_buffer,
+                dst_buffer,
+                self.n_kv_heads,
+                self.head_dim,
+                pos,
+                self.max_seq,
+            )
+            .ok();
+    }
+
+    /// Set V from a GPU buffer (GPU F32→F16 conversion)
+    pub fn set_v_buffer_gpu(
+        &mut self,
+        layer: usize,
+        src_buffer: &Rc<Buffer>,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) {
+        let pos = self.seq_len;
+        if pos >= self.max_seq {
+            return;
+        }
+
+        let dst_buffer = &self.v_buffers[layer];
+
+        gpu_ctx
+            .convert_f32_to_f16_kv(
+                src_buffer,
+                dst_buffer,
+                self.n_kv_heads,
+                self.head_dim,
+                pos,
+                self.max_seq,
+            )
+            .ok();
+    }
+
+    /// Set K from a GPU buffer (convert F32 to F16) - CPU fallback for compatibility
     /// This converts the buffer contents from F32 to F16 and stores in K cache
     pub fn set_k_buffer(&mut self, layer: usize, src_buffer: &Rc<Buffer>) {
         let pos = self.seq_len;
@@ -298,7 +384,7 @@ impl KVCacheGPU {
         }
     }
 
-    /// Set V from a GPU buffer (convert F32 to F16)
+    /// Set V from a GPU buffer (convert F32 to F16) - CPU fallback for compatibility
     pub fn set_v_buffer(&mut self, layer: usize, src_buffer: &Rc<Buffer>) {
         let pos = self.seq_len;
         if pos >= self.max_seq {

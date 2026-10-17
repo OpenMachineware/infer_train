@@ -343,3 +343,11 @@ path = "benches/f16_gemv_vs_llama_native.rs"
 [[bin]]
 name = "f16-gemv-vs-llama-real"
 path = "benches/f16_gemv_vs_llama_real.rs"
+
+[[bin]]
+name = "profile-gpu-perf"
+path = "tools/profile_gpu_perf.rs"
+
+[[bin]]
+name = "test-gemm-perf"
+path = "tools/test_gemm_perf.rs"

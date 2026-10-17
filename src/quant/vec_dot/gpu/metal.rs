@@ -144,6 +144,7 @@ pub struct MetalContext {
     softmax_4_pipeline: ComputePipelineState,
     rope_library: Library,
     rope_pipeline: ComputePipelineState,
+    rope_f16_pipeline: ComputePipelineState, // For KV cache F16 output
     activation_library: Library,
     add_pipeline: ComputePipelineState,
     mul_pipeline: ComputePipelineState,
@@ -184,6 +185,7 @@ pub struct MetalContext {
     // KV Cache Update (F32 -> F16 with strided write)
     kv_update_library: Library,
     kv_update_k_pipeline: ComputePipelineState,
+    kv_update_k_f16_pipeline: ComputePipelineState, // F16->F16 (no conversion)
     kv_update_v_pipeline: ComputePipelineState,
     // Cached buffers for MV operations
     // Once created with data, reuse without copy
@@ -1153,6 +1155,16 @@ impl MetalContext {
             .new_compute_pipeline_state_with_function(&rope_kernel)
             .map_err(|e| format!("Failed to create ROPE pipeline: {}", e))?;
 
+        // Create RoPE F16 pipeline (for KV cache)
+        let rope_f16_kernel = rope_library
+            .get_function("kernel_rope_neox_f16", None)
+            .map_err(|e| format!("Failed to get ROPE F16 kernel: {}", e))?;
+        let rope_f16_pipeline = device
+            .new_compute_pipeline_state_with_function(&rope_f16_kernel)
+            .map_err(|e| {
+                format!("Failed to create ROPE F16 pipeline: {}", e)
+            })?;
+
         // Create Activation pipelines
         let add_kernel = activation_library
             .get_function("kernel_add_f32", None)
@@ -1483,6 +1495,18 @@ impl MetalContext {
                 format!("Failed to create KV update V pipeline: {}", e)
             })?;
 
+        // Create KV update K F16 pipeline (F16->F16, no conversion)
+        let kv_update_k_f16_kernel = kv_update_library
+            .get_function("kv_update_f16_to_f16", None)
+            .map_err(|e| {
+                format!("Failed to get KV update K F16 kernel: {}", e)
+            })?;
+        let kv_update_k_f16_pipeline = device
+            .new_compute_pipeline_state_with_function(&kv_update_k_f16_kernel)
+            .map_err(|e| {
+                format!("Failed to create KV update K F16 pipeline: {}", e)
+            })?;
+
         Ok(Self {
             device,
             queue,
@@ -1553,6 +1577,7 @@ impl MetalContext {
             softmax_4_pipeline,
             rope_library,
             rope_pipeline,
+            rope_f16_pipeline,
             activation_library,
             add_pipeline,
             mul_pipeline,
@@ -1591,6 +1616,7 @@ impl MetalContext {
             // KV Cache Update
             kv_update_library,
             kv_update_k_pipeline,
+            kv_update_k_f16_pipeline,
             kv_update_v_pipeline,
             // MV buffers
             mv_weights_buffer: RefCell::new(None),
@@ -7643,6 +7669,53 @@ impl MetalContext {
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     }
 
+    /// Update K cache: Copy F16 to strided position (no conversion)
+    /// Used with RoPE F16 output to avoid redundant F32->F16 conversion
+    pub fn kv_update_k_f16_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        src_buffer: &Buffer,
+        dst_buffer: &Buffer,
+        pos: usize,
+        max_seq: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+    ) {
+        encoder.set_compute_pipeline_state(&self.kv_update_k_f16_pipeline);
+        encoder.set_buffer(0, Some(src_buffer), 0);
+        encoder.set_buffer(1, Some(dst_buffer), 0);
+        encoder.set_bytes(
+            2,
+            4,
+            &(pos as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            3,
+            4,
+            &(max_seq as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            4,
+            4,
+            &(n_kv_heads as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            5,
+            4,
+            &(head_dim as u32) as *const u32 as *const std::ffi::c_void,
+        );
+
+        let total_elements = n_kv_heads * head_dim;
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: ((total_elements as u64 + 255) / 256),
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
     // ========================================================================
     // Softmax
     // ========================================================================
@@ -7962,6 +8035,69 @@ impl MetalContext {
         let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
         let thread_group_count =
             MTLSize { width: ((n + 255) / 256) as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
+    }
+
+    /// RoPE NeoX with F16 output (for KV cache)
+    /// Input is F32, output is F16
+    pub fn rope_neox_f16_gpu(
+        &self,
+        src_buffer: &Buffer,
+        pos: &[i32],
+        n_seqs: usize,
+        n_heads: usize,
+        n_dims: usize,
+        freq_base: f32,
+        freq_scale: f32,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        let pos_buffer = self.device.new_buffer_with_data(
+            pos.as_ptr() as *const std::ffi::c_void,
+            (pos.len() * std::mem::size_of::<i32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+        // Output is F16 (half the size of F32)
+        let output_size =
+            n_seqs * n_heads * n_dims * std::mem::size_of::<u16>();
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            output_size as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        let args = RopeArgs {
+            hidden_dim: n_dims as u32,
+            rotate_dims: n_dims as u32,
+            num_heads_seqs: n_heads as u32,
+            freq_base,
+            freq_scale,
+            ext_factor: 0.0,
+            attn_factor: 1.0,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            ctx_orig: 0,
+        };
+
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder.set_compute_pipeline_state(&self.rope_f16_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<RopeArgs>() as u64,
+            &args as *const RopeArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(src_buffer), 0);
+        encoder.set_buffer(2, Some(&pos_buffer), 0);
+        encoder.set_buffer(3, Some(&output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: n_heads as u64, height: n_seqs as u64, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
@@ -9664,6 +9800,61 @@ impl MetalContext {
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         // Do NOT end_encoding() or commit() - let caller handle that
+    }
+
+    /// RoPE with F16 output (batched, encode into shared encoder)
+    /// Input is F32, output is F16 for KV cache
+    pub fn rope_neox_f16_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        src_buffer: &Buffer,
+        pos: &[i32],
+        n_seqs: usize,
+        n_heads: usize,
+        n_dims: usize,
+        freq_base: f32,
+        freq_scale: f32,
+        output_buffer: &Buffer,
+    ) {
+        let pos_buffer = self.device.new_buffer_with_data(
+            pos.as_ptr() as *const std::ffi::c_void,
+            (pos.len() * std::mem::size_of::<i32>()) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        );
+
+        let args = RopeArgs {
+            ne00: n_dims as i32,
+            ne01: (n_heads * n_seqs) as i32,
+            ne02: n_seqs as i32,
+            nb00: 4,
+            nb01: (n_dims * 4) as u64,
+            nb02: (n_heads * n_dims * 4) as u64,
+            n_dims: n_dims as i32,
+            n_offs: 0,
+            freq_base,
+            freq_scale,
+            ext_factor: 0.0,
+            attn_factor: 1.0,
+            beta_fast: 32.0,
+            beta_slow: 1.0,
+            n_ctx_orig: 0,
+        };
+
+        encoder.set_compute_pipeline_state(&self.rope_f16_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<RopeArgs>() as u64,
+            &args as *const RopeArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(src_buffer), 0);
+        encoder.set_buffer(2, Some(&pos_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: n_heads as u64, height: n_seqs as u64, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     }
 
     /// Flash Attention for F16 KV cache (batched, encode into shared encoder)

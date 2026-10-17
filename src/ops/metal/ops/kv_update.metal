@@ -5,6 +5,37 @@
 #include <metal_stdlib>
 using namespace metal;
 
+// Update K cache: Copy F16 to strided position (no conversion)
+// src: F16 buffer [n_kv_heads, head_dim]
+// dst: F16 KV cache [n_kv_heads, max_seq, head_dim]
+// Used with RoPE F16 output to avoid redundant F32->F16 conversion
+kernel void kv_update_f16_to_f16(
+    device const half* src [[buffer(0)]],
+    device half* dst [[buffer(1)]],
+    constant uint& pos [[buffer(2)]],
+    constant uint& max_seq [[buffer(3)]],
+    constant uint& n_kv_heads [[buffer(4)]],
+    constant uint& head_dim [[buffer(5)]],
+    uint3 thread_id [[thread_position_in_grid]])
+{
+    uint idx = thread_id.x;
+    uint total_elements = n_kv_heads * head_dim;
+
+    if (idx >= total_elements) {
+        return;
+    }
+
+    uint h = idx / head_dim;
+    uint d = idx % head_dim;
+
+    // Read F16 directly
+    half val = src[idx];
+
+    // Write to strided position
+    uint dst_idx = h * max_seq * head_dim + pos * head_dim + d;
+    dst[dst_idx] = val;
+}
+
 // Update K cache: Convert F32 to F16 and write to strided position
 // src: F32 buffer [n_kv_heads, head_dim]
 // dst: F16 KV cache [n_kv_heads, max_seq, head_dim]
