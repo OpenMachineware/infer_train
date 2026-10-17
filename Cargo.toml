@@ -252,6 +252,10 @@ harness = false
 name = "mv_q4_k_bench"
 harness = false
 
+[[bin]]
+name = "f16-gemv-debug-rows"
+path = "benches/f16_gemv_debug_rows.rs"
+
 [[bench]]
 name = "gpu_kernel_comparison"
 harness = false
