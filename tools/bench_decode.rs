@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use infer_train::inference::{
     Device, InferenceContext, KVCache, KVCacheFormat,
 };
 
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -30,7 +32,7 @@ fn main() {
     // Pre-fill with prompt
     let prompt_tokens: Vec<u32> = vec![1];
     let prefill_start = std::time::Instant::now();
-    let mut logits =
+    let logits =
         gpu_ctx.forward_gpu_batched(&prompt_tokens).expect("Prefill failed");
     let prefill_time = prefill_start.elapsed();
 
@@ -50,36 +52,6 @@ fn main() {
         zero_count
     );
 
-    // If all zeros, try CPU forward to compare
-    if zero_count == logits.len() {
-        println!("\nWARNING: All logits are zero! Testing CPU forward...");
-        let cpu_ctx = InferenceContext::from_gguf(model_path, Device::Cpu)
-            .expect("Failed to load CPU model");
-        let config = cpu_ctx.config.clone();
-        let mut kv_cache = KVCache::new(&config, 100, KVCacheFormat::F32);
-        let cpu_logits = cpu_ctx
-            .model
-            .forward(&prompt_tokens, &mut kv_cache)
-            .expect("CPU forward failed");
-        let cpu_min = cpu_logits.iter().cloned().fold(f32::INFINITY, f32::min);
-        let cpu_max =
-            cpu_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let cpu_sum: f32 = cpu_logits.iter().sum();
-        let cpu_top = cpu_logits
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        println!(
-            "CPU logits: min={:.4}, max={:.4}, mean={:.4}, top_token={}",
-            cpu_min,
-            cpu_max,
-            cpu_sum / cpu_logits.len() as f32,
-            cpu_top
-        );
-    }
-
     println!("Prefill: {} ms", prefill_time.as_millis());
 
     // Sample first token from prefill output
@@ -96,16 +68,15 @@ fn main() {
     // Decode benchmark
     let num_decode = 10;
     let mut total_time = std::time::Duration::ZERO;
+    let mut logits = logits;
 
     for i in 0..num_decode {
         let start = std::time::Instant::now();
-        // Pass ONLY the newly generated token
         logits =
             gpu_ctx.forward_gpu_batched(&[next_token]).expect("Decode failed");
         let elapsed = start.elapsed();
         total_time += elapsed;
 
-        // Sample next token
         next_token = logits
             .iter()
             .enumerate()
@@ -125,68 +96,11 @@ fn main() {
     let avg_time = total_time.as_millis() as f64 / num_decode as f64;
     let tps = 1000.0 / avg_time;
     println!("\n  Average: {:.2} ms/token ({:.2} t/s)", avg_time, tps);
+}
 
-    // CPU decode benchmark
-    println!("\n=== CPU Decode Benchmark ===");
-    let cpu_ctx = InferenceContext::from_gguf(model_path, Device::Cpu)
-        .expect("Failed to load CPU model");
-    let config = cpu_ctx.config.clone();
-    let mut kv_cache = KVCache::new(&config, 100, KVCacheFormat::F32);
-
-    // Pre-fill
-    let prefill_start = std::time::Instant::now();
-    let mut logits = cpu_ctx
-        .model
-        .forward(&prompt_tokens, &mut kv_cache)
-        .expect("Prefill failed");
-    let prefill_time = prefill_start.elapsed();
-    println!("Prefill: {} ms", prefill_time.as_millis());
-
-    // Sample first token
-    let mut next_token = logits
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| {
-            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|(i, _)| i as u32)
-        .unwrap_or(0);
-    println!("Generated: {}", next_token);
-
-    // Decode benchmark
-    let mut total_time = std::time::Duration::ZERO;
-
-    for i in 0..num_decode {
-        let start = std::time::Instant::now();
-        // Pass ONLY the newly generated token
-        logits = cpu_ctx
-            .model
-            .forward(&[next_token], &mut kv_cache)
-            .expect("Decode failed");
-        let elapsed = start.elapsed();
-        total_time += elapsed;
-
-        // Sample next token
-        next_token = logits
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| {
-                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(i, _)| i as u32)
-            .unwrap_or(0);
-        println!(
-            "  Token {}: {} ({} ms)",
-            i + 1,
-            next_token,
-            elapsed.as_millis()
-        );
-    }
-
-    let avg_time = total_time.as_millis() as f64 / num_decode as f64;
-    let tps = 1000.0 / avg_time;
-    println!("\n  Average: {:.2} ms/token ({:.2} t/s)", avg_time, tps);
-
-    println!("\n=== Baseline (llama.cpp) ===");
-    println!("  Target: 167 t/s (from previous benchmark)");
+#[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+fn main() {
+    println!(
+        "This benchmark requires Metal support (macOS with metal feature)"
+    );
 }

@@ -2538,7 +2538,7 @@ impl LlamaModel {
     }
 
     /// Forward pass with batched GPU encoding
-    /// Creates one command buffer for all operations to minimize dispatch overhead
+    /// Creates one command buffer for ALL operations to eliminate dispatch overhead
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn forward_gpu_native_batched(
         &self,
@@ -2554,7 +2554,11 @@ impl LlamaModel {
         let device = gpu_ctx.device();
         let queue = gpu_ctx.queue();
 
-        // Process each token
+        // Create ONE command buffer for the entire forward pass
+        let command_buffer = queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        // Process each token, encoding all layers into the same command buffer
         let mut last_hidden_buffer: Option<std::rc::Rc<Buffer>> = None;
 
         for &token in tokens.iter() {
@@ -2568,13 +2572,9 @@ impl LlamaModel {
                 metal::MTLResourceOptions::StorageModeShared,
             ));
 
-            // 2. Process through layers with SINGLE command buffer
-            let command_buffer = queue.new_command_buffer();
-            let encoder = command_buffer.new_compute_command_encoder();
-
+            // 2. Process through layers (no commit, no wait!)
             let mut hidden_buffer = hidden_buffer;
             for (layer_idx, layer) in self.layers.iter().enumerate() {
-                // Encode layer operations into shared encoder (no commit!)
                 hidden_buffer = self.forward_layer_gpu_encode(
                     layer,
                     layer_idx,
@@ -2586,15 +2586,11 @@ impl LlamaModel {
                 )?;
             }
 
-            encoder.end_encoding();
-            command_buffer.commit();
-            command_buffer.wait_until_completed();
-
             last_hidden_buffer = Some(hidden_buffer);
             kv_cache.advance();
         }
 
-        // 3. Final norm and output projection
+        // 3. Final norm (still in same command buffer)
         let hidden_buffer = last_hidden_buffer?;
         let final_norm = self.norm.as_ref()?;
         let final_norm_buffer = gpu_ctx.get_or_create_buffer(final_norm);
@@ -2603,35 +2599,37 @@ impl LlamaModel {
             metal::MTLResourceOptions::StorageModeShared,
         ));
 
-        // Final norm in a new command buffer
-        {
-            let command_buffer = queue.new_command_buffer();
-            let encoder = command_buffer.new_compute_command_encoder();
-            gpu_ctx.rms_norm_encode(
-                encoder,
-                &hidden_buffer,
-                &final_norm_buffer,
-                &final_hidden_buffer,
-                1,
-                hidden_size,
-                1e-5,
-            );
+        gpu_ctx.rms_norm_encode(
+            encoder,
+            &hidden_buffer,
+            &final_norm_buffer,
+            &final_hidden_buffer,
+            1,
+            hidden_size,
+            1e-5,
+        );
+
+        // 4. Output projection (still in same command buffer)
+        let output = self.output.as_ref()?;
+        let vocab_size =
+            if output.shape.len() == 2 && output.shape[0] == hidden_size {
+                output.shape[1] // Transposed
+            } else {
+                output.shape[0] // Normal
+            };
+
+        let logits_buffer = std::rc::Rc::new(device.new_buffer(
+            (vocab_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        if output.shape.len() == 2 && output.shape[0] == hidden_size {
+            // Transposed weight - this shouldn't happen if transpose worked
+            // For now, end encoder and use CPU fallback
             encoder.end_encoding();
             command_buffer.commit();
             command_buffer.wait_until_completed();
-        }
 
-        // Output projection - handle both transposed and normal weights
-        let output = self.output.as_ref()?;
-
-        // Detect if weight is transposed [hidden_size, vocab_size]
-        // vs normal [vocab_size, hidden_size]
-        // Note: transpose_output_layer() should have converted to normal format
-        // But keep fallback for safety
-        if output.shape.len() == 2 && output.shape[0] == hidden_size {
-            // Transposed weight - use CPU fallback for stability
-            // This path should rarely be taken if transpose worked
-            let vocab_size = output.shape[1];
             let mut hidden = vec![0.0f32; hidden_size];
             unsafe {
                 std::ptr::copy_nonoverlapping(
@@ -2640,18 +2638,30 @@ impl LlamaModel {
                     hidden_size,
                 );
             }
-            self.gemv_transposed(&hidden, output, vocab_size)
+            return self.gemv_transposed(&hidden, output, vocab_size);
         } else {
-            // Normal weight - use GPU gemv
-            let vocab_size = output.shape[0];
-            let output_buffer = gpu_ctx.get_or_create_buffer(output);
-            let logits_buffer = self.gemv_gpu_buffer(
-                &final_hidden_buffer,
-                &output_buffer,
-                vocab_size,
-                output.dtype,
-                gpu_ctx,
-            )?;
+            // Normal weight - encode into shared encoder
+            if self
+                .gemv_encode(
+                    encoder,
+                    &final_hidden_buffer,
+                    output,
+                    vocab_size,
+                    gpu_ctx,
+                    &logits_buffer,
+                )
+                .is_none()
+            {
+                eprintln!(
+                    "[DEBUG] Output projection failed for dtype {:?}",
+                    output.dtype
+                );
+                return None;
+            }
+
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
 
             // Download logits
             let mut logits = vec![0.0f32; vocab_size];

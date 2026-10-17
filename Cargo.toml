@@ -152,6 +152,10 @@ name = "bench-decode"
 path = "tools/bench_decode.rs"
 
 [[bin]]
+name = "bench-dispatch"
+path = "tools/bench_dispatch.rs"
+
+[[bin]]
 name = "bench-gemv-dispatch"
 path = "tools/bench_gemv_dispatch.rs"
 
