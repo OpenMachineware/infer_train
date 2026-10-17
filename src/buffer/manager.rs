@@ -96,32 +96,36 @@ impl BufferManager {
                 if let Some(location) = self.registry.get(&id) {
                     match location {
                         BufferLocation::Host(data) => {
-                            // Already in host memory
-                            self.host_cache.insert(id, data.clone());
-                            return BufferRef::Cpu(data.clone());
+                            // Already in host memory - wrap in Rc<UnsafeCell>
+                            let rc_buf = Rc::new(UnsafeCell::new(data.clone()));
+                            self.host_cache.insert(id, rc_buf.clone());
+                            return BufferRef::Cpu(rc_buf);
                         }
                         #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-                        BufferLocation::Local(gpu_buf) => {
+                        BufferLocation::Local(_gpu_buf) => {
                             // Future: transfer from GPU to CPU
                             // For now, create new CPU buffer
                             let buf = self.host_pool.get(size);
-                            self.host_cache.insert(id, buf.clone());
-                            return BufferRef::Cpu(buf);
+                            let rc_buf = Rc::new(UnsafeCell::new(buf));
+                            self.host_cache.insert(id, rc_buf.clone());
+                            return BufferRef::Cpu(rc_buf);
                         }
                         _ => {
                             // Create new CPU buffer
                             let buf = self.host_pool.get(size);
-                            self.host_cache.insert(id, buf.clone());
-                            return BufferRef::Cpu(buf);
+                            let rc_buf = Rc::new(UnsafeCell::new(buf));
+                            self.host_cache.insert(id, rc_buf.clone());
+                            return BufferRef::Cpu(rc_buf);
                         }
                     }
                 }
 
                 // Buffer doesn't exist, create it
                 let buf = self.host_pool.get(size);
-                self.host_cache.insert(id, buf.clone());
-                self.registry.insert(id, BufferLocation::Host(buf.clone()));
-                BufferRef::Cpu(buf)
+                let rc_buf = Rc::new(UnsafeCell::new(buf.clone()));
+                self.host_cache.insert(id, rc_buf.clone());
+                self.registry.insert(id, BufferLocation::Host(buf));
+                BufferRef::Cpu(rc_buf)
             }
         }
     }

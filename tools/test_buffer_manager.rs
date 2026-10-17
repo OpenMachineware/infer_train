@@ -28,7 +28,9 @@ fn main() {
         let buf2 = manager.get_or_load_on(id2, 2048, ComputeDevice::Cpu);
         match &buf2 {
             BufferRef::Cpu(data) => {
-                println!("  Created CPU buffer: {} bytes", data.len());
+                println!("  Created CPU buffer: {} bytes", unsafe {
+                    (*data.get()).len()
+                });
             }
             _ => println!("  ERROR: Expected CPU buffer"),
         }
@@ -40,7 +42,7 @@ fn main() {
         let buf3b = manager.get_or_load_on(id3, 1024, ComputeDevice::Cpu);
         println!(
             "  Same buffer returned: {}",
-            matches!((&buf3a, &buf3b), (BufferRef::Cpu(a), BufferRef::Cpu(b)) if a.len() == b.len())
+            matches!((&buf3a, &buf3b), (BufferRef::Cpu(a), BufferRef::Cpu(b)) if unsafe { (*a.get()).len() } == unsafe { (*b.get()).len() })
         );
 
         // Test 4: Pin and evict

@@ -2555,6 +2555,10 @@ impl LlamaModel {
         kv_cache: &mut crate::inference::KVCacheGPU,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) -> Option<Vec<f32>> {
+        eprintln!(
+            "[DEBUG] forward_gpu_native_batched called with {} tokens",
+            tokens.len()
+        );
         if tokens.is_empty() || self.tok_embeddings.is_none() {
             return None;
         }
@@ -2581,7 +2585,11 @@ impl LlamaModel {
                 metal::MTLResourceOptions::StorageModeShared,
             ));
 
-            // 2. Process through layers (no commit, no wait!)
+            // 2. Process through layers
+            // Create a new command buffer for each token to avoid overwriting
+            let command_buffer = queue.new_command_buffer();
+            let encoder = command_buffer.new_compute_command_encoder();
+
             let mut hidden_buffer = hidden_buffer;
             for (layer_idx, layer) in self.layers.iter().enumerate() {
                 hidden_buffer = self.forward_layer_gpu_encode(
@@ -2595,11 +2603,16 @@ impl LlamaModel {
                 )?;
             }
 
+            // Commit and wait for this token's forward pass
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+
             last_hidden_buffer = Some(hidden_buffer);
             kv_cache.advance();
         }
 
-        // 3. Final norm (still in same command buffer)
+        // 3. Final norm
         let hidden_buffer = last_hidden_buffer?;
         let final_norm = self.norm.as_ref()?;
         let final_norm_buffer = gpu_ctx.get_or_create_buffer(final_norm);
@@ -2607,6 +2620,9 @@ impl LlamaModel {
             (hidden_size * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
+
+        let command_buffer = queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
 
         gpu_ctx.rms_norm_encode(
             encoder,
@@ -2620,10 +2636,6 @@ impl LlamaModel {
 
         // 4. Output projection (still in same command buffer)
         let output = self.output.as_ref()?;
-        eprintln!(
-            "[DEBUG] Output layer: shape={:?}, dtype={:?}",
-            output.shape, output.dtype
-        );
 
         let vocab_size =
             if output.shape.len() == 2 && output.shape[1] == hidden_size {
@@ -2633,8 +2645,6 @@ impl LlamaModel {
                 // Normal: [hidden_size, vocab_size] or [vocab_size]
                 output.shape[0]
             };
-
-        eprintln!("[DEBUG] Vocab size: {}", vocab_size);
 
         // Check if output dtype is supported for GPU encoding
         let supported_for_gpu = matches!(
@@ -2665,6 +2675,7 @@ impl LlamaModel {
                     hidden_size,
                 );
             }
+
             return self.gemv(&hidden, output, vocab_size);
         }
 
@@ -2917,10 +2928,6 @@ impl LlamaModel {
             )
             .is_none()
         {
-            eprintln!(
-                "[DEBUG] Layer {}: Q projection failed for dtype {:?}",
-                layer_idx, wq.dtype
-            );
             return None;
         }
         if self

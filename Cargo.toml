@@ -52,6 +52,14 @@ name = "test-gpu-inference"
 path = "tools/test_gpu_inference.rs"
 
 [[bin]]
+name = "test-gpu-single-layer"
+path = "tools/test_gpu_single_layer.rs"
+
+[[bin]]
+name = "test-perf"
+path = "tools/test_perf.rs"
+
+[[bin]]
 name = "test-gpu-zerocopy"
 path = "tools/test_gpu_zerocopy.rs"
 

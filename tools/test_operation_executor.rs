@@ -16,7 +16,8 @@ fn main() {
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     {
         let device = Device::system_default().expect("No Metal device");
-        let buffer_mgr = Arc::new(Mutex::new(BufferManager::new(device)));
+        let buffer_mgr =
+            Arc::new(Mutex::new(BufferManager::new(device.clone())));
         let gpu_ctx = Arc::new(Mutex::new(create_gpu_context(&device)));
         let executor = OperationExecutor::new(buffer_mgr.clone(), gpu_ctx);
 
