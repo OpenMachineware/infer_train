@@ -260,6 +260,10 @@ name = "test-two-gemv"
 path = "tools/test_two_gemv.rs"
 
 [[bin]]
+name = "test-two-encoders"
+path = "tools/test_two_encoders.rs"
+
+[[bin]]
 name = "test-forward-pool"
 path = "tools/test_forward_pool.rs"
 
