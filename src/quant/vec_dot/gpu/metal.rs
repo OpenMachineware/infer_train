@@ -4782,6 +4782,13 @@ impl MetalContext {
 
             encoder.set_compute_pipeline_state(pipeline);
 
+            // Use multi-simdgroup for large K in _4 kernel
+            let nsg: i16 = if use_4 && k >= 512 {
+                2 // Use 2 simdgroups for K >= 512
+            } else {
+                1
+            };
+
             let args = MvArgs {
                 ne00: k as i32,
                 ne01: m as i32,
@@ -4802,7 +4809,7 @@ impl MetalContext {
                 nr0: 2,
                 r2: 1,
                 r3: 1,
-                nsg: 1, // NSG not used in simplified kernels
+                nsg,
                 ne12_batch: 1,
             };
 
@@ -4815,10 +4822,17 @@ impl MetalContext {
             encoder.set_buffer(2, Some(input_buffer), 0);
             encoder.set_buffer(3, Some(&output_buffer), 0);
 
-            // Simplified dispatch: one simdgroup per threadgroup
-            let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+            // Threadgroup size scales with nsg
+            let thread_group_size =
+                MTLSize { width: (nsg as u64 * 32), height: 1, depth: 1 };
             let thread_group_count =
                 MTLSize { width: ((m + 1) / 2) as u64, height: 1, depth: 1 };
+
+            // Allocate threadgroup memory for reduction (2 rows * 32 threads * nsg simdgroups)
+            let threadgroup_mem_size =
+                (2 * 32 * nsg as usize) * std::mem::size_of::<f32>();
+            encoder
+                .set_threadgroup_memory_length(0, threadgroup_mem_size as u64);
 
             encoder
                 .dispatch_thread_groups(thread_group_count, thread_group_size);

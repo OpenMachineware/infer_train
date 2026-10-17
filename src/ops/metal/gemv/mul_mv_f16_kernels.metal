@@ -175,56 +175,82 @@ kernel void kernel_mul_mv_f16_f32(
 }
 
 // ============================================================================
-// 3. Optimized version: float4 with strided processing (K % 4 == 0)
+// 3. Optimized version: float4 with multi-simdgroup cooperation (K % 4 == 0)
 // ============================================================================
 kernel void kernel_mul_mv_f16_f32_4(
         constant mul_mv_args & args,
         device const char * src0,
         device const char * src1,
         device       char * dst,
+        threadgroup  char * shmem [[threadgroup(0)]],
         uint3  tgpig[[threadgroup_position_in_grid]],
-        ushort tiisg[[thread_index_in_simdgroup]]) {
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
     constexpr short NR0 = 2;
     constexpr short NW = N_SIMDWIDTH;  // 32
+    constexpr short NB = 32;  // Block size in elements
+    constexpr short NF = 16;  // Elements per iteration per thread group
+    constexpr short NF4 = NF / 4;  // float4 vectors per iteration
 
     const int r0 = tgpig.x * NR0;
     const int r1 = tgpig.y;
+    const int nsg = args.nsg;
 
-    // Cast to float4 pointers for vectorized access
-    device const float4 * y4 = (device const float4 *) (src1 + r1 * args.nb11);
+    // Number of 32-element blocks
+    const int nb_blocks = args.ne00 / NB;
+
+    // Base pointers
+    device const half  * ax[NR0];
     device const half4 * ax4[NR0];
+    device const float  * y = (device const float *) (src1 + r1 * args.nb11);
+    device const float4 * y4 = (device const float4 *) (src1 + r1 * args.nb11);
+
     FOR_UNROLL (short row = 0; row < NR0; ++row) {
+        ax[row] = (device const half *) (src0 + (r0 + row) * args.nb01);
         ax4[row] = (device const half4 *) (src0 + (r0 + row) * args.nb01);
     }
 
     float sumf[NR0] = { [ 0 ... NR0 - 1 ] = 0.0f };
 
-    const int nb = args.ne00 / 4;  // Number of float4 vectors
+    // Work distribution: split threads into two groups (il=0 and il=1)
+    // Each group processes half of each 32-element block
+    const short ix = tiisg / 2;  // 0-15
+    const short il = tiisg % 2;  // 0 or 1
 
-    // Process float4 vectors in strided fashion
-    for (int ib = tiisg; ib < nb; ib += NW) {
-        float4 yv = y4[ib];
+    // Starting block for this simdgroup
+    const int ib0 = sgitg * NF + ix;
 
-        FOR_UNROLL (short row = 0; row < NR0; ++row) {
-            float4 wv = float4(ax4[row][ib]);
-            float4 prod = wv * yv;
-            sumf[row] += prod[0] + prod[1] + prod[2] + prod[3];
+    // Cache for y values
+    float4 yl4[NF4];
+
+    // Iterate over blocks with cooperative stride
+    for (int ib = ib0; ib < nb_blocks; ib += nsg * NF) {
+        // Load y values: 4 float4 vectors from position (ib*NB + il*NF)/4
+        device const float4 * yb4 = y4 + (ib * NB + il * NF) / 4;
+        FOR_UNROLL (short i = 0; i < NF4; ++i) {
+            yl4[i] = yb4[i];
         }
-    }
 
-    // Reduce within simdgroup
-    FOR_UNROLL (short row = 0; row < NR0; ++row) {
-        sumf[row] = simd_sum(sumf[row]);
-    }
-
-    // Write result
-    device float * dst_f32 = (device float *) dst + (uint64_t)r1 * args.ne0;
-
-    if (tiisg == 0) {
+        // Compute for each row
         FOR_UNROLL (short row = 0; row < NR0; ++row) {
-            if (r0 + row < args.ne01) {
-                dst_f32[r0 + row] = sumf[row];
+            device const half4 * xb4 = ax4[row] + (ib * NB + il * NF) / 4;
+            float sumq = 0.0f;
+            FOR_UNROLL (short i = 0; i < NF4; ++i) {
+                sumq += dot(float4(xb4[i]), yl4[i]);
             }
+            sumf[row] += sumq;
         }
     }
+
+    // Handle tail elements
+    const int tail_start = nb_blocks * NB;
+    for (int i = tail_start + sgitg * NW + tiisg; i < args.ne00; i += NW * nsg) {
+        FOR_UNROLL (short row = 0; row < NR0; ++row) {
+            sumf[row] += (float)ax[row][i] * y[i];
+        }
+    }
+
+    // Reduce across simdgroups
+    device float * dst_f32 = (device float *) dst + (uint64_t)r1 * args.ne0;
+    helper_mv_reduce_and_write<NR0>(dst_f32, sumf, r0, args.ne01, tiisg, sgitg, shmem);
 }
