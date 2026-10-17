@@ -4782,11 +4782,11 @@ impl MetalContext {
 
             encoder.set_compute_pipeline_state(pipeline);
 
-            // Use multi-simdgroup for large K in _4 kernel
-            let nsg: i16 = if use_4 && k >= 512 {
-                2 // Use 2 simdgroups for K >= 512
+            // Use multi-simdgroup for medium K, single for very large K
+            let nsg: i16 = if use_4 && k >= 512 && k < 2048 {
+                2 // Optimal for K=512
             } else {
-                1
+                1 // Single-simdgroup better for K<512 and K>=2048
             };
 
             let args = MvArgs {
