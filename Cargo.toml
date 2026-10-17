@@ -172,6 +172,10 @@ name = "debug-gpu-forward"
 path = "tools/debug_gpu_forward.rs"
 
 [[bin]]
+name = "debug-gpu-forward-step"
+path = "tools/debug_gpu_forward_step.rs"
+
+[[bin]]
 name = "debug-mla-layer"
 path = "tools/debug_mla_layer.rs"
 

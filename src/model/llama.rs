@@ -2189,11 +2189,11 @@ impl LlamaModel {
     ) -> Option<Vec<f32>> {
         let output = self.output.as_ref()?;
         // Detect weight format and use appropriate gemv
-        if output.shape.len() == 2 && output.shape[0] == hidden.len() {
-            // Weight is [hidden_size, vocab_size] - transposed
-            self.gemv_transposed(hidden, output, output.shape[1])
+        if output.shape.len() == 2 && output.shape[1] == hidden.len() {
+            // Weight is [vocab_size, hidden_size] - transposed
+            self.gemv_transposed(hidden, output, output.shape[0])
         } else {
-            // Weight is [vocab_size, hidden_size] - normal
+            // Weight is [hidden_size, vocab_size] - normal
             self.gemv(hidden, output, vocab_size)
         }
     }
@@ -2621,10 +2621,12 @@ impl LlamaModel {
         // 4. Output projection (still in same command buffer)
         let output = self.output.as_ref()?;
         let vocab_size =
-            if output.shape.len() == 2 && output.shape[0] == hidden_size {
-                output.shape[1] // Transposed
+            if output.shape.len() == 2 && output.shape[1] == hidden_size {
+                // Transposed: [vocab_size, hidden_size]
+                output.shape[0]
             } else {
-                output.shape[0] // Normal
+                // Normal: [hidden_size, vocab_size] or [vocab_size]
+                output.shape[0]
             };
 
         // Check if output dtype is supported for GPU encoding
@@ -2664,8 +2666,9 @@ impl LlamaModel {
             metal::MTLResourceOptions::StorageModeShared,
         ));
 
-        if output.shape.len() == 2 && output.shape[0] == hidden_size {
-            // Transposed weight - this shouldn't happen if transpose worked
+        if output.shape.len() == 2 && output.shape[1] == hidden_size {
+            // Transposed weight: [vocab_size, hidden_size]
+            // This is the expected case after transpose
             // For now, end encoder and use CPU fallback
             encoder.end_encoding();
             command_buffer.commit();
