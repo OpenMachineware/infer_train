@@ -2555,10 +2555,6 @@ impl LlamaModel {
         kv_cache: &mut crate::inference::KVCacheGPU,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) -> Option<Vec<f32>> {
-        eprintln!(
-            "[DEBUG] forward_gpu_native_batched called with {} tokens",
-            tokens.len()
-        );
         if tokens.is_empty() || self.tok_embeddings.is_none() {
             return None;
         }
@@ -2566,6 +2562,15 @@ impl LlamaModel {
         let hidden_size = self.config.hidden_size;
         let device = gpu_ctx.device();
         let queue = gpu_ctx.queue();
+
+        // Create shared reuse pool for buffers (persisted across forward passes)
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let reuse_pool = Rc::new(RefCell::new(Vec::new()));
+
+        // Keep all forward pools alive until command buffer completes
+        let mut forward_pools: Vec<crate::buffer::ForwardBufferPool> =
+            Vec::new();
 
         // Create ONE command buffer for the entire forward pass
         let command_buffer = queue.new_command_buffer();
@@ -2586,9 +2591,12 @@ impl LlamaModel {
             ));
 
             // 2. Process through layers
-            // Create a new command buffer for each token to avoid overwriting
-            let command_buffer = queue.new_command_buffer();
-            let encoder = command_buffer.new_compute_command_encoder();
+            // Create a forward buffer pool for this token's layers
+            // This keeps all intermediate buffers alive until command buffer completes
+            let mut forward_pool = crate::buffer::ForwardBufferPool::new(
+                device.clone(),
+                reuse_pool.clone(),
+            );
 
             let mut hidden_buffer = hidden_buffer;
             for (layer_idx, layer) in self.layers.iter().enumerate() {
@@ -2598,31 +2606,30 @@ impl LlamaModel {
                     &hidden_buffer,
                     kv_cache,
                     gpu_ctx,
-                    device,
+                    &mut forward_pool,
                     encoder,
                 )?;
             }
 
-            // Commit and wait for this token's forward pass
-            encoder.end_encoding();
-            command_buffer.commit();
-            command_buffer.wait_until_completed();
+            // Keep forward pool alive (will be dropped after command buffer completes)
+            forward_pools.push(forward_pool);
 
             last_hidden_buffer = Some(hidden_buffer);
             kv_cache.advance();
         }
 
-        // 3. Final norm
+        // 3. Final norm (in the same command buffer)
         let hidden_buffer = last_hidden_buffer?;
         let final_norm = self.norm.as_ref()?;
         let final_norm_buffer = gpu_ctx.get_or_create_buffer(final_norm);
-        let final_hidden_buffer = std::rc::Rc::new(device.new_buffer(
-            (hidden_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
 
-        let command_buffer = queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        // Create a forward pool for final operations
+        let mut final_pool = crate::buffer::ForwardBufferPool::new(
+            device.clone(),
+            reuse_pool.clone(),
+        );
+
+        let final_hidden_buffer = final_pool.get(hidden_size * 4);
 
         gpu_ctx.rms_norm_encode(
             encoder,
@@ -2634,7 +2641,7 @@ impl LlamaModel {
             1e-5,
         );
 
-        // 4. Output projection (still in same command buffer)
+        // 4. Output projection (in the same command buffer)
         let output = self.output.as_ref()?;
 
         let vocab_size =
@@ -2661,11 +2668,17 @@ impl LlamaModel {
                 | crate::model::tensor::DataType::Q3_K
         );
 
-        if !supported_for_gpu {
-            // Fallback to CPU for unsupported formats (e.g., F16)
+        if !supported_for_gpu
+            || (output.shape.len() == 2 && output.shape[1] == hidden_size)
+        {
+            // Fallback to CPU for unsupported formats or transposed weights
             encoder.end_encoding();
             command_buffer.commit();
             command_buffer.wait_until_completed();
+
+            // Forward pools are dropped here, releasing buffers
+            drop(forward_pools);
+            drop(final_pool);
 
             let mut hidden = vec![0.0f32; hidden_size];
             unsafe {
@@ -2676,80 +2689,50 @@ impl LlamaModel {
                 );
             }
 
-            return self.gemv(&hidden, output, vocab_size);
+            if output.shape.len() == 2 && output.shape[1] == hidden_size {
+                return self.gemv_transposed(&hidden, output, vocab_size);
+            } else {
+                return self.gemv(&hidden, output, vocab_size);
+            }
         }
 
-        let logits_buffer = std::rc::Rc::new(device.new_buffer(
-            (vocab_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
+        // GPU output projection
+        let logits_buffer = final_pool.get(vocab_size * 4);
 
-        if output.shape.len() == 2 && output.shape[1] == hidden_size {
-            // Transposed weight: [vocab_size, hidden_size]
-            // This is the expected case after transpose
-            // For now, end encoder and use CPU fallback
-            encoder.end_encoding();
-            command_buffer.commit();
-            command_buffer.wait_until_completed();
+        if self
+            .gemv_encode(
+                encoder,
+                &final_hidden_buffer,
+                output,
+                vocab_size,
+                gpu_ctx,
+                &logits_buffer,
+            )
+            .is_none()
+        {
+            return None;
+        }
 
-            let mut hidden = vec![0.0f32; hidden_size];
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    final_hidden_buffer.contents() as *const f32,
-                    hidden.as_mut_ptr(),
-                    hidden_size,
-                );
-            }
+        // Commit the ONE command buffer for the entire forward pass
+        encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
 
-            // Debug: check hidden values
-            let num_nan = hidden.iter().filter(|&&v| v.is_nan()).count();
-            let num_zero = hidden.iter().filter(|&&v| v == 0.0).count();
-            eprintln!(
-                "[DEBUG] Final hidden: {} values, {} NaN, {} zero, range [{:.4}, {:.4}]",
-                hidden.len(),
-                num_nan,
-                num_zero,
-                hidden.iter().cloned().fold(f32::INFINITY, f32::min),
-                hidden.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+        // Forward pools are dropped here, releasing all buffers to reuse pool
+        drop(forward_pools);
+        drop(final_pool);
+
+        // Download logits
+        let mut logits = vec![0.0f32; vocab_size];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                logits_buffer.contents() as *const f32,
+                logits.as_mut_ptr(),
+                vocab_size,
             );
-
-            return self.gemv_transposed(&hidden, output, vocab_size);
-        } else {
-            // Normal weight - encode into shared encoder
-            if self
-                .gemv_encode(
-                    encoder,
-                    &final_hidden_buffer,
-                    output,
-                    vocab_size,
-                    gpu_ctx,
-                    &logits_buffer,
-                )
-                .is_none()
-            {
-                eprintln!(
-                    "[DEBUG] Output projection failed for dtype {:?}",
-                    output.dtype
-                );
-                return None;
-            }
-
-            encoder.end_encoding();
-            command_buffer.commit();
-            command_buffer.wait_until_completed();
-
-            // Download logits
-            let mut logits = vec![0.0f32; vocab_size];
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    logits_buffer.contents() as *const f32,
-                    logits.as_mut_ptr(),
-                    vocab_size,
-                );
-            }
-
-            Some(logits)
         }
+
+        Some(logits)
     }
 
     /// Forward one layer with batched encoding
@@ -2762,7 +2745,7 @@ impl LlamaModel {
         hidden_buffer: &std::rc::Rc<Buffer>,
         kv_cache: &mut crate::inference::KVCacheGPU,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
-        device: &metal::Device,
+        forward_pool: &mut crate::buffer::ForwardBufferPool,
         encoder: &metal::ComputeCommandEncoderRef,
     ) -> Option<std::rc::Rc<Buffer>> {
         let hidden_size = self.config.hidden_size;
@@ -2784,121 +2767,44 @@ impl LlamaModel {
         let actual_n_kv_heads = k_out_size / head_dim;
 
         // ====================================================================
-        // Create all output buffers upfront
+        // Create all output buffers using forward pool (keeps them alive!)
         // ====================================================================
 
         // 1. Attention norm output
-        let normed_buffer = std::rc::Rc::new(device.new_buffer(
-            (hidden_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
-        // Zero the buffer to ensure consistent initial state
-        unsafe {
-            std::ptr::write_bytes(
-                normed_buffer.contents() as *mut u8,
-                0,
-                normed_buffer.length() as usize,
-            );
-        }
+        let normed_buffer = forward_pool.get_zeroed(hidden_size * 4);
 
         // 2. QKV outputs
-        let q_buffer = std::rc::Rc::new(device.new_buffer(
-            (q_out_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
-        unsafe {
-            std::ptr::write_bytes(
-                q_buffer.contents() as *mut u8,
-                0,
-                q_buffer.length() as usize,
-            );
-        }
-        let k_buffer = std::rc::Rc::new(device.new_buffer(
-            (k_out_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
-        unsafe {
-            std::ptr::write_bytes(
-                k_buffer.contents() as *mut u8,
-                0,
-                k_buffer.length() as usize,
-            );
-        }
-        let v_buffer = std::rc::Rc::new(device.new_buffer(
-            (v_out_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
-        unsafe {
-            std::ptr::write_bytes(
-                v_buffer.contents() as *mut u8,
-                0,
-                v_buffer.length() as usize,
-            );
-        }
+        let q_buffer = forward_pool.get_zeroed(q_out_size * 4);
+        let k_buffer = forward_pool.get_zeroed(k_out_size * 4);
+        let v_buffer = forward_pool.get_zeroed(v_out_size * 4);
 
         // 3. RoPE outputs
-        let q_rope_buffer = std::rc::Rc::new(device.new_buffer(
-            (q_out_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
-        let k_rope_buffer = std::rc::Rc::new(device.new_buffer(
-            (k_out_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
+        let q_rope_buffer = forward_pool.get(q_out_size * 4);
+        let k_rope_buffer = forward_pool.get(k_out_size * 4);
 
         // 4. Flash attention output
-        let attn_out_buffer = std::rc::Rc::new(device.new_buffer(
-            (q_out_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
+        let attn_out_buffer = forward_pool.get(q_out_size * 4);
 
         // 5. Output projection
-        let attn_proj_buffer = std::rc::Rc::new(device.new_buffer(
-            (hidden_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
+        let attn_proj_buffer = forward_pool.get(hidden_size * 4);
 
         // 6. Residual add
-        let residual_buffer = std::rc::Rc::new(device.new_buffer(
-            (hidden_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
+        let residual_buffer = forward_pool.get(hidden_size * 4);
 
         // 7. FFN norm output
-        let ffn_normed_buffer = std::rc::Rc::new(device.new_buffer(
-            (hidden_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
+        let ffn_normed_buffer = forward_pool.get(hidden_size * 4);
 
         // 8. FFN intermediate outputs (for SwiGLU)
         let intermediate_size =
             layer.w1.as_ref().map(|w| w.shape[1]).unwrap_or(0);
-        let gate_buffer = std::rc::Rc::new(device.new_buffer(
-            (intermediate_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
-        let up_buffer = std::rc::Rc::new(device.new_buffer(
-            (intermediate_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
-        let silu_buffer = std::rc::Rc::new(device.new_buffer(
-            (intermediate_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
-        let hidden_ffn_buffer = std::rc::Rc::new(device.new_buffer(
-            (intermediate_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
-        let ffn_out_buffer = std::rc::Rc::new(device.new_buffer(
-            (hidden_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
+        let gate_buffer = forward_pool.get(intermediate_size * 4);
+        let up_buffer = forward_pool.get(intermediate_size * 4);
+        let silu_buffer = forward_pool.get(intermediate_size * 4);
+        let hidden_ffn_buffer = forward_pool.get(intermediate_size * 4);
+        let ffn_out_buffer = forward_pool.get(hidden_size * 4);
 
         // 9. Final output
-        let final_buffer = std::rc::Rc::new(device.new_buffer(
-            (hidden_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
+        let final_buffer = forward_pool.get(hidden_size * 4);
 
         // ====================================================================
         // Encode all operations into shared encoder (no commit!)

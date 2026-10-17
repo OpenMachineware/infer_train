@@ -160,6 +160,10 @@ name = "test-new-gpu-path"
 path = "tools/test_new_gpu_path.rs"
 
 [[bin]]
+name = "test-forward-pool"
+path = "tools/test_forward_pool.rs"
+
+[[bin]]
 name = "test-gpu-layer0"
 path = "tools/test_gpu_layer0.rs"
 

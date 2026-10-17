@@ -14,11 +14,11 @@ devstral-fix.jinja
 *.bak
 
 # External dependencies (not tracked)
-llama.cpp-0.6.0/
+llama.cpp-0.7.0/
 llvm-project-llvmorg-23.1.0/
 vllm-0.31.0/
 muser/
-Strata-0.1.43/
+Strata-0.1.45/
 
 # Added by cargo
 /target

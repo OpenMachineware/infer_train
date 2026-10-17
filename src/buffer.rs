@@ -9,6 +9,7 @@
 //! - Handle transfers between devices (for heterogeneity)
 //! - Prefetch support for expert scheduling
 
+mod forward_pool;
 mod id;
 mod location;
 mod manager;
@@ -16,6 +17,7 @@ mod pool;
 mod pool_host;
 mod r#ref;
 
+pub use forward_pool::{ForwardBufferPool, ForwardBufferPoolStats};
 pub use id::BufferId;
 pub use location::BufferLocation;
 pub use manager::{BufferManager, ComputeDevice};
