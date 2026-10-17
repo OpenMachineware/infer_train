@@ -176,7 +176,7 @@ kernel void kernel_mul_mv_f16_f32(
 
 // ============================================================================
 // 3. Optimized version: float4 with multi-simdgroup cooperation (K % 4 == 0)
-// Separate kernels for different NSG values for optimal performance
+// Exact match of llama.cpp implementation
 // ============================================================================
 
 template<short NSG>
@@ -191,69 +191,71 @@ kernel void kernel_mul_mv_f16_f32_4_nsg(
         ushort sgitg[[simdgroup_index_in_threadgroup]]) {
     constexpr short NR0 = 2;
     constexpr short NW = N_SIMDWIDTH;  // 32
-    constexpr short NB = 32;  // Block size in elements
-    constexpr short NF = 16;  // Elements per iteration per thread group
-    constexpr short NF4 = NF / 4;  // float4 vectors per iteration
+    constexpr short NB  = 32;  // Block size in elements
+    constexpr short NF  = 16;  // Floats per thread per iteration
+    constexpr short NF4 = NF/4;  // Float4 vectors per thread
 
-    const int r0 = tgpig.x * NR0;
+    const int r0 = tgpig.x*NR0;
     const int r1 = tgpig.y;
 
-    // Number of 32-element blocks
-    const int nb_blocks = args.ne00 / NB;
+    const int nb = args.ne00/NB;  // Number of 32-element blocks
 
     // Base pointers
-    device const half  * ax[NR0];
-    device const half4 * ax4[NR0];
-    device const float  * y = (device const float *) (src1 + r1 * args.nb11);
-    device const float4 * y4 = (device const float4 *) (src1 + r1 * args.nb11);
+    device const float  * y  = (device const float *) (src1 + r1*args.nb11);
+    device const float4 * y4 = (device const float4 *) (src1 + r1*args.nb11);
 
+    device const half  * ax [NR0];
+    device const half4 * ax4[NR0];
     FOR_UNROLL (short row = 0; row < NR0; ++row) {
-        ax[row] = (device const half *) (src0 + (r0 + row) * args.nb01);
-        ax4[row] = (device const half4 *) (src0 + (r0 + row) * args.nb01);
+        ax [row] = (device const half *) (src0 + (r0 + row)*args.nb01);
+        ax4[row] = (device const half4 *) (src0 + (r0 + row)*args.nb01);
     }
 
-    float sumf[NR0] = { [ 0 ... NR0 - 1 ] = 0.0f };
+    float sumf[NR0] = { 0.f };
 
-    // Work distribution: split threads into two groups (il=0 and il=1)
-    // Each group processes half of each 32-element block
-    const short ix = tiisg / 2;  // 0-15
-    const short il = tiisg % 2;  // 0 or 1
+    // Work distribution exactly matching llama.cpp
+    const short ix = tiisg/(NW/NF);  // tiisg/2, range 0-15
+    const short il = tiisg%(NW/NF);  // tiisg%2, range 0-1
 
-    // Starting block for this simdgroup
-    const int ib0 = sgitg * NF + ix;
+    const int ib0 = sgitg*NF + ix;  // Starting block
 
-    // Cache for y values
-    float4 yl4[NF4];
+    float4 yl4[NF4];  // Local cache for y values
 
-    // Iterate over blocks with cooperative stride
-    for (int ib = ib0; ib < nb_blocks; ib += NSG * NF) {
-        // Load y values: 4 float4 vectors from position (ib*NB + il*NF)/4
-        device const float4 * yb4 = y4 + (ib * NB + il * NF) / 4;
-        FOR_UNROLL (short i = 0; i < NF4; ++i) {
+    // Initial y pointer - MATCHES LLAMA.CPP EXACTLY
+    device const float4 * yb4 = y4 + (ib0*NB + il*NF)/4;
+
+    // Main loop - stride by NSG*NF blocks
+    for (int ib = ib0; ib < nb; ib += NSG*NF) {
+        // Load y values into local cache
+        for (short i = 0; i < NF4; ++i) {
             yl4[i] = yb4[i];
         }
 
-        // Compute for each row
-        FOR_UNROLL (short row = 0; row < NR0; ++row) {
-            device const half4 * xb4 = ax4[row] + (ib * NB + il * NF) / 4;
-            float sumq = 0.0f;
+        // Compute dot products
+        for (short row = 0; row < NR0; ++row) {
+            device const half4 * xb4 = ax4[row] + (ib*NB + il*NF)/4;
+
+            float sumq = 0.f;
             FOR_UNROLL (short i = 0; i < NF4; ++i) {
-                sumq += dot(float4(xb4[i]), yl4[i]);
+                sumq += dot(float4(xb4[i]), float4(yl4[i]));
             }
+
             sumf[row] += sumq;
         }
+
+        // Advance y pointer - CRITICAL DIFFERENCE
+        yb4 += NSG*NF*NW/4;
     }
 
     // Handle tail elements
-    const int tail_start = nb_blocks * NB;
-    for (int i = tail_start + sgitg * NW + tiisg; i < args.ne00; i += NW * NSG) {
-        FOR_UNROLL (short row = 0; row < NR0; ++row) {
-            sumf[row] += (float)ax[row][i] * y[i];
+    for (int i = nb*NB + sgitg*NW + tiisg; i < args.ne00; i += NW*NSG) {
+        for (short row = 0; row < NR0; ++row) {
+            sumf[row] += ax[row][i] * y[i];
         }
     }
 
-    // Reduce across simdgroups
-    device float * dst_f32 = (device float *) dst + (uint64_t)r1 * args.ne0;
+    // Reduce and write
+    device float * dst_f32 = (device float *) dst + (uint64_t)r1*args.ne0;
     helper_mv_reduce_and_write<NR0>(dst_f32, sumf, r0, args.ne01, tiisg, sgitg, shmem);
 }
 
