@@ -255,8 +255,8 @@ impl KVCacheGPU {
         self.max_seq
     }
 
-    /// Set K from a GPU buffer (copy on GPU)
-    /// This copies the buffer contents to the appropriate position in K cache
+    /// Set K from a GPU buffer (convert F32 to F16)
+    /// This converts the buffer contents from F32 to F16 and stores in K cache
     pub fn set_k_buffer(&mut self, layer: usize, src_buffer: &Rc<Buffer>) {
         let pos = self.seq_len;
         if pos >= self.max_seq {
@@ -266,29 +266,39 @@ impl KVCacheGPU {
         let dst_buffer = &self.k_buffers[layer];
 
         // Layout: [n_kv_heads, max_seq, head_dim]
-        // Copy to position `pos` in each head's slice
-        let head_stride = self.max_seq * self.head_dim * 2; // bytes per head
-        let pos_offset = pos * self.head_dim * 2; // offset within a head
+        // Convert F32 to F16 and store to position `pos` in each head's slice
+        let head_stride = self.max_seq * self.head_dim * 2; // bytes per head (F16)
+        let pos_offset = pos * self.head_dim * 2; // offset within a head (F16)
 
-        let src_contents = src_buffer.contents() as *const u8;
+        let src_contents = src_buffer.contents() as *const f32; // F32 source
         let dst_contents = dst_buffer.contents() as *mut u8;
 
-        // Copy each head's data
+        // Convert and copy each head's data
         for h in 0..self.n_kv_heads {
-            let src_offset = h * self.head_dim * 2; // source is [n_kv_heads, head_dim]
+            let src_offset = h * self.head_dim; // source is [n_kv_heads, head_dim] in F32
             let dst_offset = h * head_stride + pos_offset;
 
-            unsafe {
-                std::ptr::copy_nonoverlapping(
+            let src = unsafe {
+                std::slice::from_raw_parts(
                     src_contents.add(src_offset),
-                    dst_contents.add(dst_offset),
-                    self.head_dim * 2,
-                );
+                    self.head_dim,
+                )
+            };
+            let dst = unsafe {
+                std::slice::from_raw_parts_mut(
+                    dst_contents.add(dst_offset) as *mut u16,
+                    self.head_dim,
+                )
+            };
+
+            // Convert F32 to F16
+            for (i, &v) in src.iter().enumerate() {
+                dst[i] = half::f16::from_f32(v).to_bits();
             }
         }
     }
 
-    /// Set V from a GPU buffer (copy on GPU)
+    /// Set V from a GPU buffer (convert F32 to F16)
     pub fn set_v_buffer(&mut self, layer: usize, src_buffer: &Rc<Buffer>) {
         let pos = self.seq_len;
         if pos >= self.max_seq {
@@ -297,22 +307,32 @@ impl KVCacheGPU {
 
         let dst_buffer = &self.v_buffers[layer];
 
-        let head_stride = self.max_seq * self.head_dim * 2;
+        let head_stride = self.max_seq * self.head_dim * 2; // F16 bytes per head
         let pos_offset = pos * self.head_dim * 2;
 
-        let src_contents = src_buffer.contents() as *const u8;
+        let src_contents = src_buffer.contents() as *const f32; // F32 source
         let dst_contents = dst_buffer.contents() as *mut u8;
 
         for h in 0..self.n_kv_heads {
-            let src_offset = h * self.head_dim * 2;
+            let src_offset = h * self.head_dim;
             let dst_offset = h * head_stride + pos_offset;
 
-            unsafe {
-                std::ptr::copy_nonoverlapping(
+            let src = unsafe {
+                std::slice::from_raw_parts(
                     src_contents.add(src_offset),
-                    dst_contents.add(dst_offset),
-                    self.head_dim * 2,
-                );
+                    self.head_dim,
+                )
+            };
+            let dst = unsafe {
+                std::slice::from_raw_parts_mut(
+                    dst_contents.add(dst_offset) as *mut u16,
+                    self.head_dim,
+                )
+            };
+
+            // Convert F32 to F16
+            for (i, &v) in src.iter().enumerate() {
+                dst[i] = half::f16::from_f32(v).to_bits();
             }
         }
     }
