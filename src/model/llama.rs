@@ -2567,11 +2567,14 @@ impl LlamaModel {
         // Create shared reuse pool for buffers (persisted across forward passes)
         use std::cell::RefCell;
         use std::rc::Rc;
-        let reuse_pool = Rc::new(RefCell::new(Vec::new()));
+        let reuse_pool: Rc<RefCell<Vec<std::rc::Rc<Buffer>>>> =
+            Rc::new(RefCell::new(Vec::new()));
 
-        // Keep all forward pools alive until command buffers complete
-        let mut forward_pools: Vec<crate::buffer::ForwardBufferPool> =
-            Vec::new();
+        // Create ONE forward pool for all layers (key to avoiding NaN)
+        let mut forward_pool = crate::buffer::ForwardBufferPool::new(
+            device.clone(),
+            reuse_pool.clone(),
+        );
 
         // Process each token
         let mut last_hidden_buffer: Option<std::rc::Rc<Buffer>> = None;
@@ -2581,30 +2584,27 @@ impl LlamaModel {
             let hidden = self.embedding_lookup_impl(token)?;
 
             // Upload to GPU
-            let mut hidden_buffer =
-                std::rc::Rc::new(device.new_buffer_with_data(
-                    hidden.as_ptr() as *const std::ffi::c_void,
-                    (hidden_size * 4) as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                ));
+            let hidden_buffer = std::rc::Rc::new(device.new_buffer_with_data(
+                hidden.as_ptr() as *const std::ffi::c_void,
+                (hidden_size * 4) as u64,
+                metal::MTLResourceOptions::StorageModeShared,
+            ));
 
             // 2. Process through layers
-            // Each layer gets its own command buffer (llama.cpp approach)
-            for (layer_idx, layer) in self.layers.iter().enumerate() {
-                // Create forward pool for this layer
-                let mut forward_pool = crate::buffer::ForwardBufferPool::new(
-                    device.clone(),
-                    reuse_pool.clone(),
-                );
+            // SAFETY: Process ONE layer at a time to avoid GPU deadlock
+            // Each layer gets its own command buffer, commit and wait immediately
+            let mut layer_input = hidden_buffer.clone();
+            let n_layers = self.layers.len();
 
+            for layer_idx in 0..n_layers {
                 // Create command buffer for this layer
                 let command_buffer = queue.new_command_buffer();
                 let encoder = command_buffer.new_compute_command_encoder();
 
-                hidden_buffer = self.forward_layer_gpu_encode(
-                    layer,
+                let layer_output = self.forward_layer_gpu_encode(
+                    &self.layers[layer_idx],
                     layer_idx,
-                    &hidden_buffer,
+                    &layer_input,
                     kv_cache,
                     gpu_ctx,
                     &mut forward_pool,
@@ -2613,11 +2613,14 @@ impl LlamaModel {
 
                 encoder.end_encoding();
                 command_buffer.commit();
+                // Wait immediately for this layer to complete before next layer
+                command_buffer.wait_until_completed();
 
-                forward_pools.push(forward_pool);
+                // Update for next layer
+                layer_input = layer_output;
             }
 
-            last_hidden_buffer = Some(hidden_buffer);
+            last_hidden_buffer = Some(layer_input);
             kv_cache.advance();
         }
 
@@ -2626,13 +2629,8 @@ impl LlamaModel {
         let final_norm = self.norm.as_ref()?;
         let final_norm_buffer = gpu_ctx.get_or_create_buffer(final_norm);
 
-        // Create a forward pool for final operations
-        let mut final_pool = crate::buffer::ForwardBufferPool::new(
-            device.clone(),
-            reuse_pool.clone(),
-        );
-
-        let final_hidden_buffer = final_pool.get(hidden_size * 4);
+        // Use same forward pool for final operations
+        let final_hidden_buffer = forward_pool.get(hidden_size * 4);
 
         // Create command buffer for final operations
         let final_command_buffer = queue.new_command_buffer();
@@ -2703,10 +2701,6 @@ impl LlamaModel {
                 &hidden[..5.min(hidden.len())]
             );
 
-            // Now drop forward pools, releasing buffers
-            drop(forward_pools);
-            drop(final_pool);
-
             if output.shape.len() == 2 && output.shape[1] == hidden_size {
                 let result = self.gemv_transposed(&hidden, output, vocab_size);
                 eprintln!(
@@ -2723,7 +2717,7 @@ impl LlamaModel {
         }
 
         // GPU output projection
-        let logits_buffer = final_pool.get(vocab_size * 4);
+        let logits_buffer = forward_pool.get(vocab_size * 4);
 
         if self
             .gemv_encode(
@@ -2753,10 +2747,6 @@ impl LlamaModel {
                 vocab_size,
             );
         }
-
-        // Now drop forward pools, releasing all buffers to reuse pool
-        drop(forward_pools);
-        drop(final_pool);
 
         Some(logits)
     }

@@ -4,6 +4,8 @@
 // Test: each layer uses independent command buffer (llama.cpp approach)
 
 use infer_train::inference::{Device, InferenceContext};
+use infer_train::model::GgufFile; // Add same dependency as test_new_gpu_path
+use infer_train::tokenize::BpeTokenizer; // Add same dependency as test_new_gpu_path
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -25,6 +27,14 @@ fn main() {
     }
 
     let model_path = &args[1];
+
+    // Load tokenizer like test_new_gpu_path
+    let gguf = GgufFile::open(model_path).expect("Failed to open GGUF");
+    let tokenizer =
+        BpeTokenizer::from_gguf(&gguf).expect("Failed to load tokenizer");
+    let tokens = tokenizer.encode("Hello");
+    println!("Tokens: {:?}", tokens);
+
     let mut ctx = InferenceContext::from_gguf(model_path, Device::Gpu)
         .expect("Failed to load model");
 
@@ -60,11 +70,9 @@ fn main() {
                 ForwardBufferPool::new(device.clone(), reuse_pool.clone());
 
             // Collect command buffers for later synchronization
-            let mut command_buffers = Vec::new();
-
             // Process layers one by one, each with its own command buffer
             let mut layer_input = hidden_buffer.clone();
-            let n_layers = 2; // Test first 2 layers only
+            let n_layers = model.layers.len(); // Test all layers
 
             for layer_idx in 0..n_layers {
                 // Create new command buffer for this layer
@@ -88,19 +96,15 @@ fn main() {
 
                 // Commit immediately (llama.cpp commits each buffer right after encoding)
                 command_buffer.commit();
-                command_buffers.push(command_buffer);
+                // Wait immediately instead of collecting all command buffers
+                command_buffer.wait_until_completed();
+                // command_buffers.push(command_buffer); // Not needed if we wait
+                print!("."); // Progress indicator
 
                 println!("Layer {} encoded and committed", layer_idx);
 
                 // Use this layer's output as next layer's input
                 layer_input = layer_output;
-            }
-
-            // Wait for all command buffers to complete
-            println!("\nWaiting for all command buffers to complete...");
-            for (idx, cmd_buf) in command_buffers.iter().enumerate() {
-                cmd_buf.wait_until_completed();
-                println!("Command buffer {} completed", idx);
             }
 
             // Check results
