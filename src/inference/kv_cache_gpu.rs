@@ -50,19 +50,37 @@ impl KVCacheGPU {
 
         let k_buffers: Vec<Rc<Buffer>> = (0..n_layers)
             .map(|_| {
-                Rc::new(device.new_buffer(
+                let buf = Rc::new(device.new_buffer(
                     bytes_per_layer as u64,
                     MTLResourceOptions::StorageModeShared,
-                ))
+                ));
+                // Zero buffer on creation - Metal doesn't zero new buffers
+                unsafe {
+                    std::ptr::write_bytes(
+                        buf.contents() as *mut u8,
+                        0,
+                        bytes_per_layer,
+                    );
+                }
+                buf
             })
             .collect();
 
         let v_buffers: Vec<Rc<Buffer>> = (0..n_layers)
             .map(|_| {
-                Rc::new(device.new_buffer(
+                let buf = Rc::new(device.new_buffer(
                     bytes_per_layer as u64,
                     MTLResourceOptions::StorageModeShared,
-                ))
+                ));
+                // Zero buffer on creation - Metal doesn't zero new buffers
+                unsafe {
+                    std::ptr::write_bytes(
+                        buf.contents() as *mut u8,
+                        0,
+                        bytes_per_layer,
+                    );
+                }
+                buf
             })
             .collect();
 

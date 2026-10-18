@@ -122,6 +122,17 @@ kernel void flash_decode_attention_f32(
     threadgroup float tg_sum[4];
     threadgroup float tg_out[128 * 4];
 
+    // Initialize threadgroup memory (CRITICAL: Metal doesn't zero threadgroup memory)
+    if (tiisg == 0) {
+        tg_max[sgitg] = 0.0f;
+        tg_sum[sgitg] = 0.0f;
+        for (ushort d = 0; d < 128; d++) {
+            tg_out[sgitg * 128 + d] = 0.0f;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Write results
     if (tiisg == 0) {
         tg_max[sgitg] = sg_max_val;
         tg_sum[sgitg] = sg_sum_val;
@@ -160,8 +171,9 @@ kernel void flash_decode_attention_f32(
 
         // Write output
         device float * o_ptr = output + b * args.o_stride_b + h * args.o_stride_h;
+        float inv_sum = global_sum > 0.0f ? 1.0f / global_sum : 0.0f;
         for (ushort d = 0; d < head_dim && d < 128; d++) {
-            o_ptr[d] = global_out[d] / global_sum;
+            o_ptr[d] = global_out[d] * inv_sum;
         }
     }
 }
@@ -248,6 +260,17 @@ kernel void flash_prefill_attention_f32(
     threadgroup float tg_sum[4];
     threadgroup float tg_out[128 * 4];
 
+    // Initialize threadgroup memory (CRITICAL: Metal doesn't zero threadgroup memory)
+    if (tiisg == 0) {
+        tg_max[sgitg] = 0.0f;
+        tg_sum[sgitg] = 0.0f;
+        for (ushort d = 0; d < 128; d++) {
+            tg_out[sgitg * 128 + d] = 0.0f;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Write results
     if (tiisg == 0) {
         tg_max[sgitg] = sg_max_val;
         tg_sum[sgitg] = sg_sum_val;
@@ -282,8 +305,9 @@ kernel void flash_prefill_attention_f32(
         }
 
         device float * o_ptr = output + b * args.o_stride_b + h * args.o_stride_h + sq * args.o_stride_s;
+        float inv_sum = global_sum > 0.0f ? 1.0f / global_sum : 0.0f;
         for (ushort d = 0; d < head_dim && d < 128; d++) {
-            o_ptr[d] = global_out[d] / global_sum;
+            o_ptr[d] = global_out[d] * inv_sum;
         }
     }
 }
@@ -368,6 +392,17 @@ kernel void flash_decode_attention_f16(
     threadgroup float tg_sum[4];
     threadgroup float tg_out[128 * 4];
 
+    // Initialize threadgroup memory (CRITICAL: Metal doesn't zero threadgroup memory)
+    if (tiisg == 0) {
+        tg_max[sgitg] = 0.0f;
+        tg_sum[sgitg] = 0.0f;
+        for (ushort d = 0; d < 128; d++) {
+            tg_out[sgitg * 128 + d] = 0.0f;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Write results
     if (tiisg == 0) {
         tg_max[sgitg] = sg_max_val;
         tg_sum[sgitg] = sg_sum_val;
@@ -485,6 +520,17 @@ kernel void flash_prefill_attention_f16(
     threadgroup float tg_sum[4];
     threadgroup float tg_out[128 * 4];
 
+    // Initialize threadgroup memory (CRITICAL: Metal doesn't zero threadgroup memory)
+    if (tiisg == 0) {
+        tg_max[sgitg] = 0.0f;
+        tg_sum[sgitg] = 0.0f;
+        for (ushort d = 0; d < 128; d++) {
+            tg_out[sgitg * 128 + d] = 0.0f;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Write results
     if (tiisg == 0) {
         tg_max[sgitg] = sg_max_val;
         tg_sum[sgitg] = sg_sum_val;

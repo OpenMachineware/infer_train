@@ -5,11 +5,13 @@
 //!
 //! Executes operations with single command buffer for entire forward pass
 
-use crate::inference::KVCacheGPU;
 use crate::model::LlamaModel;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use crate::buffer::ForwardBufferPool;
+
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use crate::inference::KVCacheGPU;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use std::cell::RefCell;
