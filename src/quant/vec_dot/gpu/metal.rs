@@ -74,6 +74,7 @@ impl KquantMvArgs {
     }
 }
 
+#[derive(Clone)]
 pub struct MetalContext {
     device: Device,
     queue: CommandQueue,

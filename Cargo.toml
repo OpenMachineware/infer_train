@@ -232,14 +232,6 @@ name = "test-exact-pattern"
 path = "tools/test_exact_pattern.rs"
 
 [[bin]]
-name = "test-ffn-only"
-path = "tools/test_ffn_only.rs"
-
-[[bin]]
-name = "test-attention-only"
-path = "tools/test_attention_only.rs"
-
-[[bin]]
 name = "test-buffer-reuse"
 path = "tools/test_buffer_reuse.rs"
 
@@ -608,5 +600,165 @@ name = "test-dag-executor"
 path = "tools/test_dag_executor.rs"
 
 [[bin]]
+name = "test-first-layer"
+path = "tools/test_first_layer.rs"
+
+[[bin]]
+name = "test-reuse-pool"
+path = "tools/test_reuse_pool.rs"
+
+[[bin]]
+name = "test-fresh-context"
+path = "tools/test_fresh_context.rs"
+
+[[bin]]
+name = "test-fresh-metal-context"
+path = "tools/test_fresh_metal_context.rs"
+
+[[bin]]
+name = "test-reuse-pool-sharing"
+path = "tools/test_reuse_pool_sharing.rs"
+
+[[bin]]
+name = "test-multi-layer"
+path = "tools/test_multi_layer.rs"
+
+[[bin]]
+name = "test-nan-positions"
+path = "tools/test_nan_positions.rs"
+
+[[bin]]
+name = "test-two-layers"
+path = "tools/test_two_layers.rs"
+
+[[bin]]
+name = "test-layer-threshold"
+path = "tools/test_layer_threshold.rs"
+
+[[bin]]
+name = "test-pool-lifecycle"
+path = "tools/test_pool_lifecycle.rs"
+
+[[bin]]
 name = "test-layer-chain"
 path = "tools/test_layer_chain.rs"
+
+[[bin]]
+name = "test-determinism"
+path = "tools/test_determinism.rs"
+
+[[bin]]
+name = "test-nondet"
+path = "tools/test_nondet.rs"
+
+[[bin]]
+name = "test-two-contexts"
+path = "tools/test_two_contexts.rs"
+
+[[bin]]
+name = "test-layer0-only"
+path = "tools/test_layer0_only.rs"
+
+[[bin]]
+name = "test-layers-progressive"
+path = "tools/test_layers_progressive.rs"
+
+[[bin]]
+name = "test-full-forward"
+path = "tools/test_full_forward.rs"
+
+[[bin]]
+name = "test-nan-issue"
+path = "tools/test_nan_issue.rs"
+
+[[bin]]
+name = "test-single-context"
+path = "tools/test_single_context.rs"
+
+[[bin]]
+name = "test-step-by-step"
+path = "tools/test_step_by_step.rs"
+
+[[bin]]
+name = "test-single-context-steps"
+path = "tools/test_single_context_steps.rs"
+
+[[bin]]
+name = "profile-layer-kernels"
+path = "tools/profile_layer_kernels.rs"
+
+[[bin]]
+name = "measure-dispatch-overhead"
+path = "tools/measure_dispatch_overhead.rs"
+
+[[bin]]
+name = "measure-throughput"
+path = "tools/measure_throughput.rs"
+
+[[bin]]
+name = "debug-decode-nan"
+path = "tools/debug_decode_nan.rs"
+
+[[bin]]
+name = "debug-batch-flow"
+path = "tools/debug_batch_flow.rs"
+
+[[bin]]
+name = "check-weight-corruption"
+path = "tools/check_weight_corruption.rs"
+
+[[bin]]
+name = "check-weight-load-time"
+path = "tools/check_weight_load_time.rs"
+
+[[bin]]
+name = "test-layer0-breakdown"
+path = "tools/test_layer0_breakdown.rs"
+
+[[bin]]
+name = "test-ffn-only"
+path = "tools/test_ffn_only.rs"
+
+[[bin]]
+name = "test-attention-only"
+path = "tools/test_attention_only.rs"
+
+[[bin]]
+name = "test-context-reset"
+path = "tools/test_context_reset.rs"
+
+[[bin]]
+name = "test-layer0-output"
+path = "tools/test_layer0_output.rs"
+
+[[bin]]
+name = "test-layer1-only"
+path = "tools/test_layer1_only.rs"
+
+[[bin]]
+name = "test-layer1-skip"
+path = "tools/test_layer1_skip.rs"
+
+[[bin]]
+name = "test-layer2-only"
+path = "tools/test_layer2_only.rs"
+
+[[bin]]
+name = "check-layer-dtypes"
+path = "tools/check_layer_dtypes.rs"
+
+[[bin]]
+name = "test-q5k-direct"
+path = "tools/test_q5k_direct.rs"
+
+[[bin]]
+name = "check-layer1-weights"
+path = "tools/check_layer1_weights.rs"
+
+[[bin]]
+name = "test-swap-weights"
+path = "tools/test_swap_weights.rs"
+
+[[bin]]
+name = "test-shared-context"
+path = "tools/test_shared_context.rs"

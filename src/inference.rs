@@ -85,6 +85,35 @@ impl InferenceContext {
         })
     }
 
+    /// Load model with a shared MetalContext (avoids GPU state corruption)
+    ///
+    /// IMPORTANT: Always use this when creating multiple InferenceContexts.
+    /// Creating multiple MetalContexts on the same Metal device causes corruption.
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn from_gguf_with_gpu_ctx(
+        path: &str,
+        gpu_ctx: crate::quant::vec_dot::gpu::metal::MetalContext,
+    ) -> Result<Self, String> {
+        let store = WeightStore::from_gguf(path).map_err(|e| e.to_string())?;
+        let gguf =
+            crate::model::GgufFile::open(path).map_err(|e| e.to_string())?;
+        let config = ModelConfig::from_gguf(&gguf);
+        let model = LlamaModel::from_weights(&store, config);
+
+        // Use model's config which may have been updated from actual weight shapes
+        let config = model.config.clone();
+
+        let kv = KVCacheGPU::new(gpu_ctx.device(), &config, 2048);
+
+        Ok(InferenceContext {
+            config,
+            model,
+            device: Device::Gpu,
+            gpu_ctx: Some(gpu_ctx),
+            gpu_kv_cache: Some(kv),
+        })
+    }
+
     /// Get layer count
     pub fn layer_count(&self) -> usize {
         self.model.layers.len()
