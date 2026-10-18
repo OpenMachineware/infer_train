@@ -160,6 +160,42 @@ name = "test-new-gpu-path"
 path = "tools/test_new_gpu_path.rs"
 
 [[bin]]
+name = "bench-gpu-prefill"
+path = "tools/bench_gpu_prefill.rs"
+
+[[bin]]
+name = "test-fewer-command-buffers"
+path = "tools/test_fewer_command_buffers.rs"
+
+[[bin]]
+name = "profile-gpu-forward"
+path = "tools/profile_gpu_forward.rs"
+
+[[bin]]
+name = "profile-layer-detailed"
+path = "tools/profile_layer_detailed.rs"
+
+[[bin]]
+name = "profile-dispatch-overhead"
+path = "tools/profile_dispatch_overhead.rs"
+
+[[bin]]
+name = "profile-full-pass"
+path = "tools/profile_full_pass.rs"
+
+[[bin]]
+name = "test-three-layers"
+path = "tools/test_three_layers.rs"
+
+[[bin]]
+name = "compare-layer0-layer3"
+path = "tools/compare_layer0_layer3.rs"
+
+[[bin]]
+name = "check-layer-weights"
+path = "tools/check_layer_weights.rs"
+
+[[bin]]
 name = "test-single-layer-debug"
 path = "tools/test_single_layer_debug.rs"
 
@@ -559,3 +595,6 @@ path = "tools/test_kv_cache_update.rs"
 [[bin]]
 name = "test-kv-dims"
 path = "tools/test_kv_dims.rs"
+[[bin]]
+name = "test-layer-debug"
+path = "tools/test_layer_debug.rs"
