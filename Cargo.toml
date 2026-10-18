@@ -264,6 +264,10 @@ name = "test-two-encoders"
 path = "tools/test_two_encoders.rs"
 
 [[bin]]
+name = "test-layer-separate-cb"
+path = "tools/test_layer_separate_cb.rs"
+
+[[bin]]
 name = "test-forward-pool"
 path = "tools/test_forward_pool.rs"
 
