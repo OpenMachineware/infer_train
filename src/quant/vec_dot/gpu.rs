@@ -2,8 +2,13 @@
 // Copyright 2026 Jia Liu
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+pub mod device;
+
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
 pub mod metal;
 
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+pub use device::MetalDevice;
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 pub use metal::MetalContext;
 

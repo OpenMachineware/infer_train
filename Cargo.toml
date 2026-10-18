@@ -756,6 +756,10 @@ name = "check-layer1-weights"
 path = "tools/check_layer1_weights.rs"
 
 [[bin]]
+name = "test-metal-device"
+path = "tools/test_metal_device.rs"
+
+[[bin]]
 name = "test-swap-weights"
 path = "tools/test_swap_weights.rs"
 

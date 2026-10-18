@@ -2570,16 +2570,16 @@ impl LlamaModel {
         let reuse_pool: Rc<RefCell<Vec<std::rc::Rc<Buffer>>>> =
             Rc::new(RefCell::new(Vec::new()));
 
-        // Create ONE forward pool for all layers (key to avoiding NaN)
-        let mut forward_pool = crate::buffer::ForwardBufferPool::new(
-            device.clone(),
-            reuse_pool.clone(),
-        );
-
         // Process each token
         let mut last_hidden_buffer: Option<std::rc::Rc<Buffer>> = None;
 
         for &token in tokens.iter() {
+            // Create FRESH forward pool for this token (avoids buffer contamination across tokens)
+            let mut token_pool = crate::buffer::ForwardBufferPool::new(
+                device.clone(),
+                reuse_pool.clone(),
+            );
+
             // 1. Embedding lookup (CPU)
             let hidden = self.embedding_lookup_impl(token)?;
 
@@ -2607,7 +2607,7 @@ impl LlamaModel {
                     &layer_input,
                     kv_cache,
                     gpu_ctx,
-                    &mut forward_pool,
+                    &mut token_pool,
                     encoder,
                 )?;
 
@@ -2629,8 +2629,12 @@ impl LlamaModel {
         let final_norm = self.norm.as_ref()?;
         let final_norm_buffer = gpu_ctx.get_or_create_buffer(final_norm);
 
-        // Use same forward pool for final operations
-        let final_hidden_buffer = forward_pool.get(hidden_size * 4);
+        // Create FRESH forward pool for final operations (avoids contamination from token loop)
+        let mut final_pool = crate::buffer::ForwardBufferPool::new(
+            device.clone(),
+            reuse_pool.clone(),
+        );
+        let final_hidden_buffer = final_pool.get(hidden_size * 4);
 
         // Create command buffer for final operations
         let final_command_buffer = queue.new_command_buffer();
@@ -2717,7 +2721,7 @@ impl LlamaModel {
         }
 
         // GPU output projection
-        let logits_buffer = forward_pool.get(vocab_size * 4);
+        let logits_buffer = final_pool.get(vocab_size * 4);
 
         if self
             .gemv_encode(
@@ -3045,9 +3049,13 @@ impl LlamaModel {
             hidden_size,
         );
 
-        // Memory barrier to ensure final output is visible to next layer
+        // Memory barrier to ensure ALL outputs are visible to next layer
+        // Note: We need to barrier ALL intermediate buffers, not just final output
+        // Metal can reorder operations on different buffers
         encoder.memory_barrier_with_resources(&[
-            final_buffer.as_ref() as &ResourceRef
+            final_buffer.as_ref() as &ResourceRef,
+            residual_buffer.as_ref() as &ResourceRef,
+            ffn_out_buffer.as_ref() as &ResourceRef,
         ]);
 
         // No commit here - caller handles single commit for all layers
