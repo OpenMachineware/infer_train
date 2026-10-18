@@ -682,16 +682,15 @@ impl MetalContext {
             .new_compute_pipeline_state_with_function(&mv_tq2_0_kernel)
             .map_err(|e| format!("Failed to create TQ2_0 pipeline: {}", e))?;
 
-        // Create cached pipeline for IQ4_XS MV
-        let mv_iq4_xs_kernel = gemm_library
-            .get_function(
-                "kernel_mul_mm_iq4_xs_f32",
-                Some(create_mv_function_constants(2, 1, 1, 1)),
-            )
-            .map_err(|e| format!("Failed to get IQ4_XS kernel: {}", e))?;
+        // Create cached pipeline for IQ4_XS MV (use GEMV kernel, not GEMM!)
+        let mv_iq4_xs_kernel = mv_iq_tq_library
+            .get_function("kernel_mul_mv_iq4_xs_f32", None)
+            .map_err(|e| format!("Failed to get IQ4_XS MV kernel: {}", e))?;
         let mv_iq4_xs_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_iq4_xs_kernel)
-            .map_err(|e| format!("Failed to create IQ4_XS pipeline: {}", e))?;
+            .map_err(|e| {
+                format!("Failed to create IQ4_XS MV pipeline: {}", e)
+            })?;
 
         // Create cached pipeline for TQ1_0 MV
         let mv_tq1_0_kernel = gemm_library
