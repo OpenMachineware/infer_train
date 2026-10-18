@@ -14,9 +14,58 @@ This separation enables systematic optimization across all backends.
 
 ---
 
+## Two Design Dimensions
+
+The codebase has two independent "layer" concepts that serve different purposes:
+
+### 1. Metal Resource Layers (Hardware Abstraction)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  MetalDevice (singleton)                                │
+│  - Shared MTLDevice, MTLCommandQueue, MTLLibrary        │
+│  - "a single global queue shared by all backends"       │
+│  - Prevents Metal state corruption                      │
+└─────────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────┐
+│  MetalContext (per-backend)                             │
+│  - Pipelines, cached buffers, execution state           │
+│  - Lightweight, just references shared resources        │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Why**: Metal device is a singleton (`MTLCreateSystemDefaultDevice`). Creating multiple `CommandQueue`s or `Library`s on the same device corrupts Metal's internal state. llama.cpp explicitly shares these resources at device level.
+
+### 2. Execution Layers (Inference Engine)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Layer 3: Forward Orchestrator                          │
+│  - Architecture detection, path selection               │
+│  - Expert scheduling, top-level coordination            │
+└─────────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────┐
+│  Layer 2: Operation Executor                            │
+│  - GEMV, Attention, FFN dispatchers                     │
+│  - Multi-backend support (CPU/GPU/Remote)               │
+└─────────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────┐
+│  Layer 1: Buffer Manager                                │
+│  - Unified buffer pool, location tracking               │
+│  - KV cache management, transfer queue                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Why**: Separation of concerns. Buffer Manager knows WHERE data is, Operation Executor knows HOW to compute, Forward Orchestrator knows WHAT to compute.
+
+---
+
 ## Core Architecture
 
-### Three-Layer Design
+### Three-Layer Execution Design
 
 The inference engine is organized into three distinct layers, each with clear responsibilities:
 
@@ -411,7 +460,93 @@ impl BufferManager {
 
 ---
 
-## Current Status
+## Design Comparison
+
+### Metal Resource Layers vs Execution Layers
+
+| Aspect | Metal Resource Layers | Execution Layers |
+|--------|----------------------|------------------|
+| **Purpose** | Hardware abstraction | Inference orchestration |
+| **Scope** | Metal/GPU only | All backends (CPU/GPU/Remote) |
+| **Problem Solved** | Prevent state corruption | Enable optimization & heterogeneity |
+| **Inspiration** | llama.cpp | Custom design |
+
+### Metal Resource Layers: Why Two Layers?
+
+**Problem**: Creating multiple `MetalContext` instances caused NaN on Layer 1 operations.
+
+**Root Cause**: `MTLCreateSystemDefaultDevice()` returns the same device object. Creating multiple `CommandQueue`s or `Library`s on the same device corrupts Metal's internal state.
+
+**llama.cpp's Solution**:
+```c
+struct ggml_metal_device {
+    id<MTLDevice> mtl_device;
+    id<MTLCommandQueue> mtl_queue;  // "shared by all Metal backends"
+    ggml_metal_library_t library;
+};
+
+struct ggml_metal {
+    ggml_metal_device_t dev;  // Just a reference
+    // Only state, not shared resources
+};
+```
+
+**Our Solution**:
+```rust
+// Singleton, shared across all contexts
+pub struct MetalDevice {
+    device: Device,
+    queue: CommandQueue,
+}
+
+// Per-backend, lightweight
+pub struct MetalContext {
+    // Can reference MetalDevice::global()
+    pipelines: Vec<Pipeline>,
+    buffers: RefCell<...>,
+}
+```
+
+**Benefits**:
+1. **Correctness**: No Metal state corruption
+2. **Efficiency**: Compile shaders once, reuse across contexts
+3. **Clarity**: Explicit separation of shared vs. per-context state
+
+### Execution Layers: Why Three Layers?
+
+**Layer 1 - Buffer Manager**:
+- Manages WHERE data is (GPU VRAM / CPU Memory / Remote)
+- Handles data movement between devices
+- Single-user fast path for local inference
+
+**Layer 2 - Operation Executor**:
+- Knows HOW to compute (GPU kernel vs CPU fallback)
+- Automatic format detection and fallback
+- Cross-device synchronization
+
+**Layer 3 - Forward Orchestrator**:
+- Knows WHAT to compute (which layers, which experts)
+- Architecture detection (Standard/MQA/MLA)
+- Expert scheduling for MoE models
+
+**Benefits**:
+1. **Flexibility**: Each layer can be optimized independently
+2. **Extensibility**: Easy to add new backends or architectures
+3. **Heterogeneity**: Natural support for multi-device scenarios
+
+---
+
+## Current Implementation Status
+
+### Metal Resource Layers
+
+| Component | Status |
+|-----------|--------|
+| MetalDevice singleton | ✅ Implemented |
+| MetalContext Clone | ✅ Implemented (workaround) |
+| Full two-layer refactoring | 📋 Planned |
+
+### Execution Layers
 
 ### Phase 1: Baseline Performance
 
@@ -534,5 +669,5 @@ impl BufferManager {
 ---
 
 **Created**: 2026-09-22
-**Updated**: 2026-10-17
-**Status**: Phase 1 (Baseline) - Architecture refactoring planned
+**Updated**: 2026-10-19
+**Status**: Phase 1 (Baseline) - Metal resource layers implemented, execution layers designed
