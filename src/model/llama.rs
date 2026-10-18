@@ -2547,7 +2547,8 @@ impl LlamaModel {
     }
 
     /// Forward pass with batched GPU encoding
-    /// Creates one command buffer for ALL operations to eliminate dispatch overhead
+    /// Creates separate command buffers per layer to avoid Metal operation limits
+    /// Following llama.cpp's approach: split compute graph into chunks per command buffer
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn forward_gpu_native_batched(
         &self,
@@ -2568,15 +2569,11 @@ impl LlamaModel {
         use std::rc::Rc;
         let reuse_pool = Rc::new(RefCell::new(Vec::new()));
 
-        // Keep all forward pools alive until command buffer completes
+        // Keep all forward pools alive until command buffers complete
         let mut forward_pools: Vec<crate::buffer::ForwardBufferPool> =
             Vec::new();
 
-        // Create ONE command buffer for the entire forward pass
-        let command_buffer = queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
-
-        // Process each token, encoding all layers into the same command buffer
+        // Process each token
         let mut last_hidden_buffer: Option<std::rc::Rc<Buffer>> = None;
 
         for &token in tokens.iter() {
@@ -2584,22 +2581,26 @@ impl LlamaModel {
             let hidden = self.embedding_lookup_impl(token)?;
 
             // Upload to GPU
-            let hidden_buffer = std::rc::Rc::new(device.new_buffer_with_data(
-                hidden.as_ptr() as *const std::ffi::c_void,
-                (hidden_size * 4) as u64,
-                metal::MTLResourceOptions::StorageModeShared,
-            ));
+            let mut hidden_buffer =
+                std::rc::Rc::new(device.new_buffer_with_data(
+                    hidden.as_ptr() as *const std::ffi::c_void,
+                    (hidden_size * 4) as u64,
+                    metal::MTLResourceOptions::StorageModeShared,
+                ));
 
             // 2. Process through layers
-            // Create a forward buffer pool for this token's layers
-            // This keeps all intermediate buffers alive until command buffer completes
-            let mut forward_pool = crate::buffer::ForwardBufferPool::new(
-                device.clone(),
-                reuse_pool.clone(),
-            );
-
-            let mut hidden_buffer = hidden_buffer;
+            // Each layer gets its own command buffer (llama.cpp approach)
             for (layer_idx, layer) in self.layers.iter().enumerate() {
+                // Create forward pool for this layer
+                let mut forward_pool = crate::buffer::ForwardBufferPool::new(
+                    device.clone(),
+                    reuse_pool.clone(),
+                );
+
+                // Create command buffer for this layer
+                let command_buffer = queue.new_command_buffer();
+                let encoder = command_buffer.new_compute_command_encoder();
+
                 hidden_buffer = self.forward_layer_gpu_encode(
                     layer,
                     layer_idx,
@@ -2609,16 +2610,18 @@ impl LlamaModel {
                     &mut forward_pool,
                     encoder,
                 )?;
-            }
 
-            // Keep forward pool alive (will be dropped after command buffer completes)
-            forward_pools.push(forward_pool);
+                encoder.end_encoding();
+                command_buffer.commit();
+
+                forward_pools.push(forward_pool);
+            }
 
             last_hidden_buffer = Some(hidden_buffer);
             kv_cache.advance();
         }
 
-        // 3. Final norm (in the same command buffer)
+        // 3. Final norm (separate command buffer)
         let hidden_buffer = last_hidden_buffer?;
         let final_norm = self.norm.as_ref()?;
         let final_norm_buffer = gpu_ctx.get_or_create_buffer(final_norm);
@@ -2631,8 +2634,12 @@ impl LlamaModel {
 
         let final_hidden_buffer = final_pool.get(hidden_size * 4);
 
+        // Create command buffer for final operations
+        let final_command_buffer = queue.new_command_buffer();
+        let final_encoder = final_command_buffer.new_compute_command_encoder();
+
         gpu_ctx.rms_norm_encode(
-            encoder,
+            final_encoder,
             &hidden_buffer,
             &final_norm_buffer,
             &final_hidden_buffer,
@@ -2672,9 +2679,9 @@ impl LlamaModel {
             || (output.shape.len() == 2 && output.shape[1] == hidden_size)
         {
             // Fallback to CPU for unsupported formats or transposed weights
-            encoder.end_encoding();
-            command_buffer.commit();
-            command_buffer.wait_until_completed();
+            final_encoder.end_encoding();
+            final_command_buffer.commit();
+            final_command_buffer.wait_until_completed();
 
             // Read final_hidden BEFORE dropping pools (buffer still alive)
             let mut hidden = vec![0.0f32; hidden_size];
@@ -2720,7 +2727,7 @@ impl LlamaModel {
 
         if self
             .gemv_encode(
-                encoder,
+                final_encoder,
                 &final_hidden_buffer,
                 output,
                 vocab_size,
@@ -2732,10 +2739,10 @@ impl LlamaModel {
             return None;
         }
 
-        // Commit the ONE command buffer for the entire forward pass
-        encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
+        // Commit final command buffer and wait for completion
+        final_encoder.end_encoding();
+        final_command_buffer.commit();
+        final_command_buffer.wait_until_completed();
 
         // Download logits BEFORE dropping pools (buffers still alive)
         let mut logits = vec![0.0f32; vocab_size];
