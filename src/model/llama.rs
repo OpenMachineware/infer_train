@@ -2018,7 +2018,7 @@ impl LlamaModel {
 
     /// Transposed gemv: weight is stored as [in_size, out_size] instead of [out_size, in_size]
     /// This is needed for tied embeddings where weight shape is [hidden_size, vocab_size]
-    fn gemv_transposed(
+    pub fn gemv_transposed(
         &self,
         x: &[f32],
         w: &Tensor,

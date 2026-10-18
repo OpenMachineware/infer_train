@@ -117,13 +117,18 @@ fn main() {
     let cb = queue.new_command_buffer();
     let enc = cb.new_compute_command_encoder();
 
+    // Create buffer pool for this layer
+    let reuse_pool = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let mut forward_pool =
+        infer_train::buffer::ForwardBufferPool::new(device.clone(), reuse_pool);
+
     let result_buffer = model.forward_layer_gpu_encode(
         layer,
         0,
         &hidden_buffer,
         gpu_kv,
         gpu_ctx,
-        device,
+        &mut forward_pool,
         enc,
     );
 

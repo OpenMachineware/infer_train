@@ -20,7 +20,8 @@ fn main() {
     let model_path = &args[1];
 
     let gguf = GgufFile::open(model_path).expect("Failed to open GGUF");
-    let tokenizer = BpeTokenizer::from_gguf(&gguf).expect("Failed to load tokenizer");
+    let tokenizer =
+        BpeTokenizer::from_gguf(&gguf).expect("Failed to load tokenizer");
     let tokens = tokenizer.encode("Hello");
 
     let mut ctx = InferenceContext::from_gguf(model_path, Device::Gpu)
@@ -38,9 +39,14 @@ fn main() {
             let device = gpu_ctx.device();
             let queue = gpu_ctx.queue();
 
-            println!("\n=== Detailed Timing Analysis (Layer 0 Representative) ===\n");
+            println!(
+                "\n=== Detailed Timing Analysis (Layer 0 Representative) ===\n"
+            );
             println!("Model: {}", model_path);
-            println!("Layers: {}, Hidden size: {}, Head dim: {}", n_layers, hidden_size, head_dim);
+            println!(
+                "Layers: {}, Hidden size: {}, Head dim: {}",
+                n_layers, hidden_size, head_dim
+            );
 
             let hidden =
                 model.embedding_lookup_impl(tokens[0]).expect("No embedding");
@@ -63,7 +69,8 @@ fn main() {
             let mut layer_input = hidden_buffer.clone();
 
             // Timing results storage
-            let mut timing_results: Vec<(&str, std::time::Duration)> = Vec::new();
+            let mut timing_results: Vec<(&str, std::time::Duration)> =
+                Vec::new();
 
             // 1. Embedding lookup (CPU)
             let start = Instant::now();
@@ -75,7 +82,8 @@ fn main() {
             let cb = queue.new_command_buffer();
             let encoder = cb.new_compute_command_encoder();
             let attention_norm = layer.attention_norm.as_ref().unwrap();
-            let norm_weight_buffer = gpu_ctx.get_or_create_buffer(attention_norm);
+            let norm_weight_buffer =
+                gpu_ctx.get_or_create_buffer(attention_norm);
             let normed_buffer = forward_pool.get_zeroed(hidden_size * 4);
 
             gpu_ctx.rms_norm_encode(
@@ -103,7 +111,14 @@ fn main() {
             let q_buffer = forward_pool.get_zeroed(q_out_size * 4);
 
             model
-                .gemv_encode(encoder, &normed_buffer, wq, q_out_size, gpu_ctx, &q_buffer)
+                .gemv_encode(
+                    encoder,
+                    &normed_buffer,
+                    wq,
+                    q_out_size,
+                    gpu_ctx,
+                    &q_buffer,
+                )
                 .unwrap();
             encoder.end_encoding();
             cb.commit();
@@ -121,7 +136,14 @@ fn main() {
             let k_buffer = forward_pool.get_zeroed(k_out_size * 4);
 
             model
-                .gemv_encode(encoder, &normed_buffer, wk, k_out_size, gpu_ctx, &k_buffer)
+                .gemv_encode(
+                    encoder,
+                    &normed_buffer,
+                    wk,
+                    k_out_size,
+                    gpu_ctx,
+                    &k_buffer,
+                )
                 .unwrap();
             encoder.end_encoding();
             cb.commit();
@@ -138,7 +160,14 @@ fn main() {
             let v_buffer = forward_pool.get_zeroed(v_out_size * 4);
 
             model
-                .gemv_encode(encoder, &normed_buffer, wv, v_out_size, gpu_ctx, &v_buffer)
+                .gemv_encode(
+                    encoder,
+                    &normed_buffer,
+                    wv,
+                    v_out_size,
+                    gpu_ctx,
+                    &v_buffer,
+                )
                 .unwrap();
             encoder.end_encoding();
             cb.commit();
@@ -370,7 +399,12 @@ fn main() {
             let encoder = cb.new_compute_command_encoder();
             let silu_buffer = forward_pool.get_zeroed(intermediate_size * 4);
 
-            gpu_ctx.silu_encode(encoder, &gate_buffer, &silu_buffer, intermediate_size);
+            gpu_ctx.silu_encode(
+                encoder,
+                &gate_buffer,
+                &silu_buffer,
+                intermediate_size,
+            );
             encoder.end_encoding();
             cb.commit();
             cb.wait_until_completed();
@@ -380,7 +414,8 @@ fn main() {
             let start = Instant::now();
             let cb = queue.new_command_buffer();
             let encoder = cb.new_compute_command_encoder();
-            let hidden_ffn_buffer = forward_pool.get_zeroed(intermediate_size * 4);
+            let hidden_ffn_buffer =
+                forward_pool.get_zeroed(intermediate_size * 4);
 
             gpu_ctx.mul_encode(
                 encoder,
@@ -439,16 +474,31 @@ fn main() {
             println!("\n=== Our Implementation Timing (Layer 0) ===\n");
             let mut total_time = std::time::Duration::ZERO;
             for (name, duration) in &timing_results {
-                println!("{:40} {:8.3} ms", name, duration.as_secs_f64() * 1000.0);
+                println!(
+                    "{:40} {:8.3} ms",
+                    name,
+                    duration.as_secs_f64() * 1000.0
+                );
                 total_time += *duration;
             }
-            println!("{:40} {:8.3} ms", "TOTAL (Layer 0)", total_time.as_secs_f64() * 1000.0);
+            println!(
+                "{:40} {:8.3} ms",
+                "TOTAL (Layer 0)",
+                total_time.as_secs_f64() * 1000.0
+            );
 
             // Estimate full forward pass
             println!("\n=== Estimated Full Forward Pass ===\n");
             let estimated_total = total_time * n_layers as u32;
-            println!("Estimated time for {} layers: {:.3} ms", n_layers, estimated_total.as_secs_f64() * 1000.0);
-            println!("Estimated throughput: {:.1} t/s", 1000.0 / estimated_total.as_secs_f64() / 1000.0);
+            println!(
+                "Estimated time for {} layers: {:.3} ms",
+                n_layers,
+                estimated_total.as_secs_f64() * 1000.0
+            );
+            println!(
+                "Estimated throughput: {:.1} t/s",
+                1000.0 / estimated_total.as_secs_f64() / 1000.0
+            );
         }
     }
 }

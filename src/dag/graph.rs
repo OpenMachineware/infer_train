@@ -116,6 +116,12 @@ pub enum TensorLocation {
     NotYetAllocated,
 }
 
+impl Default for ComputeDag {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ComputeDag {
     pub fn new() -> Self {
         Self {

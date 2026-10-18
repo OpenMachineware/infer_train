@@ -176,6 +176,10 @@ name = "profile-layer-detailed"
 path = "tools/profile_layer_detailed.rs"
 
 [[bin]]
+name = "compare-timing"
+path = "tools/compare_timing.rs"
+
+[[bin]]
 name = "profile-dispatch-overhead"
 path = "tools/profile_dispatch_overhead.rs"
 
@@ -598,3 +602,11 @@ path = "tools/test_kv_dims.rs"
 [[bin]]
 name = "test-layer-debug"
 path = "tools/test_layer_debug.rs"
+
+[[bin]]
+name = "test-dag-executor"
+path = "tools/test_dag_executor.rs"
+
+[[bin]]
+name = "test-layer-chain"
+path = "tools/test_layer_chain.rs"

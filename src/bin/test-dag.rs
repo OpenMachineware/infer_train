@@ -15,9 +15,10 @@ fn main() {
     let mut ctx = InferenceContext::from_gguf(model_path, Device::Gpu)
         .expect("Failed to load model");
 
-    if let (Some(_gpu_ctx), Some(ref model), Some(_kv_cache)) =
-        (ctx.gpu_ctx.as_ref(), ctx.model.as_ref(), ctx.gpu_kv_cache.as_ref())
+    if let (Some(_gpu_ctx), Some(_kv_cache)) =
+        (ctx.gpu_ctx.as_ref(), ctx.gpu_kv_cache.as_ref())
     {
+        let model = &ctx.model;
         let layer = &model.layers[0];
 
         // Build DAG for layer 0
