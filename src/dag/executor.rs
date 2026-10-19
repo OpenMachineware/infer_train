@@ -282,6 +282,54 @@ impl DagExecutor {
                 Some(())
             }
 
+            Operation::FusedGateUp {
+                input,
+                gate_weight,
+                up_weight,
+                output_gate,
+                output_up,
+                intermediate_size,
+                ..
+            } => {
+                let input_buf = ctx.tensor_registry.get(*input)?;
+                let gate_weight_buf = ctx.tensor_registry.get(*gate_weight)?;
+                let up_weight_buf = ctx.tensor_registry.get(*up_weight)?;
+
+                let gate_buf = ctx.forward_pool.get(*intermediate_size * 4);
+                let up_buf = ctx.forward_pool.get(*intermediate_size * 4);
+
+                let hidden_size = ctx.model.config.hidden_size;
+
+                // Get weight dtypes
+                let gate_dtype = ctx.weight_bindings.get(gate_weight)?.dtype;
+                let up_dtype = ctx.weight_bindings.get(up_weight)?.dtype;
+
+                // Run two GEMV operations
+                // TODO: Optimize to single GEMM with concatenated weights
+                ctx.gpu_ctx.mv_encode(
+                    encoder,
+                    &gate_weight_buf,
+                    &input_buf,
+                    &gate_buf,
+                    *intermediate_size,
+                    hidden_size,
+                    gate_dtype,
+                );
+                ctx.gpu_ctx.mv_encode(
+                    encoder,
+                    &up_weight_buf,
+                    &input_buf,
+                    &up_buf,
+                    *intermediate_size,
+                    hidden_size,
+                    up_dtype,
+                );
+
+                ctx.tensor_registry.insert(*output_gate, gate_buf);
+                ctx.tensor_registry.insert(*output_up, up_buf);
+                Some(())
+            }
+
             Operation::RoPE { input, output, pos: _, n_heads, head_dim } => {
                 let input_buf = ctx.tensor_registry.get(*input)?;
                 let output_buf = ctx.forward_pool.get(*n_heads * *head_dim * 4);

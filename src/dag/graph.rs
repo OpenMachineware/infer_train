@@ -42,6 +42,18 @@ pub enum Operation {
         k_out_size: usize,
         v_out_size: usize,
     },
+    /// Fused Gate + Up projections (both take FFN norm as input)
+    /// Combines two GEMV operations into one GEMM
+    /// This is a key fusion from llama.cpp/vLLM for FFN
+    FusedGateUp {
+        input: usize,             // FFN norm output
+        gate_weight: usize,       // Gate projection weight
+        up_weight: usize,         // Up projection weight
+        output_gate: usize,       // Gate output tensor
+        output_up: usize,         // Up output tensor
+        intermediate_size: usize, // M dimension
+        hidden_size: usize,       // K dimension
+    },
     RoPE {
         input: usize,
         output: usize,

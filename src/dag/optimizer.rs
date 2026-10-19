@@ -165,13 +165,51 @@ impl DagOptimizer {
                         &other.op
                     {
                         if *other_input == *input {
-                            // Found a pair - check if it's gate-up pattern
-                            // (same input, different outputs)
-                            // For now, just create a simple fused node
-                            // This could be enhanced to actual GEMM fusion
+                            // Found a pair with same input - fuse them
+                            let other_op = &other.op;
+                            if let Operation::Gemv {
+                                weight: other_weight,
+                                output: other_output,
+                                out_size: other_out_size,
+                                ..
+                            } = other_op
+                            {
+                                nodes_to_remove.push(node.id);
+                                nodes_to_remove.push(other.id);
 
-                            // Skip - gate-up fusion needs different approach
-                            // (concatenate weights, then split output)
+                                // Combine dependencies
+                                let mut combined_deps = Vec::new();
+                                for &dep in &node.dependencies {
+                                    if !nodes_to_remove.contains(&dep) {
+                                        combined_deps.push(dep);
+                                    }
+                                }
+                                for &dep in &other.dependencies {
+                                    if !combined_deps.contains(&dep)
+                                        && !nodes_to_remove.contains(&dep)
+                                    {
+                                        combined_deps.push(dep);
+                                    }
+                                }
+
+                                let fused_node = DagNode {
+                                    id: dag.nodes.len() + nodes_to_add.len(),
+                                    op: Operation::FusedGateUp {
+                                        input: *input,
+                                        gate_weight: *weight,
+                                        up_weight: *other_weight,
+                                        output_gate: *output,
+                                        output_up: *other_output,
+                                        intermediate_size: *out_size,
+                                        hidden_size: 0,
+                                    },
+                                    dependencies: combined_deps,
+                                    device_preference: DevicePreference::Gpu,
+                                };
+
+                                nodes_to_add.push(fused_node);
+                                fused_count += 2;
+                            }
                             break;
                         }
                     }
