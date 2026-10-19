@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
+// Trace NaN source through layer execution
+
+use std::time::Instant;
+
+fn main() {
+    let model_path =
+        "/Users/jia/Desktop/infer_train/Qwen3-0.6B-UD-Q4_K_XL.gguf";
+
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    {
+        use infer_train::buffer::ForwardBufferPool;
+        use infer_train::inference::{Device, InferenceContext, KVCacheGPU};
+        use infer_train::quant::vec_dot::gpu::metal::MetalContext;
+
+        // Create shared MetalContext
+        let gpu_ctx = MetalContext::new().unwrap();
+        let device = gpu_ctx.device();
+        let queue = gpu_ctx.queue();
+
+        // Load model with shared context
+        let ctx = InferenceContext::from_gguf_with_gpu_ctx(
+            model_path,
+            gpu_ctx.clone(),
+        )
+        .unwrap();
+        let config = ctx.model.config.clone();
+
+        let mut kv_cache = KVCacheGPU::new(device, &config, 2048);
+        let reuse_pool = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+
+        // Get embedding for token 1
+        let embedding = ctx.model.embedding_lookup_impl(1).unwrap();
+        let emb_buffer = std::rc::Rc::new(device.new_buffer_with_data(
+            embedding.as_ptr() as *const std::ffi::c_void,
+            (embedding.len() * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        println!("=== Tracing NaN through layers ===");
+        println!("Embedding: first 5 = {:?}", &embedding[..5]);
+
+        // Process each layer and check output
+        let mut hidden = emb_buffer;
+        let num_layers = ctx.model.layers.len();
+
+        for layer_idx in 0..num_layers {
+            let mut forward_pool =
+                ForwardBufferPool::new(device.clone(), reuse_pool.clone());
+            let layer = &ctx.model.layers[layer_idx];
+            let cb = queue.new_command_buffer();
+            let enc = cb.new_compute_command_encoder();
+
+            let output = ctx
+                .model
+                .forward_layer_gpu_encode(
+                    layer,
+                    layer_idx,
+                    &hidden,
+                    &mut kv_cache,
+                    &gpu_ctx,
+                    &mut forward_pool,
+                    enc,
+                )
+                .unwrap();
+
+            enc.end_encoding();
+            cb.commit();
+            cb.wait_until_completed();
+
+            // Check output
+            let mut h = vec![0.0f32; 100];
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    output.contents() as *const f32,
+                    h.as_mut_ptr(),
+                    100,
+                );
+            }
+            let nan_count = h.iter().filter(|v| v.is_nan()).count();
+            let zero_count = h.iter().filter(|v| **v == 0.0).count();
+
+            println!(
+                "Layer {} output: {} NaN, {} zero, first 5 = {:?}",
+                layer_idx,
+                nan_count,
+                zero_count,
+                &h[..5]
+            );
+
+            if nan_count > 0 {
+                println!("\n*** NaN detected at Layer {}! ***", layer_idx);
+                break;
+            }
+
+            hidden = output;
+        }
+
+        // Check final hidden state
+        println!("\n=== Final hidden state ===");
+        let mut final_h = vec![0.0f32; 100];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                hidden.contents() as *const f32,
+                final_h.as_mut_ptr(),
+                100,
+            );
+        }
+        let nan_count = final_h.iter().filter(|v| v.is_nan()).count();
+        println!(
+            "Final hidden: {} NaN, first 5 = {:?}",
+            nan_count,
+            &final_h[..5]
+        );
+    }
+
+    #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+    println!("GPU tests require aarch64+metal");
+}

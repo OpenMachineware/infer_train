@@ -28,6 +28,20 @@ pub enum Operation {
         output: usize,
         out_size: usize,
     },
+    /// Fused QKV projection: combines Q, K, V projections into single GEMM
+    /// output_q, output_k, output_v are tensor IDs for each projection
+    FusedQKV {
+        input: usize,
+        q_weight: usize,
+        k_weight: usize,
+        v_weight: usize,
+        output_q: usize,
+        output_k: usize,
+        output_v: usize,
+        q_out_size: usize,
+        k_out_size: usize,
+        v_out_size: usize,
+    },
     RoPE {
         input: usize,
         output: usize,

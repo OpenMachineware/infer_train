@@ -144,6 +144,10 @@ name = "trace-gemv"
 path = "tools/trace_gemv.rs"
 
 [[bin]]
+name = "trace-nan"
+path = "tools/trace_nan.rs"
+
+[[bin]]
 name = "test-q6k-gemm"
 path = "tools/test_q6k_gemm.rs"
 
@@ -198,6 +202,10 @@ path = "tools/compare_layer0_layer3.rs"
 [[bin]]
 name = "check-layer-weights"
 path = "tools/check_layer_weights.rs"
+
+[[bin]]
+name = "test-q4k-gemv"
+path = "tools/test_q4k_gemv.rs"
 
 [[bin]]
 name = "test-single-layer-debug"
@@ -600,6 +608,21 @@ name = "test-dag-executor"
 path = "tools/test_dag_executor.rs"
 
 [[bin]]
+name = "test-fused-swiglu"
+path = "tools/test_fused_swiglu.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-fused-norm-linear"
+path = "tools/test_fused_norm_linear.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-fused-inference"
+path = "tools/test_fused_inference.rs"
+required-features = ["metal"]
+
+[[bin]]
 name = "test-first-layer"
 path = "tools/test_first_layer.rs"
 
@@ -666,6 +689,70 @@ path = "tools/test_layers_progressive.rs"
 [[bin]]
 name = "test-full-forward"
 path = "tools/test_full_forward.rs"
+
+[[bin]]
+name = "test-single-prefill"
+path = "tools/test_single_prefill.rs"
+
+[[bin]]
+name = "test-multi-prefill"
+path = "tools/test_multi_prefill.rs"
+
+[[bin]]
+name = "test-single-context-twice"
+path = "tools/test_single_context_twice.rs"
+
+[[bin]]
+name = "test-layer-nan-trace"
+path = "tools/test_layer_nan_trace.rs"
+
+[[bin]]
+name = "test-fresh-metal-each"
+path = "tools/test_fresh_metal_each.rs"
+
+[[bin]]
+name = "test-embedding-only"
+path = "tools/test_embedding_only.rs"
+
+[[bin]]
+name = "test-thread-isolation"
+path = "tools/test_thread_isolation.rs"
+
+[[bin]]
+name = "test-cache-clear"
+path = "tools/test_cache_clear.rs"
+
+[[bin]]
+name = "test-threaded-inference"
+path = "tools/test_threaded_inference.rs"
+
+[[bin]]
+name = "benchmark-throughput"
+path = "tools/benchmark_throughput.rs"
+
+[[bin]]
+name = "benchmark-inference"
+path = "tools/benchmark_inference.rs"
+
+[[bin]]
+name = "benchmark-decode"
+path = "tools/benchmark_decode.rs"
+
+[[bin]]
+name = "profile-timing"
+path = "tools/profile_timing.rs"
+
+[[bin]]
+name = "check-output-layer"
+path = "tools/check_output_layer.rs"
+
+[[bin]]
+name = "profile-detailed"
+path = "tools/profile_detailed.rs"
+
+[[bin]]
+name = "profile-decode"
+path = "tools/profile_decode.rs"
 
 [[bin]]
 name = "test-nan-issue"
@@ -766,3 +853,33 @@ path = "tools/test_swap_weights.rs"
 [[bin]]
 name = "test-shared-context"
 path = "tools/test_shared_context.rs"
+[[bin]]
+name = "analyze-gemv-sizes"
+path = "tools/analyze_gemv_sizes.rs"
+[[bin]]
+name = "profile-output-layer"
+path = "tools/profile_output_layer.rs"
+[[bin]]
+name = "profile-layer-breakdown"
+path = "tools/profile_layer_breakdown.rs"
+[[bin]]
+name = "test-q5k-perf"
+path = "tools/test_q5k_perf.rs"
+[[bin]]
+name = "test-q5k-batch"
+path = "tools/test_q5k_batch.rs"
+[[bin]]
+name = "test-q5k-batch-prealloc"
+path = "tools/test_q5k_batch_prealloc.rs"
+[[bin]]
+name = "test-layer-time"
+path = "tools/test_layer_time.rs"
+[[bin]]
+name = "profile-rope-time"
+path = "tools/profile_rope_time.rs"
+[[bin]]
+name = "profile-attention-time"
+path = "tools/profile_attention_time.rs"
+[[bin]]
+name = "profile-flash-attn"
+path = "tools/profile_flash_attn.rs"

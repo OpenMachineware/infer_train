@@ -19,12 +19,167 @@ impl DagOptimizer {
     pub fn optimize(dag: &mut ComputeDag) -> usize {
         let mut fused_count = 0;
 
+        // Apply QKV projection fusion (most impactful)
+        fused_count += Self::fuse_qkv_projections(dag);
+
+        // Apply gate-up projection fusion
+        fused_count += Self::fuse_gate_up_projections(dag);
+
         // Apply SiLU + Mul → FusedSwiGLU fusion
         fused_count += Self::fuse_silu_mul(dag);
 
         // Apply RMSNorm + Gemv → FusedNormLinear fusion
         fused_count += Self::fuse_norm_gemv(dag);
 
+        fused_count
+    }
+
+    /// Fuse Q, K, V projections into FusedQKV
+    /// Finds three GEMV operations that all use the same input tensor
+    fn fuse_qkv_projections(dag: &mut ComputeDag) -> usize {
+        let mut fused_count = 0;
+        let mut nodes_to_remove = Vec::new();
+        let mut nodes_to_add = Vec::new();
+
+        // Find all Gemv operations and group by input tensor
+        for node in &dag.nodes {
+            if let Operation::Gemv { input, .. } = &node.op {
+                if nodes_to_remove.contains(&node.id) {
+                    continue;
+                }
+
+                // Find all other Gemv nodes with the same input
+                let same_input: Vec<_> = dag
+                    .nodes
+                    .iter()
+                    .filter(|n| {
+                        if let Operation::Gemv { input: inp, .. } = &n.op {
+                            *inp == *input && !nodes_to_remove.contains(&n.id)
+                        } else {
+                            false
+                        }
+                    })
+                    .collect();
+
+                // If we have exactly 3 projections (Q, K, V), fuse them
+                if same_input.len() == 3 {
+                    // Sort by ID to get consistent ordering (Q, K, V)
+                    let mut projections: Vec<_> =
+                        same_input.into_iter().collect();
+                    projections.sort_by_key(|n| n.id);
+
+                    // Extract projection info
+                    let get_info = |node: &DagNode| {
+                        if let Operation::Gemv {
+                            weight,
+                            output,
+                            out_size,
+                            ..
+                        } = &node.op
+                        {
+                            Some((*weight, *output, *out_size))
+                        } else {
+                            None
+                        }
+                    };
+
+                    if let (
+                        Some((q_weight, q_out, q_size)),
+                        Some((k_weight, k_out, k_size)),
+                        Some((v_weight, v_out, v_size)),
+                    ) = (
+                        get_info(projections[0]),
+                        get_info(projections[1]),
+                        get_info(projections[2]),
+                    ) {
+                        // Mark nodes for removal
+                        let ids: Vec<usize> =
+                            projections.iter().map(|n| n.id).collect();
+                        nodes_to_remove.extend(ids.clone());
+
+                        // Combine dependencies
+                        let mut combined_deps = Vec::new();
+                        for proj in &projections {
+                            for &dep in &proj.dependencies {
+                                if !combined_deps.contains(&dep)
+                                    && !nodes_to_remove.contains(&dep)
+                                {
+                                    combined_deps.push(dep);
+                                }
+                            }
+                        }
+
+                        let fused_node = DagNode {
+                            id: dag.nodes.len() + nodes_to_add.len(),
+                            op: Operation::FusedQKV {
+                                input: *input,
+                                q_weight,
+                                k_weight,
+                                v_weight,
+                                output_q: q_out,
+                                output_k: k_out,
+                                output_v: v_out,
+                                q_out_size: q_size,
+                                k_out_size: k_size,
+                                v_out_size: v_size,
+                            },
+                            dependencies: combined_deps,
+                            device_preference: DevicePreference::Gpu,
+                        };
+
+                        nodes_to_add.push(fused_node);
+                        fused_count += 3; // Three nodes fused into one
+                    }
+                }
+            }
+        }
+
+        Self::apply_modifications(dag, nodes_to_remove, nodes_to_add);
+        fused_count
+    }
+
+    /// Fuse gate and up projections (both use ffn_norm output)
+    /// Similar to QKV fusion but for 2 projections
+    fn fuse_gate_up_projections(dag: &mut ComputeDag) -> usize {
+        let mut fused_count = 0;
+        let mut nodes_to_remove = Vec::new();
+        let mut nodes_to_add = Vec::new();
+
+        // Find pairs of Gemv operations that use the same input
+        for node in &dag.nodes {
+            if let Operation::Gemv { input, weight, output, out_size } =
+                &node.op
+            {
+                if nodes_to_remove.contains(&node.id) {
+                    continue;
+                }
+
+                // Find another Gemv with the same input
+                for other in &dag.nodes {
+                    if other.id <= node.id
+                        || nodes_to_remove.contains(&other.id)
+                    {
+                        continue;
+                    }
+                    if let Operation::Gemv { input: other_input, .. } =
+                        &other.op
+                    {
+                        if *other_input == *input {
+                            // Found a pair - check if it's gate-up pattern
+                            // (same input, different outputs)
+                            // For now, just create a simple fused node
+                            // This could be enhanced to actual GEMM fusion
+
+                            // Skip - gate-up fusion needs different approach
+                            // (concatenate weights, then split output)
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        Self::apply_modifications(dag, nodes_to_remove, nodes_to_add);
         fused_count
     }
 

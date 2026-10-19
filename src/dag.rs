@@ -15,5 +15,5 @@ pub mod optimizer;
 
 pub use builder::DagBuilder;
 pub use executor::DagExecutor;
-pub use graph::{DagEdge, DagNode, Operation};
+pub use graph::{DagEdge, DagNode, Operation, OptimizedDag};
 pub use optimizer::DagOptimizer;

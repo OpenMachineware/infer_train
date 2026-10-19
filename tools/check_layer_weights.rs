@@ -1,75 +1,54 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-// Check: Layer weight types and shapes
-
-use infer_train::inference::{Device, InferenceContext};
-use infer_train::model::GgufFile;
+// Check each layer's weight types
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: {} <model.gguf>", args[0]);
-        std::process::exit(1);
-    }
+    let model_path =
+        "/Users/jia/Desktop/infer_train/Qwen3-0.6B-UD-Q4_K_XL.gguf";
 
-    let model_path = &args[1];
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    {
+        use infer_train::inference::{Device, InferenceContext};
 
-    let gguf = GgufFile::open(model_path).expect("Failed to open GGUF");
-    let ctx = InferenceContext::from_gguf(model_path, Device::Gpu)
-        .expect("Failed to load model");
+        let ctx = InferenceContext::from_gguf(model_path, Device::Gpu).unwrap();
 
-    let model = &ctx.model;
-
-    println!("\n=== Layer Weight Check ===\n");
-
-    for layer_idx in [0, 1, 2, 3, 4].iter() {
-        let layer = &model.layers[*layer_idx];
-
-        println!("Layer {}:", layer_idx);
-
-        // Q weight
-        if let Some(ref wq) = layer.wq {
-            let data = wq.data.as_bytes();
-            println!(
-                "  WQ: shape={:?}, dtype={:?}, n_bytes={}",
-                wq.shape,
-                wq.dtype,
-                data.len()
-            );
-            // Check first few bytes
-            if data.len() >= 32 {
-                let first_bytes = &data[0..32.min(data.len())];
-                println!("    First 32 bytes: {:?}", first_bytes);
+        println!("=== Layer Weight Types ===");
+        for (i, layer) in ctx.model.layers.iter().enumerate() {
+            println!("\nLayer {}:", i);
+            if let Some(wq) = &layer.wq {
+                println!("  wq: dtype={:?}, shape={:?}", wq.dtype, wq.shape);
+            }
+            if let Some(wk) = &layer.wk {
+                println!("  wk: dtype={:?}, shape={:?}", wk.dtype, wk.shape);
+            }
+            if let Some(wv) = &layer.wv {
+                println!("  wv: dtype={:?}, shape={:?}", wv.dtype, wv.shape);
+            }
+            if let Some(wo) = &layer.wo {
+                println!("  wo: dtype={:?}, shape={:?}", wo.dtype, wo.shape);
+            }
+            if let Some(w1) = &layer.w1 {
+                println!(
+                    "  w1 (gate): dtype={:?}, shape={:?}",
+                    w1.dtype, w1.shape
+                );
+            }
+            if let Some(w2) = &layer.w2 {
+                println!(
+                    "  w2 (down): dtype={:?}, shape={:?}",
+                    w2.dtype, w2.shape
+                );
+            }
+            if let Some(w3) = &layer.w3 {
+                println!(
+                    "  w3 (up): dtype={:?}, shape={:?}",
+                    w3.dtype, w3.shape
+                );
             }
         }
-
-        // K weight
-        if let Some(ref wk) = layer.wk {
-            let data = wk.data.as_bytes();
-            println!(
-                "  WK: shape={:?}, dtype={:?}, n_bytes={}",
-                wk.shape,
-                wk.dtype,
-                data.len()
-            );
-            if data.len() >= 32 {
-                let first_bytes = &data[0..32.min(data.len())];
-                println!("    First 32 bytes: {:?}", first_bytes);
-            }
-        }
-
-        // V weight
-        if let Some(ref wv) = layer.wv {
-            let data = wv.data.as_bytes();
-            println!(
-                "  WV: shape={:?}, dtype={:?}, n_bytes={}",
-                wv.shape,
-                wv.dtype,
-                data.len()
-            );
-        }
-
-        println!();
     }
+
+    #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+    println!("GPU tests require aarch64+metal");
 }

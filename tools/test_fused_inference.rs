@@ -48,6 +48,7 @@ fn main() {
         let mut gemv_count = 0;
         let mut fused_swiglu_count = 0;
         let mut fused_norm_linear_count = 0;
+        let mut fused_qkv_count = 0;
 
         for node in dag.nodes_in_order() {
             match &node.op {
@@ -69,6 +70,9 @@ fn main() {
                 infer_train::dag::graph::Operation::FusedNormLinear {
                     ..
                 } => fused_norm_linear_count += 1,
+                infer_train::dag::graph::Operation::FusedQKV { .. } => {
+                    fused_qkv_count += 1
+                }
                 infer_train::dag::graph::Operation::NoOp => {
                     // Skip - placeholder for fused operations
                 }
@@ -85,6 +89,7 @@ fn main() {
         println!("\nFused operations:");
         println!("  FusedSwiGLU: {}", fused_swiglu_count);
         println!("  FusedNormLinear: {}", fused_norm_linear_count);
+        println!("  FusedQKV: {}", fused_qkv_count);
 
         // Debug: count NoOp nodes
         let noop_count = dag

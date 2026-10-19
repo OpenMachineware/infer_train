@@ -217,6 +217,71 @@ impl DagExecutor {
                 Some(())
             }
 
+            Operation::FusedQKV {
+                input,
+                q_weight,
+                k_weight,
+                v_weight,
+                output_q,
+                output_k,
+                output_v,
+                q_out_size,
+                k_out_size,
+                v_out_size,
+            } => {
+                let input_buf = ctx.tensor_registry.get(*input)?;
+                let q_weight_buf = ctx.tensor_registry.get(*q_weight)?;
+                let k_weight_buf = ctx.tensor_registry.get(*k_weight)?;
+                let v_weight_buf = ctx.tensor_registry.get(*v_weight)?;
+
+                // Allocate output buffers
+                let q_buf = ctx.forward_pool.get(*q_out_size * 4);
+                let k_buf = ctx.forward_pool.get(*k_out_size * 4);
+                let v_buf = ctx.forward_pool.get(*v_out_size * 4);
+
+                // Get weight dtypes
+                let q_dtype = ctx.weight_bindings.get(q_weight)?.dtype;
+                let k_dtype = ctx.weight_bindings.get(k_weight)?.dtype;
+                let v_dtype = ctx.weight_bindings.get(v_weight)?.dtype;
+
+                let hidden_size = ctx.model.config.hidden_size;
+
+                // Run three GEMV operations
+                // TODO: Optimize to single GEMM when weights are contiguous
+                ctx.gpu_ctx.mv_encode(
+                    encoder,
+                    &q_weight_buf,
+                    &input_buf,
+                    &q_buf,
+                    *q_out_size,
+                    hidden_size,
+                    q_dtype,
+                );
+                ctx.gpu_ctx.mv_encode(
+                    encoder,
+                    &k_weight_buf,
+                    &input_buf,
+                    &k_buf,
+                    *k_out_size,
+                    hidden_size,
+                    k_dtype,
+                );
+                ctx.gpu_ctx.mv_encode(
+                    encoder,
+                    &v_weight_buf,
+                    &input_buf,
+                    &v_buf,
+                    *v_out_size,
+                    hidden_size,
+                    v_dtype,
+                );
+
+                ctx.tensor_registry.insert(*output_q, q_buf);
+                ctx.tensor_registry.insert(*output_k, k_buf);
+                ctx.tensor_registry.insert(*output_v, v_buf);
+                Some(())
+            }
+
             Operation::RoPE { input, output, pos: _, n_heads, head_dim } => {
                 let input_buf = ctx.tensor_registry.get(*input)?;
                 let output_buf = ctx.forward_pool.get(*n_heads * *head_dim * 4);

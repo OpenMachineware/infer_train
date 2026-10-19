@@ -122,9 +122,21 @@ impl ForwardBufferPool {
     ///
     /// Call this after the command buffer completes.
     /// Buffers are returned to the reuse pool for future forward passes.
+    ///
+    /// IMPORTANT: Only returns buffers with reference count of 1.
+    /// If a buffer is still referenced elsewhere (e.g., as layer output),
+    /// it must not be reused to avoid data corruption.
     pub fn release_all(&mut self) {
-        for buf in self.buffers.drain(..) {
-            self.reuse_pool.borrow_mut().push(buf);
+        // Take ownership of the buffer list, leaving an empty Vec
+        let buffers = std::mem::take(&mut self.buffers);
+
+        for buf in buffers {
+            // Now the only reference is 'buf' (if strong_count == 1)
+            // If strong_count > 1, the buffer is still in use elsewhere
+            if Rc::strong_count(&buf) == 1 {
+                self.reuse_pool.borrow_mut().push(buf);
+            }
+            // Otherwise, let the buffer deallocate when 'buf' goes out of scope
         }
     }
 

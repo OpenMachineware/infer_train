@@ -350,13 +350,104 @@ src/
 
 ## Optimization Strategy
 
-### Three-Phase Approach
+### DAG-Based Optimization Architecture
+
+The engine uses DAG as its intermediate representation (IR) for systematic optimization:
+
+```
+Model Load → Build DAG → Optimize DAG (once) → Cache DAG → Execute DAG (many times)
+```
+
+**Key Principle**: Optimization happens once at model load time, in CPU memory. GPU execution is pure dispatch with no runtime decisions.
+
+### Three-Layer Optimization
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Layer 1: DAG-Level Optimizations (Machine-Independent) │
+│  - Algebraic simplification                             │
+│  - Fusion pattern matching                              │
+│  - Commutative/associative law optimizations            │
+│  - Works across ALL backends (CPU/GPU/Remote)           │
+└─────────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────┐
+│  Layer 2: Platform-Specific Fused Operators             │
+│  - Metal: FusedFlashAttention, FusedFfnSwiGLU           │
+│  - CUDA: Similar fused kernels                          │
+│  - Each backend registers its fusion support            │
+└─────────────────────────────────────────────────────────┘
+                         ↓
+┌─────────────────────────────────────────────────────────┐
+│  Layer 3: Platform-Specific Optimizations               │
+│  - Metal: simdgroup_matrix, threadgroup memory          │
+│  - CUDA: Tensor cores, warp shuffle                     │
+│  - ROCm: Wavefront operations                           │
+└─────────────────────────────────────────────────────────┘
+```
+
+### DAG Optimization Pass
+
+```rust
+// At model load time
+let dag = DagBuilder::build_model_dag(&model);
+let optimized_dag = DagOptimizer::optimize(dag);
+
+// Cache in model
+model.optimized_dag = Some(optimized_dag);
+
+// At each forward
+for node_id in &model.optimized_dag.execution_order {
+    execute_node(node_id);
+}
+```
+
+### Fusion Pattern Matching
+
+**Pattern Registration** (backend-specific):
+```rust
+trait Backend {
+    fn supported_fusion_patterns() -> Vec<FusionPattern>;
+    fn create_fused_node(pattern: &FusionPattern, inputs: &[Tensor]) -> Option<FusedOp>;
+}
+
+struct FusionPattern {
+    pattern_graph: PatternGraph,    // DAG subgraph template
+    constraints: Vec<Constraint>,   // Shape constraints for fallback
+    fused_op_type: OpType,
+}
+```
+
+**Pattern Examples**:
+- `SiLU + Mul` → `FusedSwiGLU` (FFN gate)
+- `RMSNorm + MatMul` → `FusedNormLinear` (layer input)
+- `MatMul + Add` → `FusedMatMulAdd` (bias)
+
+### Shape Constraints and Fallback
+
+Fused nodes have constraints checked at execution time:
+
+```rust
+impl FusedOp {
+    fn execute(&self, ctx: &ExecutionContext) -> Result<Tensor> {
+        if !self.constraints.satisfied(ctx.shape()) {
+            // Fallback: execute original op sequence
+            return self.execute_unfused(ctx);
+        }
+        self.fused_kernel.execute(ctx)
+    }
+}
+```
+
+**Why**: Decode phase has growing seq_len. Some fusions only work for small seq_len. Constraints ensure correctness while maximizing fusion coverage.
+
+### Optimization Phases
 
 | Phase | Description | Expected Gain | Status |
 |-------|-------------|---------------|--------|
-| **1. Baseline** | DAG traversal, no fusion | Match llama.cpp (~167 t/s) | Current |
-| **2. Platform-Independent Fusion** | DAG-level optimizations | +20% | Future |
-| **3. Backend-Specific Fusion** | Metal/CUDA/ROCm-specific | +5% | Future |
+| **1. Baseline** | DAG traversal, no fusion | Match llama.cpp (~187 t/s) | 🔧 Current |
+| **2. Platform-Independent Fusion** | DAG-level optimizations | +20% | 📋 Planned |
+| **3. Backend-Specific Fusion** | Metal/CUDA/ROCm-specific | +5% | 📋 Planned |
 
 **Key Principle**: Each phase builds on the previous. No skipping to fusion before baseline is correct and performant.
 
@@ -372,11 +463,11 @@ llama.cpp does per-backend fusion (limited gains). Our approach:
 
 **Platform-Independent (DAG-Level)**:
 - SiLU + Mul (FFN gate)
+- RMSNorm + MatMul (layer input)
 - Residual Add (inline into previous op)
-- RMS Norm + input caching
 
 **Backend-Specific**:
-- Metal: SIMDgroup operations, tile memory
+- Metal: Flash Attention, fused FFN
 - CUDA: Tensor cores, cooperative groups
 - ROCm: Wavefront operations
 
