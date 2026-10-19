@@ -112,6 +112,15 @@ pub enum Operation {
         in_size: usize,  // K (input dimension)
         epsilon: f32,
     },
+    /// FusedAddNorm: output = RMSNorm(Add(lhs, rhs), norm_weight, eps)
+    /// Combines residual add and FFN norm (from vLLM's fused_add_rms_norm)
+    FusedAddNorm {
+        lhs: usize,         // Layer input (residual)
+        rhs: usize,         // Attention/FFN output
+        norm_weight: usize, // RMSNorm weight
+        output: usize,
+        epsilon: f32,
+    },
 
     /// Placeholder for removed/fused operations
     /// Executor skips these nodes

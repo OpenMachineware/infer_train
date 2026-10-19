@@ -528,6 +528,45 @@ impl DagExecutor {
                 Some(())
             }
 
+            Operation::FusedAddNorm {
+                lhs,
+                rhs,
+                norm_weight,
+                output,
+                epsilon,
+            } => {
+                let lhs_buf = ctx.tensor_registry.get(*lhs)?;
+                let rhs_buf = ctx.tensor_registry.get(*rhs)?;
+                let norm_weight_buf = ctx.tensor_registry.get(*norm_weight)?;
+
+                let hidden_size = ctx.model.config.hidden_size;
+                let add_out_buf = ctx.forward_pool.get(hidden_size * 4);
+                let output_buf = ctx.forward_pool.get(hidden_size * 4);
+
+                // Fallback: separate Add + RMSNorm
+                // TODO: Implement proper fused_add_norm Metal kernel
+                ctx.gpu_ctx.add_encode(
+                    encoder,
+                    &lhs_buf,
+                    &rhs_buf,
+                    &add_out_buf,
+                    hidden_size,
+                );
+
+                ctx.gpu_ctx.rms_norm_encode(
+                    encoder,
+                    &add_out_buf,
+                    &norm_weight_buf,
+                    &output_buf,
+                    1,
+                    hidden_size,
+                    *epsilon,
+                );
+
+                ctx.tensor_registry.insert(*output, output_buf);
+                Some(())
+            }
+
             Operation::ExpertRouting { .. } => {
                 // MoE - not implemented yet
                 None

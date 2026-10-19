@@ -31,6 +31,9 @@ impl DagOptimizer {
         // Apply RMSNorm + Gemv → FusedNormLinear fusion
         fused_count += Self::fuse_norm_gemv(dag);
 
+        // Apply Add + RMSNorm → FusedAddNorm fusion (residual + FFN norm)
+        fused_count += Self::fuse_add_norm(dag);
+
         fused_count
     }
 
@@ -379,6 +382,84 @@ impl DagOptimizer {
 
                     nodes_to_add.push(fused_node);
                     fused_count += 2;
+                }
+            }
+        }
+
+        // Apply modifications
+        Self::apply_modifications(dag, nodes_to_remove, nodes_to_add);
+
+        fused_count
+    }
+
+    /// Fuse Add + RMSNorm → FusedAddNorm
+    /// Pattern: residual = Add(layer_input, wo_output); ffn_norm = RMSNorm(residual, weight)
+    /// This is from vLLM's fused_add_rms_norm kernel
+    fn fuse_add_norm(dag: &mut ComputeDag) -> usize {
+        let mut fused_count = 0;
+        let mut nodes_to_remove = Vec::new();
+        let mut nodes_to_add = Vec::new();
+
+        for add_node in &dag.nodes {
+            if let Operation::Add { lhs, rhs, output: add_output } =
+                &add_node.op
+            {
+                if nodes_to_remove.contains(&add_node.id) {
+                    continue;
+                }
+
+                // Find RmsNorm that uses this Add output as input
+                for norm_node in &dag.nodes {
+                    if norm_node.id <= add_node.id
+                        || nodes_to_remove.contains(&norm_node.id)
+                    {
+                        continue;
+                    }
+                    if let Operation::RmsNorm {
+                        input: norm_input,
+                        weight: norm_weight,
+                        output: norm_output,
+                        epsilon,
+                    } = &norm_node.op
+                    {
+                        if *norm_input == *add_output {
+                            // Found Add + RmsNorm pattern
+                            nodes_to_remove.push(add_node.id);
+                            nodes_to_remove.push(norm_node.id);
+
+                            // Combine dependencies
+                            let mut combined_deps = Vec::new();
+                            for &dep in &add_node.dependencies {
+                                if !nodes_to_remove.contains(&dep) {
+                                    combined_deps.push(dep);
+                                }
+                            }
+                            for &dep in &norm_node.dependencies {
+                                if !combined_deps.contains(&dep)
+                                    && !nodes_to_remove.contains(&dep)
+                                {
+                                    combined_deps.push(dep);
+                                }
+                            }
+
+                            let fused_node = DagNode {
+                                id: dag.nodes.len() + nodes_to_add.len(),
+                                op: Operation::FusedAddNorm {
+                                    lhs: *lhs,
+                                    rhs: *rhs,
+                                    norm_weight: *norm_weight,
+                                    output: *norm_output,
+                                    epsilon: *epsilon,
+                                },
+                                dependencies: combined_deps,
+                                device_preference: DevicePreference::Gpu,
+                            };
+
+                            nodes_to_add.push(fused_node);
+                            fused_count += 2;
+                            break;
+                        }
+                    }
                 }
             }
         }
