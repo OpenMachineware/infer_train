@@ -162,6 +162,11 @@ pub struct MetalContext {
     fused_norm_linear_f16_pipeline: ComputePipelineState,
     fused_norm_linear_f32_pipeline: ComputePipelineState,
     fused_norm_linear_f16_4_pipeline: ComputePipelineState,
+    // FusedAddNorm (Add + RMSNorm)
+    fused_add_norm_f32_pipeline: ComputePipelineState,
+    fused_add_norm_f32_4_pipeline: ComputePipelineState,
+    fused_add_norm_f16_pipeline: ComputePipelineState,
+    fused_add_norm_f16_4_pipeline: ComputePipelineState,
     // Flash Attention
     flash_attn_library: Library,
     // F16 decode pipelines for each head_dim (NE=4 variant)
@@ -326,6 +331,18 @@ impl Clone for MetalContext {
                 .clone(),
             fused_norm_linear_f16_4_pipeline: self
                 .fused_norm_linear_f16_4_pipeline
+                .clone(),
+            fused_add_norm_f32_pipeline: self
+                .fused_add_norm_f32_pipeline
+                .clone(),
+            fused_add_norm_f32_4_pipeline: self
+                .fused_add_norm_f32_4_pipeline
+                .clone(),
+            fused_add_norm_f16_pipeline: self
+                .fused_add_norm_f16_pipeline
+                .clone(),
+            fused_add_norm_f16_4_pipeline: self
+                .fused_add_norm_f16_4_pipeline
                 .clone(),
             flash_attn_library: self.flash_attn_library.clone(),
             flash_decode_f16_32_pipeline: self
@@ -712,6 +729,15 @@ impl MetalContext {
             .new_library_with_source(fused_norm_linear_source, &compile_options)
             .map_err(|e| {
                 format!("Failed to compile fused_norm_linear library: {}", e)
+            })?;
+
+        // Compile Fused Add Norm library
+        let fused_add_norm_source =
+            include_str!("../../../ops/metal/ops/fused_add_norm.metal");
+        let fused_add_norm_library = device
+            .new_library_with_source(fused_add_norm_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile fused_add_norm library: {}", e)
             })?;
 
         // Compile Flash Attention library (vectorized decode kernel)
@@ -1475,6 +1501,65 @@ impl MetalContext {
                 )
             })?;
 
+        // Create FusedAddNorm pipelines
+        let fused_add_norm_f32_kernel = fused_add_norm_library
+            .get_function("kernel_fused_add_norm_f32", None)
+            .map_err(|e| {
+                format!("Failed to get kernel_fused_add_norm_f32 kernel: {}", e)
+            })?;
+        let fused_add_norm_f32_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_add_norm_f32_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create fused_add_norm_f32 pipeline: {}", e)
+            })?;
+
+        let fused_add_norm_f32_4_kernel = fused_add_norm_library
+            .get_function("kernel_fused_add_norm_f32_4", None)
+            .map_err(|e| {
+                format!(
+                    "Failed to get kernel_fused_add_norm_f32_4 kernel: {}",
+                    e
+                )
+            })?;
+        let fused_add_norm_f32_4_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_add_norm_f32_4_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create fused_add_norm_f32_4 pipeline: {}", e)
+            })?;
+
+        let fused_add_norm_f16_kernel = fused_add_norm_library
+            .get_function("kernel_fused_add_norm_f16", None)
+            .map_err(|e| {
+                format!("Failed to get kernel_fused_add_norm_f16 kernel: {}", e)
+            })?;
+        let fused_add_norm_f16_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_add_norm_f16_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create fused_add_norm_f16 pipeline: {}", e)
+            })?;
+
+        let fused_add_norm_f16_4_kernel = fused_add_norm_library
+            .get_function("kernel_fused_add_norm_f16_4", None)
+            .map_err(|e| {
+                format!(
+                    "Failed to get kernel_fused_add_norm_f16_4 kernel: {}",
+                    e
+                )
+            })?;
+        let fused_add_norm_f16_4_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_add_norm_f16_4_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create fused_add_norm_f16_4 pipeline: {}", e)
+            })?;
+
         // Create Flash Attention pipeline (template specialization, may fail on some Metal versions)
         // Create Flash Attention pipelines for each head_dim
         let flash_decode_f16_32_kernel = flash_attn_library
@@ -1859,6 +1944,10 @@ impl MetalContext {
             fused_norm_linear_f16_pipeline,
             fused_norm_linear_f32_pipeline,
             fused_norm_linear_f16_4_pipeline,
+            fused_add_norm_f32_pipeline,
+            fused_add_norm_f32_4_pipeline,
+            fused_add_norm_f16_pipeline,
+            fused_add_norm_f16_4_pipeline,
             // Flash Attention
             flash_attn_library,
             flash_decode_f16_32_pipeline,
@@ -8204,6 +8293,114 @@ impl MetalContext {
         let thread_group_count =
             MTLSize { width: m as u64, height: 1, depth: 1 };
         let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    // ========================================================================
+    // FusedAddNorm (Add + RMSNorm)
+    // ========================================================================
+
+    /// Fused Add + RMSNorm kernel
+    /// Pattern from vLLM's fused_add_rms_norm
+    /// Computes: output = RMSNorm(lhs + rhs, norm_weight, eps)
+    ///
+    /// # Arguments
+    /// * `lhs_buffer` - Left-hand side of add (residual)
+    /// * `rhs_buffer` - Right-hand side of add (attention/FFN output)
+    /// * `norm_weight_buffer` - RMSNorm scale weights
+    /// * `output_buffer` - Output tensor
+    /// * `dimension` - Vector dimension
+    /// * `epsilon` - RMSNorm epsilon
+    pub fn fused_add_norm_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        lhs_buffer: &Buffer,
+        rhs_buffer: &Buffer,
+        norm_weight_buffer: &Buffer,
+        output_buffer: &Buffer,
+        dimension: usize,
+        epsilon: f32,
+    ) {
+        // Use vectorized kernel for better memory throughput
+        let (pipeline, threadgroup_size) =
+            if dimension % 4 == 0 && dimension >= 256 {
+                (&self.fused_add_norm_f32_4_pipeline, 64)
+            } else {
+                (&self.fused_add_norm_f32_pipeline, 32)
+            };
+
+        encoder.set_compute_pipeline_state(pipeline);
+        encoder.set_buffer(0, Some(lhs_buffer), 0);
+        encoder.set_buffer(1, Some(rhs_buffer), 0);
+        encoder.set_buffer(2, Some(norm_weight_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+        encoder.set_bytes(
+            4,
+            4,
+            &(dimension as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            5,
+            4,
+            &epsilon as *const f32 as *const std::ffi::c_void,
+        );
+
+        // Threadgroup memory for reduction
+        let tg_mem_size = std::cmp::max(dimension * 4 + 256, 4096);
+        encoder.set_threadgroup_memory_length(0, tg_mem_size as u64);
+
+        // One threadgroup per row
+        let thread_group_count = MTLSize { width: 1, height: 1, depth: 1 };
+        let thread_group_size =
+            MTLSize { width: threadgroup_size as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Fused Add + RMSNorm with F16 inputs
+    pub fn fused_add_norm_f16_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        lhs_buffer: &Buffer,
+        rhs_buffer: &Buffer,
+        norm_weight_buffer: &Buffer,
+        output_buffer: &Buffer,
+        dimension: usize,
+        epsilon: f32,
+    ) {
+        // Use vectorized kernel for better memory throughput
+        let (pipeline, threadgroup_size) =
+            if dimension % 4 == 0 && dimension >= 256 {
+                (&self.fused_add_norm_f16_4_pipeline, 64)
+            } else {
+                (&self.fused_add_norm_f16_pipeline, 32)
+            };
+
+        encoder.set_compute_pipeline_state(pipeline);
+        encoder.set_buffer(0, Some(lhs_buffer), 0);
+        encoder.set_buffer(1, Some(rhs_buffer), 0);
+        encoder.set_buffer(2, Some(norm_weight_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+        encoder.set_bytes(
+            4,
+            4,
+            &(dimension as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            5,
+            4,
+            &epsilon as *const f32 as *const std::ffi::c_void,
+        );
+
+        // Threadgroup memory for reduction
+        let tg_mem_size = std::cmp::max(dimension * 4 + 256, 4096);
+        encoder.set_threadgroup_memory_length(0, tg_mem_size as u64);
+
+        // One threadgroup per row
+        let thread_group_count = MTLSize { width: 1, height: 1, depth: 1 };
+        let thread_group_size =
+            MTLSize { width: threadgroup_size as u64, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     }
