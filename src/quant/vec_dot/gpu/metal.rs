@@ -74,7 +74,8 @@ impl KquantMvArgs {
     }
 }
 
-#[derive(Clone)]
+// Note: We do NOT derive(Clone) because we need to clear caches on clone
+// to avoid stale buffer references when MetalContext is shared across contexts.
 pub struct MetalContext {
     device: Device,
     queue: CommandQueue,
@@ -155,6 +156,12 @@ pub struct MetalContext {
     gelu_4_pipeline: ComputePipelineState,
     gelu_quick_pipeline: ComputePipelineState,
     gelu_quick_4_pipeline: ComputePipelineState,
+    // Fused kernels
+    fused_swiglu_pipeline: ComputePipelineState,
+    fused_swiglu_4_pipeline: ComputePipelineState,
+    fused_norm_linear_f16_pipeline: ComputePipelineState,
+    fused_norm_linear_f32_pipeline: ComputePipelineState,
+    fused_norm_linear_f16_4_pipeline: ComputePipelineState,
     // Flash Attention
     flash_attn_library: Library,
     // F16 decode pipelines for each head_dim (NE=4 variant)
@@ -209,6 +216,8 @@ pub struct MetalContext {
     gemm_weights_size: RefCell<usize>,
     gemm_input_size: RefCell<usize>,
     gemm_output_size: RefCell<usize>,
+    // Cached pos buffer for RoPE (avoid allocation on every call)
+    rope_pos_buffer: RefCell<Option<Buffer>>,
 }
 
 impl std::fmt::Debug for MetalContext {
@@ -216,6 +225,176 @@ impl std::fmt::Debug for MetalContext {
         f.debug_struct("MetalContext")
             .field("device", &self.device.name())
             .finish_non_exhaustive()
+    }
+}
+
+impl Clone for MetalContext {
+    fn clone(&self) -> Self {
+        // Clone all immutable resources (device, queues, libraries, pipelines)
+        // but CLEAR all caches to avoid stale buffer references
+        Self {
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            vec_dot_library: self.vec_dot_library.clone(),
+            mv_library: self.mv_library.clone(),
+            mv_simd_library: self.mv_simd_library.clone(),
+            mv_iq_tq_library: self.mv_iq_tq_library.clone(),
+            gemm_library: self.gemm_library.clone(),
+            kquant_mv_library: self.kquant_mv_library.clone(),
+            gemv_transposed_library: self.gemv_transposed_library.clone(),
+            mv_q6_k_transposed_pipeline: self
+                .mv_q6_k_transposed_pipeline
+                .clone(),
+            mv_f16_library: self.mv_f16_library.clone(),
+            mv_f16_short_pipeline: self.mv_f16_short_pipeline.clone(),
+            mv_f16_basic_pipeline: self.mv_f16_basic_pipeline.clone(),
+            mv_f16_4_nsg1_pipeline: self.mv_f16_4_nsg1_pipeline.clone(),
+            mv_f16_4_nsg2_pipeline: self.mv_f16_4_nsg2_pipeline.clone(),
+            mv_f16_4_nsg4_pipeline: self.mv_f16_4_nsg4_pipeline.clone(),
+            mv_q1_0_pipeline: self.mv_q1_0_pipeline.clone(),
+            mv_q2_0_pipeline: self.mv_q2_0_pipeline.clone(),
+            mv_q4_0_pipeline: self.mv_q4_0_pipeline.clone(),
+            mv_q4_1_pipeline: self.mv_q4_1_pipeline.clone(),
+            mv_q5_0_pipeline: self.mv_q5_0_pipeline.clone(),
+            mv_q5_1_pipeline: self.mv_q5_1_pipeline.clone(),
+            mv_q8_0_pipeline: self.mv_q8_0_pipeline.clone(),
+            mv_q4_k_pipeline: self.mv_q4_k_pipeline.clone(),
+            mv_q5_k_pipeline: self.mv_q5_k_pipeline.clone(),
+            mv_q2_k_pipeline: self.mv_q2_k_pipeline.clone(),
+            mv_q6_k_pipeline: self.mv_q6_k_pipeline.clone(),
+            mv_q3_k_pipeline: self.mv_q3_k_pipeline.clone(),
+            mv_iq4_nl_pipeline: self.mv_iq4_nl_pipeline.clone(),
+            mv_tq2_0_pipeline: self.mv_tq2_0_pipeline.clone(),
+            mv_tq1_0_pipeline: self.mv_tq1_0_pipeline.clone(),
+            mv_iq4_xs_pipeline: self.mv_iq4_xs_pipeline.clone(),
+            mv_iq1_s_pipeline: self.mv_iq1_s_pipeline.clone(),
+            mv_iq1_m_pipeline: self.mv_iq1_m_pipeline.clone(),
+            mv_iq2_xxs_pipeline: self.mv_iq2_xxs_pipeline.clone(),
+            mv_iq2_xs_pipeline: self.mv_iq2_xs_pipeline.clone(),
+            mv_iq2_s_pipeline: self.mv_iq2_s_pipeline.clone(),
+            mv_iq3_xxs_pipeline: self.mv_iq3_xxs_pipeline.clone(),
+            mv_iq3_s_pipeline: self.mv_iq3_s_pipeline.clone(),
+            mv_mxfp4_pipeline: self.mv_mxfp4_pipeline.clone(),
+            mv_iq2_xxs_split1_pipeline: self.mv_iq2_xxs_split1_pipeline.clone(),
+            mv_iq2_xs_split1_pipeline: self.mv_iq2_xs_split1_pipeline.clone(),
+            mv_iq2_s_split1_pipeline: self.mv_iq2_s_split1_pipeline.clone(),
+            mv_iq3_xxs_split1_pipeline: self.mv_iq3_xxs_split1_pipeline.clone(),
+            mv_iq3_s_split1_pipeline: self.mv_iq3_s_split1_pipeline.clone(),
+            gemm_template_q4_k_pipeline: self
+                .gemm_template_q4_k_pipeline
+                .clone(),
+            gemm_template_q2_k_pipeline: self
+                .gemm_template_q2_k_pipeline
+                .clone(),
+            gemm_template_q3_k_pipeline: self
+                .gemm_template_q3_k_pipeline
+                .clone(),
+            gemm_template_q5_k_pipeline: self
+                .gemm_template_q5_k_pipeline
+                .clone(),
+            gemm_template_q6_k_pipeline: self
+                .gemm_template_q6_k_pipeline
+                .clone(),
+            rms_norm_library: self.rms_norm_library.clone(),
+            rms_norm_pipeline: self.rms_norm_pipeline.clone(),
+            rms_norm_4_pipeline: self.rms_norm_4_pipeline.clone(),
+            softmax_library: self.softmax_library.clone(),
+            softmax_fast_pipeline: self.softmax_fast_pipeline.clone(),
+            softmax_4_fast_pipeline: self.softmax_4_fast_pipeline.clone(),
+            softmax_pipeline: self.softmax_pipeline.clone(),
+            softmax_4_pipeline: self.softmax_4_pipeline.clone(),
+            rope_library: self.rope_library.clone(),
+            rope_pipeline: self.rope_pipeline.clone(),
+            rope_f16_pipeline: self.rope_f16_pipeline.clone(),
+            activation_library: self.activation_library.clone(),
+            add_pipeline: self.add_pipeline.clone(),
+            mul_pipeline: self.mul_pipeline.clone(),
+            silu_pipeline: self.silu_pipeline.clone(),
+            silu_4_pipeline: self.silu_4_pipeline.clone(),
+            gelu_pipeline: self.gelu_pipeline.clone(),
+            gelu_4_pipeline: self.gelu_4_pipeline.clone(),
+            gelu_quick_pipeline: self.gelu_quick_pipeline.clone(),
+            gelu_quick_4_pipeline: self.gelu_quick_4_pipeline.clone(),
+            // Fused kernels
+            fused_swiglu_pipeline: self.fused_swiglu_pipeline.clone(),
+            fused_swiglu_4_pipeline: self.fused_swiglu_4_pipeline.clone(),
+            fused_norm_linear_f16_pipeline: self
+                .fused_norm_linear_f16_pipeline
+                .clone(),
+            fused_norm_linear_f32_pipeline: self
+                .fused_norm_linear_f32_pipeline
+                .clone(),
+            fused_norm_linear_f16_4_pipeline: self
+                .fused_norm_linear_f16_4_pipeline
+                .clone(),
+            flash_attn_library: self.flash_attn_library.clone(),
+            flash_decode_f16_32_pipeline: self
+                .flash_decode_f16_32_pipeline
+                .clone(),
+            flash_decode_f16_64_pipeline: self
+                .flash_decode_f16_64_pipeline
+                .clone(),
+            flash_decode_f16_80_pipeline: self
+                .flash_decode_f16_80_pipeline
+                .clone(),
+            flash_decode_f16_128_pipeline: self
+                .flash_decode_f16_128_pipeline
+                .clone(),
+            flash_decode_f16_160_pipeline: self
+                .flash_decode_f16_160_pipeline
+                .clone(),
+            quantize_library: self.quantize_library.clone(),
+            quantize_f16_pipeline: self.quantize_f16_pipeline.clone(),
+            quantize_f16_4_pipeline: self.quantize_f16_4_pipeline.clone(),
+            quantize_q4_0_pipeline: self.quantize_q4_0_pipeline.clone(),
+            quantize_q8_0_pipeline: self.quantize_q8_0_pipeline.clone(),
+            ssm_library: self.ssm_library.clone(),
+            ssm_conv1d_d4_pipeline: self.ssm_conv1d_d4_pipeline.clone(),
+            ssm_scan_d16_pipeline: self.ssm_scan_d16_pipeline.clone(),
+            ssm_scan_ssd_pipeline: self.ssm_scan_ssd_pipeline.clone(),
+            ssm_scan_ssd_mma_pipeline: self.ssm_scan_ssd_mma_pipeline.clone(),
+            ssm_conv1d_d4_batched_256_pipeline: self
+                .ssm_conv1d_d4_batched_256_pipeline
+                .clone(),
+            ssm_conv1d_d4_batched_128_pipeline: self
+                .ssm_conv1d_d4_batched_128_pipeline
+                .clone(),
+            ssm_conv1d_d4_batched_64_pipeline: self
+                .ssm_conv1d_d4_batched_64_pipeline
+                .clone(),
+            ssm_conv1d_d4_batched_32_pipeline: self
+                .ssm_conv1d_d4_batched_32_pipeline
+                .clone(),
+            ssm_conv1d_d4_batched_16_pipeline: self
+                .ssm_conv1d_d4_batched_16_pipeline
+                .clone(),
+            ssm_conv1d_d4_batched_8_pipeline: self
+                .ssm_conv1d_d4_batched_8_pipeline
+                .clone(),
+            ssm_conv1d_d4_batched_2_pipeline: self
+                .ssm_conv1d_d4_batched_2_pipeline
+                .clone(),
+            kv_update_library: self.kv_update_library.clone(),
+            kv_update_k_pipeline: self.kv_update_k_pipeline.clone(),
+            kv_update_k_f16_pipeline: self.kv_update_k_f16_pipeline.clone(),
+            kv_update_v_pipeline: self.kv_update_v_pipeline.clone(),
+            // Clear all cached buffers - they may contain stale data
+            mv_weights_buffer: RefCell::new(None),
+            mv_input_buffer: RefCell::new(None),
+            mv_output_buffer: RefCell::new(None),
+            mv_weights_size: RefCell::new(0),
+            mv_weights_ptr: RefCell::new(0),
+            mv_input_size: RefCell::new(0),
+            mv_output_size: RefCell::new(0),
+            weight_buffer_cache: RefCell::new(std::collections::HashMap::new()),
+            gemm_weights_buffer: RefCell::new(None),
+            gemm_input_buffer: RefCell::new(None),
+            gemm_output_buffer: RefCell::new(None),
+            gemm_weights_size: RefCell::new(0),
+            gemm_input_size: RefCell::new(0),
+            gemm_output_size: RefCell::new(0),
+            rope_pos_buffer: RefCell::new(None),
+        }
     }
 }
 
@@ -524,6 +703,15 @@ impl MetalContext {
             .new_library_with_source(activation_source, &compile_options)
             .map_err(|e| {
                 format!("Failed to compile activation library: {}", e)
+            })?;
+
+        // Compile Fused Norm Linear library
+        let fused_norm_linear_source =
+            include_str!("../../../ops/metal/ops/fused_norm_linear.metal");
+        let fused_norm_linear_library = device
+            .new_library_with_source(fused_norm_linear_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile fused_norm_linear library: {}", e)
             })?;
 
         // Compile Flash Attention library (vectorized decode kernel)
@@ -1206,6 +1394,87 @@ impl MetalContext {
 
         let gelu_quick_4_pipeline = gelu_quick_pipeline.clone();
 
+        // Create fused kernel pipelines
+        let fused_swiglu_kernel = activation_library
+            .get_function("kernel_fused_swiglu_f32", None)
+            .map_err(|e| {
+                format!("Failed to get kernel_fused_swiglu_f32 kernel: {}", e)
+            })?;
+        let fused_swiglu_pipeline = device
+            .new_compute_pipeline_state_with_function(&fused_swiglu_kernel)
+            .map_err(|e| {
+                format!("Failed to create fused_swiglu pipeline: {}", e)
+            })?;
+
+        let fused_swiglu_4_kernel = activation_library
+            .get_function("kernel_fused_swiglu_f32_4", None)
+            .map_err(|e| {
+                format!("Failed to get kernel_fused_swiglu_f32_4 kernel: {}", e)
+            })?;
+        let fused_swiglu_4_pipeline = device
+            .new_compute_pipeline_state_with_function(&fused_swiglu_4_kernel)
+            .map_err(|e| {
+                format!("Failed to create fused_swiglu_4 pipeline: {}", e)
+            })?;
+
+        // Create FusedNormLinear pipelines
+        let fused_norm_linear_f16_kernel = fused_norm_linear_library
+            .get_function("kernel_fused_norm_linear_f16", None)
+            .map_err(|e| {
+                format!(
+                    "Failed to get kernel_fused_norm_linear_f16 kernel: {}",
+                    e
+                )
+            })?;
+        let fused_norm_linear_f16_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_norm_linear_f16_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create fused_norm_linear_f16 pipeline: {}",
+                    e
+                )
+            })?;
+
+        let fused_norm_linear_f32_kernel = fused_norm_linear_library
+            .get_function("kernel_fused_norm_linear_f32", None)
+            .map_err(|e| {
+                format!(
+                    "Failed to get kernel_fused_norm_linear_f32 kernel: {}",
+                    e
+                )
+            })?;
+        let fused_norm_linear_f32_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_norm_linear_f32_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create fused_norm_linear_f32 pipeline: {}",
+                    e
+                )
+            })?;
+
+        let fused_norm_linear_f16_4_kernel = fused_norm_linear_library
+            .get_function("kernel_fused_norm_linear_f16_4", None)
+            .map_err(|e| {
+                format!(
+                    "Failed to get kernel_fused_norm_linear_f16_4 kernel: {}",
+                    e
+                )
+            })?;
+        let fused_norm_linear_f16_4_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_norm_linear_f16_4_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create fused_norm_linear_f16_4 pipeline: {}",
+                    e
+                )
+            })?;
+
         // Create Flash Attention pipeline (template specialization, may fail on some Metal versions)
         // Create Flash Attention pipelines for each head_dim
         let flash_decode_f16_32_kernel = flash_attn_library
@@ -1584,6 +1853,12 @@ impl MetalContext {
             gelu_4_pipeline,
             gelu_quick_pipeline,
             gelu_quick_4_pipeline,
+            // Fused kernels
+            fused_swiglu_pipeline,
+            fused_swiglu_4_pipeline,
+            fused_norm_linear_f16_pipeline,
+            fused_norm_linear_f32_pipeline,
+            fused_norm_linear_f16_4_pipeline,
             // Flash Attention
             flash_attn_library,
             flash_decode_f16_32_pipeline,
@@ -1630,6 +1905,7 @@ impl MetalContext {
             gemm_weights_size: RefCell::new(0),
             gemm_input_size: RefCell::new(0),
             gemm_output_size: RefCell::new(0),
+            rope_pos_buffer: RefCell::new(None),
             weight_buffer_cache: RefCell::new(std::collections::HashMap::new()),
         })
     }
@@ -1645,6 +1921,38 @@ impl MetalContext {
 
     pub fn queue(&self) -> &CommandQueue {
         &self.queue
+    }
+
+    /// Clear all cached buffers to prevent stale references
+    /// Call this before reusing MetalContext for a new forward pass
+    pub fn clear_caches(&self) {
+        // Clear MV buffers
+        *self.mv_weights_buffer.borrow_mut() = None;
+        *self.mv_input_buffer.borrow_mut() = None;
+        *self.mv_output_buffer.borrow_mut() = None;
+        *self.mv_weights_size.borrow_mut() = 0;
+        *self.mv_weights_ptr.borrow_mut() = 0;
+        *self.mv_input_size.borrow_mut() = 0;
+        *self.mv_output_size.borrow_mut() = 0;
+
+        // Clear weight buffer cache
+        self.weight_buffer_cache.borrow_mut().clear();
+
+        // Clear GEMM buffers
+        *self.gemm_weights_buffer.borrow_mut() = None;
+        *self.gemm_input_buffer.borrow_mut() = None;
+        *self.gemm_output_buffer.borrow_mut() = None;
+        *self.gemm_weights_size.borrow_mut() = 0;
+        *self.gemm_input_size.borrow_mut() = 0;
+        *self.gemm_output_size.borrow_mut() = 0;
+    }
+
+    /// Insert a GPU fence to ensure all previous commands complete
+    /// This can help with thread-local Metal state issues
+    pub fn insert_fence(&self) {
+        let command_buffer = self.queue.new_command_buffer();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
     }
 
     /// Get Conv1D batched pipeline for specific batch size
@@ -2478,6 +2786,15 @@ impl MetalContext {
                 k,
                 dtype,
             ),
+            // F16
+            crate::model::tensor::DataType::F16 => self.mv_f16_encode(
+                encoder,
+                weights_buffer,
+                input_buffer,
+                output_buffer,
+                m,
+                k,
+            ),
             // Add more formats as needed
             _ => false,
         }
@@ -2593,6 +2910,161 @@ impl MetalContext {
         };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        true
+    }
+
+    /// F16 GEMV encode
+    fn mv_f16_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+    ) -> bool {
+        // Parameter struct matching mul_mv_args
+        #[repr(C)]
+        struct MvArgs {
+            ne00: i32, // K
+            ne01: i32, // M (rows)
+            ne02: i32,
+            nb00: u64,
+            nb01: u64, // row stride
+            nb02: u64,
+            nb03: u64,
+            ne10: i32,
+            ne11: i32,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            nr0: i32, // NR0 (2 for normal kernels, 32 for short)
+            r2: i16,
+            r3: i16,
+            nsg: i16,        // Number of simdgroups
+            ne12_batch: i16, // batch dimension
+        }
+
+        if k < 32 {
+            // Short kernel: nsg=1, nr0=32, each thread processes one row
+            encoder.set_compute_pipeline_state(&self.mv_f16_short_pipeline);
+
+            let args = MvArgs {
+                ne00: k as i32,
+                ne01: m as i32,
+                ne02: 1,
+                nb00: 2, // sizeof(half)
+                nb01: (k * 2) as u64,
+                nb02: 0,
+                nb03: 0,
+                ne10: k as i32,
+                ne11: 1,
+                ne12: 1,
+                nb10: 4, // sizeof(float)
+                nb11: (k * 4) as u64,
+                nb12: 0,
+                nb13: 0,
+                ne0: m as i32,
+                ne1: 1,
+                nr0: 32,
+                r2: 1,
+                r3: 1,
+                nsg: 1, // NSG=1 for short kernel
+                ne12_batch: 1,
+            };
+
+            let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+            let thread_group_count =
+                MTLSize { width: ((m + 31) / 32) as u64, height: 1, depth: 1 };
+
+            encoder.set_bytes(
+                0,
+                std::mem::size_of::<MvArgs>() as u64,
+                &args as *const MvArgs as *const std::ffi::c_void,
+            );
+            encoder.set_buffer(1, Some(weights_buffer), 0);
+            encoder.set_buffer(2, Some(input_buffer), 0);
+            encoder.set_buffer(3, Some(output_buffer), 0);
+            encoder
+                .dispatch_thread_groups(thread_group_count, thread_group_size);
+        } else {
+            let use_4 = k % 4 == 0; // Use float4 version if K % 4 == 0
+
+            // Match llama.cpp NSG formula: min(4, (K+127)/128)
+            let nsg = if use_4 { std::cmp::min(4, (k + 127) / 128) } else { 1 };
+
+            let pipeline = if use_4 {
+                match nsg {
+                    1 => &self.mv_f16_4_nsg1_pipeline,
+                    2 => &self.mv_f16_4_nsg2_pipeline,
+                    _ => &self.mv_f16_4_nsg4_pipeline, // 4 or larger
+                }
+            } else {
+                &self.mv_f16_basic_pipeline
+            };
+
+            encoder.set_compute_pipeline_state(pipeline);
+
+            // Match llama.cpp NSG formula: min(4, (K+127)/128)
+            let nsg: i16 = if use_4 {
+                std::cmp::min(4, (k + 127) / 128) as i16
+            } else {
+                1
+            };
+
+            let args = MvArgs {
+                ne00: k as i32,
+                ne01: m as i32,
+                ne02: 1,
+                nb00: 2,
+                nb01: (k * 2) as u64,
+                nb02: 0,
+                nb03: 0,
+                ne10: k as i32,
+                ne11: 1,
+                ne12: 1,
+                nb10: 4,
+                nb11: (k * 4) as u64,
+                nb12: 0,
+                nb13: 0,
+                ne0: m as i32,
+                ne1: 1,
+                nr0: 2,
+                r2: 1,
+                r3: 1,
+                nsg: nsg as i16, // Store in args for reference
+                ne12_batch: 1,
+            };
+
+            encoder.set_bytes(
+                0,
+                std::mem::size_of::<MvArgs>() as u64,
+                &args as *const MvArgs as *const std::ffi::c_void,
+            );
+            encoder.set_buffer(1, Some(weights_buffer), 0);
+            encoder.set_buffer(2, Some(input_buffer), 0);
+            encoder.set_buffer(3, Some(output_buffer), 0);
+
+            // Threadgroup size scales with nsg
+            let thread_group_size =
+                MTLSize { width: (nsg as u64 * 32), height: 1, depth: 1 };
+            let thread_group_count =
+                MTLSize { width: ((m + 1) / 2) as u64, height: 1, depth: 1 };
+
+            // Allocate threadgroup memory for reduction (2 rows * 32 threads * nsg simdgroups)
+            let threadgroup_mem_size =
+                (2 * 32 * nsg as usize) * std::mem::size_of::<f32>();
+            encoder
+                .set_threadgroup_memory_length(0, threadgroup_mem_size as u64);
+
+            encoder
+                .dispatch_thread_groups(thread_group_count, thread_group_size);
+        }
+
         true
     }
 
@@ -7569,6 +8041,174 @@ impl MetalContext {
     }
 
     // ========================================================================
+    // Fused Kernels
+    // ========================================================================
+
+    /// Fused SwiGLU: output = SiLU(gate) * up
+    /// Combines SiLU activation and element-wise multiplication into one kernel
+    /// Reduces dispatch overhead and intermediate memory writes
+    pub fn fused_swiglu_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        gate_buffer: &Buffer,   // Gate projection output
+        up_buffer: &Buffer,     // Up projection output
+        output_buffer: &Buffer, // Output: SiLU(gate) * up
+        n: usize,
+    ) {
+        // Use float4 kernel for better throughput when size is large enough
+        if n >= 256 && n % 4 == 0 {
+            encoder.set_compute_pipeline_state(&self.fused_swiglu_4_pipeline);
+            encoder.set_buffer(0, Some(gate_buffer), 0);
+            encoder.set_buffer(1, Some(up_buffer), 0);
+            encoder.set_buffer(2, Some(output_buffer), 0);
+            let n_i32 = n as i32;
+            encoder.set_bytes(
+                3,
+                4,
+                &n_i32 as *const i32 as *const std::ffi::c_void,
+            );
+
+            let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+            let thread_group_count = MTLSize {
+                width: ((n / 4) as u64 + 255) / 256,
+                height: 1,
+                depth: 1,
+            };
+
+            encoder
+                .dispatch_thread_groups(thread_group_count, thread_group_size);
+        } else {
+            encoder.set_compute_pipeline_state(&self.fused_swiglu_pipeline);
+            encoder.set_buffer(0, Some(gate_buffer), 0);
+            encoder.set_buffer(1, Some(up_buffer), 0);
+            encoder.set_buffer(2, Some(output_buffer), 0);
+            let n_i32 = n as i32;
+            encoder.set_bytes(
+                3,
+                4,
+                &n_i32 as *const i32 as *const std::ffi::c_void,
+            );
+
+            let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+            let thread_group_count =
+                MTLSize { width: (n as u64 + 255) / 256, height: 1, depth: 1 };
+
+            encoder
+                .dispatch_thread_groups(thread_group_count, thread_group_size);
+        }
+    }
+
+    /// Fused RMSNorm + Linear: output = RMSNorm(input, norm_weight, eps) @ weights
+    /// Combines normalization and linear projection into one kernel
+    /// Reduces dispatch overhead and avoids intermediate memory writes
+    ///
+    /// # Arguments
+    /// * `input_buffer` - Input vector [K] in F32
+    /// * `norm_weight_buffer` - RMSNorm scale weights [K] in F32
+    /// * `weights_buffer` - Linear weights [M, K] (F16 or F32 depending on pipeline)
+    /// * `output_buffer` - Output vector [M] in F32
+    /// * `m` - Output dimension (number of rows)
+    /// * `k` - Input dimension (vector size)
+    /// * `epsilon` - RMSNorm epsilon
+    pub fn fused_norm_linear_f16_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        input_buffer: &Buffer,
+        norm_weight_buffer: &Buffer,
+        weights_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+        epsilon: f32,
+    ) {
+        // Use float4 kernel for better memory throughput when K is divisible by 4
+        let (pipeline, threadgroup_size) = if k % 4 == 0 && k >= 256 {
+            (&self.fused_norm_linear_f16_4_pipeline, 64)
+        } else {
+            (&self.fused_norm_linear_f16_pipeline, 32)
+        };
+
+        encoder.set_compute_pipeline_state(pipeline);
+        encoder.set_buffer(0, Some(input_buffer), 0);
+        encoder.set_buffer(1, Some(norm_weight_buffer), 0);
+        encoder.set_buffer(2, Some(weights_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+        encoder.set_bytes(
+            4,
+            4,
+            &(m as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            5,
+            4,
+            &(k as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            6,
+            4,
+            &epsilon as *const f32 as *const std::ffi::c_void,
+        );
+
+        // Threadgroup memory size (K elements as F32) + reduction buffer
+        let tg_mem_size = std::cmp::max(k * 4 + 256, 4096);
+        encoder.set_threadgroup_memory_length(0, tg_mem_size as u64);
+
+        // One threadgroup per output row
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
+        let thread_group_size =
+            MTLSize { width: threadgroup_size as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Fused RMSNorm + Linear with F32 weights
+    pub fn fused_norm_linear_f32_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        input_buffer: &Buffer,
+        norm_weight_buffer: &Buffer,
+        weights_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+        epsilon: f32,
+    ) {
+        encoder
+            .set_compute_pipeline_state(&self.fused_norm_linear_f32_pipeline);
+        encoder.set_buffer(0, Some(input_buffer), 0);
+        encoder.set_buffer(1, Some(norm_weight_buffer), 0);
+        encoder.set_buffer(2, Some(weights_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+        encoder.set_bytes(
+            4,
+            4,
+            &(m as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            5,
+            4,
+            &(k as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            6,
+            4,
+            &epsilon as *const f32 as *const std::ffi::c_void,
+        );
+
+        // Threadgroup memory size (K elements as F32) + reduction buffer
+        let tg_mem_size = std::cmp::max(k * 4 + 256, 4096);
+        encoder.set_threadgroup_memory_length(0, tg_mem_size as u64);
+
+        // One threadgroup per output row
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    // ========================================================================
     // KV Cache Update (F32 -> F16 with strided write)
     // ========================================================================
 
@@ -9753,11 +10393,34 @@ impl MetalContext {
         freq_scale: f32,
         output_buffer: &Buffer,
     ) {
-        let pos_buffer = self.device.new_buffer_with_data(
-            pos.as_ptr() as *const std::ffi::c_void,
-            (pos.len() * std::mem::size_of::<i32>()) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        );
+        // Reuse cached pos buffer to avoid allocation overhead
+        let pos_size = pos.len() * std::mem::size_of::<i32>();
+        let pos_buffer = {
+            let mut cache = self.rope_pos_buffer.borrow_mut();
+            let needs_new = match cache.as_ref() {
+                Some(buf) => (buf.length() as usize) < pos_size,
+                None => true,
+            };
+
+            if needs_new {
+                let new_buf = self.device.new_buffer_with_data(
+                    pos.as_ptr() as *const std::ffi::c_void,
+                    pos_size as u64,
+                    metal::MTLResourceOptions::StorageModeShared,
+                );
+                *cache = Some(new_buf);
+            } else if let Some(buf) = cache.as_ref() {
+                // Update existing buffer with new data
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        pos.as_ptr() as *const std::ffi::c_void,
+                        buf.contents(),
+                        pos_size,
+                    );
+                }
+            }
+            cache.as_ref().unwrap().clone()
+        };
 
         let args = RopeArgs {
             hidden_dim: n_dims as i32,

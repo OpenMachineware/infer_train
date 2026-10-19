@@ -183,3 +183,73 @@ kernel void kernel_gelu_quick_f32_4_tg(
     float4 x = src0[i0];
     dst[i0] = x / (1.0f + exp(GELU_QUICK_COEF * x));
 }
+
+// ========== Fused kernels ==========
+
+// Fused SwiGLU: output = SiLU(gate) * up
+// Combines SiLU activation and element-wise multiplication
+// Reduces dispatch overhead and intermediate memory writes
+kernel void kernel_fused_swiglu_f32(
+    device const float* gate [[buffer(0)]],   // Gate projection output
+    device const float* up [[buffer(1)]],     // Up projection output
+    device float* dst [[buffer(2)]],          // Output: SiLU(gate) * up
+    constant int & ne00 [[buffer(3)]],        // Size
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= (uint)ne00) return;
+    float g = gate[gid];
+    float u = up[gid];
+    float silu_g = g / (1.0f + exp(-g));  // SiLU activation
+    dst[gid] = silu_g * u;               // Element-wise multiplication
+}
+
+// Fused SwiGLU with float4 for better memory throughput
+kernel void kernel_fused_swiglu_f32_4(
+    device const float4* gate [[buffer(0)]],
+    device const float4* up [[buffer(1)]],
+    device float4* dst [[buffer(2)]],
+    constant int & ne00 [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid * 4 >= (uint)ne00) return;
+    float4 g = gate[gid];
+    float4 u = up[gid];
+    float4 silu_g = g / (1.0f + exp(-g));
+    dst[gid] = silu_g * u;
+}
+
+// Fused SwiGLU with threadgroups for large sizes
+kernel void kernel_fused_swiglu_f32_tg(
+    constant int & ne00,
+    device const float* gate,
+    device const float* up,
+    device float* dst,
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort3 tpitg [[thread_position_in_threadgroup]],
+    ushort3 ntg [[threads_per_threadgroup]])
+{
+    const int i0 = tgpig.x * ntg.x + tpitg.x;
+    if (i0 >= ne00) return;
+    float g = gate[i0];
+    float u = up[i0];
+    float silu_g = g / (1.0f + exp(-g));
+    dst[i0] = silu_g * u;
+}
+
+// Fused SwiGLU with float4 and threadgroups
+kernel void kernel_fused_swiglu_f32_4_tg(
+    constant int & ne00,
+    device const float4* gate,
+    device const float4* up,
+    device float4* dst,
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort3 tpitg [[thread_position_in_threadgroup]],
+    ushort3 ntg [[threads_per_threadgroup]])
+{
+    const int i0 = tgpig.x * ntg.x + tpitg.x;
+    if (i0 * 4 >= ne00) return;
+    float4 g = gate[i0];
+    float4 u = up[i0];
+    float4 silu_g = g / (1.0f + exp(-g));
+    dst[i0] = silu_g * u;
+}

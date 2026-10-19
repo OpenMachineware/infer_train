@@ -5,6 +5,7 @@
 
 #![allow(dead_code)]
 
+use crate::dag::OptimizedDag;
 use crate::inference::{KVCacheBase, dequant_to_f32};
 use crate::model::config::ModelConfig;
 use crate::model::tensor::{DataType, Tensor, TensorData};
@@ -35,6 +36,10 @@ pub struct LlamaModel {
     // Output
     pub norm: Option<Tensor>,
     pub output: Option<Tensor>,
+
+    /// Cached optimized DAG for forward pass
+    /// Built once at model load, reused for all forward passes
+    pub optimized_dag: Option<OptimizedDag>,
 }
 
 impl LlamaModel {
@@ -93,6 +98,7 @@ impl LlamaModel {
             layers: Vec::new(),
             norm: None,
             output: None,
+            optimized_dag: None,
         };
 
         // Load embeddings - try multiple naming conventions
@@ -182,6 +188,25 @@ impl LlamaModel {
         // Transpose output layer if needed (GGUF stores output weights transposed)
         // This enables using standard GEMV kernel instead of transposed kernel
         model.transpose_output_layer();
+
+        // Build and optimize DAG for GPU inference
+        #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+        {
+            use crate::dag::builder::DagBuilder;
+            use crate::dag::optimizer::DagOptimizer;
+
+            let mut builder = DagBuilder::new();
+            let mut dag = builder.build_model_dag(&model);
+
+            // Apply fusion optimizations
+            let fused_count = DagOptimizer::optimize(&mut dag);
+            if fused_count > 0 {
+                println!("DAG optimization: {} operations fused", fused_count);
+            }
+
+            // Convert to optimized DAG with pre-computed execution order
+            model.optimized_dag = Some(dag.into_optimized());
+        }
 
         model
     }
@@ -2560,6 +2585,13 @@ impl LlamaModel {
             return None;
         }
 
+        // Timing
+        let enable_timing = std::env::var("INFER_TIMING").is_ok();
+        let mut total_embed_time = std::time::Duration::ZERO;
+        let mut total_upload_time = std::time::Duration::ZERO;
+        let mut total_layer_time = std::time::Duration::ZERO;
+        let mut total_output_time = std::time::Duration::ZERO;
+
         let hidden_size = self.config.hidden_size;
         let device = gpu_ctx.device();
         let queue = gpu_ctx.queue();
@@ -2570,185 +2602,146 @@ impl LlamaModel {
         let reuse_pool: Rc<RefCell<Vec<std::rc::Rc<Buffer>>>> =
             Rc::new(RefCell::new(Vec::new()));
 
+        // Create ONE forward pool for the entire forward pass
+        // This ensures buffers stay alive until we've read the final output
+        let mut forward_pool = crate::buffer::ForwardBufferPool::new(
+            device.clone(),
+            reuse_pool.clone(),
+        );
+
         // Process each token
         let mut last_hidden_buffer: Option<std::rc::Rc<Buffer>> = None;
+        let mut logits = Vec::new();
 
         for &token in tokens.iter() {
-            // Create FRESH forward pool for this token (avoids buffer contamination across tokens)
-            let mut token_pool = crate::buffer::ForwardBufferPool::new(
-                device.clone(),
-                reuse_pool.clone(),
-            );
-
             // 1. Embedding lookup (CPU)
+            let t0 = std::time::Instant::now();
             let hidden = self.embedding_lookup_impl(token)?;
+            total_embed_time += t0.elapsed();
 
             // Upload to GPU
+            let t1 = std::time::Instant::now();
             let hidden_buffer = std::rc::Rc::new(device.new_buffer_with_data(
                 hidden.as_ptr() as *const std::ffi::c_void,
                 (hidden_size * 4) as u64,
                 metal::MTLResourceOptions::StorageModeShared,
             ));
+            total_upload_time += t1.elapsed();
 
-            // 2. Process through layers
-            // SAFETY: Process ONE layer at a time to avoid GPU deadlock
-            // Each layer gets its own command buffer, commit and wait immediately
+            // 2. Process through layers + final operations in ONE command buffer
+            // Encode ALL operations into a single command buffer for best performance
             let mut layer_input = hidden_buffer.clone();
             let n_layers = self.layers.len();
 
-            for layer_idx in 0..n_layers {
-                // Create command buffer for this layer
-                let command_buffer = queue.new_command_buffer();
-                let encoder = command_buffer.new_compute_command_encoder();
+            let t_encode_start = std::time::Instant::now();
 
+            // Create ONE command buffer for all operations
+            // Use unretained references for better performance (we manage lifetimes via ForwardBufferPool)
+            let command_buffer =
+                queue.new_command_buffer_with_unretained_references();
+            let encoder = command_buffer.new_compute_command_encoder();
+
+            // Encode all layers
+            for layer_idx in 0..n_layers {
                 let layer_output = self.forward_layer_gpu_encode(
                     &self.layers[layer_idx],
                     layer_idx,
                     &layer_input,
                     kv_cache,
                     gpu_ctx,
-                    &mut token_pool,
+                    &mut forward_pool,
                     encoder,
                 )?;
 
-                encoder.end_encoding();
-                command_buffer.commit();
-                // Wait immediately for this layer to complete before next layer
-                command_buffer.wait_until_completed();
-
                 // Update for next layer
                 layer_input = layer_output;
+            }
+
+            // 3. Final norm + Output projection (in same command buffer)
+            let final_norm = self.norm.as_ref()?;
+            let final_norm_buffer = gpu_ctx.get_or_create_buffer(final_norm);
+            let final_hidden_buffer = forward_pool.get(hidden_size * 4);
+            let output = self.output.as_ref()?;
+            let vocab_size =
+                if output.shape.len() == 2 && output.shape[1] == hidden_size {
+                    output.shape[0]
+                } else {
+                    output.shape[0]
+                };
+
+            // Final norm
+            gpu_ctx.rms_norm_encode(
+                encoder,
+                &layer_input,
+                &final_norm_buffer,
+                &final_hidden_buffer,
+                1,
+                hidden_size,
+                1e-5,
+            );
+
+            // Output projection
+            let output_weights = gpu_ctx.get_or_create_buffer(output);
+            let logits_buffer = forward_pool.get(vocab_size * 4);
+
+            if !gpu_ctx.mv_encode(
+                encoder,
+                &output_weights,
+                &final_hidden_buffer,
+                &logits_buffer,
+                vocab_size,
+                hidden_size,
+                output.dtype,
+            ) {
+                return None;
+            }
+
+            encoder.end_encoding();
+            let encode_time = t_encode_start.elapsed();
+            total_layer_time += encode_time;
+
+            // 4. GPU execution
+            let t_gpu_start = std::time::Instant::now();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+            let gpu_time = t_gpu_start.elapsed();
+            total_output_time += gpu_time;
+
+            // 5. Download logits
+            let t_download_start = std::time::Instant::now();
+            logits = vec![0.0f32; vocab_size];
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    logits_buffer.contents() as *const f32,
+                    logits.as_mut_ptr(),
+                    vocab_size,
+                );
+            }
+            let download_time = t_download_start.elapsed();
+
+            if enable_timing {
+                eprintln!(
+                    "[TIMING] Encode: {:?}, GPU: {:?}, Download: {:?}",
+                    encode_time, gpu_time, download_time
+                );
             }
 
             last_hidden_buffer = Some(layer_input);
             kv_cache.advance();
         }
 
-        // 3. Final norm (separate command buffer)
-        let hidden_buffer = last_hidden_buffer?;
-        let final_norm = self.norm.as_ref()?;
-        let final_norm_buffer = gpu_ctx.get_or_create_buffer(final_norm);
-
-        // Create FRESH forward pool for final operations (avoids contamination from token loop)
-        let mut final_pool = crate::buffer::ForwardBufferPool::new(
-            device.clone(),
-            reuse_pool.clone(),
-        );
-        let final_hidden_buffer = final_pool.get(hidden_size * 4);
-
-        // Create command buffer for final operations
-        let final_command_buffer = queue.new_command_buffer();
-        let final_encoder = final_command_buffer.new_compute_command_encoder();
-
-        gpu_ctx.rms_norm_encode(
-            final_encoder,
-            &hidden_buffer,
-            &final_norm_buffer,
-            &final_hidden_buffer,
-            1,
-            hidden_size,
-            1e-5,
-        );
-
-        // 4. Output projection (in the same command buffer)
-        let output = self.output.as_ref()?;
-
-        let vocab_size =
-            if output.shape.len() == 2 && output.shape[1] == hidden_size {
-                // Transposed: [vocab_size, hidden_size]
-                output.shape[0]
-            } else {
-                // Normal: [hidden_size, vocab_size] or [vocab_size]
-                output.shape[0]
-            };
-
-        // Check if output dtype is supported for GPU encoding
-        let supported_for_gpu = matches!(
-            output.dtype,
-            crate::model::tensor::DataType::Q4_0
-                | crate::model::tensor::DataType::Q4_1
-                | crate::model::tensor::DataType::Q5_0
-                | crate::model::tensor::DataType::Q5_1
-                | crate::model::tensor::DataType::Q8_0
-                | crate::model::tensor::DataType::Q4_K
-                | crate::model::tensor::DataType::Q5_K
-                | crate::model::tensor::DataType::Q2_K
-                | crate::model::tensor::DataType::Q6_K
-                | crate::model::tensor::DataType::Q3_K
-        );
-
-        if !supported_for_gpu
-            || (output.shape.len() == 2 && output.shape[1] == hidden_size)
-        {
-            // Fallback to CPU for unsupported formats or transposed weights
-            final_encoder.end_encoding();
-            final_command_buffer.commit();
-            final_command_buffer.wait_until_completed();
-
-            // Read final_hidden BEFORE dropping pools (buffer still alive)
-            let mut hidden = vec![0.0f32; hidden_size];
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    final_hidden_buffer.contents() as *const f32,
-                    hidden.as_mut_ptr(),
-                    hidden_size,
-                );
-            }
-
-            // Debug: check hidden values
-            let num_nan = hidden.iter().filter(|&&v| v.is_nan()).count();
-            let num_zero = hidden.iter().filter(|&&v| v == 0.0).count();
+        // Print timing if enabled
+        if enable_timing {
+            eprintln!("[TIMING] Embedding: {:?}", total_embed_time);
+            eprintln!("[TIMING] Upload: {:?}", total_upload_time);
+            eprintln!("[TIMING] Layers: {:?}", total_layer_time);
+            eprintln!("[TIMING] Output: {:?}", total_output_time);
             eprintln!(
-                "[DEBUG] Hidden buffer before output projection: {} NaN, {} zero, first 5: {:?}",
-                num_nan,
-                num_zero,
-                &hidden[..5.min(hidden.len())]
-            );
-
-            if output.shape.len() == 2 && output.shape[1] == hidden_size {
-                let result = self.gemv_transposed(&hidden, output, vocab_size);
-                eprintln!(
-                    "[DEBUG] gemv_transposed result: first 5: {:?}",
-                    &result
-                        .as_ref()
-                        .map(|r| r[..5.min(r.len())].to_vec())
-                        .unwrap_or_default()
-                );
-                return result;
-            } else {
-                return self.gemv(&hidden, output, vocab_size);
-            }
-        }
-
-        // GPU output projection
-        let logits_buffer = final_pool.get(vocab_size * 4);
-
-        if self
-            .gemv_encode(
-                final_encoder,
-                &final_hidden_buffer,
-                output,
-                vocab_size,
-                gpu_ctx,
-                &logits_buffer,
-            )
-            .is_none()
-        {
-            return None;
-        }
-
-        // Commit final command buffer and wait for completion
-        final_encoder.end_encoding();
-        final_command_buffer.commit();
-        final_command_buffer.wait_until_completed();
-
-        // Download logits BEFORE dropping pools (buffers still alive)
-        let mut logits = vec![0.0f32; vocab_size];
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                logits_buffer.contents() as *const f32,
-                logits.as_mut_ptr(),
-                vocab_size,
+                "[TIMING] Total: {:?}",
+                total_embed_time
+                    + total_upload_time
+                    + total_layer_time
+                    + total_output_time
             );
         }
 
@@ -2791,43 +2784,45 @@ impl LlamaModel {
 
         // ====================================================================
         // Create all output buffers using forward pool (keeps them alive!)
+        // Note: We use get() instead of get_zeroed() because all kernels
+        // write to all elements of their output buffers
         // ====================================================================
 
         // 1. Attention norm output
-        let normed_buffer = forward_pool.get_zeroed(hidden_size * 4);
+        let normed_buffer = forward_pool.get(hidden_size * 4);
 
         // 2. QKV outputs
-        let q_buffer = forward_pool.get_zeroed(q_out_size * 4);
-        let k_buffer = forward_pool.get_zeroed(k_out_size * 4);
-        let v_buffer = forward_pool.get_zeroed(v_out_size * 4);
+        let q_buffer = forward_pool.get(q_out_size * 4);
+        let k_buffer = forward_pool.get(k_out_size * 4);
+        let v_buffer = forward_pool.get(v_out_size * 4);
 
         // 3. RoPE outputs
-        let q_rope_buffer = forward_pool.get_zeroed(q_out_size * 4);
-        let k_rope_buffer = forward_pool.get_zeroed(k_out_size * 4);
+        let q_rope_buffer = forward_pool.get(q_out_size * 4);
+        let k_rope_buffer = forward_pool.get(k_out_size * 4);
 
         // 4. Flash attention output
-        let attn_out_buffer = forward_pool.get_zeroed(q_out_size * 4);
+        let attn_out_buffer = forward_pool.get(q_out_size * 4);
 
         // 5. Output projection
-        let attn_proj_buffer = forward_pool.get_zeroed(hidden_size * 4);
+        let attn_proj_buffer = forward_pool.get(hidden_size * 4);
 
         // 6. Residual add
-        let residual_buffer = forward_pool.get_zeroed(hidden_size * 4);
+        let residual_buffer = forward_pool.get(hidden_size * 4);
 
         // 7. FFN norm output
-        let ffn_normed_buffer = forward_pool.get_zeroed(hidden_size * 4);
+        let ffn_normed_buffer = forward_pool.get(hidden_size * 4);
 
         // 8. FFN intermediate outputs (for SwiGLU)
         let intermediate_size =
             layer.w1.as_ref().map(|w| w.shape[1]).unwrap_or(0);
-        let gate_buffer = forward_pool.get_zeroed(intermediate_size * 4);
-        let up_buffer = forward_pool.get_zeroed(intermediate_size * 4);
-        let silu_buffer = forward_pool.get_zeroed(intermediate_size * 4);
-        let hidden_ffn_buffer = forward_pool.get_zeroed(intermediate_size * 4);
-        let ffn_out_buffer = forward_pool.get_zeroed(hidden_size * 4);
+        let gate_buffer = forward_pool.get(intermediate_size * 4);
+        let up_buffer = forward_pool.get(intermediate_size * 4);
+        let silu_buffer = forward_pool.get(intermediate_size * 4);
+        let hidden_ffn_buffer = forward_pool.get(intermediate_size * 4);
+        let ffn_out_buffer = forward_pool.get(hidden_size * 4);
 
         // 9. Final output
-        let final_buffer = forward_pool.get_zeroed(hidden_size * 4);
+        let final_buffer = forward_pool.get(hidden_size * 4);
 
         // ====================================================================
         // Encode all operations into shared encoder (no commit!)
@@ -2870,10 +2865,6 @@ impl LlamaModel {
             )
             .is_none()
         {
-            eprintln!(
-                "[DEBUG] Layer {}: K projection failed for dtype {:?}",
-                layer_idx, wk.dtype
-            );
             return None;
         }
         if self
@@ -2887,10 +2878,6 @@ impl LlamaModel {
             )
             .is_none()
         {
-            eprintln!(
-                "[DEBUG] Layer {}: V projection failed for dtype {:?}",
-                layer_idx, wv.dtype
-            );
             return None;
         }
 
