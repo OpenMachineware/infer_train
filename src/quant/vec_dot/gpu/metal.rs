@@ -11228,6 +11228,55 @@ impl MetalContext {
         // Do NOT end_encoding() or commit() - let caller handle that
     }
 
+    /// Flash Attention MMA kernel (experimental, for performance comparison)
+    /// Process 4 heads per simdgroup for better memory coalescing
+    pub fn flash_attn_mma_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        n_heads: usize,
+        n_kv_heads: usize,
+        seq_len: usize,
+        kv_stride: usize,
+        q_buffer: &Buffer,
+        k_buffer: &Buffer,
+        v_buffer: &Buffer,
+        output_buffer: &Buffer,
+    ) {
+        let head_dim = 128; // MMA kernel only supports head_dim=128
+
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+        let seq_k = seq_len as u32;
+        let kv_stride_u32 = kv_stride as u32;
+
+        encoder.set_compute_pipeline_state(&self.flash_decode_mma_pipeline);
+        encoder.set_bytes(
+            0,
+            4,
+            &seq_k as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            1,
+            4,
+            &kv_stride_u32 as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            2,
+            4,
+            &scale as *const f32 as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(3, Some(q_buffer), 0);
+        encoder.set_buffer(4, Some(k_buffer), 0);
+        encoder.set_buffer(5, Some(v_buffer), 0);
+        encoder.set_buffer(6, Some(output_buffer), 0);
+
+        // 1 threadgroup per head (simplified version)
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: n_heads as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
     /// Flash Prefill for batched queries (encode into shared encoder)
     /// Process N queries in parallel, each query attending to seq_k KV cache entries
     /// q: [batch, n_heads, seq_q, head_dim]

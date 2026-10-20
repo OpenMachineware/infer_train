@@ -348,6 +348,10 @@ name = "bench-decode"
 path = "tools/bench_decode.rs"
 
 [[bin]]
+name = "test-flash-mma"
+path = "tools/test_flash_mma.rs"
+
+[[bin]]
 name = "bench-dispatch"
 path = "tools/bench_dispatch.rs"
 
