@@ -348,6 +348,11 @@ name = "bench-decode"
 path = "tools/bench_decode.rs"
 
 [[bin]]
+name = "bench-decode-with-dag"
+path = "tools/bench_decode_with_dag.rs"
+required-features = ["metal"]
+
+[[bin]]
 name = "test-flash-mma"
 path = "tools/test_flash_mma.rs"
 

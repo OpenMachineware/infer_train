@@ -6,8 +6,9 @@
 use std::time::Instant;
 
 fn main() {
-    let model_path = std::env::var("MODEL_PATH")
-        .unwrap_or_else(|_| "DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf".to_string());
+    let model_path = std::env::var("MODEL_PATH").unwrap_or_else(|_| {
+        "DeepSeek-R1-Distill-Qwen-1.5B-Q5_K_M.gguf".to_string()
+    });
 
     println!("=== Decode Performance with DAG Fusion ===\n");
     println!("Model: {}", model_path);
@@ -19,7 +20,11 @@ fn main() {
 
         let gpu_ctx = MetalContext::new().unwrap();
         let device = gpu_ctx.device().clone();
-        let ctx = InferenceContext::from_gguf_with_gpu_ctx(&model_path, gpu_ctx.clone()).unwrap();
+        let ctx = InferenceContext::from_gguf_with_gpu_ctx(
+            &model_path,
+            gpu_ctx.clone(),
+        )
+        .unwrap();
 
         println!(
             "Layers: {}, Hidden: {}",
@@ -41,7 +46,11 @@ fn main() {
         println!("\n=== Prefill 64 tokens ===");
         let prefill_tokens: Vec<u32> = (1..=64).collect();
         let start = Instant::now();
-        let result = ctx.model.forward_gpu_native_batched(&prefill_tokens, &mut kv, &gpu_ctx);
+        let result = ctx.model.forward_gpu_native_batched(
+            &prefill_tokens,
+            &mut kv,
+            &gpu_ctx,
+        );
         let prefill_time = start.elapsed();
         let has_nan = result
             .as_ref()
@@ -60,13 +69,19 @@ fn main() {
         for i in 0..num_tokens {
             let token = (65 + i) as u32;
             let start = Instant::now();
-            let result = ctx.model.forward_gpu_native_batched(&[token], &mut kv, &gpu_ctx);
+            let result = ctx.model.forward_gpu_native_batched(
+                &[token],
+                &mut kv,
+                &gpu_ctx,
+            );
             let elapsed = start.elapsed();
             total_time += elapsed;
 
             let has_nan = result
                 .as_ref()
-                .map(|logits| logits.iter().any(|&x| x.is_nan() || x.is_infinite()))
+                .map(|logits| {
+                    logits.iter().any(|&x| x.is_nan() || x.is_infinite())
+                })
                 .unwrap_or(true);
 
             if has_nan {

@@ -58,6 +58,7 @@ pub struct ExecutionContext<'a> {
     pub forward_pool: &'a mut ForwardBufferPool,
     pub layer_idx: usize,
     pub position: usize,
+    pub use_mma: bool, // Use MMA kernel for Flash Attention
 }
 
 pub struct DagExecutor;
@@ -110,6 +111,11 @@ impl DagExecutor {
             tensor_registry.insert(*tensor_id, weight_buffer);
         }
 
+        // Check if MMA kernel is enabled via environment variable
+        let use_mma = std::env::var("INFER_USE_MMA")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+
         // Create execution context
         let mut exec_ctx = ExecutionContext {
             model,
@@ -120,19 +126,100 @@ impl DagExecutor {
             forward_pool: &mut forward_pool,
             layer_idx: 0,
             position: 0,
+            use_mma,
         };
 
-        // Create command buffer for entire forward pass
-        let command_buffer = queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        // Track layer boundaries for committing command buffers
+        // Each layer's FlashAttention has a unique layer_idx
+        // Commit after completing each layer to avoid NaN issues
+        let mut last_layer_idx: Option<usize> = None;
+        let mut command_buffer = queue.new_command_buffer();
+        let mut encoder = command_buffer.new_compute_command_encoder();
 
         // Traverse DAG nodes in execution order
         for node_id in &dag.execution_order {
             let node = &dag.dag.nodes[*node_id];
-            Self::execute_node(node, &mut exec_ctx, encoder)?;
+
+            // Debug: show registry state before executing node 534
+            if std::env::var("INFER_DEBUG_DAG").is_ok() && *node_id == 534 {
+                let keys: Vec<_> =
+                    exec_ctx.tensor_registry.buffers.keys().collect();
+                eprintln!(
+                    "[DAG] Before node 534: registry has {} entries",
+                    keys.len()
+                );
+
+                // Check what operations produced tensors 675 and 678
+                // Look at nodes before 534 in execution order
+                let idx_534 = dag
+                    .execution_order
+                    .iter()
+                    .position(|&x| x == 534)
+                    .unwrap_or(0);
+                if idx_534 >= 2 {
+                    let prev_nodes: Vec<_> = dag
+                        .execution_order
+                        .iter()
+                        .skip(idx_534 - 5)
+                        .take(5)
+                        .collect();
+                    eprintln!("[DAG] Nodes before 534: {:?}", prev_nodes);
+                    for &nid in &prev_nodes {
+                        let n = &dag.dag.nodes[nid];
+                        eprintln!(
+                            "[DAG] Node {}: {:?}",
+                            nid,
+                            std::mem::discriminant(&n.op)
+                        );
+                    }
+                }
+            }
+
+            // Check if this operation belongs to a new layer
+            let node_layer_idx = Self::get_node_layer_idx(node);
+            let is_new_layer = node_layer_idx.is_some()
+                && last_layer_idx.is_some()
+                && node_layer_idx != last_layer_idx;
+
+            // If new layer, commit previous command buffer and start new one
+            if is_new_layer {
+                if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                    eprintln!(
+                        "[DAG] Layer boundary at node {}, committing CB",
+                        node_id
+                    );
+                }
+                encoder.end_encoding();
+                command_buffer.commit();
+                command_buffer.wait_until_completed();
+
+                // Start new command buffer for next layer
+                command_buffer = queue.new_command_buffer();
+                encoder = command_buffer.new_compute_command_encoder();
+            }
+
+            // Execute node
+            let result = Self::execute_node(node, &mut exec_ctx, &encoder);
+            if result.is_none() {
+                if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                    eprintln!(
+                        "[DAG] Node {} ({:?}) failed!",
+                        node_id,
+                        std::mem::discriminant(&node.op)
+                    );
+                }
+                // Clean up encoder before returning
+                encoder.end_encoding();
+                return None;
+            }
+
+            // Update last layer index
+            if let Some(idx) = node_layer_idx {
+                last_layer_idx = Some(idx);
+            }
         }
 
-        // Commit and wait
+        // Commit final command buffer
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
@@ -229,20 +316,106 @@ impl DagExecutor {
                 k_out_size,
                 v_out_size,
             } => {
-                let input_buf = ctx.tensor_registry.get(*input)?;
-                let q_weight_buf = ctx.tensor_registry.get(*q_weight)?;
-                let k_weight_buf = ctx.tensor_registry.get(*k_weight)?;
-                let v_weight_buf = ctx.tensor_registry.get(*v_weight)?;
+                if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                    eprintln!(
+                        "[DAG] FusedQKV: input={}, q_weight={}, k_weight={}, v_weight={}",
+                        input, q_weight, k_weight, v_weight
+                    );
+                }
+
+                let input_buf = match ctx.tensor_registry.get(*input) {
+                    Some(buf) => buf,
+                    None => {
+                        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                            eprintln!(
+                                "[DAG] FusedQKV: input {} not in tensor_registry",
+                                input
+                            );
+                        }
+                        return None;
+                    }
+                };
+
+                // Get weight buffers - check each one
+                let q_weight_buf = match ctx.tensor_registry.get(*q_weight) {
+                    Some(buf) => buf,
+                    None => {
+                        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                            eprintln!(
+                                "[DAG] FusedQKV: q_weight {} not in tensor_registry",
+                                q_weight
+                            );
+                        }
+                        return None;
+                    }
+                };
+                let k_weight_buf = match ctx.tensor_registry.get(*k_weight) {
+                    Some(buf) => buf,
+                    None => {
+                        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                            eprintln!(
+                                "[DAG] FusedQKV: k_weight {} not in tensor_registry",
+                                k_weight
+                            );
+                        }
+                        return None;
+                    }
+                };
+                let v_weight_buf = match ctx.tensor_registry.get(*v_weight) {
+                    Some(buf) => buf,
+                    None => {
+                        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                            eprintln!(
+                                "[DAG] FusedQKV: v_weight {} not in tensor_registry",
+                                v_weight
+                            );
+                        }
+                        return None;
+                    }
+                };
 
                 // Allocate output buffers
                 let q_buf = ctx.forward_pool.get(*q_out_size * 4);
                 let k_buf = ctx.forward_pool.get(*k_out_size * 4);
                 let v_buf = ctx.forward_pool.get(*v_out_size * 4);
 
-                // Get weight dtypes
-                let q_dtype = ctx.weight_bindings.get(q_weight)?.dtype;
-                let k_dtype = ctx.weight_bindings.get(k_weight)?.dtype;
-                let v_dtype = ctx.weight_bindings.get(v_weight)?.dtype;
+                // Get weight dtypes - check each one
+                let q_dtype = match ctx.weight_bindings.get(q_weight) {
+                    Some(t) => t.dtype,
+                    None => {
+                        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                            eprintln!(
+                                "[DAG] FusedQKV: q_weight {} not in weight_bindings",
+                                q_weight
+                            );
+                        }
+                        return None;
+                    }
+                };
+                let k_dtype = match ctx.weight_bindings.get(k_weight) {
+                    Some(t) => t.dtype,
+                    None => {
+                        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                            eprintln!(
+                                "[DAG] FusedQKV: k_weight {} not in weight_bindings",
+                                k_weight
+                            );
+                        }
+                        return None;
+                    }
+                };
+                let v_dtype = match ctx.weight_bindings.get(v_weight) {
+                    Some(t) => t.dtype,
+                    None => {
+                        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                            eprintln!(
+                                "[DAG] FusedQKV: v_weight {} not in weight_bindings",
+                                v_weight
+                            );
+                        }
+                        return None;
+                    }
+                };
 
                 let hidden_size = ctx.model.config.hidden_size;
 
@@ -372,19 +545,34 @@ impl DagExecutor {
                 let seq_len = ctx.kv_cache.seq_len() + 1; // +1 for current token
                 let kv_stride = ctx.kv_cache.max_seq();
 
-                ctx.gpu_ctx.flash_attn_f16_encode(
-                    encoder,
-                    1, // n_seqs
-                    *n_heads,
-                    *n_kv_heads,
-                    *head_dim,
-                    seq_len,
-                    kv_stride,
-                    &q_buf,
-                    k_buf,
-                    v_buf,
-                    &output_buf,
-                );
+                // Use MMA kernel if enabled and head_dim is 128
+                if ctx.use_mma && *head_dim == 128 {
+                    ctx.gpu_ctx.flash_attn_mma_encode(
+                        encoder,
+                        *n_heads,
+                        *n_kv_heads,
+                        seq_len,
+                        kv_stride,
+                        &q_buf,
+                        k_buf,
+                        v_buf,
+                        &output_buf,
+                    );
+                } else {
+                    ctx.gpu_ctx.flash_attn_f16_encode(
+                        encoder,
+                        1, // n_seqs
+                        *n_heads,
+                        *n_kv_heads,
+                        *head_dim,
+                        seq_len,
+                        kv_stride,
+                        &q_buf,
+                        k_buf,
+                        v_buf,
+                        &output_buf,
+                    );
+                }
 
                 ctx.tensor_registry.insert(*output, output_buf);
                 Some(())
@@ -613,6 +801,15 @@ impl DagExecutor {
                 // Placeholder for fused/removed operations - skip
                 Some(())
             }
+        }
+    }
+
+    /// Get layer index from DAG node (if it belongs to a specific layer)
+    fn get_node_layer_idx(node: &DagNode) -> Option<usize> {
+        match &node.op {
+            Operation::FlashAttention { layer_idx, .. } => Some(*layer_idx),
+            Operation::KVCacheUpdate { layer_idx, .. } => Some(*layer_idx),
+            _ => None,
         }
     }
 }
