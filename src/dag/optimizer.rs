@@ -19,8 +19,8 @@ impl DagOptimizer {
     pub fn optimize(dag: &mut ComputeDag) -> usize {
         let mut fused_count = 0;
 
-        // Apply QKV projection fusion (most impactful)
-        fused_count += Self::fuse_qkv_projections(dag);
+        // TEMPORARILY DISABLED: QKV fusion has dependency tracking issues
+        // fused_count += Self::fuse_qkv_projections(dag);
 
         // Apply gate-up projection fusion
         fused_count += Self::fuse_gate_up_projections(dag);

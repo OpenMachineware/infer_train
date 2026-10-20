@@ -2,6 +2,7 @@
 // Tests DAG building and optimization
 
 use infer_train::dag::DagBuilder;
+use infer_train::dag::graph::Operation;
 use infer_train::inference::InferenceContext;
 
 fn main() {
@@ -60,6 +61,95 @@ fn main() {
             i,
             node_id,
             std::mem::discriminant(&node.op)
+        );
+    }
+
+    // Show node 534 details
+    println!("\nNode 534 details:");
+    if optimized_dag.dag.nodes.len() > 534 {
+        let node = &optimized_dag.dag.nodes[534];
+        match &node.op {
+            Operation::RmsNorm { input, output, .. } => {
+                println!(
+                    "  Operation: RmsNorm(input={}, output={})",
+                    input, output
+                );
+                println!("  Dependencies: {:?}", node.dependencies);
+            }
+            Operation::FusedQKV {
+                input, output_q, output_k, output_v, ..
+            } => {
+                println!(
+                    "  Operation: FusedQKV(input={}, outputs={}/{}/{})",
+                    input, output_q, output_k, output_v
+                );
+                println!("  Dependencies: {:?}", node.dependencies);
+            }
+            Operation::NoOp => {
+                println!("  Operation: NoOp");
+            }
+            _ => {
+                println!("  Operation: {:?}", std::mem::discriminant(&node.op));
+            }
+        }
+
+        // Check what nodes 534's dependencies are
+        println!("  Checking dependencies:");
+        for &dep_id in &node.dependencies {
+            let dep_node = &optimized_dag.dag.nodes[dep_id];
+            println!(
+                "    Dep {}: {:?} (in exec_order: {})",
+                dep_id,
+                std::mem::discriminant(&dep_node.op),
+                optimized_dag.execution_order.contains(&dep_id)
+            );
+        }
+    } else {
+        println!(
+            "  DAG has {} nodes, node 534 does not exist",
+            optimized_dag.dag.nodes.len()
+        );
+    }
+
+    // Find which node produces tensor 677
+    println!("\nSearching for node that produces tensor 677:");
+    for node in &optimized_dag.dag.nodes {
+        match &node.op {
+            Operation::RmsNorm { output, .. } if *output == 677 => {
+                println!("  Node {}: RmsNorm output=677", node.id);
+            }
+            Operation::Gemv { output, .. } if *output == 677 => {
+                println!("  Node {}: Gemv output=677", node.id);
+            }
+            Operation::Add { output, .. } if *output == 677 => {
+                println!("  Node {}: Add output=677", node.id);
+            }
+            _ => {}
+        }
+    }
+
+    // Check if node 487 is in execution order
+    if let Some(pos) =
+        optimized_dag.execution_order.iter().position(|&x| x == 487)
+    {
+        println!(
+            "\nNode 487 (RmsNorm producing 677) is at execution position {}",
+            pos
+        );
+    } else {
+        println!("\nNode 487 NOT in execution order!");
+    }
+
+    // Check if node 534 is in execution order
+    if let Some(pos) =
+        optimized_dag.execution_order.iter().position(|&x| x == 534)
+    {
+        println!("\nNode 534 is at execution position {}", pos);
+    } else {
+        println!("\nNode 534 NOT in execution order!");
+        println!(
+            "Execution order length: {}",
+            optimized_dag.execution_order.len()
         );
     }
 

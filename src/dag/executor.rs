@@ -149,29 +149,22 @@ impl DagExecutor {
                     keys.len()
                 );
 
-                // Check what operations produced tensors 675 and 678
-                // Look at nodes before 534 in execution order
-                let idx_534 = dag
-                    .execution_order
-                    .iter()
-                    .position(|&x| x == 534)
-                    .unwrap_or(0);
-                if idx_534 >= 2 {
-                    let prev_nodes: Vec<_> = dag
-                        .execution_order
-                        .iter()
-                        .skip(idx_534 - 5)
-                        .take(5)
-                        .collect();
-                    eprintln!("[DAG] Nodes before 534: {:?}", prev_nodes);
-                    for &nid in &prev_nodes {
-                        let n = &dag.dag.nodes[nid];
-                        eprintln!(
-                            "[DAG] Node {}: {:?}",
-                            nid,
-                            std::mem::discriminant(&n.op)
-                        );
-                    }
+                // Show the actual FusedQKV operation details
+                if let Operation::FusedQKV {
+                    input,
+                    q_weight,
+                    k_weight,
+                    v_weight,
+                    output_q,
+                    output_k,
+                    output_v,
+                    ..
+                } = &node.op
+                {
+                    eprintln!(
+                        "[DAG] FusedQKV details: input={}, outputs={}/{}/{}",
+                        input, output_q, output_k, output_v
+                    );
                 }
             }
 
