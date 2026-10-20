@@ -133,13 +133,14 @@ impl DagExecutor {
             use_mma_v2,
         };
 
-        // EXPERIMENT: Per-layer CB split WITHOUT wait
-        // Allows GPU to overlap execution between layers
+        // Use single command buffer for entire graph (llama.cpp style)
+        // Enqueue early to allow GPU to schedule execution
         // Use unretained references for lower dispatch overhead
-        let mut last_layer_idx: Option<usize> = None;
-        let mut command_buffer =
+        let command_buffer =
             queue.new_command_buffer_with_unretained_references();
-        let mut encoder = command_buffer.new_compute_command_encoder();
+        command_buffer.enqueue(); // Pre-enqueue (llama.cpp line 565)
+
+        let encoder = command_buffer.new_compute_command_encoder();
 
         // Traverse DAG nodes in execution order
         for node_id in &dag.execution_order {
@@ -180,23 +181,6 @@ impl DagExecutor {
                         input, output_q, output_k, output_v
                     );
                 }
-            }
-
-            // Check if this operation belongs to a new layer
-            let node_layer_idx = Self::get_node_layer_idx(node);
-            let is_new_layer = node_layer_idx.is_some()
-                && last_layer_idx.is_some()
-                && node_layer_idx != last_layer_idx;
-
-            // Per-layer CB split for better GPU overlap
-            if is_new_layer {
-                encoder.end_encoding();
-                command_buffer.commit();
-                // NO wait - let GPU overlap execution
-
-                command_buffer =
-                    queue.new_command_buffer_with_unretained_references();
-                encoder = command_buffer.new_compute_command_encoder();
             }
 
             // Execute node
@@ -286,14 +270,9 @@ impl DagExecutor {
                 encoder.end_encoding();
                 return None;
             }
-
-            // Update last layer index
-            if let Some(idx) = node_layer_idx {
-                last_layer_idx = Some(idx);
-            }
         }
 
-        // Commit final command buffer
+        // Commit and wait (llama.cpp style: single CB for entire graph)
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
