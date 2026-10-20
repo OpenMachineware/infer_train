@@ -156,6 +156,10 @@ pub struct MetalContext {
     gelu_4_pipeline: ComputePipelineState,
     gelu_quick_pipeline: ComputePipelineState,
     gelu_quick_4_pipeline: ComputePipelineState,
+    // F32 <-> F16 conversion
+    f32_to_f16_pipeline: ComputePipelineState,
+    f16_to_f32_pipeline: ComputePipelineState,
+    f32_to_f16_strided_pipeline: ComputePipelineState,
     // Fused kernels
     fused_swiglu_pipeline: ComputePipelineState,
     fused_swiglu_4_pipeline: ComputePipelineState,
@@ -175,6 +179,10 @@ pub struct MetalContext {
     flash_decode_f16_80_pipeline: ComputePipelineState,
     flash_decode_f16_128_pipeline: ComputePipelineState,
     flash_decode_f16_160_pipeline: ComputePipelineState,
+    // Flash Prefill (for batched prefill)
+    flash_prefill_f16_pipeline: ComputePipelineState,
+    // Batched flash prefill (llama.cpp style)
+    flash_prefill_batch_pipeline: ComputePipelineState,
     // Quantize
     quantize_library: Library,
     quantize_f16_pipeline: ComputePipelineState,
@@ -200,6 +208,9 @@ pub struct MetalContext {
     kv_update_k_pipeline: ComputePipelineState,
     kv_update_k_f16_pipeline: ComputePipelineState, // F16->F16 (no conversion)
     kv_update_v_pipeline: ComputePipelineState,
+    // Batched KV update for prefill
+    kv_update_batched_f16_pipeline: ComputePipelineState,
+    kv_update_batched_f16_strided_pipeline: ComputePipelineState,
     // Cached buffers for MV operations
     // Once created with data, reuse without copy
     mv_weights_buffer: RefCell<Option<Buffer>>,
@@ -320,6 +331,12 @@ impl Clone for MetalContext {
             gelu_4_pipeline: self.gelu_4_pipeline.clone(),
             gelu_quick_pipeline: self.gelu_quick_pipeline.clone(),
             gelu_quick_4_pipeline: self.gelu_quick_4_pipeline.clone(),
+            // F32 <-> F16 conversion
+            f32_to_f16_pipeline: self.f32_to_f16_pipeline.clone(),
+            f16_to_f32_pipeline: self.f16_to_f32_pipeline.clone(),
+            f32_to_f16_strided_pipeline: self
+                .f32_to_f16_strided_pipeline
+                .clone(),
             // Fused kernels
             fused_swiglu_pipeline: self.fused_swiglu_pipeline.clone(),
             fused_swiglu_4_pipeline: self.fused_swiglu_4_pipeline.clone(),
@@ -360,6 +377,10 @@ impl Clone for MetalContext {
             flash_decode_f16_160_pipeline: self
                 .flash_decode_f16_160_pipeline
                 .clone(),
+            flash_prefill_f16_pipeline: self.flash_prefill_f16_pipeline.clone(),
+            flash_prefill_batch_pipeline: self
+                .flash_prefill_batch_pipeline
+                .clone(),
             quantize_library: self.quantize_library.clone(),
             quantize_f16_pipeline: self.quantize_f16_pipeline.clone(),
             quantize_f16_4_pipeline: self.quantize_f16_4_pipeline.clone(),
@@ -395,6 +416,13 @@ impl Clone for MetalContext {
             kv_update_k_pipeline: self.kv_update_k_pipeline.clone(),
             kv_update_k_f16_pipeline: self.kv_update_k_f16_pipeline.clone(),
             kv_update_v_pipeline: self.kv_update_v_pipeline.clone(),
+            // Batched KV update
+            kv_update_batched_f16_pipeline: self
+                .kv_update_batched_f16_pipeline
+                .clone(),
+            kv_update_batched_f16_strided_pipeline: self
+                .kv_update_batched_f16_strided_pipeline
+                .clone(),
             // Clear all cached buffers - they may contain stale data
             mv_weights_buffer: RefCell::new(None),
             mv_input_buffer: RefCell::new(None),
@@ -747,6 +775,15 @@ impl MetalContext {
             .new_library_with_source(flash_attn_source, &compile_options)
             .map_err(|e| {
                 format!("Failed to compile flash_attn library: {}", e)
+            })?;
+
+        // Compile Flash Prefill library (for batched attention)
+        let flash_prefill_source =
+            include_str!("../../../ops/metal/attention/flash_attn_quant.metal");
+        let flash_prefill_library = device
+            .new_library_with_source(flash_prefill_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile flash_prefill library: {}", e)
             })?;
 
         // Compile Quantize library
@@ -1420,6 +1457,38 @@ impl MetalContext {
 
         let gelu_quick_4_pipeline = gelu_quick_pipeline.clone();
 
+        // Create F32 <-> F16 conversion pipelines
+        let f32_to_f16_kernel = activation_library
+            .get_function("kernel_f32_to_f16", None)
+            .map_err(|e| format!("Failed to get kernel_f32_to_f16: {}", e))?;
+        let f32_to_f16_pipeline = device
+            .new_compute_pipeline_state_with_function(&f32_to_f16_kernel)
+            .map_err(|e| {
+                format!("Failed to create f32_to_f16 pipeline: {}", e)
+            })?;
+
+        let f16_to_f32_kernel = activation_library
+            .get_function("kernel_f16_to_f32", None)
+            .map_err(|e| format!("Failed to get kernel_f16_to_f32: {}", e))?;
+        let f16_to_f32_pipeline = device
+            .new_compute_pipeline_state_with_function(&f16_to_f32_kernel)
+            .map_err(|e| {
+                format!("Failed to create f16_to_f32 pipeline: {}", e)
+            })?;
+
+        let f32_to_f16_strided_kernel = activation_library
+            .get_function("kernel_f32_to_f16_strided", None)
+            .map_err(|e| {
+                format!("Failed to get kernel_f32_to_f16_strided: {}", e)
+            })?;
+        let f32_to_f16_strided_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &f32_to_f16_strided_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create f32_to_f16_strided pipeline: {}", e)
+            })?;
+
         // Create fused kernel pipelines
         let fused_swiglu_kernel = activation_library
             .get_function("kernel_fused_swiglu_f32", None)
@@ -1628,6 +1697,49 @@ impl MetalContext {
                     "Failed to create flash_decode_vec_f16_160 pipeline: {}",
                     e
                 )
+            })?;
+
+        // Create Flash Prefill pipeline
+        let flash_prefill_f16_kernel = flash_prefill_library
+            .get_function("flash_prefill_attention_f16", None)
+            .map_err(|e| {
+                format!(
+                    "Failed to get flash_prefill_attention_f16 kernel: {}",
+                    e
+                )
+            })?;
+        let flash_prefill_f16_pipeline = device
+            .new_compute_pipeline_state_with_function(&flash_prefill_f16_kernel)
+            .map_err(|e| {
+                format!("Failed to create flash_prefill_f16 pipeline: {}", e)
+            })?;
+
+        // Create Batched Flash Prefill pipeline (llama.cpp style architecture)
+        let flash_prefill_batch_source = include_str!(
+            "../../../ops/metal/attention/flash_prefill_batch.metal"
+        );
+        let flash_prefill_batch_library = device
+            .new_library_with_source(
+                flash_prefill_batch_source,
+                &compile_options,
+            )
+            .map_err(|e| {
+                format!("Failed to compile flash_prefill_batch library: {}", e)
+            })?;
+        let flash_prefill_batch_kernel = flash_prefill_batch_library
+            .get_function("kernel_flash_prefill_batch", None)
+            .map_err(|e| {
+                format!(
+                    "Failed to get kernel_flash_prefill_batch kernel: {}",
+                    e
+                )
+            })?;
+        let flash_prefill_batch_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &flash_prefill_batch_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create flash_prefill_batch pipeline: {}", e)
             })?;
 
         // Create Quantize pipelines
@@ -1858,6 +1970,42 @@ impl MetalContext {
                 format!("Failed to create KV update K F16 pipeline: {}", e)
             })?;
 
+        // Create batched KV update pipelines for prefill
+        let kv_update_batched_f16_kernel = kv_update_library
+            .get_function("kv_update_batched_f16", None)
+            .map_err(|e| {
+                format!("Failed to get KV update batched F16 kernel: {}", e)
+            })?;
+        let kv_update_batched_f16_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &kv_update_batched_f16_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create KV update batched F16 pipeline: {}",
+                    e
+                )
+            })?;
+
+        let kv_update_batched_f16_strided_kernel = kv_update_library
+            .get_function("kv_update_batched_f16_strided", None)
+            .map_err(|e| {
+                format!(
+                    "Failed to get KV update batched F16 strided kernel: {}",
+                    e
+                )
+            })?;
+        let kv_update_batched_f16_strided_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &kv_update_batched_f16_strided_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create KV update batched F16 strided pipeline: {}",
+                    e
+                )
+            })?;
+
         Ok(Self {
             device,
             queue,
@@ -1938,6 +2086,10 @@ impl MetalContext {
             gelu_4_pipeline,
             gelu_quick_pipeline,
             gelu_quick_4_pipeline,
+            // F32 <-> F16 conversion
+            f32_to_f16_pipeline,
+            f16_to_f32_pipeline,
+            f32_to_f16_strided_pipeline,
             // Fused kernels
             fused_swiglu_pipeline,
             fused_swiglu_4_pipeline,
@@ -1955,6 +2107,9 @@ impl MetalContext {
             flash_decode_f16_80_pipeline,
             flash_decode_f16_128_pipeline,
             flash_decode_f16_160_pipeline,
+            // Flash Prefill
+            flash_prefill_f16_pipeline,
+            flash_prefill_batch_pipeline,
             // Quantize
             quantize_library,
             quantize_f16_pipeline,
@@ -1979,6 +2134,9 @@ impl MetalContext {
             kv_update_k_pipeline,
             kv_update_k_f16_pipeline,
             kv_update_v_pipeline,
+            // Batched KV update
+            kv_update_batched_f16_pipeline,
+            kv_update_batched_f16_strided_pipeline,
             // MV buffers
             mv_weights_buffer: RefCell::new(None),
             mv_input_buffer: RefCell::new(None),
@@ -8130,6 +8288,116 @@ impl MetalContext {
     }
 
     // ========================================================================
+    // Type Conversion
+    // ========================================================================
+
+    /// F32 to F16 conversion (encode into shared encoder)
+    pub fn f32_to_f16_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        src_buffer: &Buffer,
+        dst_buffer: &Buffer,
+        total_size: usize,
+    ) {
+        encoder.set_compute_pipeline_state(&self.f32_to_f16_pipeline);
+        encoder.set_buffer(0, Some(src_buffer), 0);
+        encoder.set_buffer(1, Some(dst_buffer), 0);
+        let size_u32 = total_size as u32;
+        encoder.set_bytes(
+            2,
+            4,
+            &size_u32 as *const u32 as *const std::ffi::c_void,
+        );
+
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: (total_size as u64 + 255) / 256,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// F16 to F32 conversion (encode into shared encoder)
+    pub fn f16_to_f32_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        src_buffer: &Buffer,
+        dst_buffer: &Buffer,
+        total_size: usize,
+    ) {
+        encoder.set_compute_pipeline_state(&self.f16_to_f32_pipeline);
+        encoder.set_buffer(0, Some(src_buffer), 0);
+        encoder.set_buffer(1, Some(dst_buffer), 0);
+        let size_u32 = total_size as u32;
+        encoder.set_bytes(
+            2,
+            4,
+            &size_u32 as *const u32 as *const std::ffi::c_void,
+        );
+
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: (total_size as u64 + 255) / 256,
+            height: 1,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// F32 to F16 with strided input (for non-contiguous data)
+    pub fn f32_to_f16_strided_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        src_buffer: &Buffer,
+        dst_buffer: &Buffer,
+        src_stride: usize,
+        dst_stride: usize,
+        rows: usize,
+        cols: usize,
+    ) {
+        encoder.set_compute_pipeline_state(&self.f32_to_f16_strided_pipeline);
+        encoder.set_buffer(0, Some(src_buffer), 0);
+        encoder.set_buffer(1, Some(dst_buffer), 0);
+        let src_stride_u32 = src_stride as u32;
+        let dst_stride_u32 = dst_stride as u32;
+        let rows_u32 = rows as u32;
+        let cols_u32 = cols as u32;
+        encoder.set_bytes(
+            2,
+            4,
+            &src_stride_u32 as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            3,
+            4,
+            &dst_stride_u32 as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            4,
+            4,
+            &rows_u32 as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            5,
+            4,
+            &cols_u32 as *const u32 as *const std::ffi::c_void,
+        );
+
+        // 2D dispatch: [cols, rows]
+        let thread_group_size = MTLSize { width: 16, height: 16, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: ((cols as u64 + 15) / 16),
+            height: ((rows as u64 + 15) / 16),
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    // ========================================================================
     // Fused Kernels
     // ========================================================================
 
@@ -8545,6 +8813,123 @@ impl MetalContext {
             width: ((total_elements as u64 + 255) / 256),
             height: 1,
             depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Batched KV cache update for prefill (encode into shared encoder)
+    /// Update multiple positions at once from batched input
+    /// src: [batch, n_kv_heads, head_dim] F16
+    /// dst: [n_kv_heads, max_seq, head_dim] F16 KV cache
+    pub fn kv_update_batched_f16_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        src_buffer: &Buffer,
+        dst_buffer: &Buffer,
+        start_pos: usize,
+        max_seq: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        batch: usize,
+    ) {
+        encoder
+            .set_compute_pipeline_state(&self.kv_update_batched_f16_pipeline);
+        encoder.set_buffer(0, Some(src_buffer), 0);
+        encoder.set_buffer(1, Some(dst_buffer), 0);
+        encoder.set_bytes(
+            2,
+            4,
+            &(start_pos as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            3,
+            4,
+            &(max_seq as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            4,
+            4,
+            &(n_kv_heads as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            5,
+            4,
+            &(head_dim as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            6,
+            4,
+            &(batch as u32) as *const u32 as *const std::ffi::c_void,
+        );
+
+        // 3D dispatch: [head_dim, n_kv_heads, batch]
+        let thread_group_size = MTLSize { width: 64, height: 4, depth: 4 };
+        let thread_group_count = MTLSize {
+            width: ((head_dim as u64 + 63) / 64),
+            height: ((n_kv_heads as u64 + 3) / 4),
+            depth: ((batch as u64 + 3) / 4),
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Batched KV cache update with strided input (encode into shared encoder)
+    /// Used when input is not contiguous (e.g., from GEMM output)
+    pub fn kv_update_batched_f16_strided_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        src_buffer: &Buffer,
+        dst_buffer: &Buffer,
+        start_pos: usize,
+        max_seq: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        batch: usize,
+        src_stride: usize,
+    ) {
+        encoder.set_compute_pipeline_state(
+            &self.kv_update_batched_f16_strided_pipeline,
+        );
+        encoder.set_buffer(0, Some(src_buffer), 0);
+        encoder.set_buffer(1, Some(dst_buffer), 0);
+        encoder.set_bytes(
+            2,
+            4,
+            &(start_pos as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            3,
+            4,
+            &(max_seq as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            4,
+            4,
+            &(n_kv_heads as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            5,
+            4,
+            &(head_dim as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            6,
+            4,
+            &(batch as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            7,
+            4,
+            &(src_stride as u32) as *const u32 as *const std::ffi::c_void,
+        );
+
+        // 3D dispatch: [head_dim, n_kv_heads, batch]
+        let thread_group_size = MTLSize { width: 64, height: 4, depth: 4 };
+        let thread_group_count = MTLSize {
+            width: ((head_dim as u64 + 63) / 64),
+            height: ((n_kv_heads as u64 + 3) / 4),
+            depth: ((batch as u64 + 3) / 4),
         };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
@@ -10776,5 +11161,315 @@ impl MetalContext {
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         // Do NOT end_encoding() or commit() - let caller handle that
+    }
+
+    /// Flash Prefill for batched queries (encode into shared encoder)
+    /// Process N queries in parallel, each query attending to seq_k KV cache entries
+    /// q: [batch, n_heads, seq_q, head_dim]
+    /// k: [batch, n_kv_heads, seq_k, head_dim]
+    /// v: [batch, n_kv_heads, seq_k, head_dim]
+    /// output: [batch, n_heads, seq_q, head_dim]
+    /// start_pos: Starting position in KV cache for causal mask
+    pub fn flash_prefill_f16_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        batch: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        seq_q: usize,
+        seq_k: usize,
+        head_dim: usize,
+        q_buffer: &Buffer,
+        k_buffer: &Buffer,
+        v_buffer: &Buffer,
+        output_buffer: &Buffer,
+        q_stride_b: usize,
+        q_stride_h: usize,
+        q_stride_s: usize,
+        k_stride_b: usize,
+        k_stride_h: usize,
+        k_stride_s: usize,
+        v_stride_b: usize,
+        v_stride_h: usize,
+        v_stride_s: usize,
+        o_stride_b: usize,
+        o_stride_h: usize,
+        o_stride_s: usize,
+        start_pos: usize,
+    ) {
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+
+        #[repr(C)]
+        struct FlashPrefillArgs {
+            batch: u32,
+            heads: u32,
+            seq_q: u32,
+            seq_k: u32,
+            head_dim: u32,
+            scale: f32,
+            q_stride_b: u32,
+            q_stride_h: u32,
+            q_stride_s: u32,
+            k_stride_b: u32,
+            k_stride_h: u32,
+            k_stride_s: u32,
+            v_stride_b: u32,
+            v_stride_h: u32,
+            v_stride_s: u32,
+            o_stride_b: u32,
+            o_stride_h: u32,
+            o_stride_s: u32,
+            start_pos: u32, // For causal mask
+        }
+
+        let args = FlashPrefillArgs {
+            batch: batch as u32,
+            heads: n_heads as u32,
+            seq_q: seq_q as u32,
+            seq_k: seq_k as u32,
+            head_dim: head_dim as u32,
+            scale,
+            q_stride_b: q_stride_b as u32,
+            q_stride_h: q_stride_h as u32,
+            q_stride_s: q_stride_s as u32,
+            k_stride_b: k_stride_b as u32,
+            k_stride_h: k_stride_h as u32,
+            k_stride_s: k_stride_s as u32,
+            v_stride_b: v_stride_b as u32,
+            v_stride_h: v_stride_h as u32,
+            v_stride_s: v_stride_s as u32,
+            o_stride_b: o_stride_b as u32,
+            o_stride_h: o_stride_h as u32,
+            o_stride_s: o_stride_s as u32,
+            start_pos: start_pos as u32,
+        };
+
+        encoder.set_compute_pipeline_state(&self.flash_prefill_f16_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<FlashPrefillArgs>() as u64,
+            &args as *const FlashPrefillArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(q_buffer), 0);
+        encoder.set_buffer(2, Some(k_buffer), 0);
+        encoder.set_buffer(3, Some(v_buffer), 0);
+        encoder.set_buffer(4, Some(output_buffer), 0);
+
+        // Threadgroup: each query position gets one threadgroup
+        // Grid: [seq_q, n_heads, batch]
+        let thread_group_count = MTLSize {
+            width: seq_q as u64,
+            height: n_heads as u64,
+            depth: batch as u64,
+        };
+
+        // Threadgroup size: 128 threads (4 simdgroups)
+        let thread_group_size = MTLSize { width: 128, height: 1, depth: 1 };
+
+        // Shared memory for threadgroup reduction
+        // tg_max: 4 floats, tg_sum: 4 floats, tg_out: 128 * 4 floats
+        let shmem_size = (4 + 4 + 128 * 4) * 4;
+        encoder.set_threadgroup_memory_length(0, shmem_size as u64);
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Batched Flash Prefill (llama.cpp style architecture)
+    /// One threadgroup per Q_PER_TG (8) queries, each processing all KV positions
+    /// This maximizes GPU parallelism by launching more threadgroups
+    pub fn flash_prefill_batch_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        batch: usize,
+        n_heads: usize,
+        seq_q: usize,
+        seq_k: usize,
+        head_dim: usize,
+        q_buffer: &Buffer,
+        k_buffer: &Buffer,
+        v_buffer: &Buffer,
+        output_buffer: &Buffer,
+        q_stride_b: usize,
+        q_stride_h: usize,
+        q_stride_s: usize,
+        k_stride_b: usize,
+        k_stride_h: usize,
+        k_stride_s: usize,
+        v_stride_b: usize,
+        v_stride_h: usize,
+        v_stride_s: usize,
+        o_stride_b: usize,
+        o_stride_h: usize,
+        o_stride_s: usize,
+        start_pos: usize,
+    ) {
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+
+        #[repr(C)]
+        struct FlashPrefillBatchArgs {
+            batch: u32,
+            n_heads: u32,
+            seq_q: u32,
+            seq_k: u32,
+            head_dim: u32,
+            scale: f32,
+            q_stride_b: u32,
+            q_stride_h: u32,
+            q_stride_s: u32,
+            k_stride_b: u32,
+            k_stride_h: u32,
+            k_stride_s: u32,
+            v_stride_b: u32,
+            v_stride_h: u32,
+            v_stride_s: u32,
+            o_stride_b: u32,
+            o_stride_h: u32,
+            o_stride_s: u32,
+            start_pos: u32,
+        }
+
+        let args = FlashPrefillBatchArgs {
+            batch: batch as u32,
+            n_heads: n_heads as u32,
+            seq_q: seq_q as u32,
+            seq_k: seq_k as u32,
+            head_dim: head_dim as u32,
+            scale,
+            q_stride_b: q_stride_b as u32,
+            q_stride_h: q_stride_h as u32,
+            q_stride_s: q_stride_s as u32,
+            k_stride_b: k_stride_b as u32,
+            k_stride_h: k_stride_h as u32,
+            k_stride_s: k_stride_s as u32,
+            v_stride_b: v_stride_b as u32,
+            v_stride_h: v_stride_h as u32,
+            v_stride_s: v_stride_s as u32,
+            o_stride_b: o_stride_b as u32,
+            o_stride_h: o_stride_h as u32,
+            o_stride_s: o_stride_s as u32,
+            start_pos: start_pos as u32,
+        };
+
+        encoder.set_compute_pipeline_state(&self.flash_prefill_batch_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<FlashPrefillBatchArgs>() as u64,
+            &args as *const FlashPrefillBatchArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(q_buffer), 0);
+        encoder.set_buffer(2, Some(k_buffer), 0);
+        encoder.set_buffer(3, Some(v_buffer), 0);
+        encoder.set_buffer(4, Some(output_buffer), 0);
+
+        // Grid: [(seq_q + 7) / 8, n_heads, batch]
+        // Each threadgroup handles 8 query positions
+        const Q_PER_TG: usize = 8;
+        let num_q_blocks = (seq_q + Q_PER_TG - 1) / Q_PER_TG;
+        let thread_group_count = MTLSize {
+            width: num_q_blocks as u64,
+            height: n_heads as u64,
+            depth: batch as u64,
+        };
+
+        // Threadgroup size: 128 threads (4 simdgroups × 32 threads)
+        let thread_group_size = MTLSize { width: 128, height: 1, depth: 1 };
+
+        // Shared memory:
+        // sq: 8 * 128 = 1024 half (2048 bytes)
+        // so: 8 * 128 = 1024 half (2048 bytes)
+        // ss: 8 * 64 = 512 float (2048 bytes)
+        let shmem_size = 2048 + 2048 + 2048;
+        encoder.set_threadgroup_memory_length(0, shmem_size as u64);
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    // ========================================================================
+    // GEMM (Matrix-Matrix Multiplication) for Batched Prefill
+    // ========================================================================
+
+    /// Q5_K x F16 Matrix-Matrix multiplication (encode into shared encoder)
+    /// weights: [M, K] quantized as Q5_K (row-major)
+    /// input: [N, K] as F16 (transposed - batch_size rows, hidden_size cols)
+    /// output: [M, N] as F32
+    pub fn mul_mm_q5_k_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize, // output rows (hidden_size)
+        n: usize, // output cols (batch_size)
+        k: usize, // reduction dimension (hidden_size)
+    ) {
+        // Q5_K: 256 elements per block
+        let nb = k / 256;
+        let nb01 = (nb * std::mem::size_of::<BlockQ5K>()) as u64;
+
+        #[repr(C)]
+        struct MulMmArgs {
+            ne00: i32, // K
+            ne02: i32, // batch for weights (1)
+            nb01: u64, // row stride for weights
+            nb02: u64, // batch stride for weights
+            nb03: u64, // batch3 stride for weights
+            ne12: i32, // batch for input (1)
+            nb10: u64, // element stride for input
+            nb11: u64, // row stride for input
+            nb12: u64, // batch stride for input
+            nb13: u64, // batch3 stride for input
+            ne0: i32,  // M
+            ne1: i32,  // N
+            r2: i16,   // broadcast ratio
+            r3: i16,   // broadcast ratio
+        }
+
+        // Input is [N, K] in row-major order:
+        // - nb10: stride between elements in a row = 2 (size of F16)
+        // - nb11: stride between rows = K * 2
+        let args = MulMmArgs {
+            ne00: k as i32,
+            ne02: 1,
+            nb01,
+            nb02: 0,
+            nb03: 0,
+            ne12: 1,
+            nb10: 2, // Stride between elements in a row (F16 = 2 bytes)
+            nb11: (k * 2) as u64, // Stride between rows = K * sizeof(F16)
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: n as i32,
+            r2: 1,
+            r3: 1,
+        };
+
+        encoder.set_compute_pipeline_state(&self.gemm_template_q5_k_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<MulMmArgs>() as u64,
+            &args as *const MulMmArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(weights_buffer), 0);
+        encoder.set_buffer(2, Some(input_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+
+        // Threadgroup configuration from mul_mm.metal:
+        // NR0 = 64, NR1 = 32
+        // Grid: [ceil(N/32), ceil(M/64), batch]
+        let thread_group_count = MTLSize {
+            width: ((n + 31) / 32) as u64,
+            height: ((m + 63) / 64) as u64,
+            depth: 1,
+        };
+
+        // Threadgroup size: 2 simdgroups = 64 threads (from template)
+        let thread_group_size = MTLSize { width: 32, height: 2, depth: 1 };
+
+        // Shared memory for simdgroup matrix operations
+        // sa: 4096 bytes, sb: 4096 bytes = 8192 total
+        encoder.set_threadgroup_memory_length(0, 8192);
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     }
 }

@@ -615,8 +615,10 @@ kernel void kernel_mul_mm(
         }
     }
 
-    if (!FC_mul_mm_bc_out || (r0 + NR0 <= args.ne0 && r1 + NR1 <= args.ne1)) {
+    if (FC_mul_mm_bc_out || (r0 + NR0 <= args.ne0 && r1 + NR1 <= args.ne1)) {
         // Full tile: write directly to device memory
+        // FC_mul_mm_bc_out = true means no bounds check needed (broadcast case)
+        // Otherwise check if tile dimensions fit within matrix dimensions
         device float * C = (device float *) dst +
             (r0 + 32*(sgitg &  1)) +
             (r1 + 16*(sgitg >> 1)) * args.ne0 + im*args.ne1*args.ne0;

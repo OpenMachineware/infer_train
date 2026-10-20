@@ -2748,6 +2748,41 @@ impl LlamaModel {
         Some(logits)
     }
 
+    /// Batched embedding lookup - returns [batch, hidden_size] on GPU
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn embedding_lookup_batched_gpu(
+        &self,
+        tokens: &[u32],
+        device: &metal::DeviceRef,
+    ) -> Option<(std::rc::Rc<Buffer>, usize)> {
+        if tokens.is_empty() || self.tok_embeddings.is_none() {
+            return None;
+        }
+
+        let embed = self.tok_embeddings.as_ref()?;
+        let hidden_size = self.config.hidden_size;
+        let dtype = embed.dtype;
+        let batch = tokens.len();
+
+        // Dequantize all token embeddings to F32
+        let mut all_embeddings = vec![0.0f32; batch * hidden_size];
+
+        for (i, &token) in tokens.iter().enumerate() {
+            let embedding = self.embedding_lookup_impl(token)?;
+            all_embeddings[i * hidden_size..(i + 1) * hidden_size]
+                .copy_from_slice(&embedding);
+        }
+
+        // Create GPU buffer
+        let buffer = std::rc::Rc::new(device.new_buffer_with_data(
+            all_embeddings.as_ptr() as *const std::ffi::c_void,
+            (batch * hidden_size * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        Some((buffer, batch))
+    }
+
     /// Forward one layer with batched encoding
     /// All operations are encoded into the shared encoder for batching
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -3048,6 +3083,396 @@ impl LlamaModel {
         // No commit here - caller handles single commit for all layers
         // WARNING: Multiple layers in same command buffer can cause NaN issues
         // Workaround: Use separate command buffers for each layer
+        Some(final_buffer)
+    }
+
+    /// Forward one layer with batched prefill
+    /// Processes batch tokens in parallel using GEMM instead of GEMV
+    /// input: [batch, hidden_size] F32 on GPU
+    /// Returns: [batch, hidden_size] F32 on GPU
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward_layer_prefill_batched(
+        &self,
+        layer: &LlamaLayer,
+        layer_idx: usize,
+        input_buffer: &std::rc::Rc<Buffer>,
+        batch: usize,
+        kv_cache: &mut crate::inference::KVCacheGPU,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+        forward_pool: &mut crate::buffer::ForwardBufferPool,
+        encoder: &metal::ComputeCommandEncoderRef,
+    ) -> Option<std::rc::Rc<Buffer>> {
+        let hidden_size = self.config.hidden_size;
+        let head_dim = self.config.head_dim;
+        let start_pos = kv_cache.seq_len();
+
+        // Register input buffer
+        let input_buffer = forward_pool.register(input_buffer.clone());
+
+        // Get layer weights
+        let attention_norm = layer.attention_norm.as_ref()?;
+        let wq = layer.wq.as_ref()?;
+        let wk = layer.wk.as_ref()?;
+        let wv = layer.wv.as_ref()?;
+        let wo = layer.wo.as_ref()?;
+        let ffn_norm = layer.ffn_norm.as_ref()?;
+        let w1 = layer.w1.as_ref()?;
+        let w2 = layer.w2.as_ref()?;
+        let w3 = layer.w3.as_ref()?;
+
+        let q_out_size = wq.shape[1];
+        let k_out_size = wk.shape[1];
+        let v_out_size = wv.shape[1];
+        let n_heads = q_out_size / head_dim;
+        let n_kv_heads = k_out_size / head_dim;
+        let intermediate_size = w1.shape[1];
+
+        // ================================================================
+        // Allocate output buffers
+        // ================================================================
+
+        // 1. Attention norm output [batch, hidden_size]
+        let normed_buffer = forward_pool.get(batch * hidden_size * 4);
+
+        // 2. F16 version for GEMM [batch, hidden_size]
+        let normed_f16_buffer = forward_pool.get(batch * hidden_size * 2);
+
+        // 3. QKV outputs [batch, q/k/v_out_size]
+        let q_buffer = forward_pool.get(batch * q_out_size * 4);
+        let k_buffer = forward_pool.get(batch * k_out_size * 4);
+        let v_buffer = forward_pool.get(batch * v_out_size * 4);
+
+        // 4. F16 versions for KV cache
+        let k_f16_buffer = forward_pool.get(batch * k_out_size * 2);
+        let v_f16_buffer = forward_pool.get(batch * v_out_size * 2);
+
+        // 5. RoPE outputs [batch, q/k_out_size]
+        let q_rope_buffer = forward_pool.get(batch * q_out_size * 4);
+        let k_rope_buffer = forward_pool.get(batch * k_out_size * 4);
+
+        // 6. Flash prefill output [batch, q_out_size]
+        let attn_out_buffer = forward_pool.get(batch * q_out_size * 4);
+
+        // 7. F16 for output projection
+        let attn_out_f16_buffer = forward_pool.get(batch * q_out_size * 2);
+
+        // 8. Output projection [batch, hidden_size]
+        let attn_proj_buffer = forward_pool.get(batch * hidden_size * 4);
+
+        // 9. Residual add [batch, hidden_size]
+        let residual_buffer = forward_pool.get(batch * hidden_size * 4);
+
+        // 10. FFN norm [batch, hidden_size]
+        let ffn_normed_buffer = forward_pool.get(batch * hidden_size * 4);
+        let ffn_normed_f16_buffer = forward_pool.get(batch * hidden_size * 2);
+
+        // 11. FFN intermediate [batch, intermediate_size]
+        let gate_buffer = forward_pool.get(batch * intermediate_size * 4);
+        let up_buffer = forward_pool.get(batch * intermediate_size * 4);
+        let gate_f16_buffer = forward_pool.get(batch * intermediate_size * 2);
+        let up_f16_buffer = forward_pool.get(batch * intermediate_size * 2);
+
+        // 12. Fused SwiGLU output
+        let hidden_ffn_buffer = forward_pool.get(batch * intermediate_size * 4);
+
+        // 13. FFN output [batch, hidden_size]
+        let ffn_out_f16_buffer = forward_pool.get(batch * hidden_size * 2);
+        let ffn_out_buffer = forward_pool.get(batch * hidden_size * 4);
+
+        // 14. Final output [batch, hidden_size]
+        let final_buffer = forward_pool.get(batch * hidden_size * 4);
+
+        // ================================================================
+        // Encode operations
+        // ================================================================
+
+        // 1. Batched RMSNorm
+        let norm_weight_buffer = gpu_ctx.get_or_create_buffer(attention_norm);
+        gpu_ctx.rms_norm_encode(
+            encoder,
+            &input_buffer,
+            &norm_weight_buffer,
+            &normed_buffer,
+            batch,
+            hidden_size,
+            1e-5,
+        );
+
+        // 2. F32->F16 conversion for GEMM
+        gpu_ctx.f32_to_f16_encode(
+            encoder,
+            &normed_buffer,
+            &normed_f16_buffer,
+            batch * hidden_size,
+        );
+
+        // 3. QKV projections using GEMM
+        let wq_buffer = gpu_ctx.get_or_create_buffer(wq);
+        let wk_buffer = gpu_ctx.get_or_create_buffer(wk);
+        let wv_buffer = gpu_ctx.get_or_create_buffer(wv);
+
+        gpu_ctx.mul_mm_q5_k_encode(
+            encoder,
+            &wq_buffer,
+            &normed_f16_buffer,
+            &q_buffer,
+            q_out_size,
+            batch,
+            hidden_size,
+        );
+        gpu_ctx.mul_mm_q5_k_encode(
+            encoder,
+            &wk_buffer,
+            &normed_f16_buffer,
+            &k_buffer,
+            k_out_size,
+            batch,
+            hidden_size,
+        );
+        gpu_ctx.mul_mm_q5_k_encode(
+            encoder,
+            &wv_buffer,
+            &normed_f16_buffer,
+            &v_buffer,
+            v_out_size,
+            batch,
+            hidden_size,
+        );
+
+        // 4. F32->F16 for KV cache
+        gpu_ctx.f32_to_f16_encode(
+            encoder,
+            &k_buffer,
+            &k_f16_buffer,
+            batch * k_out_size,
+        );
+        gpu_ctx.f32_to_f16_encode(
+            encoder,
+            &v_buffer,
+            &v_f16_buffer,
+            batch * v_out_size,
+        );
+
+        // 5. RoPE for each position
+        let positions: Vec<i32> =
+            (start_pos as i32..(start_pos + batch) as i32).collect();
+        gpu_ctx.rope_neox_encode(
+            encoder,
+            &q_buffer,
+            &positions,
+            batch,
+            n_heads,
+            head_dim,
+            10000.0,
+            1.0,
+            &q_rope_buffer,
+        );
+        gpu_ctx.rope_neox_encode(
+            encoder,
+            &k_f16_buffer,
+            &positions,
+            batch,
+            n_kv_heads,
+            head_dim,
+            10000.0,
+            1.0,
+            &k_rope_buffer,
+        );
+
+        // 6. Update KV cache (batched)
+        let k_cache = kv_cache.k_buffer(layer_idx);
+        let v_cache = kv_cache.v_buffer(layer_idx);
+        let max_seq = kv_cache.max_seq();
+
+        gpu_ctx.kv_update_batched_f16_encode(
+            encoder,
+            &k_rope_buffer,
+            k_cache,
+            start_pos,
+            max_seq,
+            n_kv_heads,
+            head_dim,
+            batch,
+        );
+        gpu_ctx.kv_update_batched_f16_encode(
+            encoder,
+            &v_f16_buffer,
+            v_cache,
+            start_pos,
+            max_seq,
+            n_kv_heads,
+            head_dim,
+            batch,
+        );
+
+        // 7. Flash Prefill attention
+        // Q: [batch, n_heads, head_dim], F32
+        // K, V: from KV cache [n_kv_heads, max_seq, head_dim], F16
+        let seq_len = start_pos + batch;
+
+        // Q layout: [batch, n_heads, head_dim]
+        // Strides: batch stride = n_heads * head_dim, head stride = head_dim, seq stride = 1
+        let q_stride_b = n_heads * head_dim;
+        let q_stride_h = head_dim;
+        let q_stride_s = 1;
+
+        // K/V cache layout: [n_kv_heads, max_seq, head_dim]
+        // Strides: head stride = max_seq * head_dim, seq stride = head_dim
+        // No batch stride (shared across batch)
+        let kv_stride_h = max_seq * head_dim;
+        let kv_stride_s = head_dim;
+
+        // For single-sequence prefill: batch=1, seq_q=number of tokens
+        // The kernel expects batch to be the number of independent sequences,
+        // not the number of tokens in a single sequence.
+        gpu_ctx.flash_prefill_batch_encode(
+            encoder,
+            1, // batch = 1 (single sequence)
+            n_heads,
+            batch,   // seq_q = number of tokens to process
+            seq_len, // seq_k = total sequence length
+            head_dim,
+            &q_rope_buffer,
+            k_cache,
+            v_cache,
+            &attn_out_buffer,
+            q_stride_b,
+            q_stride_h,
+            q_stride_s,
+            0, // k_stride_b (shared KV cache, no batch dimension)
+            kv_stride_h,
+            kv_stride_s,
+            0, // v_stride_b (shared KV cache)
+            kv_stride_h,
+            kv_stride_s,
+            q_stride_b, // o_stride_b (same as Q)
+            q_stride_h, // o_stride_h
+            q_stride_s, // o_stride_s
+            start_pos,  // start_pos for causal mask
+        );
+
+        // 8. F32->F16 for output projection
+        gpu_ctx.f32_to_f16_encode(
+            encoder,
+            &attn_out_buffer,
+            &attn_out_f16_buffer,
+            batch * q_out_size,
+        );
+
+        // 9. Output projection (GEMM)
+        let wo_buffer = gpu_ctx.get_or_create_buffer(wo);
+        gpu_ctx.mul_mm_q5_k_encode(
+            encoder,
+            &wo_buffer,
+            &attn_out_f16_buffer,
+            &attn_proj_buffer,
+            hidden_size,
+            batch,
+            q_out_size,
+        );
+
+        // 10. Residual add (batched)
+        gpu_ctx.add_encode(
+            encoder,
+            &input_buffer,
+            &attn_proj_buffer,
+            &residual_buffer,
+            batch * hidden_size,
+        );
+
+        // 11. FFN norm
+        let ffn_norm_buffer = gpu_ctx.get_or_create_buffer(ffn_norm);
+        gpu_ctx.rms_norm_encode(
+            encoder,
+            &residual_buffer,
+            &ffn_norm_buffer,
+            &ffn_normed_buffer,
+            batch,
+            hidden_size,
+            1e-5,
+        );
+
+        // 12. F32->F16 for FFN GEMM
+        gpu_ctx.f32_to_f16_encode(
+            encoder,
+            &ffn_normed_buffer,
+            &ffn_normed_f16_buffer,
+            batch * hidden_size,
+        );
+
+        // 13. FFN projections (Gate + Up)
+        let w1_buffer = gpu_ctx.get_or_create_buffer(w1);
+        let w3_buffer = gpu_ctx.get_or_create_buffer(w3);
+
+        gpu_ctx.mul_mm_q5_k_encode(
+            encoder,
+            &w1_buffer,
+            &ffn_normed_f16_buffer,
+            &gate_buffer,
+            intermediate_size,
+            batch,
+            hidden_size,
+        );
+        gpu_ctx.mul_mm_q5_k_encode(
+            encoder,
+            &w3_buffer,
+            &ffn_normed_f16_buffer,
+            &up_buffer,
+            intermediate_size,
+            batch,
+            hidden_size,
+        );
+
+        // 14. Fused SwiGLU: SiLU(gate) * up
+        gpu_ctx.f32_to_f16_encode(
+            encoder,
+            &gate_buffer,
+            &gate_f16_buffer,
+            batch * intermediate_size,
+        );
+        gpu_ctx.f32_to_f16_encode(
+            encoder,
+            &up_buffer,
+            &up_f16_buffer,
+            batch * intermediate_size,
+        );
+        gpu_ctx.fused_swiglu_encode(
+            encoder,
+            &gate_f16_buffer,
+            &up_f16_buffer,
+            &hidden_ffn_buffer,
+            batch * intermediate_size,
+        );
+
+        // 15. F32->F16 for down projection
+        gpu_ctx.f32_to_f16_encode(
+            encoder,
+            &hidden_ffn_buffer,
+            &ffn_out_f16_buffer,
+            batch * intermediate_size,
+        );
+
+        // 16. Down projection (GEMM)
+        let w2_buffer = gpu_ctx.get_or_create_buffer(w2);
+        gpu_ctx.mul_mm_q5_k_encode(
+            encoder,
+            &w2_buffer,
+            &ffn_out_f16_buffer,
+            &ffn_out_buffer,
+            hidden_size,
+            batch,
+            intermediate_size,
+        );
+
+        // 17. Final residual add
+        gpu_ctx.add_encode(
+            encoder,
+            &residual_buffer,
+            &ffn_out_buffer,
+            &final_buffer,
+            batch * hidden_size,
+        );
+
         Some(final_buffer)
     }
 
