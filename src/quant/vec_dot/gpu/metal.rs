@@ -180,6 +180,8 @@ pub struct MetalContext {
     flash_decode_f16_80_pipeline: ComputePipelineState,
     flash_decode_f16_128_pipeline: ComputePipelineState,
     flash_decode_f16_160_pipeline: ComputePipelineState,
+    // MMA-based decode (experimental, for performance comparison)
+    flash_decode_mma_pipeline: ComputePipelineState,
     // Flash Prefill (for batched prefill)
     flash_prefill_f16_pipeline: ComputePipelineState,
     // Batched flash prefill (llama.cpp style)
@@ -379,6 +381,7 @@ impl Clone for MetalContext {
             flash_decode_f16_160_pipeline: self
                 .flash_decode_f16_160_pipeline
                 .clone(),
+            flash_decode_mma_pipeline: self.flash_decode_mma_pipeline.clone(),
             flash_prefill_f16_pipeline: self.flash_prefill_f16_pipeline.clone(),
             flash_prefill_batch_pipeline: self
                 .flash_prefill_batch_pipeline
@@ -777,6 +780,15 @@ impl MetalContext {
             .new_library_with_source(flash_attn_source, &compile_options)
             .map_err(|e| {
                 format!("Failed to compile flash_attn library: {}", e)
+            })?;
+
+        // Compile Flash Attention MMA library (experimental)
+        let flash_attn_mma_source =
+            include_str!("../../../ops/metal/attention/flash_decode_mma.metal");
+        let flash_attn_mma_library = device
+            .new_library_with_source(flash_attn_mma_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile flash_attn_mma library: {}", e)
             })?;
 
         // Compile Flash Prefill library (for batched attention)
@@ -1710,6 +1722,18 @@ impl MetalContext {
                 )
             })?;
 
+        // Create Flash Attention MMA pipeline (experimental)
+        let flash_decode_mma_kernel = flash_attn_mma_library
+            .get_function("flash_decode_mma_f16", None)
+            .map_err(|e| {
+                format!("Failed to get flash_decode_mma_f16 kernel: {}", e)
+            })?;
+        let flash_decode_mma_pipeline = device
+            .new_compute_pipeline_state_with_function(&flash_decode_mma_kernel)
+            .map_err(|e| {
+                format!("Failed to create flash_decode_mma pipeline: {}", e)
+            })?;
+
         // Create Flash Prefill pipeline
         let flash_prefill_f16_kernel = flash_prefill_library
             .get_function("flash_prefill_attention_f16", None)
@@ -2119,6 +2143,7 @@ impl MetalContext {
             flash_decode_f16_80_pipeline,
             flash_decode_f16_128_pipeline,
             flash_decode_f16_160_pipeline,
+            flash_decode_mma_pipeline,
             // Flash Prefill
             flash_prefill_f16_pipeline,
             flash_prefill_batch_pipeline,
