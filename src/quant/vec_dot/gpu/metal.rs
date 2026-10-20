@@ -11269,10 +11269,11 @@ impl MetalContext {
         encoder.set_buffer(5, Some(v_buffer), 0);
         encoder.set_buffer(6, Some(output_buffer), 0);
 
-        // 1 threadgroup per head (simplified version)
+        // 4 heads per threadgroup (MMA version)
+        let n_head_groups = (n_heads + 3) / 4;
         let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
         let thread_group_count =
-            MTLSize { width: n_heads as u64, height: 1, depth: 1 };
+            MTLSize { width: n_head_groups as u64, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     }
