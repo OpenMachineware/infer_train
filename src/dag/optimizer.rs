@@ -592,20 +592,113 @@ impl DagOptimizer {
             return;
         }
 
+        // Build a map: removed_node_id -> output_tensor_ids it produces
+        let mut removed_outputs: std::collections::HashMap<usize, Vec<usize>> =
+            std::collections::HashMap::new();
+        for &node_id in &nodes_to_remove {
+            if let Some(node) = dag.nodes.get(node_id) {
+                let outputs = Self::get_output_tensors(&node.op);
+                if !outputs.is_empty() {
+                    removed_outputs.insert(node_id, outputs);
+                }
+            }
+        }
+
+        // Build a map: output_tensor_id -> new_node_id that produces it
+        let mut output_to_new_node: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
+        for node in &nodes_to_add {
+            let outputs = Self::get_output_tensors(&node.op);
+            for &output_id in &outputs {
+                output_to_new_node.insert(output_id, node.id);
+            }
+        }
+
         // Mark nodes for removal by replacing with NoOp
-        // Keep dependencies intact to preserve topological ordering
-        for node_id in nodes_to_remove {
-            if let Some(node) = dag.nodes.get_mut(node_id) {
+        for node_id in &nodes_to_remove {
+            if let Some(node) = dag.nodes.get_mut(*node_id) {
                 node.op = Operation::NoOp;
-                // Don't clear dependencies - they're needed for topological sort
             }
         }
 
         // Add new fused nodes
         for mut node in nodes_to_add {
-            // Assign proper ID
             node.id = dag.nodes.len();
             dag.nodes.push(node);
+        }
+
+        // Update dependencies: find nodes that depend on removed nodes
+        // and connect them to the new fused node that produces the same output
+        for node in dag.nodes.iter_mut() {
+            if nodes_to_remove.contains(&node.id) {
+                continue;
+            }
+
+            // For each dependency that's a removed node
+            let mut new_deps = Vec::new();
+            let mut deps_to_remove = Vec::new();
+
+            for &dep in &node.dependencies {
+                if nodes_to_remove.contains(&dep) {
+                    deps_to_remove.push(dep);
+
+                    // Find what output tensors the removed node produced
+                    if let Some(outputs) = removed_outputs.get(&dep) {
+                        // Find which new fused node produces these outputs
+                        for &output_id in outputs {
+                            if let Some(&new_node_id) =
+                                output_to_new_node.get(&output_id)
+                            {
+                                if !new_deps.contains(&new_node_id) {
+                                    new_deps.push(new_node_id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Update dependencies
+            node.dependencies.retain(|dep| !deps_to_remove.contains(dep));
+            for new_dep in new_deps {
+                if !node.dependencies.contains(&new_dep) {
+                    node.dependencies.push(new_dep);
+                }
+            }
+        }
+    }
+
+    /// Get output tensor IDs from an operation
+    fn get_output_tensors(op: &Operation) -> Vec<usize> {
+        match op {
+            Operation::EmbeddingLookup { output, .. } => vec![*output],
+            Operation::RmsNorm { output, .. } => vec![*output],
+            Operation::Gemv { output, .. } => vec![*output],
+            Operation::FusedQKV { output_q, output_k, output_v, .. } => {
+                vec![*output_q, *output_k, *output_v]
+            }
+            Operation::FusedGateUp { output_gate, output_up, .. } => {
+                vec![*output_gate, *output_up]
+            }
+            Operation::RoPE { output, .. } => vec![*output],
+            Operation::FlashAttention { output, .. } => vec![*output],
+            Operation::KVCacheUpdate { .. } => vec![],
+            Operation::SiLU { output, .. } => vec![*output],
+            Operation::Mul { output, .. } => vec![*output],
+            Operation::Add { output, .. } => vec![*output],
+            Operation::FusedSwiGLU { output, .. } => vec![*output],
+            Operation::FusedNormLinear { output, .. } => vec![*output],
+            Operation::FusedAddNorm { output, .. } => vec![*output],
+            Operation::FusedGemvAdd { output, .. } => vec![*output],
+            Operation::ExpertRouting {
+                selected_experts,
+                routing_weights,
+                ..
+            } => {
+                vec![*selected_experts, *routing_weights]
+            }
+            Operation::ExpertCompute { output, .. } => vec![*output],
+            Operation::NoOp => vec![],
         }
     }
 }

@@ -133,16 +133,26 @@ impl DagExecutor {
             use_mma_v2,
         };
 
-        // Track layer boundaries for committing command buffers
-        // Each layer's FlashAttention has a unique layer_idx
-        // Commit after completing each layer to avoid NaN issues
+        // EXPERIMENT: Per-layer CB split WITHOUT wait
+        // Allows GPU to overlap execution between layers
+        // Use unretained references for lower dispatch overhead
         let mut last_layer_idx: Option<usize> = None;
-        let mut command_buffer = queue.new_command_buffer();
+        let mut command_buffer =
+            queue.new_command_buffer_with_unretained_references();
         let mut encoder = command_buffer.new_compute_command_encoder();
 
         // Traverse DAG nodes in execution order
         for node_id in &dag.execution_order {
             let node = &dag.dag.nodes[*node_id];
+
+            // Debug: trace all operations
+            if std::env::var("INFER_TRACE_DAG").is_ok() {
+                eprintln!(
+                    "[TRACE] Node {}: {:?}",
+                    node_id,
+                    std::mem::discriminant(&node.op)
+                );
+            }
 
             // Debug: show registry state before executing node 534
             if std::env::var("INFER_DEBUG_DAG").is_ok() && *node_id == 534 {
@@ -178,29 +188,14 @@ impl DagExecutor {
                 && last_layer_idx.is_some()
                 && node_layer_idx != last_layer_idx;
 
-            if std::env::var("INFER_DEBUG_DAG").is_ok() {
-                if node_layer_idx != last_layer_idx {
-                    eprintln!(
-                        "[DAG] Node {} layer_idx: {:?} (last: {:?}), is_new_layer: {}",
-                        node_id, node_layer_idx, last_layer_idx, is_new_layer
-                    );
-                }
-            }
-
-            // If new layer, commit previous command buffer and start new one
+            // Per-layer CB split for better GPU overlap
             if is_new_layer {
-                if std::env::var("INFER_DEBUG_DAG").is_ok() {
-                    eprintln!(
-                        "[DAG] Layer boundary at node {}, committing CB",
-                        node_id
-                    );
-                }
                 encoder.end_encoding();
                 command_buffer.commit();
-                command_buffer.wait_until_completed();
+                // NO wait - let GPU overlap execution
 
-                // Start new command buffer for next layer
-                command_buffer = queue.new_command_buffer();
+                command_buffer =
+                    queue.new_command_buffer_with_unretained_references();
                 encoder = command_buffer.new_compute_command_encoder();
             }
 
@@ -334,6 +329,13 @@ impl DagExecutor {
                 let output_buf =
                     ctx.forward_pool.get(ctx.model.config.hidden_size * 4);
 
+                if std::env::var("INFER_TRACE_DAG").is_ok() {
+                    eprintln!(
+                        "[TRACE] RmsNorm: input={}, output={}",
+                        input, output
+                    );
+                }
+
                 ctx.gpu_ctx.rms_norm_encode(
                     encoder,
                     &input_buf,
@@ -356,6 +358,13 @@ impl DagExecutor {
                 // Get weight tensor dtype from weight_bindings
                 let weight_tensor = ctx.weight_bindings.get(weight)?;
                 let dtype = weight_tensor.dtype;
+
+                if std::env::var("INFER_TRACE_DAG").is_ok() {
+                    eprintln!(
+                        "[TRACE] Gemv: input={}, output={}, out_size={}",
+                        input, output, out_size
+                    );
+                }
 
                 ctx.gpu_ctx.mv_encode(
                     encoder,
@@ -520,6 +529,14 @@ impl DagExecutor {
                 ctx.tensor_registry.insert(*output_q, q_buf);
                 ctx.tensor_registry.insert(*output_k, k_buf);
                 ctx.tensor_registry.insert(*output_v, v_buf);
+
+                if std::env::var("INFER_TRACE_DAG").is_ok() {
+                    eprintln!(
+                        "[TRACE] FusedQKV outputs: q={}, k={}, v={}",
+                        output_q, output_k, output_v
+                    );
+                }
+
                 Some(())
             }
 
@@ -544,6 +561,13 @@ impl DagExecutor {
                 // Get weight dtypes
                 let gate_dtype = ctx.weight_bindings.get(gate_weight)?.dtype;
                 let up_dtype = ctx.weight_bindings.get(up_weight)?.dtype;
+
+                if std::env::var("INFER_TRACE_DAG").is_ok() {
+                    eprintln!(
+                        "[TRACE] FusedGateUp: input={}, outputs={}/{}",
+                        input, output_gate, output_up
+                    );
+                }
 
                 // Run two GEMV operations
                 // TODO: Optimize to single GEMM with concatenated weights
@@ -744,6 +768,13 @@ impl DagExecutor {
                 let output_buf =
                     ctx.forward_pool.get(ctx.model.config.hidden_size * 4);
 
+                if std::env::var("INFER_TRACE_DAG").is_ok() {
+                    eprintln!(
+                        "[TRACE] Add: lhs={}, rhs={}, output={}",
+                        lhs, rhs, output
+                    );
+                }
+
                 ctx.gpu_ctx.add_encode(
                     encoder,
                     &lhs_buf,
@@ -762,6 +793,13 @@ impl DagExecutor {
                 let up_buf = ctx.tensor_registry.get(*up)?;
                 let output_buf =
                     ctx.forward_pool.get(ctx.model.config.hidden_size * 4);
+
+                if std::env::var("INFER_TRACE_DAG").is_ok() {
+                    eprintln!(
+                        "[TRACE] FusedSwiGLU: gate={}, up={}, output={}",
+                        gate, up, output
+                    );
+                }
 
                 ctx.gpu_ctx.fused_swiglu_encode(
                     encoder,
