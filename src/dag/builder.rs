@@ -804,3 +804,133 @@ impl DagBuilder {
         // For now, dependencies are tracked in node.dependencies
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{LlamaConfig, LlamaLayer, LlamaModel, Tensor};
+
+    #[test]
+    fn test_exit_node_is_vocab_projection() {
+        // Create minimal model
+        let config = LlamaConfig {
+            hidden_size: 256,
+            intermediate_size: 512,
+            n_layers: 1,
+            n_heads: 4,
+            n_kv_heads: 4,
+            vocab_size: 1000,
+            norm_eps: 1e-5,
+            head_dim: 64,
+            rope_freq_base: 10000.0,
+        };
+
+        let mut model = LlamaModel::new(config.clone());
+
+        // Add required weights
+        model.tok_embeddings = Some(Tensor {
+            data: vec![0.0f32; config.vocab_size * config.hidden_size],
+            shape: vec![config.vocab_size, config.hidden_size],
+            ..Default::default()
+        });
+
+        model.output = Some(Tensor {
+            data: vec![0.0f32; config.vocab_size * config.hidden_size],
+            shape: vec![config.vocab_size, config.hidden_size],
+            ..Default::default()
+        });
+
+        model.norm = Some(Tensor {
+            data: vec![1.0f32; config.hidden_size],
+            shape: vec![config.hidden_size],
+            ..Default::default()
+        });
+
+        // Add minimal layer weights
+        let mut layer = LlamaLayer::default();
+        layer.attention_norm = Some(Tensor {
+            data: vec![1.0f32; config.hidden_size],
+            shape: vec![config.hidden_size],
+            ..Default::default()
+        });
+        layer.ffn_norm = Some(Tensor {
+            data: vec![1.0f32; config.hidden_size],
+            shape: vec![config.hidden_size],
+            ..Default::default()
+        });
+
+        // Add dummy Q/K/V weights
+        layer.wq = Some(Tensor {
+            data: vec![0.0f32; config.hidden_size * config.hidden_size],
+            shape: vec![config.hidden_size, config.hidden_size],
+            ..Default::default()
+        });
+        layer.wk = Some(Tensor {
+            data: vec![0.0f32; config.hidden_size * config.hidden_size],
+            shape: vec![config.hidden_size, config.hidden_size],
+            ..Default::default()
+        });
+        layer.wv = Some(Tensor {
+            data: vec![0.0f32; config.hidden_size * config.hidden_size],
+            shape: vec![config.hidden_size, config.hidden_size],
+            ..Default::default()
+        });
+        layer.wo = Some(Tensor {
+            data: vec![0.0f32; config.hidden_size * config.hidden_size],
+            shape: vec![config.hidden_size, config.hidden_size],
+            ..Default::default()
+        });
+
+        // Add FFN weights
+        layer.w1 = Some(Tensor {
+            data: vec![0.0f32; config.hidden_size * config.intermediate_size],
+            shape: vec![config.intermediate_size, config.hidden_size],
+            ..Default::default()
+        });
+        layer.w2 = Some(Tensor {
+            data: vec![0.0f32; config.intermediate_size * config.hidden_size],
+            shape: vec![config.hidden_size, config.intermediate_size],
+            ..Default::default()
+        });
+        layer.w3 = Some(Tensor {
+            data: vec![0.0f32; config.hidden_size * config.intermediate_size],
+            shape: vec![config.intermediate_size, config.hidden_size],
+            ..Default::default()
+        });
+
+        model.layers.push(layer);
+
+        // Build DAG
+        let dag = DagBuilder::new().build_model_dag(&model);
+
+        // Verify exit point exists
+        assert!(!dag.exit_points.is_empty(), "DAG should have exit points");
+
+        let exit_node_id = dag.exit_points[0];
+        let exit_node = &dag.nodes[exit_node_id];
+
+        // Exit node should be either Gemv or FusedNormLinear
+        match &exit_node.op {
+            Operation::Gemv { out_size, .. } => {
+                // Verify output size is vocab size
+                assert_eq!(
+                    *out_size, config.vocab_size,
+                    "Exit Gemv output size should be vocab size"
+                );
+            }
+            Operation::FusedNormLinear { out_size, .. } => {
+                // Verify output size is vocab size
+                assert_eq!(
+                    *out_size, config.vocab_size,
+                    "Exit FusedNormLinear output size should be vocab size"
+                );
+            }
+            _ => {
+                panic!(
+                    "Exit node should be Gemv or FusedNormLinear, got {:?}",
+                    std::mem::discriminant(&exit_node.op)
+                );
+            }
+        }
+    }
+}
