@@ -100,6 +100,18 @@ impl DagExecutor {
             metal::MTLResourceOptions::StorageModeShared,
         ));
 
+        // Debug: check embedding for NaN
+        if std::env::var("INFER_TRACE_NAN").is_ok() {
+            let has_nan = hidden.iter().any(|&x| x.is_nan() || x.is_infinite());
+            eprintln!("[NAN] Embedding has NaN/Inf: {}", has_nan);
+            if has_nan {
+                eprintln!(
+                    "[NAN] First 10 embedding values: {:?}",
+                    &hidden[..10]
+                );
+            }
+        }
+
         // Create tensor registry
         let mut tensor_registry = TensorRegistry::new();
 
@@ -276,6 +288,60 @@ impl DagExecutor {
         encoder.end_encoding();
         command_buffer.commit();
         command_buffer.wait_until_completed();
+
+        // Debug: check all tensors for NaN after GPU execution
+        if std::env::var("INFER_TRACE_NAN").is_ok() {
+            let mut first_nan_node: Option<usize> = None;
+
+            for node_id in &dag.execution_order {
+                let node = &dag.dag.nodes[*node_id];
+                let outputs = Self::get_node_outputs(&node.op);
+
+                for output_id in &outputs {
+                    if let Some(buffer) =
+                        exec_ctx.tensor_registry.get(*output_id)
+                    {
+                        let ptr = buffer.contents() as *const f32;
+                        let len = buffer.length() as usize / 4;
+
+                        let has_nan = (0..std::cmp::min(10, len)).any(|i| {
+                            let val = unsafe { *ptr.add(i) };
+                            val.is_nan() || val.is_infinite()
+                        });
+
+                        if has_nan && first_nan_node.is_none() {
+                            first_nan_node = Some(*node_id);
+                            eprintln!(
+                                "[NAN] FIRST NaN at node {} ({:?}) output tensor {}",
+                                node_id,
+                                std::mem::discriminant(&node.op),
+                                output_id
+                            );
+
+                            // Print input tensors
+                            let inputs = Self::get_node_inputs(&node.op);
+                            for input_id in &inputs {
+                                if let Some(buf) =
+                                    exec_ctx.tensor_registry.get(*input_id)
+                                {
+                                    let ptr = buf.contents() as *const f32;
+                                    let len = buf.length() as usize / 4;
+                                    let input_has_nan =
+                                        (0..std::cmp::min(10, len)).any(|i| {
+                                            let val = unsafe { *ptr.add(i) };
+                                            val.is_nan() || val.is_infinite()
+                                        });
+                                    eprintln!(
+                                        "  Input tensor {}: has_nan={}",
+                                        input_id, input_has_nan
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Get output tensor from the exit node
         let exit_node_id = dag.dag.exit_points[0];
@@ -996,5 +1062,82 @@ impl DagExecutor {
     fn get_node_layer_idx(node: &DagNode) -> Option<usize> {
         // Use the node's layer_idx field
         node.layer_idx
+    }
+
+    /// Get output tensor IDs from a DAG node operation
+    fn get_node_outputs(op: &Operation) -> Vec<usize> {
+        match op {
+            Operation::EmbeddingLookup { output, .. } => vec![*output],
+            Operation::RmsNorm { output, .. } => vec![*output],
+            Operation::Gemv { output, .. } => vec![*output],
+            Operation::FusedQKV { output_q, output_k, output_v, .. } => {
+                vec![*output_q, *output_k, *output_v]
+            }
+            Operation::FusedGateUp { output_gate, output_up, .. } => {
+                vec![*output_gate, *output_up]
+            }
+            Operation::RoPE { output, .. } => vec![*output],
+            Operation::FlashAttention { output, .. } => vec![*output],
+            Operation::KVCacheUpdate { .. } => vec![],
+            Operation::SiLU { output, .. } => vec![*output],
+            Operation::Mul { output, .. } => vec![*output],
+            Operation::Add { output, .. } => vec![*output],
+            Operation::FusedSwiGLU { output, .. } => vec![*output],
+            Operation::FusedNormLinear { output, .. } => vec![*output],
+            Operation::FusedAddNorm { output, .. } => vec![*output],
+            Operation::FusedGemvAdd { output, .. } => vec![*output],
+            Operation::ExpertRouting {
+                selected_experts,
+                routing_weights,
+                ..
+            } => {
+                vec![*selected_experts, *routing_weights]
+            }
+            Operation::ExpertCompute { output, .. } => vec![*output],
+            Operation::NoOp => vec![],
+        }
+    }
+
+    /// Get input tensor IDs from a DAG node operation
+    fn get_node_inputs(op: &Operation) -> Vec<usize> {
+        match op {
+            Operation::EmbeddingLookup { .. } => vec![],
+            Operation::RmsNorm { input, weight, .. } => vec![*input, *weight],
+            Operation::Gemv { input, weight, .. } => vec![*input, *weight],
+            Operation::FusedQKV {
+                input, q_weight, k_weight, v_weight, ..
+            } => {
+                vec![*input, *q_weight, *k_weight, *v_weight]
+            }
+            Operation::FusedGateUp {
+                input, gate_weight, up_weight, ..
+            } => {
+                vec![*input, *gate_weight, *up_weight]
+            }
+            Operation::RoPE { input, .. } => vec![*input],
+            Operation::FlashAttention { q, .. } => vec![*q],
+            Operation::KVCacheUpdate { input, .. } => vec![*input],
+            Operation::SiLU { input, .. } => vec![*input],
+            Operation::Mul { lhs, rhs, .. } => vec![*lhs, *rhs],
+            Operation::Add { lhs, rhs, .. } => vec![*lhs, *rhs],
+            Operation::FusedSwiGLU { gate, up, .. } => vec![*gate, *up],
+            Operation::FusedNormLinear {
+                input,
+                norm_weight,
+                linear_weight,
+                ..
+            } => {
+                vec![*input, *norm_weight, *linear_weight]
+            }
+            Operation::FusedAddNorm { lhs, rhs, norm_weight, .. } => {
+                vec![*lhs, *rhs, *norm_weight]
+            }
+            Operation::FusedGemvAdd { input, weight, residual, .. } => {
+                vec![*input, *weight, *residual]
+            }
+            Operation::ExpertRouting { .. } => vec![],
+            Operation::ExpertCompute { .. } => vec![],
+            Operation::NoOp => vec![],
+        }
     }
 }
