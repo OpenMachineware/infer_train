@@ -124,6 +124,17 @@ pub enum Operation {
         epsilon: f32,
         layer_idx: usize,
     },
+    /// FusedGemvAdd: output = (weight @ input) + residual
+    /// Combines GEMV with residual addition (from llama.cpp's MUL_MAT_ADD)
+    FusedGemvAdd {
+        input: usize,    // GEMV input tensor
+        weight: usize,   // GEMV weight tensor
+        residual: usize, // Residual tensor to add
+        output: usize,   // Output tensor
+        out_size: usize, // M (output dimension)
+        in_size: usize,  // K (input dimension)
+        layer_idx: usize,
+    },
 
     /// Placeholder for removed/fused operations
     /// Executor skips these nodes

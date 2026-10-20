@@ -853,6 +853,51 @@ impl DagExecutor {
                 Some(())
             }
 
+            Operation::FusedGemvAdd {
+                input,
+                weight,
+                residual,
+                output,
+                out_size,
+                in_size,
+                layer_idx: _,
+            } => {
+                let input_buf = ctx.tensor_registry.get(*input)?;
+                let weight_tensor = ctx.weight_bindings.get(weight)?;
+                let residual_buf = ctx.tensor_registry.get(*residual)?;
+
+                // Output buffer - GEMV result + residual add
+                let output_buf = ctx.forward_pool.get(*out_size * 4);
+
+                // Step 1: Execute GEMV to output buffer
+                ctx.model.gemv_encode(
+                    encoder,
+                    &input_buf,
+                    *in_size,
+                    weight_tensor,
+                    *out_size,
+                    ctx.gpu_ctx,
+                    &output_buf,
+                )?;
+
+                // Step 2: Add residual to output buffer in-place
+                ctx.gpu_ctx.add_encode(
+                    encoder,
+                    &residual_buf,
+                    &output_buf,
+                    &output_buf,
+                    *out_size,
+                );
+
+                ctx.tensor_registry.insert(*output, output_buf);
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "[FusedGemvAdd] input={}, weight={}, residual={}, output={}, out_size={}",
+                    input, weight, residual, output, out_size
+                );
+                Some(())
+            }
+
             Operation::ExpertRouting { .. } => {
                 // MoE - not implemented yet
                 None

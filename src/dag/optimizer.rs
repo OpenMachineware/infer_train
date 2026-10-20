@@ -24,6 +24,8 @@ impl DagOptimizer {
         fused_count += Self::fuse_gate_up_projections(dag);
         fused_count += Self::fuse_silu_mul(dag);
         fused_count += Self::fuse_norm_gemv(dag);
+        // GEMV+Add fusion disabled - needs true fused kernel, not sequential execution
+        // fused_count += Self::fuse_gemv_add(dag);
         // FusedAddNorm disabled - references intermediate tensors that may not exist
         // fused_count += Self::fuse_add_norm(dag);
 
@@ -483,6 +485,98 @@ impl DagOptimizer {
         }
 
         // Apply modifications
+        Self::apply_modifications(dag, nodes_to_remove, nodes_to_add);
+
+        fused_count
+    }
+
+    /// Fuse GEMV + Add → FusedGemvAdd
+    /// Combines GEMV output with residual addition
+    /// Pattern: output = (W @ input) + residual
+    fn fuse_gemv_add(dag: &mut ComputeDag) -> usize {
+        let mut fused_count = 0;
+        let mut nodes_to_remove = Vec::new();
+        let mut nodes_to_add = Vec::new();
+
+        for gemv_node in &dag.nodes {
+            if let Operation::Gemv {
+                input: gemv_input,
+                weight: gemv_weight,
+                output: gemv_output,
+                out_size,
+            } = &gemv_node.op
+            {
+                if nodes_to_remove.contains(&gemv_node.id) {
+                    continue;
+                }
+
+                // Find Add that uses this GEMV output as rhs
+                for add_node in &dag.nodes {
+                    if add_node.id <= gemv_node.id
+                        || nodes_to_remove.contains(&add_node.id)
+                    {
+                        continue;
+                    }
+                    if let Operation::Add {
+                        lhs: residual,
+                        rhs: add_rhs,
+                        output: add_output,
+                    } = &add_node.op
+                    {
+                        if *add_rhs == *gemv_output {
+                            // Found GEMV + Add pattern
+                            nodes_to_remove.push(gemv_node.id);
+                            nodes_to_remove.push(add_node.id);
+
+                            // Get in_size from weight tensor
+                            let in_size = dag
+                                .weight_bindings
+                                .get(gemv_weight)
+                                .map(|t| t.shape[0])
+                                .unwrap_or(0);
+
+                            // Combine dependencies
+                            let mut combined_deps = Vec::new();
+                            for &dep in &gemv_node.dependencies {
+                                if !nodes_to_remove.contains(&dep) {
+                                    combined_deps.push(dep);
+                                }
+                            }
+                            for &dep in &add_node.dependencies {
+                                if !combined_deps.contains(&dep)
+                                    && !nodes_to_remove.contains(&dep)
+                                {
+                                    combined_deps.push(dep);
+                                }
+                            }
+
+                            let layer_idx = gemv_node.layer_idx.unwrap_or(0);
+
+                            let fused_node = DagNode {
+                                id: dag.nodes.len() + nodes_to_add.len(),
+                                op: Operation::FusedGemvAdd {
+                                    input: *gemv_input,
+                                    weight: *gemv_weight,
+                                    residual: *residual,
+                                    output: *add_output,
+                                    out_size: *out_size,
+                                    in_size,
+                                    layer_idx,
+                                },
+                                dependencies: combined_deps,
+                                device_preference: DevicePreference::Gpu,
+                                layer_idx: gemv_node.layer_idx,
+                            };
+
+                            nodes_to_add.push(fused_node);
+                            fused_count += 2;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         Self::apply_modifications(dag, nodes_to_remove, nodes_to_add);
 
         fused_count
