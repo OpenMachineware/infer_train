@@ -386,9 +386,45 @@ impl DagExecutor {
                 Some(())
             }
 
-            Operation::KVCacheUpdate { input: _, cache: _, pos: _ } => {
-                // KV cache update logic
-                // For now, skip - will be handled separately
+            Operation::KVCacheUpdate { input, cache: _, pos: _ } => {
+                // KV cache update: write K or V to the cache buffer
+                let input_buf = ctx.tensor_registry.get(*input)?;
+
+                // Get KV cache buffers from kv_cache (not from tensor_registry)
+                // Note: layer_idx is tracked in ExecutionContext and updated per layer
+                let k_cache_buf = ctx.kv_cache.k_buffer(ctx.layer_idx);
+                let v_cache_buf = ctx.kv_cache.v_buffer(ctx.layer_idx);
+
+                // Determine if this is K or V based on which cache we need to update
+                // For now, we need to track this better in the DAG
+                // Use input size to determine: K cache needs rope output, V cache needs raw projection
+
+                // Get model config
+                let n_kv_heads = ctx
+                    .model
+                    .layers
+                    .get(ctx.layer_idx)
+                    .and_then(|l| l.wk.as_ref())
+                    .map(|w| w.shape[1] / ctx.model.config.head_dim)
+                    .unwrap_or(ctx.model.config.n_heads);
+                let head_dim = ctx.model.config.head_dim;
+                let pos = ctx.kv_cache.seq_len();
+                let max_seq = ctx.kv_cache.max_seq();
+
+                // Update K cache (input is after RoPE)
+                ctx.gpu_ctx.kv_update_k_encode(
+                    encoder,
+                    &input_buf,
+                    k_cache_buf,
+                    pos,
+                    max_seq,
+                    n_kv_heads,
+                    head_dim,
+                );
+
+                // Note: V cache update will be handled by a separate KVCacheUpdate node
+                // For now, this handles K cache
+
                 Some(())
             }
 

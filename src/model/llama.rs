@@ -3051,16 +3051,10 @@ impl LlamaModel {
             &up_buffer,
         )?;
 
-        // SiLU(gate) * up
-        gpu_ctx.silu_encode(
+        // Fused SiLU(gate) * up
+        gpu_ctx.fused_swi_glu_encode(
             encoder,
             &gate_buffer,
-            &silu_buffer,
-            intermediate_size,
-        );
-        gpu_ctx.mul_encode(
-            encoder,
-            &silu_buffer,
             &up_buffer,
             &hidden_ffn_buffer,
             intermediate_size,

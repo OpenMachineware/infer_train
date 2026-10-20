@@ -151,6 +151,7 @@ pub struct MetalContext {
     add_pipeline: ComputePipelineState,
     mul_pipeline: ComputePipelineState,
     silu_pipeline: ComputePipelineState,
+    fused_swi_glu_pipeline: ComputePipelineState,
     silu_4_pipeline: ComputePipelineState,
     gelu_pipeline: ComputePipelineState,
     gelu_4_pipeline: ComputePipelineState,
@@ -326,6 +327,7 @@ impl Clone for MetalContext {
             add_pipeline: self.add_pipeline.clone(),
             mul_pipeline: self.mul_pipeline.clone(),
             silu_pipeline: self.silu_pipeline.clone(),
+            fused_swi_glu_pipeline: self.fused_swi_glu_pipeline.clone(),
             silu_4_pipeline: self.silu_4_pipeline.clone(),
             gelu_pipeline: self.gelu_pipeline.clone(),
             gelu_4_pipeline: self.gelu_4_pipeline.clone(),
@@ -1435,6 +1437,15 @@ impl MetalContext {
             .new_compute_pipeline_state_with_function(&silu_kernel)
             .map_err(|e| format!("Failed to create SiLU pipeline: {}", e))?;
 
+        let fused_swi_glu_kernel = activation_library
+            .get_function("kernel_fused_swi_glu", None)
+            .map_err(|e| format!("Failed to get FusedSwiGLU kernel: {}", e))?;
+        let fused_swi_glu_pipeline = device
+            .new_compute_pipeline_state_with_function(&fused_swi_glu_kernel)
+            .map_err(|e| {
+                format!("Failed to create FusedSwiGLU pipeline: {}", e)
+            })?;
+
         let silu_4_pipeline = silu_pipeline.clone();
 
         let gelu_kernel = activation_library
@@ -2081,6 +2092,7 @@ impl MetalContext {
             add_pipeline,
             mul_pipeline,
             silu_pipeline,
+            fused_swi_glu_pipeline,
             silu_4_pipeline,
             gelu_pipeline,
             gelu_4_pipeline,
@@ -8283,6 +8295,34 @@ impl MetalContext {
         let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
         let thread_group_count =
             MTLSize { width: (n as u64 + 255) / 256, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// FusedSwiGLU: SiLU(gate) * up in single kernel
+    pub fn fused_swi_glu_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        gate_buffer: &Buffer,
+        up_buffer: &Buffer,
+        output_buffer: &Buffer,
+        n: usize,
+    ) {
+        encoder.set_compute_pipeline_state(&self.fused_swi_glu_pipeline);
+        encoder.set_buffer(0, Some(gate_buffer), 0);
+        encoder.set_buffer(1, Some(up_buffer), 0);
+        encoder.set_buffer(2, Some(output_buffer), 0);
+
+        let n_u32 = n as u32;
+        encoder.set_bytes(
+            3,
+            std::mem::size_of::<u32>() as u64,
+            &n_u32 as *const u32 as *const std::ffi::c_void,
+        );
+
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: (n as u64 + 31) / 32, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     }

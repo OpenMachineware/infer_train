@@ -327,3 +327,26 @@ kernel void kernel_f32_to_f16_strided(
 
     dst[dst_idx] = half(src[src_idx]);
 }
+
+// ========== Fused Operations ==========
+
+// Fused SiLU and multiplication: output = SiLU(gate) * up
+// Combines two operations into single kernel for better memory locality
+kernel void kernel_fused_swi_glu(
+    device const float * gate [[buffer(0)]],
+    device const float * up [[buffer(1)]],
+    device float * output [[buffer(2)]],
+    constant uint32_t & n [[buffer(3)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]])
+{
+    const int idx = tgpig.x * 32 + tiisg;
+    if (idx >= (int)n) return;
+
+    // SiLU activation: x * sigmoid(x)
+    float g = gate[idx];
+    float silu = g / (1.0f + exp(-g));
+
+    // Element-wise multiply
+    output[idx] = silu * up[idx];
+}
