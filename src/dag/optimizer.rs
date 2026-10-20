@@ -19,11 +19,12 @@ impl DagOptimizer {
     pub fn optimize(dag: &mut ComputeDag) -> usize {
         let mut fused_count = 0;
 
-        // TEMPORARILY DISABLED: All fusion for debugging
-        // fused_count += Self::fuse_qkv_projections(dag);
-        // fused_count += Self::fuse_gate_up_projections(dag);
-        // fused_count += Self::fuse_silu_mul(dag);
-        // fused_count += Self::fuse_norm_gemv(dag);
+        // Apply fusion patterns
+        fused_count += Self::fuse_qkv_projections(dag);
+        fused_count += Self::fuse_gate_up_projections(dag);
+        fused_count += Self::fuse_silu_mul(dag);
+        fused_count += Self::fuse_norm_gemv(dag);
+        // FusedAddNorm disabled - references intermediate tensors that may not exist
         // fused_count += Self::fuse_add_norm(dag);
 
         fused_count
