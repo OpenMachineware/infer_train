@@ -940,3 +940,8 @@ required-features = ["metal"]
 [[bin]]
 name = "bench-decode-prefill"
 path = "tools/bench_decode_prefill.rs"
+
+[[bin]]
+name = "benchmark-gemv-single"
+path = "tools/benchmark_gemv_single.rs"
+required-features = ["metal"]

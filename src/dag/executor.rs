@@ -201,6 +201,18 @@ impl DagExecutor {
 
             // Execute node
             let result = Self::execute_node(node, &mut exec_ctx, &encoder);
+
+            // Trace exit point execution
+            if std::env::var("INFER_DEBUG_DAG").is_ok()
+                && dag.dag.exit_points.contains(&node_id)
+            {
+                eprintln!(
+                    "[DAG] Exit point node {} executed: success={}",
+                    node_id,
+                    result.is_some()
+                );
+            }
+
             if result.is_none() {
                 if std::env::var("INFER_DEBUG_DAG").is_ok() {
                     eprintln!(
@@ -286,9 +298,27 @@ impl DagExecutor {
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
-        // Get output tensor
-        let output_id = dag.dag.exit_points[0];
-        let output_buffer = exec_ctx.tensor_registry.get(output_id)?;
+        // Get output tensor from the exit node
+        let exit_node_id = dag.dag.exit_points[0];
+        let exit_node = &dag.dag.nodes[exit_node_id];
+
+        // Extract output tensor ID from the exit node's operation
+        let output_tensor_id = match &exit_node.op {
+            Operation::Gemv { output, .. } => *output,
+            Operation::FusedNormLinear { output, .. } => *output,
+            Operation::Add { output, .. } => *output,
+            Operation::RmsNorm { output, .. } => *output,
+            Operation::Mul { output, .. } => *output,
+            _ => {
+                eprintln!(
+                    "[DAG] Exit node has unsupported operation: {:?}",
+                    exit_node.op
+                );
+                return None;
+            }
+        };
+
+        let output_buffer = exec_ctx.tensor_registry.get(output_tensor_id)?;
 
         // Read logits
         let output_tensor = model.output.as_ref()?;
