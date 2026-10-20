@@ -302,6 +302,14 @@ impl DagExecutor {
         let exit_node_id = dag.dag.exit_points[0];
         let exit_node = &dag.dag.nodes[exit_node_id];
 
+        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+            eprintln!(
+                "[DAG] Exit node ID: {}, op: {:?}",
+                exit_node_id,
+                std::mem::discriminant(&exit_node.op)
+            );
+        }
+
         // Extract output tensor ID from the exit node's operation
         let output_tensor_id = match &exit_node.op {
             Operation::Gemv { output, .. } => *output,
@@ -317,6 +325,10 @@ impl DagExecutor {
                 return None;
             }
         };
+
+        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+            eprintln!("[DAG] Output tensor ID: {}", output_tensor_id);
+        }
 
         let output_buffer = exec_ctx.tensor_registry.get(output_tensor_id)?;
 
