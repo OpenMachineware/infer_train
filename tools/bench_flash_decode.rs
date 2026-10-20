@@ -16,10 +16,12 @@ fn main() {
 
         // Create buffers
         let q_size = n_heads * head_dim * std::mem::size_of::<f32>();
-        let kv_size = n_kv_heads * max_seq * head_dim * std::mem::size_of::<half::f16>();
+        let kv_size =
+            n_kv_heads * max_seq * head_dim * std::mem::size_of::<half::f16>();
 
         let q_buffer = std::rc::Rc::new(ctx.device().new_buffer_with_data(
-            vec![0.1f32; n_heads * head_dim].as_ptr() as *const std::ffi::c_void,
+            vec![0.1f32; n_heads * head_dim].as_ptr()
+                as *const std::ffi::c_void,
             q_size as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -43,8 +45,14 @@ fn main() {
         ));
 
         // Benchmark different sequence lengths
-        println!("Flash Decode Kernel Performance (n_heads={}, head_dim={})", n_heads, head_dim);
-        println!("{:10} {:12} {:12} {:12}", "seq_k", "time (us)", "GFLOPS", "GB/s");
+        println!(
+            "Flash Decode Kernel Performance (n_heads={}, head_dim={})",
+            n_heads, head_dim
+        );
+        println!(
+            "{:10} {:12} {:12} {:12}",
+            "seq_k", "time (us)", "GFLOPS", "GB/s"
+        );
 
         let n_iterations = 100;
 
@@ -55,15 +63,8 @@ fn main() {
                 let start = std::time::Instant::now();
                 let _ = ctx
                     .flash_attn_f16_gpu(
-                        1,
-                        n_heads,
-                        n_kv_heads,
-                        head_dim,
-                        seq_k,
-                        max_seq,
-                        &q_buffer,
-                        &k_buffer,
-                        &v_buffer,
+                        1, n_heads, n_kv_heads, head_dim, seq_k, max_seq,
+                        &q_buffer, &k_buffer, &v_buffer,
                     )
                     .expect("Flash attention failed");
                 total_time += start.elapsed();
@@ -73,7 +74,8 @@ fn main() {
             let avg_us = avg_time / 1000.0;
 
             // Compute FLOPS: 2 * head_dim * seq_k * n_heads (Q*K^T + softmax + V accumulation)
-            let flops = 2.0 * head_dim as f64 * seq_k as f64 * n_heads as f64 * 2.0; // x2 for QK and V
+            let flops =
+                2.0 * head_dim as f64 * seq_k as f64 * n_heads as f64 * 2.0; // x2 for QK and V
             let gflops = flops / avg_time;
 
             // Memory bandwidth: Q (n_heads * head_dim * 4) + K (n_kv_heads * seq_k * head_dim * 2) + V (same)
@@ -82,7 +84,10 @@ fn main() {
             let total_bytes = (q_bytes + 2 * kv_bytes) as f64;
             let gbps = total_bytes / avg_time;
 
-            println!("{:10} {:12.2} {:12.2} {:12.2}", seq_k, avg_us, gflops, gbps);
+            println!(
+                "{:10} {:12.2} {:12.2} {:12.2}",
+                seq_k, avg_us, gflops, gbps
+            );
         }
     }
 

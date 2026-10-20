@@ -356,6 +356,35 @@ name = "bench-gemv-dispatch"
 path = "tools/bench_gemv_dispatch.rs"
 
 [[bin]]
+name = "bench-forward"
+path = "tools/bench_forward.rs"
+
+[[bin]]
+name = "bench-flash-decode"
+path = "tools/bench_flash_decode.rs"
+
+[[bin]]
+name = "profile-forward"
+path = "tools/profile_forward.rs"
+
+[[bin]]
+name = "profile-flash-attn"
+path = "tools/profile_flash_attn.rs"
+
+[[bin]]
+name = "test-gemm-prefill"
+path = "tools/test_gemm_prefill.rs"
+
+[[bin]]
+name = "test-flash-prefill-only"
+path = "tools/test_flash_prefill_only.rs"
+
+[[bin]]
+name = "compare-prefill"
+path = "tools/compare_prefill.rs"
+required-features = ["metal"]
+
+[[bin]]
 name = "measure-dispatch-breakdown"
 path = "tools/measure_dispatch_breakdown.rs"
 
@@ -755,6 +784,14 @@ name = "profile-decode"
 path = "tools/profile_decode.rs"
 
 [[bin]]
+name = "profile-decode-breakdown"
+path = "tools/profile_decode_breakdown.rs"
+
+[[bin]]
+name = "profile-decode-kernels"
+path = "tools/profile_decode_kernels.rs"
+
+[[bin]]
 name = "test-nan-issue"
 path = "tools/test_nan_issue.rs"
 
@@ -880,6 +917,17 @@ path = "tools/profile_rope_time.rs"
 [[bin]]
 name = "profile-attention-time"
 path = "tools/profile_attention_time.rs"
+
 [[bin]]
-name = "profile-flash-attn"
-path = "tools/profile_flash_attn.rs"
+name = "bench-batched-prefill"
+path = "tools/bench_batched_prefill.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-batched-prefill"
+path = "tools/test_batched_prefill.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "bench-decode-prefill"
+path = "tools/bench_decode_prefill.rs"

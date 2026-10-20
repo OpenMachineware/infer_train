@@ -1,0 +1,34 @@
+cmake_minimum_required(VERSION 3.10)
+project(timing_llama)
+
+set(CMAKE_CXX_STANDARD 17)
+
+# Find llama.cpp
+set(LLAMA_CPP_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp-0.7.0)
+set(LLAMA_INCLUDE_DIR ${LLAMA_CPP_ROOT}/src)
+set(LLAMA_COMMON_INCLUDE_DIR ${LLAMA_CPP_ROOT}/common)
+set(GGML_INCLUDE_DIR ${LLAMA_CPP_ROOT}/ggml/src)
+
+# Find ggml-metal headers
+set(GGML_METAL_INCLUDE_DIR ${LLAMA_CPP_ROOT}/ggml/src/ggml-metal)
+
+# Include directories
+include_directories(
+    ${LLAMA_INCLUDE_DIR}
+    ${LLAMA_COMMON_INCLUDE_DIR}
+    ${GGML_INCLUDE_DIR}
+    ${GGML_METAL_INCLUDE_DIR}
+    ${LLAMA_CPP_ROOT}
+)
+
+# Find libraries
+find_library(LLAMA_LIB llama PATHS ${LLAMA_CPP_ROOT}/build/src NO_DEFAULT_PATH)
+find_library(GGML_LIB ggml PATHS ${LLAMA_CPP_ROOT}/build/ggml/src NO_DEFAULT_PATH)
+find_library(GGML_METAL_LIB ggml-metal PATHS ${LLAMA_CPP_ROOT}/build/ggml/src/ggml-metal NO_DEFAULT_PATH)
+find_library(COMMON_LIB common PATHS ${LLAMA_CPP_ROOT}/build/common NO_DEFAULT_PATH)
+
+# Link libraries
+link_libraries(${LLAMA_LIB} ${GGML_LIB} ${GGML_METAL_LIB} ${COMMON_LIB})
+
+# Add executable
+add_executable(timing_llama timing_llama.cpp)

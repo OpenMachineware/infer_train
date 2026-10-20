@@ -463,6 +463,7 @@ struct FlashAttnArgs {
     uint32_t o_stride_b;
     uint32_t o_stride_h;
     uint32_t o_stride_s;
+    uint32_t start_pos;  // Starting position in KV cache for causal mask
 };
 
 // ============================================================================
@@ -623,6 +624,10 @@ kernel void flash_prefill_attention_quant(
     const float scale = args.scale;
     const uint seq_k = args.seq_k;
 
+    // Causal mask: query at position (start_pos + sq) can only attend to KV[0..start_pos+sq]
+    const uint query_pos = args.start_pos + sq;
+    const uint max_kv_idx = query_pos;  // Maximum KV position this query can attend to
+
     constexpr ushort BLK_SIZE = 32;
     constexpr ushort BLK4 = BLK_SIZE / 4;
 
@@ -641,8 +646,8 @@ kernel void flash_prefill_attention_quant(
         local_out[d] = 0.0f;
     }
 
-    // Process KV positions
-    for (uint kv_idx = tid; kv_idx < seq_k; kv_idx += num_threads) {
+    // Process KV positions (with causal mask)
+    for (uint kv_idx = tid; kv_idx <= max_kv_idx; kv_idx += num_threads) {
         device const char * k_row = k_base + kv_idx * args.k_stride_s;
         float score = 0.0f;
 
@@ -1318,6 +1323,10 @@ kernel void flash_prefill_attention_f16(
     const float scale = args.scale;
     const uint seq_k = args.seq_k;
 
+    // Causal mask: query at position (start_pos + sq) can only attend to KV[0..start_pos+sq]
+    const uint query_pos = args.start_pos + sq;
+    const uint max_kv_idx = query_pos;
+
     device const float * q_ptr = q + b * args.q_stride_b + h * args.q_stride_h + sq * args.q_stride_s;
     device const char * k_base = k + b * args.k_stride_b + h * args.k_stride_h;
     device const char * v_base = v + b * args.v_stride_b + h * args.v_stride_h;
@@ -1333,8 +1342,8 @@ kernel void flash_prefill_attention_f16(
         local_out[d] = 0.0f;
     }
 
-    // Process KV positions
-    for (uint kv_idx = tid; kv_idx < seq_k; kv_idx += num_threads) {
+    // Process KV positions (with causal mask)
+    for (uint kv_idx = tid; kv_idx <= max_kv_idx; kv_idx += num_threads) {
         device const char * k_row = k_base + kv_idx * args.k_stride_s;
         float score = 0.0f;
 
@@ -1571,6 +1580,10 @@ kernel void flash_prefill_attention_kquant(
     const float scale = args.scale;
     const uint seq_k = args.seq_k;
 
+    // Causal mask: query at position (start_pos + sq) can only attend to KV[0..start_pos+sq]
+    const uint query_pos = args.start_pos + sq;
+    const uint max_kv_idx = query_pos;
+
     device const float * q_ptr = q + b * args.q_stride_b + h * args.q_stride_h + sq * args.q_stride_s;
     device const char * k_base = k + b * args.k_stride_b + h * args.k_stride_h;
     device const char * v_base = v + b * args.v_stride_b + h * args.v_stride_h;
@@ -1586,8 +1599,8 @@ kernel void flash_prefill_attention_kquant(
         local_out[d] = 0.0f;
     }
 
-    // Process KV positions
-    for (uint kv_idx = tid; kv_idx < seq_k; kv_idx += num_threads) {
+    // Process KV positions (with causal mask)
+    for (uint kv_idx = tid; kv_idx <= max_kv_idx; kv_idx += num_threads) {
         device const char * k_row = k_base + kv_idx * args.k_stride_s;
         float score = 0.0f;
 

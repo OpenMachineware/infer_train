@@ -253,3 +253,77 @@ kernel void kernel_fused_swiglu_f32_4_tg(
     float4 silu_g = g / (1.0f + exp(-g));
     dst[i0] = silu_g * u;
 }
+
+// ========== Batched kernels for prefill ==========
+
+// Batched Add: dst[i] = src0[i] + src1[i]
+// Process [batch, size] tensor
+kernel void kernel_add_batched_f32(
+    device const float* src0 [[buffer(0)]],
+    device const float* src1 [[buffer(1)]],
+    device float* dst [[buffer(2)]],
+    constant uint& total_size [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= total_size) return;
+    dst[gid] = src0[gid] + src1[gid];
+}
+
+// Batched Mul: dst[i] = src0[i] * src1[i]
+kernel void kernel_mul_batched_f32(
+    device const float* src0 [[buffer(0)]],
+    device const float* src1 [[buffer(1)]],
+    device float* dst [[buffer(2)]],
+    constant uint& total_size [[buffer(3)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= total_size) return;
+    dst[gid] = src0[gid] * src1[gid];
+}
+
+// F32 to F16 conversion
+kernel void kernel_f32_to_f16(
+    device const float* src [[buffer(0)]],
+    device half* dst [[buffer(1)]],
+    constant uint& total_size [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= total_size) return;
+    dst[gid] = half(src[gid]);
+}
+
+// F16 to F32 conversion
+kernel void kernel_f16_to_f32(
+    device const half* src [[buffer(0)]],
+    device float* dst [[buffer(1)]],
+    constant uint& total_size [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= total_size) return;
+    dst[gid] = float(src[gid]);
+}
+
+// Batched F32 to F16 (with stride support for non-contiguous input)
+// src_stride: stride in elements for source rows
+// dst_stride: stride in elements for destination rows
+// rows: number of rows (batch size)
+// cols: elements per row
+kernel void kernel_f32_to_f16_strided(
+    device const float* src [[buffer(0)]],
+    device half* dst [[buffer(1)]],
+    constant uint& src_stride [[buffer(2)]],
+    constant uint& dst_stride [[buffer(3)]],
+    constant uint& rows [[buffer(4)]],
+    constant uint& cols [[buffer(5)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint row = gid.y;
+    uint col = gid.x;
+
+    if (row >= rows || col >= cols) return;
+
+    uint src_idx = row * src_stride + col;
+    uint dst_idx = row * dst_stride + col;
+
+    dst[dst_idx] = half(src[src_idx]);
+}

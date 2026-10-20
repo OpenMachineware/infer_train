@@ -51,8 +51,11 @@ impl ForwardBufferPool {
 
     /// Get a buffer of the specified size
     ///
-    /// Creates new buffer or reuses from pool. Always zeros the buffer.
+    /// Creates new buffer or reuses from pool. Does NOT zero the buffer.
     /// The buffer is kept alive in this pool until the forward pass completes.
+    ///
+    /// NOTE: Callers must ensure buffers are properly initialized by the GPU kernel.
+    /// This avoids the massive overhead of zeroing large buffers on every forward pass.
     pub fn get(&mut self, size: usize) -> Rc<Buffer> {
         // Round up to power of 2 for better reuse
         let size_class = size.next_power_of_two();
@@ -64,14 +67,7 @@ impl ForwardBufferPool {
                 pool.iter().position(|b| b.length() as usize >= size_class)
             {
                 let buf = pool.remove(idx);
-                // Zero reused buffer to ensure clean state
-                unsafe {
-                    std::ptr::write_bytes(
-                        buf.contents() as *mut u8,
-                        0,
-                        buf.length() as usize,
-                    );
-                }
+                // DO NOT zero - GPU kernels will overwrite the data
                 self.buffers.push(buf.clone());
                 return buf;
             }
@@ -82,14 +78,7 @@ impl ForwardBufferPool {
             size_class as u64,
             MTLResourceOptions::StorageModeShared,
         ));
-        // Zero new buffer too
-        unsafe {
-            std::ptr::write_bytes(
-                buf.contents() as *mut u8,
-                0,
-                buf.length() as usize,
-            );
-        }
+        // DO NOT zero - GPU kernels will overwrite the data
         self.buffers.push(buf.clone());
         buf
     }

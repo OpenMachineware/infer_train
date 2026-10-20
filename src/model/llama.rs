@@ -2585,6 +2585,20 @@ impl LlamaModel {
             return None;
         }
 
+        // DAG executor has KV cache update bug - disabled for now
+        // TODO: Fix KV cache update in DAG executor
+        /*
+        // For decode (single token), use DAG executor with kernel fusion
+        if tokens.len() == 1 {
+            #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+            {
+                use crate::dag::executor::DagExecutor;
+                return DagExecutor::forward_dag(self, tokens, kv_cache, gpu_ctx);
+            }
+        }
+        */
+
+        // For prefill (batch > 1), use optimized batched encoding
         // Timing
         let enable_timing = std::env::var("INFER_TIMING").is_ok();
         let mut total_embed_time = std::time::Duration::ZERO;

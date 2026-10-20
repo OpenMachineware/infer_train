@@ -1,7 +1,7 @@
 // Test DAG executor correctness
 // Tests DAG building and optimization
 
-use infer_train::dag::{DagBuilder, DagOptimizer};
+use infer_train::dag::DagBuilder;
 use infer_train::inference::InferenceContext;
 
 fn main() {
@@ -63,15 +63,6 @@ fn main() {
         );
     }
 
-    // Check for fusion opportunities
-    println!("\n=== Fusion Analysis ===\n");
-    let fusion_patterns =
-        DagOptimizer::find_fusion_patterns(&optimized_dag.dag);
-    println!("Fusion patterns found: {}", fusion_patterns.len());
-    for pattern in &fusion_patterns {
-        println!("  - {}", pattern.name);
-    }
-
     // Analyze weight bindings
     println!("\n=== Weight Bindings ===\n");
     let mut weight_counts: std::collections::HashMap<String, usize> =
@@ -88,7 +79,6 @@ fn main() {
     println!("\n=== Test Complete ===");
     println!("\nSummary:");
     println!("- DAG built with {} nodes", optimized_dag.node_count());
-    println!("- {} fusion opportunities identified", fusion_patterns.len());
     println!(
         "- {} weight tensors bound",
         optimized_dag.dag.weight_bindings.len()
