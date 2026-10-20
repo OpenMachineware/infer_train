@@ -49,6 +49,7 @@ impl DagBuilder {
             },
             dependencies: vec![],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let norm_node_id = self.dag.add_node(norm_node);
 
@@ -72,6 +73,7 @@ impl DagBuilder {
             },
             dependencies: vec![norm_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let q_node_id = self.dag.add_node(q_node);
 
@@ -87,6 +89,7 @@ impl DagBuilder {
             },
             dependencies: vec![norm_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let k_node_id = self.dag.add_node(k_node);
 
@@ -102,6 +105,7 @@ impl DagBuilder {
             },
             dependencies: vec![norm_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let v_node_id = self.dag.add_node(v_node);
 
@@ -121,6 +125,7 @@ impl DagBuilder {
             },
             dependencies: vec![q_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let q_rope_node_id = self.dag.add_node(q_rope_node);
 
@@ -136,6 +141,7 @@ impl DagBuilder {
             },
             dependencies: vec![k_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let k_rope_node_id = self.dag.add_node(k_rope_node);
 
@@ -149,6 +155,7 @@ impl DagBuilder {
             },
             dependencies: vec![k_rope_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let k_cache_node_id = self.dag.add_node(k_cache_node);
 
@@ -161,6 +168,7 @@ impl DagBuilder {
             },
             dependencies: vec![v_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let v_cache_node_id = self.dag.add_node(v_cache_node);
 
@@ -182,6 +190,7 @@ impl DagBuilder {
                 v_cache_node_id,
             ],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let attn_node_id = self.dag.add_node(attn_node);
 
@@ -198,6 +207,7 @@ impl DagBuilder {
             },
             dependencies: vec![attn_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let wo_node_id = self.dag.add_node(wo_node);
 
@@ -212,6 +222,7 @@ impl DagBuilder {
             },
             dependencies: vec![wo_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let residual_node_id = self.dag.add_node(residual_node);
 
@@ -228,6 +239,7 @@ impl DagBuilder {
             },
             dependencies: vec![residual_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let ffn_norm_node_id = self.dag.add_node(ffn_norm_node);
 
@@ -247,6 +259,7 @@ impl DagBuilder {
             },
             dependencies: vec![ffn_norm_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let gate_node_id = self.dag.add_node(gate_node);
 
@@ -262,6 +275,7 @@ impl DagBuilder {
             },
             dependencies: vec![ffn_norm_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let up_node_id = self.dag.add_node(up_node);
 
@@ -272,6 +286,7 @@ impl DagBuilder {
             op: Operation::SiLU { input: gate_id, output: silu_id },
             dependencies: vec![gate_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let silu_node_id = self.dag.add_node(silu_node);
 
@@ -286,6 +301,7 @@ impl DagBuilder {
             },
             dependencies: vec![silu_node_id, up_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let mul_node_id = self.dag.add_node(mul_node);
 
@@ -305,6 +321,7 @@ impl DagBuilder {
             },
             dependencies: vec![mul_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let down_node_id = self.dag.add_node(down_node);
 
@@ -319,6 +336,7 @@ impl DagBuilder {
             },
             dependencies: vec![residual_node_id, down_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None,
         };
         let final_residual_node_id = self.dag.add_node(final_residual_node);
 
@@ -360,21 +378,24 @@ impl DagBuilder {
             },
             dependencies: vec![],
             device_preference: DevicePreference::Cpu, // Embedding on CPU
+            layer_idx: None,                          // No layer for embedding
         };
         let embed_node_id = self.dag.add_node(embed_node);
 
         // Process each layer
         let mut layer_input = embed_tensor_id;
+        let mut last_layer_node_id = embed_node_id;
         for layer_idx in 0..model.layers.len() {
             let layer = &model.layers[layer_idx];
-            let layer_output = self.build_layer_dag_inline(
+            let (layer_output, last_node) = self.build_layer_dag_inline(
                 model,
                 layer,
                 layer_idx,
                 layer_input,
-                embed_node_id,
+                last_layer_node_id,
             );
             layer_input = layer_output;
+            last_layer_node_id = last_node;
         }
 
         // 2. Final norm
@@ -393,6 +414,7 @@ impl DagBuilder {
             },
             dependencies: vec![self.dag.nodes.len() - 1], // Depends on last layer
             device_preference: DevicePreference::Gpu,
+            layer_idx: None, // Final norm is not part of any layer
         };
         let final_norm_node_id = self.dag.add_node(final_norm_node);
 
@@ -414,6 +436,7 @@ impl DagBuilder {
             },
             dependencies: vec![final_norm_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: None, // Output projection is not part of any layer
         };
         let output_node_id = self.dag.add_node(output_node);
 
@@ -427,6 +450,7 @@ impl DagBuilder {
     }
 
     /// Build DAG for a single layer, inline into existing DAG
+    /// Returns (output_tensor_id, last_node_id)
     fn build_layer_dag_inline(
         &mut self,
         model: &LlamaModel,
@@ -434,7 +458,7 @@ impl DagBuilder {
         layer_idx: usize,
         input_tensor_id: usize,
         last_node_id: usize,
-    ) -> usize {
+    ) -> (usize, usize) {
         let hidden_size = model.config.hidden_size;
         let head_dim = model.config.head_dim;
 
@@ -454,6 +478,7 @@ impl DagBuilder {
             },
             dependencies: vec![last_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let norm_node_id = self.dag.add_node(norm_node);
 
@@ -480,6 +505,7 @@ impl DagBuilder {
             },
             dependencies: vec![norm_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let q_node_id = self.dag.add_node(q_node);
 
@@ -498,6 +524,7 @@ impl DagBuilder {
             },
             dependencies: vec![norm_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let k_node_id = self.dag.add_node(k_node);
 
@@ -516,6 +543,7 @@ impl DagBuilder {
             },
             dependencies: vec![norm_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let v_node_id = self.dag.add_node(v_node);
 
@@ -535,6 +563,7 @@ impl DagBuilder {
             },
             dependencies: vec![q_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let q_rope_node_id = self.dag.add_node(q_rope_node);
 
@@ -550,6 +579,7 @@ impl DagBuilder {
             },
             dependencies: vec![k_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let k_rope_node_id = self.dag.add_node(k_rope_node);
 
@@ -563,6 +593,7 @@ impl DagBuilder {
             },
             dependencies: vec![k_rope_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let k_cache_node_id = self.dag.add_node(k_cache_node);
 
@@ -575,6 +606,7 @@ impl DagBuilder {
             },
             dependencies: vec![v_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let v_cache_node_id = self.dag.add_node(v_cache_node);
 
@@ -596,6 +628,7 @@ impl DagBuilder {
                 v_cache_node_id,
             ],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let attn_node_id = self.dag.add_node(attn_node);
 
@@ -615,6 +648,7 @@ impl DagBuilder {
             },
             dependencies: vec![attn_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let wo_node_id = self.dag.add_node(wo_node);
 
@@ -629,6 +663,7 @@ impl DagBuilder {
             },
             dependencies: vec![wo_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let residual_node_id = self.dag.add_node(residual_node);
 
@@ -648,6 +683,7 @@ impl DagBuilder {
             },
             dependencies: vec![residual_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let ffn_norm_node_id = self.dag.add_node(ffn_norm_node);
 
@@ -670,6 +706,7 @@ impl DagBuilder {
             },
             dependencies: vec![ffn_norm_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let gate_node_id = self.dag.add_node(gate_node);
 
@@ -688,6 +725,7 @@ impl DagBuilder {
             },
             dependencies: vec![ffn_norm_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let up_node_id = self.dag.add_node(up_node);
 
@@ -698,6 +736,7 @@ impl DagBuilder {
             op: Operation::SiLU { input: gate_id, output: silu_id },
             dependencies: vec![gate_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let silu_node_id = self.dag.add_node(silu_node);
 
@@ -712,6 +751,7 @@ impl DagBuilder {
             },
             dependencies: vec![silu_node_id, up_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let mul_node_id = self.dag.add_node(mul_node);
 
@@ -731,6 +771,7 @@ impl DagBuilder {
             },
             dependencies: vec![mul_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
         let down_node_id = self.dag.add_node(down_node);
 
@@ -745,10 +786,11 @@ impl DagBuilder {
             },
             dependencies: vec![residual_node_id, down_node_id],
             device_preference: DevicePreference::Gpu,
+            layer_idx: Some(layer_idx),
         };
-        let _final_residual_node_id = self.dag.add_node(final_residual_node);
+        let final_residual_node_id = self.dag.add_node(final_residual_node);
 
-        output_id
+        (output_id, final_residual_node_id)
     }
 
     fn alloc_tensor(&mut self) -> usize {

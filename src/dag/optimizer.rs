@@ -19,20 +19,12 @@ impl DagOptimizer {
     pub fn optimize(dag: &mut ComputeDag) -> usize {
         let mut fused_count = 0;
 
-        // TEMPORARILY DISABLED: QKV fusion has dependency tracking issues
+        // TEMPORARILY DISABLED: All fusion for debugging
         // fused_count += Self::fuse_qkv_projections(dag);
-
-        // Apply gate-up projection fusion
-        fused_count += Self::fuse_gate_up_projections(dag);
-
-        // Apply SiLU + Mul → FusedSwiGLU fusion
-        fused_count += Self::fuse_silu_mul(dag);
-
-        // Apply RMSNorm + Gemv → FusedNormLinear fusion
-        fused_count += Self::fuse_norm_gemv(dag);
-
-        // Apply Add + RMSNorm → FusedAddNorm fusion (residual + FFN norm)
-        fused_count += Self::fuse_add_norm(dag);
+        // fused_count += Self::fuse_gate_up_projections(dag);
+        // fused_count += Self::fuse_silu_mul(dag);
+        // fused_count += Self::fuse_norm_gemv(dag);
+        // fused_count += Self::fuse_add_norm(dag);
 
         fused_count
     }
@@ -112,6 +104,9 @@ impl DagOptimizer {
                             }
                         }
 
+                        // Get layer_idx from the first projection node
+                        let layer_idx = projections[0].layer_idx;
+
                         let fused_node = DagNode {
                             id: dag.nodes.len() + nodes_to_add.len(),
                             op: Operation::FusedQKV {
@@ -125,9 +120,11 @@ impl DagOptimizer {
                                 q_out_size: q_size,
                                 k_out_size: k_size,
                                 v_out_size: v_size,
+                                layer_idx: layer_idx.unwrap_or(0),
                             },
                             dependencies: combined_deps,
                             device_preference: DevicePreference::Gpu,
+                            layer_idx,
                         };
 
                         nodes_to_add.push(fused_node);
@@ -195,6 +192,9 @@ impl DagOptimizer {
                                     }
                                 }
 
+                                // Get layer_idx from the first node
+                                let layer_idx = node.layer_idx;
+
                                 let fused_node = DagNode {
                                     id: dag.nodes.len() + nodes_to_add.len(),
                                     op: Operation::FusedGateUp {
@@ -205,9 +205,11 @@ impl DagOptimizer {
                                         output_up: *other_output,
                                         intermediate_size: *out_size,
                                         hidden_size: 0,
+                                        layer_idx: layer_idx.unwrap_or(0),
                                     },
                                     dependencies: combined_deps,
                                     device_preference: DevicePreference::Gpu,
+                                    layer_idx,
                                 };
 
                                 nodes_to_add.push(fused_node);
@@ -267,15 +269,20 @@ impl DagOptimizer {
                                 }
                             }
 
+                            // Get layer_idx from silu_node
+                            let layer_idx = silu_node.layer_idx;
+
                             let fused_node = DagNode {
                                 id: dag.nodes.len() + nodes_to_add.len(), // Temporary ID
                                 op: Operation::FusedSwiGLU {
                                     gate: *silu_input,
                                     up: up_input,
                                     output: *mul_output,
+                                    layer_idx: layer_idx.unwrap_or(0),
                                 },
                                 dependencies: combined_deps,
                                 device_preference: DevicePreference::Gpu,
+                                layer_idx,
                             };
 
                             nodes_to_add.push(fused_node);
@@ -365,6 +372,9 @@ impl DagOptimizer {
                         }
                     }
 
+                    // Get layer_idx from norm_node
+                    let layer_idx = norm_node.layer_idx;
+
                     let fused_node = DagNode {
                         id: dag.nodes.len() + nodes_to_add.len(), // Temporary ID
                         op: Operation::FusedNormLinear {
@@ -375,9 +385,11 @@ impl DagOptimizer {
                             out_size: *out_size,
                             in_size: 0, // Will be filled from tensor shape
                             epsilon: *epsilon,
+                            layer_idx: layer_idx.unwrap_or(0),
                         },
                         dependencies: combined_deps,
                         device_preference: DevicePreference::Gpu,
+                        layer_idx,
                     };
 
                     nodes_to_add.push(fused_node);
@@ -442,6 +454,9 @@ impl DagOptimizer {
                                 }
                             }
 
+                            // Get layer_idx from add_node
+                            let layer_idx = add_node.layer_idx;
+
                             let fused_node = DagNode {
                                 id: dag.nodes.len() + nodes_to_add.len(),
                                 op: Operation::FusedAddNorm {
@@ -450,9 +465,11 @@ impl DagOptimizer {
                                     norm_weight: *norm_weight,
                                     output: *norm_output,
                                     epsilon: *epsilon,
+                                    layer_idx: layer_idx.unwrap_or(0),
                                 },
                                 dependencies: combined_deps,
                                 device_preference: DevicePreference::Gpu,
+                                layer_idx,
                             };
 
                             nodes_to_add.push(fused_node);

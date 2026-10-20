@@ -174,6 +174,15 @@ impl DagExecutor {
                 && last_layer_idx.is_some()
                 && node_layer_idx != last_layer_idx;
 
+            if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                if node_layer_idx != last_layer_idx {
+                    eprintln!(
+                        "[DAG] Node {} layer_idx: {:?} (last: {:?}), is_new_layer: {}",
+                        node_id, node_layer_idx, last_layer_idx, is_new_layer
+                    );
+                }
+            }
+
             // If new layer, commit previous command buffer and start new one
             if is_new_layer {
                 if std::env::var("INFER_DEBUG_DAG").is_ok() {
@@ -196,10 +205,71 @@ impl DagExecutor {
             if result.is_none() {
                 if std::env::var("INFER_DEBUG_DAG").is_ok() {
                     eprintln!(
-                        "[DAG] Node {} ({:?}) failed!",
+                        "[DAG] Node {} ({:?}) failed! Op details: {:?}",
                         node_id,
-                        std::mem::discriminant(&node.op)
+                        std::mem::discriminant(&node.op),
+                        node.op
                     );
+                    // Check which tensors are missing
+                    match &node.op {
+                        Operation::FusedGateUp {
+                            input,
+                            output_gate,
+                            output_up,
+                            ..
+                        } => {
+                            eprintln!(
+                                "[DAG] FusedGateUp needs tensors: input={}, outputs={}/{}",
+                                input, output_gate, output_up
+                            );
+                            if exec_ctx.tensor_registry.get(*input).is_none() {
+                                eprintln!(
+                                    "[DAG] Missing input tensor {}",
+                                    input
+                                );
+                            }
+                        }
+                        Operation::FusedSwiGLU { gate, up, .. } => {
+                            eprintln!(
+                                "[DAG] FusedSwiGLU needs tensors: gate={}, up={}",
+                                gate, up
+                            );
+                            if exec_ctx.tensor_registry.get(*gate).is_none() {
+                                eprintln!("[DAG] Missing gate tensor {}", gate);
+                            }
+                            if exec_ctx.tensor_registry.get(*up).is_none() {
+                                eprintln!("[DAG] Missing up tensor {}", up);
+                            }
+                        }
+                        Operation::FusedAddNorm {
+                            lhs,
+                            rhs,
+                            norm_weight,
+                            ..
+                        } => {
+                            eprintln!(
+                                "[DAG] FusedAddNorm needs tensors: lhs={}, rhs={}, norm_weight={}",
+                                lhs, rhs, norm_weight
+                            );
+                            if exec_ctx.tensor_registry.get(*lhs).is_none() {
+                                eprintln!("[DAG] Missing lhs tensor {}", lhs);
+                            }
+                            if exec_ctx.tensor_registry.get(*rhs).is_none() {
+                                eprintln!("[DAG] Missing rhs tensor {}", rhs);
+                            }
+                            if exec_ctx
+                                .tensor_registry
+                                .get(*norm_weight)
+                                .is_none()
+                            {
+                                eprintln!(
+                                    "[DAG] Missing norm_weight tensor {}",
+                                    norm_weight
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 // Clean up encoder before returning
                 encoder.end_encoding();
@@ -308,6 +378,7 @@ impl DagExecutor {
                 q_out_size,
                 k_out_size,
                 v_out_size,
+                layer_idx: _,
             } => {
                 if std::env::var("INFER_DEBUG_DAG").is_ok() {
                     eprintln!(
@@ -668,7 +739,7 @@ impl DagExecutor {
             }
 
             // Fused operations
-            Operation::FusedSwiGLU { gate, up, output } => {
+            Operation::FusedSwiGLU { gate, up, output, layer_idx: _ } => {
                 let gate_buf = ctx.tensor_registry.get(*gate)?;
                 let up_buf = ctx.tensor_registry.get(*up)?;
                 let output_buf =
@@ -694,6 +765,7 @@ impl DagExecutor {
                 out_size,
                 in_size: _,
                 epsilon,
+                layer_idx: _,
             } => {
                 let input_buf = ctx.tensor_registry.get(*input)?;
                 let norm_weight_buf = ctx.tensor_registry.get(*norm_weight)?;
@@ -757,6 +829,7 @@ impl DagExecutor {
                 norm_weight,
                 output,
                 epsilon,
+                layer_idx: _,
             } => {
                 let lhs_buf = ctx.tensor_registry.get(*lhs)?;
                 let rhs_buf = ctx.tensor_registry.get(*rhs)?;
@@ -799,10 +872,7 @@ impl DagExecutor {
 
     /// Get layer index from DAG node (if it belongs to a specific layer)
     fn get_node_layer_idx(node: &DagNode) -> Option<usize> {
-        match &node.op {
-            Operation::FlashAttention { layer_idx, .. } => Some(*layer_idx),
-            Operation::KVCacheUpdate { layer_idx, .. } => Some(*layer_idx),
-            _ => None,
-        }
+        // Use the node's layer_idx field
+        node.layer_idx
     }
 }

@@ -97,13 +97,37 @@ fn main() {
             let v = forward_pool.get_zeroed(v_out_size * 4);
 
             model
-                .gemv_encode(encoder, &normed, wq, q_out_size, gpu_ctx, &q)
+                .gemv_encode(
+                    encoder,
+                    &normed,
+                    hidden_size,
+                    wq,
+                    q_out_size,
+                    gpu_ctx,
+                    &q,
+                )
                 .unwrap();
             model
-                .gemv_encode(encoder, &normed, wk, k_out_size, gpu_ctx, &k)
+                .gemv_encode(
+                    encoder,
+                    &normed,
+                    hidden_size,
+                    wk,
+                    k_out_size,
+                    gpu_ctx,
+                    &k,
+                )
                 .unwrap();
             model
-                .gemv_encode(encoder, &normed, wv, v_out_size, gpu_ctx, &v)
+                .gemv_encode(
+                    encoder,
+                    &normed,
+                    hidden_size,
+                    wv,
+                    v_out_size,
+                    gpu_ctx,
+                    &v,
+                )
                 .unwrap();
 
             // 3. RoPE
@@ -188,6 +212,7 @@ fn main() {
                 .gemv_encode(
                     encoder,
                     &attn_out,
+                    q_out_size, // input size from attention output
                     wo,
                     hidden_size,
                     gpu_ctx,
@@ -229,6 +254,7 @@ fn main() {
                 .gemv_encode(
                     encoder,
                     &ffn_normed,
+                    hidden_size,
                     w1,
                     intermediate_size,
                     gpu_ctx,
@@ -239,6 +265,7 @@ fn main() {
                 .gemv_encode(
                     encoder,
                     &ffn_normed,
+                    hidden_size,
                     w3,
                     intermediate_size,
                     gpu_ctx,
@@ -258,6 +285,7 @@ fn main() {
                 .gemv_encode(
                     encoder,
                     &hidden_ffn,
+                    intermediate_size,
                     w2,
                     hidden_size,
                     gpu_ctx,

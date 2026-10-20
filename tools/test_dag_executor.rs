@@ -47,6 +47,12 @@ fn main() {
 
     // Optimize DAG
     println!("\n=== Optimizing DAG ===\n");
+    let mut dag = dag; // Make mutable for optimizer
+    let fused_count =
+        infer_train::dag::optimizer::DagOptimizer::optimize(&mut dag);
+    println!("Fused {} operations", fused_count);
+    println!("DAG nodes after optimization: {}", dag.nodes.len());
+
     let optimized_dag = dag.into_optimized();
     println!("Execution order length: {}", optimized_dag.execution_order.len());
 

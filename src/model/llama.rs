@@ -2892,6 +2892,7 @@ impl LlamaModel {
             .gemv_encode(
                 encoder,
                 &normed_buffer,
+                hidden_size,
                 wq,
                 q_out_size,
                 gpu_ctx,
@@ -2905,6 +2906,7 @@ impl LlamaModel {
             .gemv_encode(
                 encoder,
                 &normed_buffer,
+                hidden_size,
                 wk,
                 k_out_size,
                 gpu_ctx,
@@ -2918,6 +2920,7 @@ impl LlamaModel {
             .gemv_encode(
                 encoder,
                 &normed_buffer,
+                hidden_size,
                 wv,
                 v_out_size,
                 gpu_ctx,
@@ -3000,6 +3003,7 @@ impl LlamaModel {
         self.gemv_encode(
             encoder,
             &attn_out_buffer,
+            q_out_size, // input size from attention output
             wo,
             hidden_size,
             gpu_ctx,
@@ -3035,6 +3039,7 @@ impl LlamaModel {
         self.gemv_encode(
             encoder,
             &ffn_normed_buffer,
+            hidden_size,
             w1,
             intermediate_size,
             gpu_ctx,
@@ -3043,6 +3048,7 @@ impl LlamaModel {
         self.gemv_encode(
             encoder,
             &ffn_normed_buffer,
+            hidden_size,
             w3,
             intermediate_size,
             gpu_ctx,
@@ -3062,6 +3068,7 @@ impl LlamaModel {
         self.gemv_encode(
             encoder,
             &hidden_ffn_buffer,
+            intermediate_size,
             w2,
             hidden_size,
             gpu_ctx,
@@ -3489,14 +3496,12 @@ impl LlamaModel {
         &self,
         encoder: &metal::ComputeCommandEncoderRef,
         input_buffer: &std::rc::Rc<Buffer>,
+        in_size: usize,
         weight: &crate::model::tensor::Tensor,
         out_size: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
         output_buffer: &std::rc::Rc<Buffer>,
     ) -> Option<()> {
-        let in_size =
-            input_buffer.length() as usize / std::mem::size_of::<f32>();
-
         // Use GPU kernel for encoding into shared command buffer
         let weight_buffer = gpu_ctx.get_or_create_buffer(weight);
 

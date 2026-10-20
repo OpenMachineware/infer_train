@@ -41,6 +41,7 @@ pub enum Operation {
         q_out_size: usize,
         k_out_size: usize,
         v_out_size: usize,
+        layer_idx: usize,
     },
     /// Fused Gate + Up projections (both take FFN norm as input)
     /// Combines two GEMV operations into one GEMM
@@ -53,6 +54,7 @@ pub enum Operation {
         output_up: usize,         // Up output tensor
         intermediate_size: usize, // M dimension
         hidden_size: usize,       // K dimension
+        layer_idx: usize,
     },
     RoPE {
         input: usize,
@@ -98,6 +100,7 @@ pub enum Operation {
         gate: usize, // Gate projection output
         up: usize,   // Up projection output
         output: usize,
+        layer_idx: usize,
     },
     /// FusedNormLinear: output = RMSNorm(input, norm_weight, eps) @ weights
     /// Combines RMSNorm and linear projection (GEMV)
@@ -109,6 +112,7 @@ pub enum Operation {
         out_size: usize, // M (output dimension)
         in_size: usize,  // K (input dimension)
         epsilon: f32,
+        layer_idx: usize,
     },
     /// FusedAddNorm: output = RMSNorm(Add(lhs, rhs), norm_weight, eps)
     /// Combines residual add and FFN norm (from vLLM's fused_add_rms_norm)
@@ -118,6 +122,7 @@ pub enum Operation {
         norm_weight: usize, // RMSNorm weight
         output: usize,
         epsilon: f32,
+        layer_idx: usize,
     },
 
     /// Placeholder for removed/fused operations
@@ -146,6 +151,7 @@ pub struct DagNode {
     pub op: Operation,
     pub dependencies: Vec<usize>, // Node IDs this depends on
     pub device_preference: DevicePreference,
+    pub layer_idx: Option<usize>, // Which layer this operation belongs to (for CB management)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
