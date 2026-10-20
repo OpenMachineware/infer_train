@@ -75,6 +75,7 @@ pub enum Operation {
         input: usize,
         cache: usize,
         pos: usize,
+        is_key: bool, // true for K cache, false for V cache
     },
 
     // FFN operations

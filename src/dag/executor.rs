@@ -386,18 +386,8 @@ impl DagExecutor {
                 Some(())
             }
 
-            Operation::KVCacheUpdate { input, cache: _, pos: _ } => {
-                // KV cache update: write K or V to the cache buffer
+            Operation::KVCacheUpdate { input, cache: _, pos: _, is_key } => {
                 let input_buf = ctx.tensor_registry.get(*input)?;
-
-                // Get KV cache buffers from kv_cache (not from tensor_registry)
-                // Note: layer_idx is tracked in ExecutionContext and updated per layer
-                let k_cache_buf = ctx.kv_cache.k_buffer(ctx.layer_idx);
-                let v_cache_buf = ctx.kv_cache.v_buffer(ctx.layer_idx);
-
-                // Determine if this is K or V based on which cache we need to update
-                // For now, we need to track this better in the DAG
-                // Use input size to determine: K cache needs rope output, V cache needs raw projection
 
                 // Get model config
                 let n_kv_heads = ctx
@@ -411,19 +401,31 @@ impl DagExecutor {
                 let pos = ctx.kv_cache.seq_len();
                 let max_seq = ctx.kv_cache.max_seq();
 
-                // Update K cache (input is after RoPE)
-                ctx.gpu_ctx.kv_update_k_encode(
-                    encoder,
-                    &input_buf,
-                    k_cache_buf,
-                    pos,
-                    max_seq,
-                    n_kv_heads,
-                    head_dim,
-                );
-
-                // Note: V cache update will be handled by a separate KVCacheUpdate node
-                // For now, this handles K cache
+                if *is_key {
+                    // Update K cache
+                    let k_cache_buf = ctx.kv_cache.k_buffer(ctx.layer_idx);
+                    ctx.gpu_ctx.kv_update_k_encode(
+                        encoder,
+                        &input_buf,
+                        k_cache_buf,
+                        pos,
+                        max_seq,
+                        n_kv_heads,
+                        head_dim,
+                    );
+                } else {
+                    // Update V cache
+                    let v_cache_buf = ctx.kv_cache.v_buffer(ctx.layer_idx);
+                    ctx.gpu_ctx.kv_update_v_encode(
+                        encoder,
+                        &input_buf,
+                        v_cache_buf,
+                        pos,
+                        max_seq,
+                        n_kv_heads,
+                        head_dim,
+                    );
+                }
 
                 Some(())
             }

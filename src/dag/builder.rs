@@ -147,6 +147,7 @@ impl DagBuilder {
                 input: k_rope_id,
                 cache: k_cache_id,
                 pos: 0,
+                is_key: true, // K cache update
             },
             dependencies: vec![k_rope_node_id],
             device_preference: DevicePreference::Gpu,
@@ -160,6 +161,7 @@ impl DagBuilder {
                 input: v_id,
                 cache: v_cache_id,
                 pos: 0,
+                is_key: false, // V cache update
             },
             dependencies: vec![v_node_id],
             device_preference: DevicePreference::Gpu,
@@ -565,6 +567,7 @@ impl DagBuilder {
                 input: k_rope_id,
                 cache: k_cache_id,
                 pos: 0,
+                is_key: true, // K cache update
             },
             dependencies: vec![k_rope_node_id],
             device_preference: DevicePreference::Gpu,
@@ -578,6 +581,7 @@ impl DagBuilder {
                 input: v_id,
                 cache: v_cache_id,
                 pos: 0,
+                is_key: false, // V cache update
             },
             dependencies: vec![v_node_id],
             device_preference: DevicePreference::Gpu,
