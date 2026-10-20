@@ -58,7 +58,8 @@ pub struct ExecutionContext<'a> {
     pub forward_pool: &'a mut ForwardBufferPool,
     pub layer_idx: usize,
     pub position: usize,
-    pub use_mma: bool, // Use MMA kernel for Flash Attention
+    pub use_mma: bool,    // Use MMA kernel for Flash Attention
+    pub use_mma_v2: bool, // Use MMA v2 kernel
 }
 
 pub struct DagExecutor;
@@ -113,8 +114,10 @@ impl DagExecutor {
 
         // Check if MMA kernel is enabled via environment variable
         let use_mma = std::env::var("INFER_USE_MMA")
-            .map(|v| v == "1" || v == "true")
+            .map(|v| v == "1" || v == "true" || v == "v2")
             .unwrap_or(false);
+        let use_mma_v2 =
+            std::env::var("INFER_USE_MMA").map(|v| v == "v2").unwrap_or(false);
 
         // Create execution context
         let mut exec_ctx = ExecutionContext {
@@ -127,6 +130,7 @@ impl DagExecutor {
             layer_idx: 0,
             position: 0,
             use_mma,
+            use_mma_v2,
         };
 
         // Track layer boundaries for committing command buffers
@@ -611,17 +615,31 @@ impl DagExecutor {
 
                 // Use MMA kernel if enabled and head_dim is 128
                 if ctx.use_mma && *head_dim == 128 {
-                    ctx.gpu_ctx.flash_attn_mma_encode(
-                        encoder,
-                        *n_heads,
-                        *n_kv_heads,
-                        seq_len,
-                        kv_stride,
-                        &q_buf,
-                        k_buf,
-                        v_buf,
-                        &output_buf,
-                    );
+                    if ctx.use_mma_v2 {
+                        ctx.gpu_ctx.flash_attn_mma_v2_encode(
+                            encoder,
+                            *n_heads,
+                            *n_kv_heads,
+                            seq_len,
+                            kv_stride,
+                            &q_buf,
+                            k_buf,
+                            v_buf,
+                            &output_buf,
+                        );
+                    } else {
+                        ctx.gpu_ctx.flash_attn_mma_encode(
+                            encoder,
+                            *n_heads,
+                            *n_kv_heads,
+                            seq_len,
+                            kv_stride,
+                            &q_buf,
+                            k_buf,
+                            v_buf,
+                            &output_buf,
+                        );
+                    }
                 } else {
                     ctx.gpu_ctx.flash_attn_f16_encode(
                         encoder,

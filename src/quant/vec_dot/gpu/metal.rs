@@ -182,6 +182,7 @@ pub struct MetalContext {
     flash_decode_f16_160_pipeline: ComputePipelineState,
     // MMA-based decode (experimental, for performance comparison)
     flash_decode_mma_pipeline: ComputePipelineState,
+    flash_decode_mma_v2_pipeline: ComputePipelineState, // Optimized version
     // Flash Prefill (for batched prefill)
     flash_prefill_f16_pipeline: ComputePipelineState,
     // Batched flash prefill (llama.cpp style)
@@ -382,6 +383,9 @@ impl Clone for MetalContext {
                 .flash_decode_f16_160_pipeline
                 .clone(),
             flash_decode_mma_pipeline: self.flash_decode_mma_pipeline.clone(),
+            flash_decode_mma_v2_pipeline: self
+                .flash_decode_mma_v2_pipeline
+                .clone(),
             flash_prefill_f16_pipeline: self.flash_prefill_f16_pipeline.clone(),
             flash_prefill_batch_pipeline: self
                 .flash_prefill_batch_pipeline
@@ -789,6 +793,16 @@ impl MetalContext {
             .new_library_with_source(flash_attn_mma_source, &compile_options)
             .map_err(|e| {
                 format!("Failed to compile flash_attn_mma library: {}", e)
+            })?;
+
+        // Compile Flash Attention MMA v2 library (optimized)
+        let flash_attn_mma_v2_source = include_str!(
+            "../../../ops/metal/attention/flash_decode_mma_v2.metal"
+        );
+        let flash_attn_mma_v2_library = device
+            .new_library_with_source(flash_attn_mma_v2_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile flash_attn_mma_v2 library: {}", e)
             })?;
 
         // Compile Flash Prefill library (for batched attention)
@@ -1734,6 +1748,20 @@ impl MetalContext {
                 format!("Failed to create flash_decode_mma pipeline: {}", e)
             })?;
 
+        // Create Flash Attention MMA v2 pipeline (optimized)
+        let flash_decode_mma_v2_kernel = flash_attn_mma_v2_library
+            .get_function("flash_decode_mma_v2_f16", None)
+            .map_err(|e| {
+                format!("Failed to get flash_decode_mma_v2_f16 kernel: {}", e)
+            })?;
+        let flash_decode_mma_v2_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &flash_decode_mma_v2_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create flash_decode_mma_v2 pipeline: {}", e)
+            })?;
+
         // Create Flash Prefill pipeline
         let flash_prefill_f16_kernel = flash_prefill_library
             .get_function("flash_prefill_attention_f16", None)
@@ -2144,6 +2172,7 @@ impl MetalContext {
             flash_decode_f16_128_pipeline,
             flash_decode_f16_160_pipeline,
             flash_decode_mma_pipeline,
+            flash_decode_mma_v2_pipeline,
             // Flash Prefill
             flash_prefill_f16_pipeline,
             flash_prefill_batch_pipeline,
@@ -11270,6 +11299,55 @@ impl MetalContext {
         encoder.set_buffer(6, Some(output_buffer), 0);
 
         // 4 heads per threadgroup (MMA version)
+        let n_head_groups = (n_heads + 3) / 4;
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: n_head_groups as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Flash Attention MMA v2 encode (optimized version)
+    pub fn flash_attn_mma_v2_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        n_heads: usize,
+        n_kv_heads: usize,
+        seq_len: usize,
+        kv_stride: usize,
+        q_buffer: &Buffer,
+        k_buffer: &Buffer,
+        v_buffer: &Buffer,
+        output_buffer: &Buffer,
+    ) {
+        let head_dim = 128; // MMA v2 kernel only supports head_dim=128
+
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+        let seq_k = seq_len as u32;
+        let kv_stride_u32 = kv_stride as u32;
+
+        encoder.set_compute_pipeline_state(&self.flash_decode_mma_v2_pipeline);
+        encoder.set_bytes(
+            0,
+            4,
+            &seq_k as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            1,
+            4,
+            &kv_stride_u32 as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            2,
+            4,
+            &scale as *const f32 as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(3, Some(q_buffer), 0);
+        encoder.set_buffer(4, Some(k_buffer), 0);
+        encoder.set_buffer(5, Some(v_buffer), 0);
+        encoder.set_buffer(6, Some(output_buffer), 0);
+
+        // 4 heads per threadgroup (same as MMA v1)
         let n_head_groups = (n_heads + 3) / 4;
         let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
         let thread_group_count =
