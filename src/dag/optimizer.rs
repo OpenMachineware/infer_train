@@ -666,6 +666,23 @@ impl DagOptimizer {
                 }
             }
         }
+
+        // Update exit_points if they point to removed nodes
+        for exit_node_id in dag.exit_points.iter_mut() {
+            if nodes_to_remove.contains(exit_node_id) {
+                // Find what output tensors the removed node produced
+                if let Some(outputs) = removed_outputs.get(exit_node_id) {
+                    // Find which new fused node produces the same output
+                    if let Some(&first_output) = outputs.first() {
+                        if let Some(&new_node_id) =
+                            output_to_new_node.get(&first_output)
+                        {
+                            *exit_node_id = new_node_id;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Get output tensor IDs from an operation
