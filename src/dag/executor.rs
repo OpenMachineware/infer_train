@@ -355,18 +355,22 @@ impl DagExecutor {
 
             Operation::FlashAttention {
                 q,
-                k_cache,
-                v_cache,
                 output,
+                layer_idx,
                 n_heads,
                 n_kv_heads,
                 head_dim,
-                kv_seq_len,
             } => {
                 let q_buf = ctx.tensor_registry.get(*q)?;
-                let k_buf = ctx.tensor_registry.get(*k_cache)?;
-                let v_buf = ctx.tensor_registry.get(*v_cache)?;
+
+                // Get KV cache buffers directly from kv_cache object
+                let k_buf = ctx.kv_cache.k_buffer(*layer_idx);
+                let v_buf = ctx.kv_cache.v_buffer(*layer_idx);
                 let output_buf = ctx.forward_pool.get(*n_heads * *head_dim * 4);
+
+                // Get actual sequence length from kv_cache
+                let seq_len = ctx.kv_cache.seq_len() + 1; // +1 for current token
+                let kv_stride = ctx.kv_cache.max_seq();
 
                 ctx.gpu_ctx.flash_attn_f16_encode(
                     encoder,
@@ -374,11 +378,11 @@ impl DagExecutor {
                     *n_heads,
                     *n_kv_heads,
                     *head_dim,
-                    1,           // seq_len = 1 for decode
-                    *kv_seq_len, // kv_stride
+                    seq_len,
+                    kv_stride,
                     &q_buf,
-                    &k_buf,
-                    &v_buf,
+                    k_buf,
+                    v_buf,
                     &output_buf,
                 );
 
@@ -386,14 +390,14 @@ impl DagExecutor {
                 Some(())
             }
 
-            Operation::KVCacheUpdate { input, cache: _, pos: _, is_key } => {
+            Operation::KVCacheUpdate { input, layer_idx, is_key } => {
                 let input_buf = ctx.tensor_registry.get(*input)?;
 
                 // Get model config
                 let n_kv_heads = ctx
                     .model
                     .layers
-                    .get(ctx.layer_idx)
+                    .get(*layer_idx)
                     .and_then(|l| l.wk.as_ref())
                     .map(|w| w.shape[1] / ctx.model.config.head_dim)
                     .unwrap_or(ctx.model.config.n_heads);
@@ -403,7 +407,7 @@ impl DagExecutor {
 
                 if *is_key {
                     // Update K cache
-                    let k_cache_buf = ctx.kv_cache.k_buffer(ctx.layer_idx);
+                    let k_cache_buf = ctx.kv_cache.k_buffer(*layer_idx);
                     ctx.gpu_ctx.kv_update_k_encode(
                         encoder,
                         &input_buf,
@@ -415,7 +419,7 @@ impl DagExecutor {
                     );
                 } else {
                     // Update V cache
-                    let v_cache_buf = ctx.kv_cache.v_buffer(ctx.layer_idx);
+                    let v_cache_buf = ctx.kv_cache.v_buffer(*layer_idx);
                     ctx.gpu_ctx.kv_update_v_encode(
                         encoder,
                         &input_buf,

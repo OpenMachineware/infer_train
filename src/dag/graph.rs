@@ -62,20 +62,17 @@ pub enum Operation {
         head_dim: usize,
     },
     FlashAttention {
-        q: usize,
-        k_cache: usize,
-        v_cache: usize,
-        output: usize,
+        q: usize,         // Query tensor ID
+        output: usize,    // Output tensor ID
+        layer_idx: usize, // Which layer's KV cache to use
         n_heads: usize,
         n_kv_heads: usize,
         head_dim: usize,
-        kv_seq_len: usize,
     },
     KVCacheUpdate {
-        input: usize,
-        cache: usize,
-        pos: usize,
-        is_key: bool, // true for K cache, false for V cache
+        input: usize,     // Input tensor ID (K or V after RoPE)
+        layer_idx: usize, // Which layer's cache to update
+        is_key: bool,     // true for K cache, false for V cache
     },
 
     // FFN operations

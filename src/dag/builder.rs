@@ -140,13 +140,11 @@ impl DagBuilder {
         let k_rope_node_id = self.dag.add_node(k_rope_node);
 
         // 4. KV Cache Updates
-        let k_cache_id = self.alloc_tensor();
         let k_cache_node = DagNode {
             id: self.dag.nodes.len(),
             op: Operation::KVCacheUpdate {
                 input: k_rope_id,
-                cache: k_cache_id,
-                pos: 0,
+                layer_idx,
                 is_key: true, // K cache update
             },
             dependencies: vec![k_rope_node_id],
@@ -154,13 +152,11 @@ impl DagBuilder {
         };
         let k_cache_node_id = self.dag.add_node(k_cache_node);
 
-        let v_cache_id = self.alloc_tensor();
         let v_cache_node = DagNode {
             id: self.dag.nodes.len(),
             op: Operation::KVCacheUpdate {
                 input: v_id,
-                cache: v_cache_id,
-                pos: 0,
+                layer_idx,
                 is_key: false, // V cache update
             },
             dependencies: vec![v_node_id],
@@ -174,13 +170,11 @@ impl DagBuilder {
             id: self.dag.nodes.len(),
             op: Operation::FlashAttention {
                 q: q_rope_id,
-                k_cache: k_cache_id,
-                v_cache: v_cache_id,
                 output: attn_out_id,
+                layer_idx,
                 n_heads,
                 n_kv_heads,
                 head_dim,
-                kv_seq_len: 1, // Will be set during execution
             },
             dependencies: vec![
                 q_rope_node_id,
@@ -437,7 +431,7 @@ impl DagBuilder {
         &mut self,
         model: &LlamaModel,
         layer: &LlamaLayer,
-        _layer_idx: usize,
+        layer_idx: usize,
         input_tensor_id: usize,
         last_node_id: usize,
     ) -> usize {
@@ -560,13 +554,11 @@ impl DagBuilder {
         let k_rope_node_id = self.dag.add_node(k_rope_node);
 
         // 4. KV Cache Updates
-        let k_cache_id = self.alloc_tensor();
         let k_cache_node = DagNode {
             id: self.dag.nodes.len(),
             op: Operation::KVCacheUpdate {
                 input: k_rope_id,
-                cache: k_cache_id,
-                pos: 0,
+                layer_idx,
                 is_key: true, // K cache update
             },
             dependencies: vec![k_rope_node_id],
@@ -574,13 +566,11 @@ impl DagBuilder {
         };
         let k_cache_node_id = self.dag.add_node(k_cache_node);
 
-        let v_cache_id = self.alloc_tensor();
         let v_cache_node = DagNode {
             id: self.dag.nodes.len(),
             op: Operation::KVCacheUpdate {
                 input: v_id,
-                cache: v_cache_id,
-                pos: 0,
+                layer_idx,
                 is_key: false, // V cache update
             },
             dependencies: vec![v_node_id],
@@ -594,13 +584,11 @@ impl DagBuilder {
             id: self.dag.nodes.len(),
             op: Operation::FlashAttention {
                 q: q_rope_id,
-                k_cache: k_cache_id,
-                v_cache: v_cache_id,
                 output: attn_out_id,
+                layer_idx,
                 n_heads,
                 n_kv_heads,
                 head_dim,
-                kv_seq_len: 1,
             },
             dependencies: vec![
                 q_rope_node_id,
