@@ -30,6 +30,10 @@ fn main() {
         BpeTokenizer::from_gguf(&gguf).expect("Failed to load tokenizer");
     println!("Tokenizer loaded in {:?}", start_load.elapsed());
 
+    // Debug: Check FORCE_CPU
+    let force_cpu = std::env::var("FORCE_CPU").is_ok();
+    println!("FORCE_CPU: {}", force_cpu);
+
     // Load model on GPU
     let start_model = Instant::now();
     let mut ctx = InferenceContext::from_gguf(model_path, Device::Gpu)
@@ -51,8 +55,8 @@ fn main() {
     let is_mqa = ctx.config.architecture == "deepseek2";
 
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    let logits = if is_mqa {
-        println!("Using CPU fallback for MQA architecture");
+    let logits = if is_mqa || force_cpu {
+        println!("Using CPU fallback for prefill");
         let mut kv_cache = infer_train::inference::KVCache::new(
             &ctx.config,
             prompt_tokens.len() + max_tokens,
@@ -60,6 +64,7 @@ fn main() {
         );
         ctx.forward(&prompt_tokens, &mut kv_cache).expect("Prefill failed")
     } else {
+        println!("Using GPU batched prefill");
         // Use true batched prefill for GPU
         ctx.forward_prefill_batch(&prompt_tokens).expect("Prefill failed")
     };
@@ -88,12 +93,23 @@ fn main() {
     let start_gen = Instant::now();
 
     // Create KV cache for CPU fallback
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    let mut kv_cache = if force_cpu {
+        Some(infer_train::inference::KVCache::new(
+            &ctx.config,
+            prompt_tokens.len() + max_tokens,
+            infer_train::inference::KVCacheFormat::F32,
+        ))
+    } else {
+        None
+    };
+
     #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
-    let mut kv_cache = infer_train::inference::KVCache::new(
+    let mut kv_cache = Some(infer_train::inference::KVCache::new(
         &ctx.config,
         prompt_tokens.len() + max_tokens,
         infer_train::inference::KVCacheFormat::F32,
-    );
+    ));
 
     for i in 0..max_tokens {
         // Get logits for last token
@@ -103,15 +119,24 @@ fn main() {
         } else {
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
             {
-                decode_logits = match ctx.forward_gpu_batched(&[
-                    current_tokens[current_tokens.len() - 1]
-                ]) {
-                    Some(l) => l,
-                    None => {
-                        eprintln!("\nDecode failed at token {}", i);
-                        break;
-                    }
-                };
+                if force_cpu {
+                    decode_logits = ctx
+                        .forward(
+                            &[current_tokens[current_tokens.len() - 1]],
+                            kv_cache.as_mut().unwrap(),
+                        )
+                        .expect("CPU decode failed");
+                } else {
+                    decode_logits = match ctx.forward_gpu_batched(&[
+                        current_tokens[current_tokens.len() - 1],
+                    ]) {
+                        Some(l) => l,
+                        None => {
+                            eprintln!("\nDecode failed at token {}", i);
+                            break;
+                        }
+                    };
+                }
                 &decode_logits
             }
             #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
@@ -119,7 +144,7 @@ fn main() {
                 decode_logits = ctx
                     .forward(
                         &[current_tokens[current_tokens.len() - 1]],
-                        &mut kv_cache,
+                        kv_cache.as_mut().unwrap(),
                     )
                     .expect("Decode failed");
                 &decode_logits

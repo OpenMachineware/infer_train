@@ -9449,7 +9449,7 @@ impl MetalContext {
 
         let args = RopeArgs {
             hidden_dim: n_dims as i32,
-            num_heads_seqs: (n_heads * n_seqs) as i32,
+            num_heads_seqs: n_heads as i32, // Each sequence has n_heads heads
             num_seqs: n_seqs as i32,
             rotate_dims: n_dims as i32,
             offset: 0,
@@ -9513,7 +9513,7 @@ impl MetalContext {
 
         let args = RopeArgs {
             hidden_dim: n_dims as i32,
-            num_heads_seqs: (n_heads * n_seqs) as i32,
+            num_heads_seqs: n_heads as i32, // Each sequence has n_heads heads
             num_seqs: n_seqs as i32,
             rotate_dims: n_dims as i32,
             offset: 0,
@@ -11421,7 +11421,7 @@ impl MetalContext {
 
         let args = RopeArgs {
             hidden_dim: n_dims as i32,
-            num_heads_seqs: (n_heads * n_seqs) as i32,
+            num_heads_seqs: n_heads as i32, // Each sequence has n_heads heads
             num_seqs: n_seqs as i32,
             rotate_dims: n_dims as i32,
             offset: 0,
@@ -11474,7 +11474,7 @@ impl MetalContext {
 
         let args = RopeArgs {
             hidden_dim: n_dims as i32,
-            num_heads_seqs: (n_heads * n_seqs) as i32,
+            num_heads_seqs: n_heads as i32, // Each sequence has n_heads heads
             num_seqs: n_seqs as i32,
             rotate_dims: n_dims as i32,
             offset: 0,

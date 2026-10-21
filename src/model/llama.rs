@@ -2603,164 +2603,113 @@ impl LlamaModel {
             }
         }
 
-        // For prefill (batch > 1), use optimized batched encoding
-        // Timing
-        let enable_timing = std::env::var("INFER_TIMING").is_ok();
-        let mut total_embed_time = std::time::Duration::ZERO;
-        let mut total_upload_time = std::time::Duration::ZERO;
-        let mut total_layer_time = std::time::Duration::ZERO;
-        let mut total_output_time = std::time::Duration::ZERO;
-
+        // For prefill (batch > 1), use true GPU batched implementation
+        let batch_size = tokens.len();
         let hidden_size = self.config.hidden_size;
         let device = gpu_ctx.device();
         let queue = gpu_ctx.queue();
 
-        // Create shared reuse pool for buffers (persisted across forward passes)
+        // 1. Batch embedding lookup (GPU)
+        let (hidden_buffer, _) =
+            self.embedding_lookup_batched_gpu(tokens, device)?;
+
+        // 2. Create forward pool and command buffer
         use std::cell::RefCell;
         use std::rc::Rc;
-        let reuse_pool: Rc<RefCell<Vec<std::rc::Rc<Buffer>>>> =
+        let reuse_pool: Rc<RefCell<Vec<Rc<Buffer>>>> =
             Rc::new(RefCell::new(Vec::new()));
-
-        // Create ONE forward pool for the entire forward pass
-        // This ensures buffers stay alive until we've read the final output
         let mut forward_pool = crate::buffer::ForwardBufferPool::new(
             device.clone(),
             reuse_pool.clone(),
         );
 
-        // Process each token
-        let mut last_hidden_buffer: Option<std::rc::Rc<Buffer>> = None;
-        let mut logits = Vec::new();
+        let command_buffer =
+            queue.new_command_buffer_with_unretained_references();
+        let encoder = command_buffer.new_compute_command_encoder();
 
-        for &token in tokens.iter() {
-            // 1. Embedding lookup (CPU)
-            let t0 = std::time::Instant::now();
-            let hidden = self.embedding_lookup_impl(token)?;
-            total_embed_time += t0.elapsed();
-
-            // Upload to GPU
-            let t1 = std::time::Instant::now();
-            let hidden_buffer = std::rc::Rc::new(device.new_buffer_with_data(
-                hidden.as_ptr() as *const std::ffi::c_void,
-                (hidden_size * 4) as u64,
-                metal::MTLResourceOptions::StorageModeShared,
-            ));
-            total_upload_time += t1.elapsed();
-
-            // 2. Process through layers + final operations in ONE command buffer
-            // Encode ALL operations into a single command buffer for best performance
-            let mut layer_input = hidden_buffer.clone();
-            let n_layers = self.layers.len();
-
-            let t_encode_start = std::time::Instant::now();
-
-            // Create ONE command buffer for all operations
-            // Use unretained references for better performance (we manage lifetimes via ForwardBufferPool)
-            let command_buffer =
-                queue.new_command_buffer_with_unretained_references();
-            let encoder = command_buffer.new_compute_command_encoder();
-
-            // Encode all layers
-            for layer_idx in 0..n_layers {
-                let layer_output = self.forward_layer_gpu_encode(
-                    &self.layers[layer_idx],
-                    layer_idx,
-                    &layer_input,
-                    kv_cache,
-                    gpu_ctx,
-                    &mut forward_pool,
-                    encoder,
-                )?;
-
-                // Update for next layer
-                layer_input = layer_output;
-            }
-
-            // 3. Final norm + Output projection (in same command buffer)
-            let final_norm = self.norm.as_ref()?;
-            let final_norm_buffer = gpu_ctx.get_or_create_buffer(final_norm);
-            let final_hidden_buffer = forward_pool.get(hidden_size * 4);
-            let output = self.output.as_ref()?;
-            let vocab_size =
-                if output.shape.len() == 2 && output.shape[1] == hidden_size {
-                    output.shape[0]
-                } else {
-                    output.shape[0]
-                };
-
-            // Final norm
-            gpu_ctx.rms_norm_encode(
-                encoder,
+        // 3. Process all layers with GPU batched implementation
+        let mut layer_input = hidden_buffer.clone();
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            layer_input = self.forward_layer_prefill_batched(
+                layer,
+                layer_idx,
                 &layer_input,
-                &final_norm_buffer,
-                &final_hidden_buffer,
-                1,
-                hidden_size,
-                1e-5,
-            );
-
-            // Output projection
-            let output_weights = gpu_ctx.get_or_create_buffer(output);
-            let logits_buffer = forward_pool.get(vocab_size * 4);
-
-            if !gpu_ctx.mv_encode(
+                batch_size,
+                kv_cache,
+                gpu_ctx,
+                &mut forward_pool,
                 encoder,
-                &output_weights,
-                &final_hidden_buffer,
-                &logits_buffer,
-                vocab_size,
-                hidden_size,
-                output.dtype,
-            ) {
-                return None;
-            }
+            )?;
+        }
 
-            encoder.end_encoding();
-            let encode_time = t_encode_start.elapsed();
-            total_layer_time += encode_time;
+        // 4. Final norm and output projection
+        let final_norm = self.norm.as_ref()?;
+        let final_norm_buffer = gpu_ctx.get_or_create_buffer(final_norm);
+        let final_hidden_buffer =
+            forward_pool.get(batch_size * hidden_size * 4);
 
-            // 4. GPU execution
-            let t_gpu_start = std::time::Instant::now();
-            command_buffer.commit();
-            command_buffer.wait_until_completed();
-            let gpu_time = t_gpu_start.elapsed();
-            total_output_time += gpu_time;
+        gpu_ctx.rms_norm_encode(
+            encoder,
+            &layer_input,
+            &final_norm_buffer,
+            &final_hidden_buffer,
+            batch_size,
+            hidden_size,
+            1e-5,
+        );
 
-            // 5. Download logits
-            let t_download_start = std::time::Instant::now();
-            logits = vec![0.0f32; vocab_size];
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    logits_buffer.contents() as *const f32,
-                    logits.as_mut_ptr(),
-                    vocab_size,
-                );
-            }
-            let download_time = t_download_start.elapsed();
+        let output = self.output.as_ref()?;
+        let vocab_size =
+            if output.shape.len() == 2 && output.shape[1] == hidden_size {
+                output.shape[0]
+            } else {
+                output.shape[0]
+            };
 
-            if enable_timing {
-                eprintln!(
-                    "[TIMING] Encode: {:?}, GPU: {:?}, Download: {:?}",
-                    encode_time, gpu_time, download_time
-                );
-            }
+        let output_weights = gpu_ctx.get_or_create_buffer(output);
+        let logits_buffer = forward_pool.get(batch_size * vocab_size * 4);
 
-            last_hidden_buffer = Some(layer_input);
+        // For batch output projection, use GEMM
+        let final_hidden_f16 = forward_pool.get(batch_size * hidden_size * 2);
+        gpu_ctx.f32_to_f16_encode(
+            encoder,
+            &final_hidden_buffer,
+            &final_hidden_f16,
+            batch_size * hidden_size,
+        );
+
+        gpu_ctx.mul_mm_q5_k_encode(
+            encoder,
+            &output_weights,
+            &final_hidden_f16,
+            &logits_buffer,
+            vocab_size,
+            batch_size,
+            hidden_size,
+        );
+
+        encoder.end_encoding();
+
+        // 5. Execute GPU commands
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        // Update KV cache position
+        for _ in 0..batch_size {
             kv_cache.advance();
         }
 
-        // Print timing if enabled
-        if enable_timing {
-            eprintln!("[TIMING] Embedding: {:?}", total_embed_time);
-            eprintln!("[TIMING] Upload: {:?}", total_upload_time);
-            eprintln!("[TIMING] Layers: {:?}", total_layer_time);
-            eprintln!("[TIMING] Output: {:?}", total_output_time);
-            eprintln!(
-                "[TIMING] Total: {:?}",
-                total_embed_time
-                    + total_upload_time
-                    + total_layer_time
-                    + total_output_time
+        // 6. Download logits (only last token's logits needed for generation)
+        let logits_ptr = logits_buffer.contents() as *const f32;
+        let logits_len = vocab_size;
+        let last_token_offset = (batch_size - 1) * vocab_size;
+
+        let mut logits = vec![0.0f32; logits_len];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                logits_ptr.add(last_token_offset),
+                logits.as_mut_ptr(),
+                logits_len,
             );
         }
 
@@ -3330,11 +3279,12 @@ impl LlamaModel {
         // K, V: from KV cache [n_kv_heads, max_seq, head_dim], F16
         let seq_len = start_pos + batch;
 
-        // Q layout: [batch, n_heads, head_dim]
-        // Strides: batch stride = n_heads * head_dim, head stride = head_dim, seq stride = 1
+        // Q layout from GEMM: [batch, n_heads * head_dim]
+        // Each token has all heads packed contiguously
+        // Strides: batch stride = n_heads * head_dim, head stride = head_dim, seq stride = n_heads * head_dim
         let q_stride_b = n_heads * head_dim;
         let q_stride_h = head_dim;
-        let q_stride_s = 1;
+        let q_stride_s = n_heads * head_dim;
 
         // K/V cache layout: [n_kv_heads, max_seq, head_dim]
         // Strides: head stride = max_seq * head_dim, seq stride = head_dim
