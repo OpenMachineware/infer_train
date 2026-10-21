@@ -5160,78 +5160,48 @@ impl MetalContext {
         let nb = k / 256; // QK_K = 256
         let nb01 = (nb * std::mem::size_of::<BlockQ6K>()) as u64; // Byte stride per row
 
+        // Simple args structure matching kernel's kquant_mv_args
         #[repr(C)]
-        struct MvArgs {
-            ne00: i32,
-            ne01: i32,
-            ne02: i32,
-            nb00: u64,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne10: i32,
-            ne11: i32,
-            ne12: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            nr0: i32,
-            r2: i16,
-            r3: i16,
+        struct KquantMvArgs {
+            ne00: u32, // K dimension
+            ne01: u32, // M dimension
+            nb01: u64, // Byte stride
         }
 
-        let args = MvArgs {
-            ne00: k as i32,
-            ne01: m as i32,
-            ne02: 1,
-            nb00: 1,
-            nb01,
-            nb02: 0,
-            nb03: 0,
-            ne10: k as i32,
-            ne11: 1,
-            ne12: 1,
-            nb10: 4,
-            nb11: k as u64 * 4,
-            nb12: 0,
-            nb13: 0,
-            ne0: m as i32,
-            ne1: 1,
-            nr0: 2,
-            r2: 1,
-            r3: 1, // N_R0_Q6_K = 2
-        };
+        let args = KquantMvArgs { ne00: k as u32, ne01: m as u32, nb01 };
 
         let weights_size = weights.len() * std::mem::size_of::<BlockQ6K>();
         let input_size = input.len() * std::mem::size_of::<f32>();
         let output_size = m * std::mem::size_of::<f32>();
 
+        // Weights buffer - cache by data pointer (weights are static during inference)
         let weights_buffer = {
-            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
-            let mut size_cell = self.mv_weights_size.borrow_mut();
+            let data_ptr = weights.as_ptr() as usize;
+            let mut cache = self.weight_buffer_cache.borrow_mut();
 
-            if *size_cell != weights_size {
-                let buf = self.device.new_buffer_with_data(
-                    weights.as_ptr() as *const std::ffi::c_void,
-                    weights_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = weights_size;
-                buf
+            if let Some(buffer) = cache.get(&data_ptr) {
+                // Buffer already exists for this tensor
+                std::rc::Rc::clone(buffer)
             } else {
-                buf_cell.as_ref().unwrap().clone()
+                // Create new buffer and cache it
+                let buffer =
+                    std::rc::Rc::new(self.device.new_buffer_with_data(
+                        weights.as_ptr() as *const std::ffi::c_void,
+                        weights_size as u64,
+                        metal::MTLResourceOptions::StorageModeShared,
+                    ));
+                cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
+                buffer
             }
         };
 
+        // Input buffer - data changes every layer, so always upload
         let input_buffer = {
             let mut buf_cell = self.mv_input_buffer.borrow_mut();
             let mut size_cell = self.mv_input_size.borrow_mut();
 
             if *size_cell != input_size {
+                // Size changed, create new buffer with data
                 let buf = self.device.new_buffer_with_data(
                     input.as_ptr() as *const std::ffi::c_void,
                     input_size as u64,
@@ -5241,10 +5211,21 @@ impl MetalContext {
                 *size_cell = input_size;
                 buf
             } else {
-                buf_cell.as_ref().unwrap().clone()
+                // Size matches, reuse buffer but copy new data
+                let buf = buf_cell.as_ref().unwrap().clone();
+                let contents = buf.contents();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        input.as_ptr() as *const std::ffi::c_void,
+                        contents,
+                        input_size,
+                    );
+                }
+                buf
             }
         };
 
+        // Output buffer - create once, reuse
         let output_buffer = {
             let mut buf_cell = self.mv_output_buffer.borrow_mut();
             let mut size_cell = self.mv_output_size.borrow_mut();
@@ -5266,28 +5247,24 @@ impl MetalContext {
         let encoder = command_buffer.new_compute_command_encoder();
 
         encoder.set_compute_pipeline_state(&self.mv_q6_k_pipeline);
-        // Template kernel signature: (args, src0, src1, dst)
-        // Index 0: args struct
-        // Index 1: src0 (weights)
-        // Index 2: src1 (input)
-        // Index 3: dst (output)
+        // Kernel signature: buffer(0)=weights, 1=input, 2=output, 3=args
+        encoder.set_buffer(0, Some(&weights_buffer), 0);
+        encoder.set_buffer(1, Some(&input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
         encoder.set_bytes(
-            0,
-            std::mem::size_of::<MvArgs>() as u64,
-            &args as *const MvArgs as *const std::ffi::c_void,
+            3,
+            std::mem::size_of::<KquantMvArgs>() as u64,
+            &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
-        encoder.set_buffer(1, Some(&weights_buffer), 0);
-        encoder.set_buffer(2, Some(&input_buffer), 0);
-        encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        // Q6_K: N_R0 = 2, NSG = 2
-        const NSG: u64 = 2;
-        const NR0: u64 = 2; // N_R0_Q6_K = 2
-        const ROWS_PER_THREADGROUP: u64 = NSG * NR0; // 4
-
-        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        // Thread group configuration - Simple version (1 row per threadgroup)
+        let thread_group_size = MTLSize {
+            width: 32, // 1 SIMD group
+            height: 1,
+            depth: 1,
+        };
         let thread_group_count = MTLSize {
-            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
+            width: m as u64, // 1 threadgroup per row
             height: 1,
             depth: 1,
         };
@@ -5312,78 +5289,48 @@ impl MetalContext {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ3K>()) as u64;
 
+        // Simple args structure matching kernel's kquant_mv_args
         #[repr(C)]
-        struct MvArgs {
-            ne00: i32,
-            ne01: i32,
-            ne02: i32,
-            nb00: u64,
-            nb01: u64,
-            nb02: u64,
-            nb03: u64,
-            ne10: i32,
-            ne11: i32,
-            ne12: i32,
-            nb10: u64,
-            nb11: u64,
-            nb12: u64,
-            nb13: u64,
-            ne0: i32,
-            ne1: i32,
-            nr0: i32,
-            r2: i16,
-            r3: i16,
+        struct KquantMvArgs {
+            ne00: u32, // K dimension
+            ne01: u32, // M dimension
+            nb01: u64, // Byte stride
         }
 
-        let args = MvArgs {
-            ne00: k as i32,
-            ne01: m as i32,
-            ne02: 1,
-            nb00: 1,
-            nb01,
-            nb02: 0,
-            nb03: 0,
-            ne10: k as i32,
-            ne11: 1,
-            ne12: 1,
-            nb10: 4,
-            nb11: k as u64 * 4,
-            nb12: 0,
-            nb13: 0,
-            ne0: m as i32,
-            ne1: 1,
-            nr0: 2,
-            r2: 1,
-            r3: 1, // N_R0_Q3_K = 2
-        };
+        let args = KquantMvArgs { ne00: k as u32, ne01: m as u32, nb01 };
 
         let weights_size = weights.len() * std::mem::size_of::<BlockQ3K>();
         let input_size = input.len() * std::mem::size_of::<f32>();
         let output_size = m * std::mem::size_of::<f32>();
 
+        // Weights buffer - cache by data pointer (weights are static during inference)
         let weights_buffer = {
-            let mut buf_cell = self.mv_weights_buffer.borrow_mut();
-            let mut size_cell = self.mv_weights_size.borrow_mut();
+            let data_ptr = weights.as_ptr() as usize;
+            let mut cache = self.weight_buffer_cache.borrow_mut();
 
-            if *size_cell != weights_size {
-                let buf = self.device.new_buffer_with_data(
-                    weights.as_ptr() as *const std::ffi::c_void,
-                    weights_size as u64,
-                    metal::MTLResourceOptions::StorageModeShared,
-                );
-                *buf_cell = Some(buf.clone());
-                *size_cell = weights_size;
-                buf
+            if let Some(buffer) = cache.get(&data_ptr) {
+                // Buffer already exists for this tensor
+                std::rc::Rc::clone(buffer)
             } else {
-                buf_cell.as_ref().unwrap().clone()
+                // Create new buffer and cache it
+                let buffer =
+                    std::rc::Rc::new(self.device.new_buffer_with_data(
+                        weights.as_ptr() as *const std::ffi::c_void,
+                        weights_size as u64,
+                        metal::MTLResourceOptions::StorageModeShared,
+                    ));
+                cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
+                buffer
             }
         };
 
+        // Input buffer - data changes every layer, so always upload
         let input_buffer = {
             let mut buf_cell = self.mv_input_buffer.borrow_mut();
             let mut size_cell = self.mv_input_size.borrow_mut();
 
             if *size_cell != input_size {
+                // Size changed, create new buffer with data
                 let buf = self.device.new_buffer_with_data(
                     input.as_ptr() as *const std::ffi::c_void,
                     input_size as u64,
@@ -5393,10 +5340,21 @@ impl MetalContext {
                 *size_cell = input_size;
                 buf
             } else {
-                buf_cell.as_ref().unwrap().clone()
+                // Size matches, reuse buffer but copy new data
+                let buf = buf_cell.as_ref().unwrap().clone();
+                let contents = buf.contents();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        input.as_ptr() as *const std::ffi::c_void,
+                        contents,
+                        input_size,
+                    );
+                }
+                buf
             }
         };
 
+        // Output buffer - create once, reuse
         let output_buffer = {
             let mut buf_cell = self.mv_output_buffer.borrow_mut();
             let mut size_cell = self.mv_output_size.borrow_mut();
@@ -5418,28 +5376,24 @@ impl MetalContext {
         let encoder = command_buffer.new_compute_command_encoder();
 
         encoder.set_compute_pipeline_state(&self.mv_q3_k_pipeline);
-        // Template kernel signature: (args, src0, src1, dst)
-        // Index 0: args struct
-        // Index 1: src0 (weights)
-        // Index 2: src1 (input)
-        // Index 3: dst (output)
+        // Kernel signature: buffer(0)=weights, 1=input, 2=output, 3=args
+        encoder.set_buffer(0, Some(&weights_buffer), 0);
+        encoder.set_buffer(1, Some(&input_buffer), 0);
+        encoder.set_buffer(2, Some(&output_buffer), 0);
         encoder.set_bytes(
-            0,
-            std::mem::size_of::<MvArgs>() as u64,
-            &args as *const MvArgs as *const std::ffi::c_void,
+            3,
+            std::mem::size_of::<KquantMvArgs>() as u64,
+            &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
-        encoder.set_buffer(1, Some(&weights_buffer), 0);
-        encoder.set_buffer(2, Some(&input_buffer), 0);
-        encoder.set_buffer(3, Some(&output_buffer), 0);
 
-        // Q3_K: N_R0 = 2, NSG = 2
-        const NSG: u64 = 2;
-        const NR0: u64 = 2; // N_R0_Q3_K = 2
-        const ROWS_PER_THREADGROUP: u64 = NSG * NR0; // 4
-
-        let thread_group_size = MTLSize { width: 32, height: NSG, depth: 1 };
+        // Thread group configuration - Simple version (1 row per threadgroup)
+        let thread_group_size = MTLSize {
+            width: 32, // 1 SIMD group
+            height: 1,
+            depth: 1,
+        };
         let thread_group_count = MTLSize {
-            width: (m as u64 + ROWS_PER_THREADGROUP - 1) / ROWS_PER_THREADGROUP,
+            width: m as u64, // 1 threadgroup per row
             height: 1,
             depth: 1,
         };

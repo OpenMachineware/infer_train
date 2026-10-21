@@ -39,7 +39,12 @@ fn main() {
     let mut ctx = InferenceContext::from_gguf(model_path, Device::Gpu)
         .expect("Failed to load model");
     println!("Model loaded in {:?}", start_model.elapsed());
+    println!("  Architecture: {}", ctx.config.architecture);
     println!("  Layers: {}", ctx.layer_count());
+    println!("  Hidden size: {}", ctx.config.hidden_size);
+    println!("  n_heads: {}", ctx.config.n_heads);
+    println!("  n_kv_heads: {}", ctx.config.n_kv_heads);
+    println!("  head_dim: {}", ctx.config.head_dim);
     println!("  Params: {}M", ctx.param_count() / 1_000_000);
 
     // Tokenize prompt

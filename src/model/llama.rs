@@ -1629,10 +1629,6 @@ impl LlamaModel {
             if !has_nan {
                 return gpu_result;
             }
-            eprintln!(
-                "[GEMM] GPU returned NaN, falling back to CPU (M={}, N={}, K={}, dtype={:?})",
-                m, batch, k, w.dtype
-            );
         }
 
         // Fallback to sequential CPU GEMV
@@ -3092,8 +3088,12 @@ impl LlamaModel {
         let q_out_size = wq.shape[1];
         let k_out_size = wk.shape[1];
         let v_out_size = wv.shape[1];
-        let n_heads = q_out_size / head_dim;
-        let n_kv_heads = k_out_size / head_dim;
+        // For Qwen3: head_dim is explicit (128), NOT hidden_size/n_heads
+        // All Q, K, V heads have the same dimension
+        // Derive n_heads and n_kv_heads from weight shapes
+        let n_heads = q_out_size / self.config.head_dim;
+        let n_kv_heads = k_out_size / self.config.head_dim;
+        let head_dim = self.config.head_dim; // Use explicit head_dim from config
         let intermediate_size = w1.shape[1];
 
         // ================================================================
@@ -3281,7 +3281,7 @@ impl LlamaModel {
 
         // Q layout from GEMM: [batch, n_heads * head_dim]
         // Each token has all heads packed contiguously
-        // Strides: batch stride = n_heads * head_dim, head stride = head_dim, seq stride = n_heads * head_dim
+        // Strides: batch stride = n_heads * head_dim, head stride = head_dim
         let q_stride_b = n_heads * head_dim;
         let q_stride_h = head_dim;
         let q_stride_s = n_heads * head_dim;
