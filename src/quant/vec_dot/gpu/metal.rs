@@ -186,6 +186,8 @@ pub struct MetalContext {
     flash_decode_mma_pipeline: ComputePipelineState,
     flash_decode_mma_v2_pipeline: ComputePipelineState, // Optimized version
     flash_decode_mma_true_pipeline: ComputePipelineState, // True MMA with simdgroup_float8x8
+    // Multi-head Flash Attention (llama.cpp style, Q=32, NSG=8)
+    flash_attn_multihead_128_pipeline: ComputePipelineState,
     // Flash Prefill (for batched prefill)
     flash_prefill_f16_pipeline: ComputePipelineState,
     // Batched flash prefill (llama.cpp style)
@@ -394,6 +396,9 @@ impl Clone for MetalContext {
                 .clone(),
             flash_decode_mma_true_pipeline: self
                 .flash_decode_mma_true_pipeline
+                .clone(),
+            flash_attn_multihead_128_pipeline: self
+                .flash_attn_multihead_128_pipeline
                 .clone(),
             flash_prefill_f16_pipeline: self.flash_prefill_f16_pipeline.clone(),
             flash_prefill_batch_pipeline: self
@@ -1866,6 +1871,38 @@ impl MetalContext {
                 )
             })?;
 
+        // Create Multi-Head Flash Attention pipeline (llama.cpp style)
+        // Q=32, NSG=8 for 32x dispatch overhead reduction
+        let flash_attn_multihead_source = include_str!(
+            "../../../ops/metal/attention/flash_attn_multihead.metal"
+        );
+        let flash_attn_multihead_library = device
+            .new_library_with_source(
+                flash_attn_multihead_source,
+                &compile_options,
+            )
+            .map_err(|e| {
+                format!("Failed to compile flash_attn_multihead library: {}", e)
+            })?;
+        let flash_attn_multihead_128_kernel = flash_attn_multihead_library
+            .get_function("kernel_flash_attn_multihead_d128", None)
+            .map_err(|e| {
+                format!(
+                    "Failed to get kernel_flash_attn_multihead_d128 kernel: {}",
+                    e
+                )
+            })?;
+        let flash_attn_multihead_128_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &flash_attn_multihead_128_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create flash_attn_multihead_128 pipeline: {}",
+                    e
+                )
+            })?;
+
         // Create Flash Prefill pipeline
         let flash_prefill_f16_kernel = flash_prefill_library
             .get_function("flash_prefill_attention_f16", None)
@@ -2280,6 +2317,7 @@ impl MetalContext {
             flash_decode_mma_pipeline,
             flash_decode_mma_v2_pipeline,
             flash_decode_mma_true_pipeline,
+            flash_attn_multihead_128_pipeline,
             // Flash Prefill
             flash_prefill_f16_pipeline,
             flash_prefill_batch_pipeline,
@@ -11538,6 +11576,75 @@ impl MetalContext {
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         // Do NOT end_encoding() or commit() - let caller handle that
+    }
+
+    /// Multi-Head Flash Attention (llama.cpp style)
+    /// Process 32 heads per threadgroup for 32x dispatch overhead reduction
+    /// Q=32, NSG=8, C=64
+    pub fn flash_attn_multihead_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        n_seqs: usize,
+        n_heads: usize,
+        head_dim: usize,
+        seq_len: usize,
+        kv_stride: usize,
+        q_buffer: &Buffer,
+        k_buffer: &Buffer,
+        v_buffer: &Buffer,
+        output_buffer: &Buffer,
+    ) {
+        // Only support head_dim=128 for now
+        if head_dim != 128 {
+            eprintln!(
+                "Multi-head Flash Attention only supports head_dim=128, got {}",
+                head_dim
+            );
+            return;
+        }
+
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+        let seq_k = seq_len as u32;
+        let kv_stride_u32 = kv_stride as u32;
+
+        encoder.set_compute_pipeline_state(
+            &self.flash_attn_multihead_128_pipeline,
+        );
+        encoder.set_bytes(
+            0,
+            4,
+            &seq_k as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            1,
+            4,
+            &kv_stride_u32 as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            2,
+            4,
+            &scale as *const f32 as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(3, Some(q_buffer), 0);
+        encoder.set_buffer(4, Some(k_buffer), 0);
+        encoder.set_buffer(5, Some(v_buffer), 0);
+        encoder.set_buffer(6, Some(output_buffer), 0);
+
+        // Grid: [n_heads / 32, n_seqs, 1]
+        // Each threadgroup processes 32 heads with 8 simdgroups (256 threads)
+        let n_head_groups = (n_heads + 31) / 32;
+        let thread_group_size = MTLSize {
+            width: 256, // 8 simdgroups
+            height: 1,
+            depth: 1,
+        };
+        let thread_group_count = MTLSize {
+            width: n_head_groups as u64,
+            height: n_seqs as u64,
+            depth: 1,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     }
 
     /// Flash Attention MMA kernel (experimental, for performance comparison)

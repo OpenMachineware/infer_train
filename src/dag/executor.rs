@@ -446,10 +446,22 @@ impl DagExecutor {
                 let weight_tensor = ctx.weight_bindings.get(weight)?;
                 let dtype = weight_tensor.dtype;
 
-                if std::env::var("INFER_TRACE_DAG").is_ok() {
+                // Debug: print Gemv parameters for first occurrence
+                if std::env::var("INFER_TRACE_NAN").is_ok() && node.id < 500 {
                     eprintln!(
-                        "[TRACE] Gemv: input={}, output={}, out_size={}",
-                        input, output, out_size
+                        "[DEBUG] Gemv node {}: m={}, k={}, dtype={:?}",
+                        node.id, out_size, ctx.model.config.hidden_size, dtype
+                    );
+                    eprintln!(
+                        "  input_buf len={}, weight_buf len={}, output_buf len={}",
+                        input_buf.length(),
+                        weight_buf.length(),
+                        output_buf.length()
+                    );
+                    eprintln!(
+                        "  weight_tensor shape={:?}, bytes={}",
+                        weight_tensor.shape,
+                        weight_tensor.bytes().len()
                     );
                 }
 
@@ -724,8 +736,27 @@ impl DagExecutor {
                 let seq_len = ctx.kv_cache.seq_len() + 1; // +1 for current token
                 let kv_stride = ctx.kv_cache.max_seq();
 
-                // Use MMA kernel if enabled and head_dim is 128
-                if ctx.use_mma && *head_dim == 128 {
+                // Use multi-head kernel if enabled (INFER_USE_MULTIHEAD=1)
+                // This reduces dispatch overhead by 32x for models with n_heads >= 32
+                let use_multihead = std::env::var("INFER_USE_MULTIHEAD")
+                    .is_ok()
+                    && *head_dim == 128
+                    && *n_heads >= 32;
+
+                if use_multihead {
+                    ctx.gpu_ctx.flash_attn_multihead_encode(
+                        encoder,
+                        1, // n_seqs
+                        *n_heads,
+                        *head_dim,
+                        seq_len,
+                        kv_stride,
+                        &q_buf,
+                        k_buf,
+                        v_buf,
+                        &output_buf,
+                    );
+                } else if ctx.use_mma && *head_dim == 128 {
                     if ctx.use_mma_v2 {
                         ctx.gpu_ctx.flash_attn_mma_v2_encode(
                             encoder,
