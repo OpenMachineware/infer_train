@@ -289,6 +289,10 @@ impl DagExecutor {
         command_buffer.commit();
         command_buffer.wait_until_completed();
 
+        // CRITICAL: Advance KV cache position after each forward pass
+        // This must happen AFTER GPU execution completes
+        exec_ctx.kv_cache.advance();
+
         // Debug: check all tensors for NaN after GPU execution
         if std::env::var("INFER_TRACE_NAN").is_ok() {
             let mut first_nan_node: Option<usize> = None;
@@ -844,6 +848,14 @@ impl DagExecutor {
                 let seq_len = ctx.kv_cache.seq_len() + 1; // +1 for current token
                 let kv_stride = ctx.kv_cache.max_seq();
 
+                // CRITICAL: Memory barrier to ensure KV cache writes are visible
+                // Without this, FlashAttention may read stale/garbage data from KV cache
+                use metal::ResourceRef;
+                encoder.memory_barrier_with_resources(&[
+                    k_buf.as_ref() as &ResourceRef,
+                    v_buf.as_ref() as &ResourceRef,
+                ]);
+
                 // Debug: trace FlashAttention inputs for layers 30-31
                 if std::env::var("INFER_TRACE_NAN").is_ok() && *layer_idx >= 30
                 {
@@ -973,13 +985,38 @@ impl DagExecutor {
                         .collect();
                     let has_nan = (0..std::cmp::min(10, len))
                         .any(|i| unsafe { (*ptr.add(i)).is_nan() });
+
+                    // Check buffer addresses for overlap detection
+                    let cache_buf = if *is_key {
+                        ctx.kv_cache.k_buffer(*layer_idx)
+                    } else {
+                        ctx.kv_cache.v_buffer(*layer_idx)
+                    };
+                    let layer_30_buf = if *is_key {
+                        ctx.kv_cache.k_buffer(30)
+                    } else {
+                        ctx.kv_cache.v_buffer(30)
+                    };
+                    let layer_31_buf = if *is_key {
+                        ctx.kv_cache.k_buffer(31)
+                    } else {
+                        ctx.kv_cache.v_buffer(31)
+                    };
+
                     eprintln!(
-                        "[KV] Layer {} {}: input tensor {}, has_nan={}, first_vals={:?}",
+                        "[KV] Layer {} {}: input tensor {}, has_nan={}, first_vals={:?}, pos={}, n_kv_heads={}, head_dim={}, max_seq={}, buf_ptr={:p}, L30_buf={:p}, L31_buf={:p}",
                         layer_idx,
                         if *is_key { "K" } else { "V" },
                         input,
                         has_nan,
-                        first_vals
+                        first_vals,
+                        pos,
+                        n_kv_heads,
+                        head_dim,
+                        max_seq,
+                        cache_buf.contents(),
+                        layer_30_buf.contents(),
+                        layer_31_buf.contents()
                     );
                 }
 

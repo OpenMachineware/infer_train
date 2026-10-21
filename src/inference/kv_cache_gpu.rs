@@ -48,6 +48,12 @@ impl KVCacheGPU {
         // Each layer needs: n_kv_heads * max_seq * head_dim * 2 bytes (F16)
         let bytes_per_layer = n_kv_heads * max_seq * head_dim * 2;
 
+        // Debug: print KV cache allocation parameters
+        eprintln!(
+            "[KV INIT] n_layers={}, n_kv_heads={}, head_dim={}, max_seq={}, bytes_per_layer={}",
+            n_layers, n_kv_heads, head_dim, max_seq, bytes_per_layer
+        );
+
         let k_buffers: Vec<Rc<Buffer>> = (0..n_layers)
             .map(|_| {
                 let buf = Rc::new(device.new_buffer(
