@@ -1596,6 +1596,13 @@ impl LlamaModel {
         // GGUF stores weights in column-major: shape = [K, M]
         let k = w.shape[0];
 
+        if std::env::var("INFER_TIMING").is_ok() {
+            eprintln!(
+                "[GEMM] M={}, N={}, K={}, dtype={:?}",
+                m, batch, k, w.dtype
+            );
+        }
+
         // Use matmul_q*_k_f32 which dispatches to MV for N=1, GEMM for N>=32
         let gpu_result = match w.dtype {
             crate::model::tensor::DataType::Q4_K => {

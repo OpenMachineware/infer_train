@@ -309,6 +309,12 @@ impl DagExecutor {
                             val.is_nan() || val.is_infinite()
                         });
 
+                        // Check for all zeros too
+                        let all_zeros = (0..std::cmp::min(10, len)).all(|i| {
+                            let val = unsafe { *ptr.add(i) };
+                            val == 0.0
+                        });
+
                         if has_nan && first_nan_node.is_none() {
                             first_nan_node = Some(*node_id);
                             eprintln!(
@@ -331,11 +337,39 @@ impl DagExecutor {
                                             let val = unsafe { *ptr.add(i) };
                                             val.is_nan() || val.is_infinite()
                                         });
+                                    let input_all_zeros =
+                                        (0..std::cmp::min(10, len)).all(|i| {
+                                            let val = unsafe { *ptr.add(i) };
+                                            val == 0.0
+                                        });
                                     eprintln!(
-                                        "  Input tensor {}: has_nan={}",
-                                        input_id, input_has_nan
+                                        "  Input tensor {}: has_nan={}, all_zeros={}",
+                                        input_id,
+                                        input_has_nan,
+                                        input_all_zeros
                                     );
                                 }
+                            }
+                        }
+
+                        // Trace FlashAttention outputs specifically
+                        if matches!(&node.op, Operation::FlashAttention { .. })
+                        {
+                            if let Operation::FlashAttention {
+                                layer_idx, ..
+                            } = &node.op
+                            {
+                                eprintln!(
+                                    "[CHECK] FlashAttention node {} (layer {}): tensor {}, has_nan={}, all_zeros={}, first_vals={:?}",
+                                    node_id,
+                                    layer_idx,
+                                    output_id,
+                                    has_nan,
+                                    all_zeros,
+                                    (0..5)
+                                        .map(|i| unsafe { *ptr.add(i) })
+                                        .collect::<Vec<_>>()
+                                );
                             }
                         }
                     }
@@ -399,6 +433,18 @@ impl DagExecutor {
         ctx: &mut ExecutionContext,
         encoder: &metal::ComputeCommandEncoderRef,
     ) -> Option<()> {
+        // Debug: trace all nodes in range
+        if std::env::var("INFER_TRACE_NAN").is_ok()
+            && node.id >= 520
+            && node.id <= 545
+        {
+            eprintln!(
+                "[NODE] Node {}: {:?}",
+                node.id,
+                std::mem::discriminant(&node.op)
+            );
+        }
+
         match &node.op {
             Operation::EmbeddingLookup {
                 token_id: _,
@@ -415,6 +461,26 @@ impl DagExecutor {
                 let weight_buf = ctx.tensor_registry.get(*weight)?;
                 let output_buf =
                     ctx.forward_pool.get(ctx.model.config.hidden_size * 4);
+
+                if std::env::var("INFER_TRACE_NAN").is_ok()
+                    && *output >= 725
+                    && *output <= 745
+                {
+                    eprintln!(
+                        "[TRACE] RmsNorm node {}: input={}, output={}",
+                        node.id, input, output
+                    );
+                    let input_ptr = input_buf.contents() as *const f32;
+                    let input_len = (input_buf.length() / 4) as usize;
+                    let input_vals: Vec<f32> = unsafe {
+                        std::slice::from_raw_parts(
+                            input_ptr,
+                            std::cmp::min(5, input_len),
+                        )
+                        .to_vec()
+                    };
+                    eprintln!("  input tensor {}: {:?}", input, input_vals);
+                }
 
                 if std::env::var("INFER_TRACE_DAG").is_ok() {
                     eprintln!(
@@ -446,23 +512,39 @@ impl DagExecutor {
                 let weight_tensor = ctx.weight_bindings.get(weight)?;
                 let dtype = weight_tensor.dtype;
 
-                // Debug: print Gemv parameters for first occurrence
-                if std::env::var("INFER_TRACE_NAN").is_ok() && node.id < 500 {
+                // Debug: print Gemv parameters
+                if std::env::var("INFER_TRACE_NAN").is_ok() {
                     eprintln!(
-                        "[DEBUG] Gemv node {}: m={}, k={}, dtype={:?}",
-                        node.id, out_size, ctx.model.config.hidden_size, dtype
+                        "[TRACE] Gemv node {}: input={}, weight={}, output={}, dtype={:?}, weight_shape={:?}",
+                        node.id,
+                        input,
+                        weight,
+                        output,
+                        dtype,
+                        weight_tensor.shape
                     );
+
+                    // Check if weight buffer has valid data
+                    let weight_ptr = weight_buf.contents() as *const u8;
+                    let weight_len = weight_buf.length() as usize;
                     eprintln!(
-                        "  input_buf len={}, weight_buf len={}, output_buf len={}",
-                        input_buf.length(),
-                        weight_buf.length(),
-                        output_buf.length()
+                        "[TRACE] Weight buffer length: {} bytes",
+                        weight_len
                     );
+
+                    // Check if input buffer has valid size
+                    let input_ptr = input_buf.contents() as *const f32;
+                    let input_len = input_buf.length() as usize / 4;
                     eprintln!(
-                        "  weight_tensor shape={:?}, bytes={}",
-                        weight_tensor.shape,
-                        weight_tensor.bytes().len()
+                        "[TRACE] Input buffer length: {} floats",
+                        input_len
                     );
+
+                    // Check first few input values
+                    let first_vals: Vec<f32> = (0..std::cmp::min(5, input_len))
+                        .map(|i| unsafe { *input_ptr.add(i) })
+                        .collect();
+                    eprintln!("[TRACE] First input values: {:?}", first_vals);
                 }
 
                 ctx.gpu_ctx.mv_encode(
@@ -660,6 +742,16 @@ impl DagExecutor {
                 // Get weight dtypes
                 let gate_dtype = ctx.weight_bindings.get(gate_weight)?.dtype;
                 let up_dtype = ctx.weight_bindings.get(up_weight)?.dtype;
+
+                if std::env::var("INFER_TRACE_NAN").is_ok()
+                    && node.id >= 520
+                    && node.id <= 545
+                {
+                    eprintln!(
+                        "[TRACE] FusedGateUp node {}: input={}, outputs={}/{}",
+                        node.id, input, output_gate, output_up
+                    );
+                }
 
                 if std::env::var("INFER_TRACE_DAG").is_ok() {
                     eprintln!(
@@ -886,6 +978,35 @@ impl DagExecutor {
                 let output_buf =
                     ctx.forward_pool.get(ctx.model.config.hidden_size * 4);
 
+                if std::env::var("INFER_TRACE_NAN").is_ok()
+                    && *output >= 725
+                    && *output <= 745
+                {
+                    eprintln!(
+                        "[TRACE] Add node {}: lhs={}, rhs={}, output={}",
+                        node.id, lhs, rhs, output
+                    );
+                    let lhs_ptr = lhs_buf.contents() as *const f32;
+                    let lhs_len = (lhs_buf.length() / 4) as usize;
+                    let lhs_vals: Vec<f32> = unsafe {
+                        std::slice::from_raw_parts(
+                            lhs_ptr,
+                            std::cmp::min(5, lhs_len),
+                        )
+                        .to_vec()
+                    };
+                    let rhs_ptr = rhs_buf.contents() as *const f32;
+                    let rhs_len = (rhs_buf.length() / 4) as usize;
+                    let rhs_vals: Vec<f32> = unsafe {
+                        std::slice::from_raw_parts(
+                            rhs_ptr,
+                            std::cmp::min(5, rhs_len),
+                        )
+                        .to_vec()
+                    };
+                    eprintln!("  lhs: {:?}, rhs: {:?}", lhs_vals, rhs_vals);
+                }
+
                 if std::env::var("INFER_TRACE_DAG").is_ok() {
                     eprintln!(
                         "[TRACE] Add: lhs={}, rhs={}, output={}",
@@ -909,13 +1030,15 @@ impl DagExecutor {
             Operation::FusedSwiGLU { gate, up, output, layer_idx: _ } => {
                 let gate_buf = ctx.tensor_registry.get(*gate)?;
                 let up_buf = ctx.tensor_registry.get(*up)?;
-                let output_buf =
-                    ctx.forward_pool.get(ctx.model.config.hidden_size * 4);
+
+                // Get intermediate_size from gate_buf length
+                let intermediate_size = (gate_buf.length() / 4) as usize;
+                let output_buf = ctx.forward_pool.get(intermediate_size * 4);
 
                 if std::env::var("INFER_TRACE_DAG").is_ok() {
                     eprintln!(
-                        "[TRACE] FusedSwiGLU: gate={}, up={}, output={}",
-                        gate, up, output
+                        "[TRACE] FusedSwiGLU: gate={}, up={}, output={}, intermediate_size={}",
+                        gate, up, output, intermediate_size
                     );
                 }
 
@@ -924,7 +1047,7 @@ impl DagExecutor {
                     &gate_buf,
                     &up_buf,
                     &output_buf,
-                    ctx.model.config.hidden_size,
+                    intermediate_size,
                 );
 
                 ctx.tensor_registry.insert(*output, output_buf);

@@ -60,7 +60,7 @@ fn main() {
         );
         ctx.forward(&prompt_tokens, &mut kv_cache).expect("Prefill failed")
     } else {
-        ctx.forward_prefill_batch(&prompt_tokens).expect("Prefill failed")
+        ctx.forward_gpu_batched(&prompt_tokens).expect("Prefill failed")
     };
 
     #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
@@ -102,7 +102,7 @@ fn main() {
         } else {
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
             {
-                decode_logits = match ctx.forward_gpu_native(&[
+                decode_logits = match ctx.forward_gpu_batched(&[
                     current_tokens[current_tokens.len() - 1]
                 ]) {
                     Some(l) => l,

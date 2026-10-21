@@ -592,6 +592,15 @@ impl DagOptimizer {
             return;
         }
 
+        // Debug output
+        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+            eprintln!(
+                "[FUSION] Removing {} nodes, adding {} nodes",
+                nodes_to_remove.len(),
+                nodes_to_add.len()
+            );
+        }
+
         // Build a map: removed_node_id -> output_tensor_ids it produces
         let mut removed_outputs: std::collections::HashMap<usize, Vec<usize>> =
             std::collections::HashMap::new();
@@ -599,6 +608,12 @@ impl DagOptimizer {
             if let Some(node) = dag.nodes.get(node_id) {
                 let outputs = Self::get_output_tensors(&node.op);
                 if !outputs.is_empty() {
+                    if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                        eprintln!(
+                            "[FUSION] Removed node {} produced tensors: {:?}",
+                            node_id, outputs
+                        );
+                    }
                     removed_outputs.insert(node_id, outputs);
                 }
             }
@@ -611,6 +626,12 @@ impl DagOptimizer {
             let outputs = Self::get_output_tensors(&node.op);
             for &output_id in &outputs {
                 output_to_new_node.insert(output_id, node.id);
+                if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                    eprintln!(
+                        "[FUSION] New node {} produces tensor: {}",
+                        node.id, output_id
+                    );
+                }
             }
         }
 

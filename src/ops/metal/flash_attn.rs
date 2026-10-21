@@ -67,6 +67,8 @@ pub struct FlashAttnMetalContext {
     pipeline_q5_0: ComputePipelineState,
     pipeline_q5_1: ComputePipelineState,
     pipeline_q8_0: ComputePipelineState,
+    // MMA pipeline for decode (optimized with matrix operations)
+    pipeline_mma_f16: ComputePipelineState,
     // Cached buffers
     q_buffer: RefCell<Option<Buffer>>,
     k_buffer: RefCell<Option<Buffer>>,
@@ -231,11 +233,28 @@ impl FlashAttnMetalContext {
             &constant_values,
         )?;
 
+        // Load MMA kernel library
+        let mma_source = include_str!("attention/flash_attn_mma.metal");
+        let mma_library = device
+            .new_library_with_source(mma_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile Flash Attention MMA library: {}", e)
+            })?;
+
+        // Create MMA pipeline for F16 decode
+        let mma_kernel = mma_library
+            .get_function("kernel_flash_attn_ext_mma_f16_dk128_dv128_c8", None)
+            .map_err(|e| format!("Failed to get MMA kernel: {}", e))?;
+        let pipeline_mma_f16 = device
+            .new_compute_pipeline_state_with_function(&mma_kernel)
+            .map_err(|e| format!("Failed to create MMA pipeline: {}", e))?;
+
         Ok(Self {
             device,
             queue,
             library,
             pipeline_f16,
+            pipeline_mma_f16,
             pipeline_q4_0,
             pipeline_q4_1,
             pipeline_q5_0,
@@ -248,6 +267,11 @@ impl FlashAttnMetalContext {
             dst_buffer: RefCell::new(None),
             shmem_size: RefCell::new(0),
         })
+    }
+
+    /// Check if MMA is available for decode
+    pub fn has_mma() -> bool {
+        true
     }
 
     fn get_pipeline(&self, format: KvFormat) -> &ComputePipelineState {
