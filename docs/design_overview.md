@@ -776,15 +776,17 @@ pub struct MetalContext {
 
 ### Hy-MT2-7B NaN Issue (2026-10-21)
 
-**Status**: Fixed KV cache advance, NaN in Q4_K GEMV under investigation
+**Status**: ✅ RESOLVED
 
 **Root Causes Identified**:
 1. **CRITICAL: KV cache sequence length not advancing** - All tokens wrote to position 0
-2. **Missing memory barrier** - Race condition between kv_update and flash_attn kernels
-3. **New discovery**: NaN originates from Q4_K GEMV (layer 29 output projection), NOT FlashAttention
+2. **Q4_K quantization bug** - Scales set to all zeros, causing zero outputs or NaN with dmin/d calculation
+3. **Unnecessary memory barrier** - Not needed on Apple Silicon unified memory architecture
 
 **Fixes Applied**:
-- Added `kv_cache.advance()` call after each forward pass
+1. Added `kv_cache.advance()` call after each forward pass in DAG executor
+2. Fixed Q4_K quantization to properly set scales (1) and mins (8) with correct dmin=d
+3. Removed unnecessary memory barrier from FlashAttention path
 - Added memory barrier before FlashAttention
 - Added comprehensive KV cache tracing
 
