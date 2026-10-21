@@ -898,6 +898,7 @@ impl DagExecutor {
                         encoder,
                         1, // n_seqs
                         *n_heads,
+                        *n_kv_heads,
                         *head_dim,
                         seq_len,
                         kv_stride,

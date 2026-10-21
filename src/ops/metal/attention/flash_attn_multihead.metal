@@ -35,9 +35,11 @@ kernel void kernel_flash_attn_multihead(
     constant uint &seq_k [[buffer(0)]], // KV cache length
     constant uint &kv_stride [[buffer(1)]], // KV cache stride (max_seq)
     constant float &scale [[buffer(2)]], // Attention scale (1/sqrt(DK))
+    constant uint &n_kv_heads [[buffer(7)]], // Number of KV heads (for GQA)
+    constant uint &n_heads [[buffer(8)]], // Number of query heads
     device const float *query [[buffer(3)]], // Query [n_heads, DK]
-    device const half *key [[buffer(4)]], // Key cache [n_heads, max_seq, DK]
-    device const half *value [[buffer(5)]], // Value cache [n_heads, max_seq, DV]
+    device const half *key [[buffer(4)]], // Key cache [n_kv_heads, max_seq, DK]
+    device const half *value [[buffer(5)]], // Value cache [n_kv_heads, max_seq, DV]
     device float *output [[buffer(6)]], // Output [n_heads, DV]
     uint3 tgpig [[threadgroup_position_in_grid]],
     ushort tiisg [[thread_index_in_simdgroup]],
@@ -61,6 +63,7 @@ kernel void kernel_flash_attn_multihead(
 
     // For DK=128, each thread loads DK/4/32 = 1 float4 per query
     // Total: 4 queries * 1 float4 = 4 float4s per thread
+    // Each thread gets the float4 at index tiisg
     float4 q_local[NQ];
 
     for (short q = 0; q < NQ; q++)
@@ -70,10 +73,8 @@ kernel void kernel_flash_attn_multihead(
 
         // Each thread loads one float4 from each query
         // For DK=128: 128/4 = 32 float4s total, 32 threads load 1 each
-        if (tiisg < DK / 4)
-        {
-            q_local[q] = q_ptr[tiisg];
-        }
+        // Thread tiisg loads the float4 at index tiisg
+        q_local[q] = q_ptr[tiisg];
     }
 
     // Online softmax state for each head this simdgroup handles
@@ -114,6 +115,9 @@ kernel void kernel_flash_attn_multihead(
         {
             const short head = head_group * Q_PER_TG + local_head_start + q;
 
+            // GQA mapping: map query head to KV head
+            const short kv_head = head * n_kv_heads / n_heads;
+
             // Compute Q*K^T for this head
             // Process C/NW positions per thread
             for (uint c_offset = 0; c_offset < C_PER_TG / NW; c_offset++)
@@ -126,23 +130,17 @@ kernel void kernel_flash_attn_multihead(
                     continue;
                 }
 
-                // Load K for this position
-                device const half *k_ptr = key + head * kv_stride * DK + pos * DK;
+                // Load K for this position (using KV head for GQA)
+                device const half *k_ptr = key + kv_head * kv_stride * DK + pos * DK;
 
                 // Compute dot product: Q · K
-                float qk = 0.0f;
-                for (short i = 0; i < DK / 4; i++)
-                {
-                    // Load K (half4) and convert to float4
-                    half4 k_h4 = *((device const half4 *)(k_ptr + i * 4));
-                    float4 k_f4 = float4(k_h4);
+                // Each thread only computes its portion (the float4 at index tiisg)
+                half4 k_h4 = *((device const half4 *)(k_ptr + tiisg * 4));
+                float4 k_f4 = float4(k_h4);
+                float qk = dot(q_local[q], k_f4);
 
-                    // Dot with Q (only this thread's portion)
-                    qk += dot(q_local[q], k_f4);
-                }
-
-                // Reduce within simdgroup
-                // All threads contribute to the dot product
+                // Reduce within simdgroup to get full dot product
+                // All 32 threads contribute their portion
                 float qk_total = simd_sum(qk);
                 float score = qk_total * scale;
 
@@ -155,18 +153,15 @@ kernel void kernel_flash_attn_multihead(
 
                 S[q] = S[q] * exp_mdiff + exp_sdiff;
 
-                // Load V and update output
-                device const half *v_ptr = value + head * kv_stride * DV + pos * DV;
+                // Load V and update output (using KV head for GQA)
+                device const half *v_ptr = value + kv_head * kv_stride * DV + pos * DV;
 
-                // Load V (half4) and update O
-                for (short i = 0; i < DV / 4; i++)
-                {
-                    half4 v_h4 = *((device const half4 *)(v_ptr + i * 4));
-                    float4 v_f4 = float4(v_h4);
+                // Load V (half4) - only this thread's portion
+                half4 v_h4 = *((device const half4 *)(v_ptr + tiisg * 4));
+                float4 v_f4 = float4(v_h4);
 
-                    // This thread updates its portion of the output
-                    O[q * DV / 4 + i] = O[q * DV / 4 + i] * exp_mdiff + exp_sdiff * v_f4;
-                }
+                // Update O - only this thread's portion
+                O[q * DV / 4 + tiisg] = O[q * DV / 4 + tiisg] * exp_mdiff + exp_sdiff * v_f4;
             }
         }
 
@@ -181,10 +176,8 @@ kernel void kernel_flash_attn_multihead(
         const float inv_S = S[q] > 0.0f ? 1.0f / S[q] : 0.0f;
 
         device float4 *out_ptr = (device float4 *)(output + head * DV);
-        for (short i = 0; i < DV / 4; i++)
-        {
-            out_ptr[i] = O[q * DV / 4 + i] * inv_S;
-        }
+        // Each thread writes only its portion
+        out_ptr[tiisg] = O[q * DV / 4 + tiisg] * inv_S;
     }
 }
 
@@ -193,6 +186,8 @@ template [[host_name("kernel_flash_attn_multihead_d64")]] kernel void kernel_fla
     constant uint &,
     constant uint &,
     constant float &,
+    constant uint &,
+    constant uint &,
     device const float *,
     device const half *,
     device const half *,
@@ -205,6 +200,8 @@ template [[host_name("kernel_flash_attn_multihead_d128")]] kernel void kernel_fl
     constant uint &,
     constant uint &,
     constant float &,
+    constant uint &,
+    constant uint &,
     device const float *,
     device const half *,
     device const half *,

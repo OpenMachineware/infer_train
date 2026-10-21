@@ -11522,6 +11522,7 @@ impl MetalContext {
         encoder: &ComputeCommandEncoderRef,
         n_seqs: usize,
         n_heads: usize,
+        n_kv_heads: usize,
         head_dim: usize,
         seq_len: usize,
         kv_stride: usize,
@@ -11565,6 +11566,20 @@ impl MetalContext {
         encoder.set_buffer(4, Some(k_buffer), 0);
         encoder.set_buffer(5, Some(v_buffer), 0);
         encoder.set_buffer(6, Some(output_buffer), 0);
+
+        // Pass GQA parameters (buffer indices 7 and 8)
+        let n_kv_heads_u32 = n_kv_heads as u32;
+        let n_heads_u32 = n_heads as u32;
+        encoder.set_bytes(
+            7,
+            4,
+            &n_kv_heads_u32 as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            8,
+            4,
+            &n_heads_u32 as *const u32 as *const std::ffi::c_void,
+        );
 
         // Grid: [n_heads / 32, n_seqs, 1]
         // Each threadgroup processes 32 heads with 8 simdgroups (256 threads)
