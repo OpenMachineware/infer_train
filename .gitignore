@@ -44,3 +44,6 @@ tools/*.dylib
 
 # Temporary planning documents
 TMP_*.md
+
+# Qoder workspace files
+.qoder-cn/
