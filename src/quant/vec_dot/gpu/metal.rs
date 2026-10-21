@@ -5812,159 +5812,75 @@ impl MetalContext {
         } else {
             let use_4 = k % 4 == 0; // Use float4 version if K % 4 == 0
 
-            // Try optimized kernel for large K (llama.cpp-style with nxpsg)
-            // For K >= 256, use nxpsg=16 (matching llama.cpp: ne00 % 256 == 0 && ne11 < 3)
-            if use_4 && k >= 256 {
-                // Use optimized kernel with nxpsg=16
-                encoder.set_compute_pipeline_state(
-                    &self.mv_f16_opt_r1_1_nxpsg16_pipeline,
-                );
+            // Match llama.cpp NSG formula: min(4, (K+127)/128)
+            let nsg = if use_4 { std::cmp::min(4, (k + 127) / 128) } else { 1 };
 
-                // mul_mv_ext_args structure (matching Metal kernel)
-                #[repr(C)]
-                struct MvExtArgs {
-                    ne00: i32,
-                    ne01: i32,
-                    ne02: i32,
-                    nb00: u64,
-                    nb01: u64,
-                    nb02: u64,
-                    nb03: u64,
-                    ne10: i32,
-                    ne11: i32,
-                    ne12: i32,
-                    nb10: u64,
-                    nb11: u64,
-                    nb12: u64,
-                    nb13: u64,
-                    ne0: i32,
-                    ne1: i32,
+            let pipeline = if use_4 {
+                match nsg {
+                    1 => &self.mv_f16_4_nsg1_pipeline,
+                    2 => &self.mv_f16_4_nsg2_pipeline,
+                    _ => &self.mv_f16_4_nsg4_pipeline, // 4 or larger
                 }
-
-                let args = MvExtArgs {
-                    ne00: k as i32,
-                    ne01: m as i32,
-                    ne02: 1,
-                    nb00: 2, // sizeof(half)
-                    nb01: (k * 2) as u64,
-                    nb02: 0,
-                    nb03: 0,
-                    ne10: k as i32,
-                    ne11: 1, // batch=1 for decode
-                    ne12: 1,
-                    nb10: 4, // sizeof(float)
-                    nb11: (k * 4) as u64,
-                    nb12: 0,
-                    nb13: 0,
-                    ne0: m as i32,
-                    ne1: 1,
-                };
-
-                encoder.set_bytes(
-                    0,
-                    std::mem::size_of::<MvExtArgs>() as u64,
-                    &args as *const MvExtArgs as *const std::ffi::c_void,
-                );
-                encoder.set_buffer(1, Some(weights_buffer), 0);
-                encoder.set_buffer(2, Some(input_buffer), 0);
-                encoder.set_buffer(3, Some(&output_buffer), 0);
-
-                // Threadgroup configuration for nxpsg=16, nsg=1
-                // nypsg = 32/nxpsg = 2 (threads per simdgroup in Y dimension)
-                // Each threadgroup has 1 simdgroup = 32 threads
-                let thread_group_size =
-                    MTLSize { width: 32, height: 1, depth: 1 };
-                // Number of threadgroups = (M / nypsg) = (M / 2)
-                let thread_group_count = MTLSize {
-                    width: ((m + 1) / 2) as u64,
-                    height: 1,
-                    depth: 1,
-                };
-
-                encoder.dispatch_thread_groups(
-                    thread_group_count,
-                    thread_group_size,
-                );
             } else {
-                // Fall back to original kernels
-                // Match llama.cpp NSG formula: min(4, (K+127)/128)
-                let nsg =
-                    if use_4 { std::cmp::min(4, (k + 127) / 128) } else { 1 };
+                &self.mv_f16_basic_pipeline
+            };
 
-                let pipeline = if use_4 {
-                    match nsg {
-                        1 => &self.mv_f16_4_nsg1_pipeline,
-                        2 => &self.mv_f16_4_nsg2_pipeline,
-                        _ => &self.mv_f16_4_nsg4_pipeline, // 4 or larger
-                    }
-                } else {
-                    &self.mv_f16_basic_pipeline
-                };
+            encoder.set_compute_pipeline_state(pipeline);
 
-                encoder.set_compute_pipeline_state(pipeline);
+            // Match llama.cpp NSG formula: min(4, (K+127)/128)
+            let nsg: i16 = if use_4 {
+                std::cmp::min(4, (k + 127) / 128) as i16
+            } else {
+                1
+            };
 
-                // Match llama.cpp NSG formula: min(4, (K+127)/128)
-                let nsg: i16 = if use_4 {
-                    std::cmp::min(4, (k + 127) / 128) as i16
-                } else {
-                    1
-                };
+            let args = MvArgs {
+                ne00: k as i32,
+                ne01: m as i32,
+                ne02: 1,
+                nb00: 2,
+                nb01: (k * 2) as u64,
+                nb02: 0,
+                nb03: 0,
+                ne10: k as i32,
+                ne11: 1,
+                ne12: 1,
+                nb10: 4,
+                nb11: (k * 4) as u64,
+                nb12: 0,
+                nb13: 0,
+                ne0: m as i32,
+                ne1: 1,
+                nr0: 2,
+                r2: 1,
+                r3: 1,
+                nsg: nsg as i16, // Store in args for reference
+                ne12_batch: 1,
+            };
 
-                let args = MvArgs {
-                    ne00: k as i32,
-                    ne01: m as i32,
-                    ne02: 1,
-                    nb00: 2,
-                    nb01: (k * 2) as u64,
-                    nb02: 0,
-                    nb03: 0,
-                    ne10: k as i32,
-                    ne11: 1,
-                    ne12: 1,
-                    nb10: 4,
-                    nb11: (k * 4) as u64,
-                    nb12: 0,
-                    nb13: 0,
-                    ne0: m as i32,
-                    ne1: 1,
-                    nr0: 2,
-                    r2: 1,
-                    r3: 1,
-                    nsg: nsg as i16, // Store in args for reference
-                    ne12_batch: 1,
-                };
+            encoder.set_bytes(
+                0,
+                std::mem::size_of::<MvArgs>() as u64,
+                &args as *const MvArgs as *const std::ffi::c_void,
+            );
+            encoder.set_buffer(1, Some(weights_buffer), 0);
+            encoder.set_buffer(2, Some(input_buffer), 0);
+            encoder.set_buffer(3, Some(&output_buffer), 0);
 
-                encoder.set_bytes(
-                    0,
-                    std::mem::size_of::<MvArgs>() as u64,
-                    &args as *const MvArgs as *const std::ffi::c_void,
-                );
-                encoder.set_buffer(1, Some(weights_buffer), 0);
-                encoder.set_buffer(2, Some(input_buffer), 0);
-                encoder.set_buffer(3, Some(&output_buffer), 0);
+            // Threadgroup size scales with nsg
+            let thread_group_size =
+                MTLSize { width: (nsg as u64 * 32), height: 1, depth: 1 };
+            let thread_group_count =
+                MTLSize { width: ((m + 1) / 2) as u64, height: 1, depth: 1 };
 
-                // Threadgroup size scales with nsg
-                let thread_group_size =
-                    MTLSize { width: (nsg as u64 * 32), height: 1, depth: 1 };
-                let thread_group_count = MTLSize {
-                    width: ((m + 1) / 2) as u64,
-                    height: 1,
-                    depth: 1,
-                };
+            // Allocate threadgroup memory for reduction (2 rows * 32 threads * nsg simdgroups)
+            let threadgroup_mem_size =
+                (2 * 32 * nsg as usize) * std::mem::size_of::<f32>();
+            encoder
+                .set_threadgroup_memory_length(0, threadgroup_mem_size as u64);
 
-                // Allocate threadgroup memory for reduction (2 rows * 32 threads * nsg simdgroups)
-                let threadgroup_mem_size =
-                    (2 * 32 * nsg as usize) * std::mem::size_of::<f32>();
-                encoder.set_threadgroup_memory_length(
-                    0,
-                    threadgroup_mem_size as u64,
-                );
-
-                encoder.dispatch_thread_groups(
-                    thread_group_count,
-                    thread_group_size,
-                );
-            }
+            encoder
+                .dispatch_thread_groups(thread_group_count, thread_group_size);
         }
 
         encoder.end_encoding();
