@@ -97,6 +97,8 @@ pub struct MetalContext {
     mv_f16_4_nsg1_pipeline: ComputePipelineState,
     mv_f16_4_nsg2_pipeline: ComputePipelineState,
     mv_f16_4_nsg4_pipeline: ComputePipelineState,
+    // Optimized F16 pipelines with nxpsg support (llama.cpp-style)
+    mv_f16_opt_r1_1_nxpsg16_pipeline: ComputePipelineState,
     // Cached MV pipelines - Standard Q
     mv_q1_0_pipeline: ComputePipelineState,
     mv_q2_0_pipeline: ComputePipelineState,
@@ -183,6 +185,7 @@ pub struct MetalContext {
     // MMA-based decode (experimental, for performance comparison)
     flash_decode_mma_pipeline: ComputePipelineState,
     flash_decode_mma_v2_pipeline: ComputePipelineState, // Optimized version
+    flash_decode_mma_true_pipeline: ComputePipelineState, // True MMA with simdgroup_float8x8
     // Flash Prefill (for batched prefill)
     flash_prefill_f16_pipeline: ComputePipelineState,
     // Batched flash prefill (llama.cpp style)
@@ -271,6 +274,9 @@ impl Clone for MetalContext {
             mv_f16_4_nsg1_pipeline: self.mv_f16_4_nsg1_pipeline.clone(),
             mv_f16_4_nsg2_pipeline: self.mv_f16_4_nsg2_pipeline.clone(),
             mv_f16_4_nsg4_pipeline: self.mv_f16_4_nsg4_pipeline.clone(),
+            mv_f16_opt_r1_1_nxpsg16_pipeline: self
+                .mv_f16_opt_r1_1_nxpsg16_pipeline
+                .clone(),
             mv_q1_0_pipeline: self.mv_q1_0_pipeline.clone(),
             mv_q2_0_pipeline: self.mv_q2_0_pipeline.clone(),
             mv_q4_0_pipeline: self.mv_q4_0_pipeline.clone(),
@@ -385,6 +391,9 @@ impl Clone for MetalContext {
             flash_decode_mma_pipeline: self.flash_decode_mma_pipeline.clone(),
             flash_decode_mma_v2_pipeline: self
                 .flash_decode_mma_v2_pipeline
+                .clone(),
+            flash_decode_mma_true_pipeline: self
+                .flash_decode_mma_true_pipeline
                 .clone(),
             flash_prefill_f16_pipeline: self.flash_prefill_f16_pipeline.clone(),
             flash_prefill_batch_pipeline: self
@@ -726,6 +735,70 @@ impl MetalContext {
             .new_compute_pipeline_state_with_function(&mv_f16_4_nsg4_kernel)
             .map_err(|e| {
                 format!("Failed to create F16 GEMV _4_nsg4 pipeline: {}", e)
+            })?;
+
+        // Load optimized F16 GEMV library (llama.cpp-style with nxpsg)
+        let mv_f16_optimized_source =
+            include_str!("../../../ops/metal/gemv/mul_mv_f16_optimized.metal");
+        let mv_f16_optimized_library = device
+            .new_library_with_source(mv_f16_optimized_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile F16 GEMV optimized library: {}", e)
+            })?;
+
+        // Create optimized pipelines for r1ptg=1 (decode scenario)
+        // For K >= 256 && batch=1, use nxpsg=16
+        let mut fc_opt_nxpsg16 = metal::FunctionConstantValues::new();
+        let nsg_opt: i16 = 1;
+        let nxpsg16: i16 = 16;
+        let ne12_opt: i16 = 1;
+        let r2_opt: i16 = 1;
+        let r3_opt: i16 = 1;
+        fc_opt_nxpsg16.set_constant_value_at_index(
+            &nsg_opt as *const i16 as *const std::ffi::c_void,
+            metal::MTLDataType::Short,
+            600,
+        );
+        fc_opt_nxpsg16.set_constant_value_at_index(
+            &nxpsg16 as *const i16 as *const std::ffi::c_void,
+            metal::MTLDataType::Short,
+            601,
+        );
+        fc_opt_nxpsg16.set_constant_value_at_index(
+            &ne12_opt as *const i16 as *const std::ffi::c_void,
+            metal::MTLDataType::Short,
+            602,
+        );
+        fc_opt_nxpsg16.set_constant_value_at_index(
+            &r2_opt as *const i16 as *const std::ffi::c_void,
+            metal::MTLDataType::Short,
+            603,
+        );
+        fc_opt_nxpsg16.set_constant_value_at_index(
+            &r3_opt as *const i16 as *const std::ffi::c_void,
+            metal::MTLDataType::Short,
+            604,
+        );
+        let mv_f16_opt_r1_1_nxpsg16_kernel = mv_f16_optimized_library
+            .get_function(
+                "kernel_mul_mv_ext_f16_f32_r1_1",
+                Some(fc_opt_nxpsg16),
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to get optimized F16 kernel r1=1 nxpsg=16: {}",
+                    e
+                )
+            })?;
+        let mv_f16_opt_r1_1_nxpsg16_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &mv_f16_opt_r1_1_nxpsg16_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create optimized F16 pipeline r1=1 nxpsg=16: {}",
+                    e
+                )
             })?;
 
         // Compile RMS Norm library
@@ -1762,6 +1835,37 @@ impl MetalContext {
                 format!("Failed to create flash_decode_mma_v2 pipeline: {}", e)
             })?;
 
+        // Create Flash Attention MMA True pipeline (with simdgroup_float8x8)
+        let flash_decode_mma_true_source = include_str!(
+            "../../../ops/metal/attention/flash_decode_mma_true.metal"
+        );
+        let flash_decode_mma_true_library = device
+            .new_library_with_source(
+                flash_decode_mma_true_source,
+                &compile_options,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to compile flash_decode_mma_true library: {}",
+                    e
+                )
+            })?;
+        let flash_decode_mma_true_kernel = flash_decode_mma_true_library
+            .get_function("flash_decode_mma_true_f16", None)
+            .map_err(|e| {
+                format!("Failed to get flash_decode_mma_true_f16 kernel: {}", e)
+            })?;
+        let flash_decode_mma_true_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &flash_decode_mma_true_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create flash_decode_mma_true pipeline: {}",
+                    e
+                )
+            })?;
+
         // Create Flash Prefill pipeline
         let flash_prefill_f16_kernel = flash_prefill_library
             .get_function("flash_prefill_attention_f16", None)
@@ -2090,6 +2194,8 @@ impl MetalContext {
             mv_f16_4_nsg1_pipeline,
             mv_f16_4_nsg2_pipeline,
             mv_f16_4_nsg4_pipeline,
+            // Optimized F16 pipeline with nxpsg
+            mv_f16_opt_r1_1_nxpsg16_pipeline,
             // MV pipelines - Standard Q
             mv_q1_0_pipeline,
             mv_q2_0_pipeline,
@@ -2173,6 +2279,7 @@ impl MetalContext {
             flash_decode_f16_160_pipeline,
             flash_decode_mma_pipeline,
             flash_decode_mma_v2_pipeline,
+            flash_decode_mma_true_pipeline,
             // Flash Prefill
             flash_prefill_f16_pipeline,
             flash_prefill_batch_pipeline,
@@ -3307,6 +3414,83 @@ impl MetalContext {
         } else {
             let use_4 = k % 4 == 0; // Use float4 version if K % 4 == 0
 
+            // Try optimized kernel for large K (llama.cpp-style with nxpsg)
+            // For K >= 256, use nxpsg=16 (matching llama.cpp: ne00 % 256 == 0 && ne11 < 3)
+            if use_4 && k >= 256 {
+                // Use optimized kernel with nxpsg=16
+                encoder.set_compute_pipeline_state(
+                    &self.mv_f16_opt_r1_1_nxpsg16_pipeline,
+                );
+
+                // mul_mv_ext_args structure (matching Metal kernel)
+                #[repr(C)]
+                struct MvExtArgs {
+                    ne00: i32,
+                    ne01: i32,
+                    ne02: i32,
+                    nb00: u64,
+                    nb01: u64,
+                    nb02: u64,
+                    nb03: u64,
+                    ne10: i32,
+                    ne11: i32,
+                    ne12: i32,
+                    nb10: u64,
+                    nb11: u64,
+                    nb12: u64,
+                    nb13: u64,
+                    ne0: i32,
+                    ne1: i32,
+                }
+
+                let args = MvExtArgs {
+                    ne00: k as i32,
+                    ne01: m as i32,
+                    ne02: 1,
+                    nb00: 2, // sizeof(half)
+                    nb01: (k * 2) as u64,
+                    nb02: 0,
+                    nb03: 0,
+                    ne10: k as i32,
+                    ne11: 1, // batch=1 for decode
+                    ne12: 1,
+                    nb10: 4, // sizeof(float)
+                    nb11: (k * 4) as u64,
+                    nb12: 0,
+                    nb13: 0,
+                    ne0: m as i32,
+                    ne1: 1,
+                };
+
+                encoder.set_bytes(
+                    0,
+                    std::mem::size_of::<MvExtArgs>() as u64,
+                    &args as *const MvExtArgs as *const std::ffi::c_void,
+                );
+                encoder.set_buffer(1, Some(weights_buffer), 0);
+                encoder.set_buffer(2, Some(input_buffer), 0);
+                encoder.set_buffer(3, Some(output_buffer), 0);
+
+                // Threadgroup configuration for nxpsg=16, nsg=1
+                // nypsg = 32/nxpsg = 2 (threads per simdgroup in Y dimension)
+                // Each threadgroup has 1 simdgroup = 32 threads
+                let thread_group_size =
+                    MTLSize { width: 32, height: 1, depth: 1 };
+                // Number of threadgroups = (M / nypsg) = (M / 2)
+                let thread_group_count = MTLSize {
+                    width: ((m + 1) / 2) as u64,
+                    height: 1,
+                    depth: 1,
+                };
+
+                encoder.dispatch_thread_groups(
+                    thread_group_count,
+                    thread_group_size,
+                );
+                return true;
+            }
+
+            // Fall back to original kernels
             // Match llama.cpp NSG formula: min(4, (K+127)/128)
             let nsg = if use_4 { std::cmp::min(4, (k + 127) / 128) } else { 1 };
 
@@ -5636,75 +5820,159 @@ impl MetalContext {
         } else {
             let use_4 = k % 4 == 0; // Use float4 version if K % 4 == 0
 
-            // Match llama.cpp NSG formula: min(4, (K+127)/128)
-            let nsg = if use_4 { std::cmp::min(4, (k + 127) / 128) } else { 1 };
+            // Try optimized kernel for large K (llama.cpp-style with nxpsg)
+            // For K >= 256, use nxpsg=16 (matching llama.cpp: ne00 % 256 == 0 && ne11 < 3)
+            if use_4 && k >= 256 {
+                // Use optimized kernel with nxpsg=16
+                encoder.set_compute_pipeline_state(
+                    &self.mv_f16_opt_r1_1_nxpsg16_pipeline,
+                );
 
-            let pipeline = if use_4 {
-                match nsg {
-                    1 => &self.mv_f16_4_nsg1_pipeline,
-                    2 => &self.mv_f16_4_nsg2_pipeline,
-                    _ => &self.mv_f16_4_nsg4_pipeline, // 4 or larger
+                // mul_mv_ext_args structure (matching Metal kernel)
+                #[repr(C)]
+                struct MvExtArgs {
+                    ne00: i32,
+                    ne01: i32,
+                    ne02: i32,
+                    nb00: u64,
+                    nb01: u64,
+                    nb02: u64,
+                    nb03: u64,
+                    ne10: i32,
+                    ne11: i32,
+                    ne12: i32,
+                    nb10: u64,
+                    nb11: u64,
+                    nb12: u64,
+                    nb13: u64,
+                    ne0: i32,
+                    ne1: i32,
                 }
+
+                let args = MvExtArgs {
+                    ne00: k as i32,
+                    ne01: m as i32,
+                    ne02: 1,
+                    nb00: 2, // sizeof(half)
+                    nb01: (k * 2) as u64,
+                    nb02: 0,
+                    nb03: 0,
+                    ne10: k as i32,
+                    ne11: 1, // batch=1 for decode
+                    ne12: 1,
+                    nb10: 4, // sizeof(float)
+                    nb11: (k * 4) as u64,
+                    nb12: 0,
+                    nb13: 0,
+                    ne0: m as i32,
+                    ne1: 1,
+                };
+
+                encoder.set_bytes(
+                    0,
+                    std::mem::size_of::<MvExtArgs>() as u64,
+                    &args as *const MvExtArgs as *const std::ffi::c_void,
+                );
+                encoder.set_buffer(1, Some(weights_buffer), 0);
+                encoder.set_buffer(2, Some(input_buffer), 0);
+                encoder.set_buffer(3, Some(&output_buffer), 0);
+
+                // Threadgroup configuration for nxpsg=16, nsg=1
+                // nypsg = 32/nxpsg = 2 (threads per simdgroup in Y dimension)
+                // Each threadgroup has 1 simdgroup = 32 threads
+                let thread_group_size =
+                    MTLSize { width: 32, height: 1, depth: 1 };
+                // Number of threadgroups = (M / nypsg) = (M / 2)
+                let thread_group_count = MTLSize {
+                    width: ((m + 1) / 2) as u64,
+                    height: 1,
+                    depth: 1,
+                };
+
+                encoder.dispatch_thread_groups(
+                    thread_group_count,
+                    thread_group_size,
+                );
             } else {
-                &self.mv_f16_basic_pipeline
-            };
+                // Fall back to original kernels
+                // Match llama.cpp NSG formula: min(4, (K+127)/128)
+                let nsg =
+                    if use_4 { std::cmp::min(4, (k + 127) / 128) } else { 1 };
 
-            encoder.set_compute_pipeline_state(pipeline);
+                let pipeline = if use_4 {
+                    match nsg {
+                        1 => &self.mv_f16_4_nsg1_pipeline,
+                        2 => &self.mv_f16_4_nsg2_pipeline,
+                        _ => &self.mv_f16_4_nsg4_pipeline, // 4 or larger
+                    }
+                } else {
+                    &self.mv_f16_basic_pipeline
+                };
 
-            // Match llama.cpp NSG formula: min(4, (K+127)/128)
-            let nsg: i16 = if use_4 {
-                std::cmp::min(4, (k + 127) / 128) as i16
-            } else {
-                1
-            };
+                encoder.set_compute_pipeline_state(pipeline);
 
-            let args = MvArgs {
-                ne00: k as i32,
-                ne01: m as i32,
-                ne02: 1,
-                nb00: 2,
-                nb01: (k * 2) as u64,
-                nb02: 0,
-                nb03: 0,
-                ne10: k as i32,
-                ne11: 1,
-                ne12: 1,
-                nb10: 4,
-                nb11: (k * 4) as u64,
-                nb12: 0,
-                nb13: 0,
-                ne0: m as i32,
-                ne1: 1,
-                nr0: 2,
-                r2: 1,
-                r3: 1,
-                nsg: nsg as i16, // Store in args for reference
-                ne12_batch: 1,
-            };
+                // Match llama.cpp NSG formula: min(4, (K+127)/128)
+                let nsg: i16 = if use_4 {
+                    std::cmp::min(4, (k + 127) / 128) as i16
+                } else {
+                    1
+                };
 
-            encoder.set_bytes(
-                0,
-                std::mem::size_of::<MvArgs>() as u64,
-                &args as *const MvArgs as *const std::ffi::c_void,
-            );
-            encoder.set_buffer(1, Some(weights_buffer), 0);
-            encoder.set_buffer(2, Some(input_buffer), 0);
-            encoder.set_buffer(3, Some(&output_buffer), 0);
+                let args = MvArgs {
+                    ne00: k as i32,
+                    ne01: m as i32,
+                    ne02: 1,
+                    nb00: 2,
+                    nb01: (k * 2) as u64,
+                    nb02: 0,
+                    nb03: 0,
+                    ne10: k as i32,
+                    ne11: 1,
+                    ne12: 1,
+                    nb10: 4,
+                    nb11: (k * 4) as u64,
+                    nb12: 0,
+                    nb13: 0,
+                    ne0: m as i32,
+                    ne1: 1,
+                    nr0: 2,
+                    r2: 1,
+                    r3: 1,
+                    nsg: nsg as i16, // Store in args for reference
+                    ne12_batch: 1,
+                };
 
-            // Threadgroup size scales with nsg
-            let thread_group_size =
-                MTLSize { width: (nsg as u64 * 32), height: 1, depth: 1 };
-            let thread_group_count =
-                MTLSize { width: ((m + 1) / 2) as u64, height: 1, depth: 1 };
+                encoder.set_bytes(
+                    0,
+                    std::mem::size_of::<MvArgs>() as u64,
+                    &args as *const MvArgs as *const std::ffi::c_void,
+                );
+                encoder.set_buffer(1, Some(weights_buffer), 0);
+                encoder.set_buffer(2, Some(input_buffer), 0);
+                encoder.set_buffer(3, Some(&output_buffer), 0);
 
-            // Allocate threadgroup memory for reduction (2 rows * 32 threads * nsg simdgroups)
-            let threadgroup_mem_size =
-                (2 * 32 * nsg as usize) * std::mem::size_of::<f32>();
-            encoder
-                .set_threadgroup_memory_length(0, threadgroup_mem_size as u64);
+                // Threadgroup size scales with nsg
+                let thread_group_size =
+                    MTLSize { width: (nsg as u64 * 32), height: 1, depth: 1 };
+                let thread_group_count = MTLSize {
+                    width: ((m + 1) / 2) as u64,
+                    height: 1,
+                    depth: 1,
+                };
 
-            encoder
-                .dispatch_thread_groups(thread_group_count, thread_group_size);
+                // Allocate threadgroup memory for reduction (2 rows * 32 threads * nsg simdgroups)
+                let threadgroup_mem_size =
+                    (2 * 32 * nsg as usize) * std::mem::size_of::<f32>();
+                encoder.set_threadgroup_memory_length(
+                    0,
+                    threadgroup_mem_size as u64,
+                );
+
+                encoder.dispatch_thread_groups(
+                    thread_group_count,
+                    thread_group_size,
+                );
+            }
         }
 
         encoder.end_encoding();
@@ -9655,18 +9923,26 @@ impl MetalContext {
         k_buffer: &Buffer,
         v_buffer: &Buffer,
     ) -> Result<std::rc::Rc<Buffer>, String> {
+        // Use true MMA pipeline for head_dim=128 (simdgroup_float8x8)
+        // Expected 2-3x speedup over vector kernel
+        let use_mma = head_dim == 128;
+
         // Select pipeline based on head_dim
-        let pipeline = match head_dim {
-            32 => &self.flash_decode_f16_32_pipeline,
-            64 => &self.flash_decode_f16_64_pipeline,
-            80 => &self.flash_decode_f16_80_pipeline,
-            128 => &self.flash_decode_f16_128_pipeline,
-            160 => &self.flash_decode_f16_160_pipeline,
-            _ => {
-                return Err(format!(
-                    "Flash Attention does not support head_dim={}, only 32/64/80/128/160",
-                    head_dim
-                ));
+        let pipeline = if use_mma {
+            &self.flash_decode_mma_true_pipeline
+        } else {
+            match head_dim {
+                32 => &self.flash_decode_f16_32_pipeline,
+                64 => &self.flash_decode_f16_64_pipeline,
+                80 => &self.flash_decode_f16_80_pipeline,
+                128 => &self.flash_decode_f16_128_pipeline,
+                160 => &self.flash_decode_f16_160_pipeline,
+                _ => {
+                    return Err(format!(
+                        "Flash Attention does not support head_dim={}, only 32/64/80/128/160",
+                        head_dim
+                    ));
+                }
             }
         };
 
@@ -9721,10 +9997,17 @@ impl MetalContext {
         encoder.set_buffer(6, Some(&output_buffer), 0);
 
         // Grid: [1, n_heads, n_seqs]
-        // Each threadgroup handles one (head, batch) pair
-        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
-        let thread_group_count =
-            MTLSize { width: 1, height: n_heads as u64, depth: n_seqs as u64 };
+        // Each simdgroup processes one head
+        let thread_group_size = MTLSize {
+            width: 32, // 32 threads per simdgroup
+            height: 1,
+            depth: 1,
+        };
+        let thread_group_count = MTLSize {
+            width: n_heads as u64, // One simdgroup per head
+            height: n_seqs as u64,
+            depth: 1,
+        };
 
         // Threadgroup memory for shared query and scores
         // s_query: float4[32] = 512 bytes (fixed size, kernel uses HEAD_DIM/4 elements)
