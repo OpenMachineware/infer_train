@@ -169,6 +169,8 @@ pub struct MetalContext {
     fused_norm_linear_f16_pipeline: ComputePipelineState,
     fused_norm_linear_f32_pipeline: ComputePipelineState,
     fused_norm_linear_f16_4_pipeline: ComputePipelineState,
+    // TODO: Add Q5_K, Q6_K fused norm linear pipelines
+    fused_norm_linear_q4_k_pipeline: ComputePipelineState,
     // FusedAddNorm (Add + RMSNorm)
     fused_add_norm_f32_pipeline: ComputePipelineState,
     fused_add_norm_f32_4_pipeline: ComputePipelineState,
@@ -361,6 +363,9 @@ impl Clone for MetalContext {
                 .clone(),
             fused_norm_linear_f16_4_pipeline: self
                 .fused_norm_linear_f16_4_pipeline
+                .clone(),
+            fused_norm_linear_q4_k_pipeline: self
+                .fused_norm_linear_q4_k_pipeline
                 .clone(),
             fused_add_norm_f32_pipeline: self
                 .fused_add_norm_f32_pipeline
@@ -840,8 +845,14 @@ impl MetalContext {
         // Compile Fused Norm Linear library
         let fused_norm_linear_source =
             include_str!("../../../ops/metal/ops/fused_norm_linear.metal");
+        // Replace include with actual content (needed for Q4_K fused kernel)
+        let fused_norm_linear_combined = fused_norm_linear_source
+            .replace("#include \"../include/blocks.h\"", blocks_h);
         let fused_norm_linear_library = device
-            .new_library_with_source(fused_norm_linear_source, &compile_options)
+            .new_library_with_source(
+                &fused_norm_linear_combined,
+                &compile_options,
+            )
             .map_err(|e| {
                 format!("Failed to compile fused_norm_linear library: {}", e)
             })?;
@@ -1685,6 +1696,27 @@ impl MetalContext {
                 )
             })?;
 
+        // Create FusedNormLinear Q4_K pipeline
+        // TODO: Add Q5_K, Q6_K pipelines
+        let fused_norm_linear_q4_k_kernel = fused_norm_linear_library
+            .get_function("kernel_fused_norm_linear_q4_k", None)
+            .map_err(|e| {
+                format!(
+                    "Failed to get kernel_fused_norm_linear_q4_k kernel: {}",
+                    e
+                )
+            })?;
+        let fused_norm_linear_q4_k_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_norm_linear_q4_k_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create fused_norm_linear_q4_k pipeline: {}",
+                    e
+                )
+            })?;
+
         // Create FusedAddNorm pipelines
         let fused_add_norm_f32_kernel = fused_add_norm_library
             .get_function("kernel_fused_add_norm_f32", None)
@@ -2303,6 +2335,7 @@ impl MetalContext {
             fused_norm_linear_f16_pipeline,
             fused_norm_linear_f32_pipeline,
             fused_norm_linear_f16_4_pipeline,
+            fused_norm_linear_q4_k_pipeline,
             fused_add_norm_f32_pipeline,
             fused_add_norm_f32_4_pipeline,
             fused_add_norm_f16_pipeline,
@@ -8796,6 +8829,55 @@ impl MetalContext {
         encoder.set_threadgroup_memory_length(0, tg_mem_size as u64);
 
         // One threadgroup per output row
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Fused RMSNorm + Linear with Q4_K quantized weights
+    /// TODO: Add Q5_K, Q6_K versions
+    pub fn fused_norm_linear_q4_k_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        input_buffer: &Buffer,
+        norm_weight_buffer: &Buffer,
+        weights_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+        epsilon: f32,
+        nb01: u64,
+    ) {
+        encoder
+            .set_compute_pipeline_state(&self.fused_norm_linear_q4_k_pipeline);
+        encoder.set_buffer(0, Some(input_buffer), 0);
+        encoder.set_buffer(1, Some(norm_weight_buffer), 0);
+        encoder.set_buffer(2, Some(weights_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+        encoder.set_bytes(
+            4,
+            4,
+            &(m as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            5,
+            4,
+            &(k as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            6,
+            4,
+            &epsilon as *const f32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(7, 8, &nb01 as *const u64 as *const std::ffi::c_void);
+
+        // Threadgroup memory size (K elements as F32) + reduction buffer
+        let tg_mem_size = std::cmp::max(k * 4 + 256, 4096);
+        encoder.set_threadgroup_memory_length(0, tg_mem_size as u64);
+
+        // One threadgroup per output row, 32 threads for SIMD reduction
         let thread_group_count =
             MTLSize { width: m as u64, height: 1, depth: 1 };
         let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };

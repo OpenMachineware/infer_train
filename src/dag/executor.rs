@@ -1191,6 +1191,23 @@ impl DagExecutor {
                             *epsilon,
                         );
                     }
+                    crate::model::tensor::DataType::Q4_K => {
+                        // Q4_K fused kernel - each block is 144 bytes for 256 elements
+                        let nb = ctx.model.config.hidden_size / 256;
+                        let nb01 = (nb * 144) as u64;
+                        // TODO: Add Q5_K, Q6_K fused kernel support
+                        ctx.gpu_ctx.fused_norm_linear_q4_k_encode(
+                            encoder,
+                            &input_buf,
+                            &norm_weight_buf,
+                            &linear_weight_buf,
+                            &output_buf,
+                            *out_size,
+                            ctx.model.config.hidden_size,
+                            *epsilon,
+                            nb01,
+                        );
+                    }
                     _ => {
                         // Fallback: separate RMSNorm + GEMV for other dtypes
                         // First, do RMSNorm
