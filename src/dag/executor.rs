@@ -790,6 +790,22 @@ impl DagExecutor {
                 let input_buf = ctx.tensor_registry.get(*input)?;
                 let output_buf = ctx.forward_pool.get(*n_heads * *head_dim * 4);
 
+                // Debug: trace RoPE for layers 30-31
+                if std::env::var("INFER_TRACE_NAN").is_ok()
+                    && ctx.layer_idx >= 30
+                {
+                    let ptr = input_buf.contents() as *const f32;
+                    let len = input_buf.length() as usize / 4;
+                    let first_vals: Vec<f32> =
+                        (0..5).map(|i| unsafe { *ptr.add(i) }).collect();
+                    let has_nan = (0..std::cmp::min(10, len))
+                        .any(|i| unsafe { (*ptr.add(i)).is_nan() });
+                    eprintln!(
+                        "[ROPE] Layer {} input tensor {}: has_nan={}, first_vals={:?}",
+                        ctx.layer_idx, input, has_nan, first_vals
+                    );
+                }
+
                 // Create position slice
                 let pos_slice = [ctx.position as i32];
 
@@ -827,6 +843,44 @@ impl DagExecutor {
                 // Get actual sequence length from kv_cache
                 let seq_len = ctx.kv_cache.seq_len() + 1; // +1 for current token
                 let kv_stride = ctx.kv_cache.max_seq();
+
+                // Debug: trace FlashAttention inputs for layers 30-31
+                if std::env::var("INFER_TRACE_NAN").is_ok() && *layer_idx >= 30
+                {
+                    let q_ptr = q_buf.contents() as *const f32;
+                    let q_len = q_buf.length() as usize / 4;
+                    let q_has_nan = (0..std::cmp::min(10, q_len))
+                        .any(|i| unsafe { (*q_ptr.add(i)).is_nan() });
+
+                    let k_ptr = k_buf.contents() as *const f32;
+                    let k_len = k_buf.length() as usize / 4;
+                    let k_has_nan = (0..std::cmp::min(10, k_len))
+                        .any(|i| unsafe { (*k_ptr.add(i)).is_nan() });
+
+                    let v_ptr = v_buf.contents() as *const f32;
+                    let v_len = v_buf.length() as usize / 4;
+                    let v_has_nan = (0..std::cmp::min(10, v_len))
+                        .any(|i| unsafe { (*v_ptr.add(i)).is_nan() });
+
+                    let q_first: Vec<f32> =
+                        (0..3).map(|i| unsafe { *q_ptr.add(i) }).collect();
+                    let k_first: Vec<f32> =
+                        (0..3).map(|i| unsafe { *k_ptr.add(i) }).collect();
+                    let v_first: Vec<f32> =
+                        (0..3).map(|i| unsafe { *v_ptr.add(i) }).collect();
+
+                    eprintln!(
+                        "[FA] Layer {}: Q(has_nan={}, {:?}), K(has_nan={}, {:?}), V(has_nan={}, {:?}), seq_len={}",
+                        layer_idx,
+                        q_has_nan,
+                        q_first,
+                        k_has_nan,
+                        k_first,
+                        v_has_nan,
+                        v_first,
+                        seq_len
+                    );
+                }
 
                 // Use multi-head kernel if enabled (INFER_USE_MULTIHEAD=1)
                 // This reduces dispatch overhead by 32x for models with n_heads >= 32
@@ -908,6 +962,26 @@ impl DagExecutor {
                 let head_dim = ctx.model.config.head_dim;
                 let pos = ctx.kv_cache.seq_len();
                 let max_seq = ctx.kv_cache.max_seq();
+
+                // Debug: trace KV cache operations for layers 30-31
+                if std::env::var("INFER_TRACE_NAN").is_ok() && *layer_idx >= 30
+                {
+                    let ptr = input_buf.contents() as *const f32;
+                    let len = input_buf.length() as usize / 4;
+                    let first_vals: Vec<f32> = (0..std::cmp::min(5, len))
+                        .map(|i| unsafe { *ptr.add(i) })
+                        .collect();
+                    let has_nan = (0..std::cmp::min(10, len))
+                        .any(|i| unsafe { (*ptr.add(i)).is_nan() });
+                    eprintln!(
+                        "[KV] Layer {} {}: input tensor {}, has_nan={}, first_vals={:?}",
+                        layer_idx,
+                        if *is_key { "K" } else { "V" },
+                        input,
+                        has_nan,
+                        first_vals
+                    );
+                }
 
                 if *is_key {
                     // Update K cache
