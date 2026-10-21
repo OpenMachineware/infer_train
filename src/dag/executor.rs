@@ -848,14 +848,6 @@ impl DagExecutor {
                 let seq_len = ctx.kv_cache.seq_len() + 1; // +1 for current token
                 let kv_stride = ctx.kv_cache.max_seq();
 
-                // CRITICAL: Memory barrier to ensure KV cache writes are visible
-                // Without this, FlashAttention may read stale/garbage data from KV cache
-                use metal::ResourceRef;
-                encoder.memory_barrier_with_resources(&[
-                    k_buf.as_ref() as &ResourceRef,
-                    v_buf.as_ref() as &ResourceRef,
-                ]);
-
                 // Debug: trace FlashAttention inputs for layers 30-31
                 if std::env::var("INFER_TRACE_NAN").is_ok() && *layer_idx >= 30
                 {

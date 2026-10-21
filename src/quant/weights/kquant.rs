@@ -119,22 +119,41 @@ pub fn quantize_q4_k(x: &[f32]) -> Vec<BlockQ4K> {
         for j in 0..QK_K {
             amax = amax.max(xb[j].abs());
         }
-        let d = amax / 8.0;
-        let id = if d > 0.0 { 1.0 / d } else { 0.0 };
+
+        // Scale: map to [-8, 8] range, then shift to [0, 16]
+        let d = if amax > 0.0 { amax / 8.0 } else { 1.0 };
+        let id = 1.0 / d;
 
         let mut qs = [0u8; 128];
         for j in 0..128 {
-            let x0 = xb[j] * id;
-            let x1 = xb[j + 128] * id;
-            let q0 = ((x0 + 8.5).clamp(0.0, 15.0) as u8) & 0x0F;
-            let q1 = ((x1 + 8.5).clamp(0.0, 15.0) as u8) & 0x0F;
+            let x0 = xb[j] * id + 8.0; // Shift to [0, 16]
+            let x1 = xb[j + 128] * id + 8.0;
+            let q0 = (x0.clamp(0.0, 15.999) as u8) & 0x0F;
+            let q1 = (x1.clamp(0.0, 15.999) as u8) & 0x0F;
             qs[j] = q0 | (q1 << 4);
+        }
+
+        // Set scales and mins for dequantization formula: d * v - dmin * min
+        // We want: d * (v - 8) = d * v - d * 8
+        // So: sc = 1, min = 8 for all sub-blocks
+        // This gives: dl = d * 1 = d, ml = dmin * 8
+        // Result: d * v - dmin * 8 = d * (v - 8) when dmin = d
+        let mut scales = [0u8; 12];
+        for j in 0..4 {
+            scales[j] = 1; // scale = 1 for sub-blocks 0-3
+            scales[j + 4] = 8; // min = 8 for sub-blocks 0-3
+        }
+        // scales[8..12] pack scales and mins for sub-blocks 4-7
+        for j in 0..4 {
+            // For sub-block j+4: scale = 1, min = 8
+            // Packed format: lower 4 bits = scale, upper 4 bits = min
+            scales[j + 8] = (8 << 4) | 1; // 0x81 = min=8 in upper nibble, scale=1 in lower
         }
 
         blocks.push(BlockQ4K {
             d: f16::from_f32(d).to_bits(),
-            dmin: f16::from_f32(0.0).to_bits(),
-            scales: [0u8; 12],
+            dmin: f16::from_f32(d).to_bits(), // dmin = d to compute d * 8
+            scales,
             qs,
         });
     }
