@@ -651,6 +651,7 @@ pub struct MetalContext {
 - MV/GEMM: All 23 formats implemented, performance bugs pending
 - Flash Attention: Decode (107 GFLOPS), Prefill (1106 GFLOPS)
 - Operators: RMS_NORM, SOFTMAX, ROPE, etc.
+- **Flash Attention bottleneck identified (2026-10-21)**: Single-head architecture (Q=1, NSG=1) vs llama.cpp multi-head (Q=32, NSG=8)
 
 **Model Layer**: ✅ Complete
 - GGUF Parser: 29 data types
@@ -713,16 +714,23 @@ pub struct MetalContext {
 
 ### Phase 1: Fix Immediate Issues (P0)
 
-1. **Fix GPU kernel bugs**
+1. **Flash Attention Decode Optimization** ⭐ **CRITICAL (2026-10-21)**
+   - Root cause: Single-head architecture (Q=1, NSG=1) causes 32x dispatch overhead
+   - llama.cpp uses multi-head architecture (Q=32, NSG=8)
+   - Current: 74 t/s, Target: 177.8 t/s (2.4x gap)
+   - Solution: Implement tensor-based Flash Attention with MPP API
+   - Expected: Match or exceed llama.cpp
+
+2. **Fix GPU kernel bugs**
    - GEMV correctness for all quantization formats
    - KV cache update kernel validation
    - Command buffer batching
 
-2. **Achieve baseline performance**
+3. **Achieve baseline performance**
    - Target: 167 t/s on 7B Q4_K
    - GPU must be faster than CPU (≥10%)
 
-3. **Validate architecture coverage**
+4. **Validate architecture coverage**
    - Standard LLaMA ✅
    - MQA/MLA (DeepSeek) - CPU fallback
    - Fused QKV (Qwen)
