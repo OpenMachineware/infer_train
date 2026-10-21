@@ -109,6 +109,8 @@ kernel void flash_decode_vec_kernel(
     constant uint& seq_k [[buffer(0)]],         // Actual sequence length
     constant uint& kv_stride [[buffer(1)]],     // KV cache stride (max_seq)
     constant float& scale [[buffer(2)]],
+    constant uint& n_kv_heads [[buffer(7)]],    // Number of KV heads for GQA
+    constant uint& n_heads [[buffer(8)]],       // Number of Q heads
     device const float* query [[buffer(3)]],
     device const char* key_cache [[buffer(4)]],
     device const char* value_cache [[buffer(5)]],
@@ -127,6 +129,10 @@ kernel void flash_decode_vec_kernel(
 
     const int batch = gid.z;
     const int head = gid.y;
+
+    // GQA: map query head to KV head
+    // For n_heads=32, n_kv_heads=8: head 0-3 -> kv_head 0, head 4-7 -> kv_head 1, etc.
+    const int kv_head = head * n_kv_heads / n_heads;
 
     // Shared memory for query (128 floats = 32 float4s)
     // All 32 threads cooperate to load it
@@ -167,8 +173,9 @@ kernel void flash_decode_vec_kernel(
 
     // Pointer to key cache for this head
     // Use kv_stride (max_seq) for head offset, not seq_k
-    device const char* k_head = key_cache + head * kv_stride * HEAD_DIM * ELEM_SIZE;
-    device const char* v_head = value_cache + head * kv_stride * HEAD_DIM * ELEM_SIZE;
+    // Use kv_head for GQA mapping
+    device const char* k_head = key_cache + kv_head * kv_stride * HEAD_DIM * ELEM_SIZE;
+    device const char* v_head = value_cache + kv_head * kv_stride * HEAD_DIM * ELEM_SIZE;
 
     // Shared memory for scores - declare once outside the loop
     threadgroup float s_scores[C];
@@ -336,8 +343,8 @@ kernel void flash_decode_vec_kernel<
     dequant_f16, dequant_f16,
     128, 1, 32, 2
 >(
-    constant uint&, constant uint&, constant float&, device const float*, device const char*,
-    device const char*, device float*, uint3, ushort
+    constant uint&, constant uint&, constant float&, constant uint&, constant uint&,
+    device const float*, device const char*, device const char*, device float*, uint3, ushort
 );
 
 // F16 NE=4 variant
@@ -348,8 +355,8 @@ kernel void flash_decode_vec_kernel<
     dequant_f16, dequant_f16,
     128, 4, 32, 2
 >(
-    constant uint&, constant uint&, constant float&, device const float*, device const char*,
-    device const char*, device float*, uint3, ushort
+    constant uint&, constant uint&, constant float&, constant uint&, constant uint&,
+    device const float*, device const char*, device const char*, device float*, uint3, ushort
 );
 
 // ============================================================================
@@ -364,8 +371,8 @@ kernel void flash_decode_vec_kernel<
     dequant_f16, dequant_f16,
     32, 4, 8, 2
 >(
-    constant uint&, constant uint&, constant float&, device const float*, device const char*,
-    device const char*, device float*, uint3, ushort
+    constant uint&, constant uint&, constant float&, constant uint&, constant uint&,
+    device const float*, device const char*, device const char*, device float*, uint3, ushort
 );
 
 // ============================================================================
@@ -380,8 +387,8 @@ kernel void flash_decode_vec_kernel<
     dequant_f16, dequant_f16,
     64, 4, 16, 2
 >(
-    constant uint&, constant uint&, constant float&, device const float*, device const char*,
-    device const char*, device float*, uint3, ushort
+    constant uint&, constant uint&, constant float&, constant uint&, constant uint&,
+    device const float*, device const char*, device const char*, device float*, uint3, ushort
 );
 
 // ============================================================================
@@ -396,8 +403,8 @@ kernel void flash_decode_vec_kernel<
     dequant_f16, dequant_f16,
     80, 4, 20, 2
 >(
-    constant uint&, constant uint&, constant float&, device const float*, device const char*,
-    device const char*, device float*, uint3, ushort
+    constant uint&, constant uint&, constant float&, constant uint&, constant uint&,
+    device const float*, device const char*, device const char*, device float*, uint3, ushort
 );
 
 // ============================================================================
@@ -412,8 +419,8 @@ kernel void flash_decode_vec_kernel<
     dequant_f16, dequant_f16,
     160, 1, 40, 2
 >(
-    constant uint&, constant uint&, constant float&, device const float*, device const char*,
-    device const char*, device float*, uint3, ushort
+    constant uint&, constant uint&, constant float&, constant uint&, constant uint&,
+    device const float*, device const char*, device const char*, device float*, uint3, ushort
 );
 
 // F16 NE=4 for HEAD_DIM=160
@@ -424,8 +431,8 @@ kernel void flash_decode_vec_kernel<
     dequant_f16, dequant_f16,
     160, 4, 40, 2
 >(
-    constant uint&, constant uint&, constant float&, device const float*, device const char*,
-    device const char*, device float*, uint3, ushort
+    constant uint&, constant uint&, constant float&, constant uint&, constant uint&,
+    device const float*, device const char*, device const char*, device float*, uint3, ushort
 );
 
 // ============================================================================
@@ -440,6 +447,6 @@ kernel void flash_decode_vec_kernel<
     dequant_q4_0, dequant_q4_0,
     128, 4, 32, 1
 >(
-    constant uint&, constant uint&, constant float&, device const float*, device const char*,
-    device const char*, device float*, uint3, ushort
+    constant uint&, constant uint&, constant float&, constant uint&, constant uint&,
+    device const float*, device const char*, device const char*, device float*, uint3, ushort
 );

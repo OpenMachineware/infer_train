@@ -11481,6 +11481,20 @@ impl MetalContext {
         encoder.set_buffer(5, Some(v_buffer), 0);
         encoder.set_buffer(6, Some(output_buffer), 0);
 
+        // Pass GQA parameters (buffer indices 7 and 8)
+        let n_kv_heads_u32 = _n_kv_heads as u32;
+        let n_heads_u32 = n_heads as u32;
+        encoder.set_bytes(
+            7,
+            4,
+            &n_kv_heads_u32 as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            8,
+            4,
+            &n_heads_u32 as *const u32 as *const std::ffi::c_void,
+        );
+
         let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
         let thread_group_count =
             MTLSize { width: 1, height: n_heads as u64, depth: n_seqs as u64 };

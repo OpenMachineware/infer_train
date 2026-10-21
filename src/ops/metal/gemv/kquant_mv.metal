@@ -71,24 +71,27 @@ kernel void kernel_mul_mv_q4_K_f32(
         device const block_q4_K * block = blocks + ib;
         device const float * y = src1 + ib * QK_K;
 
-        // Super-block scales
-        float d = block->d;
-        float dmin = block->dmin;
+        // Super-block scales (convert FP16 to float)
+        device const half * dh = (device const half *)&block->d;
+        float d = dh[0];
+        float dmin = dh[1];
 
         // Process 8 sub-blocks of 32 elements
         for (int is = 0; is < 8; is++) {
             // Extract scale and min for this sub-block
+            // 6-bit values stored as unsigned (0-63), used directly
             uchar2 sc_min = get_scale_min_k4(is, 0, block->scales);
-            float sc = sc_min.x;
-            float min = sc_min.y;
+            float sc = sc_min.x;  // Used directly
+            float m = sc_min.y;   // Used directly
 
             float dl = d * sc;
-            float ml = dmin * min;
+            float ml = dmin * m;
 
             // 32 elements stored in 16 bytes (4 bits each)
             device const uchar * qs = block->qs + is * 16;
 
             // Process 16 bytes (32 elements)
+            // Formula: d * sc * q - dmin * m
             for (int k = 0; k < 16; k++) {
                 uchar byte = qs[k];
                 float v0 = (byte & 0x0F);  // Lower nibble
@@ -138,8 +141,10 @@ kernel void kernel_mul_mv_q2_K_f32(
         device const block_q2_K * block = blocks + ib;
         device const float * y = src1 + ib * QK_K;
 
-        float d = block->d;
-        float dmin = block->dmin;
+        // Convert FP16 to float
+        device const half * dh = (device const half *)&block->d;
+        float d = dh[0];
+        float dmin = dh[1];
 
         // Q2_K has 16 sub-blocks of 16 elements
         // Each sub-block has its own scale (4 bits) and min (4 bits) packed in scales[16]
@@ -367,11 +372,13 @@ kernel void kernel_mul_mv_q5_K_f32(
         }
 
         // Final computation
-        sumf += (float)dh[0] * (sc8[0] * (acc1[0]      + 16.f*acc2[0]) +
-                               sc8[1] * (acc1[1]/16.f + 16.f*acc2[1]) +
-                               sc8[4] * (acc1[2]      + 16.f*acc2[2]) +
-                               sc8[5] * (acc1[3]/16.f + 16.f*acc2[3])) -
-                (float)dh[1] * (sumy[0] * sc8[2] + sumy[1] * sc8[3] + sumy[2] * sc8[6] + sumy[3] * sc8[7]);
+        // 6-bit values stored as unsigned (0-63), convert to signed (-32 to 31)
+        // Formula from llama.cpp: d * (sc-32) * q + dmin * (m-32)
+        sumf += (float)dh[0] * ((sc8[0]-32.f) * (acc1[0]      + 16.f*acc2[0]) +
+                               (sc8[1]-32.f) * (acc1[1]/16.f + 16.f*acc2[1]) +
+                               (sc8[4]-32.f) * (acc1[2]      + 16.f*acc2[2]) +
+                               (sc8[5]-32.f) * (acc1[3]/16.f + 16.f*acc2[3])) +
+                (float)dh[1] * (sumy[0] * (sc8[2]-32.f) + sumy[1] * (sc8[3]-32.f) + sumy[2] * (sc8[6]-32.f) + sumy[3] * (sc8[7]-32.f));
 
         y1 += 4 * QK_K;
     }

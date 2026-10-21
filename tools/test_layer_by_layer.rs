@@ -67,7 +67,7 @@ fn main() {
             println!("Model has {} layers\n", n_layers);
 
             // Test progressive layer accumulation
-            for max_layer in 0..n_layers.min(4) {
+            for max_layer in 0..n_layers.min(32) {
                 println!("=== Test: Encode layers 0..={} ===", max_layer);
 
                 kv_cache.clear();

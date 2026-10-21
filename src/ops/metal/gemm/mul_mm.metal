@@ -151,12 +151,14 @@ void dequantize_q4_K(device const block_q4_K * xb, short il, thread type4x4 & re
     il = il & 3;
     const uchar2 sc = get_scale_min_k4_just2(is, il/2, xb->scales);
     const float d   = il < 2 ? xb->d : xb->d / 16.h;
-    const float min = xb->dmin;
+    const float dmin = xb->dmin;
+    // 6-bit values stored as unsigned (0-63), used directly
     const float dl = d * sc[0];
-    const float ml = min * sc[1];
+    const float ml = dmin * sc[1];
 
     const ushort mask = il < 2 ? 0x0F : 0xF0;
     for (int i = 0; i < 16; ++i) {
+        // Formula: d * sc * q - dmin * m
         reg[i/4][i%4] = dl * (q[i] & mask) - ml;
     }
 }
@@ -221,13 +223,15 @@ void dequantize_q5_K(device const block_q5_K *xb, short il, thread type4x4 & reg
     il = il & 3;
     const uchar2 sc = get_scale_min_k4_just2(is, il/2, xb->scales);
     const float d = il < 2 ? xb->d : xb->d / 16.f;
-    const float min = xb->dmin;
+    const float dmin = xb->dmin;
+    // 6-bit values stored as unsigned (0-63), used directly
     const float dl = d * sc[0];
-    const float ml = min * sc[1];
+    const float ml = dmin * sc[1];
 
     const ushort mask  = il<2 ? 0x0F : 0xF0;
     const float qh_val = il<2 ? 16.f : 256.f;
     for (int i = 0; i < 16; ++i) {
+        // Formula: d * sc * q - dmin * m
         reg[i/4][i%4] = dl * ((q[i] & mask) + (qh[i] & ul ? qh_val : 0)) - ml;
     }
 }

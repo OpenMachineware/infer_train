@@ -68,10 +68,10 @@ struct block_q2_K {
 };
 
 struct block_q3_K {
-    half d;
     uint8_t hmask[32];
     uint8_t qs[64];
     int8_t scales[12];
+    half d;
 };
 
 struct block_q4_K {
@@ -90,10 +90,10 @@ struct block_q5_K {
 };
 
 struct block_q6_K {
-    half d;
-    int8_t scales[16];
-    uint8_t ql[128];
-    uint8_t qh[64];
+    uint8_t ql[128];   // Lower 4 bits
+    uint8_t qh[64];    // Upper 2 bits
+    int8_t scales[16]; // Scales
+    half d;            // Super-block scale
 };
 
 // Dequantize functions (inline from dequantize.metal)
@@ -322,13 +322,37 @@ void dequantize_q3_K_t4x4(device const block_q3_K * xb, short il, thread type4x4
 template <typename type4x4>
 void dequantize_q4_K_t4x4(device const block_q4_K * xb, short il, thread type4x4 & reg) {
     // Q4_K: 4-bit quantization, 256 elements per block
-    // qs[128]: two 4-bit values per byte
-    // Layout: qs[j] = element j (low nibble) | element j+128 (high nibble)
-    // For head_dim < 256, we use only the low nibbles (elements 0..127)
-    // il ranges 0..15 for head_dim=256, 0..7 for head_dim=128
+    // 8 sub-blocks of 32 elements each
+    // Each sub-block has scale and min stored in scales[12]
+    // Formula: d * scale * q - dmin * m (scales used directly)
 
     const float d = xb->d;
-    const float min = xb->dmin;
+    const float dmin = xb->dmin;
+
+    // Map il to sub-block index
+    // il=0..1 -> sub-block 0, il=2..3 -> sub-block 1, etc.
+    // For head_dim=128: il ranges 0..7, covering 4 sub-blocks
+    short is = il / 2;  // Sub-block index
+
+    // Extract scale and min using GEMM-style extraction
+    // For simplicity, use direct access to scales array
+    // scales layout: first 8 bytes for scales, next 4 bytes for mins (for sub-blocks 0-3)
+    // For sub-blocks 4-7, scales are packed differently
+    float sc, m;
+    if (is < 4) {
+        // Lower 6 bits for scale and min, used directly
+        sc = (xb->scales[is] & 63);
+        m = (xb->scales[is + 4] & 63);
+    } else {
+        // Packed format for sub-blocks 4-7
+        // scale: lower 4 bits of scales[is+4] | (upper 2 bits of scales[is-4] >> 2)
+        // min: upper 4 bits of scales[is+4] >> 4 | (upper 2 bits of scales[is] >> 2)
+        sc = ((xb->scales[is + 4] & 0x0F) | ((xb->scales[is - 4] & 0xC0) >> 2));
+        m = ((xb->scales[is + 4] >> 4) | ((xb->scales[is] & 0xC0) >> 2));
+    }
+
+    const float dl = d * sc;
+    const float ml = dmin * m;
 
     // For head_dim=128: each il produces 16 elements from 16 bytes
     short byte_idx = il * 16;  // 16 bytes per il
@@ -340,24 +364,40 @@ void dequantize_q4_K_t4x4(device const block_q4_K * xb, short il, thread type4x4
         uchar byte2 = q[i * 4 + 2];
         uchar byte3 = q[i * 4 + 3];
 
-        // Use only low nibbles (elements 0..127)
-        reg[i][0] = (byte0 & 0x0F) * d + min;
-        reg[i][1] = (byte1 & 0x0F) * d + min;
-        reg[i][2] = (byte2 & 0x0F) * d + min;
-        reg[i][3] = (byte3 & 0x0F) * d + min;
+        // Use low nibbles for first 128 elements
+        // Formula: dl * q - ml
+        reg[i][0] = dl * (byte0 & 0x0F) - ml;
+        reg[i][1] = dl * (byte1 & 0x0F) - ml;
+        reg[i][2] = dl * (byte2 & 0x0F) - ml;
+        reg[i][3] = dl * (byte3 & 0x0F) - ml;
     }
 }
 
 template <typename type4x4>
 void dequantize_q5_K_t4x4(device const block_q5_K * xb, short il, thread type4x4 & reg) {
     // Q5_K: 5-bit quantization, 256 elements per block
-    // qs[128]: low 4 bits, two per byte
-    // qh[32]: high bit for each element
-    // Layout: qs[j] = element j (low nibble) | element j+128 (high nibble)
-    // For head_dim < 256, use elements 0..127 (low nibbles)
+    // 8 sub-blocks of 32 elements each
+    // Each sub-block has scale and min stored in scales[12]
+    // Formula: d * scale * q - dmin * m (scales used directly)
 
     const float d = xb->d;
-    const float min = xb->dmin;
+    const float dmin = xb->dmin;
+
+    // Map il to sub-block index
+    short is = il / 2;  // Sub-block index
+
+    // Extract scale and min
+    float sc, m;
+    if (is < 4) {
+        sc = (xb->scales[is] & 63);
+        m = (xb->scales[is + 4] & 63);
+    } else {
+        sc = ((xb->scales[is + 4] & 0x0F) | ((xb->scales[is - 4] & 0xC0) >> 2));
+        m = ((xb->scales[is + 4] >> 4) | ((xb->scales[is] & 0xC0) >> 2));
+    }
+
+    const float dl = d * sc;
+    const float ml = dmin * m;
 
     short byte_idx = il * 16;
     device const uchar * q = xb->qs + byte_idx;
@@ -380,15 +420,16 @@ void dequantize_q5_K_t4x4(device const block_q5_K * xb, short il, thread type4x4
         short idx1 = byte_idx + i * 4 + 1;
         short idx2 = byte_idx + i * 4 + 2;
         short idx3 = byte_idx + i * 4 + 3;
-        float h0 = ((qh[idx0 / 8] >> (idx0 % 8)) & 1) * 16.0;
-        float h1 = ((qh[idx1 / 8] >> (idx1 % 8)) & 1) * 16.0;
-        float h2 = ((qh[idx2 / 8] >> (idx2 % 8)) & 1) * 16.0;
-        float h3 = ((qh[idx3 / 8] >> (idx3 % 8)) & 1) * 16.0;
+        float h0 = ((qh[idx0 / 8] >> (idx0 % 8)) & 1) * 16.0f;
+        float h1 = ((qh[idx1 / 8] >> (idx1 % 8)) & 1) * 16.0f;
+        float h2 = ((qh[idx2 / 8] >> (idx2 % 8)) & 1) * 16.0f;
+        float h3 = ((qh[idx3 / 8] >> (idx3 % 8)) & 1) * 16.0f;
 
-        reg[i][0] = (low0 + h0) * d + min;
-        reg[i][1] = (low1 + h1) * d + min;
-        reg[i][2] = (low2 + h2) * d + min;
-        reg[i][3] = (low3 + h3) * d + min;
+        // Formula: dl * q - ml
+        reg[i][0] = dl * (low0 + h0) - ml;
+        reg[i][1] = dl * (low1 + h1) - ml;
+        reg[i][2] = dl * (low2 + h2) - ml;
+        reg[i][3] = dl * (low3 + h3) - ml;
     }
 }
 

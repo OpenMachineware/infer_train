@@ -99,6 +99,7 @@ fn main() {
         let buf1 = manager.get_or_load_on(id1, 1024, ComputeDevice::Cpu);
         match &buf1 {
             BufferRef::Cpu(data) => {
+                let data = data.borrow();
                 println!("  Created CPU buffer: {} bytes", data.len());
             }
             _ => println!("  ERROR: Expected CPU buffer"),
@@ -109,10 +110,13 @@ fn main() {
         let id2 = BufferId::new(2);
         let buf2a = manager.get_or_load_on(id2, 2048, ComputeDevice::Cpu);
         let buf2b = manager.get_or_load_on(id2, 2048, ComputeDevice::Cpu);
-        println!(
-            "  Same buffer returned: {}",
-            matches!((&buf2a, &buf2b), (BufferRef::Cpu(a), BufferRef::Cpu(b)) if a.len() == b.len())
-        );
+        let len_match = match (&buf2a, &buf2b) {
+            (BufferRef::Cpu(a), BufferRef::Cpu(b)) => {
+                a.borrow().len() == b.borrow().len()
+            }
+            _ => false,
+        };
+        println!("  Same buffer returned: {}", len_match);
 
         let stats = manager.stats();
         println!("\nStats:");

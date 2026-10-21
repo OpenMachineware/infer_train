@@ -160,7 +160,7 @@ pub fn quantize_q4_k(x: &[f32]) -> Vec<BlockQ4K> {
     blocks
 }
 
-/// Quantize FP32 to Q5_K (simplified)
+/// Quantize FP32 to Q5_K (matching llama.cpp layout)
 pub fn quantize_q5_k(x: &[f32]) -> Vec<BlockQ5K> {
     assert!(x.len() % QK_K == 0);
     let nb = x.len() / QK_K;
@@ -182,21 +182,34 @@ pub fn quantize_q5_k(x: &[f32]) -> Vec<BlockQ5K> {
         let mut qs = [0u8; 128];
         let mut qh = [0u8; 32];
 
-        // Quantize to 5-bit: values 0-31
-        // Low 4 bits go to qs, high 1 bit goes to qh
+        // First quantize to 5-bit values 0-31
+        let mut l = [0u8; QK_K];
         for j in 0..QK_K {
             let val = xb[j] * id + 16.0; // Shift to [0, 32]
-            let q = (val.clamp(0.0, 31.999) as u8) & 0x1F;
-            let j8 = j / 2;
-            if j % 2 == 0 {
-                qs[j8] = q & 0x0F; // Low 4 bits
-                if q >= 16 {
-                    qh[j / 8] |= 1 << (j % 8); // High bit
+            l[j] = (val.clamp(0.0, 31.999) as u8) & 0x1F;
+        }
+
+        // Pack into llama.cpp format:
+        // 4 groups of 64 elements, each group has 32 qs bytes + 8 bits in qh
+        for n in (0..QK_K).step_by(64) {
+            let group = n / 64;
+            let m1 = 1u8 << (2 * group);
+            let m2 = m1 << 1;
+            let ql_offset = group * 32;
+
+            for j in 0..32 {
+                let l1 = l[n + j]; // Element n+j
+                let l2 = l[n + j + 32]; // Element n+j+32
+
+                // Pack low 4 bits
+                qs[ql_offset + j] = (l1 & 0x0F) | ((l2 & 0x0F) << 4);
+
+                // Set high bits in qh
+                if l1 > 15 {
+                    qh[j] |= m1; // Bit position 2*group
                 }
-            } else {
-                qs[j8] |= (q & 0x0F) << 4; // Low 4 bits in upper nibble
-                if q >= 16 {
-                    qh[j / 8] |= 1 << (j % 8); // High bit
+                if l2 > 15 {
+                    qh[j] |= m2; // Bit position 2*group+1
                 }
             }
         }
