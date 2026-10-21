@@ -174,29 +174,50 @@ pub fn quantize_q5_k(x: &[f32]) -> Vec<BlockQ5K> {
         for j in 0..QK_K {
             amax = amax.max(xb[j].abs());
         }
-        let d = amax / 16.0;
-        let id = if d > 0.0 { 1.0 / d } else { 0.0 };
+
+        // Scale: map to [-16, 16] range, then shift to [0, 32]
+        let d = if amax > 0.0 { amax / 16.0 } else { 1.0 };
+        let id = 1.0 / d;
 
         let mut qs = [0u8; 128];
         let mut qh = [0u8; 32];
 
+        // Quantize to 5-bit: values 0-31
+        // Low 4 bits go to qs, high 1 bit goes to qh
         for j in 0..QK_K {
-            let val = xb[j] * id;
-            let q = ((val + 16.5).clamp(0.0, 31.0) as u8) & 0x1F;
+            let val = xb[j] * id + 16.0; // Shift to [0, 32]
+            let q = (val.clamp(0.0, 31.999) as u8) & 0x1F;
             let j8 = j / 2;
             if j % 2 == 0 {
-                qs[j8] = q & 0x0F;
-                qh[j / 8] |= ((q >> 4) << (j % 8)) as u8;
+                qs[j8] = q & 0x0F; // Low 4 bits
+                if q >= 16 {
+                    qh[j / 8] |= 1 << (j % 8); // High bit
+                }
             } else {
-                qs[j8] |= (q & 0x0F) << 4;
-                qh[j / 8] |= ((q >> 4) << (j % 8)) as u8;
+                qs[j8] |= (q & 0x0F) << 4; // Low 4 bits in upper nibble
+                if q >= 16 {
+                    qh[j / 8] |= 1 << (j % 8); // High bit
+                }
             }
+        }
+
+        // Set scales and mins like Q4_K
+        // Dequant formula: d * (q + h) - dmin * min
+        // We want: d * ((q + h) - 16) = d * (q + h) - d * 16
+        // So: sc = 1, min = 16, dmin = d
+        let mut scales = [0u8; 12];
+        for j in 0..4 {
+            scales[j] = 1; // scale = 1 for sub-blocks 0-3
+            scales[j + 4] = 16; // min = 16 for sub-blocks 0-3
+        }
+        for j in 0..4 {
+            scales[j + 8] = (16 << 4) | 1; // Packed: min=16 in upper, scale=1 in lower
         }
 
         blocks.push(BlockQ5K {
             d: f16::from_f32(d).to_bits(),
-            dmin: f16::from_f32(0.0).to_bits(),
-            scales: [0u8; 12],
+            dmin: f16::from_f32(d).to_bits(), // dmin = d to compute d * 16
+            scales,
             qh,
             qs,
         });
