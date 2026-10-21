@@ -769,5 +769,26 @@ pub struct MetalContext {
 ---
 
 **Created**: 2026-09-22
-**Updated**: 2026-10-19
+**Updated**: 2026-10-21
 **Status**: Phase 1 (Baseline) - Metal resource layers implemented, execution layers designed
+
+## Recent Issues
+
+### Hy-MT2-7B NaN Issue (2026-10-21)
+
+**Status**: Fixed KV cache advance, NaN in Q4_K GEMV under investigation
+
+**Root Causes Identified**:
+1. **CRITICAL: KV cache sequence length not advancing** - All tokens wrote to position 0
+2. **Missing memory barrier** - Race condition between kv_update and flash_attn kernels
+3. **New discovery**: NaN originates from Q4_K GEMV (layer 29 output projection), NOT FlashAttention
+
+**Fixes Applied**:
+- Added `kv_cache.advance()` call after each forward pass
+- Added memory barrier before FlashAttention
+- Added comprehensive KV cache tracing
+
+**Remaining Issue**:
+- Q4_K GEMV produces NaN for layer 29 output projection
+- All layers 0-29 FlashAttention outputs are clean
+- Need to investigate Q4_K GEMV kernel separately
