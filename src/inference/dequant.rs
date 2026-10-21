@@ -9,28 +9,27 @@ use crate::quant::types::{
 use half::f16;
 
 /// Helper to extract scale and min from Q4_K/Q5_K scales array
-/// j: sub-block index (0-7)
-/// k: which pair (0 or 1)
+/// j: scale index (0-7)
 /// Returns (scale, min)
-fn get_scale_min_k4(j: usize, k: usize, scales: &[u8; 12]) -> (f32, f32) {
+fn get_scale_min_k4(j: usize, scales: &[u8; 12]) -> (f32, f32) {
     if j < 4 {
-        let sc = (scales[j + k] & 63) as f32;
-        let min = (scales[j + 4 + k] & 63) as f32;
+        let sc = (scales[j] & 63) as f32;
+        let min = (scales[j + 4] & 63) as f32;
         (sc, min)
     } else {
-        // Extract from packed format: 4-bit value from one byte combined with 2 bits from another
-        let sc = ((scales[j + 4 + k] & 0x0F)
-            | ((scales[j - 4 + k] & 0xC0) >> 2)) as f32;
-        let min =
-            ((scales[j + 4 + k] >> 4) | ((scales[j + k] & 0xC0) >> 2)) as f32;
+        // Extract from packed format (matches llama.cpp exactly):
+        // scale: lower 4 bits of scales[j+4] | (upper 2 bits of scales[j-4]) << 4
+        // min: upper 4 bits of scales[j+4] | (upper 2 bits of scales[j]) << 4
+        let sc = ((scales[j + 4] & 0x0F) | ((scales[j - 4] >> 6) << 4)) as f32;
+        let min = ((scales[j + 4] >> 4) | ((scales[j] >> 6) << 4)) as f32;
         (sc, min)
     }
 }
 
 /// Dequantize Q4_K block to F32
 /// Q4_K: 256 elements per block, 144 bytes
-/// 8 sub-blocks of 32 elements each
-/// Each sub-block has its own scale and min
+/// 4 groups of 64 elements, each group uses 2 scales
+/// Layout matches llama.cpp's dequantize_row_q4_K exactly
 pub fn dequant_q4_k(data: &[u8], out: &mut [f32], count: usize) {
     let n_blocks = count.div_ceil(QK_K);
     for block_idx in 0..n_blocks {
@@ -43,30 +42,42 @@ pub fn dequant_q4_k(data: &[u8], out: &mut [f32], count: usize) {
         let d = f16::from_bits(block.d).to_f32();
         let dmin = f16::from_bits(block.dmin).to_f32();
 
-        // Process 8 sub-blocks of 32 elements each
-        for j in 0..8 {
-            // Get scale and min for this sub-block
-            let (sc, min) = get_scale_min_k4(j, 0, &block.scales);
-            let dl = d * sc;
-            let ml = dmin * min;
+        // Process 4 groups of 64 elements, matching llama.cpp layout
+        // Each group uses 2 scales: scale[is] for lower nibbles, scale[is+1] for upper nibbles
+        // q pointer advances by 32 bytes per group
+        let mut is: usize = 0;
+        let mut q_offset: usize = 0;
 
-            // Each sub-block has 32 elements stored in 16 bytes
-            // Each byte packs two 4-bit values
-            for k in 0..16 {
-                let byte = block.qs[j * 16 + k];
-                let v0 = (byte & 0x0F) as f32;
-                let v1 = ((byte >> 4) & 0x0F) as f32;
+        for j in (0..QK_K).step_by(64) {
+            let (sc0, m0) = get_scale_min_k4(is, &block.scales);
+            let (sc1, m1) = get_scale_min_k4(is + 1, &block.scales);
+            let d1 = d * sc0;
+            let m1_val = dmin * m0;
+            let d2 = d * sc1;
+            let m2_val = dmin * m1;
 
-                let idx0 = block_idx * QK_K + j * 32 + k;
-                let idx1 = block_idx * QK_K + j * 32 + k + 16;
-
-                if idx0 < count {
-                    out[idx0] = dl * v0 - ml;
-                }
-                if idx1 < count {
-                    out[idx1] = dl * v1 - ml;
+            // Lower nibbles of q[q_offset..q_offset+31] -> elements j..j+31
+            for l in 0..32 {
+                let byte = block.qs[q_offset + l];
+                let v = (byte & 0x0F) as f32;
+                let idx = block_idx * QK_K + j + l;
+                if idx < count {
+                    out[idx] = d1 * v - m1_val;
                 }
             }
+
+            // Upper nibbles of q[q_offset..q_offset+31] -> elements j+32..j+63
+            for l in 0..32 {
+                let byte = block.qs[q_offset + l];
+                let v = (byte >> 4) as f32;
+                let idx = block_idx * QK_K + j + 32 + l;
+                if idx < count {
+                    out[idx] = d2 * v - m2_val;
+                }
+            }
+
+            q_offset += 32;
+            is += 2;
         }
     }
 }
@@ -264,63 +275,51 @@ pub fn dequant_q6_k(data: &[u8], out: &mut [f32], count: usize) {
             unsafe { &*(data.as_ptr().add(block_offset) as *const BlockQ6K) };
         let d = f16::from_bits(block.d).to_f32();
 
-        // Q6_K uses interleaved layout for ql/qh
-        // Treat ql as u16 array for correct addressing
-        let ql16: &[u16] = unsafe {
-            std::slice::from_raw_parts(
-                block.ql.as_ptr() as *const u16,
-                block.ql.len() / 2,
-            )
-        };
-        let qh16: &[u16] = unsafe {
-            std::slice::from_raw_parts(
-                block.qh.as_ptr() as *const u16,
-                block.qh.len() / 2,
-            )
-        };
+        // Q6_K layout from llama.cpp:
+        // 2 groups of 128 elements each
+        // Each group processes 32 values at a time, producing 4 outputs per iteration
+        let ql = &block.ql;
+        let qh = &block.qh;
+        let sc = &block.scales;
 
-        // Process 16 sub-blocks
-        for il in 0..16 {
-            let sc = block.scales[il] as f32;
-            let dl = d * sc;
-            let ml = 32.0 * dl;
+        for n in (0..QK_K).step_by(128) {
+            for l in 0..32 {
+                let is = l / 16;
 
-            // Compute interleaved offsets
-            let ql_offset = 32 * (il / 8) + 16 * ((il / 2) & 1) + 8 * (il & 1);
-            let qh_offset = 16 * (il / 8) + 8 * (il & 1);
+                // Construct 6-bit values from 4-bit ql + 2-bit qh
+                let q1 = ((ql[(n / 128) * 64 + l] & 0x0F) as i32
+                    | (((qh[(n / 128) * 32 + l] >> 0) & 3) as i32) << 4)
+                    - 32;
+                let q2 = ((ql[(n / 128) * 64 + l + 32] & 0x0F) as i32
+                    | (((qh[(n / 128) * 32 + l] >> 2) & 3) as i32) << 4)
+                    - 32;
+                let q3 = ((ql[(n / 128) * 64 + l] >> 4) as i32
+                    | (((qh[(n / 128) * 32 + l] >> 4) & 3) as i32) << 4)
+                    - 32;
+                let q4 = ((ql[(n / 128) * 64 + l + 32] >> 4) as i32
+                    | (((qh[(n / 128) * 32 + l] >> 6) & 3) as i32) << 4)
+                    - 32;
 
-            let il2 = (il / 2) & 3;
-            let kmask1: u32 = if il2 > 1 {
-                if il2 > 2 { 0xC0C0C0C0 } else { 0x30303030 }
-            } else {
-                if il2 > 0 { 0x0C0C0C0C } else { 0x03030303 }
-            };
-            let kmask2: u32 = if il2 > 1 { 0xF0F0F0F0 } else { 0x0F0F0F0F };
-            let shr_h = if il2 > 2 { 2 } else { 0 };
-            let shl_h = if il2 > 1 { 0 } else { if il2 > 0 { 2 } else { 4 } };
-            let shr_l = if il2 > 1 { 4 } else { 0 };
+                let idx0 = block_idx * QK_K + n + l;
+                let idx1 = block_idx * QK_K + n + l + 32;
+                let idx2 = block_idx * QK_K + n + l + 64;
+                let idx3 = block_idx * QK_K + n + l + 96;
 
-            // Process 4 iterations of 4 elements each
-            for i in 0..4 {
-                let low = (ql16[ql_offset + 2 * i] as u32
-                    | ((ql16[ql_offset + 2 * i + 1] as u32) << 16))
-                    & kmask2;
-                let high = (qh16[qh_offset + 2 * i] as u32
-                    | ((qh16[qh_offset + 2 * i + 1] as u32) << 16))
-                    & kmask1;
-                let q = ((high << shl_h) >> shr_h) | (low >> shr_l);
-
-                for b in 0..4 {
-                    let elem_idx = il * 16 + i * 4 + b;
-                    let idx = block_idx * QK_K + elem_idx;
-                    if idx >= count {
-                        continue;
-                    }
-
-                    let qv = ((q >> (b * 8)) & 0xFF) as f32;
-                    // Convert to signed: qv - 32
-                    let v = dl * (qv - 32.0);
-                    out[idx] = v;
+                if idx0 < count {
+                    out[idx0] =
+                        d * sc[(n / 128) * 8 + is + 0] as f32 * q1 as f32;
+                }
+                if idx1 < count {
+                    out[idx1] =
+                        d * sc[(n / 128) * 8 + is + 2] as f32 * q2 as f32;
+                }
+                if idx2 < count {
+                    out[idx2] =
+                        d * sc[(n / 128) * 8 + is + 4] as f32 * q3 as f32;
+                }
+                if idx3 < count {
+                    out[idx3] =
+                        d * sc[(n / 128) * 8 + is + 6] as f32 * q4 as f32;
                 }
             }
         }
@@ -383,7 +382,7 @@ mod tests {
         scales[0] = 42; // scale
         scales[4] = 17; // min
 
-        let (sc, min) = get_scale_min_k4(0, 0, &scales);
+        let (sc, min) = get_scale_min_k4(0, &scales);
         assert_eq!(sc, 42.0);
         assert_eq!(min, 17.0);
     }
