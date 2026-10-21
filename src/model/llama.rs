@@ -1596,13 +1596,6 @@ impl LlamaModel {
         // GGUF stores weights in column-major: shape = [K, M]
         let k = w.shape[0];
 
-        if std::env::var("INFER_TIMING").is_ok() {
-            eprintln!(
-                "[GEMM] M={}, N={}, K={}, dtype={:?}",
-                m, batch, k, w.dtype
-            );
-        }
-
         // Use matmul_q*_k_f32 which dispatches to MV for N=1, GEMM for N>=32
         let gpu_result = match w.dtype {
             crate::model::tensor::DataType::Q4_K => {
@@ -1620,7 +1613,12 @@ impl LlamaModel {
                     bytemuck::cast_slice(w.bytes());
                 gpu_ctx.matmul_q6_k_f32(m, batch, k, weights, x).ok()
             }
-            _ => None,
+            crate::model::tensor::DataType::IQ4_XS => {
+                let weights: &[crate::quant::types::BlockIQ4XS] =
+                    bytemuck::cast_slice(w.bytes());
+                gpu_ctx.matmul_iq4_xs_f32(m, batch, k, weights, x).ok()
+            }
+            other => None,
         };
 
         // Check if GPU result is valid (no NaN)
