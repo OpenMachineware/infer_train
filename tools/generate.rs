@@ -60,7 +60,8 @@ fn main() {
         );
         ctx.forward(&prompt_tokens, &mut kv_cache).expect("Prefill failed")
     } else {
-        ctx.forward_gpu_batched(&prompt_tokens).expect("Prefill failed")
+        // Use true batched prefill for GPU
+        ctx.forward_prefill_batch(&prompt_tokens).expect("Prefill failed")
     };
 
     #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
