@@ -652,6 +652,7 @@ pub struct MetalContext {
 - Flash Attention: Decode (107 GFLOPS), Prefill (1106 GFLOPS)
 - Operators: RMS_NORM, SOFTMAX, ROPE, etc.
 - **Flash Attention bottleneck identified (2026-10-21)**: Single-head architecture (Q=1, NSG=1) vs llama.cpp multi-head (Q=32, NSG=8)
+- **NaN in Hy-MT2-7B (2026-10-21)**: Layers 30-31 FlashAttention produces NaN, investigating root cause in KV cache or input
 
 **Model Layer**: ✅ Complete
 - GGUF Parser: 29 data types
