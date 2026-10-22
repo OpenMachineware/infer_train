@@ -145,10 +145,12 @@ If we fix the parallelism gap:
 ### Implementation Steps
 
 1. ✅ **Root cause identified**: NSG=2 vs NSG=32 (16x gap)
-2. 🔄 **Create MMA template kernel** (Q4_K first)
-3. ⏳ **Implement adaptive NSG selection**
-4. ⏳ **Add MMA accumulation path**
-5. ⏳ **Benchmark and verify bandwidth improvement**
+2. ✅ **Created MMA template kernel** (Q4_K with NSG=8/16/32)
+3. ✅ **Created benchmark tool** to compare NSG configurations
+4. ⏳ **Run benchmark** to validate the hypothesis
+5. ⏳ **Implement adaptive NSG selection** in Rust dispatch code
+6. ⏳ **Add MMA accumulation path** (simdgroup_float8x8)
+7. ⏳ **Benchmark and verify bandwidth improvement**
 
 ## Progress Log
 
