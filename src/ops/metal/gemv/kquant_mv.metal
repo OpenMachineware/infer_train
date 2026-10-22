@@ -301,10 +301,14 @@ kernel void kernel_mul_mv_q5_K_f32(
     device float * dst [[buffer(2)]],
     constant kquant_mv_args & args [[buffer(3)]],
     uint3 tgpig [[threadgroup_position_in_grid]],
-    ushort tiisg [[thread_index_in_simdgroup]])
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
 {
     const int nb = args.ne00 / QK_K;
-    const int row = tgpig.x;
+
+    // Support for multiple simdgroups per threadgroup (NSG=2)
+    // Each simdgroup processes one row
+    const int row = tgpig.x * 2 + sgitg;
 
     if (row >= (int)args.ne01) return;
 
