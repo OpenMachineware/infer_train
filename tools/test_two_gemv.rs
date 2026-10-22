@@ -67,14 +67,30 @@ fn main() {
             // GEMV 1
             let q1 = forward_pool.get_zeroed(q_out_size * 4);
             model
-                .gemv_encode(encoder, &input, wq, q_out_size, gpu_ctx, &q1)
+                .gemv_encode(
+                    encoder,
+                    &input,
+                    hidden_size,
+                    wq,
+                    q_out_size,
+                    gpu_ctx,
+                    &q1,
+                )
                 .unwrap();
             println!("GEMV 1 encoded");
 
             // GEMV 2 (using same input and weight)
             let q2 = forward_pool.get_zeroed(q_out_size * 4);
             model
-                .gemv_encode(encoder, &input, wq, q_out_size, gpu_ctx, &q2)
+                .gemv_encode(
+                    encoder,
+                    &input,
+                    hidden_size,
+                    wq,
+                    q_out_size,
+                    gpu_ctx,
+                    &q2,
+                )
                 .unwrap();
             println!("GEMV 2 encoded");
 

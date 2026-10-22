@@ -47,17 +47,19 @@ fn main() {
         // Reset KV cache for each run
         let mut kv_cache = KVCacheGPU::new(&device, &ctx.model.config, 512);
 
-        // Get batched embedding
+        let mut forward_pool =
+            ForwardBufferPool::new(device.clone(), reuse_pool.clone());
+
+        // Batched forward pass - single command buffer
+        // Include embedding lookup in timing!
+        let start = std::time::Instant::now();
+
+        // Get batched embedding (CPU-side operation)
         let (embed_buffer, batch) = ctx
             .model
             .embedding_lookup_batched_gpu(&tokens, &device)
             .expect("Embedding failed");
 
-        let mut forward_pool =
-            ForwardBufferPool::new(device.clone(), reuse_pool.clone());
-
-        // Batched forward pass - single command buffer
-        let start = std::time::Instant::now();
         {
             let command_buffer = gpu_ctx.queue().new_command_buffer();
             let encoder = command_buffer.new_compute_command_encoder();

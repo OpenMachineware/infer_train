@@ -203,6 +203,9 @@ pub struct MetalContext {
     flash_decode_mma_v2_pipeline: ComputePipelineState, // Optimized version
     flash_decode_mma_true_pipeline: ComputePipelineState, // True MMA with simdgroup_float8x8
     flash_decode_mma_batched_pipeline: ComputePipelineState, // Batched processing (C=8)
+    // NWG parallelized Flash Attention
+    flash_decode_nwg_pass1_pipeline: ComputePipelineState, // First pass: partial results
+    flash_decode_nwg_pass2_pipeline: ComputePipelineState, // Second pass: reduction
     // Multi-head Flash Attention (llama.cpp style, Q=32, NSG=8)
     flash_attn_multihead_128_pipeline: ComputePipelineState,
     // Flash Prefill (for batched prefill)
@@ -450,6 +453,12 @@ impl Clone for MetalContext {
                 .clone(),
             flash_decode_mma_batched_pipeline: self
                 .flash_decode_mma_batched_pipeline
+                .clone(),
+            flash_decode_nwg_pass1_pipeline: self
+                .flash_decode_nwg_pass1_pipeline
+                .clone(),
+            flash_decode_nwg_pass2_pipeline: self
+                .flash_decode_nwg_pass2_pipeline
                 .clone(),
             flash_attn_multihead_128_pipeline: self
                 .flash_attn_multihead_128_pipeline
@@ -2127,6 +2136,51 @@ impl MetalContext {
                 )
             })?;
 
+        // Create NWG parallelized Flash Attention pipelines
+        let flash_decode_nwg_source =
+            include_str!("../../../ops/metal/attention/flash_decode_nwg.metal");
+        let flash_decode_nwg_library = device
+            .new_library_with_source(flash_decode_nwg_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile flash_decode_nwg library: {}", e)
+            })?;
+        let flash_decode_nwg_pass1_kernel = flash_decode_nwg_library
+            .get_function("flash_decode_nwg_pass1_f16", None)
+            .map_err(|e| {
+                format!(
+                    "Failed to get flash_decode_nwg_pass1_f16 kernel: {}",
+                    e
+                )
+            })?;
+        let flash_decode_nwg_pass1_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &flash_decode_nwg_pass1_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create flash_decode_nwg_pass1 pipeline: {}",
+                    e
+                )
+            })?;
+        let flash_decode_nwg_pass2_kernel = flash_decode_nwg_library
+            .get_function("flash_decode_nwg_pass2_f16", None)
+            .map_err(|e| {
+                format!(
+                    "Failed to get flash_decode_nwg_pass2_f16 kernel: {}",
+                    e
+                )
+            })?;
+        let flash_decode_nwg_pass2_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &flash_decode_nwg_pass2_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create flash_decode_nwg_pass2 pipeline: {}",
+                    e
+                )
+            })?;
+
         // Create Multi-Head Flash Attention pipeline (llama.cpp style)
         // Q=32, NSG=8 for 32x dispatch overhead reduction
         let flash_attn_multihead_source = include_str!(
@@ -2608,6 +2662,9 @@ impl MetalContext {
             flash_decode_mma_v2_pipeline,
             flash_decode_mma_true_pipeline,
             flash_decode_mma_batched_pipeline,
+            // NWG parallelized Flash Attention
+            flash_decode_nwg_pass1_pipeline,
+            flash_decode_nwg_pass2_pipeline,
             flash_attn_multihead_128_pipeline,
             // Flash Prefill
             flash_prefill_f16_pipeline,
@@ -10539,6 +10596,7 @@ impl MetalContext {
 
     /// Flash Attention for F16 KV cache (fully zero-copy, GPU buffers)
     /// Supports head_dim: 32, 64, 80, 128, 160
+    /// For head_dim=128 and seq_len >= 64, uses NWG parallelization
     pub fn flash_attn_f16_gpu(
         &self,
         n_seqs: usize,
@@ -10551,8 +10609,18 @@ impl MetalContext {
         k_buffer: &Buffer,
         v_buffer: &Buffer,
     ) -> Result<std::rc::Rc<Buffer>, String> {
-        // Use true MMA pipeline for head_dim=128 (simdgroup_float8x8)
-        // Expected 2-3x speedup over vector kernel
+        // Use NWG parallelization for head_dim=128 with longer sequences
+        // NWG is beneficial when seq_len >= 64 (2+ iterations per workgroup)
+        // For short sequences, single-workgroup sequential is faster
+        let use_nwg = head_dim == 128 && seq_len >= 64;
+        if use_nwg {
+            return self.flash_attn_nwg_f16_gpu(
+                n_seqs, n_heads, head_dim, seq_len, kv_stride, q_buffer,
+                k_buffer, v_buffer,
+            );
+        }
+
+        // Use MMA pipeline for head_dim=128
         let use_mma = head_dim == 128;
 
         // Select pipeline based on head_dim
@@ -10658,6 +10726,163 @@ impl MetalContext {
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
+        command_buffer.commit();
+        command_buffer.wait_until_completed();
+
+        Ok(output_buffer)
+    }
+
+    /// Flash Attention with NWG parallelization for decode
+    /// Uses 32 workgroups per head to parallelize across KV positions
+    /// Expected 30-50% speedup for decode
+    pub fn flash_attn_nwg_f16_gpu(
+        &self,
+        n_seqs: usize,
+        n_heads: usize,
+        head_dim: usize,
+        seq_len: usize,
+        kv_stride: usize,
+        q_buffer: &Buffer,
+        k_buffer: &Buffer,
+        v_buffer: &Buffer,
+    ) -> Result<std::rc::Rc<Buffer>, String> {
+        if head_dim != 128 {
+            return Err(format!(
+                "NWG Flash Attention only supports head_dim=128, got {}",
+                head_dim
+            ));
+        }
+
+        let n_wg = 32; // Number of workgroups per head (matching llama.cpp)
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+        let seq_k = seq_len as u32;
+        let kv_stride_u32 = kv_stride as u32;
+        let n_wg_u32 = n_wg as u32;
+
+        // Buffers for partial results
+        // partial_O: [n_wg, n_heads, head_dim]
+        let partial_o_size =
+            n_wg * n_heads * head_dim * std::mem::size_of::<f32>();
+        let partial_o_buffer = std::rc::Rc::new(self.device.new_buffer(
+            partial_o_size as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+        // partial_S: [n_wg, n_heads]
+        let partial_s_size = n_wg * n_heads * std::mem::size_of::<f32>();
+        let partial_s_buffer = std::rc::Rc::new(self.device.new_buffer(
+            partial_s_size as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+        // partial_M: [n_wg, n_heads]
+        let partial_m_size = n_wg * n_heads * std::mem::size_of::<f32>();
+        let partial_m_buffer = std::rc::Rc::new(self.device.new_buffer(
+            partial_m_size as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        // Final output buffer
+        let output_size =
+            n_seqs * n_heads * head_dim * std::mem::size_of::<f32>();
+        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+            output_size as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
+
+        // Pass 1: Compute partial results
+        let command_buffer = self.queue.new_command_buffer();
+        let encoder = command_buffer.new_compute_command_encoder();
+
+        encoder
+            .set_compute_pipeline_state(&self.flash_decode_nwg_pass1_pipeline);
+
+        // Buffer 0: seq_k
+        encoder.set_bytes(
+            0,
+            4,
+            &seq_k as *const u32 as *const std::ffi::c_void,
+        );
+        // Buffer 1: kv_stride
+        encoder.set_bytes(
+            1,
+            4,
+            &kv_stride_u32 as *const u32 as *const std::ffi::c_void,
+        );
+        // Buffer 2: scale
+        encoder.set_bytes(
+            2,
+            4,
+            &scale as *const f32 as *const std::ffi::c_void,
+        );
+        // Buffer 3: query
+        encoder.set_buffer(3, Some(q_buffer), 0);
+        // Buffer 4: key_cache
+        encoder.set_buffer(4, Some(k_buffer), 0);
+        // Buffer 5: value_cache
+        encoder.set_buffer(5, Some(v_buffer), 0);
+        // Buffer 6: partial_O
+        encoder.set_buffer(6, Some(&partial_o_buffer), 0);
+        // Buffer 7: partial_S
+        encoder.set_buffer(7, Some(&partial_s_buffer), 0);
+        // Buffer 8: partial_M
+        encoder.set_buffer(8, Some(&partial_m_buffer), 0);
+        // Buffer 9: n_wg
+        encoder.set_bytes(
+            9,
+            4,
+            &n_wg_u32 as *const u32 as *const std::ffi::c_void,
+        );
+        // Buffer 10: n_heads
+        let n_heads_u32 = n_heads as u32;
+        encoder.set_bytes(
+            10,
+            4,
+            &n_heads_u32 as *const u32 as *const std::ffi::c_void,
+        );
+
+        // Grid: [n_heads, n_seqs, n_wg]
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: n_heads as u64,
+            height: n_seqs as u64,
+            depth: n_wg as u64,
+        };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        encoder.end_encoding();
+
+        // Pass 2: Reduce partial results
+        let encoder2 = command_buffer.new_compute_command_encoder();
+        encoder2
+            .set_compute_pipeline_state(&self.flash_decode_nwg_pass2_pipeline);
+
+        // Buffer 0: partial_O
+        encoder2.set_buffer(0, Some(&partial_o_buffer), 0);
+        // Buffer 1: partial_S
+        encoder2.set_buffer(1, Some(&partial_s_buffer), 0);
+        // Buffer 2: partial_M
+        encoder2.set_buffer(2, Some(&partial_m_buffer), 0);
+        // Buffer 3: output
+        encoder2.set_buffer(3, Some(&output_buffer), 0);
+        // Buffer 4: n_wg
+        encoder2.set_bytes(
+            4,
+            4,
+            &n_wg_u32 as *const u32 as *const std::ffi::c_void,
+        );
+        // Buffer 5: n_heads
+        encoder2.set_bytes(
+            5,
+            4,
+            &n_heads_u32 as *const u32 as *const std::ffi::c_void,
+        );
+
+        // Grid: [n_heads, n_seqs, 1]
+        let thread_group_count2 =
+            MTLSize { width: n_heads as u64, height: n_seqs as u64, depth: 1 };
+
+        encoder2.dispatch_thread_groups(thread_group_count2, thread_group_size);
+        encoder2.end_encoding();
+
         command_buffer.commit();
         command_buffer.wait_until_completed();
 

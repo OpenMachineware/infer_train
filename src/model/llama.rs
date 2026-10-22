@@ -2597,6 +2597,11 @@ impl LlamaModel {
             }
         }
 
+        let enable_timing = std::env::var("INFER_PREFILL_TIMING").is_ok();
+        let mut timings: Vec<(&str, u64)> = Vec::new();
+        let start_time = std::time::Instant::now();
+        let mut last_time = start_time;
+
         // For prefill (batch > 1), use true GPU batched implementation
         let batch_size = tokens.len();
         let hidden_size = self.config.hidden_size;
@@ -2606,6 +2611,15 @@ impl LlamaModel {
         // 1. Batch embedding lookup (GPU)
         let (hidden_buffer, _) =
             self.embedding_lookup_batched_gpu(tokens, device)?;
+
+        if enable_timing {
+            let now = std::time::Instant::now();
+            timings.push((
+                "embedding_lookup",
+                (now - last_time).as_micros() as u64,
+            ));
+            last_time = now;
+        }
 
         // 2. Create forward pool and command buffer
         use std::cell::RefCell;
@@ -2621,6 +2635,12 @@ impl LlamaModel {
             queue.new_command_buffer_with_unretained_references();
         let encoder = command_buffer.new_compute_command_encoder();
 
+        if enable_timing {
+            let now = std::time::Instant::now();
+            timings.push(("setup", (now - last_time).as_micros() as u64));
+            last_time = now;
+        }
+
         // 3. Process all layers with GPU batched implementation
         let mut layer_input = hidden_buffer.clone();
         for (layer_idx, layer) in self.layers.iter().enumerate() {
@@ -2634,6 +2654,13 @@ impl LlamaModel {
                 &mut forward_pool,
                 encoder,
             )?;
+        }
+
+        if enable_timing {
+            let now = std::time::Instant::now();
+            timings
+                .push(("layers_encode", (now - last_time).as_micros() as u64));
+            last_time = now;
         }
 
         // 4. Final norm and output projection
@@ -2684,9 +2711,22 @@ impl LlamaModel {
 
         encoder.end_encoding();
 
+        if enable_timing {
+            let now = std::time::Instant::now();
+            timings
+                .push(("output_encode", (now - last_time).as_micros() as u64));
+            last_time = now;
+        }
+
         // 5. Execute GPU commands
         command_buffer.commit();
         command_buffer.wait_until_completed();
+
+        if enable_timing {
+            let now = std::time::Instant::now();
+            timings.push(("gpu_execute", (now - last_time).as_micros() as u64));
+            last_time = now;
+        }
 
         // Update KV cache position
         for _ in 0..batch_size {
@@ -2705,6 +2745,26 @@ impl LlamaModel {
                 logits.as_mut_ptr(),
                 logits_len,
             );
+        }
+
+        if enable_timing {
+            let now = std::time::Instant::now();
+            timings.push((
+                "logits_readback",
+                (now - last_time).as_micros() as u64,
+            ));
+
+            eprintln!("\n=== PREFILL TIMING (batch={}) ===", batch_size);
+            let mut total: u64 = 0;
+            for (name, us) in &timings {
+                let ms = *us as f64 / 1000.0;
+                eprintln!("  {}: {:.2} ms", name, ms);
+                total += us;
+            }
+            eprintln!("  TOTAL: {:.2} ms", total as f64 / 1000.0);
+            let tokens_per_sec =
+                batch_size as f64 / (total as f64 / 1_000_000.0);
+            eprintln!("  Prefill speed: {:.1} t/s", tokens_per_sec);
         }
 
         Some(logits)
