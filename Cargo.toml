@@ -209,6 +209,16 @@ path = "tools/bandwidth_profile.rs"
 required-features = ["metal"]
 
 [[bin]]
+name = "kernel-bandwidth-profile"
+path = "tools/kernel_bandwidth_profile.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "dispatch-overhead-profile"
+path = "tools/dispatch_overhead_profile.rs"
+required-features = ["metal"]
+
+[[bin]]
 name = "kernel-timing"
 path = "tools/kernel_timing.rs"
 
