@@ -1,25 +1,32 @@
 # GPU Decode Performance Optimization Roadmap
 
-## Current Status (2026-10-22 Session 8)
+## Current Status (2026-10-22 Session 9)
 
 **Performance** (Q4_K models after dispatch fix):
-| Model | 我们 | llama.cpp | 差距 |
+| Model | We | llama.cpp | Gap |
 |-------|------|-----------|------|
-| Qwen3-0.6B | 95.24 t/s | 211.4 t/s | 2.22x |
-| Hy-MT2-7B | 34.72 t/s | 43.7 t/s | 1.26x |
+| Qwen3-0.6B | 103 t/s | 211.4 t/s | **2.05x** |
+| Hy-MT2-7B | 33.44 t/s | 43.7 t/s | **1.31x** |
 
 **Performance** (Q5_K models):
-| Model | 我们 | llama.cpp | 差距 |
+| Model | We | llama.cpp | Gap |
 |-------|------|-----------|------|
-| DeepSeek-1.5B | 83.33 t/s | 131.6 t/s | 1.58x |
+| DeepSeek-1.5B | 83.33 t/s | 131.6 t/s | **1.58x** |
 
-**Status**: ✅ **DISPATCH FIXED** - Performance gap reduced to 1.26-2.22x
+**Status**: ✅ **DISPATCH FIXED** - Performance gap reduced to 1.31-2.05x
 
-### Session 8 Progress
-1. ✅ Fixed dispatch: Changed from 1D to 2D (width:32, height:nsg)
-2. ✅ Kernel formula matches llama.cpp: `first_row = (tgpig.x * NSG + sgitg) * N_R0`
-3. ✅ All Q4_K and Q5_K models work correctly (no NaN)
-4. ✅ Performance gap significantly reduced for larger models
+### Session 9 Progress
+1. ✅ Verified dispatch fix performance (103 t/s for Qwen3-0.6B)
+2. ✅ Confirmed pattern: smaller models have larger gaps (Rust overhead)
+3. ✅ Identified gap as ~5-7 ms fixed overhead per token
+4. ⏳ Investigating Rust-side overhead sources
+
+### Gap Analysis
+**Gap in absolute time:**
+- Qwen3-0.6B: 9.71 ms/token vs 4.73 ms/token → **4.98 ms gap**
+- Hy-MT2-7B: 29.90 ms/token vs 22.88 ms/token → **7.02 ms gap**
+
+**Key insight**: Gap is similar in absolute time (~5-7 ms), confirming fixed per-token overhead.
 
 ### Dispatch Configuration Fix
 **Before (wrong)**: 1D dispatch, each threadgroup = 32 threads, 1 simdgroup

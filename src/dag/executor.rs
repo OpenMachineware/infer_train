@@ -27,23 +27,41 @@ use std::rc::Rc;
 use metal::Buffer as MetalBuffer;
 
 /// Tensor registry: maps tensor IDs to GPU buffers
+/// Uses Vec for O(1) direct indexing instead of HashMap
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 pub struct TensorRegistry {
-    buffers: HashMap<usize, Rc<MetalBuffer>>,
+    buffers: Vec<Option<Rc<MetalBuffer>>>,
+    max_tensor_id: usize,
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 impl TensorRegistry {
     pub fn new() -> Self {
-        Self { buffers: HashMap::new() }
+        Self { buffers: Vec::new(), max_tensor_id: 0 }
+    }
+
+    /// Pre-allocate space for expected number of tensors
+    pub fn with_capacity(capacity: usize) -> Self {
+        let mut buffers = Vec::with_capacity(capacity);
+        buffers.resize(capacity, None);
+        Self { buffers, max_tensor_id: 0 }
     }
 
     pub fn get(&self, id: usize) -> Option<Rc<MetalBuffer>> {
-        self.buffers.get(&id).cloned()
+        self.buffers.get(id).and_then(|b| b.clone())
     }
 
     pub fn insert(&mut self, id: usize, buffer: Rc<MetalBuffer>) {
-        self.buffers.insert(id, buffer);
+        // Extend vector if needed
+        if id >= self.buffers.len() {
+            // Double the size for amortized O(1) growth
+            let new_len = (id + 1).next_power_of_two();
+            self.buffers.resize(new_len, None);
+        }
+        self.buffers[id] = Some(buffer);
+        if id > self.max_tensor_id {
+            self.max_tensor_id = id;
+        }
     }
 }
 
@@ -177,11 +195,15 @@ impl DagExecutor {
 
             // Debug: show registry state before executing node 534
             if std::env::var("INFER_DEBUG_DAG").is_ok() && *node_id == 534 {
-                let keys: Vec<_> =
-                    exec_ctx.tensor_registry.buffers.keys().collect();
+                let count = exec_ctx
+                    .tensor_registry
+                    .buffers
+                    .iter()
+                    .filter(|b| b.is_some())
+                    .count();
                 eprintln!(
                     "[DAG] Before node 534: registry has {} entries",
-                    keys.len()
+                    count
                 );
 
                 // Show the actual FusedQKV operation details
