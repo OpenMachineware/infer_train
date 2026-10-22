@@ -1020,6 +1020,7 @@ impl DagExecutor {
 
                 // Use multi-head kernel if enabled (INFER_USE_MULTIHEAD=1)
                 // This reduces dispatch overhead by 32x for models with n_heads >= 32
+                // Note: For n_heads < 32, single-head approach is more efficient
                 let use_multihead = std::env::var("INFER_USE_MULTIHEAD")
                     .is_ok()
                     && *head_dim == 128
