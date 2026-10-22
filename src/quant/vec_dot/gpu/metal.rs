@@ -3918,11 +3918,21 @@ impl MetalContext {
             &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
 
-        // TEMPORARILY REVERTED: P0 GEMV kernel changes cause NaN issue
-        // TODO: Re-enable after fixing kernel implementation
-        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        // Threadgroup configuration (matching llama.cpp)
+        // Q4_K, Q5_K: NSG=2 (2 simdgroups per threadgroup, each processes 1 row)
+        // Q6_K: NSG=1, N_R0=2 (1 simdgroup per threadgroup, processes 2 rows)
+        let (nsg, nr0) = match dtype {
+            crate::model::tensor::DataType::Q6_K => (1, 2),
+            _ => (2, 1), // Q4_K, Q5_K, Q2_K, Q3_K
+        };
+
+        let threads_per_tg = nsg * 32; // 32 threads per simdgroup
+        let tgs = (m + nsg * nr0 - 1) / (nsg * nr0); // threadgroups needed
+
+        let thread_group_size =
+            MTLSize { width: threads_per_tg as u64, height: 1, depth: 1 };
         let thread_group_count =
-            MTLSize { width: m as u64, height: 1, depth: 1 };
+            MTLSize { width: tgs as u64, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         true
