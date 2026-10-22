@@ -43,6 +43,7 @@ kernel void flash_decode_mma_v2_f16(
     constant uint& seq_k [[buffer(0)]],
     constant uint& kv_stride [[buffer(1)]],
     constant float& scale [[buffer(2)]],
+    constant uint& gqa_ratio [[buffer(7)]],  // n_heads / n_kv_heads
     device const half* query [[buffer(3)]],       // [n_heads, head_dim]
     device const half* key_cache [[buffer(4)]],   // [n_kv_heads, kv_stride, head_dim]
     device const half* value_cache [[buffer(5)]], // [n_kv_heads, kv_stride, head_dim]
@@ -62,7 +63,6 @@ kernel void flash_decode_mma_v2_f16(
     const int head = head_base + head_in_sg;
 
     // GQA: map Q head to KV head
-    const int gqa_ratio = 4;
     const int kv_head = head / gqa_ratio;
 
     // Get pointers

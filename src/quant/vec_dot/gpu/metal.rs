@@ -3918,21 +3918,11 @@ impl MetalContext {
             &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
 
-        // Threadgroup configuration (matching llama.cpp)
-        // Q4_K, Q5_K: NSG=2 (2 simdgroups per threadgroup, each processes 1 row)
-        // Q6_K: NSG=1, N_R0=2 (1 simdgroup per threadgroup, processes 2 rows)
-        let (nsg, nr0) = match dtype {
-            crate::model::tensor::DataType::Q6_K => (1, 2),
-            _ => (2, 1), // Q4_K, Q5_K, Q2_K, Q3_K
-        };
-
-        let threads_per_tg = nsg * 32; // 32 threads per simdgroup
-        let tgs = (m + nsg * nr0 - 1) / (nsg * nr0); // threadgroups needed
-
-        let thread_group_size =
-            MTLSize { width: threads_per_tg as u64, height: 1, depth: 1 };
+        // TEMPORARILY REVERTED: P0 GEMV kernel changes cause NaN issue
+        // TODO: Re-enable after fixing kernel implementation
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
         let thread_group_count =
-            MTLSize { width: tgs as u64, height: 1, depth: 1 };
+            MTLSize { width: m as u64, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         true
@@ -12202,6 +12192,7 @@ impl MetalContext {
         let scale = 1.0f32 / (head_dim as f32).sqrt();
         let seq_k = seq_len as u32;
         let kv_stride_u32 = kv_stride as u32;
+        let gqa_ratio = (n_heads / n_kv_heads) as u32;
 
         encoder.set_compute_pipeline_state(&self.flash_decode_mma_pipeline);
         encoder.set_bytes(
@@ -12223,6 +12214,11 @@ impl MetalContext {
         encoder.set_buffer(4, Some(k_buffer), 0);
         encoder.set_buffer(5, Some(v_buffer), 0);
         encoder.set_buffer(6, Some(output_buffer), 0);
+        encoder.set_bytes(
+            7,
+            4,
+            &gqa_ratio as *const u32 as *const std::ffi::c_void,
+        );
 
         // 4 heads per threadgroup (MMA version)
         let n_head_groups = (n_heads + 3) / 4;
@@ -12251,6 +12247,7 @@ impl MetalContext {
         let scale = 1.0f32 / (head_dim as f32).sqrt();
         let seq_k = seq_len as u32;
         let kv_stride_u32 = kv_stride as u32;
+        let gqa_ratio = (n_heads / n_kv_heads) as u32;
 
         encoder.set_compute_pipeline_state(&self.flash_decode_mma_v2_pipeline);
         encoder.set_bytes(
@@ -12272,6 +12269,11 @@ impl MetalContext {
         encoder.set_buffer(4, Some(k_buffer), 0);
         encoder.set_buffer(5, Some(v_buffer), 0);
         encoder.set_buffer(6, Some(output_buffer), 0);
+        encoder.set_bytes(
+            7,
+            4,
+            &gqa_ratio as *const u32 as *const std::ffi::c_void,
+        );
 
         // 4 heads per threadgroup (same as MMA v1)
         let n_head_groups = (n_heads + 3) / 4;

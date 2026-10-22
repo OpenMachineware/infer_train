@@ -131,11 +131,13 @@ impl DagExecutor {
         }
 
         // Check if MMA kernel is enabled via environment variable
+        // MMA kernels disabled by default due to NaN issues with GQA models
+        // TODO: Fix MMA kernels and re-enable
         let use_mma = std::env::var("INFER_USE_MMA")
             .map(|v| v == "1" || v == "true" || v == "v2")
-            .unwrap_or(true); // Default to MMA for better performance
+            .unwrap_or(false); // Disabled by default
         let use_mma_v2 =
-            std::env::var("INFER_USE_MMA").map(|v| v == "v2").unwrap_or(true); // Default to v2
+            std::env::var("INFER_USE_MMA").map(|v| v == "v2").unwrap_or(false); // Disabled by default
 
         // Create execution context
         let mut exec_ctx = ExecutionContext {
@@ -908,6 +910,14 @@ impl DagExecutor {
                 let input_buf = ctx.tensor_registry.get(*input)?;
                 let output_buf = ctx.forward_pool.get(*n_heads * *head_dim * 4);
 
+                // Trace RoPE output tensor ID
+                if std::env::var("INFER_TRACE_DAG").is_ok() {
+                    eprintln!(
+                        "[TRACE] RoPE: input={}, output={}",
+                        input, output
+                    );
+                }
+
                 // Debug: trace RoPE for layers 30-31
                 if std::env::var("INFER_TRACE_NAN").is_ok()
                     && ctx.layer_idx >= 30
@@ -952,6 +962,14 @@ impl DagExecutor {
                 head_dim,
             } => {
                 let q_buf = ctx.tensor_registry.get(*q)?;
+
+                // Trace FlashAttention input/output
+                if std::env::var("INFER_TRACE_DAG").is_ok() {
+                    eprintln!(
+                        "[TRACE] FlashAttention: q={}, output={}, layer={}",
+                        q, output, layer_idx
+                    );
+                }
 
                 // Get KV cache buffers directly from kv_cache object
                 let k_buf = ctx.kv_cache.k_buffer(*layer_idx);

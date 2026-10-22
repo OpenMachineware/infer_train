@@ -21,7 +21,8 @@ impl DagOptimizer {
 
         // Apply fusion patterns
         fused_count += Self::fuse_qkv_projections(dag);
-        fused_count += Self::fuse_gate_up_projections(dag);
+        // TEMPORARILY DISABLED: Investigating NaN issue
+        // fused_count += Self::fuse_gate_up_projections(dag);
         fused_count += Self::fuse_silu_mul(dag);
         // TEMPORARILY DISABLED: FusedNormLinear Q5_K/Q6_K kernels produce NaN
         // fused_count += Self::fuse_norm_gemv(dag);
