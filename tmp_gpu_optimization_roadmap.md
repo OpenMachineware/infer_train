@@ -5,7 +5,7 @@
 **Performance** (Q4_K models):
 | Model | We | llama.cpp | Gap |
 |-------|------|-----------|------|
-| Qwen3-0.6B | 120.72 t/s | 239.59 t/s | **1.98x** |
+| Qwen3-0.6B | 120.3 t/s | 239.59 t/s | **1.99x** |
 | Hy-MT2-7B | ~32 t/s | 43.7 t/s | **1.37x** |
 
 **Performance** (Q5_K models):
@@ -13,21 +13,20 @@
 |-------|------|-----------|------|
 | DeepSeek-1.5B | ~83 t/s | 131.6 t/s | **1.58x** |
 
-**Status**: ✅ **Vec Registry Optimization** - 17% speedup (103 → 120.72 t/s)
+**Status**: ✅ **Vec Registry + Dtype Caching** - 17% speedup
 
 ### Session 9 Progress
-1. ✅ Verified dispatch fix performance
-2. ✅ Confirmed pattern: smaller models have larger gaps (Rust overhead)
-3. ✅ Optimized TensorRegistry: HashMap → Vec (17% speedup)
-4. ✅ Measured sampling overhead: 202 µs (2.4% of total time)
-5. ⏳ Remaining gap: 1.98x
+1. ✅ Optimized TensorRegistry: HashMap → Vec (17% speedup)
+2. ✅ Cached dtypes to avoid redundant lookups
+3. ✅ Measured sampling overhead: 202 µs (2.4% of total time)
+4. ⏳ Remaining gap: 1.99x
 
 ### Performance Timeline
 | Session | Performance | Gap | Optimization |
 |---------|-------------|-----|--------------|
 | Session 8 | 95.24 t/s | 2.51x | Dispatch fix |
 | Session 9 | 103 t/s | 2.05x | Vec registry baseline |
-| Session 9 | 120.72 t/s | 1.98x | Vec registry optimized |
+| Session 9 | 120.3 t/s | 1.99x | Vec registry + dtype cache |
 
 ### Dispatch Configuration Fix
 **Before (wrong)**: 1D dispatch, each threadgroup = 32 threads, 1 simdgroup
