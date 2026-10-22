@@ -32,23 +32,32 @@ use metal::Buffer as MetalBuffer;
 pub struct TensorRegistry {
     buffers: Vec<Option<Rc<MetalBuffer>>>,
     max_tensor_id: usize,
+    /// Cached dtypes for weight tensors (avoid HashMap lookups)
+    dtypes: Vec<Option<crate::model::DataType>>,
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 impl TensorRegistry {
     pub fn new() -> Self {
-        Self { buffers: Vec::new(), max_tensor_id: 0 }
+        Self { buffers: Vec::new(), max_tensor_id: 0, dtypes: Vec::new() }
     }
 
     /// Pre-allocate space for expected number of tensors
     pub fn with_capacity(capacity: usize) -> Self {
         let mut buffers = Vec::with_capacity(capacity);
         buffers.resize(capacity, None);
-        Self { buffers, max_tensor_id: 0 }
+        let mut dtypes = Vec::with_capacity(capacity);
+        dtypes.resize(capacity, None);
+        Self { buffers, max_tensor_id: 0, dtypes }
     }
 
     pub fn get(&self, id: usize) -> Option<Rc<MetalBuffer>> {
         self.buffers.get(id).and_then(|b| b.clone())
+    }
+
+    /// Get cached dtype for a tensor
+    pub fn get_dtype(&self, id: usize) -> Option<crate::model::DataType> {
+        self.dtypes.get(id).and_then(|d| *d)
     }
 
     pub fn insert(&mut self, id: usize, buffer: Rc<MetalBuffer>) {
@@ -57,10 +66,24 @@ impl TensorRegistry {
             // Double the size for amortized O(1) growth
             let new_len = (id + 1).next_power_of_two();
             self.buffers.resize(new_len, None);
+            self.dtypes.resize(new_len, None);
         }
         self.buffers[id] = Some(buffer);
         if id > self.max_tensor_id {
             self.max_tensor_id = id;
+        }
+    }
+
+    /// Insert buffer with dtype (for weight tensors)
+    pub fn insert_with_dtype(
+        &mut self,
+        id: usize,
+        buffer: Rc<MetalBuffer>,
+        dtype: crate::model::DataType,
+    ) {
+        self.insert(id, buffer);
+        if id < self.dtypes.len() {
+            self.dtypes[id] = Some(dtype);
         }
     }
 }
@@ -142,10 +165,14 @@ impl DagExecutor {
         // Bind initial input tensor
         tensor_registry.insert(0, hidden_buffer);
 
-        // Bind all weight tensors to GPU buffers
+        // Bind all weight tensors to GPU buffers (with dtype caching)
         for (tensor_id, tensor) in &dag.dag.weight_bindings {
             let weight_buffer = gpu_ctx.get_or_create_buffer(tensor);
-            tensor_registry.insert(*tensor_id, weight_buffer);
+            tensor_registry.insert_with_dtype(
+                *tensor_id,
+                weight_buffer,
+                tensor.dtype,
+            );
         }
 
         // Check if MMA kernel is enabled via environment variable
@@ -542,12 +569,12 @@ impl DagExecutor {
                 let weight_buf = ctx.tensor_registry.get(*weight)?;
                 let output_buf = ctx.forward_pool.get(*out_size * 4);
 
-                // Get weight tensor dtype from weight_bindings
-                let weight_tensor = ctx.weight_bindings.get(weight)?;
-                let dtype = weight_tensor.dtype;
+                // Get weight tensor dtype from cached registry (avoid HashMap lookup)
+                let dtype = ctx.tensor_registry.get_dtype(*weight)?;
 
                 // Debug: print Gemv parameters
                 if std::env::var("INFER_TRACE_NAN").is_ok() {
+                    let weight_tensor = ctx.weight_bindings.get(weight)?;
                     eprintln!(
                         "[TRACE] Gemv node {}: input={}, weight={}, output={}, dtype={:?}, weight_shape={:?}",
                         node.id,
@@ -671,37 +698,37 @@ impl DagExecutor {
                 let k_buf = ctx.forward_pool.get(*k_out_size * 4);
                 let v_buf = ctx.forward_pool.get(*v_out_size * 4);
 
-                // Get weight dtypes - check each one
-                let q_dtype = match ctx.weight_bindings.get(q_weight) {
-                    Some(t) => t.dtype,
+                // Get weight dtypes from cached registry (avoid HashMap lookups)
+                let q_dtype = match ctx.tensor_registry.get_dtype(*q_weight) {
+                    Some(d) => d,
                     None => {
                         if std::env::var("INFER_DEBUG_DAG").is_ok() {
                             eprintln!(
-                                "[DAG] FusedQKV: q_weight {} not in weight_bindings",
+                                "[DAG] FusedQKV: q_weight {} dtype not cached",
                                 q_weight
                             );
                         }
                         return None;
                     }
                 };
-                let k_dtype = match ctx.weight_bindings.get(k_weight) {
-                    Some(t) => t.dtype,
+                let k_dtype = match ctx.tensor_registry.get_dtype(*k_weight) {
+                    Some(d) => d,
                     None => {
                         if std::env::var("INFER_DEBUG_DAG").is_ok() {
                             eprintln!(
-                                "[DAG] FusedQKV: k_weight {} not in weight_bindings",
+                                "[DAG] FusedQKV: k_weight {} dtype not cached",
                                 k_weight
                             );
                         }
                         return None;
                     }
                 };
-                let v_dtype = match ctx.weight_bindings.get(v_weight) {
-                    Some(t) => t.dtype,
+                let v_dtype = match ctx.tensor_registry.get_dtype(*v_weight) {
+                    Some(d) => d,
                     None => {
                         if std::env::var("INFER_DEBUG_DAG").is_ok() {
                             eprintln!(
-                                "[DAG] FusedQKV: v_weight {} not in weight_bindings",
+                                "[DAG] FusedQKV: v_weight {} dtype not cached",
                                 v_weight
                             );
                         }
@@ -806,13 +833,14 @@ impl DagExecutor {
                 let total_out_size = q_out_size + k_out_size + v_out_size;
                 let qkv_buf = ctx.forward_pool.get(total_out_size * 4);
 
-                // Get weight dtype
-                let qkv_dtype = match ctx.weight_bindings.get(qkv_weight) {
-                    Some(t) => t.dtype,
+                // Get weight dtype from cached registry
+                let qkv_dtype = match ctx.tensor_registry.get_dtype(*qkv_weight)
+                {
+                    Some(d) => d,
                     None => {
                         if std::env::var("INFER_DEBUG_DAG").is_ok() {
                             eprintln!(
-                                "[DAG] FusedQKVWeight: qkv_weight {} not in weight_bindings",
+                                "[DAG] FusedQKVWeight: qkv_weight {} dtype not cached",
                                 qkv_weight
                             );
                         }
@@ -875,9 +903,9 @@ impl DagExecutor {
 
                 let hidden_size = ctx.model.config.hidden_size;
 
-                // Get weight dtypes
-                let gate_dtype = ctx.weight_bindings.get(gate_weight)?.dtype;
-                let up_dtype = ctx.weight_bindings.get(up_weight)?.dtype;
+                // Get weight dtypes from cached registry
+                let gate_dtype = ctx.tensor_registry.get_dtype(*gate_weight)?;
+                let up_dtype = ctx.tensor_registry.get_dtype(*up_weight)?;
 
                 if std::env::var("INFER_TRACE_NAN").is_ok()
                     && node.id >= 520
@@ -1316,11 +1344,11 @@ impl DagExecutor {
                     ctx.tensor_registry.get(*linear_weight)?;
                 let output_buf = ctx.forward_pool.get(*out_size * 4);
 
-                // Get weight tensor info
-                let weight_tensor = ctx.weight_bindings.get(linear_weight)?;
+                // Get weight dtype from cached registry
+                let dtype = ctx.tensor_registry.get_dtype(*linear_weight)?;
 
                 // Use F16 fused kernel for F16 weights, fallback otherwise
-                match weight_tensor.dtype {
+                match dtype {
                     crate::model::tensor::DataType::F16 => {
                         ctx.gpu_ctx.fused_norm_linear_f16_encode(
                             encoder,
@@ -1405,7 +1433,7 @@ impl DagExecutor {
                             &output_buf,
                             *out_size,
                             ctx.model.config.hidden_size,
-                            weight_tensor.dtype,
+                            dtype,
                         );
                     }
                 }
@@ -1455,14 +1483,13 @@ impl DagExecutor {
             } => {
                 let input_buf = ctx.tensor_registry.get(*input)?;
                 let weight_buf = ctx.tensor_registry.get(*weight)?;
-                let weight_tensor = ctx.weight_bindings.get(weight)?;
                 let residual_buf = ctx.tensor_registry.get(*residual)?;
 
                 // Output buffer - GEMV result + residual add
                 let output_buf = ctx.forward_pool.get(*out_size * 4);
 
-                // Get weight dtype
-                let dtype = weight_tensor.dtype;
+                // Get weight dtype from cached registry
+                let dtype = ctx.tensor_registry.get_dtype(*weight)?;
 
                 // Use fused kernel if available (K-quant formats)
                 let fused_success = ctx.gpu_ctx.fused_gemv_add_encode(
@@ -1478,6 +1505,8 @@ impl DagExecutor {
 
                 if !fused_success {
                     // Fallback to separate operations for unsupported formats
+                    // Get weight tensor from bindings for fallback path
+                    let weight_tensor = ctx.weight_bindings.get(weight)?;
                     ctx.model.gemv_encode(
                         encoder,
                         &input_buf,
