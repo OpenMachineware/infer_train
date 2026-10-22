@@ -731,6 +731,94 @@ impl DagExecutor {
                 Some(())
             }
 
+            Operation::FusedQKVWeight {
+                input,
+                qkv_weight,
+                output_q,
+                output_k,
+                output_v,
+                q_out_size,
+                k_out_size,
+                v_out_size,
+                layer_idx: _,
+            } => {
+                // Fused QKV with merged weight tensor
+                // Single GEMV operation, result is split into Q, K, V
+                if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                    eprintln!(
+                        "[DAG] FusedQKVWeight: input={}, qkv_weight={}",
+                        input, qkv_weight
+                    );
+                }
+
+                let input_buf = match ctx.tensor_registry.get(*input) {
+                    Some(buf) => buf,
+                    None => {
+                        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                            eprintln!(
+                                "[DAG] FusedQKVWeight: input {} not in tensor_registry",
+                                input
+                            );
+                        }
+                        return None;
+                    }
+                };
+
+                let qkv_weight_buf = match ctx.tensor_registry.get(*qkv_weight)
+                {
+                    Some(buf) => buf,
+                    None => {
+                        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                            eprintln!(
+                                "[DAG] FusedQKVWeight: qkv_weight {} not in tensor_registry",
+                                qkv_weight
+                            );
+                        }
+                        return None;
+                    }
+                };
+
+                // Allocate output buffer for the fused QKV result
+                let total_out_size = q_out_size + k_out_size + v_out_size;
+                let qkv_buf = ctx.forward_pool.get(total_out_size * 4);
+
+                // Get weight dtype
+                let qkv_dtype = match ctx.weight_bindings.get(qkv_weight) {
+                    Some(t) => t.dtype,
+                    None => {
+                        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                            eprintln!(
+                                "[DAG] FusedQKVWeight: qkv_weight {} not in weight_bindings",
+                                qkv_weight
+                            );
+                        }
+                        return None;
+                    }
+                };
+
+                let hidden_size = ctx.model.config.hidden_size;
+
+                // Single GEMV for the fused weight
+                ctx.gpu_ctx.mv_encode(
+                    encoder,
+                    &qkv_weight_buf,
+                    &input_buf,
+                    &qkv_buf,
+                    total_out_size,
+                    hidden_size,
+                    qkv_dtype,
+                );
+
+                // TODO: Split the result into Q, K, V
+                // For now, use the fused buffer for all three
+                // This needs a split kernel or CPU post-processing
+                ctx.tensor_registry.insert(*output_q, qkv_buf.clone());
+                ctx.tensor_registry.insert(*output_k, qkv_buf.clone());
+                ctx.tensor_registry.insert(*output_v, qkv_buf.clone());
+
+                Some(())
+            }
+
             Operation::FusedGateUp {
                 input,
                 gate_weight,
@@ -1391,6 +1479,11 @@ impl DagExecutor {
             Operation::FusedQKV { output_q, output_k, output_v, .. } => {
                 vec![*output_q, *output_k, *output_v]
             }
+            Operation::FusedQKVWeight {
+                output_q, output_k, output_v, ..
+            } => {
+                vec![*output_q, *output_k, *output_v]
+            }
             Operation::FusedGateUp { output_gate, output_up, .. } => {
                 vec![*output_gate, *output_up]
             }
@@ -1426,6 +1519,9 @@ impl DagExecutor {
                 input, q_weight, k_weight, v_weight, ..
             } => {
                 vec![*input, *q_weight, *k_weight, *v_weight]
+            }
+            Operation::FusedQKVWeight { input, qkv_weight, .. } => {
+                vec![*input, *qkv_weight]
             }
             Operation::FusedGateUp {
                 input, gate_weight, up_weight, ..

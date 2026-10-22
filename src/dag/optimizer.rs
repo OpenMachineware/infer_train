@@ -763,6 +763,11 @@ impl DagOptimizer {
             Operation::FusedQKV { output_q, output_k, output_v, .. } => {
                 vec![*output_q, *output_k, *output_v]
             }
+            Operation::FusedQKVWeight {
+                output_q, output_k, output_v, ..
+            } => {
+                vec![*output_q, *output_k, *output_v]
+            }
             Operation::FusedGateUp { output_gate, output_up, .. } => {
                 vec![*output_gate, *output_up]
             }

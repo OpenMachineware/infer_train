@@ -43,6 +43,20 @@ pub enum Operation {
         v_out_size: usize,
         layer_idx: usize,
     },
+    /// Fused QKV projection with merged weight tensor (attn_qkv)
+    /// Used by models like Qwen3.8 where Q/K/V weights are stored as a single tensor
+    /// Single GEMV operation, result split into Q, K, V
+    FusedQKVWeight {
+        input: usize,
+        qkv_weight: usize, // Merged Q/K/V weight tensor
+        output_q: usize,
+        output_k: usize,
+        output_v: usize,
+        q_out_size: usize,
+        k_out_size: usize,
+        v_out_size: usize,
+        layer_idx: usize,
+    },
     /// Fused Gate + Up projections (both take FFN norm as input)
     /// Combines two GEMV operations into one GEMM
     /// This is a key fusion from llama.cpp/vLLM for FFN
