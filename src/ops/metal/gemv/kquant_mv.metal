@@ -35,10 +35,14 @@ kernel void kernel_mul_mv_q4_K_f32(
     device float * dst [[buffer(2)]],
     constant kquant_mv_args & args [[buffer(3)]],
     uint3 tgpig [[threadgroup_position_in_grid]],
-    ushort tiisg [[thread_index_in_simdgroup]])
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
 {
     const int nb = args.ne00 / QK_K;
-    const int row = tgpig.x;
+
+    // Support for multiple simdgroups per threadgroup (NSG=2)
+    // Each simdgroup processes one row
+    const int row = tgpig.x * 2 + sgitg;
     if (row >= (int)args.ne01) return;
 
     device const block_q4_K * blocks = (device const block_q4_K *)(src0 + row * args.nb01);
@@ -135,9 +139,12 @@ kernel void kernel_mul_mv_q2_K_f32(
     device float * dst [[buffer(2)]],
     constant kquant_mv_args & args [[buffer(3)]],
     uint3 tgpig [[threadgroup_position_in_grid]],
-    ushort tiisg [[thread_index_in_simdgroup]])
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
 {
-    const int row = tgpig.x;  // Each threadgroup handles one row
+    // Support for multiple simdgroups per threadgroup (NSG=2)
+    // Each simdgroup processes one row
+    const int row = tgpig.x * 2 + sgitg;
     if (row >= (int)args.ne01) return;
 
     const int nb = args.ne00 / QK_K;  // Number of blocks per row
@@ -208,9 +215,12 @@ kernel void kernel_mul_mv_q3_K_f32(
     device float * dst [[buffer(2)]],
     constant kquant_mv_args & args [[buffer(3)]],
     uint3 tgpig [[threadgroup_position_in_grid]],
-    ushort tiisg [[thread_index_in_simdgroup]])
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
 {
-    const int row = tgpig.x;  // Each threadgroup handles one row
+    // Support for multiple simdgroups per threadgroup (NSG=2)
+    // Each simdgroup processes one row
+    const int row = tgpig.x * 2 + sgitg;
     if (row >= (int)args.ne01) return;
 
     const int nb = args.ne00 / QK_K;  // Number of blocks per row
@@ -414,36 +424,25 @@ kernel void kernel_mul_mv_q5_K_f32(
 // Layout: ql[128] + qh[64] + scales[16] + d[2]
 // 16 sub-blocks of 16 elements each, 6-bit quantization
 // Note: ql/qh have interleaved layout, not linear per sub-block
+// Optimizations: NSG=1, N_R0=2 (each simdgroup processes 2 rows)
 // ============================================================================
 
-kernel void kernel_mul_mv_q6_K_f32(
-    device const char * src0 [[buffer(0)]],
-    device const float * src1 [[buffer(1)]],
-    device float * dst [[buffer(2)]],
-    constant kquant_mv_args & args [[buffer(3)]],
-    uint3 tgpig [[threadgroup_position_in_grid]],
-    ushort tiisg [[thread_index_in_simdgroup]])
+// Helper function to compute dot product for a single Q6_K row
+static float q6_k_row_dot(
+    device const block_q6_K * blocks,
+    device const float * y,
+    int nb,
+    ushort tiisg)
 {
-    const int row = tgpig.x;  // Each threadgroup handles one row
-    if (row >= (int)args.ne01) return;
-
-    const int nb = args.ne00 / QK_K;  // Number of blocks per row
-
     float sumf = 0.0f;
 
-    // Get pointer to the weights for this row
-    device const char * row_ptr = src0 + row * args.nb01;
-    device const block_q6_K * blocks = (device const block_q6_K *)row_ptr;
-
-    // Each thread processes blocks at stride N_SIMDWIDTH
     for (int ib = tiisg; ib < nb; ib += N_SIMDWIDTH) {
         device const block_q6_K * block = blocks + ib;
-        device const float * y = src1 + ib * QK_K;
+        device const float * y_block = y + ib * QK_K;
 
         float d = block->d;
 
         // Q6_K uses interleaved ql/qh layout
-        // ql and qh are read as uint16 for SIMD processing
         device const uint16_t * ql16 = (device const uint16_t *)block->ql;
         device const uint16_t * qh16 = (device const uint16_t *)block->qh;
 
@@ -451,14 +450,10 @@ kernel void kernel_mul_mv_q6_K_f32(
         for (int il = 0; il < 16; il++) {
             float sc = block->scales[il];
             float dl = d * sc;
-            float ml = 32.0f * dl;  // Offset for signed quant
 
-            // Compute offsets for interleaved layout
             device const uint16_t * ql_sub = ql16 + 32*(il/8) + 16*((il/2)&1) + 8*(il&1);
             device const uint16_t * qh_sub = qh16 + 16*(il/8) + 8*(il&1);
 
-            // Process 16 elements using 4 iterations of 4 elements each
-            // Use masks based on (il/2)&3
             int il2 = (il/2) & 3;
             const uint32_t kmask1 = il2>1 ? (il2>2 ? 0xC0C0C0C0 : 0x30303030) : (il2>0 ? 0x0C0C0C0C : 0x03030303);
             const uint32_t kmask2 = il2>1 ? 0xF0F0F0F0 : 0x0F0F0F0F;
@@ -471,20 +466,57 @@ kernel void kernel_mul_mv_q6_K_f32(
                 const uint32_t high = (qh_sub[2*i] | ((uint32_t)qh_sub[2*i+1] << 16)) & kmask1;
                 const uint32_t q = ((high << shl_h) >> shr_h) | (low >> shr_l);
 
-                // Extract 4 bytes (4 elements)
                 for (int b = 0; b < 4; b++) {
                     uint8_t qv = (q >> (b * 8)) & 0xFF;
-                    // Convert to signed: qv - 32
                     float v = dl * (qv - 32.0f);
-                    sumf += v * y[il * 16 + i * 4 + b];
+                    sumf += v * y_block[il * 16 + i * 4 + b];
                 }
             }
         }
     }
 
-    // SIMD reduction across threads
-    float sum_all = simd_sum(sumf);
+    return sumf;
+}
+
+kernel void kernel_mul_mv_q6_K_f32(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device float * dst [[buffer(2)]],
+    constant kquant_mv_args & args [[buffer(3)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]])
+{
+    // NSG=1, N_R0=2: Each threadgroup (1 simdgroup) processes 2 rows
+    const int row0 = tgpig.x * 2;
+    const int row1 = row0 + 1;
+    const int nb = args.ne00 / QK_K;
+
+    // Process both rows
+    float sumf0 = 0.0f;
+    float sumf1 = 0.0f;
+
+    // Row 0
+    if (row0 < (int)args.ne01) {
+        device const block_q6_K * blocks0 = (device const block_q6_K *)(src0 + row0 * args.nb01);
+        sumf0 = q6_k_row_dot(blocks0, src1, nb, tiisg);
+    }
+
+    // Row 1
+    if (row1 < (int)args.ne01) {
+        device const block_q6_K * blocks1 = (device const block_q6_K *)(src0 + row1 * args.nb01);
+        sumf1 = q6_k_row_dot(blocks1, src1, nb, tiisg);
+    }
+
+    // SIMD reduction for both rows
+    float sum_all0 = simd_sum(sumf0);
+    float sum_all1 = simd_sum(sumf1);
+
     if (tiisg == 0) {
-        dst[row] = sum_all;
+        if (row0 < (int)args.ne01) {
+            dst[row0] = sum_all0;
+        }
+        if (row1 < (int)args.ne01) {
+            dst[row1] = sum_all1;
+        }
     }
 }
