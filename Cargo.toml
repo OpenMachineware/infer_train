@@ -1028,3 +1028,8 @@ required-features = ["metal"]
 name = "bench-kquant-gemv-optimization"
 path = "tools/bench_kquant_gemv_optimization.rs"
 required-features = ["metal"]
+
+[[bin]]
+name = "bench-sampling"
+path = "tools/bench_sampling.rs"
+required-features = ["metal"]
