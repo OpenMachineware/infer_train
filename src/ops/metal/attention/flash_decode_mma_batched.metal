@@ -109,7 +109,7 @@ kernel void flash_decode_true_mma_f16(
         S *= scale_prev;
 
         // Rescale previous output
-        O[0] *= scale_prev;
+        O *= scale_prev;
 
         // Compute softmax weights and accumulate V
         float local_S = 0.0f;
@@ -120,7 +120,7 @@ kernel void flash_decode_true_mma_f16(
             // Accumulate weighted V (each thread accumulates its 4 elements)
             float4 v_frag = float4(v_batch[p][0], v_batch[p][1],
                                    v_batch[p][2], v_batch[p][3]);
-            O[0] += w * v_frag;
+            O += w * v_frag;
         }
 
         S += simd_sum(local_S);
