@@ -75,11 +75,23 @@ fn get_adaptive_nsg(num_rows: usize) -> usize {
 fn main() {
     let device = Device::system_default().expect("No Metal device found");
     let queue = device.new_command_queue();
+
+    // Load and prepare blocks.h
+    let ggml_common = include_str!("../src/ops/metal/include/blocks.h");
+    let ggml_common_metal =
+        format!("#define GGML_COMMON_DECL_METAL\n{}", ggml_common);
+
+    // Load kernel source and remove include line
+    let kernel_source =
+        include_str!("../src/ops/metal/gemv/kquant_mv_mma.metal");
+    let kernel_source =
+        kernel_source.replace("#include \"../include/blocks.h\"", "");
+
+    // Combine
+    let combined = format!("{}\n{}", ggml_common_metal, kernel_source);
+
     let library = device
-        .new_library_with_source(
-            include_str!("../src/ops/metal/gemv/kquant_mv_mma.metal"),
-            &CompileOptions::new(),
-        )
+        .new_library_with_source(&combined, &CompileOptions::new())
         .expect("Failed to compile Metal library");
 
     // Test dimensions matching decode scenario
@@ -100,73 +112,9 @@ fn main() {
         let recommended_nsg = get_adaptive_nsg(m);
         println!("Recommended NSG: {}", recommended_nsg);
 
-        // Test original kernel (NSG=2)
-        let pipeline_nsg2 =
-            library.get_function("kernel_mul_mv_q4_K_f32", None).unwrap();
-        let pipeline_nsg2 = device
-            .new_compute_pipeline_state_with_function(&pipeline_nsg2)
-            .unwrap();
-
-        // Warm up
-        for _ in 0..10 {
-            let cmd_buf = queue.new_command_buffer();
-            let encoder = cmd_buf.new_compute_command_encoder();
-            encoder.set_compute_pipeline_state(&pipeline_nsg2);
-            encoder.set_buffer(0, Some(&weights), 0);
-            encoder.set_buffer(1, Some(&input), 0);
-            encoder.set_buffer(2, Some(&output), 0);
-
-            let args = kquant_mv_mma_args {
-                ne00: k as u32,
-                ne01: m as u32,
-                nb01: ((k / 256) * 144) as u64,
-            };
-            encoder.set_bytes(
-                3,
-                std::mem::size_of::<kquant_mv_mma_args>() as u64,
-                &args as *const _ as *const std::ffi::c_void,
-            );
-
-            let thread_groups =
-                MTLSize { width: ((m + 3) / 4) as u64, height: 1, depth: 1 };
-            let thread_group_size = MTLSize { width: 64, height: 1, depth: 1 };
-            encoder.dispatch_thread_groups(thread_groups, thread_group_size);
-            encoder.end_encoding();
-            cmd_buf.commit();
-            cmd_buf.wait_until_completed();
-        }
-
-        // Benchmark NSG=2
-        let start = Instant::now();
+        // Baseline time (will use first successful NSG as baseline)
         let iterations = 100;
-        for _ in 0..iterations {
-            let cmd_buf = queue.new_command_buffer();
-            let encoder = cmd_buf.new_compute_command_encoder();
-            encoder.set_compute_pipeline_state(&pipeline_nsg2);
-            encoder.set_buffer(0, Some(&weights), 0);
-            encoder.set_buffer(1, Some(&input), 0);
-            encoder.set_buffer(2, Some(&output), 0);
-
-            let args = kquant_mv_mma_args {
-                ne00: k as u32,
-                ne01: m as u32,
-                nb01: ((k / 256) * 144) as u64,
-            };
-            encoder.set_bytes(
-                3,
-                std::mem::size_of::<kquant_mv_mma_args>() as u64,
-                &args as *const _ as *const std::ffi::c_void,
-            );
-
-            let thread_groups =
-                MTLSize { width: ((m + 3) / 4) as u64, height: 1, depth: 1 };
-            let thread_group_size = MTLSize { width: 64, height: 1, depth: 1 };
-            encoder.dispatch_thread_groups(thread_groups, thread_group_size);
-            encoder.end_encoding();
-            cmd_buf.commit();
-            cmd_buf.wait_until_completed();
-        }
-        let time_nsg2 = start.elapsed().as_micros() as f64 / iterations as f64;
+        let mut time_baseline: Option<f64> = None;
 
         // Test MMA kernels for each NSG
         for nsg in [8, 16, 32] {
@@ -175,8 +123,11 @@ fn main() {
                 Ok(f) => {
                     device.new_compute_pipeline_state_with_function(&f).unwrap()
                 }
-                Err(_) => {
-                    println!("  NSG={}: Kernel not found, skipping", nsg);
+                Err(e) => {
+                    println!(
+                        "  NSG={}: Kernel not found: {}, skipping",
+                        nsg, e
+                    );
                     continue;
                 }
             };
@@ -202,7 +153,7 @@ fn main() {
                 );
 
                 let thread_groups = MTLSize {
-                    width: ((m + nsg - 1) / nsg) as u64,
+                    width: m as u64, // One threadgroup per row
                     height: 1,
                     depth: 1,
                 };
@@ -237,7 +188,7 @@ fn main() {
                 );
 
                 let thread_groups = MTLSize {
-                    width: ((m + nsg - 1) / nsg) as u64,
+                    width: m as u64, // One threadgroup per row
                     height: 1,
                     depth: 1,
                 };
@@ -252,7 +203,12 @@ fn main() {
             let time_nsg =
                 start.elapsed().as_micros() as f64 / iterations as f64;
 
-            let speedup = time_nsg2 / time_nsg;
+            // Use first successful NSG as baseline
+            if time_baseline.is_none() {
+                time_baseline = Some(time_nsg);
+            }
+
+            let speedup = time_baseline.unwrap() / time_nsg;
             let data_gb = (m as f64 * k as f64 * 0.5625
                 + m as f64 * 4.0
                 + k as f64 * 4.0)

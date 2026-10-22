@@ -232,6 +232,21 @@ path = "tools/bench_nsg_comparison.rs"
 required-features = ["metal"]
 
 [[bin]]
+name = "test-nsg-correctness"
+path = "tools/test_nsg_correctness.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-nsg-debug"
+path = "tools/test_nsg_debug.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "bench-nsg-large-k"
+path = "tools/bench_nsg_large_k.rs"
+required-features = ["metal"]
+
+[[bin]]
 name = "test-q4k-gemv"
 path = "tools/test_q4k_gemv.rs"
 

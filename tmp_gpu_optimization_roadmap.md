@@ -42,6 +42,36 @@ Speedup from batching:                    1.63x
 
 ## Root Cause Analysis: NSG Parallelism Gap
 
+### Session 12 Findings: Kernel Correctness Fixed, Architecture Insight
+
+**Progress**:
+1. ✅ Fixed Metal template instantiation syntax (typedef approach)
+2. ✅ Fixed kernel correctness - all 32 threads were processing same data
+3. ✅ Tested NSG variants with corrected kernel
+4. ✅ **Key insight**: NSG approach doesn't help for decode scenario
+
+**Test Results**:
+- K=1024 (4 blocks, typical decode): NSG=8 fastest, higher NSG slower
+- K=8192 (32 blocks): NSG=32 5.7% faster than NSG=8
+- Bandwidth utilization still very low (0.13-0.14%)
+
+**Root cause for decode bottleneck**:
+- Decode has small K (1024) with many rows (2048+)
+- Only 4 blocks available for K-split parallelism
+- High NSG wastes resources (idle simdgroups)
+- Current architecture: 1 threadgroup per row, inefficient for many small rows
+
+**llama.cpp's approach for decode**:
+- NT parameter: Multiple 8-row tiles per threadgroup
+- Batch multiple rows per threadgroup
+- Better GPU utilization with fewer, larger threadgroups
+
+**Next steps**:
+- Implement multi-row batching (NT parameter) for decode
+- Each threadgroup processes 8-32 rows
+- Better memory coalescing and cache utilization
+- This is the real optimization needed, not just NSG
+
 ### llama.cpp MMA Architecture
 ```cpp
 // From llama.cpp-0.7.0/ggml/src/ggml-metal/ggml-metal-device.cpp
@@ -145,14 +175,69 @@ If we fix the parallelism gap:
 ### Implementation Steps
 
 1. ✅ **Root cause identified**: NSG=2 vs NSG=32 (16x gap)
-2. ✅ **Created MMA template kernel** (Q4_K with NSG=8/16/32)
+2. ❌ **Created MMA template kernel** - **ARCHITECTURE WRONG**
+   - Prototype used row-parallel approach (each simdgroup per row)
+   - Correct approach: K-split parallelism (all simdgroups on same row)
 3. ✅ **Created benchmark tool** to compare NSG configurations
-4. ⏳ **Run benchmark** to validate the hypothesis
-5. ⏳ **Implement adaptive NSG selection** in Rust dispatch code
-6. ⏳ **Add MMA accumulation path** (simdgroup_float8x8)
-7. ⏳ **Benchmark and verify bandwidth improvement**
+4. ✅ **Ran benchmark**: NSG variants give minimal improvement (~10-15%)
+5. ✅ **Correctness test**: Kernel produces wrong values
+6. ⏳ **Need complete rewrite** following llama.cpp architecture
+   - Template with NT, RT, NSG parameters
+   - K-split across simdgroups with threadgroup reduction
+   - simdgroup_float8x8 MMA accumulation
+7. ⏳ **Implement adaptive NSG selection** in Rust dispatch code
+8. ⏳ **Benchmark and verify bandwidth improvement**
 
 ## Progress Log
+
+### Session 12
+1. ✅ Fixed Metal template instantiation syntax (typedef approach)
+2. ✅ Ran NSG benchmark - minimal improvement (~10-15%)
+3. ✅ **Discovered prototype kernel architecture is wrong**
+   - Tested with simple Q4_K data, got wrong values
+   - Root cause: Mixed row-parallelism with K-parallelism incorrectly
+4. ✅ **Analyzed llama.cpp MMA kernel structure**
+   - NT: Number of 8-row weight tiles per threadgroup
+   - RT: Number of 8-row input tiles per threadgroup
+   - NSG: Number of simdgroups that split K dimension
+   - All simdgroups collaborate on same rows, not separate rows
+5. ⏳ **Next**: Implement correct MMA kernel following llama.cpp pattern
+
+### Correct MMA Kernel Architecture (from llama.cpp analysis)
+
+**Key insight**: All simdgroups in a threadgroup collaborate on the SAME rows
+
+```
+Threadgroup: processes NT*8 weight rows × RT*8 input rows
+├── Simdgroup 0: processes K-slice [0, K/NSG)
+├── Simdgroup 1: processes K-slice [K/NSG, 2K/NSG)
+├── ...
+└── Simdgroup NSG-1: processes K-slice [(NSG-1)K/NSG, K)
+
+Reduction:
+1. Each simdgroup accumulates partial sum in registers
+2. Store partial sums to threadgroup memory
+3. threadgroup_barrier
+4. Each thread sums across NSG simdgroups for its output element
+5. Write final result to global memory
+```
+
+**Template parameters**:
+- `NT`: Number of 8-row weight tiles (1-4)
+- `RT`: Number of 8-row input tiles (1-2, typically 1 for decode)
+- `NSG`: Number of simdgroups for K-split (8/16/32, adaptive based on row count)
+
+**Key data structures**:
+- `simdgroup_float8x8`: 8x8 matrix of floats (64 elements per simdgroup)
+- `simdgroup_multiply_accumulate`: Efficient MAC operation
+- Threadgroup memory for K-split reduction
+
+**Implementation approach**:
+1. Start with Q4_K (most common quantization)
+2. Use llama.cpp's `mul_mv_mma_blk` template as reference
+3. Implement K-split loop: `for (int ib = sgitg; ib < nb; ib += NSG)`
+4. Implement MMA accumulation with simdgroup matrices
+5. Implement threadgroup reduction in `mul_mv_mma_store`
 
 ### Session 11
 1. ✅ FusedGateUp优化: 20%提升 (101→120 t/s)
@@ -160,18 +245,6 @@ If we fix the parallelism gap:
 3. ✅ Kernel-level profiling: 发现kernel本身是瓶颈 (5% util)
 4. ✅ Dispatch overhead测试: 批量化提升1.63x
 5. ✅ **Root cause found**: NSG parallelism gap (16x deficit!)
-
-### Session 10
-1. ✅ NWG parallelization for Flash Attention
-2. ✅ Verified prefill performance
-
-## Progress Log
-
-### Session 11
-1. ✅ FusedGateUp优化: 20%提升 (101→120 t/s)
-2. ✅ 带宽分析工具: 发现核心问题
-3. ✅ Kernel-level profiling: 发现kernel本身是瓶颈 (5% util)
-4. ✅ Dispatch overhead测试: 批量化提升1.63x
 
 ### Session 10
 1. ✅ NWG parallelization for Flash Attention
