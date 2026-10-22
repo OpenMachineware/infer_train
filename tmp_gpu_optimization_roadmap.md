@@ -6,9 +6,9 @@
 | Metric | We | llama.cpp | Gap |
 |--------|------|-----------|------|
 | Prefill (128 tokens) | 2571 t/s | 920 t/s | **0.36x (faster!)** |
-| Decode | 128.2 t/s | 201.3 t/s | **1.57x** |
+| Decode (typical) | 90-128 t/s | 184 t/s | **1.4-2.0x** |
 
-**Status**: ✅ **Prefill exceeds llama.cpp!** Decode gap reduced to 1.57x
+**Status**: ✅ **Prefill exceeds llama.cpp!** Decode shows thermal-sensitive performance.
 
 ### Session 10 Progress
 1. ✅ Verified prefill performance: 2571 t/s (2.8x faster than llama.cpp)
@@ -112,8 +112,16 @@ For Q4_K: `MTLSize { width: 32, height: 2, depth: 1 }` creates 2 simdgroups
 **Key Findings:**
 1. KV Cache access in current MMA kernel is **contiguous, not strided**
 2. NWG parallelization adds overhead for short sequences
-3. Decode performance sensitive to thermal throttling (98-128 t/s range observed)
+3. Decode performance sensitive to thermal throttling (90-128 t/s range observed)
 4. GEMV+dequantization is already fused inside kernel
+5. K-quant GEMV thread config matches llama.cpp (NSG=2 for Q4_K/Q5_K)
+6. DAG dispatch count: ~8 per layer (total ~283, not 620 as originally estimated)
+
+**Thermal Sensitivity Analysis:**
+- Performance varies 40% between cool (128 t/s) and warm (90 t/s) state
+- llama.cpp shows more stable performance (184 t/s)
+- May indicate our kernel dispatch pattern causes more GPU heating
+- Need to investigate: kernel execution overlap, command buffer management
 
 **Priority 2: Find Optimal Thread Count for GEMV** (Expected: 10-20% speedup)
 - Test thread counts: 2, 4, 8, 16, 32
