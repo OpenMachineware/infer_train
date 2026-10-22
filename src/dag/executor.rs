@@ -809,12 +809,26 @@ impl DagExecutor {
                     qkv_dtype,
                 );
 
-                // TODO: Split the result into Q, K, V
-                // For now, use the fused buffer for all three
-                // This needs a split kernel or CPU post-processing
-                ctx.tensor_registry.insert(*output_q, qkv_buf.clone());
-                ctx.tensor_registry.insert(*output_k, qkv_buf.clone());
-                ctx.tensor_registry.insert(*output_v, qkv_buf.clone());
+                // Allocate separate output buffers for Q, K, V
+                let q_buf = ctx.forward_pool.get(*q_out_size * 4);
+                let k_buf = ctx.forward_pool.get(*k_out_size * 4);
+                let v_buf = ctx.forward_pool.get(*v_out_size * 4);
+
+                // Split the fused QKV result into separate Q, K, V buffers
+                ctx.gpu_ctx.split_qkv_encode(
+                    encoder,
+                    &qkv_buf,
+                    &q_buf,
+                    &k_buf,
+                    &v_buf,
+                    *q_out_size,
+                    *k_out_size,
+                    *v_out_size,
+                );
+
+                ctx.tensor_registry.insert(*output_q, q_buf);
+                ctx.tensor_registry.insert(*output_k, k_buf);
+                ctx.tensor_registry.insert(*output_v, v_buf);
 
                 Some(())
             }

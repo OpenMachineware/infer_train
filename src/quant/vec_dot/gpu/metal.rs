@@ -173,6 +173,9 @@ pub struct MetalContext {
     // TODO: Add Q3_K, Q2_K, IQ4_NL, IQ4_XS fused norm linear pipelines
     fused_norm_linear_q5_k_pipeline: ComputePipelineState,
     fused_norm_linear_q6_k_pipeline: ComputePipelineState,
+    // Split QKV kernel
+    split_qkv_library: Library,
+    split_qkv_pipeline: ComputePipelineState,
     // FusedAddNorm (Add + RMSNorm)
     fused_add_norm_f32_pipeline: ComputePipelineState,
     fused_add_norm_f32_4_pipeline: ComputePipelineState,
@@ -384,6 +387,8 @@ impl Clone for MetalContext {
             fused_norm_linear_q6_k_pipeline: self
                 .fused_norm_linear_q6_k_pipeline
                 .clone(),
+            split_qkv_library: self.split_qkv_library.clone(),
+            split_qkv_pipeline: self.split_qkv_pipeline.clone(),
             fused_add_norm_f32_pipeline: self
                 .fused_add_norm_f32_pipeline
                 .clone(),
@@ -2187,6 +2192,25 @@ impl MetalContext {
                 format!("Failed to create Quantize Q8_0 pipeline: {}", e)
             })?;
 
+        // Compile Split QKV library
+        let split_qkv_source =
+            include_str!("../../../ops/metal/ops/split_qkv.metal");
+        let split_qkv_library = device
+            .new_library_with_source(split_qkv_source, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile split_qkv library: {}", e)
+            })?;
+
+        // Create Split QKV pipeline
+        let split_qkv_kernel = split_qkv_library
+            .get_function("kernel_split_qkv", None)
+            .map_err(|e| format!("Failed to get split_qkv kernel: {}", e))?;
+        let split_qkv_pipeline = device
+            .new_compute_pipeline_state_with_function(&split_qkv_kernel)
+            .map_err(|e| {
+                format!("Failed to create split_qkv pipeline: {}", e)
+            })?;
+
         // Compile SSM library (State Space Model kernels)
         let ssm_conv_source =
             include_str!("../../../ops/metal/ops/ssm_conv.metal");
@@ -2504,6 +2528,9 @@ impl MetalContext {
             fused_norm_linear_q4_k_pipeline,
             fused_norm_linear_q5_k_pipeline,
             fused_norm_linear_q6_k_pipeline,
+            // Split QKV
+            split_qkv_library,
+            split_qkv_pipeline,
             fused_add_norm_f32_pipeline,
             fused_add_norm_f32_4_pipeline,
             fused_add_norm_f16_pipeline,
@@ -9215,6 +9242,51 @@ impl MetalContext {
         let thread_group_count =
             MTLSize { width: m as u64, height: 1, depth: 1 };
         let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Split fused QKV buffer into separate Q, K, V buffers
+    /// Used for models with merged qkv weights (e.g., Qwen3.8)
+    pub fn split_qkv_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        fused_qkv_buffer: &Buffer,
+        q_out_buffer: &Buffer,
+        k_out_buffer: &Buffer,
+        v_out_buffer: &Buffer,
+        q_size: usize,
+        k_size: usize,
+        v_size: usize,
+    ) {
+        encoder.set_compute_pipeline_state(&self.split_qkv_pipeline);
+        encoder.set_buffer(0, Some(fused_qkv_buffer), 0);
+        encoder.set_buffer(1, Some(q_out_buffer), 0);
+        encoder.set_buffer(2, Some(k_out_buffer), 0);
+        encoder.set_buffer(3, Some(v_out_buffer), 0);
+        encoder.set_bytes(
+            4,
+            4,
+            &(q_size as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            5,
+            4,
+            &(k_size as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            6,
+            4,
+            &(v_size as u32) as *const u32 as *const std::ffi::c_void,
+        );
+
+        let total_size = q_size + k_size + v_size;
+        let thread_group_size = MTLSize { width: 256, height: 1, depth: 1 };
+        let thread_group_count = MTLSize {
+            width: ((total_size as u64 + 255) / 256),
+            height: 1,
+            depth: 1,
+        };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     }
