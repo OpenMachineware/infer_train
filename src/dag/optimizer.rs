@@ -23,7 +23,8 @@ impl DagOptimizer {
         fused_count += Self::fuse_qkv_projections(dag);
         fused_count += Self::fuse_gate_up_projections(dag);
         fused_count += Self::fuse_silu_mul(dag);
-        fused_count += Self::fuse_norm_gemv(dag);
+        // TEMPORARILY DISABLED: FusedNormLinear Q5_K/Q6_K kernels produce NaN
+        // fused_count += Self::fuse_norm_gemv(dag);
         // GEMV+Add fusion disabled - needs true fused kernel, not sequential execution
         // fused_count += Self::fuse_gemv_add(dag);
         // Enable FusedAddNorm with safety check (only fuse when Add output has single consumer)
