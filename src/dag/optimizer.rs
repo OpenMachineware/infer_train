@@ -24,7 +24,7 @@ impl DagOptimizer {
         // TEMPORARILY DISABLED: Investigating NaN issue
         // fused_count += Self::fuse_gate_up_projections(dag);
         fused_count += Self::fuse_silu_mul(dag);
-        // TEMPORARILY DISABLED: FusedNormLinear Q5_K/Q6_K kernels produce NaN
+        // TEMPORARILY DISABLED: FusedNormLinear causes 10% performance regression
         // fused_count += Self::fuse_norm_gemv(dag);
         // GEMV+Add fusion disabled - needs true fused kernel, not sequential execution
         // fused_count += Self::fuse_gemv_add(dag);
