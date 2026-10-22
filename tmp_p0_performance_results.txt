@@ -1,0 +1,58 @@
+# P0 Optimization Performance Results
+
+## Test Configuration
+- Model: Qwen3-0.6B-UD-Q4_K_XL.gguf
+- Hardware: Apple Silicon GPU
+- Optimization: K-quant GEMV threadgroup config (NSG=1 → NSG=2)
+
+## Performance Comparison
+
+### Baseline (NSG=1, before optimization)
+- Decode: **76.34 t/s** (13.10 ms/token)
+- Source: tmp_gpu_optimization_roadmap.md baseline
+
+### Optimized (NSG=2, after optimization)
+10 iterations:
+- Run 1: 99.01 t/s
+- Run 2: 107.53 t/s
+- Run 3: 99.01 t/s
+- Run 4: 100.00 t/s
+- Run 5: 95.24 t/s
+- Run 6: 91.74 t/s
+- Run 7: 97.09 t/s
+- Run 8: 96.15 t/s
+- Run 9: 98.04 t/s
+- Run 10: 100.00 t/s
+
+**Average**: 98.38 t/s
+**Min**: 91.74 t/s
+**Max**: 107.53 t/s
+**Stddev**: 4.24 t/s
+
+## Improvement
+
+**Speedup**: 28.9% improvement
+- Before: 76.34 t/s
+- After: 98.38 t/s
+- Gain: +22.04 t/s
+
+## Analysis
+
+The optimization successfully improves decode performance by **28.9%**, bringing it from 76.34 t/s to 98.38 t/s. This confirms that matching llama.cpp's threadgroup configuration (NSG=2) significantly improves GPU utilization.
+
+### Why it works
+1. **Better GPU utilization**: 2 simdgroups per threadgroup reduces threadgroup launch overhead
+2. **Improved memory coalescing**: Adjacent simdgroups can share memory access patterns
+3. **Reduced scheduling overhead**: Fewer threadgroups to schedule (m/2 vs m)
+
+## Gap to Target
+
+- Current: 98.38 t/s
+- Target (llama.cpp): 227 t/s
+- Remaining gap: 2.3x
+
+## Next Steps
+
+1. Continue with P1 optimization (FusedQKV)
+2. Investigate other bottlenecks (Flash Attention, output projection)
+3. Profile detailed layer timing to identify next optimization targets

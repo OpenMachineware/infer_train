@@ -1019,3 +1019,8 @@ required-features = ["metal"]
 name = "test-small-m-gemv"
 path = "tools/test_small_m_gemv.rs"
 required-features = ["metal"]
+
+[[bin]]
+name = "bench-kquant-gemv-optimization"
+path = "tools/bench_kquant_gemv_optimization.rs"
+required-features = ["metal"]
