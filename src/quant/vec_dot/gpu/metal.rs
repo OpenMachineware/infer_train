@@ -3976,18 +3976,24 @@ impl MetalContext {
         );
 
         // Threadgroup configuration (matching llama.cpp)
-        // Q4_K, Q5_K: NSG=2 (2 simdgroups per threadgroup, each processes 1 row)
-        // Q6_K: NSG=1, N_R0=2 (1 simdgroup per threadgroup, processes 2 rows)
+        // Q4_K: NSG=2, N_R0=2 (2 simdgroups, each processes 2 rows)
+        // Q5_K: NSG=2, N_R0=1 (2 simdgroups, each processes 1 row)
+        // Q6_K: NSG=1, N_R0=2 (1 simdgroup, processes 2 rows)
+        // Q2_K, Q3_K: NSG=2, N_R0=2 (similar to Q4_K)
         let (nsg, nr0) = match dtype {
             crate::model::tensor::DataType::Q6_K => (1, 2),
-            _ => (2, 1), // Q4_K, Q5_K, Q2_K, Q3_K
+            crate::model::tensor::DataType::Q5_K => (2, 1),
+            _ => (2, 2), // Q4_K, Q2_K, Q3_K
         };
 
         let threads_per_tg = nsg * 32; // 32 threads per simdgroup
         let tgs = (m + nsg * nr0 - 1) / (nsg * nr0); // threadgroups needed
 
+        // Use 2D threadgroup size to create multiple simdgroups
+        // width: 32 threads per simdgroup
+        // height: nsg simdgroups
         let thread_group_size =
-            MTLSize { width: threads_per_tg as u64, height: 1, depth: 1 };
+            MTLSize { width: 32, height: nsg as u64, depth: 1 };
         let thread_group_count =
             MTLSize { width: tgs as u64, height: 1, depth: 1 };
 
@@ -5780,10 +5786,14 @@ impl MetalContext {
             &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
 
-        // One row per threadgroup, 32 threads for SIMD reduction
-        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
-        let thread_group_count =
-            MTLSize { width: m as u64, height: 1, depth: 1 };
+        // 2D dispatch for multiple simdgroups per threadgroup
+        // Q4_K: NSG=2, N_R0=2 (2 simdgroups, each processes 2 rows)
+        let nsg: u64 = 2;
+        let nr0: u64 = 2;
+        let tgs = (m as u64 + nsg * nr0 - 1) / (nsg * nr0); // threadgroups needed
+
+        let thread_group_size = MTLSize { width: 32, height: nsg, depth: 1 };
+        let thread_group_count = MTLSize { width: tgs, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
@@ -5823,10 +5833,14 @@ impl MetalContext {
             &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
 
-        // One row per threadgroup, 32 threads for SIMD reduction
-        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
-        let thread_group_count =
-            MTLSize { width: m as u64, height: 1, depth: 1 };
+        // 2D dispatch for multiple simdgroups per threadgroup
+        // Q5_K: NSG=2, N_R0=1 (2 simdgroups, each processes 1 row)
+        let nsg: u64 = 2;
+        let nr0: u64 = 1;
+        let tgs = (m as u64 + nsg * nr0 - 1) / (nsg * nr0); // threadgroups needed
+
+        let thread_group_size = MTLSize { width: 32, height: nsg, depth: 1 };
+        let thread_group_count = MTLSize { width: tgs, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
@@ -5866,10 +5880,14 @@ impl MetalContext {
             &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
 
-        // One row per threadgroup, 32 threads for SIMD reduction
-        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
-        let thread_group_count =
-            MTLSize { width: m as u64, height: 1, depth: 1 };
+        // 2D dispatch for multiple simdgroups per threadgroup
+        // Q2_K: NSG=2, N_R0=4 (2 simdgroups, each processes 4 rows)
+        let nsg: u64 = 2;
+        let nr0: u64 = 4;
+        let tgs = (m as u64 + nsg * nr0 - 1) / (nsg * nr0); // threadgroups needed
+
+        let thread_group_size = MTLSize { width: 32, height: nsg, depth: 1 };
+        let thread_group_count = MTLSize { width: tgs, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
@@ -5909,10 +5927,14 @@ impl MetalContext {
             &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
 
-        // One row per threadgroup, 32 threads for SIMD reduction
-        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
-        let thread_group_count =
-            MTLSize { width: m as u64, height: 1, depth: 1 };
+        // 2D dispatch for multiple simdgroups per threadgroup
+        // Q6_K: NSG=2, N_R0=2 (2 simdgroups, each processes 2 rows)
+        let nsg: u64 = 2;
+        let nr0: u64 = 2;
+        let tgs = (m as u64 + nsg * nr0 - 1) / (nsg * nr0); // threadgroups needed
+
+        let thread_group_size = MTLSize { width: 32, height: nsg, depth: 1 };
+        let thread_group_count = MTLSize { width: tgs, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();
@@ -5952,10 +5974,14 @@ impl MetalContext {
             &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
 
-        // One row per threadgroup, 32 threads for SIMD reduction
-        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
-        let thread_group_count =
-            MTLSize { width: m as u64, height: 1, depth: 1 };
+        // 2D dispatch for multiple simdgroups per threadgroup
+        // Q3_K: NSG=2, N_R0=2 (2 simdgroups, each processes 2 rows)
+        let nsg: u64 = 2;
+        let nr0: u64 = 2;
+        let tgs = (m as u64 + nsg * nr0 - 1) / (nsg * nr0); // threadgroups needed
+
+        let thread_group_size = MTLSize { width: 32, height: nsg, depth: 1 };
+        let thread_group_count = MTLSize { width: tgs, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         encoder.end_encoding();

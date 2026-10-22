@@ -1,25 +1,41 @@
 # GPU Decode Performance Optimization Roadmap
 
-## Current Status (2026-10-22 Session 7)
+## Current Status (2026-10-22 Session 8)
 
 **Performance**:
-- Current: **93.46 t/s** (Qwen3-0.6B Q4_K_XL)
-- llama.cpp: **198.4 t/s** (same model)
-- Gap: **2.12x**
+- Current: **105 t/s** (Devstral-Small-2-24B Q4_K_M) - NaN issues
+- llama.cpp: **227 t/s** (same model)
+- Gap: **2.16x**
 
-**Status**: 🎯 **ROOT CAUSE FOUND** - Q4_K kernel has 7-8x lower thread utilization
+**Status**: 🎯 **KERNEL DISPATCH FIXED** - But correctness issues remain
 
-### Root Cause
-Our Q4_K GEMV kernel uses scalar loop with stride 32, leaving 28/32 threads idle.
-llama.cpp uses 4-block batching with stride 4, utilizing all 32 threads.
+### Session 8 Progress
+1. ✅ Fixed dispatch: Changed from 1D (width:32, height:1) to 2D (width:32, height:nsg)
+2. ✅ Kernel formula matches llama.cpp: `first_row = (tgpig.x * NSG + sgitg) * N_R0`
+3. ✅ Simple correctness test passes (zero weights → zero output)
+4. ❌ Full model produces NaN - additional kernel issues to debug
 
-### Fix Required
-Rewrite Q4_K kernel using llama.cpp's approach:
-1. 4-block batching (stride 4, not 32)
-2. Y-vector caching in registers
-3. Float4 accumulation
+### Dispatch Configuration Fix
+**Before (wrong)**: 1D dispatch, each threadgroup = 32 threads, 1 simdgroup
+**After (correct)**: 2D dispatch, each threadgroup = 32 × nsg threads, nsg simdgroups
 
-**Expected improvement**: 2-4x for Q4_K kernels, 15-30% overall
+For Q4_K: `MTLSize { width: 32, height: 2, depth: 1 }` creates 2 simdgroups
+
+### N_R0 and NSG Values (from llama.cpp)
+| Quant Type | N_R0 | NSG | Rows/TG |
+|------------|------|-----|---------|
+| Q4_K       | 2    | 2   | 4       |
+| Q5_K       | 1    | 2   | 2       |
+| Q6_K       | 2    | 2   | 4       |
+| Q2_K       | 4    | 2   | 8       |
+| Q3_K       | 2    | 2   | 4       |
+
+### Previous Session Findings (Session 7)
+
+**Root Cause Found**: Q4_K kernel has 7-8x lower thread utilization
+- Our kernel used scalar loop with stride 32, leaving 28/32 threads idle
+- llama.cpp uses 4-block batching with stride 4, utilizing all 32 threads
+- Fixed by rewriting kernel to match llama.cpp's approach
 
 ### Key Finding from Session 5
 **Fusion is NOT the main cause of the gap.**

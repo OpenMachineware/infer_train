@@ -45,6 +45,8 @@ static inline uchar2 get_scale_min_k4(int j, int k, device const uchar * scales)
 // Block: 256 elements, 144 bytes
 // Layout: d[2] + dmin[2] + scales[12] + qs[128]
 // 8 sub-blocks of 32 elements each, each has scale and min
+// Optimizations: 4-block batching, Y-vector caching, float4 accumulation
+// Each simdgroup processes 2 rows (N_R0_Q4_K = 2)
 // ============================================================================
 
 kernel void kernel_mul_mv_q4_K_f32(
@@ -56,60 +58,102 @@ kernel void kernel_mul_mv_q4_K_f32(
     ushort tiisg [[thread_index_in_simdgroup]],
     ushort sgitg [[simdgroup_index_in_threadgroup]])
 {
-    // Support for multiple simdgroups per threadgroup (NSG=2)
-    // Each simdgroup processes one row
-    const int row = tgpig.x * 2 + sgitg;
-    if (row >= (int)args.ne01) return;
+    const int nb = args.ne00 / QK_K;
 
-    const int nb = args.ne00 / QK_K;  // Number of blocks per row
+    // Each simdgroup processes 2 rows (N_R0 = 2)
+    // Each threadgroup has 2 simdgroups (NSG = 2)
+    // Total rows per threadgroup = NSG * N_R0 = 4
+    const int first_row = (tgpig.x * 2 + sgitg) * 2; // 2 rows per simdgroup
+    if (first_row >= (int)args.ne01) return;
 
-    float sumf = 0.0f;
+    float sumf[2] = {0.f, 0.f}; // Accumulate 2 rows
 
-    // Get pointer to the weights for this row
-    device const char * row_ptr = src0 + row * args.nb01;
-    device const block_q4_K * blocks = (device const block_q4_K *)row_ptr;
+    // Y-vector caching in registers
+    float yl[16];
+    float yh[16];
 
-    // Each thread processes blocks at stride N_SIMDWIDTH
-    for (int ib = tiisg; ib < nb; ib += N_SIMDWIDTH) {
-        device const block_q4_K * block = blocks + ib;
-        device const float * y = src1 + ib * QK_K;
+    // Thread indexing for 4-block batching
+    const short ix = tiisg/8;  // 0...3 (divide 32 threads into 4 groups)
+    const short it = tiisg%8;  // 0...7
+    const short iq = it/4;     // 0 or 1
+    const short ir = it%4;     // 0...3
 
-        // Super-block scales (convert FP16 to float)
-        device const half * dh = (device const half *)&block->d;
-        float d = dh[0];
-        float dmin = dh[1];
+    // Compute offsets
+    device const float * y4 = src1 + ix * QK_K + 64 * iq + 8 * ir;
 
-        // Process 8 sub-blocks of 32 elements
-        for (int is = 0; is < 8; is++) {
-            // Extract scale and min for this sub-block
-            // 6-bit values stored as unsigned (0-63), used directly
-            uchar2 sc_min = get_scale_min_k4(is, 0, block->scales);
-            float sc = sc_min.x;  // Used directly
-            float m = sc_min.y;   // Used directly
+    // Scale extraction masks
+    constexpr uint16_t kmask1 = 0x3f3f;
+    constexpr uint16_t kmask2 = 0x0f0f;
+    constexpr uint16_t kmask3 = 0xc0c0;
 
-            float dl = d * sc;
-            float ml = dmin * m;
+    uint16_t sc16[4];
+    thread const uint8_t * sc8 = (thread const uint8_t *)sc16;
 
-            // 32 elements stored in 16 bytes (4 bits each)
-            device const uchar * qs = block->qs + is * 16;
+    // Each thread group starts at different block (4-block batching)
+    for (int ib = ix; ib < nb; ib += 4) {
+        float4 sumy = {0.f, 0.f, 0.f, 0.f};
 
-            // Process 16 bytes (32 elements)
-            // Formula: d * sc * q - dmin * m
-            for (int k = 0; k < 16; k++) {
-                uchar byte = qs[k];
-                float v0 = (byte & 0x0F);  // Lower nibble
-                float v1 = ((byte >> 4) & 0x0F);  // Upper nibble
-
-                sumf += (dl * v0 - ml) * y[is * 32 + k];
-                sumf += (dl * v1 - ml) * y[is * 32 + 16 + k];
-            }
+        // Y-vector caching
+        for (short i = 0; i < 8; ++i) {
+            yl[i+0] = y4[i+  0]; sumy[0] += yl[i+0];
+            yl[i+8] = y4[i+ 32]; sumy[1] += yl[i+8];
+            yh[i+0] = y4[i+128]; sumy[2] += yh[i+0];
+            yh[i+8] = y4[i+160]; sumy[3] += yh[i+8];
         }
+
+        // Process 2 rows per simdgroup
+        for (short row = 0; row < 2; row++) {
+            const int cur_row = first_row + row;
+            if (cur_row >= (int)args.ne01) break;
+
+            // Get pointer to the correct row's weights
+            device const block_q4_K * x_row = (device const block_q4_K *)(src0 + cur_row * args.nb01);
+            device const uint16_t * sc = (device const uint16_t *)x_row[ib].scales + iq;
+            device const uint16_t * q1 = (device const uint16_t *)x_row[ib].qs + 16 * iq + 4 * ir;
+            device const half * dh = &x_row[ib].d;
+
+            // Extract scales using masks
+            sc16[0] = sc[0] & kmask1;
+            sc16[1] = sc[2] & kmask1;
+            sc16[2] = ((sc[4] >> 0) & kmask2) | ((sc[0] & kmask3) >> 2);
+            sc16[3] = ((sc[4] >> 4) & kmask2) | ((sc[2] & kmask3) >> 2);
+
+            device const uint16_t * q2 = q1 + 32;
+
+            // Float4 accumulation
+            float4 acc1 = {0.f};
+            float4 acc2 = {0.f};
+
+            FOR_UNROLL (short i = 0; i < 4; ++i) {
+                acc1[0] += yl[2*i + 0] * (q1[i] & 0x000F);
+                acc1[1] += yl[2*i + 1] * (q1[i] & 0x0F00);
+                acc1[2] += yl[2*i + 8] * (q1[i] & 0x00F0);
+                acc1[3] += yl[2*i + 9] * (q1[i] & 0xF000);
+                acc2[0] += yh[2*i + 0] * (q2[i] & 0x000F);
+                acc2[1] += yh[2*i + 1] * (q2[i] & 0x0F00);
+                acc2[2] += yh[2*i + 8] * (q2[i] & 0x00F0);
+                acc2[3] += yh[2*i + 9] * (q2[i] & 0xF000);
+            }
+
+            // Final computation
+            sumf[row] += dh[0] * ((acc1[0] + 1.f/256.f * acc1[1]) * sc8[0] +
+                                  (acc1[2] + 1.f/256.f * acc1[3]) * sc8[1] * 1.f/16.f +
+                                  (acc2[0] + 1.f/256.f * acc2[1]) * sc8[4] +
+                                  (acc2[2] + 1.f/256.f * acc2[3]) * sc8[5] * 1.f/16.f) -
+                         dh[1] * (sumy[0] * sc8[2] + sumy[1] * sc8[3] + sumy[2] * sc8[6] + sumy[3] * sc8[7]);
+        }
+
+        y4 += 4 * QK_K;
     }
 
-    // SIMD reduction across threads
-    float sum_all = simd_sum(sumf);
-    if (tiisg == 0) {
-        dst[row] = sum_all;
+    // SIMD reduction for each row
+    for (short row = 0; row < 2; row++) {
+        const int cur_row = first_row + row;
+        if (cur_row >= (int)args.ne01) break;
+        float sum_all = simd_sum(sumf[row]);
+        if (tiisg == 0) {
+            dst[cur_row] = sum_all;
+        }
     }
 }
 
