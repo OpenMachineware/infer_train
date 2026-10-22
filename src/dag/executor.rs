@@ -1041,31 +1041,18 @@ impl DagExecutor {
                         &output_buf,
                     );
                 } else if ctx.use_mma && *head_dim == 128 {
-                    if ctx.use_mma_v2 {
-                        ctx.gpu_ctx.flash_attn_mma_v2_encode(
-                            encoder,
-                            *n_heads,
-                            *n_kv_heads,
-                            seq_len,
-                            kv_stride,
-                            &q_buf,
-                            k_buf,
-                            v_buf,
-                            &output_buf,
-                        );
-                    } else {
-                        ctx.gpu_ctx.flash_attn_mma_encode(
-                            encoder,
-                            *n_heads,
-                            *n_kv_heads,
-                            seq_len,
-                            kv_stride,
-                            &q_buf,
-                            k_buf,
-                            v_buf,
-                            &output_buf,
-                        );
-                    }
+                    // Use batched MMA kernel for better performance
+                    ctx.gpu_ctx.flash_attn_mma_batched_encode(
+                        encoder,
+                        *n_heads,
+                        *n_kv_heads,
+                        seq_len,
+                        kv_stride,
+                        &q_buf,
+                        k_buf,
+                        v_buf,
+                        &output_buf,
+                    );
                 } else {
                     ctx.gpu_ctx.flash_attn_f16_encode(
                         encoder,
