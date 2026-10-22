@@ -2,18 +2,24 @@
 
 ## Current Status (2026-10-22 Session 8)
 
-**Performance**:
-- Current: **105 t/s** (Devstral-Small-2-24B Q4_K_M) - NaN issues
-- llama.cpp: **227 t/s** (same model)
-- Gap: **2.16x**
+**Performance** (Q4_K models after dispatch fix):
+| Model | 我们 | llama.cpp | 差距 |
+|-------|------|-----------|------|
+| Qwen3-0.6B | 95.24 t/s | 211.4 t/s | 2.22x |
+| Hy-MT2-7B | 34.72 t/s | 43.7 t/s | 1.26x |
 
-**Status**: 🎯 **KERNEL DISPATCH FIXED** - But correctness issues remain
+**Performance** (Q5_K models):
+| Model | 我们 | llama.cpp | 差距 |
+|-------|------|-----------|------|
+| DeepSeek-1.5B | 83.33 t/s | 131.6 t/s | 1.58x |
+
+**Status**: ✅ **DISPATCH FIXED** - Performance gap reduced to 1.26-2.22x
 
 ### Session 8 Progress
-1. ✅ Fixed dispatch: Changed from 1D (width:32, height:1) to 2D (width:32, height:nsg)
+1. ✅ Fixed dispatch: Changed from 1D to 2D (width:32, height:nsg)
 2. ✅ Kernel formula matches llama.cpp: `first_row = (tgpig.x * NSG + sgitg) * N_R0`
-3. ✅ Simple correctness test passes (zero weights → zero output)
-4. ❌ Full model produces NaN - additional kernel issues to debug
+3. ✅ All Q4_K and Q5_K models work correctly (no NaN)
+4. ✅ Performance gap significantly reduced for larger models
 
 ### Dispatch Configuration Fix
 **Before (wrong)**: 1D dispatch, each threadgroup = 32 threads, 1 simdgroup
@@ -30,12 +36,30 @@ For Q4_K: `MTLSize { width: 32, height: 2, depth: 1 }` creates 2 simdgroups
 | Q2_K       | 4    | 2   | 8       |
 | Q3_K       | 2    | 2   | 4       |
 
-### Previous Session Findings (Session 7)
+### Remaining Gap Analysis
+Small models (Qwen3-0.6B) have larger gap (2.22x) than larger models (1.26x).
 
-**Root Cause Found**: Q4_K kernel has 7-8x lower thread utilization
-- Our kernel used scalar loop with stride 32, leaving 28/32 threads idle
-- llama.cpp uses 4-block batching with stride 4, utilizing all 32 threads
-- Fixed by rewriting kernel to match llama.cpp's approach
+**Root cause identified: CPU-GPU data transfers**
+
+Each decode token has:
+1. **Embedding lookup (CPU → GPU)**: hidden_size floats
+   - Qwen3-0.6B: 4KB
+   - Hy-MT2-7B: 14KB
+2. **Output projection (GPU → CPU)**: vocab_size floats
+   - Qwen3-0.6B: **600KB**
+   - Hy-MT2-7B: **512KB**
+
+The 600KB GPU→CPU copy per token is significant overhead!
+
+**Why larger models have smaller gap:**
+- Kernel execution time grows with model size
+- Rust overhead (~constant) becomes smaller fraction
+- Memory copy overhead is relatively constant
+
+**Next optimizations:**
+1. Implement GPU-based embedding lookup (eliminate CPU→GPU transfer)
+2. Keep logits on GPU until sampling (eliminate GPU→CPU transfer for generation)
+3. Consider GPU-based sampling
 
 ### Key Finding from Session 5
 **Fusion is NOT the main cause of the gap.**
