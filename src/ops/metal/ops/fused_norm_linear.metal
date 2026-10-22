@@ -495,10 +495,12 @@ kernel void kernel_fused_norm_linear_q5_k(
         float dmin = dh[1];
 
         // Process 8 sub-blocks of 32 elements
+        // Formula from llama.cpp: d * (sc-32) * q + dmin * (m-32)
+        // Scales are 6-bit unsigned (0-63), convert to signed (-32 to 31)
         for (int is = 0; is < 8; is++) {
             uchar2 sc_min = get_scale_min_k4(is, 0, block->scales);
-            float sc = sc_min.x;
-            float m = sc_min.y;
+            float sc = float(sc_min.x) - 32.0f;  // Convert to signed
+            float m = float(sc_min.y) - 32.0f;    // Convert to signed
 
             float dl = d * sc;
             float ml = dmin * m;
@@ -507,6 +509,9 @@ kernel void kernel_fused_norm_linear_q5_k(
             device const uchar* qs = block->qs + is * 16;
             device const uchar* qh = block->qh + is * 4;
 
+            float sumy0 = 0.0f;
+            float sumy1 = 0.0f;
+
             for (int kk = 0; kk < 16; kk++) {
                 uchar byte = qs[kk];
                 uchar high_bits = qh[kk / 4];
@@ -514,11 +519,17 @@ kernel void kernel_fused_norm_linear_q5_k(
                 float v0 = (byte & 0x0F) + ((high_bits & 0x01) ? 16.0f : 0.0f);
                 float v1 = ((byte >> 4) & 0x0F) + ((high_bits & 0x02) ? 16.0f : 0.0f);
 
-                sumf += (dl * v0 - ml) * y[is * 32 + kk];
-                sumf += (dl * v1 - ml) * y[is * 32 + 16 + kk];
+                sumf += dl * v0 * y[is * 32 + kk];
+                sumf += dl * v1 * y[is * 32 + 16 + kk];
+
+                sumy0 += y[is * 32 + kk];
+                sumy1 += y[is * 32 + 16 + kk];
 
                 high_bits >>= 2;
             }
+
+            // Add min term: -dmin * (m-32) * sum(y)
+            sumf -= ml * (sumy0 + sumy1);
         }
     }
 
