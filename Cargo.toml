@@ -227,6 +227,11 @@ name = "check-layer-weights"
 path = "tools/check_layer_weights.rs"
 
 [[bin]]
+name = "bench-nsg-comparison"
+path = "tools/bench_nsg_comparison.rs"
+required-features = ["metal"]
+
+[[bin]]
 name = "test-q4k-gemv"
 path = "tools/test_q4k_gemv.rs"
 
