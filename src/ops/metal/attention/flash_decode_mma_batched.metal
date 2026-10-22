@@ -33,24 +33,19 @@ kernel void flash_decode_true_mma_f16(
     const int gqa_ratio = args.n_heads / args.n_kv_heads;
     const int kv_head = head / gqa_ratio;
 
-    // Each thread loads part of Q (16 elements per thread)
-    device const half4* q_h4 = (device const half4*)
+    // Each thread loads 4 elements of Q (one float4)
+    // HEAD_DIM=128, 32 threads, each handles 4 elements
+    device const float4* q_f4 = (device const float4*)
         (query + head * HEAD_DIM);
 
-    float4 q_frag[4];  // 16 elements per thread
-    for (short i = 0; i < 4; i++) {
-        q_frag[i] = float4(q_h4[tiisg * 4 + i]);
-    }
+    float4 q_frag = q_f4[tiisg];  // Each thread loads its 4 elements
 
     // Online softmax state
     float M = -INFINITY;
     float S = 0.0f;
 
-    // Output accumulator
-    float4 O[4];
-    for (short i = 0; i < 4; i++) {
-        O[i] = float4(0.0f);
-    }
+    // Output accumulator (each thread accumulates its 4 elements)
+    float4 O = float4(0.0f);
 
     // Get K, V pointers for this KV head
     device const half* k_head = key_cache + kv_head * args.kv_stride * HEAD_DIM;
@@ -61,44 +56,42 @@ kernel void flash_decode_true_mma_f16(
         const uint pos_end = min(pos_start + C, args.seq_k);
 
         // Load K and V for up to C positions
-        // Each thread handles 16 elements across C positions
-        // Use separate arrays to avoid Metal compiler issues
-        float k_batch[C][16];  // [C positions, 16 elements per position]
-        float v_batch[C][16];
+        // Correct access pattern: 32 threads / 128 elements = 4 elements per thread
+        // Each thread accesses k_pos[tiisg] (one float4 = 4 elements)
+        float k_batch[C][4];  // [C positions, 4 elements per position per thread]
+        float v_batch[C][4];
 
         for (uint p = 0; p < C && (pos_start + p) < args.seq_k; p++) {
-            device const half4* k_pos = (device const half4*)
+            device const float4* k_pos = (device const float4*)
                 (k_head + (pos_start + p) * HEAD_DIM);
-            device const half4* v_pos = (device const half4*)
+            device const float4* v_pos = (device const float4*)
                 (v_head + (pos_start + p) * HEAD_DIM);
 
-            for (short i = 0; i < 4; i++) {
-                float4 k_val = float4(k_pos[tiisg * 4 + i]);
-                float4 v_val = float4(v_pos[tiisg * 4 + i]);
-                k_batch[p][i * 4 + 0] = k_val.x;
-                k_batch[p][i * 4 + 1] = k_val.y;
-                k_batch[p][i * 4 + 2] = k_val.z;
-                k_batch[p][i * 4 + 3] = k_val.w;
-                v_batch[p][i * 4 + 0] = v_val.x;
-                v_batch[p][i * 4 + 1] = v_val.y;
-                v_batch[p][i * 4 + 2] = v_val.z;
-                v_batch[p][i * 4 + 3] = v_val.w;
-            }
+            // Each thread loads one float4 (4 elements) - no bounds check needed
+            // as 32 threads * 4 = 128 = HEAD_DIM
+            float4 k_val = k_pos[tiisg];
+            float4 v_val = v_pos[tiisg];
+            k_batch[p][0] = k_val.x;
+            k_batch[p][1] = k_val.y;
+            k_batch[p][2] = k_val.z;
+            k_batch[p][3] = k_val.w;
+            v_batch[p][0] = v_val.x;
+            v_batch[p][1] = v_val.y;
+            v_batch[p][2] = v_val.z;
+            v_batch[p][3] = v_val.w;
         }
 
         // Compute Q*K^T for all C positions (matrix-vector multiply)
         float qk_scores[C];
         for (uint p = 0; p < C && (pos_start + p) < args.seq_k; p++) {
-            float qk = 0.0f;
-            for (short i = 0; i < 4; i++) {
-                float4 k_frag = float4(k_batch[p][i*4+0], k_batch[p][i*4+1],
-                                       k_batch[p][i*4+2], k_batch[p][i*4+3]);
-                qk += dot(q_frag[i], k_frag);
-            }
+            // Each thread has 4 elements of Q and 4 elements of K
+            // Dot product of q_frag[0] (4 elements) and k_batch[p] (4 elements)
+            float qk = dot(q_frag[0], float4(k_batch[p][0], k_batch[p][1],
+                                             k_batch[p][2], k_batch[p][3]));
             qk_scores[p] = qk * args.scale;
         }
 
-        // Reduce within simdgroup
+        // Reduce within simdgroup (all 32 threads participate)
         for (uint p = 0; p < C && (pos_start + p) < args.seq_k; p++) {
             qk_scores[p] = simd_sum(qk_scores[p]);
         }
@@ -116,9 +109,7 @@ kernel void flash_decode_true_mma_f16(
         S *= scale_prev;
 
         // Rescale previous output
-        for (short i = 0; i < 4; i++) {
-            O[i] *= scale_prev;
-        }
+        O[0] *= scale_prev;
 
         // Compute softmax weights and accumulate V
         float local_S = 0.0f;
@@ -126,12 +117,10 @@ kernel void flash_decode_true_mma_f16(
             float w = exp(qk_scores[p] - m_new);
             local_S += w;
 
-            // Accumulate weighted V
-            for (short i = 0; i < 4; i++) {
-                float4 v_frag = float4(v_batch[p][i*4+0], v_batch[p][i*4+1],
-                                       v_batch[p][i*4+2], v_batch[p][i*4+3]);
-                O[i] += w * v_frag;
-            }
+            // Accumulate weighted V (each thread accumulates its 4 elements)
+            float4 v_frag = float4(v_batch[p][0], v_batch[p][1],
+                                   v_batch[p][2], v_batch[p][3]);
+            O[0] += w * v_frag;
         }
 
         S += simd_sum(local_S);
@@ -141,10 +130,8 @@ kernel void flash_decode_true_mma_f16(
     // Final normalization
     float inv_S = S > 0.0f ? 1.0f / S : 0.0f;
 
-    // Write output
+    // Write output - each thread writes its 4 elements
     device float4* out_f4 = (device float4*)
         (output + head * HEAD_DIM);
-    for (short i = 0; i < 4; i++) {
-        out_f4[tiisg * 4 + i] = O[i] * inv_S;
-    }
+    out_f4[tiisg] = O * inv_S;
 }
