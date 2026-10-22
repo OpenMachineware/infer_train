@@ -204,6 +204,11 @@ name = "bench-decode"
 path = "tools/bench_decode.rs"
 
 [[bin]]
+name = "bandwidth-profile"
+path = "tools/bandwidth_profile.rs"
+required-features = ["metal"]
+
+[[bin]]
 name = "kernel-timing"
 path = "tools/kernel_timing.rs"
 

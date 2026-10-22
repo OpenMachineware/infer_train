@@ -13,5 +13,6 @@ pub mod model;
 pub mod ops;
 pub mod orchestrator;
 pub mod platform;
+pub mod profiling;
 pub mod quant;
 pub mod tokenize;
