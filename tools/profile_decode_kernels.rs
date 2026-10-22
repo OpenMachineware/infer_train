@@ -120,6 +120,7 @@ fn main() {
                 ctx.model.gemv_encode(
                     &encoder,
                     &input_buffer,
+                    hidden_size,
                     wq,
                     q_out_size,
                     &gpu_ctx,
@@ -148,6 +149,7 @@ fn main() {
                 ctx.model.gemv_encode(
                     &encoder,
                     &input_buffer,
+                    hidden_size,
                     wk,
                     k_out_size,
                     &gpu_ctx,
@@ -176,6 +178,7 @@ fn main() {
                 ctx.model.gemv_encode(
                     &encoder,
                     &input_buffer,
+                    hidden_size,
                     wv,
                     v_out_size,
                     &gpu_ctx,
@@ -269,6 +272,7 @@ fn main() {
                 ctx.model.gemv_encode(
                     &encoder,
                     &input_buffer,
+                    hidden_size,
                     wo,
                     wo_out_size,
                     &gpu_ctx,
@@ -296,6 +300,7 @@ fn main() {
                 ctx.model.gemv_encode(
                     &encoder,
                     &input_buffer,
+                    hidden_size,
                     w1,
                     intermediate_size,
                     &gpu_ctx,
@@ -323,6 +328,7 @@ fn main() {
                 ctx.model.gemv_encode(
                     &encoder,
                     &input_buffer,
+                    hidden_size,
                     w3,
                     intermediate_size,
                     &gpu_ctx,
@@ -351,6 +357,7 @@ fn main() {
                 ctx.model.gemv_encode(
                     &encoder,
                     &ffn_input,
+                    intermediate_size,
                     w2,
                     hidden_size,
                     &gpu_ctx,

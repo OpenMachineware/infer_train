@@ -200,6 +200,14 @@ name = "compare-layer0-layer3"
 path = "tools/compare_layer0_layer3.rs"
 
 [[bin]]
+name = "bench-decode"
+path = "tools/bench_decode.rs"
+
+[[bin]]
+name = "kernel-timing"
+path = "tools/kernel_timing.rs"
+
+[[bin]]
 name = "check-layer-weights"
 path = "tools/check_layer_weights.rs"
 
@@ -346,10 +354,6 @@ path = "tools/debug_gpu_forward_step.rs"
 [[bin]]
 name = "debug-mla-layer"
 path = "tools/debug_mla_layer.rs"
-
-[[bin]]
-name = "bench-decode"
-path = "tools/bench_decode.rs"
 
 [[bin]]
 name = "bench-decode-with-dag"
