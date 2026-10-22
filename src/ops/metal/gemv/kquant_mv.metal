@@ -502,3 +502,221 @@ kernel void kernel_mul_mv_q6_K_f32(
         }
     }
 }
+
+// ============================================================================
+// Fused GEMV + Add kernels for residual connections
+// Combines matrix-vector multiply with residual addition in single kernel
+// Pattern: output = (W @ input) + residual
+// ============================================================================
+
+// Args structure for fused GEMV + Add
+struct fused_gemv_add_args {
+    uint32_t ne00;  // K dimension (input size)
+    uint32_t ne01;  // M dimension (output rows)
+    uint64_t nb01;  // Byte stride between rows of weight matrix
+};
+
+// ============================================================================
+// Q5_K Fused GEMV + Add
+// ============================================================================
+kernel void kernel_fused_gemv_add_q5_K(
+    device const char * src0 [[buffer(0)]],      // Weights
+    device const float * src1 [[buffer(1)]],     // Input vector
+    device const float * residual [[buffer(2)]], // Residual vector
+    device float * dst [[buffer(3)]],            // Output
+    constant fused_gemv_add_args & args [[buffer(4)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const int nb = args.ne00 / QK_K;
+    const int row = tgpig.x * 2 + sgitg;
+
+    if (row >= (int)args.ne01) return;
+
+    device const block_q5_K * blocks = (device const block_q5_K *)(src0 + row * args.nb01);
+    device const float * yy = src1;
+
+    float sumf = 0.0f;
+
+    // Y-vector caching in registers (same as regular Q5_K GEMV)
+    float yl[16], yh[16];
+
+    const short tid = tiisg/4;
+    const short ix  = tiisg%4;
+    const short iq  = tid/4;
+    const short ir  = tid%4;
+
+    const short l0 = 8*ir;
+    const short q_offset = 32*iq + l0;
+    const short y_offset = 64*iq + l0;
+
+    const uint8_t hm1 = 1u << (2*iq);
+    const uint8_t hm2 = hm1 << 1;
+    const uint8_t hm3 = hm1 << 4;
+    const uint8_t hm4 = hm2 << 4;
+
+    constexpr uint16_t kmask1 = 0x3f3f;
+    constexpr uint16_t kmask2 = 0x0f0f;
+    constexpr uint16_t kmask3 = 0xc0c0;
+
+    uint16_t sc16[4];
+    thread const uint8_t * sc8 = (thread const uint8_t *)sc16;
+
+    device const float * y1 = yy + ix*QK_K + y_offset;
+
+    for (int i = ix; i < nb; i += 4) {
+        device const block_q5_K * block = blocks + i;
+
+        device const uint8_t * q1 = block->qs + q_offset;
+        device const uint8_t * qh = block->qh + l0;
+        device const half * dh = (device const half *)&block->d;
+        device const uint16_t * a = (device const uint16_t *)block->scales + iq;
+
+        device const float * y2 = y1 + 128;
+        float4 sumy = {0.f, 0.f, 0.f, 0.f};
+        for (short l = 0; l < 8; ++l) {
+            yl[l+0] = y1[l+ 0]; sumy[0] += yl[l+0];
+            yl[l+8] = y1[l+32]; sumy[1] += yl[l+8];
+            yh[l+0] = y2[l+ 0]; sumy[2] += yh[l+0];
+            yh[l+8] = y2[l+32]; sumy[3] += yh[l+8];
+        }
+
+        sc16[0] = a[0] & kmask1;
+        sc16[1] = a[2] & kmask1;
+        sc16[2] = ((a[4] >> 0) & kmask2) | ((a[0] & kmask3) >> 2);
+        sc16[3] = ((a[4] >> 4) & kmask2) | ((a[2] & kmask3) >> 2);
+
+        float4 acc1 = {0.f};
+        float4 acc2 = {0.f};
+
+        device const uint8_t * q2 = q1 + 64;
+
+        FOR_UNROLL (short l = 0; l < 8; ++l) {
+            uint8_t h = qh[l];
+            acc1[0] += yl[l+0] * (q1[l] & 0x0F);
+            acc1[1] += yl[l+8] * (q1[l] & 0xF0);
+            acc1[2] += yh[l+0] * (q2[l] & 0x0F);
+            acc1[3] += yh[l+8] * (q2[l] & 0xF0);
+            acc2[0] += h & hm1 ? yl[l+0] : 0.f;
+            acc2[1] += h & hm2 ? yl[l+8] : 0.f;
+            acc2[2] += h & hm3 ? yh[l+0] : 0.f;
+            acc2[3] += h & hm4 ? yh[l+8] : 0.f;
+        }
+
+        sumf += (float)dh[0] * ((sc8[0]-32.f) * (acc1[0]      + 16.f*acc2[0]) +
+                               (sc8[1]-32.f) * (acc1[1]/16.f + 16.f*acc2[1]) +
+                               (sc8[4]-32.f) * (acc1[2]      + 16.f*acc2[2]) +
+                               (sc8[5]-32.f) * (acc1[3]/16.f + 16.f*acc2[3])) +
+                (float)dh[1] * (sumy[0] * (sc8[2]-32.f) + sumy[1] * (sc8[3]-32.f) + sumy[2] * (sc8[6]-32.f) + sumy[3] * (sc8[7]-32.f));
+
+        y1 += 4 * QK_K;
+    }
+
+    // SIMD reduction
+    float total = simd_sum(sumf);
+
+    // FUSED: Add residual
+    if (tiisg == 0) {
+        dst[row] = total + residual[row];
+    }
+}
+
+// ============================================================================
+// Q4_K Fused GEMV + Add
+// ============================================================================
+kernel void kernel_fused_gemv_add_q4_K(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device const float * residual [[buffer(2)]],
+    device float * dst [[buffer(3)]],
+    constant fused_gemv_add_args & args [[buffer(4)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const int nb = args.ne00 / QK_K;
+    const int row = tgpig.x * 2 + sgitg;
+
+    if (row >= (int)args.ne01) return;
+
+    device const block_q4_K * blocks = (device const block_q4_K *)(src0 + row * args.nb01);
+    device const float * y = src1;
+
+    float sumf = 0.0f;
+
+    for (int ib = tiisg; ib < nb; ib += N_SIMDWIDTH) {
+        device const block_q4_K * block = blocks + ib;
+        device const float * yb = y + ib * QK_K;
+
+        float d = (float)((device const half *)&block->d)[0];
+
+        for (int is = 0; is < 8; is++) {
+            uchar2 sc_min = get_scale_min_k4(is, 0, block->scales);
+            float sc = (float)sc_min.x - 32.0f;  // Convert to signed
+            float m = (float)sc_min.y - 32.0f;   // Convert to signed
+            float dl = d * sc;
+            float ml = d * m;
+
+            device const uint8_t * qs = block->qs + is * 16;
+            device const float * y_sub = yb + is * 32;
+
+            for (int k = 0; k < 16; k++) {
+                uchar byte = qs[k];
+                float v0 = (byte & 0x0F);
+                float v1 = ((byte >> 4) & 0x0F);
+                sumf += (dl * v0 - ml) * y_sub[k];
+                sumf += (dl * v1 - ml) * y_sub[k + 16];
+            }
+        }
+    }
+
+    float total = simd_sum(sumf);
+
+    if (tiisg == 0) {
+        dst[row] = total + residual[row];
+    }
+}
+
+// ============================================================================
+// Q6_K Fused GEMV + Add
+// ============================================================================
+kernel void kernel_fused_gemv_add_q6_K(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device const float * residual [[buffer(2)]],
+    device float * dst [[buffer(3)]],
+    constant fused_gemv_add_args & args [[buffer(4)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]])
+{
+    const int row0 = tgpig.x * 2;
+    const int row1 = row0 + 1;
+    const int nb = args.ne00 / QK_K;
+
+    float sumf0 = 0.0f;
+    float sumf1 = 0.0f;
+
+    if (row0 < (int)args.ne01) {
+        device const block_q6_K * blocks0 = (device const block_q6_K *)(src0 + row0 * args.nb01);
+        sumf0 = q6_k_row_dot(blocks0, src1, nb, tiisg);
+    }
+
+    if (row1 < (int)args.ne01) {
+        device const block_q6_K * blocks1 = (device const block_q6_K *)(src0 + row1 * args.nb01);
+        sumf1 = q6_k_row_dot(blocks1, src1, nb, tiisg);
+    }
+
+    float sum_all0 = simd_sum(sumf0);
+    float sum_all1 = simd_sum(sumf1);
+
+    // FUSED: Add residual
+    if (tiisg == 0) {
+        if (row0 < (int)args.ne01) {
+            dst[row0] = sum_all0 + residual[row0];
+        }
+        if (row1 < (int)args.ne01) {
+            dst[row1] = sum_all1 + residual[row1];
+        }
+    }
+}

@@ -110,6 +110,10 @@ pub struct MetalContext {
     // Cached MV pipelines - K-quant
     mv_q4_k_pipeline: ComputePipelineState,
     mv_q5_k_pipeline: ComputePipelineState,
+    // Fused GEMV+Add pipelines for residual connections
+    fused_gemv_add_q4_k_pipeline: ComputePipelineState,
+    fused_gemv_add_q5_k_pipeline: ComputePipelineState,
+    fused_gemv_add_q6_k_pipeline: ComputePipelineState,
     mv_q2_k_pipeline: ComputePipelineState,
     mv_q6_k_pipeline: ComputePipelineState,
     mv_q3_k_pipeline: ComputePipelineState,
