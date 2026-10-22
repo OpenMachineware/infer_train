@@ -26,8 +26,8 @@ impl DagOptimizer {
         fused_count += Self::fuse_norm_gemv(dag);
         // GEMV+Add fusion disabled - needs true fused kernel, not sequential execution
         // fused_count += Self::fuse_gemv_add(dag);
-        // FusedAddNorm disabled - references intermediate tensors that may not exist
-        // fused_count += Self::fuse_add_norm(dag);
+        // Enable FusedAddNorm with safety check (only fuse when Add output has single consumer)
+        fused_count += Self::fuse_add_norm(dag);
 
         fused_count
     }
@@ -148,6 +148,10 @@ impl DagOptimizer {
         let mut nodes_to_remove = Vec::new();
         let mut nodes_to_add = Vec::new();
 
+        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+            eprintln!("[FUSION] fuse_gate_up: checking for GEMV pairs");
+        }
+
         // Find pairs of Gemv operations that use the same input
         for node in &dag.nodes {
             if let Operation::Gemv { input, weight, output, out_size } =
@@ -169,6 +173,12 @@ impl DagOptimizer {
                     {
                         if *other_input == *input {
                             // Found a pair with same input - fuse them
+                            if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                                eprintln!(
+                                    "[FUSION] Found GEMV pair: node {} and {} with input {}",
+                                    node.id, other.id, input
+                                );
+                            }
                             let other_op = &other.op;
                             if let Operation::Gemv {
                                 weight: other_weight,
@@ -410,6 +420,7 @@ impl DagOptimizer {
     /// Fuse Add + RMSNorm → FusedAddNorm
     /// Pattern: residual = Add(layer_input, wo_output); ffn_norm = RMSNorm(residual, weight)
     /// This is from vLLM's fused_add_rms_norm kernel
+    /// Only fuses when the Add output has exactly ONE consumer (the RmsNorm)
     fn fuse_add_norm(dag: &mut ComputeDag) -> usize {
         let mut fused_count = 0;
         let mut nodes_to_remove = Vec::new();
@@ -420,6 +431,43 @@ impl DagOptimizer {
                 &add_node.op
             {
                 if nodes_to_remove.contains(&add_node.id) {
+                    continue;
+                }
+
+                // Count how many nodes use the Add output as input
+                let consumer_count = dag
+                    .nodes
+                    .iter()
+                    .filter(|n| {
+                        if nodes_to_remove.contains(&n.id) {
+                            return false;
+                        }
+                        match &n.op {
+                            Operation::RmsNorm { input, .. } => {
+                                *input == *add_output
+                            }
+                            Operation::Gemv { input, .. } => {
+                                *input == *add_output
+                            }
+                            Operation::Add { lhs, rhs, .. } => {
+                                *lhs == *add_output || *rhs == *add_output
+                            }
+                            Operation::Mul { lhs, rhs, .. } => {
+                                *lhs == *add_output || *rhs == *add_output
+                            }
+                            Operation::SiLU { input, .. } => {
+                                *input == *add_output
+                            }
+                            Operation::RoPE { input, .. } => {
+                                *input == *add_output
+                            }
+                            _ => false,
+                        }
+                    })
+                    .count();
+
+                // Only fuse if Add output has exactly ONE consumer
+                if consumer_count != 1 {
                     continue;
                 }
 

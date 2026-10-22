@@ -1,119 +1,111 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-// Measure dispatch overhead vs actual GPU compute time
+// Measure Metal dispatch overhead by comparing sequential vs batched dispatch
+
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use infer_train::quant::vec_dot::gpu::metal::MetalContext;
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: {} <model.gguf>", args[0]);
-        std::process::exit(1);
-    }
-    let model_path = args[1].clone();
-
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     {
-        use infer_train::inference::{InferenceContext, KVCacheGPU};
-        use infer_train::quant::vec_dot::gpu::metal::MetalContext;
+        println!("=== Metal Dispatch Overhead Measurement ===\n");
 
-        println!("=== Dispatch Overhead Measurement ===");
-        println!("Model: {}", model_path);
+        let ctx = MetalContext::new().expect("Failed to create MetalContext");
+        let device = ctx.device();
+        let queue = device.new_command_queue();
 
-        let result = std::thread::spawn(move || {
-            let gpu_ctx = MetalContext::new().unwrap();
-            let device = gpu_ctx.device();
-            let ctx = InferenceContext::from_gguf_with_gpu_ctx(
-                &model_path,
-                gpu_ctx.clone(),
-            )
-            .unwrap();
-            let config = ctx.model.config.clone();
-            let mut kv = KVCacheGPU::new(device, &config, 2048);
+        // Test with typical decode sizes (M=1536, K=1536 for Qwen1.5B)
+        let m = 1536;
+        let k = 1536;
 
-            // Prefill once
-            let prefill_tokens: Vec<u32> = (1..=10).collect();
-            let _ = ctx.model.forward_gpu_native_batched(
-                &prefill_tokens,
-                &mut kv,
-                &gpu_ctx,
-            );
+        // Create test data
+        let total_weights = m * k;
+        let mut weights_f16 = Vec::with_capacity(total_weights);
+        for i in 0..total_weights {
+            let f32_val = ((i as f32 * 0.12345) % 2.0) - 1.0;
+            let f16_val = half::f16::from_f32(f32_val);
+            weights_f16.push(f16_val.to_bits());
+        }
 
-            // Warm up
-            for _ in 0..5 {
-                let _ = ctx.model.forward_gpu_native_batched(
-                    &[11],
-                    &mut kv,
-                    &gpu_ctx,
-                );
-            }
+        let mut input_f32 = Vec::with_capacity(k);
+        for i in 0..k {
+            input_f32.push(((i as f32 * 0.98765) % 2.0) - 1.0);
+        }
 
-            // Measure single token decode
-            let mut times = Vec::new();
-            for i in 0..20 {
-                let token = (i + 20) as u32;
-                let start = std::time::Instant::now();
-                let _ = ctx.model.forward_gpu_native_batched(
-                    &[token],
-                    &mut kv,
-                    &gpu_ctx,
-                );
-                times.push(start.elapsed());
-            }
+        // Create GPU buffers
+        let weights_buffer = std::rc::Rc::new(device.new_buffer_with_data(
+            weights_f16.as_ptr() as *const std::ffi::c_void,
+            (total_weights * 2) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
 
-            let avg_time: std::time::Duration =
-                times.iter().sum::<std::time::Duration>() / times.len() as u32;
+        let input_buffer = std::rc::Rc::new(device.new_buffer_with_data(
+            input_f32.as_ptr() as *const std::ffi::c_void,
+            (k * 4) as u64,
+            metal::MTLResourceOptions::StorageModeShared,
+        ));
 
-            println!("\nAverage decode time: {:?}", avg_time);
+        // Warmup
+        for _ in 0..5 {
+            let cb = queue.new_command_buffer();
+            let encoder = cb.new_compute_command_encoder();
+            ctx.mv_encode(&encoder, &weights_buffer, &input_buffer, m, k);
+            encoder.end_encoding();
+            cb.commit();
+            cb.wait_until_completed();
+        }
 
-            // Calculate theoretical minimum
-            let n_layers = config.n_layer;
-            let hidden_size = config.hidden_size;
-            let intermediate_size = config.intermediate_size;
-            let n_heads = config.n_head;
-            let head_dim = hidden_size / n_heads;
-            let vocab_size = config.vocab_size;
+        let iterations = 100;
 
-            // Per-layer operations
-            // QKV projections: 3 * hidden_size * hidden_size
-            // FFN up: hidden_size * intermediate_size
-            // FFN gate: hidden_size * intermediate_size
-            // FFN down: intermediate_size * hidden_size
-            let ops_per_layer = 3 * hidden_size * hidden_size
-                + 2 * hidden_size * intermediate_size
-                + intermediate_size * hidden_size;
+        // Sequential dispatch (one CB per kernel)
+        let seq_start = std::time::Instant::now();
+        for _ in 0..iterations {
+            let cb = queue.new_command_buffer();
+            let encoder = cb.new_compute_command_encoder();
+            ctx.mv_encode(&encoder, &weights_buffer, &input_buffer, m, k);
+            encoder.end_encoding();
+            cb.commit();
+            cb.wait_until_completed();
+        }
+        let seq_time = seq_start.elapsed();
 
-            // Attention operations (simplified)
-            // Flash attention: O(n_heads * seq_len * head_dim)
-            // KV cache update: O(2 * n_heads * head_dim)
+        // Batched dispatch (all kernels in one CB)
+        let batch_start = std::time::Instant::now();
+        let cb = queue.new_command_buffer();
+        for _ in 0..iterations {
+            let encoder = cb.new_compute_command_encoder();
+            ctx.mv_encode(&encoder, &weights_buffer, &input_buffer, m, k);
+            encoder.end_encoding();
+        }
+        cb.commit();
+        cb.wait_until_completed();
+        let batch_time = batch_start.elapsed();
 
-            let total_ops = ops_per_layer * n_layers;
-            let gflops = total_ops as f64 / 1e9;
+        // Calculate overhead
+        let avg_seq_ms = seq_time.as_secs_f64() * 1000.0 / iterations as f64;
+        let avg_batch_ms =
+            batch_time.as_secs_f64() * 1000.0 / iterations as f64;
+        let overhead_ms = avg_seq_ms - avg_batch_ms;
+        let overhead_pct = (overhead_ms / avg_seq_ms) * 100.0;
 
-            println!("Approximate FLOPs: {:.2} GFLOPS", gflops);
-            println!("Time: {:?}", avg_time);
-            println!("Throughput: {:.1} t/s", 1.0 / avg_time.as_secs_f64());
+        println!("Problem size: {}x{}", m, k);
+        println!("Sequential dispatch: {:.3} ms/kernel", avg_seq_ms);
+        println!("Batched dispatch:    {:.3} ms/kernel", avg_batch_ms);
+        println!(
+            "Dispatch overhead:   {:.3} ms ({:.1}%)",
+            overhead_ms, overhead_pct
+        );
+        println!(
+            "GPU compute time:    {:.3} ms ({:.1}%)",
+            avg_batch_ms,
+            100.0 - overhead_pct
+        );
 
-            // If we had zero dispatch overhead
-            let compute_time = gflops / 500.0; // Assume 500 GFLOPS peak
-            let overhead = avg_time.as_secs_f64() - compute_time;
-            println!(
-                "\nEstimated compute time: {:.3} ms",
-                compute_time * 1000.0
-            );
-            println!(
-                "Estimated dispatch overhead: {:.3} ms ({:.1}%)",
-                overhead * 1000.0,
-                (overhead / avg_time.as_secs_f64()) * 100.0
-            );
+        // Estimate per-dispatch overhead
+        let dispatch_overhead = overhead_ms / iterations as f64;
+        println!("\nPer-kernel dispatch overhead: {:.3} ms", dispatch_overhead);
 
-            avg_time
-        })
-        .join()
-        .unwrap();
-    }
-
-    #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
-    {
-        println!("Requires aarch64+metal");
+        println!("\n=== Measurement Complete ===");
     }
 }

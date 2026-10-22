@@ -292,6 +292,10 @@ name = "test-two-ffn"
 path = "tools/test_two_ffn.rs"
 
 [[bin]]
+name = "test-gemv-k1024"
+path = "tools/test_gemv_k1024.rs"
+
+[[bin]]
 name = "test-separate-encode"
 path = "tools/test_separate_encode.rs"
 
@@ -825,6 +829,18 @@ name = "measure-dispatch-overhead"
 path = "tools/measure_dispatch_overhead.rs"
 
 [[bin]]
+name = "test-all-gemv-sizes"
+path = "tools/test_all_gemv_sizes.rs"
+
+[[bin]]
+name = "test-fusion-perf"
+path = "tools/test_fusion_perf.rs"
+
+[[bin]]
+name = "benchmark-flash-attn"
+path = "tools/benchmark_flash_attn.rs"
+
+[[bin]]
 name = "measure-throughput"
 path = "tools/measure_throughput.rs"
 
@@ -953,3 +969,53 @@ path = "tools/profile_prefill.rs"
 [[bin]]
 name = "profile-decode-ops"
 path = "tools/profile_decode_ops.rs"
+
+[[bin]]
+name = "trace-q5k-scales"
+path = "tools/trace_q5k_scales.rs"
+
+[[bin]]
+name = "bench-detailed-decode"
+path = "tools/bench_detailed_decode.rs"
+
+[[bin]]
+name = "bench-q4k-gemv-vs-llama"
+path = "tools/bench_q4k_gemv_vs_llama.rs"
+
+[[bin]]
+name = "bench-operator-breakdown"
+path = "tools/bench_operator_breakdown.rs"
+
+[[bin]]
+name = "test-flash-attn-perf"
+path = "tools/test_flash_attn_perf.rs"
+
+[[bin]]
+name = "test-rope-perf"
+path = "tools/test_rope_perf.rs"
+
+[[bin]]
+name = "test-kv-update-perf"
+path = "tools/test_kv_update_perf.rs"
+
+[[bin]]
+name = "test-mma-batched"
+path = "tools/test_mma_batched.rs"
+
+[[bin]]
+name = "profile-decode-layer"
+path = "tools/profile_decode_layer.rs"
+
+[[bin]]
+name = "test-embedding-perf"
+path = "tools/test_embedding_perf.rs"
+
+[[bin]]
+name = "test-fused-qkv-perf"
+path = "tools/test_fused_qkv_perf.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-small-m-gemv"
+path = "tools/test_small_m_gemv.rs"
+required-features = ["metal"]

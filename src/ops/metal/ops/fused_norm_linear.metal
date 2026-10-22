@@ -295,7 +295,6 @@ kernel void kernel_fused_norm_linear_f16_4(
 
 // ============================================================================
 // Fused RMSNorm + Q4_K GEMV kernel
-// TODO: Add Q5_K, Q6_K versions for complete quantized format support
 // ============================================================================
 
 kernel void kernel_fused_norm_linear_q4_k(
@@ -398,6 +397,248 @@ kernel void kernel_fused_norm_linear_q4_k(
     }
 
     // Reduce across all threads
+    float sum_all = simd_sum(sumf);
+
+    if (group_size > 32) {
+        if (lane_in_simd == 0) {
+            reduction_buf[simd_id] = sum_all;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        uint n_sgs = group_size / 32;
+        if (simd_id == 0) {
+            float total = 0.0f;
+            for (uint i = 0; i < n_sgs; i++) {
+                total += reduction_buf[i];
+            }
+            output[row] = total;
+        }
+    } else {
+        if (lane_in_simd == 0) {
+            output[row] = sum_all;
+        }
+    }
+}
+
+// ============================================================================
+// Fused RMSNorm + Q5_K GEMV kernel
+// ============================================================================
+
+kernel void kernel_fused_norm_linear_q5_k(
+    device const float* input [[buffer(0)]],
+    device const float* norm_weight [[buffer(1)]],
+    device const char* weights [[buffer(2)]],
+    device float* output [[buffer(3)]],
+    constant uint& m [[buffer(4)]],
+    constant uint& k [[buffer(5)]],
+    constant float& epsilon [[buffer(6)]],
+    constant uint& nb01 [[buffer(7)]],
+    threadgroup float* shared_input [[threadgroup(0)]],
+    uint row [[threadgroup_position_in_grid]],
+    uint lane_id [[thread_position_in_threadgroup]],
+    uint simd_id [[simdgroup_index_in_threadgroup]],
+    uint lane_in_simd [[thread_index_in_simdgroup]],
+    uint group_size [[threads_per_threadgroup]]
+) {
+    if (row >= m) return;
+
+    const int nb = k / QK_K;
+
+    // Phase 1: Compute RMS
+    float local_sum = 0.0f;
+    for (uint i = lane_id; i < k; i += group_size) {
+        float val = input[i];
+        local_sum += val * val;
+    }
+
+    float simd_result = simd_sum(local_sum);
+    threadgroup float* reduction_buf = shared_input;
+
+    if (group_size > 32) {
+        if (lane_in_simd == 0) {
+            reduction_buf[simd_id] = simd_result;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        uint n_sgs = group_size / 32;
+        if (simd_id == 0) {
+            float total_sum = 0.0f;
+            for (uint i = 0; i < n_sgs; i++) {
+                total_sum += reduction_buf[i];
+            }
+            reduction_buf[0] = total_sum;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    float mean_sq = (group_size > 32) ? reduction_buf[0] / float(k) : simd_result / float(k);
+    float rms = rsqrt(mean_sq + epsilon);
+
+    // Phase 2: Normalize
+    for (uint i = lane_id; i < k; i += group_size) {
+        shared_input[i] = input[i] * rms * norm_weight[i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Phase 3: Compute dot product with Q5_K weights
+    device const char* row_ptr = weights + row * nb01;
+    device const block_q5_K* blocks = (device const block_q5_K*)row_ptr;
+
+    float sumf = 0.0f;
+
+    for (int ib = lane_id; ib < nb; ib += group_size) {
+        device const block_q5_K* block = blocks + ib;
+        threadgroup const float* y = shared_input + ib * QK_K;
+
+        device const half* dh = (device const half*)&block->d;
+        float d = dh[0];
+        float dmin = dh[1];
+
+        // Process 8 sub-blocks of 32 elements
+        for (int is = 0; is < 8; is++) {
+            uchar2 sc_min = get_scale_min_k4(is, 0, block->scales);
+            float sc = sc_min.x;
+            float m = sc_min.y;
+
+            float dl = d * sc;
+            float ml = dmin * m;
+
+            // Q5_K: low 4 bits in qs, high bit in qh
+            device const uchar* qs = block->qs + is * 16;
+            device const uchar* qh = block->qh + is * 4;
+
+            for (int kk = 0; kk < 16; kk++) {
+                uchar byte = qs[kk];
+                uchar high_bits = qh[kk / 4];
+
+                float v0 = (byte & 0x0F) + ((high_bits & 0x01) ? 16.0f : 0.0f);
+                float v1 = ((byte >> 4) & 0x0F) + ((high_bits & 0x02) ? 16.0f : 0.0f);
+
+                sumf += (dl * v0 - ml) * y[is * 32 + kk];
+                sumf += (dl * v1 - ml) * y[is * 32 + 16 + kk];
+
+                high_bits >>= 2;
+            }
+        }
+    }
+
+    float sum_all = simd_sum(sumf);
+
+    if (group_size > 32) {
+        if (lane_in_simd == 0) {
+            reduction_buf[simd_id] = sum_all;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        uint n_sgs = group_size / 32;
+        if (simd_id == 0) {
+            float total = 0.0f;
+            for (uint i = 0; i < n_sgs; i++) {
+                total += reduction_buf[i];
+            }
+            output[row] = total;
+        }
+    } else {
+        if (lane_in_simd == 0) {
+            output[row] = sum_all;
+        }
+    }
+}
+
+// ============================================================================
+// Fused RMSNorm + Q6_K GEMV kernel
+// ============================================================================
+
+kernel void kernel_fused_norm_linear_q6_k(
+    device const float* input [[buffer(0)]],
+    device const float* norm_weight [[buffer(1)]],
+    device const char* weights [[buffer(2)]],
+    device float* output [[buffer(3)]],
+    constant uint& m [[buffer(4)]],
+    constant uint& k [[buffer(5)]],
+    constant float& epsilon [[buffer(6)]],
+    constant uint& nb01 [[buffer(7)]],
+    threadgroup float* shared_input [[threadgroup(0)]],
+    uint row [[threadgroup_position_in_grid]],
+    uint lane_id [[thread_position_in_threadgroup]],
+    uint simd_id [[simdgroup_index_in_threadgroup]],
+    uint lane_in_simd [[thread_index_in_simdgroup]],
+    uint group_size [[threads_per_threadgroup]]
+) {
+    if (row >= m) return;
+
+    const int nb = k / QK_K;
+
+    // Phase 1: Compute RMS
+    float local_sum = 0.0f;
+    for (uint i = lane_id; i < k; i += group_size) {
+        float val = input[i];
+        local_sum += val * val;
+    }
+
+    float simd_result = simd_sum(local_sum);
+    threadgroup float* reduction_buf = shared_input;
+
+    if (group_size > 32) {
+        if (lane_in_simd == 0) {
+            reduction_buf[simd_id] = simd_result;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        uint n_sgs = group_size / 32;
+        if (simd_id == 0) {
+            float total_sum = 0.0f;
+            for (uint i = 0; i < n_sgs; i++) {
+                total_sum += reduction_buf[i];
+            }
+            reduction_buf[0] = total_sum;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    float mean_sq = (group_size > 32) ? reduction_buf[0] / float(k) : simd_result / float(k);
+    float rms = rsqrt(mean_sq + epsilon);
+
+    // Phase 2: Normalize
+    for (uint i = lane_id; i < k; i += group_size) {
+        shared_input[i] = input[i] * rms * norm_weight[i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Phase 3: Compute dot product with Q6_K weights
+    device const char* row_ptr = weights + row * nb01;
+    device const block_q6_K* blocks = (device const block_q6_K*)row_ptr;
+
+    float sumf = 0.0f;
+
+    for (int ib = lane_id; ib < nb; ib += group_size) {
+        device const block_q6_K* block = blocks + ib;
+        threadgroup const float* y = shared_input + ib * QK_K;
+
+        // Q6_K: 16 sub-blocks of 16 elements each
+        device const half* dh = (device const half*)&block->d;
+        float d = dh[0];
+
+        for (int is = 0; is < 16; is++) {
+            float sc = block->scales[is];
+
+            // Q6_K: lower 4 bits in ql, upper 2 bits in qh
+            device const uchar* ql = block->ql + is * 8;
+            device const uchar* qh = block->qh + is * 4;
+
+            for (int kk = 0; kk < 8; kk++) {
+                uchar l = ql[kk];
+                uchar h = qh[kk];
+
+                float v0 = (l & 0x0F) + ((h & 0x03) << 4);
+                float v1 = ((l >> 4) & 0x0F) + ((h >> 2) & 0x03) * 16.0f;
+
+                sumf += d * sc * v0 * y[is * 16 + kk];
+                sumf += d * sc * v1 * y[is * 16 + 8 + kk];
+            }
+        }
+    }
+
     float sum_all = simd_sum(sumf);
 
     if (group_size > 32) {

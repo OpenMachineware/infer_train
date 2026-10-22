@@ -26,11 +26,13 @@ fn main() {
 
     // Initialize with simple pattern
     for (i, block) in weights.iter_mut().enumerate() {
-        block.d = 100; // scale (FP16)
-        block.dmin = 10;
+        // d and dmin are stored as u16 but interpreted as FP16 by the kernel
+        // Convert FP16 values to their u16 representation
+        block.d = half::f16::from_f32(0.1).to_bits(); // scale = 0.1 in FP16
+        block.dmin = half::f16::from_f32(0.01).to_bits(); // min scale = 0.01 in FP16
         // Fill with pattern
         for j in 0..12 {
-            block.scales[j] = 16; // typical scale
+            block.scales[j] = 16; // typical scale (6-bit value)
         }
         for j in 0..128 {
             block.qs[j] = (i as u8).wrapping_add(j as u8);

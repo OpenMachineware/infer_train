@@ -3,7 +3,8 @@
 
 // Check if weight buffers are corrupted across passes
 
-use infer_train::inference::{Device, InferenceContext, KVCacheGPU};
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use infer_train::inference::KVCacheGPU;
 use std::cell::RefCell;
 use std::rc::Rc;
 

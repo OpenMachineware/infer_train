@@ -18,44 +18,121 @@ void create_test_data(block_q5_k* weights, float* input, int m, int k) {
     for (int i = 0; i < k; i++) input[i] = 0.1f * ((i % 10) + 1);
 }
 
+// Self-written optimized Q5_K kernel matching llama.cpp's algorithm
 static const char* our_kernel = R"METAL(
 #include <metal_stdlib>
 using namespace metal;
 #define QK_K 256
+#define FOR_UNROLL(x) _Pragma("clang loop unroll(full)") for (x)
 typedef struct { uint16_t d; uint16_t dmin; uint8_t scales[12]; uint8_t qh[32]; uint8_t qs[128]; } block_q5_k;
 struct args_t { uint32_t ne00; uint32_t ne01; uint64_t nb01; };
-static inline float f16_to_f32(uint16_t bits) {
-    uint16_t sign = (bits >> 15) & 1; uint16_t exp = (bits >> 10) & 0x1F; uint16_t mant = bits & 0x3FF;
-    if (exp == 0) return sign ? -mant/16777216.0f : mant/16777216.0f; if (exp == 31) return sign ? -INFINITY : INFINITY;
-    return (sign?-1.0f:1.0f) * (1.0f + mant/1024.0f) * pow(2.0f, exp-15);
-}
-kernel void kernel_q5_k_gemv(device const char* src0, device const float* src1, device float* dst, constant args_t& args, uint3 tgpig, ushort tiisg) {
-    const int nb = args.ne00 / QK_K; const int row = tgpig.x; if (row >= (int)args.ne01) return;
-    device const block_q5_k* blocks = (device const block_q5_k*)(src0 + row * args.nb01); device const float* y = src1; float sumf = 0.0f;
-    for (int i = tiisg; i < nb; i += 32) {
-        device const block_q5_k* block = blocks + i; device const float* by = y + i * QK_K;
-        float d = f16_to_f32(block->d), dmin = f16_to_f32(block->dmin);
-        uint32_t utmp[4]; utmp[0] = block->scales[0]|(block->scales[1]<<8)|(block->scales[2]<<16)|(block->scales[3]<<24);
-        utmp[1] = block->scales[4]|(block->scales[5]<<8)|(block->scales[6]<<16)|(block->scales[7]<<24);
-        utmp[2] = block->scales[8]|(block->scales[9]<<8)|(block->scales[10]<<16)|(block->scales[11]<<24);
-        const uint32_t KMASK1 = 0x3f3f3f3f, KMASK2 = 0x0f0f0f0f, KMASK3 = 0x03030303;
-        utmp[3] = ((utmp[2]>>4)&KMASK2) | (((utmp[1]>>6)&KMASK3)<<4); uint32_t uaux = utmp[1] & KMASK1;
-        utmp[1] = (utmp[2]&KMASK2) | (((utmp[0]>>6)&KMASK3)<<4); utmp[2] = uaux; utmp[0] &= KMASK1;
-        uint8_t scales[8], mins[4];
-        for (int j = 0; j < 4; j++) { scales[j] = (utmp[0]>>(j*8))&0x3F; scales[j+4] = (utmp[1]>>(j*8))&0x3F; mins[j] = (utmp[2]>>(j*8))&0x3F; }
-        uint8_t qh[32]; for (int j = 0; j < 32; j++) qh[j] = block->qh[j];
-        for (int iter = 0; iter < 4; iter++) {
-            float dl0 = d*scales[iter*2], ml0 = dmin*mins[iter/2], dl1 = d*scales[iter*2+1];
-            for (int k = 0; k < 16; k++) {
-                uint8_t qs0 = block->qs[iter*32+k], qs1 = block->qs[iter*32+16+k];
-                float q0 = (qs0&0x0F)+((qh[k]&1)?16.0f:0.0f), q1 = (qs1&0x0F)+((qh[16+k]&1)?16.0f:0.0f);
-                float q2 = ((qs0>>4)&0x0F)+((qh[k]&2)?16.0f:0.0f), q3 = ((qs1>>4)&0x0F)+((qh[16+k]&2)?16.0f:0.0f);
-                sumf += (dl0*q0-ml0)*by[iter*64+k]; sumf += (dl0*q1-ml0)*by[iter*64+16+k];
-                sumf += (dl1*q2-ml0)*by[iter*64+32+k]; sumf += (dl1*q3-ml0)*by[iter*64+48+k];
-            }
+
+kernel void kernel_q5_k_gemv(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device float * dst [[buffer(2)]],
+    constant args_t & args [[buffer(3)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]])
+{
+    const int nb = args.ne00 / QK_K;
+    const int row = tgpig.x;
+    if (row >= (int)args.ne01) return;
+
+    device const block_q5_k * blocks = (device const block_q5_k *)(src0 + row * args.nb01);
+    device const float * yy = src1;
+
+    float sumf = 0.0f;
+
+    // Y-vector caching in registers
+    float yl[16], yh[16];
+
+    // Thread ID decomposition
+    const short tid = tiisg/4;
+    const short ix  = tiisg%4;
+    const short iq  = tid/4;
+    const short ir  = tid%4;
+
+    // Compute offsets
+    const short l0 = 8*ir;
+    const short q_offset = 32*iq + l0;
+    const short y_offset = 64*iq + l0;
+
+    // High bit masks for qh
+    const uint8_t hm1 = 1u << (2*iq);
+    const uint8_t hm2 = hm1 << 1;
+    const uint8_t hm3 = hm1 << 4;
+    const uint8_t hm4 = hm2 << 4;
+
+    // Scale extraction masks
+    constexpr uint16_t kmask1 = 0x3f3f;
+    constexpr uint16_t kmask2 = 0x0f0f;
+    constexpr uint16_t kmask3 = 0xc0c0;
+
+    uint16_t sc16[4];
+    thread const uint8_t * sc8 = (thread const uint8_t *)sc16;
+
+    // Each thread starts at different block (4-block batching)
+    device const float * y1 = yy + ix*QK_K + y_offset;
+
+    for (int i = ix; i < nb; i += 4) {
+        device const block_q5_k * block = blocks + i;
+
+        device const uint8_t * q1 = block->qs + q_offset;
+        device const uint8_t * qh = block->qh + l0;
+        device const half * dh = (device const half *)&block->d;
+        device const uint16_t * a = (device const uint16_t *)block->scales + iq;
+
+        // Y-vector caching
+        device const float * y2 = y1 + 128;
+        float4 sumy = {0.f, 0.f, 0.f, 0.f};
+        for (short l = 0; l < 8; ++l) {
+            yl[l+0] = y1[l+ 0]; sumy[0] += yl[l+0];
+            yl[l+8] = y1[l+32]; sumy[1] += yl[l+8];
+            yh[l+0] = y2[l+ 0]; sumy[2] += yh[l+0];
+            yh[l+8] = y2[l+32]; sumy[3] += yh[l+8];
         }
+
+        // Extract scales using masks
+        sc16[0] = a[0] & kmask1;
+        sc16[1] = a[2] & kmask1;
+        sc16[2] = ((a[4] >> 0) & kmask2) | ((a[0] & kmask3) >> 2);
+        sc16[3] = ((a[4] >> 4) & kmask2) | ((a[2] & kmask3) >> 2);
+
+        // Float4 accumulation
+        float4 acc1 = {0.f};
+        float4 acc2 = {0.f};
+
+        device const uint8_t * q2 = q1 + 64;
+
+        FOR_UNROLL (short l = 0; l < 8; ++l) {
+            uint8_t h = qh[l];
+            acc1[0] += yl[l+0] * (q1[l] & 0x0F);
+            acc1[1] += yl[l+8] * (q1[l] & 0xF0);
+            acc1[2] += yh[l+0] * (q2[l] & 0x0F);
+            acc1[3] += yh[l+8] * (q2[l] & 0xF0);
+            acc2[0] += h & hm1 ? yl[l+0] : 0.f;
+            acc2[1] += h & hm2 ? yl[l+8] : 0.f;
+            acc2[2] += h & hm3 ? yh[l+0] : 0.f;
+            acc2[3] += h & hm4 ? yh[l+8] : 0.f;
+        }
+
+        // Final computation
+        // Formula: d * scale * (q + 16*h) - dmin * sumy * min
+        sumf += (float)dh[0] * (sc8[0] * (acc1[0]      + 16.f*acc2[0]) +
+                               sc8[1] * (acc1[1]/16.f + 16.f*acc2[1]) +
+                               sc8[4] * (acc1[2]      + 16.f*acc2[2]) +
+                               sc8[5] * (acc1[3]/16.f + 16.f*acc2[3])) -
+                (float)dh[1] * (sumy[0] * sc8[2] + sumy[1] * sc8[3] + sumy[2] * sc8[6] + sumy[3] * sc8[7]);
+
+        y1 += 4 * QK_K;
     }
-    float total = simd_sum(sumf); if (tiisg == 0) dst[row] = total;
+
+    // SIMD reduction
+    float total = simd_sum(sumf);
+    if (tiisg == 0) {
+        dst[row] = total;
+    }
 }
 )METAL";
 
@@ -104,7 +181,16 @@ void kernel_mul_mv_q5_K_f32_impl(args_t args, device const char * src0, device c
     device float * dst_f32 = (device float *) dst + (uint64_t)im*args.ne0*args.ne1 + (uint64_t)r1*args.ne0;
     for (int row = 0; row < nr0 && first_row + row < args.ne0; ++row) { const float tot = simd_sum(sumf[row]); if (tiisg == 0) dst_f32[first_row + row] = tot; }
 }
-kernel void kernel_mul_mv_q5_K_f32(constant ggml_metal_kargs_mul_mv & args, device const char * src0, device const char * src1, device char * dst, uint3 tgpig, ushort tiisg, ushort sgitg) { kernel_mul_mv_q5_K_f32_impl<N_R0_Q5_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, tgpig, tiisg, sgitg); }
+kernel void kernel_mul_mv_q5_K_f32(
+        constant ggml_metal_kargs_mul_mv & args [[buffer(0)]],
+        device const char * src0 [[buffer(1)]],
+        device const char * src1 [[buffer(2)]],
+        device char * dst [[buffer(3)]],
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        ushort tiisg [[thread_index_in_simdgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]]) {
+            kernel_mul_mv_q5_K_f32_impl<N_R0_Q5_K, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, tgpig, tiisg, sgitg);
+        }
 )METAL";
 
 int main() {
@@ -117,10 +203,12 @@ int main() {
         NSError* error = nil;
 
         id<MTLLibrary> our_lib = [device newLibraryWithSource:[NSString stringWithUTF8String:our_kernel] options:nil error:&error];
+        if (!our_lib) { printf("Our kernel compilation failed: %s\n", [[error localizedDescription] UTF8String]); return 1; }
         id<MTLFunction> our_func = [our_lib newFunctionWithName:@"kernel_q5_k_gemv"];
         id<MTLComputePipelineState> our_pipeline = [device newComputePipelineStateWithFunction:our_func error:&error];
 
         id<MTLLibrary> llama_lib = [device newLibraryWithSource:[NSString stringWithUTF8String:llama_kernel] options:nil error:&error];
+        if (!llama_lib) { printf("llama kernel compilation failed: %s\n", [[error localizedDescription] UTF8String]); return 1; }
         id<MTLFunction> llama_func = [llama_lib newFunctionWithName:@"kernel_mul_mv_q5_K_f32"];
         id<MTLComputePipelineState> llama_pipeline = [device newComputePipelineStateWithFunction:llama_func error:&error];
 

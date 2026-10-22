@@ -22,29 +22,11 @@ struct kquant_mv_args {
 
 #define FOR_UNROLL(x) _Pragma("clang loop unroll(full)") for (x)
 
-// Helper function for Q4_K/Q5_K scale extraction
-// j: sub-block index (0-7), k: which sub-block within the pair (0 or 1)
-// Returns (scale, min) packed as uchar2
-static inline uchar2 get_scale_min_k4(int j, int k, device const uchar * scales) {
-    if (j < 4) {
-        // Lower 6 bits of scales[j+k] and scales[j+4+k]
-        return uchar2(uchar(scales[j+0+k] & 63), uchar(scales[j+4+k] & 63));
-    } else {
-        // For j >= 4, scales are packed differently
-        // scale: lower 4 bits of scales[j+4+k] combined with upper 2 bits of scales[j-4+k]
-        // min: upper 4 bits of scales[j+4+k] combined with upper 2 bits of scales[j+k]
-        return uchar2(
-            uchar((scales[j+4+k] & 0x0F) | ((scales[j-4+k] & 0xC0) >> 2)),
-            uchar((scales[j+4+k] >> 4) | ((scales[j-0+k] & 0xC0) >> 2))
-        );
-    }
-}
-
 // ============================================================================
 // Q4_K Matrix-Vector Multiplication
 // Block: 256 elements, 144 bytes
 // Layout: d[2] + dmin[2] + scales[12] + qs[128]
-// 8 sub-blocks of 32 elements each, each has scale and min
+// Optimizations: 4-block batching, y-vector caching, float4 accumulation
 // ============================================================================
 
 kernel void kernel_mul_mv_q4_K_f32(
@@ -55,58 +37,88 @@ kernel void kernel_mul_mv_q4_K_f32(
     uint3 tgpig [[threadgroup_position_in_grid]],
     ushort tiisg [[thread_index_in_simdgroup]])
 {
-    const int row = tgpig.x;  // Each threadgroup handles one row
+    const int nb = args.ne00 / QK_K;
+    const int row = tgpig.x;
     if (row >= (int)args.ne01) return;
 
-    const int nb = args.ne00 / QK_K;  // Number of blocks per row
+    device const block_q4_K * blocks = (device const block_q4_K *)(src0 + row * args.nb01);
+    device const float * yy = src1;
 
     float sumf = 0.0f;
 
-    // Get pointer to the weights for this row
-    device const char * row_ptr = src0 + row * args.nb01;
-    device const block_q4_K * blocks = (device const block_q4_K *)row_ptr;
+    // Y-vector caching in registers
+    float yl[16], yh[16];
 
-    // Each thread processes blocks at stride N_SIMDWIDTH
-    for (int ib = tiisg; ib < nb; ib += N_SIMDWIDTH) {
-        device const block_q4_K * block = blocks + ib;
-        device const float * y = src1 + ib * QK_K;
+    // Thread ID decomposition
+    const short tid = tiisg/4;
+    const short ix  = tiisg%4;
+    const short iq  = tid/4;
+    const short ir  = tid%4;
 
-        // Super-block scales (convert FP16 to float)
+    // Compute offsets
+    const short l0 = 8*ir;
+    const short q_offset = 32*iq + l0;
+    const short y_offset = 64*iq + l0;
+
+    // Scale extraction masks
+    constexpr uint16_t kmask1 = 0x3f3f;
+    constexpr uint16_t kmask2 = 0x0f0f;
+    constexpr uint16_t kmask3 = 0xc0c0;
+
+    uint16_t sc16[4];
+    thread const uint8_t * sc8 = (thread const uint8_t *)sc16;
+
+    // Each thread starts at different block (4-block batching)
+    device const float * y1 = yy + ix*QK_K + y_offset;
+
+    for (int i = ix; i < nb; i += 4) {
+        device const block_q4_K * block = blocks + i;
+
+        device const uint8_t * q1 = block->qs + q_offset;
         device const half * dh = (device const half *)&block->d;
-        float d = dh[0];
-        float dmin = dh[1];
+        device const uint16_t * a = (device const uint16_t *)block->scales + iq;
 
-        // Process 8 sub-blocks of 32 elements
-        for (int is = 0; is < 8; is++) {
-            // Extract scale and min for this sub-block
-            // 6-bit values stored as unsigned (0-63), used directly
-            uchar2 sc_min = get_scale_min_k4(is, 0, block->scales);
-            float sc = sc_min.x;  // Used directly
-            float m = sc_min.y;   // Used directly
-
-            float dl = d * sc;
-            float ml = dmin * m;
-
-            // 32 elements stored in 16 bytes (4 bits each)
-            device const uchar * qs = block->qs + is * 16;
-
-            // Process 16 bytes (32 elements)
-            // Formula: d * sc * q - dmin * m
-            for (int k = 0; k < 16; k++) {
-                uchar byte = qs[k];
-                float v0 = (byte & 0x0F);  // Lower nibble
-                float v1 = ((byte >> 4) & 0x0F);  // Upper nibble
-
-                sumf += (dl * v0 - ml) * y[is * 32 + k];
-                sumf += (dl * v1 - ml) * y[is * 32 + 16 + k];
-            }
+        // Y-vector caching
+        device const float * y2 = y1 + 128;
+        float4 sumy = {0.f, 0.f, 0.f, 0.f};
+        for (short l = 0; l < 8; ++l) {
+            yl[l+0] = y1[l+ 0]; sumy[0] += yl[l+0];
+            yl[l+8] = y1[l+32]; sumy[1] += yl[l+8];
+            yh[l+0] = y2[l+ 0]; sumy[2] += yh[l+0];
+            yh[l+8] = y2[l+32]; sumy[3] += yh[l+8];
         }
+
+        // Extract scales using masks
+        sc16[0] = a[0] & kmask1;
+        sc16[1] = a[2] & kmask1;
+        sc16[2] = ((a[4] >> 0) & kmask2) | ((a[0] & kmask3) >> 2);
+        sc16[3] = ((a[4] >> 4) & kmask2) | ((a[2] & kmask3) >> 2);
+
+        // Float4 accumulation
+        float4 acc1 = {0.f};
+
+        device const uint8_t * q2 = q1 + 64;
+
+        FOR_UNROLL (short l = 0; l < 8; ++l) {
+            acc1[0] += yl[l+0] * (q1[l] & 0x0F);
+            acc1[1] += yl[l+8] * (q1[l] & 0xF0);
+            acc1[2] += yh[l+0] * (q2[l] & 0x0F);
+            acc1[3] += yh[l+8] * (q2[l] & 0xF0);
+        }
+
+        // Final computation
+        // Formula: d * scale * q - dmin * sumy * min
+        sumf += (float)dh[0] * (sc8[0] * (acc1[0]      + acc1[1]/16.f) +
+                               sc8[4] * (acc1[2]      + acc1[3]/16.f)) -
+                (float)dh[1] * (sumy[0] * sc8[2] + sumy[1] * sc8[3] + sumy[2] * sc8[6] + sumy[3] * sc8[7]);
+
+        y1 += 4 * QK_K;
     }
 
-    // SIMD reduction across threads
-    float sum_all = simd_sum(sumf);
+    // SIMD reduction
+    float total = simd_sum(sumf);
     if (tiisg == 0) {
-        dst[row] = sum_all;
+        dst[row] = total;
     }
 }
 
@@ -276,9 +288,11 @@ kernel void kernel_mul_mv_q3_K_f32(
 }
 
 // ============================================================================
+// Q5_K Matrix-Vector Multiplication
 // Block: 256 elements, 176 bytes
 // Layout: d[2] + dmin[2] + scales[12] + qh[32] + qs[128]
 // Optimizations: 4-block batching, y-vector caching, float4 accumulation
+// Formula: d * scale * (q + h) - dmin * min
 // ============================================================================
 
 kernel void kernel_mul_mv_q5_K_f32(
@@ -302,6 +316,7 @@ kernel void kernel_mul_mv_q5_K_f32(
     // Y-vector caching in registers
     float yl[16], yh[16];
 
+    // Thread ID decomposition
     const short tid = tiisg/4;
     const short ix  = tiisg%4;
     const short iq  = tid/4;
@@ -372,13 +387,12 @@ kernel void kernel_mul_mv_q5_K_f32(
         }
 
         // Final computation
-        // 6-bit values stored as unsigned (0-63), convert to signed (-32 to 31)
-        // Formula from llama.cpp: d * (sc-32) * q + dmin * (m-32)
-        sumf += (float)dh[0] * ((sc8[0]-32.f) * (acc1[0]      + 16.f*acc2[0]) +
-                               (sc8[1]-32.f) * (acc1[1]/16.f + 16.f*acc2[1]) +
-                               (sc8[4]-32.f) * (acc1[2]      + 16.f*acc2[2]) +
-                               (sc8[5]-32.f) * (acc1[3]/16.f + 16.f*acc2[3])) +
-                (float)dh[1] * (sumy[0] * (sc8[2]-32.f) + sumy[1] * (sc8[3]-32.f) + sumy[2] * (sc8[6]-32.f) + sumy[3] * (sc8[7]-32.f));
+        // Formula: d * scale * (q + 16*h) - dmin * sumy * min
+        sumf += (float)dh[0] * (sc8[0] * (acc1[0]      + 16.f*acc2[0]) +
+                               sc8[1] * (acc1[1]/16.f + 16.f*acc2[1]) +
+                               sc8[4] * (acc1[2]      + 16.f*acc2[2]) +
+                               sc8[5] * (acc1[3]/16.f + 16.f*acc2[3])) -
+                (float)dh[1] * (sumy[0] * sc8[2] + sumy[1] * sc8[3] + sumy[2] * sc8[6] + sumy[3] * sc8[7]);
 
         y1 += 4 * QK_K;
     }

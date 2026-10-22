@@ -94,11 +94,17 @@ impl DagExecutor {
 
         // 1. Embedding lookup
         let hidden = model.embedding_lookup_impl(token)?;
-        let hidden_buffer = Rc::new(device.new_buffer_with_data(
-            hidden.as_ptr() as *const std::ffi::c_void,
-            (hidden_size * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
+
+        // Use cached embed buffer to avoid allocation on every decode
+        let hidden_buffer =
+            Rc::new(gpu_ctx.get_or_create_embed_buffer(hidden_size * 4));
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                hidden.as_ptr() as *const std::ffi::c_void,
+                hidden_buffer.contents(),
+                hidden_size * 4,
+            );
+        }
 
         // Debug: check embedding for NaN
         if std::env::var("INFER_TRACE_NAN").is_ok() {
@@ -127,9 +133,9 @@ impl DagExecutor {
         // Check if MMA kernel is enabled via environment variable
         let use_mma = std::env::var("INFER_USE_MMA")
             .map(|v| v == "1" || v == "true" || v == "v2")
-            .unwrap_or(false);
+            .unwrap_or(true); // Default to MMA for better performance
         let use_mma_v2 =
-            std::env::var("INFER_USE_MMA").map(|v| v == "v2").unwrap_or(false);
+            std::env::var("INFER_USE_MMA").map(|v| v == "v2").unwrap_or(true); // Default to v2
 
         // Create execution context
         let mut exec_ctx = ExecutionContext {
@@ -764,26 +770,32 @@ impl DagExecutor {
                     );
                 }
 
-                // Run two GEMV operations
-                // TODO: Optimize to single GEMM with concatenated weights
-                ctx.gpu_ctx.mv_encode(
-                    encoder,
-                    &gate_weight_buf,
-                    &input_buf,
-                    &gate_buf,
-                    *intermediate_size,
-                    hidden_size,
-                    gate_dtype,
-                );
-                ctx.gpu_ctx.mv_encode(
-                    encoder,
-                    &up_weight_buf,
-                    &input_buf,
-                    &up_buf,
-                    *intermediate_size,
-                    hidden_size,
-                    up_dtype,
-                );
+                // FusedGateUp kernel has performance issues (38% slower than separate GEMV)
+                // Temporarily disabled until kernel optimization
+                // TODO: Optimize FusedGateUp to reuse input reads and adjust thread group size
+                match gate_dtype {
+                    _ => {
+                        // Fallback: two separate GEMV calls (faster than fused)
+                        ctx.gpu_ctx.mv_encode(
+                            encoder,
+                            &gate_weight_buf,
+                            &input_buf,
+                            &gate_buf,
+                            *intermediate_size,
+                            hidden_size,
+                            gate_dtype,
+                        );
+                        ctx.gpu_ctx.mv_encode(
+                            encoder,
+                            &up_weight_buf,
+                            &input_buf,
+                            &up_buf,
+                            *intermediate_size,
+                            hidden_size,
+                            up_dtype,
+                        );
+                    }
+                }
 
                 ctx.tensor_registry.insert(*output_gate, gate_buf);
                 ctx.tensor_registry.insert(*output_up, up_buf);
@@ -1195,8 +1207,39 @@ impl DagExecutor {
                         // Q4_K fused kernel - each block is 144 bytes for 256 elements
                         let nb = ctx.model.config.hidden_size / 256;
                         let nb01 = (nb * 144) as u64;
-                        // TODO: Add Q5_K, Q6_K fused kernel support
                         ctx.gpu_ctx.fused_norm_linear_q4_k_encode(
+                            encoder,
+                            &input_buf,
+                            &norm_weight_buf,
+                            &linear_weight_buf,
+                            &output_buf,
+                            *out_size,
+                            ctx.model.config.hidden_size,
+                            *epsilon,
+                            nb01,
+                        );
+                    }
+                    crate::model::tensor::DataType::Q5_K => {
+                        // Q5_K fused kernel - each block is 176 bytes for 256 elements
+                        let nb = ctx.model.config.hidden_size / 256;
+                        let nb01 = (nb * 176) as u64;
+                        ctx.gpu_ctx.fused_norm_linear_q5_k_encode(
+                            encoder,
+                            &input_buf,
+                            &norm_weight_buf,
+                            &linear_weight_buf,
+                            &output_buf,
+                            *out_size,
+                            ctx.model.config.hidden_size,
+                            *epsilon,
+                            nb01,
+                        );
+                    }
+                    crate::model::tensor::DataType::Q6_K => {
+                        // Q6_K fused kernel - each block is 210 bytes for 256 elements
+                        let nb = ctx.model.config.hidden_size / 256;
+                        let nb01 = (nb * 210) as u64;
+                        ctx.gpu_ctx.fused_norm_linear_q6_k_encode(
                             encoder,
                             &input_buf,
                             &norm_weight_buf,

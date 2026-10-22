@@ -169,13 +169,20 @@ pub struct MetalContext {
     fused_norm_linear_f16_pipeline: ComputePipelineState,
     fused_norm_linear_f32_pipeline: ComputePipelineState,
     fused_norm_linear_f16_4_pipeline: ComputePipelineState,
-    // TODO: Add Q5_K, Q6_K fused norm linear pipelines
     fused_norm_linear_q4_k_pipeline: ComputePipelineState,
+    // TODO: Add Q3_K, Q2_K, IQ4_NL, IQ4_XS fused norm linear pipelines
+    fused_norm_linear_q5_k_pipeline: ComputePipelineState,
+    fused_norm_linear_q6_k_pipeline: ComputePipelineState,
     // FusedAddNorm (Add + RMSNorm)
     fused_add_norm_f32_pipeline: ComputePipelineState,
     fused_add_norm_f32_4_pipeline: ComputePipelineState,
     fused_add_norm_f16_pipeline: ComputePipelineState,
     fused_add_norm_f16_4_pipeline: ComputePipelineState,
+    // FusedGateUp (gate + up projections in one kernel)
+    fused_gate_up_f16_pipeline: ComputePipelineState,
+    fused_gate_up_q4_k_pipeline: ComputePipelineState,
+    fused_gate_up_q5_k_pipeline: ComputePipelineState,
+    fused_gate_up_q6_k_pipeline: ComputePipelineState,
     // Flash Attention
     flash_attn_library: Library,
     // F16 decode pipelines for each head_dim (NE=4 variant)
@@ -188,6 +195,7 @@ pub struct MetalContext {
     flash_decode_mma_pipeline: ComputePipelineState,
     flash_decode_mma_v2_pipeline: ComputePipelineState, // Optimized version
     flash_decode_mma_true_pipeline: ComputePipelineState, // True MMA with simdgroup_float8x8
+    flash_decode_mma_batched_pipeline: ComputePipelineState, // Batched processing (C=8)
     // Multi-head Flash Attention (llama.cpp style, Q=32, NSG=8)
     flash_attn_multihead_128_pipeline: ComputePipelineState,
     // Flash Prefill (for batched prefill)
@@ -245,6 +253,9 @@ pub struct MetalContext {
     gemm_output_size: RefCell<usize>,
     // Cached pos buffer for RoPE (avoid allocation on every call)
     rope_pos_buffer: RefCell<Option<Buffer>>,
+    // Cached embedding buffer for decode (avoid allocation on every call)
+    embed_buffer: RefCell<Option<Buffer>>,
+    embed_size: RefCell<usize>,
 }
 
 impl std::fmt::Debug for MetalContext {
@@ -367,6 +378,12 @@ impl Clone for MetalContext {
             fused_norm_linear_q4_k_pipeline: self
                 .fused_norm_linear_q4_k_pipeline
                 .clone(),
+            fused_norm_linear_q5_k_pipeline: self
+                .fused_norm_linear_q5_k_pipeline
+                .clone(),
+            fused_norm_linear_q6_k_pipeline: self
+                .fused_norm_linear_q6_k_pipeline
+                .clone(),
             fused_add_norm_f32_pipeline: self
                 .fused_add_norm_f32_pipeline
                 .clone(),
@@ -378,6 +395,17 @@ impl Clone for MetalContext {
                 .clone(),
             fused_add_norm_f16_4_pipeline: self
                 .fused_add_norm_f16_4_pipeline
+                .clone(),
+            // FusedGateUp
+            fused_gate_up_f16_pipeline: self.fused_gate_up_f16_pipeline.clone(),
+            fused_gate_up_q4_k_pipeline: self
+                .fused_gate_up_q4_k_pipeline
+                .clone(),
+            fused_gate_up_q5_k_pipeline: self
+                .fused_gate_up_q5_k_pipeline
+                .clone(),
+            fused_gate_up_q6_k_pipeline: self
+                .fused_gate_up_q6_k_pipeline
                 .clone(),
             flash_attn_library: self.flash_attn_library.clone(),
             flash_decode_f16_32_pipeline: self
@@ -401,6 +429,9 @@ impl Clone for MetalContext {
                 .clone(),
             flash_decode_mma_true_pipeline: self
                 .flash_decode_mma_true_pipeline
+                .clone(),
+            flash_decode_mma_batched_pipeline: self
+                .flash_decode_mma_batched_pipeline
                 .clone(),
             flash_attn_multihead_128_pipeline: self
                 .flash_attn_multihead_128_pipeline
@@ -467,6 +498,8 @@ impl Clone for MetalContext {
             gemm_input_size: RefCell::new(0),
             gemm_output_size: RefCell::new(0),
             rope_pos_buffer: RefCell::new(None),
+            embed_buffer: RefCell::new(None),
+            embed_size: RefCell::new(0),
         }
     }
 }
@@ -864,6 +897,18 @@ impl MetalContext {
             .new_library_with_source(fused_add_norm_source, &compile_options)
             .map_err(|e| {
                 format!("Failed to compile fused_add_norm library: {}", e)
+            })?;
+
+        // Compile FusedGateUp library
+        let fused_gate_up_source =
+            include_str!("../../../ops/metal/ops/fused_gate_up.metal");
+        // Replace include with actual content (needed for quantized kernels)
+        let fused_gate_up_combined = fused_gate_up_source
+            .replace("#include \"../include/blocks.h\"", blocks_h);
+        let fused_gate_up_library = device
+            .new_library_with_source(&fused_gate_up_combined, &compile_options)
+            .map_err(|e| {
+                format!("Failed to compile fused_gate_up library: {}", e)
             })?;
 
         // Compile Flash Attention library (vectorized decode kernel)
@@ -1697,7 +1742,6 @@ impl MetalContext {
             })?;
 
         // Create FusedNormLinear Q4_K pipeline
-        // TODO: Add Q5_K, Q6_K pipelines
         let fused_norm_linear_q4_k_kernel = fused_norm_linear_library
             .get_function("kernel_fused_norm_linear_q4_k", None)
             .map_err(|e| {
@@ -1713,6 +1757,46 @@ impl MetalContext {
             .map_err(|e| {
                 format!(
                     "Failed to create fused_norm_linear_q4_k pipeline: {}",
+                    e
+                )
+            })?;
+
+        // Create FusedNormLinear Q5_K pipeline
+        let fused_norm_linear_q5_k_kernel = fused_norm_linear_library
+            .get_function("kernel_fused_norm_linear_q5_k", None)
+            .map_err(|e| {
+                format!(
+                    "Failed to get kernel_fused_norm_linear_q5_k kernel: {}",
+                    e
+                )
+            })?;
+        let fused_norm_linear_q5_k_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_norm_linear_q5_k_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create fused_norm_linear_q5_k pipeline: {}",
+                    e
+                )
+            })?;
+
+        // Create FusedNormLinear Q6_K pipeline
+        let fused_norm_linear_q6_k_kernel = fused_norm_linear_library
+            .get_function("kernel_fused_norm_linear_q6_k", None)
+            .map_err(|e| {
+                format!(
+                    "Failed to get kernel_fused_norm_linear_q6_k kernel: {}",
+                    e
+                )
+            })?;
+        let fused_norm_linear_q6_k_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_norm_linear_q6_k_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create fused_norm_linear_q6_k pipeline: {}",
                     e
                 )
             })?;
@@ -1774,6 +1858,57 @@ impl MetalContext {
             )
             .map_err(|e| {
                 format!("Failed to create fused_add_norm_f16_4 pipeline: {}", e)
+            })?;
+
+        // Create FusedGateUp pipelines
+        let fused_gate_up_f16_kernel = fused_gate_up_library
+            .get_function("kernel_fused_gate_up_f16", None)
+            .map_err(|e| {
+                format!("Failed to get kernel_fused_gate_up_f16 kernel: {}", e)
+            })?;
+        let fused_gate_up_f16_pipeline = device
+            .new_compute_pipeline_state_with_function(&fused_gate_up_f16_kernel)
+            .map_err(|e| {
+                format!("Failed to create fused_gate_up_f16 pipeline: {}", e)
+            })?;
+
+        let fused_gate_up_q4_k_kernel = fused_gate_up_library
+            .get_function("kernel_fused_gate_up_q4_k", None)
+            .map_err(|e| {
+                format!("Failed to get kernel_fused_gate_up_q4_k kernel: {}", e)
+            })?;
+        let fused_gate_up_q4_k_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_gate_up_q4_k_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create fused_gate_up_q4_k pipeline: {}", e)
+            })?;
+
+        let fused_gate_up_q5_k_kernel = fused_gate_up_library
+            .get_function("kernel_fused_gate_up_q5_k", None)
+            .map_err(|e| {
+                format!("Failed to get kernel_fused_gate_up_q5_k kernel: {}", e)
+            })?;
+        let fused_gate_up_q5_k_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_gate_up_q5_k_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create fused_gate_up_q5_k pipeline: {}", e)
+            })?;
+
+        let fused_gate_up_q6_k_kernel = fused_gate_up_library
+            .get_function("kernel_fused_gate_up_q6_k", None)
+            .map_err(|e| {
+                format!("Failed to get kernel_fused_gate_up_q6_k kernel: {}", e)
+            })?;
+        let fused_gate_up_q6_k_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_gate_up_q6_k_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create fused_gate_up_q6_k pipeline: {}", e)
             })?;
 
         // Create Flash Attention pipeline (template specialization, may fail on some Metal versions)
@@ -1899,6 +2034,37 @@ impl MetalContext {
             .map_err(|e| {
                 format!(
                     "Failed to create flash_decode_mma_true pipeline: {}",
+                    e
+                )
+            })?;
+
+        // Create Flash Decode MMA Batched pipeline (C=8 positions per iteration)
+        let flash_decode_mma_batched_source = include_str!(
+            "../../../ops/metal/attention/flash_decode_mma_batched.metal"
+        );
+        let flash_decode_mma_batched_library = device
+            .new_library_with_source(
+                flash_decode_mma_batched_source,
+                &compile_options,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to compile flash_decode_mma_batched library: {}",
+                    e
+                )
+            })?;
+        let flash_decode_mma_batched_kernel = flash_decode_mma_batched_library
+            .get_function("flash_decode_true_mma_f16", None)
+            .map_err(|e| {
+                format!("Failed to get flash_decode_true_mma_f16 kernel: {}", e)
+            })?;
+        let flash_decode_mma_batched_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &flash_decode_mma_batched_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create flash_decode_mma_batched pipeline: {}",
                     e
                 )
             })?;
@@ -2336,10 +2502,17 @@ impl MetalContext {
             fused_norm_linear_f32_pipeline,
             fused_norm_linear_f16_4_pipeline,
             fused_norm_linear_q4_k_pipeline,
+            fused_norm_linear_q5_k_pipeline,
+            fused_norm_linear_q6_k_pipeline,
             fused_add_norm_f32_pipeline,
             fused_add_norm_f32_4_pipeline,
             fused_add_norm_f16_pipeline,
             fused_add_norm_f16_4_pipeline,
+            // FusedGateUp
+            fused_gate_up_f16_pipeline,
+            fused_gate_up_q4_k_pipeline,
+            fused_gate_up_q5_k_pipeline,
+            fused_gate_up_q6_k_pipeline,
             // Flash Attention
             flash_attn_library,
             flash_decode_f16_32_pipeline,
@@ -2350,6 +2523,7 @@ impl MetalContext {
             flash_decode_mma_pipeline,
             flash_decode_mma_v2_pipeline,
             flash_decode_mma_true_pipeline,
+            flash_decode_mma_batched_pipeline,
             flash_attn_multihead_128_pipeline,
             // Flash Prefill
             flash_prefill_f16_pipeline,
@@ -2397,6 +2571,8 @@ impl MetalContext {
             gemm_input_size: RefCell::new(0),
             gemm_output_size: RefCell::new(0),
             rope_pos_buffer: RefCell::new(None),
+            embed_buffer: RefCell::new(None),
+            embed_size: RefCell::new(0),
             weight_buffer_cache: RefCell::new(std::collections::HashMap::new()),
         })
     }
@@ -2436,6 +2612,28 @@ impl MetalContext {
         *self.gemm_weights_size.borrow_mut() = 0;
         *self.gemm_input_size.borrow_mut() = 0;
         *self.gemm_output_size.borrow_mut() = 0;
+
+        // Clear embed buffer
+        *self.embed_buffer.borrow_mut() = None;
+        *self.embed_size.borrow_mut() = 0;
+    }
+
+    /// Get or create cached embedding buffer
+    /// Reuses buffer if size matches, creates new one if needed
+    pub fn get_or_create_embed_buffer(&self, size: usize) -> Buffer {
+        let mut embed_buffer = self.embed_buffer.borrow_mut();
+        let mut embed_size = self.embed_size.borrow_mut();
+
+        if *embed_size != size {
+            // Size changed, create new buffer
+            *embed_buffer = Some(self.device.new_buffer(
+                size as u64,
+                metal::MTLResourceOptions::StorageModeShared,
+            ));
+            *embed_size = size;
+        }
+
+        embed_buffer.as_ref().unwrap().clone()
     }
 
     /// Insert a GPU fence to ensure all previous commands complete
@@ -2477,12 +2675,15 @@ impl MetalContext {
         if let Some(ref buffer) = *gpu_buffer {
             std::rc::Rc::clone(buffer)
         } else {
-            // Create new buffer
-            let buffer = std::rc::Rc::new(self.device.new_buffer_with_data(
-                tensor.bytes().as_ptr() as *const std::ffi::c_void,
-                tensor.bytes().len() as u64,
-                metal::MTLResourceOptions::StorageModeShared,
-            ));
+            // Create new buffer with zero-copy mapping
+            // Tensor data is owned by the model and persists for the model's lifetime
+            let buffer =
+                std::rc::Rc::new(self.device.new_buffer_with_bytes_no_copy(
+                    tensor.bytes().as_ptr() as *const std::ffi::c_void,
+                    tensor.bytes().len() as u64,
+                    metal::MTLResourceOptions::StorageModeShared,
+                    None, // No deallocator - tensor owns the memory
+                ));
             *gpu_buffer = Some(std::rc::Rc::clone(&buffer));
             buffer
         }
@@ -2789,13 +2990,15 @@ impl MetalContext {
                 // Buffer already exists for this tensor
                 std::rc::Rc::clone(buffer)
             } else {
-                // Create new buffer and cache it
-                let buffer =
-                    std::rc::Rc::new(self.device.new_buffer_with_data(
+                // Create new buffer and cache it (zero-copy mapping)
+                let buffer = std::rc::Rc::new(
+                    self.device.new_buffer_with_bytes_no_copy(
                         weights.as_ptr() as *const std::ffi::c_void,
                         weights_size as u64,
                         metal::MTLResourceOptions::StorageModeShared,
-                    ));
+                        None, // No deallocator - weights are static model data
+                    ),
+                );
                 cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
                 buffer
             }
@@ -4774,13 +4977,15 @@ impl MetalContext {
                 // Buffer already exists for this tensor
                 std::rc::Rc::clone(buffer)
             } else {
-                // Create new buffer and cache it
-                let buffer =
-                    std::rc::Rc::new(self.device.new_buffer_with_data(
+                // Create new buffer and cache it (zero-copy mapping)
+                let buffer = std::rc::Rc::new(
+                    self.device.new_buffer_with_bytes_no_copy(
                         weights.as_ptr() as *const std::ffi::c_void,
                         weights_size as u64,
                         metal::MTLResourceOptions::StorageModeShared,
-                    ));
+                        None, // No deallocator - weights are static model data
+                    ),
+                );
                 cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
                 buffer
             }
@@ -4913,13 +5118,15 @@ impl MetalContext {
                 // Buffer already exists for this tensor
                 std::rc::Rc::clone(buffer)
             } else {
-                // Create new buffer and cache it
-                let buffer =
-                    std::rc::Rc::new(self.device.new_buffer_with_data(
+                // Create new buffer and cache it (zero-copy mapping)
+                let buffer = std::rc::Rc::new(
+                    self.device.new_buffer_with_bytes_no_copy(
                         weights.as_ptr() as *const std::ffi::c_void,
                         weights_size as u64,
                         metal::MTLResourceOptions::StorageModeShared,
-                    ));
+                        None, // No deallocator - weights are static model data
+                    ),
+                );
                 cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
                 buffer
             }
@@ -5077,13 +5284,15 @@ impl MetalContext {
                 // Buffer already exists for this tensor
                 std::rc::Rc::clone(buffer)
             } else {
-                // Create new buffer and cache it
-                let buffer =
-                    std::rc::Rc::new(self.device.new_buffer_with_data(
+                // Create new buffer and cache it (zero-copy mapping)
+                let buffer = std::rc::Rc::new(
+                    self.device.new_buffer_with_bytes_no_copy(
                         weights.as_ptr() as *const std::ffi::c_void,
                         weights_size as u64,
                         metal::MTLResourceOptions::StorageModeShared,
-                    ));
+                        None, // No deallocator - weights are static model data
+                    ),
+                );
                 cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
                 buffer
             }
@@ -5216,13 +5425,15 @@ impl MetalContext {
                 // Buffer already exists for this tensor
                 std::rc::Rc::clone(buffer)
             } else {
-                // Create new buffer and cache it
-                let buffer =
-                    std::rc::Rc::new(self.device.new_buffer_with_data(
+                // Create new buffer and cache it (zero-copy mapping)
+                let buffer = std::rc::Rc::new(
+                    self.device.new_buffer_with_bytes_no_copy(
                         weights.as_ptr() as *const std::ffi::c_void,
                         weights_size as u64,
                         metal::MTLResourceOptions::StorageModeShared,
-                    ));
+                        None, // No deallocator - weights are static model data
+                    ),
+                );
                 cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
                 buffer
             }
@@ -5345,13 +5556,15 @@ impl MetalContext {
                 // Buffer already exists for this tensor
                 std::rc::Rc::clone(buffer)
             } else {
-                // Create new buffer and cache it
-                let buffer =
-                    std::rc::Rc::new(self.device.new_buffer_with_data(
+                // Create new buffer and cache it (zero-copy mapping)
+                let buffer = std::rc::Rc::new(
+                    self.device.new_buffer_with_bytes_no_copy(
                         weights.as_ptr() as *const std::ffi::c_void,
                         weights_size as u64,
                         metal::MTLResourceOptions::StorageModeShared,
-                    ));
+                        None, // No deallocator - weights are static model data
+                    ),
+                );
                 cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
                 buffer
             }
@@ -5843,74 +6056,88 @@ impl MetalContext {
             encoder
                 .dispatch_thread_groups(thread_group_count, thread_group_size);
         } else {
-            let use_4 = k % 4 == 0; // Use float4 version if K % 4 == 0
-
-            // Match llama.cpp NSG formula: min(4, (K+127)/128)
-            let nsg = if use_4 { std::cmp::min(4, (k + 127) / 128) } else { 1 };
-
-            let pipeline = if use_4 {
-                match nsg {
-                    1 => &self.mv_f16_4_nsg1_pipeline,
-                    2 => &self.mv_f16_4_nsg2_pipeline,
-                    _ => &self.mv_f16_4_nsg4_pipeline, // 4 or larger
-                }
+            // Use optimized kernel with nxpsg support (matches llama.cpp)
+            // Calculate nxpsg based on K value
+            let nxpsg: i16 = if k % 256 == 0 {
+                16 // K divisible by 256
+            } else if k % 128 == 0 {
+                8 // K divisible by 128
             } else {
-                &self.mv_f16_basic_pipeline
+                4 // Default
             };
 
-            encoder.set_compute_pipeline_state(pipeline);
+            // NSG = number of simdgroups
+            let nsg: i16 = std::cmp::min(4, (k + 127) / 128) as i16;
 
-            // Match llama.cpp NSG formula: min(4, (K+127)/128)
-            let nsg: i16 = if use_4 {
-                std::cmp::min(4, (k + 127) / 128) as i16
-            } else {
-                1
-            };
+            // r1ptg = rows per threadgroup in batch dimension (batch=1 for decode)
+            let r1ptg: i16 = 1;
 
-            let args = MvArgs {
+            // Use optimized pipeline with correct nxpsg
+            // For now, use the nxpsg=16 pipeline (we need to create all variants)
+            encoder.set_compute_pipeline_state(
+                &self.mv_f16_opt_r1_1_nxpsg16_pipeline,
+            );
+
+            // Use mul_mv_ext_args structure matching optimized kernel
+            #[repr(C)]
+            struct ExtArgs {
+                ne00: i32,
+                ne01: i32,
+                ne02: i32,
+                nb00: u64,
+                nb01: u64,
+                nb02: u64,
+                nb03: u64,
+                ne10: i32,
+                ne11: i32,
+                ne12: i32,
+                nb10: u64,
+                nb11: u64,
+                nb12: u64,
+                nb13: u64,
+                ne0: i32,
+                ne1: i32,
+            }
+
+            let args = ExtArgs {
                 ne00: k as i32,
                 ne01: m as i32,
                 ne02: 1,
-                nb00: 2,
+                nb00: 2, // sizeof(half)
                 nb01: (k * 2) as u64,
                 nb02: 0,
                 nb03: 0,
                 ne10: k as i32,
-                ne11: 1,
+                ne11: 1, // batch size
                 ne12: 1,
-                nb10: 4,
+                nb10: 4, // sizeof(float)
                 nb11: (k * 4) as u64,
                 nb12: 0,
                 nb13: 0,
                 ne0: m as i32,
                 ne1: 1,
-                nr0: 2,
-                r2: 1,
-                r3: 1,
-                nsg: nsg as i16, // Store in args for reference
-                ne12_batch: 1,
             };
 
             encoder.set_bytes(
                 0,
-                std::mem::size_of::<MvArgs>() as u64,
-                &args as *const MvArgs as *const std::ffi::c_void,
+                std::mem::size_of::<ExtArgs>() as u64,
+                &args as *const ExtArgs as *const std::ffi::c_void,
             );
             encoder.set_buffer(1, Some(weights_buffer), 0);
             encoder.set_buffer(2, Some(input_buffer), 0);
             encoder.set_buffer(3, Some(&output_buffer), 0);
 
-            // Threadgroup size scales with nsg
-            let thread_group_size =
-                MTLSize { width: (nsg as u64 * 32), height: 1, depth: 1 };
-            let thread_group_count =
-                MTLSize { width: ((m + 1) / 2) as u64, height: 1, depth: 1 };
-
-            // Allocate threadgroup memory for reduction (2 rows * 32 threads * nsg simdgroups)
-            let threadgroup_mem_size =
-                (2 * 32 * nsg as usize) * std::mem::size_of::<f32>();
-            encoder
-                .set_threadgroup_memory_length(0, threadgroup_mem_size as u64);
+            // Threadgroup size: 32 threads (one simdgroup)
+            // Number of simdgroups scales with nxpsg and nypsg
+            let nypsg = 32 / nxpsg as u64; // threads per simdgroup in Y dimension
+            let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+            let thread_group_count = MTLSize {
+                width: ((m + nypsg as usize * nsg as usize - 1)
+                    / (nypsg as usize * nsg as usize))
+                    as u64,
+                height: 1,
+                depth: 1,
+            };
 
             encoder
                 .dispatch_thread_groups(thread_group_count, thread_group_size);
@@ -8837,7 +9064,6 @@ impl MetalContext {
     }
 
     /// Fused RMSNorm + Linear with Q4_K quantized weights
-    /// TODO: Add Q5_K, Q6_K versions
     pub fn fused_norm_linear_q4_k_encode(
         &self,
         encoder: &ComputeCommandEncoderRef,
@@ -8882,6 +9108,283 @@ impl MetalContext {
             MTLSize { width: m as u64, height: 1, depth: 1 };
         let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
 
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Fused RMSNorm + Linear with Q5_K quantized weights
+    pub fn fused_norm_linear_q5_k_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        input_buffer: &Buffer,
+        norm_weight_buffer: &Buffer,
+        weights_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+        epsilon: f32,
+        nb01: u64,
+    ) {
+        encoder
+            .set_compute_pipeline_state(&self.fused_norm_linear_q5_k_pipeline);
+        encoder.set_buffer(0, Some(input_buffer), 0);
+        encoder.set_buffer(1, Some(norm_weight_buffer), 0);
+        encoder.set_buffer(2, Some(weights_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+        encoder.set_bytes(
+            4,
+            4,
+            &(m as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            5,
+            4,
+            &(k as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            6,
+            4,
+            &epsilon as *const f32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(7, 8, &nb01 as *const u64 as *const std::ffi::c_void);
+
+        // Threadgroup memory size (K elements as F32) + reduction buffer
+        let tg_mem_size = std::cmp::max(k * 4 + 256, 4096);
+        encoder.set_threadgroup_memory_length(0, tg_mem_size as u64);
+
+        // One threadgroup per output row, 32 threads for SIMD reduction
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Fused RMSNorm + Linear with Q6_K quantized weights
+    pub fn fused_norm_linear_q6_k_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        input_buffer: &Buffer,
+        norm_weight_buffer: &Buffer,
+        weights_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+        epsilon: f32,
+        nb01: u64,
+    ) {
+        encoder
+            .set_compute_pipeline_state(&self.fused_norm_linear_q6_k_pipeline);
+        encoder.set_buffer(0, Some(input_buffer), 0);
+        encoder.set_buffer(1, Some(norm_weight_buffer), 0);
+        encoder.set_buffer(2, Some(weights_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+        encoder.set_bytes(
+            4,
+            4,
+            &(m as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            5,
+            4,
+            &(k as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            6,
+            4,
+            &epsilon as *const f32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(7, 8, &nb01 as *const u64 as *const std::ffi::c_void);
+
+        // Threadgroup memory size (K elements as F32) + reduction buffer
+        let tg_mem_size = std::cmp::max(k * 4 + 256, 4096);
+        encoder.set_threadgroup_memory_length(0, tg_mem_size as u64);
+
+        // One threadgroup per output row, 32 threads for SIMD reduction
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    // ========================================================================
+    // FusedGateUp (gate + up projections in one kernel)
+    // ========================================================================
+
+    /// Fused gate and up projections with F16 weights
+    /// Computes: gate = W_gate @ input, up = W_up @ input in one kernel
+    pub fn fused_gate_up_f16_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        input_buffer: &Buffer,
+        gate_weights_buffer: &Buffer,
+        up_weights_buffer: &Buffer,
+        gate_output_buffer: &Buffer,
+        up_output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+    ) {
+        encoder.set_compute_pipeline_state(&self.fused_gate_up_f16_pipeline);
+        encoder.set_buffer(0, Some(input_buffer), 0);
+        encoder.set_buffer(1, Some(gate_weights_buffer), 0);
+        encoder.set_buffer(2, Some(up_weights_buffer), 0);
+        encoder.set_buffer(3, Some(gate_output_buffer), 0);
+        encoder.set_buffer(4, Some(up_output_buffer), 0);
+        encoder.set_bytes(
+            5,
+            4,
+            &(m as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            6,
+            4,
+            &(k as u32) as *const u32 as *const std::ffi::c_void,
+        );
+
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
+        let thread_group_size = MTLSize { width: 64, height: 1, depth: 1 };
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Fused gate and up projections with Q4_K quantized weights
+    pub fn fused_gate_up_q4_k_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        input_buffer: &Buffer,
+        gate_weights_buffer: &Buffer,
+        up_weights_buffer: &Buffer,
+        gate_output_buffer: &Buffer,
+        up_output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+        gate_nb01: u64,
+        up_nb01: u64,
+    ) {
+        encoder.set_compute_pipeline_state(&self.fused_gate_up_q4_k_pipeline);
+        encoder.set_buffer(0, Some(input_buffer), 0);
+        encoder.set_buffer(1, Some(gate_weights_buffer), 0);
+        encoder.set_buffer(2, Some(up_weights_buffer), 0);
+        encoder.set_buffer(3, Some(gate_output_buffer), 0);
+        encoder.set_buffer(4, Some(up_output_buffer), 0);
+        encoder.set_bytes(
+            5,
+            4,
+            &(m as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            6,
+            4,
+            &(k as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            7,
+            8,
+            &gate_nb01 as *const u64 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            8,
+            8,
+            &up_nb01 as *const u64 as *const std::ffi::c_void,
+        );
+
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
+        let thread_group_size = MTLSize { width: 64, height: 1, depth: 1 };
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Fused gate and up projections with Q5_K quantized weights
+    pub fn fused_gate_up_q5_k_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        input_buffer: &Buffer,
+        gate_weights_buffer: &Buffer,
+        up_weights_buffer: &Buffer,
+        gate_output_buffer: &Buffer,
+        up_output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+        gate_nb01: u64,
+        up_nb01: u64,
+    ) {
+        encoder.set_compute_pipeline_state(&self.fused_gate_up_q5_k_pipeline);
+        encoder.set_buffer(0, Some(input_buffer), 0);
+        encoder.set_buffer(1, Some(gate_weights_buffer), 0);
+        encoder.set_buffer(2, Some(up_weights_buffer), 0);
+        encoder.set_buffer(3, Some(gate_output_buffer), 0);
+        encoder.set_buffer(4, Some(up_output_buffer), 0);
+        encoder.set_bytes(
+            5,
+            4,
+            &(m as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            6,
+            4,
+            &(k as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            7,
+            8,
+            &gate_nb01 as *const u64 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            8,
+            8,
+            &up_nb01 as *const u64 as *const std::ffi::c_void,
+        );
+
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
+        let thread_group_size = MTLSize { width: 64, height: 1, depth: 1 };
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Fused gate and up projections with Q6_K quantized weights
+    pub fn fused_gate_up_q6_k_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        input_buffer: &Buffer,
+        gate_weights_buffer: &Buffer,
+        up_weights_buffer: &Buffer,
+        gate_output_buffer: &Buffer,
+        up_output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+        gate_nb01: u64,
+        up_nb01: u64,
+    ) {
+        encoder.set_compute_pipeline_state(&self.fused_gate_up_q6_k_pipeline);
+        encoder.set_buffer(0, Some(input_buffer), 0);
+        encoder.set_buffer(1, Some(gate_weights_buffer), 0);
+        encoder.set_buffer(2, Some(up_weights_buffer), 0);
+        encoder.set_buffer(3, Some(gate_output_buffer), 0);
+        encoder.set_buffer(4, Some(up_output_buffer), 0);
+        encoder.set_bytes(
+            5,
+            4,
+            &(m as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            6,
+            4,
+            &(k as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            7,
+            8,
+            &gate_nb01 as *const u64 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            8,
+            8,
+            &up_nb01 as *const u64 as *const std::ffi::c_void,
+        );
+
+        let thread_group_count =
+            MTLSize { width: m as u64, height: 1, depth: 1 };
+        let thread_group_size = MTLSize { width: 64, height: 1, depth: 1 };
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     }
 
@@ -11695,6 +12198,66 @@ impl MetalContext {
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     }
 
+    /// Flash Attention MMA Batched encode (C=8 positions per iteration)
+    /// Reduces iteration count by 8x for better performance
+    pub fn flash_attn_mma_batched_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        n_heads: usize,
+        n_kv_heads: usize,
+        seq_len: usize,
+        kv_stride: usize,
+        q_buffer: &Buffer,
+        k_buffer: &Buffer,
+        v_buffer: &Buffer,
+        output_buffer: &Buffer,
+    ) {
+        let head_dim = 128;
+
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+
+        // Pack arguments into struct
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct FlashDecodeMMAArgs {
+            seq_k: u32,
+            n_heads: u32,
+            n_kv_heads: u32,
+            kv_stride: u32,
+            scale: f32,
+            _padding: [u8; 12], // Align to 32 bytes
+        }
+
+        let args = FlashDecodeMMAArgs {
+            seq_k: seq_len as u32,
+            n_heads: n_heads as u32,
+            n_kv_heads: n_kv_heads as u32,
+            kv_stride: kv_stride as u32,
+            scale,
+            _padding: [0; 12],
+        };
+
+        encoder.set_compute_pipeline_state(
+            &self.flash_decode_mma_batched_pipeline,
+        );
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<FlashDecodeMMAArgs>() as u64,
+            &args as *const FlashDecodeMMAArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(q_buffer), 0);
+        encoder.set_buffer(2, Some(k_buffer), 0);
+        encoder.set_buffer(3, Some(v_buffer), 0);
+        encoder.set_buffer(4, Some(output_buffer), 0);
+
+        // Each threadgroup processes 1 head
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: n_heads as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
     /// Flash Prefill for batched queries (encode into shared encoder)
     /// Process N queries in parallel, each query attending to seq_k KV cache entries
     /// q: [batch, n_heads, seq_q, head_dim]
@@ -11921,28 +12484,39 @@ impl MetalContext {
     // ========================================================================
 
     /// Q5_K x F16 Matrix-Matrix multiplication (encode into shared encoder)
-    /// weights: [M, K] quantized as Q5_K (row-major)
-    /// input: [N, K] as F16 (transposed - batch_size rows, hidden_size cols)
+    /// weights: Column-major [K, M] quantized as Q5_K (GGUF format)
+    /// input: [N, K] as F16 (batch_size rows, hidden_size cols)
     /// output: [M, N] as F32
+    ///
+    /// For Column-major W[K, M]:
+    /// - Element W[i, j] is at offset i + j*K (skip K elements per column)
+    /// - This equals W^T stored as Row-major [M, K]
+    ///
+    /// The kernel expects Row-major A[ne0, ne00]:
+    /// - ne0 = M (output rows)
+    /// - ne00 = K (reduction dim)
+    /// - nb01 = stride between rows = K/256 blocks (column stride in col-major)
     pub fn mul_mm_q5_k_encode(
         &self,
         encoder: &ComputeCommandEncoderRef,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
         output_buffer: &Buffer,
-        m: usize, // output rows (hidden_size)
+        m: usize, // output rows (q_out_size)
         n: usize, // output cols (batch_size)
         k: usize, // reduction dimension (hidden_size)
     ) {
         // Q5_K: 256 elements per block
-        let nb = k / 256;
-        let nb01 = (nb * std::mem::size_of::<BlockQ5K>()) as u64;
+        // Column-major [K, M] = Row-major [M, K] (transposed)
+        // Stride between rows in row-major = column stride in col-major = K/256 blocks
+        let nb_per_row = k / 256;
+        let nb01 = (nb_per_row * std::mem::size_of::<BlockQ5K>()) as u64;
 
         #[repr(C)]
         struct MulMmArgs {
-            ne00: i32, // K
+            ne00: i32, // reduction dim = K
             ne02: i32, // batch for weights (1)
-            nb01: u64, // row stride for weights
+            nb01: u64, // row stride for kernel
             nb02: u64, // batch stride for weights
             nb03: u64, // batch3 stride for weights
             ne12: i32, // batch for input (1)
@@ -11950,8 +12524,8 @@ impl MetalContext {
             nb11: u64, // row stride for input
             nb12: u64, // batch stride for input
             nb13: u64, // batch3 stride for input
-            ne0: i32,  // M
-            ne1: i32,  // N
+            ne0: i32,  // output rows = M
+            ne1: i32,  // output cols = batch
             r2: i16,   // broadcast ratio
             r3: i16,   // broadcast ratio
         }
@@ -11960,7 +12534,7 @@ impl MetalContext {
         // - nb10: stride between elements in a row = 2 (size of F16)
         // - nb11: stride between rows = K * 2
         let args = MulMmArgs {
-            ne00: k as i32,
+            ne00: k as i32, // reduction dim = K
             ne02: 1,
             nb01,
             nb02: 0,
@@ -11970,7 +12544,7 @@ impl MetalContext {
             nb11: (k * 2) as u64, // Stride between rows = K * sizeof(F16)
             nb12: 0,
             nb13: 0,
-            ne0: m as i32,
+            ne0: m as i32, // output rows = M
             ne1: n as i32,
             r2: 1,
             r3: 1,
