@@ -118,68 +118,72 @@ kernel void kernel_fused_gate_up_q4_k(
 
     const int nb = k / QK_K;
 
-    // Gate projection
+    // Combined projection: read input once, use for both gate and up
     device const char* gate_row_ptr = gate_weights + row * gate_nb01;
+    device const char* up_row_ptr = up_weights + row * up_nb01;
     device const block_q4_K* gate_blocks = (device const block_q4_K*)gate_row_ptr;
+    device const block_q4_K* up_blocks = (device const block_q4_K*)up_row_ptr;
 
     float gate_sumf = 0.0f;
+    float up_sumf = 0.0f;
+
+    // Process both projections together, caching input reads
     for (int ib = lane_id; ib < nb; ib += group_size) {
-        device const block_q4_K* block = gate_blocks + ib;
-        device const half* dh = (device const half*)&block->d;
-        float d = dh[0];
-        float dmin = dh[1];
+        // Gate block
+        device const block_q4_K* gate_block = gate_blocks + ib;
+        device const half* gate_dh = (device const half*)&gate_block->d;
+        float gate_d = gate_dh[0];
+        float gate_dmin = gate_dh[1];
 
+        // Up block
+        device const block_q4_K* up_block = up_blocks + ib;
+        device const half* up_dh = (device const half*)&up_block->d;
+        float up_d = up_dh[0];
+        float up_dmin = up_dh[1];
+
+        // Process all 8 sub-blocks
         for (int is = 0; is < 8; is++) {
-            uchar2 sc_min = get_scale_min_k4(is, 0, block->scales);
-            float sc = sc_min.x;
-            float m = sc_min.y;
-            float dl = d * sc;
-            float ml = dmin * m;
+            // Gate scales
+            uchar2 gate_sc_min = get_scale_min_k4(is, 0, gate_block->scales);
+            float gate_sc = gate_sc_min.x;
+            float gate_m = gate_sc_min.y;
+            float gate_dl = gate_d * gate_sc;
+            float gate_ml = gate_dmin * gate_m;
 
-            device const uchar* qs = block->qs + is * 16;
+            // Up scales
+            uchar2 up_sc_min = get_scale_min_k4(is, 0, up_block->scales);
+            float up_sc = up_sc_min.x;
+            float up_m = up_sc_min.y;
+            float up_dl = up_d * up_sc;
+            float up_ml = up_dmin * up_m;
+
+            device const uchar* gate_qs = gate_block->qs + is * 16;
+            device const uchar* up_qs = up_block->qs + is * 16;
+
+            // Process 16 bytes = 32 elements per sub-block
+            // Cache input values and use for both projections
             for (int kk = 0; kk < 16; kk++) {
-                uchar byte = qs[kk];
-                float v0 = (byte & 0x0F);
-                float v1 = ((byte >> 4) & 0x0F);
+                // Read input ONCE
                 float y0 = input[ib * QK_K + is * 32 + kk];
                 float y1 = input[ib * QK_K + is * 32 + 16 + kk];
-                gate_sumf += (dl * v0 - ml) * y0;
-                gate_sumf += (dl * v1 - ml) * y1;
+
+                // Gate projection
+                uchar gate_byte = gate_qs[kk];
+                float gate_v0 = (gate_byte & 0x0F);
+                float gate_v1 = ((gate_byte >> 4) & 0x0F);
+                gate_sumf += (gate_dl * gate_v0 - gate_ml) * y0;
+                gate_sumf += (gate_dl * gate_v1 - gate_ml) * y1;
+
+                // Up projection
+                uchar up_byte = up_qs[kk];
+                float up_v0 = (up_byte & 0x0F);
+                float up_v1 = ((up_byte >> 4) & 0x0F);
+                up_sumf += (up_dl * up_v0 - up_ml) * y0;
+                up_sumf += (up_dl * up_v1 - up_ml) * y1;
             }
         }
     }
     gate_sumf = simd_sum(gate_sumf);
-
-    // Up projection
-    device const char* up_row_ptr = up_weights + row * up_nb01;
-    device const block_q4_K* up_blocks = (device const block_q4_K*)up_row_ptr;
-
-    float up_sumf = 0.0f;
-    for (int ib = lane_id; ib < nb; ib += group_size) {
-        device const block_q4_K* block = up_blocks + ib;
-        device const half* dh = (device const half*)&block->d;
-        float d = dh[0];
-        float dmin = dh[1];
-
-        for (int is = 0; is < 8; is++) {
-            uchar2 sc_min = get_scale_min_k4(is, 0, block->scales);
-            float sc = sc_min.x;
-            float m = sc_min.y;
-            float dl = d * sc;
-            float ml = dmin * m;
-
-            device const uchar* qs = block->qs + is * 16;
-            for (int kk = 0; kk < 16; kk++) {
-                uchar byte = qs[kk];
-                float v0 = (byte & 0x0F);
-                float v1 = ((byte >> 4) & 0x0F);
-                float y0 = input[ib * QK_K + is * 32 + kk];
-                float y1 = input[ib * QK_K + is * 32 + 16 + kk];
-                up_sumf += (dl * v0 - ml) * y0;
-                up_sumf += (dl * v1 - ml) * y1;
-            }
-        }
-    }
     up_sumf = simd_sum(up_sumf);
 
     // Store results
@@ -236,80 +240,71 @@ kernel void kernel_fused_gate_up_q5_k(
 
     const int nb = k / QK_K;
 
-    // Gate projection
+    // Combined projection: read input once, use for both gate and up
     device const char* gate_row_ptr = gate_weights + row * gate_nb01;
+    device const char* up_row_ptr = up_weights + row * up_nb01;
     device const block_q5_K* gate_blocks = (device const block_q5_K*)gate_row_ptr;
+    device const block_q5_K* up_blocks = (device const block_q5_K*)up_row_ptr;
 
     float gate_sumf = 0.0f;
+    float up_sumf = 0.0f;
+
+    // Process both projections together, caching input reads
     for (int ib = lane_id; ib < nb; ib += group_size) {
-        device const block_q5_K* block = gate_blocks + ib;
-        device const half* dh = (device const half*)&block->d;
-        float d = dh[0];
-        float dmin = dh[1];
+        device const block_q5_K* gate_block = gate_blocks + ib;
+        device const half* gate_dh = (device const half*)&gate_block->d;
+        float gate_d = gate_dh[0];
+        float gate_dmin = gate_dh[1];
+
+        device const block_q5_K* up_block = up_blocks + ib;
+        device const half* up_dh = (device const half*)&up_block->d;
+        float up_d = up_dh[0];
+        float up_dmin = up_dh[1];
 
         for (int is = 0; is < 8; is++) {
-            uchar2 sc_min = get_scale_min_k4(is, 0, block->scales);
-            float sc = sc_min.x;
-            float m = sc_min.y;
-            float dl = d * sc;
-            float ml = dmin * m;
+            // Gate scales
+            uchar2 gate_sc_min = get_scale_min_k4(is, 0, gate_block->scales);
+            float gate_sc = gate_sc_min.x;
+            float gate_m = gate_sc_min.y;
+            float gate_dl = gate_d * gate_sc;
+            float gate_ml = gate_dmin * gate_m;
 
-            device const uchar* qs = block->qs + is * 16;
-            device const uchar* qh = block->qh + is * 4;
+            // Up scales
+            uchar2 up_sc_min = get_scale_min_k4(is, 0, up_block->scales);
+            float up_sc = up_sc_min.x;
+            float up_m = up_sc_min.y;
+            float up_dl = up_d * up_sc;
+            float up_ml = up_dmin * up_m;
+
+            device const uchar* gate_qs = gate_block->qs + is * 16;
+            device const uchar* gate_qh = gate_block->qh + is * 4;
+            device const uchar* up_qs = up_block->qs + is * 16;
+            device const uchar* up_qh = up_block->qh + is * 4;
 
             for (int kk = 0; kk < 16; kk++) {
-                uchar byte = qs[kk];
-                uchar high_bits = qh[kk / 4];
-
-                float v0 = (byte & 0x0F) + ((high_bits & 0x01) ? 16.0f : 0.0f);
-                float v1 = ((byte >> 4) & 0x0F) + ((high_bits & 0x02) ? 16.0f : 0.0f);
+                // Read input ONCE
                 float y0 = input[ib * QK_K + is * 32 + kk];
                 float y1 = input[ib * QK_K + is * 32 + 16 + kk];
-                gate_sumf += (dl * v0 - ml) * y0;
-                gate_sumf += (dl * v1 - ml) * y1;
 
-                high_bits >>= 2;
+                // Gate projection
+                uchar gate_byte = gate_qs[kk];
+                uchar gate_high_bits = gate_qh[kk / 4];
+                float gate_v0 = (gate_byte & 0x0F) + ((gate_high_bits & 0x01) ? 16.0f : 0.0f);
+                float gate_v1 = ((gate_byte >> 4) & 0x0F) + ((gate_high_bits & 0x02) ? 16.0f : 0.0f);
+                gate_sumf += (gate_dl * gate_v0 - gate_ml) * y0;
+                gate_sumf += (gate_dl * gate_v1 - gate_ml) * y1;
+
+                // Up projection
+                uchar up_byte = up_qs[kk];
+                uchar up_high_bits = up_qh[kk / 4];
+                float up_v0 = (up_byte & 0x0F) + ((up_high_bits & 0x01) ? 16.0f : 0.0f);
+                float up_v1 = ((up_byte >> 4) & 0x0F) + ((up_high_bits & 0x02) ? 16.0f : 0.0f);
+                up_sumf += (up_dl * up_v0 - up_ml) * y0;
+                up_sumf += (up_dl * up_v1 - up_ml) * y1;
             }
         }
     }
     gate_sumf = simd_sum(gate_sumf);
-
-    // Up projection
-    device const char* up_row_ptr = up_weights + row * up_nb01;
-    device const block_q5_K* up_blocks = (device const block_q5_K*)up_row_ptr;
-
-    float up_sumf = 0.0f;
-    for (int ib = lane_id; ib < nb; ib += group_size) {
-        device const block_q5_K* block = up_blocks + ib;
-        device const half* dh = (device const half*)&block->d;
-        float d = dh[0];
-        float dmin = dh[1];
-
-        for (int is = 0; is < 8; is++) {
-            uchar2 sc_min = get_scale_min_k4(is, 0, block->scales);
-            float sc = sc_min.x;
-            float m = sc_min.y;
-            float dl = d * sc;
-            float ml = dmin * m;
-
-            device const uchar* qs = block->qs + is * 16;
-            device const uchar* qh = block->qh + is * 4;
-
-            for (int kk = 0; kk < 16; kk++) {
-                uchar byte = qs[kk];
-                uchar high_bits = qh[kk / 4];
-
-                float v0 = (byte & 0x0F) + ((high_bits & 0x01) ? 16.0f : 0.0f);
-                float v1 = ((byte >> 4) & 0x0F) + ((high_bits & 0x02) ? 16.0f : 0.0f);
-                float y0 = input[ib * QK_K + is * 32 + kk];
-                float y1 = input[ib * QK_K + is * 32 + 16 + kk];
-                up_sumf += (dl * v0 - ml) * y0;
-                up_sumf += (dl * v1 - ml) * y1;
-
-                high_bits >>= 2;
-            }
-        }
-    }
     up_sumf = simd_sum(up_sumf);
 
     // Store results
@@ -366,64 +361,58 @@ kernel void kernel_fused_gate_up_q6_k(
 
     const int nb = k / QK_K;
 
-    // Gate projection
+    // Combined projection: read input once, use for both gate and up
     device const char* gate_row_ptr = gate_weights + row * gate_nb01;
+    device const char* up_row_ptr = up_weights + row * up_nb01;
     device const block_q6_K* gate_blocks = (device const block_q6_K*)gate_row_ptr;
+    device const block_q6_K* up_blocks = (device const block_q6_K*)up_row_ptr;
 
     float gate_sumf = 0.0f;
+    float up_sumf = 0.0f;
+
+    // Process both projections together, caching input reads
     for (int ib = lane_id; ib < nb; ib += group_size) {
-        device const block_q6_K* block = gate_blocks + ib;
-        device const half* dh = (device const half*)&block->d;
-        float d = dh[0];
+        device const block_q6_K* gate_block = gate_blocks + ib;
+        device const half* gate_dh = (device const half*)&gate_block->d;
+        float gate_d = gate_dh[0];
+
+        device const block_q6_K* up_block = up_blocks + ib;
+        device const half* up_dh = (device const half*)&up_block->d;
+        float up_d = up_dh[0];
 
         for (int is = 0; is < 16; is++) {
-            float sc = block->scales[is];
-            device const uchar* ql = block->ql + is * 8;
-            device const uchar* qh = block->qh + is * 4;
+            float gate_sc = gate_block->scales[is];
+            device const uchar* gate_ql = gate_block->ql + is * 8;
+            device const uchar* gate_qh = gate_block->qh + is * 4;
+
+            float up_sc = up_block->scales[is];
+            device const uchar* up_ql = up_block->ql + is * 8;
+            device const uchar* up_qh = up_block->qh + is * 4;
 
             for (int kk = 0; kk < 8; kk++) {
-                uchar l = ql[kk];
-                uchar h = qh[kk];
-
-                float v0 = (l & 0x0F) + ((h & 0x03) << 4);
-                float v1 = ((l >> 4) & 0x0F) + ((h >> 2) & 0x03) * 16.0f;
+                // Read input ONCE
                 float y0 = input[ib * QK_K + is * 16 + kk];
                 float y1 = input[ib * QK_K + is * 16 + 8 + kk];
-                gate_sumf += d * sc * v0 * y0;
-                gate_sumf += d * sc * v1 * y1;
+
+                // Gate projection
+                uchar gate_l = gate_ql[kk];
+                uchar gate_h = gate_qh[kk];
+                float gate_v0 = (gate_l & 0x0F) + ((gate_h & 0x03) << 4);
+                float gate_v1 = ((gate_l >> 4) & 0x0F) + ((gate_h >> 2) & 0x03) * 16.0f;
+                gate_sumf += gate_d * gate_sc * gate_v0 * y0;
+                gate_sumf += gate_d * gate_sc * gate_v1 * y1;
+
+                // Up projection
+                uchar up_l = up_ql[kk];
+                uchar up_h = up_qh[kk];
+                float up_v0 = (up_l & 0x0F) + ((up_h & 0x03) << 4);
+                float up_v1 = ((up_l >> 4) & 0x0F) + ((up_h >> 2) & 0x03) * 16.0f;
+                up_sumf += up_d * up_sc * up_v0 * y0;
+                up_sumf += up_d * up_sc * up_v1 * y1;
             }
         }
     }
     gate_sumf = simd_sum(gate_sumf);
-
-    // Up projection
-    device const char* up_row_ptr = up_weights + row * up_nb01;
-    device const block_q6_K* up_blocks = (device const block_q6_K*)up_row_ptr;
-
-    float up_sumf = 0.0f;
-    for (int ib = lane_id; ib < nb; ib += group_size) {
-        device const block_q6_K* block = up_blocks + ib;
-        device const half* dh = (device const half*)&block->d;
-        float d = dh[0];
-
-        for (int is = 0; is < 16; is++) {
-            float sc = block->scales[is];
-            device const uchar* ql = block->ql + is * 8;
-            device const uchar* qh = block->qh + is * 4;
-
-            for (int kk = 0; kk < 8; kk++) {
-                uchar l = ql[kk];
-                uchar h = qh[kk];
-
-                float v0 = (l & 0x0F) + ((h & 0x03) << 4);
-                float v1 = ((l >> 4) & 0x0F) + ((h >> 2) & 0x03) * 16.0f;
-                float y0 = input[ib * QK_K + is * 16 + kk];
-                float y1 = input[ib * QK_K + is * 16 + 8 + kk];
-                up_sumf += d * sc * v0 * y0;
-                up_sumf += d * sc * v1 * y1;
-            }
-        }
-    }
     up_sumf = simd_sum(up_sumf);
 
     // Store results

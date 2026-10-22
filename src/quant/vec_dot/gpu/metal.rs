@@ -9612,6 +9612,79 @@ impl MetalContext {
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     }
 
+    /// Unified fused gate-up dispatch that routes to dtype-specific kernel
+    pub fn fused_gate_up_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        gate_weights_buffer: &Buffer,
+        up_weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+        gate_output_buffer: &Buffer,
+        up_output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+        dtype: crate::model::tensor::DataType,
+    ) {
+        let nb = k / 256; // QK_K = 256
+
+        match dtype {
+            crate::model::tensor::DataType::Q4_K => {
+                let gate_nb01 = (nb * std::mem::size_of::<BlockQ4K>()) as u64;
+                let up_nb01 = (nb * std::mem::size_of::<BlockQ4K>()) as u64;
+                self.fused_gate_up_q4_k_encode(
+                    encoder,
+                    input_buffer,
+                    gate_weights_buffer,
+                    up_weights_buffer,
+                    gate_output_buffer,
+                    up_output_buffer,
+                    m,
+                    k,
+                    gate_nb01,
+                    up_nb01,
+                );
+            }
+            crate::model::tensor::DataType::Q5_K => {
+                let gate_nb01 = (nb * std::mem::size_of::<BlockQ5K>()) as u64;
+                let up_nb01 = (nb * std::mem::size_of::<BlockQ5K>()) as u64;
+                self.fused_gate_up_q5_k_encode(
+                    encoder,
+                    input_buffer,
+                    gate_weights_buffer,
+                    up_weights_buffer,
+                    gate_output_buffer,
+                    up_output_buffer,
+                    m,
+                    k,
+                    gate_nb01,
+                    up_nb01,
+                );
+            }
+            crate::model::tensor::DataType::Q6_K => {
+                let gate_nb01 = (nb * std::mem::size_of::<BlockQ6K>()) as u64;
+                let up_nb01 = (nb * std::mem::size_of::<BlockQ6K>()) as u64;
+                self.fused_gate_up_q6_k_encode(
+                    encoder,
+                    input_buffer,
+                    gate_weights_buffer,
+                    up_weights_buffer,
+                    gate_output_buffer,
+                    up_output_buffer,
+                    m,
+                    k,
+                    gate_nb01,
+                    up_nb01,
+                );
+            }
+            _ => {
+                eprintln!(
+                    "[WARN] FusedGateUp not implemented for dtype {:?}, using separate GEMV",
+                    dtype
+                );
+            }
+        }
+    }
+
     // ========================================================================
     // FusedAddNorm (Add + RMSNorm)
     // ========================================================================

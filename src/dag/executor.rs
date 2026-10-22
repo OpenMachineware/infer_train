@@ -924,12 +924,27 @@ impl DagExecutor {
                     );
                 }
 
-                // FusedGateUp kernel has performance issues (38% slower than separate GEMV)
-                // Temporarily disabled until kernel optimization
-                // TODO: Optimize FusedGateUp to reuse input reads and adjust thread group size
+                // Use fused kernel for Q4_K, Q5_K, Q6_K (optimized to read input once)
+                // Fallback to separate GEMV for other formats
                 match gate_dtype {
+                    crate::model::tensor::DataType::Q4_K
+                    | crate::model::tensor::DataType::Q5_K
+                    | crate::model::tensor::DataType::Q6_K => {
+                        // Fused kernel: read input once, compute both gate and up
+                        ctx.gpu_ctx.fused_gate_up_encode(
+                            encoder,
+                            &gate_weight_buf,
+                            &up_weight_buf,
+                            &input_buf,
+                            &gate_buf,
+                            &up_buf,
+                            *intermediate_size,
+                            hidden_size,
+                            gate_dtype,
+                        );
+                    }
                     _ => {
-                        // Fallback: two separate GEMV calls (faster than fused)
+                        // Fallback: two separate GEMV calls for unsupported formats
                         ctx.gpu_ctx.mv_encode(
                             encoder,
                             &gate_weight_buf,
