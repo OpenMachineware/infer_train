@@ -26,8 +26,8 @@ impl DagOptimizer {
         fused_count += Self::fuse_silu_mul(dag);
         // TEMPORARILY DISABLED: FusedNormLinear causes 10% performance regression
         // fused_count += Self::fuse_norm_gemv(dag);
-        // GEMV+Add fusion disabled - needs true fused kernel, not sequential execution
-        // fused_count += Self::fuse_gemv_add(dag);
+        // Enable GEMV+Add fusion for residual connections (reduces 56 dispatches)
+        fused_count += Self::fuse_gemv_add(dag);
         // Enable FusedAddNorm with safety check (only fuse when Add output has single consumer)
         fused_count += Self::fuse_add_norm(dag);
 

@@ -1432,37 +1432,54 @@ impl DagExecutor {
                 layer_idx: _,
             } => {
                 let input_buf = ctx.tensor_registry.get(*input)?;
+                let weight_buf = ctx.tensor_registry.get(*weight)?;
                 let weight_tensor = ctx.weight_bindings.get(weight)?;
                 let residual_buf = ctx.tensor_registry.get(*residual)?;
 
                 // Output buffer - GEMV result + residual add
                 let output_buf = ctx.forward_pool.get(*out_size * 4);
 
-                // Step 1: Execute GEMV to output buffer
-                ctx.model.gemv_encode(
-                    encoder,
-                    &input_buf,
-                    *in_size,
-                    weight_tensor,
-                    *out_size,
-                    ctx.gpu_ctx,
-                    &output_buf,
-                )?;
+                // Get weight dtype
+                let dtype = weight_tensor.dtype;
 
-                // Step 2: Add residual to output buffer in-place
-                ctx.gpu_ctx.add_encode(
+                // Use fused kernel if available (K-quant formats)
+                let fused_success = ctx.gpu_ctx.fused_gemv_add_encode(
                     encoder,
+                    &weight_buf,
+                    &input_buf,
                     &residual_buf,
                     &output_buf,
-                    &output_buf,
                     *out_size,
+                    *in_size,
+                    dtype,
                 );
+
+                if !fused_success {
+                    // Fallback to separate operations for unsupported formats
+                    ctx.model.gemv_encode(
+                        encoder,
+                        &input_buf,
+                        *in_size,
+                        weight_tensor,
+                        *out_size,
+                        ctx.gpu_ctx,
+                        &output_buf,
+                    )?;
+
+                    ctx.gpu_ctx.add_encode(
+                        encoder,
+                        &residual_buf,
+                        &output_buf,
+                        &output_buf,
+                        *out_size,
+                    );
+                }
 
                 ctx.tensor_registry.insert(*output, output_buf);
                 #[cfg(debug_assertions)]
                 eprintln!(
-                    "[FusedGemvAdd] input={}, weight={}, residual={}, output={}, out_size={}",
-                    input, weight, residual, output, out_size
+                    "[FusedGemvAdd] input={}, weight={}, residual={}, output={}, out_size={}, fused={}",
+                    input, weight, residual, output, out_size, fused_success
                 );
                 Some(())
             }

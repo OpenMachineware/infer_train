@@ -311,6 +311,15 @@ impl Clone for MetalContext {
             mv_q2_k_pipeline: self.mv_q2_k_pipeline.clone(),
             mv_q6_k_pipeline: self.mv_q6_k_pipeline.clone(),
             mv_q3_k_pipeline: self.mv_q3_k_pipeline.clone(),
+            fused_gemv_add_q4_k_pipeline: self
+                .fused_gemv_add_q4_k_pipeline
+                .clone(),
+            fused_gemv_add_q5_k_pipeline: self
+                .fused_gemv_add_q5_k_pipeline
+                .clone(),
+            fused_gemv_add_q6_k_pipeline: self
+                .fused_gemv_add_q6_k_pipeline
+                .clone(),
             mv_iq4_nl_pipeline: self.mv_iq4_nl_pipeline.clone(),
             mv_tq2_0_pipeline: self.mv_tq2_0_pipeline.clone(),
             mv_tq1_0_pipeline: self.mv_tq1_0_pipeline.clone(),
@@ -1082,6 +1091,46 @@ impl MetalContext {
         let mv_q3_k_pipeline = device
             .new_compute_pipeline_state_with_function(&mv_q3_k_kernel)
             .map_err(|e| format!("Failed to create Q3_K pipeline: {}", e))?;
+
+        // Create fused GEMV+Add pipelines for residual connections
+        let fused_gemv_add_q4_k_kernel = kquant_mv_library
+            .get_function("kernel_fused_gemv_add_q4_K", None)
+            .map_err(|e| {
+                format!("Failed to get fused GEMV+Add Q4_K kernel: {}", e)
+            })?;
+        let fused_gemv_add_q4_k_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_gemv_add_q4_k_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create fused GEMV+Add Q4_K pipeline: {}", e)
+            })?;
+
+        let fused_gemv_add_q5_k_kernel = kquant_mv_library
+            .get_function("kernel_fused_gemv_add_q5_K", None)
+            .map_err(|e| {
+                format!("Failed to get fused GEMV+Add Q5_K kernel: {}", e)
+            })?;
+        let fused_gemv_add_q5_k_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_gemv_add_q5_k_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create fused GEMV+Add Q5_K pipeline: {}", e)
+            })?;
+
+        let fused_gemv_add_q6_k_kernel = kquant_mv_library
+            .get_function("kernel_fused_gemv_add_q6_K", None)
+            .map_err(|e| {
+                format!("Failed to get fused GEMV+Add Q6_K kernel: {}", e)
+            })?;
+        let fused_gemv_add_q6_k_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &fused_gemv_add_q6_k_kernel,
+            )
+            .map_err(|e| {
+                format!("Failed to create fused GEMV+Add Q6_K pipeline: {}", e)
+            })?;
 
         // Create cached pipeline for IQ4_NL MV
         let mv_iq4_nl_kernel = gemm_library
@@ -2473,6 +2522,10 @@ impl MetalContext {
             mv_q2_k_pipeline,
             mv_q6_k_pipeline,
             mv_q3_k_pipeline,
+            // Fused GEMV+Add pipelines for residual connections
+            fused_gemv_add_q4_k_pipeline,
+            fused_gemv_add_q5_k_pipeline,
+            fused_gemv_add_q6_k_pipeline,
             mv_iq4_nl_pipeline,
             mv_tq2_0_pipeline,
             mv_tq1_0_pipeline,
@@ -12677,5 +12730,96 @@ impl MetalContext {
         encoder.set_threadgroup_memory_length(0, 8192);
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Fused GEMV + Add for residual connections
+    /// Combines matrix-vector multiply with residual addition in single kernel
+    /// Pattern: output = (W @ input) + residual
+    pub fn fused_gemv_add_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+        residual_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize,
+        k: usize,
+        dtype: crate::model::tensor::DataType,
+    ) -> bool {
+        // Only support K-quant formats for now
+        if !matches!(
+            dtype,
+            crate::model::tensor::DataType::Q4_K
+                | crate::model::tensor::DataType::Q5_K
+                | crate::model::tensor::DataType::Q6_K
+        ) {
+            return false;
+        }
+
+        let nb = k / 256; // QK_K = 256
+        let nb01: u64 = match dtype {
+            crate::model::tensor::DataType::Q4_K => {
+                (nb * std::mem::size_of::<BlockQ4K>()) as u64
+            }
+            crate::model::tensor::DataType::Q5_K => {
+                (nb * std::mem::size_of::<BlockQ5K>()) as u64
+            }
+            crate::model::tensor::DataType::Q6_K => {
+                (nb * std::mem::size_of::<BlockQ6K>()) as u64
+            }
+            _ => return false,
+        };
+
+        // Args structure for fused kernel
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct FusedGemvAddArgs {
+            ne00: u32, // K dimension (input size)
+            ne01: u32, // M dimension (output rows)
+            nb01: u64, // Byte stride between rows
+        }
+
+        let args = FusedGemvAddArgs { ne00: k as u32, ne01: m as u32, nb01 };
+
+        let pipeline = match dtype {
+            crate::model::tensor::DataType::Q4_K => {
+                &self.fused_gemv_add_q4_k_pipeline
+            }
+            crate::model::tensor::DataType::Q5_K => {
+                &self.fused_gemv_add_q5_k_pipeline
+            }
+            crate::model::tensor::DataType::Q6_K => {
+                &self.fused_gemv_add_q6_k_pipeline
+            }
+            _ => return false,
+        };
+
+        encoder.set_compute_pipeline_state(pipeline);
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(residual_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+        encoder.set_bytes(
+            4,
+            std::mem::size_of::<FusedGemvAddArgs>() as u64,
+            &args as *const FusedGemvAddArgs as *const std::ffi::c_void,
+        );
+
+        // Threadgroup configuration (same as regular GEMV)
+        let (nsg, nr0) = match dtype {
+            crate::model::tensor::DataType::Q6_K => (1, 2),
+            _ => (2, 1), // Q4_K, Q5_K
+        };
+
+        let threads_per_tg = nsg * 32;
+        let tgs = (m + nsg * nr0 - 1) / (nsg * nr0);
+
+        let thread_group_size =
+            MTLSize { width: threads_per_tg as u64, height: 1, depth: 1 };
+        let thread_group_count =
+            MTLSize { width: tgs as u64, height: 1, depth: 1 };
+
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+        true
     }
 }
