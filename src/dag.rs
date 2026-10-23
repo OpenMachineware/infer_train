@@ -11,6 +11,7 @@
 pub mod builder;
 pub mod executor;
 pub mod graph;
+pub mod memory_ranges;
 pub mod optimizer;
 
 pub use builder::DagBuilder;

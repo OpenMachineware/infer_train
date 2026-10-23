@@ -36,8 +36,7 @@ fn main() {
     // First call submits CB, returns None
     let _ = gpu_ctx.forward_gpu_batched(&prompt_tokens);
     // Second call waits for CB, returns logits
-    let logits = gpu_ctx.forward_gpu_batched(&[1])
-        .expect("Prefill failed");
+    let logits = gpu_ctx.forward_gpu_batched(&[1]).expect("Prefill failed");
 
     let prefill_time = prefill_start.elapsed();
 
@@ -83,15 +82,19 @@ fn main() {
         // Get previous result and submit next token
         let current_logits = if i < num_decode - 1 {
             // Sample next token first (CPU work overlaps GPU execution)
-            let sampled = pending_logits.as_ref().map(|l| {
-                l.iter()
-                    .enumerate()
-                    .max_by(|(_, a), (_, b)| {
-                        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .map(|(i, _)| i as u32)
-                    .unwrap_or(0)
-            }).unwrap_or(next_token);
+            let sampled = pending_logits
+                .as_ref()
+                .map(|l| {
+                    l.iter()
+                        .enumerate()
+                        .max_by(|(_, a), (_, b)| {
+                            a.partial_cmp(b)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|(i, _)| i as u32)
+                        .unwrap_or(0)
+                })
+                .unwrap_or(next_token);
 
             // Submit next token (async) and get previous result
             let result = gpu_ctx.forward_gpu_batched(&[sampled]);

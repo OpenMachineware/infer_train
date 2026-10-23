@@ -1,127 +1,235 @@
-# GPU Optimization Roadmap
+# GPU Decode Optimization Roadmap
 
-## Status Update: 2026-10-23
+**Current Status**: 112-120 t/s
+**Target**: 205 t/s (llama.cpp)
+**Gap**: 1.7x
 
-### Priority 5: Async Command Buffer Implementation - IMPLEMENTED ✅
+---
 
-**Implementation complete, pending model validation**
+## Completed Optimizations ✅
 
-#### Deep Analysis of llama.cpp's Command Buffer Management
+### 1. MTLDispatchTypeConcurrent - IMPLEMENTED
 
-**Key findings** (see `tmp_llama_command_buffer_analysis.md` for details):
+**Commit**: `60bb780`
 
-1. **llama.cpp's async pattern**:
-   - `graph_compute()` commits work and returns immediately
-   - No `wait_until_completed()` by default (line 598 commented out)
-   - User calls `synchronize()` when CPU access needed
-   - Metal automatically handles dependencies between command buffers
-
-2. **Resource retention mechanism**:
-   - `buf_refs` array retains buffers during async operations
-   - Prevents Metal internal thread autorelease pool issues
-   - Clear before next operation
-
-3. **enqueue() vs commit()**:
-   - `enqueue()` reserves slot in Metal's execution queue
-   - CPU continues encoding
-   - `commit()` marks buffer ready
-   - GPU executes when previous work completes
-
-4. **Why this works without crashing**:
-   - Metal guarantees FIFO execution in a single queue
-   - No explicit wait needed between submits
-   - Only synchronize when CPU needs GPU results
-
-#### Our Implementation (Phase 1 - Minimal Async)
-
-**Changes to `src/quant/vec_dot/gpu/metal.rs`**:
-1. Added `last_command_buffer: RefCell<Option<CommandBuffer>>` field
-2. Added `synchronize()` method - waits for last command buffer
-3. Added `set_last_command_buffer()` method - stores reference after commit
-
-**Changes to `src/dag/executor.rs`**:
-1. Call `synchronize()` at forward start - wait for previous completion
-2. Commit without `wait_until_completed()`, store reference
-3. Call `synchronize()` before KV cache advance - ensure GPU writes complete
-
-**Implementation logic**:
+**Implementation**:
 ```rust
-// In forward_dag():
-// 1. Synchronize at start (wait for previous forward)
-gpu_ctx.synchronize();
-
-// 2. Encode all operations...
-
-// 3. Commit without wait
-command_buffer.commit();
-gpu_ctx.set_last_command_buffer(command_buffer);
-
-// 4. Synchronize before KV cache advance
-gpu_ctx.synchronize();
-kv_cache.advance();
+let encoder = command_buffer
+    .compute_command_encoder_with_dispatch_type(MTLDispatchType::Concurrent);
 ```
 
-**Expected improvement**:
-- Remove wait overhead: ~3.67 ms saved per forward
-- CPU/GPU overlap: potential 50% kernel time hidden
-- Target: 150+ t/s (1.5x improvement)
+**Result**:
+- Performance: 79 t/s → 112-120 t/s
+- Improvement: +42-52%
+- Allows independent kernels in same CB to execute in parallel
+- Maximizes memory bandwidth utilization
 
-#### Testing Status
+**Reference**: Based on llama.cpp's `ggml_metal_encoder_init()` with `concurrent=true`
 
-**Compilation**: ✅ SUCCESS
-- Library compiles without errors
-- All type mismatches resolved
+---
 
-**Validation**: ⚠️ BLOCKED BY MODEL ISSUES
-- Both available models (DeepSeek-R1-Distill-Qwen-1.5B, Hy-MT2-7B) produce NaN logits
-- NaN issue exists in original code (not caused by async changes)
-- Need to find a working model to validate async implementation
+## Remaining Optimizations
 
-**Safety verification**:
-- Async pattern matches llama.cpp exactly
-- `synchronize()` calls placed at correct positions:
-  - Forward start (prevent buffer reuse issues)
-  - KV cache advance (ensure GPU writes complete)
-- Metal's implicit guarantees ensure sequential execution
+### Priority 1: Memory Range Tracking + GPU Barriers
 
-#### Next Steps
+**Goal**: Allow independent operations to execute concurrently within a single encoder
 
-1. **Find working model**: Test with a model that doesn't produce NaN
-2. **Validate correctness**: Verify logits are correct with async implementation
-3. **Benchmark performance**: Compare t/s before/after async
-4. **Phase 2 (if needed)**: Add resource retention mechanism (buf_refs)
-5. **Phase 3 (if needed)**: Multi-buffer parallelism
+**llama.cpp Implementation** (`ggml-metal-common.h`, `ggml-metal-ops.cpp`):
 
-#### Code Preservation
+1. **Memory range tracking**:
+```c
+struct ggml_mem_ranges {
+    int n_ranges;
+    struct {
+        void * ptr;
+        size_t size;
+        bool is_dst;  // true = write, false = read
+    } ranges[MAX_RANGES];
+};
 
-Async implementation is complete and correct. The code is ready for testing once we have a working model.
+// Check if operation can run concurrently:
+// - new src cannot overlap with existing dst
+// - new dst cannot overlap with any existing range
+bool ggml_mem_ranges_check(ggml_mem_ranges_t mrs, ggml_tensor * tensor);
+```
 
-To restore async changes:
-```bash
-# The async implementation is in the commit history
-# Will be merged after finding working test model
+2. **Automatic barrier insertion**:
+```cpp
+bool is_concurrent = ggml_mem_ranges_check(ctx, node);
+if (!is_concurrent) {
+    ggml_metal_encoder_memory_barrier(ctx->enc);
+    ggml_mem_ranges_reset(ctx->mem_ranges);
+}
+```
+
+3. **GPU barrier**:
+```objc
+void ggml_metal_encoder_memory_barrier(ggml_metal_encoder_t encoder) {
+    [encoder->obj memoryBarrierWithScope:MTLBarrierScopeBuffers];
+}
+```
+
+**Our Implementation Plan**:
+
+1. Add `MemoryRanges` struct to track buffer access
+2. In `execute_node()`, record src/dst ranges
+3. Before each dispatch, check for conflicts
+4. Insert `encoder.memory_barrier_with_scope(MTLBarrierScopeBuffers)` when needed
+5. Reset tracking after barrier
+
+**Files to modify**:
+- `src/dag/executor.rs`: Add memory range tracking
+- `src/dag/graph.rs`: No changes needed
+
+**Expected improvement**: 15-25% (based on llama.cpp's concurrency gain)
+
+---
+
+### Priority 2: Multi-threaded Graph Encoding
+
+**Goal**: Parallelize encoding to saturate memory bandwidth during command buffer creation
+
+**llama.cpp Implementation** (`ggml-metal-context.m`, lines 496-595):
+
+1. **Command buffer allocation**:
+```objc
+// Main thread: cmd_bufs[n_cb]
+// Worker threads: cmd_bufs[0..n_cb-1]
+// Total: n_cb + 1 command buffers
+
+#define GGML_METAL_MAX_COMMAND_BUFFERS 8
+```
+
+2. **Node distribution**:
+```objc
+n_main = MAX(64, 0.1 * gf->n_nodes)  // Main thread handles first 10%
+n_nodes_0 = n_main
+n_nodes_1 = gf->n_nodes - n_nodes_0
+n_nodes_per_cb = (n_nodes_1 + n_cb - 1) / n_cb
+```
+
+3. **Parallel encoding**:
+```objc
+// Main thread encodes immediately
+[cmd_buf enqueue];
+ctx->encode_async(n_cb);
+
+// Worker threads encode in parallel
+dispatch_apply(n_cb, ctx->d_queue, ctx->encode_async);
+```
+
+**Our Implementation Plan**:
+
+1. Split DAG nodes by layer (e.g., layers 0-13 in thread 0, layers 14-27 in thread 1)
+2. Create separate command buffer per thread
+3. Use `std::thread::scope` for parallel encoding
+4. Enqueue all command buffers in order
+5. Metal executes them sequentially
+
+**Files to modify**:
+- `src/dag/executor.rs`: Add multi-threaded encoding path
+- `src/dag/graph.rs`: Add layer grouping utilities
+
+**Expected improvement**: 10-15% (encoding is 19% of total time)
+
+---
+
+### Priority 3: Event-based Synchronization (Optional)
+
+**Goal**: Non-blocking cross-command-buffer synchronization
+
+**llama.cpp Implementation** (`ggml-metal-device.m`, lines 1447-1496):
+
+```objc
+struct ggml_metal_event {
+    id<MTLSharedEvent> obj;
+    atomic_int value;
+};
+
+void ggml_metal_event_encode_signal(ggml_metal_event_t ev, id<MTLCommandBuffer> cmd_buf) {
+    [cmd_buf encodeSignalEvent:event value:atomic_fetch_add(&ev->value, 1) + 1];
+}
+
+void ggml_metal_event_encode_wait(ggml_metal_event_t ev, id<MTLCommandBuffer> cmd_buf) {
+    [cmd_buf encodeWaitForEvent:event value:atomic_load(&ev->value)];
+}
+```
+
+**When needed**:
+- Async data transfers between contexts
+- CPU-GPU pipeline for prefill/decode overlap
+- Not critical for single-thread decode
+
+**Files to modify**:
+- `src/quant/vec_dot/gpu/metal.rs`: Add Event wrapper
+- `src/dag/executor.rs`: Use events for cross-CB sync
+
+**Expected improvement**: 5-10% for async pipeline scenarios
+
+---
+
+## Implementation Order
+
+```
+Step 1: Memory Range Tracking + Barriers
+  ├─ Add MemoryRanges struct
+  ├─ Track src/dst in execute_node()
+  ├─ Check conflicts before dispatch
+  ├─ Insert GPU barriers when needed
+  └─ Test: expect 15-25% improvement
+
+Step 2: Multi-threaded Encoding
+  ├─ Split DAG by layer groups
+  ├─ Create n_cb + 1 command buffers
+  ├─ Use std::thread::scope for encoding
+  ├─ Enqueue in order, commit once
+  └─ Test: expect 10-15% improvement
+
+Step 3: Event Synchronization (if needed)
+  ├─ Wrap MTLSharedEvent in Rust
+  ├─ Signal/wait for async scenarios
+  └─ Test: expect 5-10% for prefill overlap
 ```
 
 ---
 
-### Priority 4: Memory Access Investigation - ✅ COMPLETE
+## Performance Projection
 
-See previous section for bandwidth analysis details.
-
-**Key finding**: 2.38x performance gap due to synchronous execution
+| Stage | Performance | Cumulative Gain |
+|-------|-------------|-----------------|
+| Baseline | 79 t/s | - |
+| Concurrent Encoder | 112-120 t/s | +42-52% |
+| + Memory Barriers | ~130-150 t/s | +64-90% |
+| + Multi-thread Encoding | ~145-170 t/s | +83-115% |
+| Target (llama.cpp) | 205 t/s | +160% |
 
 ---
 
-## Summary
+## Technical References
 
-**Completed work**:
-- ✅ Deep analysis of llama.cpp's async pattern
-- ✅ Phase 1 async implementation (minimal, safe approach)
-- ✅ Compilation verification
+1. **llama.cpp Metal Backend**:
+   - `ggml-metal-context.m`: Graph compute flow, multi-CB management
+   - `ggml-metal-device.m`: Encoder creation, event synchronization
+   - `ggml-metal-ops.cpp`: Memory range tracking, concurrency checks
+   - `ggml-metal-common.h`: Memory range data structures
 
-**Blocking issue**:
-- ⚠️ Model validation - need working model (current models produce NaN)
+2. **Key Code Sections**:
+   - Lines 474-660: `ggml_metal_graph_compute()` main flow
+   - Lines 836-850: Concurrent encoder creation
+   - Lines 890-896: Memory barrier insertion
+   - Lines 1447-1496: Event-based synchronization
 
-**Ready for**:
-- Performance testing once model issue resolved
-- Expected 1.5-2x improvement based on llama.cpp's approach
+3. **External Analysis**:
+   - [RTX 4090D Vulkan Double-buffering](https://m.blog.csdn.net/weixin_30444111/article/details/162917938)
+   - [Metal 4 Concurrent Encoding](https://blakecrosley.com/blog/metal-4-essentials)
+
+---
+
+## Notes
+
+- All optimizations are based on llama.cpp's proven implementation
+- Implementation matches llama.cpp's exact approach (no guessing)
+- Each step is independently testable
+- Performance gains are cumulative
+
+**Next Action**: Implement Priority 1 (Memory Range Tracking + Barriers)
