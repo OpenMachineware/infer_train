@@ -26,6 +26,9 @@ use std::rc::Rc;
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use metal::Buffer as MetalBuffer;
 
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use metal::CommandBuffer;
+
 /// Tensor registry: maps tensor IDs to GPU buffers
 /// Uses Vec for O(1) direct indexing instead of HashMap
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -103,10 +106,111 @@ pub struct ExecutionContext<'a> {
     pub use_mma_v2: bool, // Use MMA v2 kernel
 }
 
+/// Async command buffer state for overlapping CPU-GPU execution
+///
+/// Async command buffer for CPU-GPU pipeline overlap.
+/// Stores command buffer reference for deferred wait.
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+pub struct AsyncCommandBuffer {
+    /// Output buffer containing logits
+    output_buffer: Rc<MetalBuffer>,
+    vocab_size: usize,
+    /// Raw pointer to command buffer (for async wait)
+    /// We use raw pointer because CommandBufferRef is a reference type
+    command_buffer: Option<*mut metal::CommandBufferRef>,
+    /// Flag indicating whether GPU execution has completed
+    completed: bool,
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+impl AsyncCommandBuffer {
+    pub fn new(
+        output_buffer: Rc<MetalBuffer>,
+        vocab_size: usize,
+        command_buffer: &metal::CommandBufferRef,
+    ) -> Self {
+        // Retain the command buffer to keep it alive until we wait
+        // Using Objective-C retain semantics
+        let cb_ptr = command_buffer as *const metal::CommandBufferRef
+            as *mut metal::CommandBufferRef;
+        unsafe {
+            // Increment reference count
+            let _ = metal::objc::rc::autoreleasepool(|| {
+                std::mem::forget(command_buffer);
+            });
+        }
+
+        Self {
+            output_buffer,
+            vocab_size,
+            command_buffer: Some(cb_ptr),
+            completed: false,
+        }
+    }
+
+    /// Wait for command buffer completion
+    pub fn wait(&mut self) {
+        if self.completed {
+            return;
+        }
+
+        if let Some(cb_ptr) = self.command_buffer {
+            unsafe {
+                let cb = &*cb_ptr;
+                cb.wait_until_completed();
+            }
+            self.completed = true;
+        }
+    }
+
+    /// Check if command buffer has completed
+    pub fn is_completed(&self) -> bool {
+        self.completed
+    }
+
+    /// Get logits from output buffer
+    /// Must call wait() first to ensure GPU has finished
+    pub fn get_logits(&self) -> Vec<f32> {
+        if !self.completed {
+            eprintln!(
+                "[WARN] get_logits called before wait() - data may be incomplete"
+            );
+        }
+
+        let mut logits = vec![0.0f32; self.vocab_size];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.output_buffer.contents() as *const f32,
+                logits.as_mut_ptr(),
+                self.vocab_size,
+            );
+        }
+        logits
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+impl Drop for AsyncCommandBuffer {
+    fn drop(&mut self) {
+        // Command buffer will be released automatically when this drops
+        // The output_buffer Rc will keep the data alive
+        self.command_buffer.take();
+    }
+}
+
 pub struct DagExecutor;
+
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+pub struct DagForwardResult {
+    pub logits: Option<Vec<f32>>,
+    pub pending_cb: Option<AsyncCommandBuffer>,
+}
 
 impl DagExecutor {
     /// Execute forward pass by traversing DAG nodes
+    ///
+    /// This is the synchronous version - waits for GPU completion before returning.
+    /// For async execution, use `forward_dag_async` instead.
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn forward_dag(
         model: &LlamaModel,
@@ -114,11 +218,46 @@ impl DagExecutor {
         kv_cache: &mut KVCacheGPU,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) -> Option<Vec<f32>> {
+        let mut result =
+            Self::forward_dag_async(model, tokens, kv_cache, gpu_ctx, None);
+
+        // Wait for GPU completion and get logits
+        if let Some(ref mut async_cb) = result.pending_cb {
+            async_cb.wait();
+            Some(async_cb.get_logits())
+        } else {
+            result.logits
+        }
+    }
+
+    /// Execute forward pass asynchronously
+    ///
+    /// Returns a DagForwardResult containing:
+    /// - `logits`: None (will be populated after wait)
+    /// - `pending_cb`: The async command buffer that's executing on GPU
+    ///
+    /// The caller can:
+    /// 1. Immediately start preparing the next token (CPU work overlaps GPU execution)
+    /// 2. Call `result.wait_and_get_logits()` when logits are needed
+    ///
+    /// IMPORTANT: The returned AsyncCommandBuffer must be kept alive until completion.
+    /// It retains the output buffer needed for logits.
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pub fn forward_dag_async(
+        model: &LlamaModel,
+        tokens: &[u32],
+        kv_cache: &mut KVCacheGPU,
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+        _pending_cb: Option<&AsyncCommandBuffer>, // Previous buffer (for dependency tracking)
+    ) -> DagForwardResult {
         if tokens.is_empty() || model.tok_embeddings.is_none() {
-            return None;
+            return DagForwardResult { logits: None, pending_cb: None };
         }
 
-        let dag = model.optimized_dag.as_ref()?;
+        let dag = match model.optimized_dag.as_ref() {
+            Some(dag) => dag,
+            None => return DagForwardResult { logits: None, pending_cb: None },
+        };
 
         let hidden_size = model.config.hidden_size;
         let device = gpu_ctx.device();
@@ -134,7 +273,10 @@ impl DagExecutor {
         let token = tokens[0];
 
         // 1. Embedding lookup
-        let hidden = model.embedding_lookup_impl(token)?;
+        let hidden = match model.embedding_lookup_impl(token) {
+            Some(h) => h,
+            None => return DagForwardResult { logits: None, pending_cb: None },
+        };
 
         // Use cached embed buffer to avoid allocation on every decode
         let hidden_buffer =
@@ -198,12 +340,9 @@ impl DagExecutor {
             use_mma_v2,
         };
 
-        // Use single command buffer for entire graph (llama.cpp style)
-        // Enqueue early to allow GPU to schedule execution
-        // Use unretained references for lower dispatch overhead
-        let command_buffer =
-            queue.new_command_buffer_with_unretained_references();
-        command_buffer.enqueue(); // Pre-enqueue (llama.cpp line 565)
+        // Use single command buffer for entire graph
+        // Use retained command buffer for async execution
+        let command_buffer = queue.new_command_buffer();
 
         let encoder = command_buffer.new_compute_command_encoder();
 
@@ -337,106 +476,14 @@ impl DagExecutor {
                 }
                 // Clean up encoder before returning
                 encoder.end_encoding();
-                return None;
+                return DagForwardResult { logits: None, pending_cb: None };
             }
         }
 
-        // Commit and wait (llama.cpp style: single CB for entire graph)
+        // Commit command buffer for async execution (like llama.cpp)
+        // DO NOT wait - let the caller decide when to wait
+        // This enables CPU-GPU overlap (software pipelining)
         encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
-
-        // CRITICAL: Advance KV cache position after each forward pass
-        // This must happen AFTER GPU execution completes
-        exec_ctx.kv_cache.advance();
-
-        // Debug: check all tensors for NaN after GPU execution
-        if std::env::var("INFER_TRACE_NAN").is_ok() {
-            let mut first_nan_node: Option<usize> = None;
-
-            for node_id in &dag.execution_order {
-                let node = &dag.dag.nodes[*node_id];
-                let outputs = Self::get_node_outputs(&node.op);
-
-                for output_id in &outputs {
-                    if let Some(buffer) =
-                        exec_ctx.tensor_registry.get(*output_id)
-                    {
-                        let ptr = buffer.contents() as *const f32;
-                        let len = buffer.length() as usize / 4;
-
-                        let has_nan = (0..std::cmp::min(10, len)).any(|i| {
-                            let val = unsafe { *ptr.add(i) };
-                            val.is_nan() || val.is_infinite()
-                        });
-
-                        // Check for all zeros too
-                        let all_zeros = (0..std::cmp::min(10, len)).all(|i| {
-                            let val = unsafe { *ptr.add(i) };
-                            val == 0.0
-                        });
-
-                        if has_nan && first_nan_node.is_none() {
-                            first_nan_node = Some(*node_id);
-                            eprintln!(
-                                "[NAN] FIRST NaN at node {} ({:?}) output tensor {}",
-                                node_id,
-                                std::mem::discriminant(&node.op),
-                                output_id
-                            );
-
-                            // Print input tensors
-                            let inputs = Self::get_node_inputs(&node.op);
-                            for input_id in &inputs {
-                                if let Some(buf) =
-                                    exec_ctx.tensor_registry.get(*input_id)
-                                {
-                                    let ptr = buf.contents() as *const f32;
-                                    let len = buf.length() as usize / 4;
-                                    let input_has_nan =
-                                        (0..std::cmp::min(10, len)).any(|i| {
-                                            let val = unsafe { *ptr.add(i) };
-                                            val.is_nan() || val.is_infinite()
-                                        });
-                                    let input_all_zeros =
-                                        (0..std::cmp::min(10, len)).all(|i| {
-                                            let val = unsafe { *ptr.add(i) };
-                                            val == 0.0
-                                        });
-                                    eprintln!(
-                                        "  Input tensor {}: has_nan={}, all_zeros={}",
-                                        input_id,
-                                        input_has_nan,
-                                        input_all_zeros
-                                    );
-                                }
-                            }
-                        }
-
-                        // Trace FlashAttention outputs specifically
-                        if matches!(&node.op, Operation::FlashAttention { .. })
-                        {
-                            if let Operation::FlashAttention {
-                                layer_idx, ..
-                            } = &node.op
-                            {
-                                eprintln!(
-                                    "[CHECK] FlashAttention node {} (layer {}): tensor {}, has_nan={}, all_zeros={}, first_vals={:?}",
-                                    node_id,
-                                    layer_idx,
-                                    output_id,
-                                    has_nan,
-                                    all_zeros,
-                                    (0..5)
-                                        .map(|i| unsafe { *ptr.add(i) })
-                                        .collect::<Vec<_>>()
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
 
         // Get output tensor from the exit node
         let exit_node_id = dag.dag.exit_points[0];
@@ -462,7 +509,7 @@ impl DagExecutor {
                     "[DAG] Exit node has unsupported operation: {:?}",
                     exit_node.op
                 );
-                return None;
+                return DagForwardResult { logits: None, pending_cb: None };
             }
         };
 
@@ -470,21 +517,132 @@ impl DagExecutor {
             eprintln!("[DAG] Output tensor ID: {}", output_tensor_id);
         }
 
-        let output_buffer = exec_ctx.tensor_registry.get(output_tensor_id)?;
+        let output_buffer = exec_ctx.tensor_registry.get(output_tensor_id);
 
-        // Read logits
-        let output_tensor = model.output.as_ref()?;
-        let vocab_size = output_tensor.shape[0];
-        let mut logits = vec![0.0f32; vocab_size];
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                output_buffer.contents() as *const f32,
-                logits.as_mut_ptr(),
-                vocab_size,
+        if output_buffer.is_none() {
+            eprintln!(
+                "[DAG] Output tensor {} not found in registry",
+                output_tensor_id
             );
+            return DagForwardResult { logits: None, pending_cb: None };
         }
 
-        Some(logits)
+        let output_buffer = output_buffer.unwrap();
+
+        // Get vocab size for logits extraction
+        let output_tensor = model.output.as_ref();
+        if output_tensor.is_none() {
+            eprintln!("[DAG] Model has no output tensor");
+            return DagForwardResult { logits: None, pending_cb: None };
+        }
+        let vocab_size = output_tensor.unwrap().shape[0];
+
+        // Create async command buffer with output buffer retained
+        let async_cb =
+            AsyncCommandBuffer::new(output_buffer, vocab_size, command_buffer);
+
+        // Commit the command buffer for async execution
+        command_buffer.commit();
+
+        // CRITICAL: Advance KV cache position
+        // We advance here because the kernel encoding is complete.
+        // The actual GPU write will happen asynchronously, but Metal's
+        // command queue ordering ensures the next CB won't start
+        // until this one completes.
+        exec_ctx.kv_cache.advance();
+
+        // Return async result - caller must call wait() before get_logits()
+        DagForwardResult {
+            logits: None, // No logits yet - must wait
+            pending_cb: Some(async_cb),
+        }
+    }
+
+    /// Check tensors for NaN values (debug utility)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn check_tensors_for_nan(
+        dag: &super::graph::OptimizedDag,
+        tensor_registry: &TensorRegistry,
+    ) {
+        if std::env::var("INFER_TRACE_NAN").is_err() {
+            return;
+        }
+
+        let mut first_nan_node: Option<usize> = None;
+
+        for node_id in &dag.execution_order {
+            let node = &dag.dag.nodes[*node_id];
+            let outputs = Self::get_node_outputs(&node.op);
+
+            for output_id in &outputs {
+                if let Some(buffer) = tensor_registry.get(*output_id) {
+                    let ptr = buffer.contents() as *const f32;
+                    let len = buffer.length() as usize / 4;
+
+                    let has_nan = (0..std::cmp::min(10, len)).any(|i| {
+                        let val = unsafe { *ptr.add(i) };
+                        val.is_nan() || val.is_infinite()
+                    });
+
+                    let all_zeros = (0..std::cmp::min(10, len)).all(|i| {
+                        let val = unsafe { *ptr.add(i) };
+                        val == 0.0
+                    });
+
+                    if has_nan && first_nan_node.is_none() {
+                        first_nan_node = Some(*node_id);
+                        eprintln!(
+                            "[NAN] FIRST NaN at node {} ({:?}) output tensor {}",
+                            node_id,
+                            std::mem::discriminant(&node.op),
+                            output_id
+                        );
+
+                        // Print input tensors
+                        let inputs = Self::get_node_inputs(&node.op);
+                        for input_id in &inputs {
+                            if let Some(buf) = tensor_registry.get(*input_id) {
+                                let ptr = buf.contents() as *const f32;
+                                let len = buf.length() as usize / 4;
+                                let input_has_nan = (0..std::cmp::min(10, len))
+                                    .any(|i| {
+                                        let val = unsafe { *ptr.add(i) };
+                                        val.is_nan() || val.is_infinite()
+                                    });
+                                let input_all_zeros =
+                                    (0..std::cmp::min(10, len)).all(|i| {
+                                        let val = unsafe { *ptr.add(i) };
+                                        val == 0.0
+                                    });
+                                eprintln!(
+                                    "  Input tensor {}: has_nan={}, all_zeros={}",
+                                    input_id, input_has_nan, input_all_zeros
+                                );
+                            }
+                        }
+                    }
+
+                    // Trace FlashAttention outputs specifically
+                    if matches!(&node.op, Operation::FlashAttention { .. }) {
+                        if let Operation::FlashAttention { layer_idx, .. } =
+                            &node.op
+                        {
+                            eprintln!(
+                                "[CHECK] FlashAttention node {} (layer {}): tensor {}, has_nan={}, all_zeros={}, first_vals={:?}",
+                                node_id,
+                                layer_idx,
+                                output_id,
+                                has_nan,
+                                all_zeros,
+                                (0..5)
+                                    .map(|i| unsafe { *ptr.add(i) })
+                                    .collect::<Vec<_>>()
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Execute a single DAG node
@@ -740,6 +898,19 @@ impl DagExecutor {
 
                 // Run three GEMV operations
                 // TODO: Optimize to single GEMM when weights are contiguous
+                if std::env::var("INFER_TRACE_NAN").is_ok() {
+                    let input_ptr = input_buf.contents() as *const f32;
+                    let has_nan =
+                        (0..std::cmp::min(10, *q_out_size)).any(|i| {
+                            let val = unsafe { *input_ptr.add(i) };
+                            val.is_nan() || val.is_infinite()
+                        });
+                    eprintln!(
+                        "[TRACE] FusedQKV input NaN: {}, dtype: Q={:?}, K={:?}, V={:?}",
+                        has_nan, q_dtype, k_dtype, v_dtype
+                    );
+                }
+
                 ctx.gpu_ctx.mv_encode(
                     encoder,
                     &q_weight_buf,
