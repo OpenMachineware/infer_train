@@ -20,7 +20,7 @@ fn main() {
         let source = r#"
         #include <metal_stdlib>
         using namespace metal;
-        
+
         kernel void noop_kernel(device float *output [[buffer(0)]], uint idx [[thread_position_in_grid]]) {
             if (idx == 0) {
                 output[0] = 0.0;

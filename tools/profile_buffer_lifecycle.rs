@@ -86,7 +86,7 @@ fn main() {
             BUFFER_REUSE_COUNT.store(0, Ordering::SeqCst);
             let token = (65 + i) as u32;
             ctx.model.forward_gpu_native_batched(&[token], &mut kv, &gpu_ctx).unwrap();
-            println!("Token {}: alloc={}, reuse={}", 
+            println!("Token {}: alloc={}, reuse={}",
                 i + 1,
                 BUFFER_ALLOC_COUNT.load(Ordering::SeqCst),
                 BUFFER_REUSE_COUNT.load(Ordering::SeqCst));

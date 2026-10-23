@@ -28,7 +28,7 @@ fn main() {
         let start = std::time::Instant::now();
         let logits = ctx.forward_gpu_batched(&[1]).expect("Decode failed");
         let elapsed = start.elapsed();
-        
+
         println!("Token {}: {:?} ({:.1} t/s)", i, elapsed, 1000.0 / elapsed.as_millis() as f64);
     }
 

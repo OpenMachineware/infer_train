@@ -22,11 +22,11 @@ fn main() {
 
         let gpu_ctx = MetalContext::new().unwrap();
         let mut ctx = InferenceContext::from_gguf_with_gpu_ctx(model_path, gpu_ctx.clone()).unwrap();
-        
+
         // Test 1: Single token decode
         eprintln!("\n--- Test 1: Single Token Decode ---");
         let token = 1u32;
-        
+
         let start = Instant::now();
         let logits = ctx.model.forward_gpu_native_batched(
             &[token],
@@ -34,12 +34,12 @@ fn main() {
             &gpu_ctx,
         );
         let elapsed = start.elapsed();
-        
+
         if let Some(logits) = logits {
             eprintln!("✓ Forward pass completed in {:?}", elapsed);
             eprintln!("✓ Logits shape: {}", logits.len());
             eprintln!("✓ Sample logits: {:?}", &logits[..5.min(logits.len())]);
-            
+
             // Check for NaN
             let has_nan = logits.iter().any(|&x| x.is_nan());
             if has_nan {
@@ -53,13 +53,13 @@ fn main() {
 
         // Test 2: Multiple tokens (prefill + decode)
         eprintln!("\n--- Test 2: Multiple Tokens ---");
-        
+
         // Reset KV cache
         ctx.gpu_kv_cache.as_mut().unwrap().reset();
-        
+
         let tokens: Vec<u32> = (0..5).collect();
         let start = Instant::now();
-        
+
         // Prefill
         let logits = ctx.model.forward_gpu_native_batched(
             &tokens,
@@ -67,7 +67,7 @@ fn main() {
             &gpu_ctx,
         );
         let elapsed = start.elapsed();
-        
+
         if let Some(logits) = logits {
             eprintln!("✓ Prefill completed in {:?}", elapsed);
             eprintln!("✓ Tokens processed: {}", tokens.len());
@@ -78,21 +78,21 @@ fn main() {
 
         // Test 3: Decode loop (simulating generation)
         eprintln!("\n--- Test 3: Decode Loop ---");
-        
+
         let mut decode_times = Vec::new();
         for i in 0..10 {
             let token = (65 + i) as u32; // A, B, C, ...
             let start = Instant::now();
-            
+
             let logits = ctx.model.forward_gpu_native_batched(
                 &[token],
                 ctx.gpu_kv_cache.as_mut().unwrap(),
                 &gpu_ctx,
             );
-            
+
             let elapsed = start.elapsed();
             decode_times.push(elapsed);
-            
+
             if logits.is_some() {
                 eprintln!("Token {}: {:?} ✓", i, elapsed);
             } else {
@@ -103,7 +103,7 @@ fn main() {
         let avg_time: std::time::Duration = decode_times.iter().sum::<std::time::Duration>() / decode_times.len() as u32;
         let min_time = decode_times.iter().min().unwrap();
         let max_time = decode_times.iter().max().unwrap();
-        
+
         eprintln!("\nDecode Statistics:");
         eprintln!("  Average: {:?}", avg_time);
         eprintln!("  Min: {:?}", min_time);
