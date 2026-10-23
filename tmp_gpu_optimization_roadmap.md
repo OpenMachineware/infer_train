@@ -26,62 +26,72 @@ let encoder = command_buffer
 
 **Reference**: Based on llama.cpp's `ggml_metal_encoder_init()` with `concurrent=true`
 
+### 2. Memory Range Tracking - IMPLEMENTED ✅
+
+**Commit**: `3bc5041`
+
+**Implementation**:
+- Created `src/dag/memory_ranges.rs` with `MemoryRanges` struct
+- Tracks src/dst buffer access patterns for conflict detection
+- Integrated into all DAG operations in `execute_node()`
+
+**Status**:
+- ✅ Memory tracking working (verified via `INFER_DEBUG_MEM_RANGES=1`)
+- ⚠️ GPU barrier temporarily disabled - Rust metal crate doesn't expose `memoryBarrierWithScope:` API
+- ⚠️ Model loading hanging - separate issue, needs investigation
+
+**Files modified**:
+- `src/dag/memory_ranges.rs`: New file for memory range tracking
+- `src/dag/executor.rs`: Added `check_memory_and_barrier()` and `track_memory_ranges()`
+- `src/dag.rs`: Added `pub mod memory_ranges`
+
+**Expected improvement**: 15-25% once barrier is working
+
+---
+
+## Blocking Issue: Model Loading Hangs
+
+**Symptom**: Model loads successfully, forward pass hangs/returns None
+
+**Tested models**:
+- Qwen3.8-27B-UD-Q5_K_M.gguf
+- DeepSeek-Coder-V2-Lite-Instruct-Q4_K_L.gguf
+
+**Debug output**:
+- DAG builds correctly (327 operations fused for Qwen)
+- Execution order shows nodes 0, 1, then jumps to 1173 (incorrect)
+- Forward returns None or hangs
+
+**Investigation needed**:
+1. Check if DAG execution order is correct
+2. Verify tensor registry bindings
+3. Check for missing tensor IDs
+4. Test with simpler model
+
 ---
 
 ## Remaining Optimizations
 
-### Priority 1: Memory Range Tracking + GPU Barriers
+### Priority 1: Fix Model Loading Issue
 
-**Goal**: Allow independent operations to execute concurrently within a single encoder
+**Goal**: Get forward pass working again
 
-**llama.cpp Implementation** (`ggml-metal-common.h`, `ggml-metal-ops.cpp`):
+**Steps**:
+1. Add debug output for tensor registry lookups
+2. Check if all required tensors are present
+3. Verify execution order in DAG
+4. Test with a minimal model
 
-1. **Memory range tracking**:
-```c
-struct ggml_mem_ranges {
-    int n_ranges;
-    struct {
-        void * ptr;
-        size_t size;
-        bool is_dst;  // true = write, false = read
-    } ranges[MAX_RANGES];
-};
+### Priority 2: Complete GPU Barrier Implementation
 
-// Check if operation can run concurrently:
-// - new src cannot overlap with existing dst
-// - new dst cannot overlap with any existing range
-bool ggml_mem_ranges_check(ggml_mem_ranges_t mrs, ggml_tensor * tensor);
-```
+**Goal**: Enable actual memory barriers for correct concurrent execution
 
-2. **Automatic barrier insertion**:
-```cpp
-bool is_concurrent = ggml_mem_ranges_check(ctx, node);
-if (!is_concurrent) {
-    ggml_metal_encoder_memory_barrier(ctx->enc);
-    ggml_mem_ranges_reset(ctx->mem_ranges);
-}
-```
+**Approach options**:
+1. Use `memory_barrier_with_resources()` with tracked buffers
+2. Call Objective-C API via `objc` crate
+3. Wait for upstream metal crate to expose `memoryBarrierWithScope:`
 
-3. **GPU barrier**:
-```objc
-void ggml_metal_encoder_memory_barrier(ggml_metal_encoder_t encoder) {
-    [encoder->obj memoryBarrierWithScope:MTLBarrierScopeBuffers];
-}
-```
-
-**Our Implementation Plan**:
-
-1. Add `MemoryRanges` struct to track buffer access
-2. In `execute_node()`, record src/dst ranges
-3. Before each dispatch, check for conflicts
-4. Insert `encoder.memory_barrier_with_scope(MTLBarrierScopeBuffers)` when needed
-5. Reset tracking after barrier
-
-**Files to modify**:
-- `src/dag/executor.rs`: Add memory range tracking
-- `src/dag/graph.rs`: No changes needed
-
-**Expected improvement**: 15-25% (based on llama.cpp's concurrency gain)
+### Priority 3: Multi-threaded Graph Encoding
 
 ---
 
