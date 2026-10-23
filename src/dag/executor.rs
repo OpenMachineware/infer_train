@@ -382,7 +382,11 @@ impl DagExecutor {
         let encode_start = std::time::Instant::now();
         let command_buffer = queue.new_command_buffer();
 
-        let encoder = command_buffer.new_compute_command_encoder();
+        // Use concurrent encoder to allow parallel kernel execution
+        // This is the key to maximizing memory bandwidth utilization
+        use metal::MTLDispatchType;
+        let encoder = command_buffer
+            .compute_command_encoder_with_dispatch_type(MTLDispatchType::Concurrent);
 
         // Traverse DAG nodes in execution order
         for node_id in &dag.execution_order {
