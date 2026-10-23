@@ -413,6 +413,29 @@ impl DagExecutor {
             );
         }
 
+        // Debug: show weight bindings for first layer
+        if std::env::var("INFER_DEBUG_DAG").is_ok() {
+            let count = dag.dag.weight_bindings.len();
+            let first_10: Vec<_> =
+                dag.dag.weight_bindings.keys().take(10).collect();
+            eprintln!(
+                "[DAG] Weight bindings: {} total, first 10 IDs: {:?}",
+                count, first_10
+            );
+            // Check if tensor IDs 5, 7, 9 exist
+            for id in [5, 7, 9] {
+                if dag.dag.weight_bindings.contains_key(&id) {
+                    let tensor = dag.dag.weight_bindings.get(&id).unwrap();
+                    eprintln!(
+                        "[DAG] Weight {} exists: shape={:?}, dtype={:?}",
+                        id, tensor.shape, tensor.dtype
+                    );
+                } else {
+                    eprintln!("[DAG] Weight {} NOT FOUND in bindings", id);
+                }
+            }
+        }
+
         // Check if MMA kernel is enabled via environment variable
         // MMA kernels disabled by default due to NaN issues with GQA models
         // TODO: Fix MMA kernels and re-enable

@@ -483,69 +483,166 @@ impl DagBuilder {
         let norm_node_id = self.dag.add_node(norm_node);
 
         // 2. Q/K/V Projections
-        let q_out_size =
-            layer.wq.as_ref().map(|w| w.shape[1]).unwrap_or(hidden_size);
-        let k_out_size =
-            layer.wk.as_ref().map(|w| w.shape[1]).unwrap_or(hidden_size);
-        let v_out_size =
-            layer.wv.as_ref().map(|w| w.shape[1]).unwrap_or(hidden_size);
+        // Determine output sizes and create nodes based on model architecture
+        let (
+            q_id,
+            k_id,
+            v_id,
+            q_node_id,
+            k_node_id,
+            v_node_id,
+            q_out_size,
+            k_out_size,
+            v_out_size,
+        ) = if let Some(ref qkv_weight) = layer.attn_qkv {
+            // Fused QKV: single weight tensor for Q/K/V (Qwen3.8-style)
+            let q_out_size = model.config.n_heads * model.config.head_dim;
+            let k_out_size = model.config.n_kv_heads * model.config.head_dim;
+            let v_out_size = model.config.n_kv_heads * model.config.head_dim;
 
-        let q_id = self.alloc_tensor();
-        let q_weight_id = self.alloc_tensor();
-        if let Some(weight) = &layer.wq {
-            self.dag.bind_weight(q_weight_id, weight.clone());
-        }
-        let q_node = DagNode {
-            id: self.dag.nodes.len(),
-            op: Operation::Gemv {
-                input: normed_id,
-                weight: q_weight_id,
-                output: q_id,
-                out_size: q_out_size,
-            },
-            dependencies: vec![norm_node_id],
-            device_preference: DevicePreference::Gpu,
-            layer_idx: Some(layer_idx),
-        };
-        let q_node_id = self.dag.add_node(q_node);
+            let q_id = self.alloc_tensor();
+            let k_id = self.alloc_tensor();
+            let v_id = self.alloc_tensor();
+            let qkv_weight_id = self.alloc_tensor();
+            self.dag.bind_weight(qkv_weight_id, qkv_weight.clone());
 
-        let k_id = self.alloc_tensor();
-        let k_weight_id = self.alloc_tensor();
-        if let Some(weight) = &layer.wk {
-            self.dag.bind_weight(k_weight_id, weight.clone());
-        }
-        let k_node = DagNode {
-            id: self.dag.nodes.len(),
-            op: Operation::Gemv {
-                input: normed_id,
-                weight: k_weight_id,
-                output: k_id,
-                out_size: k_out_size,
-            },
-            dependencies: vec![norm_node_id],
-            device_preference: DevicePreference::Gpu,
-            layer_idx: Some(layer_idx),
-        };
-        let k_node_id = self.dag.add_node(k_node);
+            if layer_idx == 0 && std::env::var("INFER_DEBUG_DAG").is_ok() {
+                eprintln!(
+                    "[DAG BUILD] Layer 0: fused QKV weight_id={}",
+                    qkv_weight_id
+                );
+            }
 
-        let v_id = self.alloc_tensor();
-        let v_weight_id = self.alloc_tensor();
-        if let Some(weight) = &layer.wv {
-            self.dag.bind_weight(v_weight_id, weight.clone());
-        }
-        let v_node = DagNode {
-            id: self.dag.nodes.len(),
-            op: Operation::Gemv {
-                input: normed_id,
-                weight: v_weight_id,
-                output: v_id,
-                out_size: v_out_size,
-            },
-            dependencies: vec![norm_node_id],
-            device_preference: DevicePreference::Gpu,
-            layer_idx: Some(layer_idx),
+            let qkv_node = DagNode {
+                id: self.dag.nodes.len(),
+                op: Operation::FusedQKVWeight {
+                    input: normed_id,
+                    qkv_weight: qkv_weight_id,
+                    output_q: q_id,
+                    output_k: k_id,
+                    output_v: v_id,
+                    q_out_size,
+                    k_out_size,
+                    v_out_size,
+                    layer_idx,
+                },
+                dependencies: vec![norm_node_id],
+                device_preference: DevicePreference::Gpu,
+                layer_idx: Some(layer_idx),
+            };
+            let qkv_node_id = self.dag.add_node(qkv_node);
+
+            if layer_idx == 0 && std::env::var("INFER_DEBUG_DAG").is_ok() {
+                eprintln!(
+                    "[DAG BUILD] Layer 0: FusedQKVWeight created q_id={}, k_id={}, v_id={}",
+                    q_id, k_id, v_id
+                );
+            }
+
+            // For fused QKV, all Q/K/V depend on the same node
+            (
+                q_id,
+                k_id,
+                v_id,
+                qkv_node_id,
+                qkv_node_id,
+                qkv_node_id,
+                q_out_size,
+                k_out_size,
+                v_out_size,
+            )
+        } else {
+            // Separate Q/K/V weights
+            let q_out_size =
+                layer.wq.as_ref().map(|w| w.shape[1]).unwrap_or(hidden_size);
+            let k_out_size =
+                layer.wk.as_ref().map(|w| w.shape[1]).unwrap_or(hidden_size);
+            let v_out_size =
+                layer.wv.as_ref().map(|w| w.shape[1]).unwrap_or(hidden_size);
+
+            let q_id = self.alloc_tensor();
+            let q_weight_id = self.alloc_tensor();
+            if let Some(weight) = &layer.wq {
+                self.dag.bind_weight(q_weight_id, weight.clone());
+            }
+            if layer_idx == 0 && std::env::var("INFER_DEBUG_DAG").is_ok() {
+                eprintln!(
+                    "[DAG BUILD] Layer 0: q_weight_id={}, weight bound={}",
+                    q_weight_id,
+                    layer.wq.is_some()
+                );
+            }
+            let q_node = DagNode {
+                id: self.dag.nodes.len(),
+                op: Operation::Gemv {
+                    input: normed_id,
+                    weight: q_weight_id,
+                    output: q_id,
+                    out_size: q_out_size,
+                },
+                dependencies: vec![norm_node_id],
+                device_preference: DevicePreference::Gpu,
+                layer_idx: Some(layer_idx),
+            };
+            let q_node_id = self.dag.add_node(q_node);
+
+            let k_id = self.alloc_tensor();
+            let k_weight_id = self.alloc_tensor();
+            if let Some(weight) = &layer.wk {
+                self.dag.bind_weight(k_weight_id, weight.clone());
+            }
+            if layer_idx == 0 && std::env::var("INFER_DEBUG_DAG").is_ok() {
+                eprintln!(
+                    "[DAG BUILD] Layer 0: k_weight_id={}, weight bound={}",
+                    k_weight_id,
+                    layer.wk.is_some()
+                );
+            }
+            let k_node = DagNode {
+                id: self.dag.nodes.len(),
+                op: Operation::Gemv {
+                    input: normed_id,
+                    weight: k_weight_id,
+                    output: k_id,
+                    out_size: k_out_size,
+                },
+                dependencies: vec![norm_node_id],
+                device_preference: DevicePreference::Gpu,
+                layer_idx: Some(layer_idx),
+            };
+            let k_node_id = self.dag.add_node(k_node);
+
+            let v_id = self.alloc_tensor();
+            let v_weight_id = self.alloc_tensor();
+            if let Some(weight) = &layer.wv {
+                self.dag.bind_weight(v_weight_id, weight.clone());
+            }
+            if layer_idx == 0 && std::env::var("INFER_DEBUG_DAG").is_ok() {
+                eprintln!(
+                    "[DAG BUILD] Layer 0: v_weight_id={}, weight bound={}",
+                    v_weight_id,
+                    layer.wv.is_some()
+                );
+            }
+            let v_node = DagNode {
+                id: self.dag.nodes.len(),
+                op: Operation::Gemv {
+                    input: normed_id,
+                    weight: v_weight_id,
+                    output: v_id,
+                    out_size: v_out_size,
+                },
+                dependencies: vec![norm_node_id],
+                device_preference: DevicePreference::Gpu,
+                layer_idx: Some(layer_idx),
+            };
+            let v_node_id = self.dag.add_node(v_node);
+
+            (
+                q_id, k_id, v_id, q_node_id, k_node_id, v_node_id, q_out_size,
+                k_out_size, v_out_size,
+            )
         };
-        let v_node_id = self.dag.add_node(v_node);
 
         // 3. RoPE Q/K
         let n_heads = q_out_size / head_dim;
