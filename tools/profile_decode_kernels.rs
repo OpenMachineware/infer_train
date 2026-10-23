@@ -1,389 +1,329 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-// Profile decode kernel performance for each layer
+//! Analyze decode kernel execution
+//!
+//! Count kernels and measure time spent in each category.
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: {} <model.gguf>", args[0]);
-        std::process::exit(1);
-    }
-    let model_path = args[1].clone();
+    let model_path =
+        "/Users/jia/Desktop/infer_train/Qwen3-0.6B-UD-Q4_K_XL.gguf";
 
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     {
-        use infer_train::inference::{InferenceContext, KVCacheGPU};
+        use infer_train::inference::{Device, InferenceContext, KVCacheGPU};
         use infer_train::quant::vec_dot::gpu::metal::MetalContext;
         use std::time::Instant;
 
-        println!("=== Decode Kernel Performance Profile ===");
-        println!("Model: {}\n", model_path);
+        let ctx = InferenceContext::from_gguf(model_path, Device::Gpu)
+            .expect("Failed to load model");
+        let gpu_ctx =
+            MetalContext::new().expect("Failed to create Metal context");
+        let device = gpu_ctx.device();
 
-        let result = std::thread::spawn(move || {
-            let gpu_ctx = MetalContext::new().unwrap();
-            let device = gpu_ctx.device();
-            let ctx = InferenceContext::from_gguf_with_gpu_ctx(
-                &model_path,
-                gpu_ctx.clone(),
-            )
-            .unwrap();
-            let config = ctx.model.config.clone();
-            let n_layers = config.n_layers;
-            let hidden_size = config.hidden_size;
-            let n_heads = config.n_heads;
-            let head_dim = config.head_dim;
-            let intermediate_size = ctx.model.layers[0]
-                .w1
-                .as_ref()
-                .map(|w| w.shape[1])
-                .unwrap_or(0);
+        let mut kv_cache = KVCacheGPU::new(
+            &device,
+            &ctx.config,
+            ctx.config.max_position_embeddings,
+        );
 
-            println!(
-                "Layers: {}, Hidden: {}, Heads: {}, Head dim: {}",
-                n_layers, hidden_size, n_heads, head_dim
-            );
-            println!("Intermediate size: {}", intermediate_size);
+        // Prefill
+        let prefill_tokens: Vec<u32> = (0..100).collect();
+        ctx.model.forward_gpu_native_batched(
+            &prefill_tokens,
+            &mut kv_cache,
+            &gpu_ctx,
+        );
 
-            let mut kv = KVCacheGPU::new(device, &config, 2048);
+        println!("\n=== Decode Kernel Analysis ===");
+        println!("Model: Qwen3-0.6B Q4_K");
+        println!("Layers: {}", ctx.model.layers.len());
 
-            // Prefill
-            let prefill_tokens: Vec<u32> = (1..=10).collect();
-            let _ = ctx.model.forward_gpu_native_batched(
-                &prefill_tokens,
-                &mut kv,
+        // Count operations per decode
+        let n_layers = ctx.model.layers.len();
+
+        // Each layer has:
+        // - 1 RMS Norm (attention_norm) - fused into FusedQKV
+        // - 1 FusedQKV (3 GEMV in one GEMM)
+        // - 2 RoPE (K and V)
+        // - 1 Flash Attention
+        // - 1 GEMV (wo)
+        // - 1 FusedAddNorm (attention output + residual)
+        // - 1 RMS Norm (ffn_norm) - fused into FusedGateUp
+        // - 1 FusedGateUp (2 GEMV in one GEMM)
+        // - 1 FusedSwiGLU
+        // - 1 GEMV (down)
+        // - 1 FusedAddNorm (FFN output + residual)
+
+        println!("\n--- Operation Counts ---");
+        println!("Per layer:");
+        println!("  FusedQKV:         1 (replaces 3 GEMV + 1 norm)");
+        println!("  RoPE:             2");
+        println!("  Flash Attention:  1");
+        println!("  GEMV (wo):        1");
+        println!("  FusedAddNorm:     2");
+        println!("  FusedGateUp:      1 (replaces 2 GEMV + 1 norm)");
+        println!("  FusedSwiGLU:      1");
+        println!("  GEMV (down):      1");
+        println!("  Total: {} ops/layer", 10);
+
+        let total_ops = 10 * n_layers;
+        println!("\nTotal for {} layers: {} operations", n_layers, total_ops);
+
+        // GEMV count: wo + down = 2 per layer
+        let total_gemv = 2 * n_layers;
+        println!("GEMV ops: {}", total_gemv);
+
+        // Measure actual decode
+        println!("\n--- Timing Breakdown ---");
+
+        // Time individual operations
+        let iterations = 20;
+
+        // GEMV (wo projection)
+        let layer = &ctx.model.layers[0];
+        let hidden_size = ctx.config.hidden_size;
+        let wo = layer.wo.as_ref().expect("No wo");
+        let wo_out_size = wo.shape[1];
+
+        use metal::MTLResourceOptions;
+        use std::rc::Rc;
+
+        let input_buffer: Rc<metal::Buffer> =
+            Rc::new(device.new_buffer_with_data(
+                vec![1.0f32; hidden_size].as_ptr() as *const _,
+                (hidden_size * 4) as u64,
+                MTLResourceOptions::StorageModeShared,
+            ));
+        let out_buffer: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+            (wo_out_size * 4) as u64,
+            MTLResourceOptions::StorageModeShared,
+        ));
+
+        let queue = gpu_ctx.queue();
+
+        // Test GEMV time
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let cb = queue.new_command_buffer_with_unretained_references();
+            let encoder = cb.new_compute_command_encoder();
+            ctx.model.gemv_encode(
+                &encoder,
+                &input_buffer,
+                hidden_size,
+                wo,
+                wo_out_size,
                 &gpu_ctx,
+                &out_buffer,
             );
-            println!("\nPrefilled 10 tokens\n");
+            encoder.end_encoding();
+            cb.commit();
+            cb.wait_until_completed();
+        }
+        let gemv_time = start.elapsed().as_micros() as f64 / iterations as f64;
+        println!("GEMV (wo, K=1024): {:.2} µs", gemv_time);
 
-            // Test individual kernel performance
-            use metal::Buffer;
-            use std::cell::RefCell;
-            use std::rc::Rc;
+        // Test down projection
+        let down = layer.w2.as_ref().expect("No down");
+        let down_out_size = hidden_size;
+        let intermediate_size = ctx.config.intermediate_size;
+        let down_input: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+            (intermediate_size * 4) as u64,
+            MTLResourceOptions::StorageModeShared,
+        ));
+        let down_out: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+            (down_out_size * 4) as u64,
+            MTLResourceOptions::StorageModeShared,
+        ));
 
-            let reuse_pool: Rc<RefCell<Vec<Rc<Buffer>>>> =
-                Rc::new(RefCell::new(Vec::new()));
-            let mut forward_pool = infer_train::buffer::ForwardBufferPool::new(
-                device.clone(),
-                reuse_pool.clone(),
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let cb = queue.new_command_buffer_with_unretained_references();
+            let encoder = cb.new_compute_command_encoder();
+            ctx.model.gemv_encode(
+                &encoder,
+                &down_input,
+                intermediate_size,
+                down,
+                down_out_size,
+                &gpu_ctx,
+                &down_out,
             );
+            encoder.end_encoding();
+            cb.commit();
+            cb.wait_until_completed();
+        }
+        let gemv_down_time =
+            start.elapsed().as_micros() as f64 / iterations as f64;
+        println!("GEMV (down, K=3072): {:.2} µs", gemv_down_time);
 
-            // Get layer 0 weights
-            let layer = &ctx.model.layers[0];
-            let attention_norm = layer.attention_norm.as_ref().unwrap();
-            let wq = layer.wq.as_ref().unwrap();
-            let wk = layer.wk.as_ref().unwrap();
-            let wv = layer.wv.as_ref().unwrap();
-            let wo = layer.wo.as_ref().unwrap();
-            let w1 = layer.w1.as_ref().unwrap();
-            let w2 = layer.w2.as_ref().unwrap();
-            let w3 = layer.w3.as_ref().unwrap();
+        // Test RMS Norm
+        let norm = layer.attention_norm.as_ref().expect("No norm");
+        let norm_buffer = gpu_ctx.get_or_create_buffer(norm);
+        let norm_out: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+            (hidden_size * 4) as u64,
+            MTLResourceOptions::StorageModeShared,
+        ));
 
-            // Create input buffer
-            let input_buffer = forward_pool.get(hidden_size * 4);
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let cb = queue.new_command_buffer_with_unretained_references();
+            let encoder = cb.new_compute_command_encoder();
+            gpu_ctx.rms_norm_encode(
+                &encoder,
+                &input_buffer,
+                &norm_buffer,
+                &norm_out,
+                1,
+                hidden_size,
+                1e-5,
+            );
+            encoder.end_encoding();
+            cb.commit();
+            cb.wait_until_completed();
+        }
+        let norm_time = start.elapsed().as_micros() as f64 / iterations as f64;
+        println!("RMS Norm: {:.2} µs", norm_time);
 
-            println!("=== Kernel Performance (Layer 0) ===\n");
+        // Test RoPE
+        let n_heads = ctx.config.n_heads;
+        let head_dim = ctx.config.head_dim;
+        let rope_in: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+            (n_heads * head_dim * 4) as u64,
+            MTLResourceOptions::StorageModeShared,
+        ));
+        let rope_out: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+            (n_heads * head_dim * 4) as u64,
+            MTLResourceOptions::StorageModeShared,
+        ));
 
-            // Test RMS Norm
-            {
-                let norm_buffer = forward_pool.get(hidden_size * 4);
-                let norm_weight = gpu_ctx.get_or_create_buffer(attention_norm);
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let cb = queue.new_command_buffer_with_unretained_references();
+            let encoder = cb.new_compute_command_encoder();
+            gpu_ctx.rope_neox_encode(
+                &encoder,
+                &rope_in,
+                &[100i32],
+                1,
+                n_heads,
+                head_dim,
+                10000.0,
+                1.0,
+                &rope_out,
+            );
+            encoder.end_encoding();
+            cb.commit();
+            cb.wait_until_completed();
+        }
+        let rope_time = start.elapsed().as_micros() as f64 / iterations as f64;
+        println!("RoPE: {:.2} µs", rope_time);
 
-                let command_buffer = gpu_ctx.queue().new_command_buffer();
-                let encoder = command_buffer.new_compute_command_encoder();
-                gpu_ctx.rms_norm_encode(
-                    &encoder,
-                    &input_buffer,
-                    &norm_weight,
-                    &norm_buffer,
-                    1,
-                    hidden_size,
-                    1e-5,
-                );
-                encoder.end_encoding();
+        // Test FusedSwiGLU
+        let silu_in: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+            (intermediate_size * 4) as u64,
+            MTLResourceOptions::StorageModeShared,
+        ));
+        let up_in: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+            (intermediate_size * 4) as u64,
+            MTLResourceOptions::StorageModeShared,
+        ));
+        let swiglu_out: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+            (intermediate_size * 4) as u64,
+            MTLResourceOptions::StorageModeShared,
+        ));
 
-                let start = Instant::now();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
-                let elapsed = start.elapsed();
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let cb = queue.new_command_buffer_with_unretained_references();
+            let encoder = cb.new_compute_command_encoder();
+            gpu_ctx.fused_swiglu_encode(
+                &encoder,
+                &silu_in,
+                &up_in,
+                &swiglu_out,
+                intermediate_size,
+            );
+            encoder.end_encoding();
+            cb.commit();
+            cb.wait_until_completed();
+        }
+        let swiglu_time =
+            start.elapsed().as_micros() as f64 / iterations as f64;
+        println!("FusedSwiGLU: {:.2} µs", swiglu_time);
 
-                println!("RMS Norm: {:?}", elapsed);
-            }
+        // Test FusedAddNorm
+        let lhs: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+            (hidden_size * 4) as u64,
+            MTLResourceOptions::StorageModeShared,
+        ));
+        let rhs: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+            (hidden_size * 4) as u64,
+            MTLResourceOptions::StorageModeShared,
+        ));
+        let add_norm_out: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+            (hidden_size * 4) as u64,
+            MTLResourceOptions::StorageModeShared,
+        ));
 
-            // Test Q projection
-            {
-                let q_out_size = wq.shape[1];
-                let q_buffer = forward_pool.get(q_out_size * 4);
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let cb = queue.new_command_buffer_with_unretained_references();
+            let encoder = cb.new_compute_command_encoder();
+            gpu_ctx.fused_add_norm_encode(
+                &encoder,
+                &lhs,
+                &rhs,
+                &norm_buffer,
+                &add_norm_out,
+                hidden_size,
+                1e-5,
+            );
+            encoder.end_encoding();
+            cb.commit();
+            cb.wait_until_completed();
+        }
+        let add_norm_time =
+            start.elapsed().as_micros() as f64 / iterations as f64;
+        println!("FusedAddNorm: {:.2} µs", add_norm_time);
 
-                let command_buffer = gpu_ctx.queue().new_command_buffer();
-                let encoder = command_buffer.new_compute_command_encoder();
-                ctx.model.gemv_encode(
-                    &encoder,
-                    &input_buffer,
-                    hidden_size,
-                    wq,
-                    q_out_size,
-                    &gpu_ctx,
-                    &q_buffer,
-                );
-                encoder.end_encoding();
+        // Calculate totals
+        println!("\n--- Estimated Total ---");
+        let gemv_total = (gemv_time + gemv_down_time) * total_gemv as f64 / 2.0;
+        let rope_total = rope_time * 2.0 * n_layers as f64;
+        let swiglu_total = swiglu_time * n_layers as f64;
+        let add_norm_total = add_norm_time * 2.0 * n_layers as f64;
+        let fa_total = 8.5 * n_layers as f64; // From Flash Attention profiler
 
-                let start = Instant::now();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
-                let elapsed = start.elapsed();
+        let estimated =
+            gemv_total + rope_total + swiglu_total + add_norm_total + fa_total;
 
-                println!(
-                    "Q projection ({}x{}): {:?}",
-                    hidden_size, q_out_size, elapsed
-                );
-            }
+        println!("GEMV total:       {:.1} µs", gemv_total);
+        println!("RoPE total:       {:.1} µs", rope_total);
+        println!("FusedSwiGLU total:{:.1} µs", swiglu_total);
+        println!("FusedAddNorm total:{:.1} µs", add_norm_total);
+        println!("Flash Attn total: {:.1} µs", fa_total);
+        println!("Estimated:        {:.1} µs", estimated);
 
-            // Test K projection
-            {
-                let k_out_size = wk.shape[1];
-                let k_buffer = forward_pool.get(k_out_size * 4);
+        // Compare with actual
+        println!("\n--- Actual Decode ---");
+        let start = Instant::now();
+        for _ in 0..10 {
+            ctx.model.forward_gpu_native_batched(&[1], &mut kv_cache, &gpu_ctx);
+        }
+        let actual = start.elapsed().as_micros() as f64 / 10.0;
+        println!("Actual:           {:.1} µs", actual);
 
-                let command_buffer = gpu_ctx.queue().new_command_buffer();
-                let encoder = command_buffer.new_compute_command_encoder();
-                ctx.model.gemv_encode(
-                    &encoder,
-                    &input_buffer,
-                    hidden_size,
-                    wk,
-                    k_out_size,
-                    &gpu_ctx,
-                    &k_buffer,
-                );
-                encoder.end_encoding();
+        let unaccounted = actual - estimated;
+        println!(
+            "\nUnaccounted:      {:.1} µs ({:.1}%)",
+            unaccounted,
+            unaccounted / actual * 100.0
+        );
+    }
 
-                let start = Instant::now();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
-                let elapsed = start.elapsed();
-
-                println!(
-                    "K projection ({}x{}): {:?}",
-                    hidden_size, k_out_size, elapsed
-                );
-            }
-
-            // Test V projection
-            {
-                let v_out_size = wv.shape[1];
-                let v_buffer = forward_pool.get(v_out_size * 4);
-
-                let command_buffer = gpu_ctx.queue().new_command_buffer();
-                let encoder = command_buffer.new_compute_command_encoder();
-                ctx.model.gemv_encode(
-                    &encoder,
-                    &input_buffer,
-                    hidden_size,
-                    wv,
-                    v_out_size,
-                    &gpu_ctx,
-                    &v_buffer,
-                );
-                encoder.end_encoding();
-
-                let start = Instant::now();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
-                let elapsed = start.elapsed();
-
-                println!(
-                    "V projection ({}x{}): {:?}",
-                    hidden_size, v_out_size, elapsed
-                );
-            }
-
-            // Test RoPE
-            {
-                let q_size = n_heads * head_dim;
-                let q_buffer = forward_pool.get(q_size * 4);
-                let q_rope = forward_pool.get(q_size * 4);
-
-                let command_buffer = gpu_ctx.queue().new_command_buffer();
-                let encoder = command_buffer.new_compute_command_encoder();
-                gpu_ctx.rope_neox_encode(
-                    &encoder,
-                    &q_buffer,
-                    &[0],
-                    1,
-                    n_heads,
-                    head_dim,
-                    10000.0,
-                    1.0,
-                    &q_rope,
-                );
-                encoder.end_encoding();
-
-                let start = Instant::now();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
-                let elapsed = start.elapsed();
-
-                println!("RoPE: {:?}", elapsed);
-            }
-
-            // Test Flash Attention
-            {
-                let q_size = n_heads * head_dim;
-                let q_buffer = forward_pool.get(q_size * 4);
-                let k_cache = kv.k_buffer(0);
-                let v_cache = kv.v_buffer(0);
-                let attn_out = forward_pool.get(q_size * 4);
-
-                let seq_k = kv.seq_len();
-                let n_kv_heads = wk.shape[1] / head_dim;
-
-                let command_buffer = gpu_ctx.queue().new_command_buffer();
-                let encoder = command_buffer.new_compute_command_encoder();
-                gpu_ctx.flash_attn_f16_encode(
-                    &encoder,
-                    1,
-                    n_heads,
-                    n_kv_heads,
-                    head_dim,
-                    seq_k,
-                    kv.max_seq(),
-                    &q_buffer,
-                    k_cache,
-                    v_cache,
-                    &attn_out,
-                );
-                encoder.end_encoding();
-
-                let start = Instant::now();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
-                let elapsed = start.elapsed();
-
-                println!("Flash Attention (seq_k={}): {:?}", seq_k, elapsed);
-            }
-
-            // Test Output projection
-            {
-                let wo_out_size = wo.shape[1];
-                let wo_buffer = forward_pool.get(wo_out_size * 4);
-
-                let command_buffer = gpu_ctx.queue().new_command_buffer();
-                let encoder = command_buffer.new_compute_command_encoder();
-                ctx.model.gemv_encode(
-                    &encoder,
-                    &input_buffer,
-                    hidden_size,
-                    wo,
-                    wo_out_size,
-                    &gpu_ctx,
-                    &wo_buffer,
-                );
-                encoder.end_encoding();
-
-                let start = Instant::now();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
-                let elapsed = start.elapsed();
-
-                println!(
-                    "Output projection ({}x{}): {:?}",
-                    hidden_size, wo_out_size, elapsed
-                );
-            }
-
-            // Test FFN gate
-            {
-                let gate_buffer = forward_pool.get(intermediate_size * 4);
-
-                let command_buffer = gpu_ctx.queue().new_command_buffer();
-                let encoder = command_buffer.new_compute_command_encoder();
-                ctx.model.gemv_encode(
-                    &encoder,
-                    &input_buffer,
-                    hidden_size,
-                    w1,
-                    intermediate_size,
-                    &gpu_ctx,
-                    &gate_buffer,
-                );
-                encoder.end_encoding();
-
-                let start = Instant::now();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
-                let elapsed = start.elapsed();
-
-                println!(
-                    "FFN gate ({}x{}): {:?}",
-                    hidden_size, intermediate_size, elapsed
-                );
-            }
-
-            // Test FFN up
-            {
-                let up_buffer = forward_pool.get(intermediate_size * 4);
-
-                let command_buffer = gpu_ctx.queue().new_command_buffer();
-                let encoder = command_buffer.new_compute_command_encoder();
-                ctx.model.gemv_encode(
-                    &encoder,
-                    &input_buffer,
-                    hidden_size,
-                    w3,
-                    intermediate_size,
-                    &gpu_ctx,
-                    &up_buffer,
-                );
-                encoder.end_encoding();
-
-                let start = Instant::now();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
-                let elapsed = start.elapsed();
-
-                println!(
-                    "FFN up ({}x{}): {:?}",
-                    hidden_size, intermediate_size, elapsed
-                );
-            }
-
-            // Test FFN down
-            {
-                let ffn_input = forward_pool.get(intermediate_size * 4);
-                let ffn_out = forward_pool.get(hidden_size * 4);
-
-                let command_buffer = gpu_ctx.queue().new_command_buffer();
-                let encoder = command_buffer.new_compute_command_encoder();
-                ctx.model.gemv_encode(
-                    &encoder,
-                    &ffn_input,
-                    intermediate_size,
-                    w2,
-                    hidden_size,
-                    &gpu_ctx,
-                    &ffn_out,
-                );
-                encoder.end_encoding();
-
-                let start = Instant::now();
-                command_buffer.commit();
-                command_buffer.wait_until_completed();
-                let elapsed = start.elapsed();
-
-                println!(
-                    "FFN down ({}x{}): {:?}",
-                    intermediate_size, hidden_size, elapsed
-                );
-            }
-
-            println!("\n=== Summary ===");
-            println!("Total kernels per layer: ~11");
-            println!(
-                "Total kernel time (estimated): {:.1} ms",
-                28.0 * 11.0 * 0.1
-            ); // Rough estimate
-        })
-        .join()
-        .unwrap();
+    #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+    {
+        println!("This benchmark requires Metal support");
     }
 }

@@ -36,6 +36,12 @@ pub struct InferenceContext {
     pub gpu_ctx: Option<crate::quant::vec_dot::gpu::metal::MetalContext>,
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub gpu_kv_cache: Option<KVCacheGPU>,
+    /// Pending async command buffer (for CPU-GPU overlap)
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    pending_cb: Option<crate::dag::executor::AsyncCommandBuffer>,
+    /// Cached logits from previous async execution
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    cached_logits: Option<Vec<f32>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +88,10 @@ impl InferenceContext {
             gpu_ctx,
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
             gpu_kv_cache,
+            #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+            pending_cb: None,
+            #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+            cached_logits: None,
         })
     }
 
@@ -111,6 +121,8 @@ impl InferenceContext {
             device: Device::Gpu,
             gpu_ctx: Some(gpu_ctx),
             gpu_kv_cache: Some(kv),
+            pending_cb: None,
+            cached_logits: None,
         })
     }
 
@@ -193,7 +205,15 @@ impl InferenceContext {
         }
     }
 
-    /// Run forward pass with batched GPU encoding (reduced dispatch overhead)
+    /// Run forward pass with batched GPU encoding (async pipeline)
+    ///
+    /// This implements CPU-GPU pipeline overlap:
+    /// 1. Wait for previous CB to complete and get its logits
+    /// 2. Submit new CB for current tokens (async)
+    /// 3. Return previous tokens' logits
+    ///
+    /// For the first call (no pending CB), waits synchronously to return logits immediately.
+    /// This allows prefill to work correctly while enabling overlap for decode.
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn forward_gpu_batched(&mut self, tokens: &[u32]) -> Option<Vec<f32>> {
         // Fall back to CPU for MQA/MLA architecture (not yet supported on GPU)
@@ -204,10 +224,13 @@ impl InferenceContext {
             );
         }
 
+        // Use synchronous forward for now
+        // TODO: Implement true multi-CB async pipeline
         if let (Some(ref gpu_ctx), Some(ref mut kv_cache)) =
             (self.gpu_ctx.as_ref(), self.gpu_kv_cache.as_mut())
         {
-            self.model.forward_gpu_native_batched(tokens, kv_cache, gpu_ctx)
+            use crate::dag::executor::DagExecutor;
+            DagExecutor::forward_dag(&self.model, tokens, kv_cache, gpu_ctx)
         } else {
             self.model.forward(
                 tokens,

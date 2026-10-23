@@ -1,201 +1,216 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-//! Profile Flash Attention performance
+//! Profile Flash Attention performance during decode
 
 fn main() {
+    let model_path =
+        "/Users/jia/Desktop/infer_train/Qwen3-0.6B-UD-Q4_K_XL.gguf";
+
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     {
+        use infer_train::inference::{Device, InferenceContext, KVCacheGPU};
         use infer_train::quant::vec_dot::gpu::metal::MetalContext;
+        use metal::MTLResourceOptions;
         use std::rc::Rc;
+        use std::time::Instant;
 
-        println!("=== Flash Attention Profile ===\n");
-
-        let gpu_ctx = MetalContext::new().unwrap();
+        let ctx = InferenceContext::from_gguf(model_path, Device::Gpu)
+            .expect("Failed to load model");
+        let gpu_ctx =
+            MetalContext::new().expect("Failed to create Metal context");
         let device = gpu_ctx.device();
         let queue = gpu_ctx.queue();
 
-        // Test dimensions from DeepSeek-R1-Distill-Qwen-1.5B
-        let n_heads = 12u64;
-        let n_kv_heads = 2u64; // MQA/GQA
-        let head_dim = 128u64;
-        let kv_seq_len = 128u64; // Context length
+        let mut kv_cache = KVCacheGPU::new(
+            &device,
+            &ctx.config,
+            ctx.config.max_position_embeddings,
+        );
 
-        println!("Config:");
-        println!("  n_heads: {}", n_heads);
-        println!("  n_kv_heads: {}", n_kv_heads);
-        println!("  head_dim: {}", head_dim);
-        println!("  kv_seq_len: {}", kv_seq_len);
+        // Prefill
+        println!("=== Prefilling ===");
+        let prefill_tokens: Vec<u32> = (0..100).collect();
+        ctx.model.forward_gpu_native_batched(
+            &prefill_tokens,
+            &mut kv_cache,
+            &gpu_ctx,
+        );
 
-        // Create test buffers
-        let q_size = n_heads * head_dim * 2; // F16
-        let k_size = n_kv_heads * kv_seq_len * head_dim * 2;
-        let v_size = n_kv_heads * kv_seq_len * head_dim * 2;
-        let out_size = n_heads * head_dim * 4; // F32
+        let n_layers = ctx.model.layers.len();
+        let n_heads = ctx.config.n_heads;
+        let n_kv_heads = ctx.config.n_kv_heads;
+        let head_dim = ctx.config.head_dim;
+        let seq_len = 101; // After prefill
 
-        let q_buffer =
-            Rc::new(device.new_buffer(
-                q_size,
-                metal::MTLResourceOptions::StorageModeShared,
-            ));
-        let k_buffer =
-            Rc::new(device.new_buffer(
-                k_size,
-                metal::MTLResourceOptions::StorageModeShared,
-            ));
-        let v_buffer =
-            Rc::new(device.new_buffer(
-                v_size,
-                metal::MTLResourceOptions::StorageModeShared,
-            ));
-        let out_buffer = Rc::new(device.new_buffer(
-            out_size,
-            metal::MTLResourceOptions::StorageModeShared,
+        println!("\n=== Flash Attention Profile ===");
+        println!(
+            "Layers: {}, n_heads: {}, n_kv_heads: {}, head_dim: {}",
+            n_layers, n_heads, n_kv_heads, head_dim
+        );
+        println!("seq_len: {}", seq_len);
+
+        // Create Q buffer
+        let q_buffer: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+            (n_heads * head_dim * 4) as u64,
+            MTLResourceOptions::StorageModeShared,
         ));
 
-        // Warmup
-        println!("\nWarming up...");
-        for _ in 0..10 {
-            let cmd = queue.new_command_buffer();
-            let encoder = cmd.new_compute_command_encoder();
+        let iterations = 10;
+
+        // Test single Flash Attention
+        println!("\n--- Single Flash Attention (per layer) ---");
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let cb = queue.new_command_buffer_with_unretained_references();
+            let encoder = cb.new_compute_command_encoder();
+
+            let k_buf = kv_cache.k_buffer(0);
+            let v_buf = kv_cache.v_buffer(0);
+            let output_buf: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+                (n_heads * head_dim * 4) as u64,
+                MTLResourceOptions::StorageModeShared,
+            ));
+
             gpu_ctx.flash_attn_f16_encode(
                 encoder,
                 1, // n_seqs
-                n_heads as usize,
-                n_kv_heads as usize,
-                head_dim as usize,
-                1, // seq_len = 1 for decode
-                kv_seq_len as usize,
+                n_heads,
+                n_kv_heads,
+                head_dim,
+                seq_len,
+                kv_cache.max_seq(),
                 &q_buffer,
-                &k_buffer,
-                &v_buffer,
-                &out_buffer,
+                k_buf,
+                v_buf,
+                &output_buf,
             );
+
             encoder.end_encoding();
-            cmd.commit();
-            cmd.wait_until_completed();
+            cb.commit();
+            cb.wait_until_completed();
         }
+        let fa_single_time =
+            start.elapsed().as_micros() as f64 / iterations as f64;
+        println!("Flash Attention time: {:.2} µs", fa_single_time);
 
-        // Benchmark
-        println!("\n=== Flash Attention Decode (seq_len=1) ===");
-        let mut times = Vec::new();
-        for i in 0..100 {
-            let cmd = queue.new_command_buffer();
-            let encoder = cmd.new_compute_command_encoder();
-            gpu_ctx.flash_attn_f16_encode(
-                encoder,
-                1,
-                n_heads as usize,
-                n_kv_heads as usize,
-                head_dim as usize,
-                1,
-                kv_seq_len as usize,
-                &q_buffer,
-                &k_buffer,
-                &v_buffer,
-                &out_buffer,
-            );
-            encoder.end_encoding();
+        // Test all layers Flash Attention (sequential CBs)
+        println!("\n--- All Layers Flash Attention (sequential CBs) ---");
+        let start = Instant::now();
+        for _ in 0..iterations {
+            for layer_idx in 0..n_layers {
+                let cb = queue.new_command_buffer_with_unretained_references();
+                let encoder = cb.new_compute_command_encoder();
 
-            let start = std::time::Instant::now();
-            cmd.commit();
-            cmd.wait_until_completed();
-            times.push(start.elapsed());
+                let k_buf = kv_cache.k_buffer(layer_idx);
+                let v_buf = kv_cache.v_buffer(layer_idx);
+                let output_buf: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+                    (n_heads * head_dim * 4) as u64,
+                    MTLResourceOptions::StorageModeShared,
+                ));
 
-            if i < 5 || i >= 95 {
-                println!("  Run {}: {:?}", i + 1, times.last().unwrap());
-            }
-        }
-
-        let avg: std::time::Duration =
-            times.iter().sum::<std::time::Duration>() / times.len() as u32;
-        println!("\n  Average: {:?}", avg);
-
-        // Calculate bandwidth
-        // K read: n_kv_heads * kv_seq_len * head_dim * 2 bytes
-        // V read: n_kv_heads * kv_seq_len * head_dim * 2 bytes
-        // Total read: 2 * 2 * 2 * 128 * 128 = 131072 bytes = 128 KB
-        let k_bytes = n_kv_heads * kv_seq_len * head_dim * 2;
-        let v_bytes = n_kv_heads * kv_seq_len * head_dim * 2;
-        let total_bytes = k_bytes + v_bytes;
-        let bandwidth_gbps = total_bytes as f64 / avg.as_secs_f64() / 1e9;
-
-        println!("\n  KV cache read: {} KB", total_bytes / 1024);
-        println!("  Bandwidth: {:.1} GB/s", bandwidth_gbps);
-
-        // Test with longer context
-        println!("\n=== Testing with longer context ===");
-        for kv_len in [256, 512, 1024, 2048].iter() {
-            let k_buf = Rc::new(device.new_buffer(
-                n_kv_heads * kv_len * head_dim * 2,
-                metal::MTLResourceOptions::StorageModeShared,
-            ));
-            let v_buf = Rc::new(device.new_buffer(
-                n_kv_heads * kv_len * head_dim * 2,
-                metal::MTLResourceOptions::StorageModeShared,
-            ));
-
-            // Warmup
-            let cmd = queue.new_command_buffer();
-            let encoder = cmd.new_compute_command_encoder();
-            gpu_ctx.flash_attn_f16_encode(
-                encoder,
-                1,
-                n_heads as usize,
-                n_kv_heads as usize,
-                head_dim as usize,
-                1,
-                *kv_len as usize,
-                &q_buffer,
-                &k_buf,
-                &v_buf,
-                &out_buffer,
-            );
-            encoder.end_encoding();
-            cmd.commit();
-            cmd.wait_until_completed();
-
-            // Benchmark
-            let mut times = Vec::new();
-            for _ in 0..50 {
-                let cmd = queue.new_command_buffer();
-                let encoder = cmd.new_compute_command_encoder();
                 gpu_ctx.flash_attn_f16_encode(
                     encoder,
                     1,
-                    n_heads as usize,
-                    n_kv_heads as usize,
-                    head_dim as usize,
-                    1,
-                    *kv_len as usize,
+                    n_heads,
+                    n_kv_heads,
+                    head_dim,
+                    seq_len,
+                    kv_cache.max_seq(),
                     &q_buffer,
-                    &k_buf,
-                    &v_buf,
-                    &out_buffer,
+                    k_buf,
+                    v_buf,
+                    &output_buf,
                 );
+
                 encoder.end_encoding();
-                let start = std::time::Instant::now();
-                cmd.commit();
-                cmd.wait_until_completed();
-                times.push(start.elapsed());
+                cb.commit();
+                cb.wait_until_completed();
+            }
+        }
+        let fa_all_sequential =
+            start.elapsed().as_micros() as f64 / iterations as f64;
+        println!("Total time (sequential CBs): {:.2} µs", fa_all_sequential);
+        println!("Per layer: {:.2} µs", fa_all_sequential / n_layers as f64);
+
+        // Test all layers Flash Attention (single CB)
+        println!("\n--- All Layers Flash Attention (single CB) ---");
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let cb = queue.new_command_buffer_with_unretained_references();
+
+            for layer_idx in 0..n_layers {
+                let encoder = cb.new_compute_command_encoder();
+
+                let k_buf = kv_cache.k_buffer(layer_idx);
+                let v_buf = kv_cache.v_buffer(layer_idx);
+                let output_buf: Rc<metal::Buffer> = Rc::new(device.new_buffer(
+                    (n_heads * head_dim * 4) as u64,
+                    MTLResourceOptions::StorageModeShared,
+                ));
+
+                gpu_ctx.flash_attn_f16_encode(
+                    encoder,
+                    1,
+                    n_heads,
+                    n_kv_heads,
+                    head_dim,
+                    seq_len,
+                    kv_cache.max_seq(),
+                    &q_buffer,
+                    k_buf,
+                    v_buf,
+                    &output_buf,
+                );
+
+                encoder.end_encoding();
             }
 
-            let avg =
-                times.iter().sum::<std::time::Duration>() / times.len() as u32;
-            let total_bytes = 2 * n_kv_heads * kv_len * head_dim * 2;
-            let bw = total_bytes as f64 / avg.as_secs_f64() / 1e9;
-
-            println!("  kv_seq_len={}: {:?} ({:.1} GB/s)", kv_len, avg, bw);
+            cb.commit();
+            cb.wait_until_completed();
         }
+        let fa_all_batched =
+            start.elapsed().as_micros() as f64 / iterations as f64;
+        println!("Total time (single CB): {:.2} µs", fa_all_batched);
+        println!("Per layer: {:.2} µs", fa_all_batched / n_layers as f64);
 
-        println!("\n=== Summary ===");
-        println!("Flash Attention decode latency at kv_seq_len=128: {:?}", avg);
-        println!("Per-layer contribution (28 layers): {:?}", avg * 28);
-        println!("Compare with total decode time: ~27ms");
+        let overlap_speedup = fa_all_sequential / fa_all_batched;
+        println!("Batched speedup: {:.2}x", overlap_speedup);
+
+        // Compare with decode time
+        println!("\n=== Comparison with Decode ===");
+        let start = Instant::now();
+        for _ in 0..10 {
+            ctx.model.forward_gpu_native_batched(&[1], &mut kv_cache, &gpu_ctx);
+        }
+        let decode_time = start.elapsed().as_micros() as f64 / 10.0;
+
+        println!("Full decode time: {:.2} µs", decode_time);
+        println!("Flash Attention total: {:.2} µs", fa_all_batched);
+        println!(
+            "Flash Attention %: {:.1}%",
+            fa_all_batched / decode_time * 100.0
+        );
+
+        // Calculate bandwidth for Flash Attention
+        let kv_bytes = seq_len * n_kv_heads * head_dim * 4 * 2; // K + V
+        let q_bytes = n_heads * head_dim * 4;
+        let output_bytes = n_heads * head_dim * 4;
+        let total_fa_bytes = (kv_bytes + q_bytes + output_bytes) as f64;
+
+        let fa_bandwidth = total_fa_bytes / (fa_single_time * 1e-6) / 1e9;
+        let fa_util = fa_bandwidth / 100.0 * 100.0;
+
+        println!("\n=== Flash Attention Bandwidth ===");
+        println!("KV cache: {} KB", kv_bytes / 1024);
+        println!("Q + Output: {} KB", (q_bytes + output_bytes) / 1024);
+        println!("Total: {:.1} KB", total_fa_bytes / 1024.0);
+        println!("Bandwidth: {:.1} GB/s", fa_bandwidth);
+        println!("Utilization: {:.1}%", fa_util);
     }
 
     #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
     {
-        eprintln!("Requires Metal support on aarch64");
+        println!("This benchmark requires Metal support");
     }
 }

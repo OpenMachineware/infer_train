@@ -163,7 +163,28 @@ impl AsyncCommandBuffer {
         }
     }
 
-    /// Check if command buffer has completed
+    /// Check if command buffer has completed (non-blocking)
+    pub fn check_completed(&mut self) -> bool {
+        if self.completed {
+            return true;
+        }
+
+        if let Some(cb_ptr) = self.command_buffer {
+            unsafe {
+                let cb = &*cb_ptr;
+                // MTLCommandBufferStatusCompleted == 4
+                use metal::MTLCommandBufferStatus;
+                let status = cb.status();
+                if status == MTLCommandBufferStatus::Completed {
+                    self.completed = true;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if command buffer has completed (deprecated - use check_completed)
     pub fn is_completed(&self) -> bool {
         self.completed
     }
@@ -207,10 +228,9 @@ pub struct DagForwardResult {
 }
 
 impl DagExecutor {
-    /// Execute forward pass by traversing DAG nodes
+    /// Execute forward pass by traversing DAG nodes (synchronous)
     ///
-    /// This is the synchronous version - waits for GPU completion before returning.
-    /// For async execution, use `forward_dag_async` instead.
+    /// Simple and efficient: commit + wait
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn forward_dag(
         model: &LlamaModel,
@@ -218,16 +238,16 @@ impl DagExecutor {
         kv_cache: &mut KVCacheGPU,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) -> Option<Vec<f32>> {
-        let mut result =
+        let result =
             Self::forward_dag_async(model, tokens, kv_cache, gpu_ctx, None);
 
-        // Wait for GPU completion and get logits
-        if let Some(ref mut async_cb) = result.pending_cb {
-            async_cb.wait();
-            Some(async_cb.get_logits())
-        } else {
-            result.logits
-        }
+        // Synchronous: wait and get logits
+        result.logits.or_else(|| {
+            result.pending_cb.map(|mut cb| {
+                cb.wait();
+                cb.get_logits()
+            })
+        })
     }
 
     /// Execute forward pass asynchronously
@@ -541,7 +561,8 @@ impl DagExecutor {
         let async_cb =
             AsyncCommandBuffer::new(output_buffer, vocab_size, command_buffer);
 
-        // Commit the command buffer for async execution
+        // Commit for async execution
+        // Metal executes committed CBs in order
         command_buffer.commit();
 
         // CRITICAL: Advance KV cache position

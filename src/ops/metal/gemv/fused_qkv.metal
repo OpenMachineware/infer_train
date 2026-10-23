@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-// Fused QKV GEMM - combines Q, K, V projections into one kernel
-// Instead of 3 separate GEMVs with small M (256 each), we do one GEMM with M=Q+K+V
+// Fused Q/K/V GEMV kernel - single dispatch for three projections
 
 #include <metal_stdlib>
 using namespace metal;
@@ -10,153 +9,172 @@ using namespace metal;
 #define QK_K 256
 #define N_SIMDWIDTH 32
 
-// Include block structure definitions
-#define GGML_COMMON_DECL_METAL
-#include "../include/blocks.h"
+// Fused GEMV args for Q/K/V projections
+struct fused_qkv_args {
+    int32_t ne00;  // K dimension (hidden_size)
+    int32_t ne01_q; // M dimension for Q
+    int32_t ne01_k; // M dimension for K
+    int32_t ne01_v; // M dimension for V
+    uint64_t nb01_q; // Row stride for Q weight
+    uint64_t nb01_k; // Row stride for K weight
+    uint64_t nb01_v; // Row stride for V weight
+    int32_t ne0_q;   // Output rows for Q
+    int32_t ne0_k;   // Output rows for K
+    int32_t ne0_v;   // Output rows for V
+};
 
-// Fused QKV kernel for Q5_K format
-// Processes Q, K, V projections in one kernel launch
-// Grid: [M_total / rows_per_tg, batch_size]
-// Each threadgroup handles multiple rows to increase parallelism
-
-kernel void kernel_fused_qkv_q5_k(
-    device const char * src0_q [[buffer(0)]],  // Q weights
-    device const char * src0_k [[buffer(1)]],  // K weights
-    device const char * src0_v [[buffer(2)]],  // V weights
-    device const float * src1 [[buffer(3)]],   // Input vector
-    device float * dst_q [[buffer(4)]],        // Q output
-    device float * dst_k [[buffer(5)]],        // K output
-    device float * dst_v [[buffer(6)]],        // V output
-    constant uint32_t & m_q [[buffer(7)]],     // Q output size
-    constant uint32_t & m_k [[buffer(8)]],     // K output size
-    constant uint32_t & m_v [[buffer(9)]],     // V output size
-    constant uint32_t & k_dim [[buffer(10)]],  // Hidden size
-    constant uint64_t & nb01_q [[buffer(11)]], // Q row stride
-    constant uint64_t & nb01_k [[buffer(12)]], // K row stride
-    constant uint64_t & nb01_v [[buffer(13)]], // V row stride
-    uint3 tgpig [[threadgroup_position_in_grid]],
-    ushort tiisg [[thread_index_in_simdgroup]])
+// Fused Q/K/V GEMV kernel for Q4_K quantization
+// Reads input once, computes all three projections
+template<short nr0>
+void kernel_fused_qkv_q4_k_f32_impl(
+    constant fused_qkv_args & args,
+    device const char * src_q,  // Q weights
+    device const char * src_k,  // K weights
+    device const char * src_v,  // V weights
+    device const float * src_x, // Input vector
+    device float * dst_q,       // Q output
+    device float * dst_k,       // K output
+    device float * dst_v,       // V output
+    uint3 tgpig,
+    ushort tiisg,
+    ushort sgitg)
 {
-    const int m_total = m_q + m_k + m_v;
-    const int nb = k_dim / QK_K;
+    const short NSG = 2; // Number of simdgroups
 
-    // Determine which projection this threadgroup handles
-    const int row_global = tgpig.x;
-
-    device const char * weight_ptr;
-    device float * dst_ptr;
-    uint64_t nb01;
-    int row_local;
-
-    if (row_global < (int)m_q) {
-        // Q projection
-        weight_ptr = src0_q;
-        dst_ptr = dst_q;
-        nb01 = nb01_q;
-        row_local = row_global;
-    } else if (row_global < (int)(m_q + m_k)) {
-        // K projection
-        weight_ptr = src0_k;
-        dst_ptr = dst_k;
-        nb01 = nb01_k;
-        row_local = row_global - m_q;
-    } else {
-        // V projection
-        weight_ptr = src0_v;
-        dst_ptr = dst_v;
-        nb01 = nb01_v;
-        row_local = row_global - m_q - m_k;
-    }
-
-    device const block_q5_K * blocks = (device const block_q5_K *)(weight_ptr + row_local * nb01);
-    device const float * yy = src1;
-
-    float sumf = 0.0f;
-
-    // Y-vector caching in registers
-    float yl[16], yh[16];
-
-    // Thread ID decomposition
-    const short tid = tiisg/4;
-    const short ix  = tiisg%4;
-    const short iq  = tid/4;
-    const short ir  = tid%4;
-
-    // Compute offsets
-    const short l0 = 8*ir;
-    const short q_offset = 32*iq + l0;
-    const short y_offset = 64*iq + l0;
-
-    // Scale extraction masks
     constexpr uint16_t kmask1 = 0x3f3f;
     constexpr uint16_t kmask2 = 0x0f0f;
     constexpr uint16_t kmask3 = 0xc0c0;
 
-    uint16_t sc16[4];
-    thread const uint8_t * sc8 = (thread const uint8_t *)sc16;
+    const short ix = tiisg/8;  // 0...3
+    const short it = tiisg%8;  // 0...7
+    const short iq = it/4;     // 0 or 1
+    const short ir = it%4;     // 0...3
 
-    // Each thread starts at different block (4-block batching)
-    device const float * y1 = yy + ix*QK_K + y_offset;
+    const int nb = args.ne00/QK_K;
 
-    for (int i = ix; i < nb; i += 4) {
-        device const block_q5_K * block = blocks + i;
+    const int r0 = tgpig.x;
 
-        device const uint8_t * q1 = block->qs + q_offset;
-        device const half * dh = (device const half *)&block->d;
-        device const uint16_t * a = (device const uint16_t *)block->scales + iq;
+    const int first_row = (r0 * NSG + sgitg) * nr0;
 
-        // Y-vector caching
-        device const float * y2 = y1 + 128;
-        float4 sumy = {0.f, 0.f, 0.f, 0.f};
-        for (short l = 0; l < 8; ++l) {
-            yl[l+0] = y1[l+ 0]; sumy[0] += yl[l+0];
-            yl[l+8] = y1[l+32]; sumy[1] += yl[l+8];
-            yh[l+0] = y2[l+ 0]; sumy[2] += yh[l+0];
-            yh[l+8] = y2[l+32]; sumy[3] += yh[l+8];
+    // Y-vector is shared across Q/K/V
+    device const float * y = src_x;
+    float yl[16];
+    float yh[16];
+
+    // Process each projection separately to handle different sizes
+    for (int proj = 0; proj < 3; proj++) {
+        // Determine which weight and output to use
+        device const block_q4_K * x;
+        device float * dst;
+        int ne01, out_size;
+        uint64_t nb01;
+
+        switch (proj) {
+            case 0: // Q projection
+                x = (device const block_q4_K *) (src_q + first_row * args.nb01_q);
+                dst = dst_q + first_row;
+                ne01 = args.ne01_q;
+                out_size = args.ne0_q;
+                nb01 = args.nb01_q;
+                break;
+            case 1: // K projection
+                x = (device const block_q4_K *) (src_k + first_row * args.nb01_k);
+                dst = dst_k + first_row;
+                ne01 = args.ne01_k;
+                out_size = args.ne0_k;
+                nb01 = args.nb01_k;
+                break;
+            case 2: // V projection
+                x = (device const block_q4_K *) (src_v + first_row * args.nb01_v);
+                dst = dst_v + first_row;
+                ne01 = args.ne01_v;
+                out_size = args.ne0_v;
+                nb01 = args.nb01_v;
+                break;
         }
 
-        // Extract scales using masks
-        sc16[0] = a[0] & kmask1;
-        sc16[1] = a[2] & kmask1;
-        sc16[2] = ((a[4] >> 0) & kmask2) | ((a[0] & kmask3) >> 2);
-        sc16[3] = ((a[4] >> 4) & kmask2) | ((a[2] & kmask3) >> 2);
+        float sumf[nr0] = {0.f};
 
-        // Float4 accumulation
-        float4 acc1 = {0.f};
+        device const float * y4 = y + ix * QK_K + 64 * iq + 8 * ir;
 
-        device const uint8_t * q2 = q1 + 64;
+        uint16_t sc16[4];
+        thread const uint8_t * sc8 = (thread const uint8_t *)sc16;
 
-        // Process 4 values at a time
-        FOR_UNROLL(short l = 0; l < 8; ++l) {
-            const uint8_t aux = q1[l];
-            const float d = dh[0];
-            const float m = dh[1];
+        for (int ib = ix; ib < nb; ib += 4) {
+            float4 sumy = {0.f, 0.f, 0.f, 0.f};
 
-            float sumq = d * sc8[l];
-            acc1[0] += sumq * (aux & 0x0F);
-            acc1[1] += sumq * (aux >> 4);
+            // Load Y vector (shared input)
+            for (short i = 0; i < 8; ++i) {
+                yl[i+0] = y4[i+  0]; sumy[0] += yl[i+0];
+                yl[i+8] = y4[i+ 32]; sumy[1] += yl[i+8];
+                yh[i+0] = y4[i+128]; sumy[2] += yh[i+0];
+                yh[i+8] = y4[i+160]; sumy[3] += yh[i+8];
+            }
+
+            device const uint16_t * sc = (device const uint16_t *)x[ib].scales + iq;
+            device const uint16_t * q1 = (device const uint16_t *)x[ib].qs + 16 * iq + 4 * ir;
+            device const half     * dh = &x[ib].d;
+
+            for (short row = 0; row < nr0; row++) {
+                sc16[0] = sc[0] & kmask1;
+                sc16[1] = sc[2] & kmask1;
+                sc16[2] = ((sc[4] >> 0) & kmask2) | ((sc[0] & kmask3) >> 2);
+                sc16[3] = ((sc[4] >> 4) & kmask2) | ((sc[2] & kmask3) >> 2);
+
+                device const uint16_t * q2 = q1 + 32;
+
+                float4 acc1 = {0.f, 0.f, 0.f, 0.f};
+                float4 acc2 = {0.f, 0.f, 0.f, 0.f};
+
+                #pragma unroll
+                for (short i = 0; i < 4; ++i) {
+                    acc1[0] += yl[2*i + 0] * (q1[i] & 0x000F);
+                    acc1[1] += yl[2*i + 1] * (q1[i] & 0x0F00);
+                    acc1[2] += yl[2*i + 8] * (q1[i] & 0x00F0);
+                    acc1[3] += yl[2*i + 9] * (q1[i] & 0xF000);
+                    acc2[0] += yh[2*i + 0] * (q2[i] & 0x000F);
+                    acc2[1] += yh[2*i + 1] * (q2[i] & 0x0F00);
+                    acc2[2] += yh[2*i + 8] * (q2[i] & 0x00F0);
+                    acc2[3] += yh[2*i + 9] * (q2[i] & 0xF000);
+                }
+
+                sumf[row] += dh[0] * ((acc1[0] + 1.f/256.f * acc1[1]) * sc8[0] +
+                                      (acc1[2] + 1.f/256.f * acc1[3]) * sc8[1] * 1.f/16.f +
+                                      (acc2[0] + 1.f/256.f * acc2[1]) * sc8[4] +
+                                      (acc2[2] + 1.f/256.f * acc2[3]) * sc8[5] * 1.f/16.f) -
+                             dh[1] * (sumy[0] * sc8[2] + sumy[1] * sc8[3] + sumy[2] * sc8[6] + sumy[3] * sc8[7]);
+
+                q1 += nb01/2;
+                sc += nb01/2;
+                dh += nb01/2;
+            }
+
+            y4 += 4 * QK_K;
         }
 
-        FOR_UNROLL(short l = 0; l < 8; ++l) {
-            const uint8_t aux = q2[l];
-            const float d = dh[0];
-            const float m = dh[1];
-
-            float sumq = d * sc8[8+l];
-            acc1[2] += sumq * (aux & 0x0F);
-            acc1[3] += sumq * (aux >> 4);
+        // Write results
+        for (int row = 0; row < nr0 && first_row + row < ne01; ++row) {
+            float sum_all = simd_sum(sumf[row]);
+            if (tiisg == 0) {
+                dst[first_row + row] = sum_all;
+            }
         }
-
-        sumf += (acc1[0] + acc1[1]) * (sumy[0] + sumy[1]) +
-                (acc1[2] + acc1[3]) * (sumy[2] + sumy[3]);
-
-        y1 += 4*QK_K;
     }
+}
 
-    // Simdgroup reduction
-    sumf = simd_sum(sumf);
-
-    if (tiisg == 0) {
-        dst_ptr[row_local] = sumf;
-    }
+[[host_name("kernel_fused_qkv_q4_k_f32")]]
+kernel void kernel_fused_qkv_q4_k_f32(
+    device const char * src_q [[buffer(0)]],
+    device const char * src_k [[buffer(1)]],
+    device const char * src_v [[buffer(2)]],
+    device const float * src_x [[buffer(3)]],
+    device float * dst_q [[buffer(4)]],
+    device float * dst_k [[buffer(5)]],
+    device float * dst_v [[buffer(6)]],
+    constant fused_qkv_args & args [[buffer(7)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    kernel_fused_qkv_q4_k_f32_impl<2>(args, src_q, src_k, src_v, src_x, dst_q, dst_k, dst_v, tgpig, tiisg, sgitg);
 }

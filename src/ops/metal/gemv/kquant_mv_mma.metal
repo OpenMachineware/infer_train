@@ -201,8 +201,113 @@ template [[host_name("kernel_mul_mv_q4_K_f32_mma_nsg8")]]  kernel kquant_mma_t k
 template [[host_name("kernel_mul_mv_q4_K_f32_mma_nsg16")]] kernel kquant_mma_t kernel_mul_mv_q4_K_f32_mma<16>;
 template [[host_name("kernel_mul_mv_q4_K_f32_mma_nsg32")]] kernel kquant_mma_t kernel_mul_mv_q4_K_f32_mma<32>;
 
-typedef decltype(kernel_mul_mv_q4_K_f32_mma_debug<32>) kquant_mma_debug_t;
+// ============================================================================
+// Q4_K Multi-Row GEMV for Decode
+// NT: Number of 8-row tiles per threadgroup (1-4)
+// Each threadgroup processes NT*8 rows simultaneously
+// Better memory coalescing and GPU utilization for decode scenario
+// ============================================================================
+template<short NT, short NSG>
+kernel void kernel_mul_mv_q4_K_f32_decode(
+    device const char * src0 [[buffer(0)]],
+    device const float * src1 [[buffer(1)]],
+    device float * dst [[buffer(2)]],
+    constant kquant_mv_mma_args & args [[buffer(3)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]])
+{
+    const int nb = args.ne00 / QK_K;  // Number of 256-element blocks
+    const int row0 = tgpig.x * NT * 8;  // First row for this threadgroup
 
-template [[host_name("kernel_mul_mv_q4_K_f32_mma_debug_nsg8")]]  kernel kquant_mma_debug_t kernel_mul_mv_q4_K_f32_mma_debug<8>;
-template [[host_name("kernel_mul_mv_q4_K_f32_mma_debug_nsg16")]] kernel kquant_mma_debug_t kernel_mul_mv_q4_K_f32_mma_debug<16>;
-template [[host_name("kernel_mul_mv_q4_K_f32_mma_debug_nsg32")]] kernel kquant_mma_debug_t kernel_mul_mv_q4_K_f32_mma_debug<32>;
+    if (row0 >= (int)args.ne01) return;
+
+    // Each simdgroup processes a different K-slice
+    float sumf[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};  // One sum per row in tile
+
+    for (int ib = sgitg; ib < nb; ib += NSG) {
+        device const float * yb = src1 + ib * QK_K;
+
+        // Process all NT*8 rows for this K-slice
+        for (short t = 0; t < NT; t++) {
+            for (short r = 0; r < 8; r++) {
+                const int row = row0 + t * 8 + r;
+                if (row >= (int)args.ne01) break;
+
+                device const block_q4_K * block =
+                    (device const block_q4_K *)(src0 + row * args.nb01) + ib;
+
+                device const half * dh = (device const half *)&block->d;
+                float d = dh[0];
+
+                // Each thread processes a subset of the block
+                for (int idx = tiisg; idx < 8 * 16; idx += 32) {
+                    const int is = idx / 16;
+                    const int k = idx % 16;
+
+                    uchar2 sc_min;
+                    if (is < 4) {
+                        sc_min.x = block->scales[is] & 63;
+                        sc_min.y = block->scales[is + 4] & 63;
+                    } else {
+                        sc_min.x = (block->scales[is + 4] & 0x0F) | ((block->scales[is - 4] & 0xC0) >> 2);
+                        sc_min.y = (block->scales[is + 4] >> 4) | ((block->scales[is] & 0xC0) >> 2);
+                    }
+
+                    float sc = (float)sc_min.x - 32.0f;
+                    float m = (float)sc_min.y - 32.0f;
+                    float dl = d * sc;
+                    float ml = d * m;
+
+                    device const uint8_t * qs = block->qs + is * 16;
+                    device const float * y_sub = yb + is * 32;
+
+                    uchar byte = qs[k];
+                    float v0 = (byte & 0x0F);
+                    float v1 = ((byte >> 4) & 0x0F);
+                    sumf[t * 8 + r] += (dl * v0 - ml) * y_sub[k];
+                    sumf[t * 8 + r] += (dl * v1 - ml) * y_sub[k + 16];
+                }
+            }
+        }
+    }
+
+    // Simdgroup-level reduction for each row
+    float sum_sg[8];
+    for (short i = 0; i < 8; i++) {
+        sum_sg[i] = simd_sum(sumf[i]);
+    }
+
+    // Threadgroup memory for cross-simdgroup reduction
+    threadgroup float partial_sums[32 * 8];  // Max NSG * 8 rows
+    if (tiisg == 0) {
+        for (short i = 0; i < 8; i++) {
+            partial_sums[sgitg * 8 + i] = sum_sg[i];
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Thread 0 of simdgroup 0 writes final results
+    if (sgitg == 0 && tiisg == 0) {
+        for (short t = 0; t < NT; t++) {
+            for (short r = 0; r < 8; r++) {
+                const int row = row0 + t * 8 + r;
+                if (row >= (int)args.ne01) break;
+
+                float total = 0.0f;
+                for (short sg = 0; sg < NSG; sg++) {
+                    total += partial_sums[sg * 8 + t * 8 + r];
+                }
+                dst[row] = total;
+            }
+        }
+    }
+}
+
+// Instantiate decode kernels for different NT/NSG combinations
+typedef decltype(kernel_mul_mv_q4_K_f32_decode<4, 8>) kquant_decode_t;
+
+template [[host_name("kernel_mul_mv_q4_K_f32_decode_nt1_nsg8")]]  kernel kquant_decode_t kernel_mul_mv_q4_K_f32_decode<1, 8>;
+template [[host_name("kernel_mul_mv_q4_K_f32_decode_nt2_nsg8")]]  kernel kquant_decode_t kernel_mul_mv_q4_K_f32_decode<2, 8>;
+template [[host_name("kernel_mul_mv_q4_K_f32_decode_nt4_nsg8")]]  kernel kquant_decode_t kernel_mul_mv_q4_K_f32_decode<4, 8>;
+template [[host_name("kernel_mul_mv_q4_K_f32_decode_nt4_nsg16")]] kernel kquant_decode_t kernel_mul_mv_q4_K_f32_decode<4, 16>;

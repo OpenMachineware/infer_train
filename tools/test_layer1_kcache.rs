@@ -136,13 +136,19 @@ fn main() {
             let v = forward_pool.get_zeroed(v_out_size * 4);
 
             model
-                .gemv_encode(encoder, &normed, wq, q_out_size, gpu_ctx, &q)
+                .gemv_encode(
+                    encoder, &normed, 1024, wq, q_out_size, gpu_ctx, &q,
+                )
                 .expect("Q failed");
             model
-                .gemv_encode(encoder, &normed, wk, k_out_size, gpu_ctx, &k)
+                .gemv_encode(
+                    encoder, &normed, 1024, wk, k_out_size, gpu_ctx, &k,
+                )
                 .expect("K failed");
             model
-                .gemv_encode(encoder, &normed, wv, v_out_size, gpu_ctx, &v)
+                .gemv_encode(
+                    encoder, &normed, 1024, wv, v_out_size, gpu_ctx, &v,
+                )
                 .expect("V failed");
             println!("Encoded Layer 1 QKV projections");
 

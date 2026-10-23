@@ -247,6 +247,11 @@ path = "tools/bench_nsg_large_k.rs"
 required-features = ["metal"]
 
 [[bin]]
+name = "bench-decode-nt"
+path = "tools/bench_decode_nt.rs"
+required-features = ["metal"]
+
+[[bin]]
 name = "test-q4k-gemv"
 path = "tools/test_q4k_gemv.rs"
 
@@ -422,6 +427,12 @@ path = "tools/profile_forward.rs"
 [[bin]]
 name = "profile-flash-attn"
 path = "tools/profile_flash_attn.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "profile-overlap-analysis"
+path = "tools/profile_overlap_analysis.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-gemm-prefill"
@@ -439,6 +450,46 @@ required-features = ["metal"]
 [[bin]]
 name = "measure-dispatch-breakdown"
 path = "tools/measure_dispatch_breakdown.rs"
+
+[[bin]]
+name = "profile-operation-breakdown"
+path = "tools/profile_operation_breakdown.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "profile-gemv-detailed"
+path = "tools/profile_gemv_detailed.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "profile-gemv-bandwidth"
+path = "tools/profile_gemv_bandwidth.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "count-dispatches"
+path = "tools/count_dispatches.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "analyze-other-ops"
+path = "tools/analyze_other_ops.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "profile-buffer-usage"
+path = "tools/profile_buffer_usage.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "analyze-kv-cache-access"
+path = "tools/analyze_kv_cache_access.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "profile-decode-instrumented"
+path = "tools/profile_decode_instrumented.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-batched-dispatch"
@@ -842,6 +893,7 @@ path = "tools/profile_decode_breakdown.rs"
 [[bin]]
 name = "profile-decode-kernels"
 path = "tools/profile_decode_kernels.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-nan-issue"
@@ -1067,4 +1119,56 @@ required-features = ["metal"]
 [[bin]]
 name = "bench-sampling"
 path = "tools/bench_sampling.rs"
+
+[[bin]]
+name = "test-multicb-pipeline"
+path = "tools/test_multicb_pipeline.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-threaded-cb"
+path = "tools/test_threaded_cb.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "profile-operation-timing"
+path = "tools/profile_operation_timing.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "profile-decode-ops-detailed"
+path = "tools/profile_decode_ops_detailed.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "profile-kernel-overlap"
+path = "tools/profile_kernel_overlap.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "analyze-fusion-patterns"
+path = "tools/analyze_fusion_patterns.rs"
+
+[[bin]]
+name = "compare-decode-timing"
+path = "tools/compare_decode_timing.rs"
+
+[[bin]]
+name = "analyze-weight-access"
+path = "tools/analyze_weight_access.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "profile-bandwidth-gap"
+path = "tools/profile_bandwidth_gap.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-async-safe"
+path = "tools/test_async_safe.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-q6k-gemv"
+path = "tools/test_q6k_gemv.rs"
 required-features = ["metal"]

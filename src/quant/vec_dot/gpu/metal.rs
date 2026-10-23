@@ -59,8 +59,7 @@ impl GemmArgs {
     }
 }
 
-/// K-quant MV kernel arguments (self-written kernels)
-/// Simpler structure than GemmArgs - only needs essential dimensions
+/// K-quant MV kernel arguments (matching kernel's kquant_mv_args)
 #[repr(C)]
 struct KquantMvArgs {
     ne00: u32, // K dimension (input size)
@@ -4032,7 +4031,7 @@ impl MetalContext {
             &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
 
-        // Threadgroup configuration (matching llama.cpp)
+        // Threadgroup configuration (matching kernel expectations)
         // Q4_K: NSG=2, N_R0=2 (2 simdgroups, each processes 2 rows)
         // Q5_K: NSG=2, N_R0=1 (2 simdgroups, each processes 1 row)
         // Q6_K: NSG=1, N_R0=2 (1 simdgroup, processes 2 rows)
@@ -5561,15 +5560,7 @@ impl MetalContext {
         let nb = k / 256; // QK_K = 256
         let nb01 = (nb * std::mem::size_of::<BlockQ6K>()) as u64; // Byte stride per row
 
-        // Simple args structure matching kernel's kquant_mv_args
-        #[repr(C)]
-        struct KquantMvArgs {
-            ne00: u32, // K dimension
-            ne01: u32, // M dimension
-            nb01: u64, // Byte stride
-        }
-
-        let args = KquantMvArgs { ne00: k as u32, ne01: m as u32, nb01 };
+        let args = KquantMvArgs::new(m, k, nb01);
 
         let weights_size = weights.len() * std::mem::size_of::<BlockQ6K>();
         let input_size = input.len() * std::mem::size_of::<f32>();
@@ -5660,14 +5651,15 @@ impl MetalContext {
             &args as *const KquantMvArgs as *const std::ffi::c_void,
         );
 
-        // Thread group configuration - Simple version (1 row per threadgroup)
+        // Thread group configuration - matches kernel expectations (NSG=1, N_R0=2)
+        // 1 simdgroup per threadgroup, each processes 2 rows
         let thread_group_size = MTLSize {
             width: 32, // 1 SIMD group
             height: 1,
             depth: 1,
         };
         let thread_group_count = MTLSize {
-            width: m as u64, // 1 threadgroup per row
+            width: ((m + 1) / 2) as u64, // Ceiling division, 2 rows per threadgroup
             height: 1,
             depth: 1,
         };
@@ -13131,7 +13123,7 @@ impl MetalContext {
 
         // Threadgroup configuration (same as regular GEMV)
         let (nsg, nr0) = match dtype {
-            crate::model::tensor::DataType::Q6_K => (1, 2),
+            crate::model::tensor::DataType::Q6_K => (2, 2),
             _ => (2, 1), // Q4_K, Q5_K
         };
 
