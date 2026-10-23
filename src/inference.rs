@@ -207,13 +207,12 @@ impl InferenceContext {
 
     /// Run forward pass with batched GPU encoding (async pipeline)
     ///
-    /// This implements CPU-GPU pipeline overlap:
+    /// Implements llama.cpp style CPU-GPU pipeline:
     /// 1. Wait for previous CB to complete and get its logits
     /// 2. Submit new CB for current tokens (async)
     /// 3. Return previous tokens' logits
     ///
-    /// For the first call (no pending CB), waits synchronously to return logits immediately.
-    /// This allows prefill to work correctly while enabling overlap for decode.
+    /// This keeps GPU busy while CPU prepares next operation.
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn forward_gpu_batched(&mut self, tokens: &[u32]) -> Option<Vec<f32>> {
         // Fall back to CPU for MQA/MLA architecture (not yet supported on GPU)
@@ -224,19 +223,40 @@ impl InferenceContext {
             );
         }
 
-        // Use synchronous forward for now
-        // TODO: Implement true multi-CB async pipeline
+        // Step 1: Wait for previous CB and get its logits (if any)
+        if let Some(mut pending_cb) = self.pending_cb.take() {
+            pending_cb.wait();
+            let logits = pending_cb.get_logits();
+            self.cached_logits = Some(logits);
+        }
+
+        // Step 2: Submit new CB asynchronously
         if let (Some(ref gpu_ctx), Some(ref mut kv_cache)) =
             (self.gpu_ctx.as_ref(), self.gpu_kv_cache.as_mut())
         {
             use crate::dag::executor::DagExecutor;
-            DagExecutor::forward_dag(&self.model, tokens, kv_cache, gpu_ctx)
+
+            let result = DagExecutor::forward_dag_async(
+                &self.model,
+                tokens,
+                kv_cache,
+                gpu_ctx,
+                self.pending_cb.as_ref(),
+            );
+
+            // Store pending CB for next call
+            self.pending_cb = result.pending_cb;
         } else {
-            self.model.forward(
+            // Fallback to CPU
+            return self.model.forward(
                 tokens,
                 &mut KVCache::new(&self.config, 2048, KVCacheFormat::F32),
-            )
+            );
         }
+
+        // Step 3: Return cached logits from previous call
+        // For first call, cached_logits is None - caller should call again
+        self.cached_logits.take()
     }
 
     /// Batch prefill using GPU GEMM (more efficient for multiple tokens)

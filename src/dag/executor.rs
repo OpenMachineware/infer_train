@@ -238,16 +238,33 @@ impl DagExecutor {
         kv_cache: &mut KVCacheGPU,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) -> Option<Vec<f32>> {
+        let total_start = std::time::Instant::now();
         let result =
             Self::forward_dag_async(model, tokens, kv_cache, gpu_ctx, None);
 
+        let encode_time = std::time::Instant::now()
+            .duration_since(total_start);
+
         // Synchronous: wait and get logits
-        result.logits.or_else(|| {
+        let wait_start = std::time::Instant::now();
+        let logits = result.logits.or_else(|| {
             result.pending_cb.map(|mut cb| {
                 cb.wait();
                 cb.get_logits()
             })
-        })
+        });
+        let gpu_time = wait_start.elapsed();
+
+        if std::env::var("INFER_PROFILE_TIMING").is_ok() {
+            eprintln!(
+                "[PROFILE] Encode: {:.2} ms, GPU: {:.2} ms, Total: {:.2} ms",
+                encode_time.as_micros() as f64 / 1000.0,
+                gpu_time.as_micros() as f64 / 1000.0,
+                total_start.elapsed().as_micros() as f64 / 1000.0
+            );
+        }
+
+        logits
     }
 
     /// Execute forward pass asynchronously
@@ -362,6 +379,7 @@ impl DagExecutor {
 
         // Use single command buffer for entire graph
         // Use retained command buffer for async execution
+        let encode_start = std::time::Instant::now();
         let command_buffer = queue.new_command_buffer();
 
         let encoder = command_buffer.new_compute_command_encoder();
@@ -504,6 +522,8 @@ impl DagExecutor {
         // DO NOT wait - let the caller decide when to wait
         // This enables CPU-GPU overlap (software pipelining)
         encoder.end_encoding();
+
+        let encode_time = encode_start.elapsed();
 
         // Get output tensor from the exit node
         let exit_node_id = dag.dag.exit_points[0];

@@ -29,11 +29,16 @@ fn main() {
         gpu_ctx.config.head_dim
     );
 
-    // Pre-fill with prompt
+    // Pre-fill with prompt (synchronous)
     let prompt_tokens: Vec<u32> = vec![1];
     let prefill_start = std::time::Instant::now();
-    let logits =
-        gpu_ctx.forward_gpu_batched(&prompt_tokens).expect("Prefill failed");
+
+    // First call submits CB, returns None
+    let _ = gpu_ctx.forward_gpu_batched(&prompt_tokens);
+    // Second call waits for CB, returns logits
+    let logits = gpu_ctx.forward_gpu_batched(&[1])
+        .expect("Prefill failed");
+
     let prefill_time = prefill_start.elapsed();
 
     // Debug: check logits
@@ -65,26 +70,55 @@ fn main() {
         .unwrap_or(0);
     println!("Generated: {}", next_token);
 
-    // Decode benchmark
+    // Decode benchmark with async pipeline
     let num_decode = 10;
     let mut total_time = std::time::Duration::ZERO;
-    let mut logits = logits;
+
+    // Submit first decode (async)
+    let mut pending_logits = gpu_ctx.forward_gpu_batched(&[next_token]);
 
     for i in 0..num_decode {
         let start = std::time::Instant::now();
-        logits =
-            gpu_ctx.forward_gpu_batched(&[next_token]).expect("Decode failed");
+
+        // Get previous result and submit next token
+        let current_logits = if i < num_decode - 1 {
+            // Sample next token first (CPU work overlaps GPU execution)
+            let sampled = pending_logits.as_ref().map(|l| {
+                l.iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| {
+                        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(i, _)| i as u32)
+                    .unwrap_or(0)
+            }).unwrap_or(next_token);
+
+            // Submit next token (async) and get previous result
+            let result = gpu_ctx.forward_gpu_batched(&[sampled]);
+            next_token = sampled;
+            let prev_result = pending_logits;
+            pending_logits = result;
+            prev_result
+        } else {
+            // Last iteration: get final result
+            gpu_ctx.forward_gpu_batched(&[next_token])
+        };
+
         let elapsed = start.elapsed();
         total_time += elapsed;
 
-        next_token = logits
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| {
-                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(i, _)| i as u32)
-            .unwrap_or(0);
+        // Sample token from result
+        if let Some(l) = current_logits.as_ref() {
+            next_token = l
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| {
+                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(i, _)| i as u32)
+                .unwrap_or(0);
+        }
+
         println!(
             "  Token {}: {} ({} ms)",
             i + 1,
