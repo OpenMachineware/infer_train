@@ -493,7 +493,7 @@ impl DagBuilder {
             v_node_id,
             q_out_size,
             k_out_size,
-            v_out_size,
+            _v_out_size,
         ) = if let Some(ref qkv_weight) = layer.attn_qkv {
             // Fused QKV: single weight tensor for Q/K/V (Qwen3.8-style)
             let q_out_size = model.config.n_heads * model.config.head_dim;

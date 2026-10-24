@@ -208,7 +208,7 @@ impl Model {
         &self,
         hidden: &[f32],
         layer_idx: usize,
-        kv_cache: &mut crate::inference::KVCache,
+        _kv_cache: &mut crate::inference::KVCache,
     ) -> Option<Vec<f32>> {
         match self.architecture {
             Architecture::Llama => {
@@ -457,7 +457,7 @@ impl Model {
         if let Some(ssm_out_weight) = &layer.ssm_out {
             // For Qwen3.5: ssm_out shape=[6144, 5120]
             // This projects from intermediate to hidden_size
-            let ssm_intermediate = ssm_out_weight.shape[0];
+            let _ssm_intermediate = ssm_out_weight.shape[0];
 
             // Simple projection (actual SSM is more complex)
             // For now, just use the output projection as a placeholder

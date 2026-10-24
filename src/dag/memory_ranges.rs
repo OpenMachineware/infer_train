@@ -6,10 +6,6 @@
 //! Based on llama.cpp's ggml_mem_ranges implementation.
 //! Tracks memory access patterns to determine if operations can execute concurrently.
 
-use metal::Buffer as MetalBuffer;
-use metal::ComputeCommandEncoderRef;
-use std::rc::Rc;
-
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryAccessType {

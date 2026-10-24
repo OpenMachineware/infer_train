@@ -5,8 +5,7 @@
 //!
 //! Executes operations by traversing optimized DAG nodes
 
-use super::graph::{DagNode, Operation, OptimizedDag};
-use crate::model::LlamaModel;
+use super::graph::{DagNode, Operation};
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use crate::buffer::ForwardBufferPool;
@@ -2319,12 +2318,14 @@ impl DagExecutor {
     }
 
     /// Get layer index from DAG node (if it belongs to a specific layer)
+    #[allow(dead_code)]
     fn get_node_layer_idx(node: &DagNode) -> Option<usize> {
         // Use the node's layer_idx field
         node.layer_idx
     }
 
     /// Get output tensor IDs from a DAG node operation
+    #[allow(dead_code)]
     fn get_node_outputs(op: &Operation) -> Vec<usize> {
         match op {
             Operation::EmbeddingLookup { output, .. } => vec![*output],
@@ -2364,6 +2365,7 @@ impl DagExecutor {
     }
 
     /// Get input tensor IDs from a DAG node operation
+    #[allow(dead_code)]
     fn get_node_inputs(op: &Operation) -> Vec<usize> {
         match op {
             Operation::EmbeddingLookup { .. } => vec![],

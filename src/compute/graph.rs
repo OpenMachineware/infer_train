@@ -274,7 +274,7 @@ impl GraphBuilder {
     pub fn rope(
         mut self,
         input: &str,
-        pos: usize,
+        _pos: usize,
         output: &str,
         n_heads: usize,
         head_dim: usize,

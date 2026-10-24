@@ -97,38 +97,44 @@ impl fmt::Display for GpuCapabilities {
 
 /// Detect GPU capabilities
 pub fn detect() -> GpuCapabilities {
-    // Try Metal first (macOS)
+    // macOS with Metal feature
     #[cfg(all(target_os = "macos", feature = "metal"))]
     {
         if let Some(gpu) = detect_metal() {
             return gpu;
         }
+        // Metal detection failed, return default
+        return GpuCapabilities::default();
     }
 
-    // Fallback for macOS without Metal feature
+    // macOS without Metal feature
     #[cfg(all(target_os = "macos", not(feature = "metal")))]
     {
         return detect_metal_fallback();
     }
 
-    // Try CUDA (Linux/Windows with NVIDIA GPU)
-    #[cfg(feature = "cuda")]
+    // Non-macOS platforms
+    #[cfg(not(target_os = "macos"))]
     {
-        if let Some(gpu) = detect_cuda() {
-            return gpu;
+        // Try CUDA (Linux/Windows with NVIDIA GPU)
+        #[cfg(feature = "cuda")]
+        {
+            if let Some(gpu) = detect_cuda() {
+                return gpu;
+            }
         }
-    }
 
-    // Try ROCm (Linux with AMD GPU)
-    #[cfg(feature = "rocm")]
-    {
-        if let Some(gpu) = detect_rocm() {
-            return gpu;
+        // Try ROCm (Linux with AMD GPU)
+        #[cfg(feature = "rocm")]
+        {
+            if let Some(gpu) = detect_rocm() {
+                return gpu;
+            }
         }
-    }
 
-    // No GPU detected
-    GpuCapabilities::default()
+        // No GPU detected
+        GpuCapabilities::default()
+    }
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]

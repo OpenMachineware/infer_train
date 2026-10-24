@@ -145,6 +145,7 @@ impl DagOptimizer {
 
     /// Fuse gate and up projections (both use ffn_norm output)
     /// Similar to QKV fusion but for 2 projections
+    #[allow(dead_code)]
     fn fuse_gate_up_projections(dag: &mut ComputeDag) -> usize {
         let mut fused_count = 0;
         let mut nodes_to_remove = Vec::new();
@@ -185,7 +186,7 @@ impl DagOptimizer {
                             if let Operation::Gemv {
                                 weight: other_weight,
                                 output: other_output,
-                                out_size: other_out_size,
+                                out_size: _other_out_size,
                                 ..
                             } = other_op
                             {
@@ -317,6 +318,7 @@ impl DagOptimizer {
 
     /// Fuse RMSNorm + Gemv → FusedNormLinear
     /// Only fuses when the norm output has exactly ONE consumer (the Gemv)
+    #[allow(dead_code)]
     fn fuse_norm_gemv(dag: &mut ComputeDag) -> usize {
         let mut fused_count = 0;
         let mut nodes_to_remove = Vec::new();
@@ -543,6 +545,7 @@ impl DagOptimizer {
     /// Fuse GEMV + Add → FusedGemvAdd
     /// Combines GEMV output with residual addition
     /// Pattern: output = (W @ input) + residual
+    #[allow(dead_code)]
     fn fuse_gemv_add(dag: &mut ComputeDag) -> usize {
         let mut fused_count = 0;
         let mut nodes_to_remove = Vec::new();

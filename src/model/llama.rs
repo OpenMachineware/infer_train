@@ -739,7 +739,7 @@ impl LlamaModel {
         //
         // We compute GEMV directly by iterating over rows and extracting expert weights
 
-        let hidden_size = hidden.len();
+        let _hidden_size = hidden.len();
         let n_experts = gate_exps.shape[2];
 
         // Compute gate and up using interleaved expert weights
@@ -776,7 +776,7 @@ impl LlamaModel {
         expert_idx: usize,
         hidden_size: usize,
     ) -> Option<Vec<f32>> {
-        let intermediate_size = hidden_ffn.len();
+        let _intermediate_size = hidden_ffn.len();
         let n_experts = down_exps.shape[2];
         self.gemv_expert(
             hidden_ffn,
@@ -1818,13 +1818,14 @@ impl LlamaModel {
         )?;
 
         // 2. QKV projections (support standard and MQA architectures)
-        let (q, k, v, q_out_size, k_out_size, v_out_size) = self.get_qkv_proj(
-            layer,
-            &normed,
-            self.config.n_heads,
-            n_kv_heads,
-            head_dim,
-        )?;
+        let (q, k, v, q_out_size, k_out_size, _v_out_size) = self
+            .get_qkv_proj(
+                layer,
+                &normed,
+                self.config.n_heads,
+                n_kv_heads,
+                head_dim,
+            )?;
 
         // For MLA, the head_dim for K/V is different from Q
         let k_head_dim = if layer.attn_kv_a_mqa.is_some() {
@@ -1842,8 +1843,8 @@ impl LlamaModel {
 
         // For standard attention, apply Q/K norms (Qwen-style)
         // For MQA, norms are already applied in compute_qkv
-        let mut q = q;
-        let mut k = k;
+        let q = q;
+        let k = k;
         if layer.wk.is_some() {
             // Standard attention - apply Q/K norms if present
             if let Some(ref q_norm) = layer.q_norm {
@@ -1928,7 +1929,7 @@ impl LlamaModel {
 
         // For MLA, use key_length as head_dim for both Q and K
         // In MLA, Q is projected to qk_head_dim (key_length), not standard head_dim
-        let actual_head_dim = if layer.attn_kv_a_mqa.is_some() {
+        let _actual_head_dim = if layer.attn_kv_a_mqa.is_some() {
             self.config.key_length
         } else {
             q_head_dim
@@ -2054,7 +2055,7 @@ impl LlamaModel {
 
         // Optimize by processing in blocks for better cache behavior
         // For Q6_K: block_size = 256
-        let block_size = 256;
+        let _block_size = 256;
 
         match w.dtype {
             crate::model::tensor::DataType::Q6_K => {

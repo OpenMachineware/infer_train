@@ -6,12 +6,11 @@
 //! Coordinates forward pass execution across GPU and CPU backends.
 //! Handles architecture detection, path selection, and KV cache lifecycle.
 
-use crate::buffer::{BufferManager, ComputeDevice};
-use crate::executor::OperationExecutor;
+use crate::buffer::ComputeDevice;
 use crate::inference::{KVCache, KVCacheBase, KVCacheFormat};
 use crate::model::llama::LlamaModel;
 use crate::orchestrator::architecture::Architecture;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use crate::quant::vec_dot::gpu::MetalContext;
@@ -27,12 +26,6 @@ pub struct ForwardOrchestrator {
     /// Model reference
     model: Arc<LlamaModel>,
 
-    /// Buffer manager
-    buffer_mgr: Arc<Mutex<BufferManager>>,
-
-    /// Operation executor
-    executor: OperationExecutor,
-
     /// Detected architecture
     architecture: Architecture,
 
@@ -45,13 +38,8 @@ pub struct ForwardOrchestrator {
 
 impl ForwardOrchestrator {
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    pub fn new(
-        model: Arc<LlamaModel>,
-        buffer_mgr: Arc<Mutex<BufferManager>>,
-        gpu_ctx: Arc<Mutex<MetalContext>>,
-    ) -> Self {
+    pub fn new(model: Arc<LlamaModel>) -> Self {
         let architecture = Architecture::detect(&model);
-        let executor = OperationExecutor::new(buffer_mgr.clone(), gpu_ctx);
 
         // Pre-allocate KV cache
         let kv_cache = KVCache::new(
@@ -67,23 +55,12 @@ impl ForwardOrchestrator {
             ComputeDevice::Cpu
         };
 
-        Self {
-            model,
-            buffer_mgr,
-            executor,
-            architecture,
-            kv_cache,
-            preferred_device,
-        }
+        Self { model, architecture, kv_cache, preferred_device }
     }
 
     #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
-    pub fn new(
-        model: Arc<LlamaModel>,
-        buffer_mgr: Arc<Mutex<BufferManager>>,
-    ) -> Self {
+    pub fn new(model: Arc<LlamaModel>) -> Self {
         let architecture = Architecture::detect(&model);
-        let executor = OperationExecutor::new(buffer_mgr.clone());
 
         // Pre-allocate KV cache
         let kv_cache = KVCache::new(
@@ -94,8 +71,6 @@ impl ForwardOrchestrator {
 
         Self {
             model,
-            buffer_mgr,
-            executor,
             architecture,
             kv_cache,
             preferred_device: ComputeDevice::Cpu,

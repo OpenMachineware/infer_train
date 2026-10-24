@@ -85,7 +85,12 @@ impl Op {
             Op::Rope { seq_len, n_heads, head_dim, .. } => {
                 (*seq_len as u64) * (*n_heads as u64) * (*head_dim as u64) * 10
             }
-            Op::FlashAttention { seq_len, n_heads, n_kv_heads, head_dim } => {
+            Op::FlashAttention {
+                seq_len,
+                n_heads: _,
+                n_kv_heads,
+                head_dim,
+            } => {
                 // Simplified: 4 * seq_len^2 * n_heads * head_dim
                 let s = *seq_len as u64;
                 (*n_kv_heads as u64) * (*head_dim as u64) * 4 * s * s

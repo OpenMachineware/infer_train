@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use metal::{Buffer, Device, MTLResourceOptions};
 

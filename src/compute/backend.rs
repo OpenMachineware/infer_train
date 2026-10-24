@@ -122,6 +122,7 @@ pub trait Backend {
 
 /// CPU backend implementation.
 pub struct CpuBackend {
+    #[allow(unused)]
     num_threads: usize,
 }
 
@@ -291,11 +292,11 @@ impl Backend for CpuBackend {
         input: &Storage,
         weight: &Storage,
         output: &mut Storage,
-        eps: f32,
+        _eps: f32,
     ) -> Result<(), String> {
-        let input_data = input.as_bytes().ok_or("Input not on CPU")?;
-        let weight_data = weight.as_bytes().ok_or("Weight not on CPU")?;
-        let output_data = output.as_bytes().ok_or("Output not on CPU")?;
+        let _input_data = input.as_bytes().ok_or("Input not on CPU")?;
+        let _weight_data = weight.as_bytes().ok_or("Weight not on CPU")?;
+        let _output_data = output.as_bytes().ok_or("Output not on CPU")?;
 
         // TODO: Implement RMS norm
         Err("RMS norm not implemented on CPU backend".to_string())
@@ -369,7 +370,7 @@ impl Backend for CpuBackend {
 impl CpuBackend {
     fn infer_output_shape(
         op: &OpType,
-        inputs: &[&Storage],
+        _inputs: &[&Storage],
     ) -> Result<Vec<usize>, String> {
         match op {
             OpType::RmsNorm { .. } => {

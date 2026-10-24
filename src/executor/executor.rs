@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-use crate::buffer::{
-    BufferId, BufferLocation, BufferManager, BufferRef, ComputeDevice,
-};
+use crate::buffer::{BufferId, BufferManager, ComputeDevice};
 use crate::executor::Op;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -15,6 +13,7 @@ use crate::quant::vec_dot::gpu::MetalContext;
 /// Automatically handles device selection and data movement.
 pub struct OperationExecutor {
     /// Buffer manager for memory operations
+    #[allow(dead_code)]
     buffer_mgr: std::sync::Arc<std::sync::Mutex<BufferManager>>,
 
     /// GPU context (Metal on macOS)
@@ -152,8 +151,8 @@ impl OperationExecutor {
 
     fn execute_cpu(
         &mut self,
-        op: &Op,
-        inputs: &[BufferId],
+        #[allow(unused_variables)] op: &Op,
+        _inputs: &[BufferId],
         output: BufferId,
     ) -> BufferId {
         #[cfg(debug_assertions)]
