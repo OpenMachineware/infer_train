@@ -253,11 +253,12 @@ fn check_memory_and_barrier(
     }
 
     if needs_barrier {
-        // TEMPORARILY DISABLED: Insert GPU barrier
-        // The memory_barrier_with_resources call needs investigation
-        // For now, just reset the ranges and continue without barrier
-        // This is safe because Metal's implicit guarantees for concurrent dispatch
-        // already provide correct ordering for dependent operations
+        // Insert GPU memory barrier to ensure proper synchronization
+        // This is critical for concurrent kernel execution
+        if std::env::var("INFER_DEBUG_MEM_RANGES").is_ok() {
+            eprintln!("[MEM] Inserting GPU barrier due to memory conflict");
+        }
+        MemoryRanges::insert_gpu_barrier(encoder);
         mem_ranges.reset();
     }
 
@@ -474,6 +475,8 @@ impl DagExecutor {
             );
 
         // Traverse DAG nodes in execution order
+        // Note: Multi-threaded encoding temporarily disabled due to ExecutionContext lifetime constraints
+        // TODO: Implement thread-safe ExecutionContext or use multiple command buffers (llama.cpp approach)
         for node_id in &dag.execution_order {
             let node = &dag.dag.nodes[*node_id];
 

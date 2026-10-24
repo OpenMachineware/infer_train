@@ -7,6 +7,7 @@
 //! Tracks memory access patterns to determine if operations can execute concurrently.
 
 use metal::Buffer as MetalBuffer;
+use metal::ComputeCommandEncoderRef;
 use std::rc::Rc;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -168,6 +169,35 @@ impl MemoryRanges {
     /// Get number of tracked ranges
     pub fn len(&self) -> usize {
         self.ranges.len()
+    }
+
+    /// Insert GPU memory barrier to ensure proper synchronization
+    ///
+    /// This is critical for concurrent kernel execution to work correctly.
+    /// Based on llama.cpp's use of `memoryBarrierWithScope:`.
+    ///
+    /// # Safety
+    /// Uses Objective-C runtime to call Metal API directly.
+    pub fn insert_gpu_barrier(encoder: &ComputeCommandEncoderRef) {
+        // Use Objective-C msg_send to call memoryBarrierWithScope:
+        // This is the same approach llama.cpp uses
+        //
+        // Rust metal crate doesn't expose this API directly, so we use
+        // the Objective-C runtime.
+        //
+        // MTLMemoryScopeDevice = 1 (device-wide synchronization)
+        #[cfg(target_os = "macos")]
+        unsafe {
+            use objc::msg_send;
+            use objc::runtime::Object;
+
+            let encoder_ptr = encoder.as_ptr() as *mut Object;
+            let _: () = msg_send![encoder_ptr, memoryBarrierWithScope: 1usize];
+        }
+
+        // Alternative: use memory_barrier_with_resources if available
+        // But this requires enumerating all conflicting buffers
+        // For simplicity, use device-wide barrier
     }
 }
 
