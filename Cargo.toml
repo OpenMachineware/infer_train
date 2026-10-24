@@ -44,6 +44,10 @@ name = "trace-sequence"
 path = "tools/trace_sequence.rs"
 
 [[bin]]
+name = "check-decode-nan-detailed"
+path = "tools/check_decode_nan_detailed.rs"
+
+[[bin]]
 name = "test-long-text"
 path = "tools/test_long_text.rs"
 
@@ -555,6 +559,7 @@ num_cpus = "1.16"
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 metal = "0.31"
+objc = "0.2"
 
 [dev-dependencies]
 approx = "0.5"
@@ -1172,3 +1177,16 @@ required-features = ["metal"]
 name = "test-q6k-gemv"
 path = "tools/test_q6k_gemv.rs"
 required-features = ["metal"]
+
+[[bin]]
+name = "check-nan-after-gpu"
+path = "tools/check_nan_after_gpu.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "check-output-dtype"
+path = "tools/check_output_dtype.rs"
+
+[[bin]]
+name = "test-flash-batched"
+path = "tools/test_flash_batched.rs"
