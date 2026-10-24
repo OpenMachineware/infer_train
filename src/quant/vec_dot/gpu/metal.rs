@@ -93,6 +93,7 @@ pub struct MetalContext {
     mv_f16_library: Library,
     mv_f16_short_pipeline: ComputePipelineState,
     mv_f16_basic_pipeline: ComputePipelineState,
+    mv_f16_f16_pipeline: ComputePipelineState, // F16 weights + F16 input
     mv_f16_4_nsg1_pipeline: ComputePipelineState,
     mv_f16_4_nsg2_pipeline: ComputePipelineState,
     mv_f16_4_nsg4_pipeline: ComputePipelineState,
@@ -296,6 +297,7 @@ impl Clone for MetalContext {
             mv_f16_library: self.mv_f16_library.clone(),
             mv_f16_short_pipeline: self.mv_f16_short_pipeline.clone(),
             mv_f16_basic_pipeline: self.mv_f16_basic_pipeline.clone(),
+            mv_f16_f16_pipeline: self.mv_f16_f16_pipeline.clone(),
             mv_f16_4_nsg1_pipeline: self.mv_f16_4_nsg1_pipeline.clone(),
             mv_f16_4_nsg2_pipeline: self.mv_f16_4_nsg2_pipeline.clone(),
             mv_f16_4_nsg4_pipeline: self.mv_f16_4_nsg4_pipeline.clone(),
@@ -749,6 +751,16 @@ impl MetalContext {
             .new_compute_pipeline_state_with_function(&mv_f16_basic_kernel)
             .map_err(|e| {
                 format!("Failed to create F16 GEMV basic pipeline: {}", e)
+            })?;
+
+        // F16×F16 GEMV pipeline (for F16 weights + F16 input)
+        let mv_f16_f16_kernel = mv_f16_library
+            .get_function("kernel_mul_mv_f16_f16", None)
+            .map_err(|e| format!("Failed to get F16×F16 GEMV kernel: {}", e))?;
+        let mv_f16_f16_pipeline = device
+            .new_compute_pipeline_state_with_function(&mv_f16_f16_kernel)
+            .map_err(|e| {
+                format!("Failed to create F16×F16 GEMV pipeline: {}", e)
             })?;
 
         // Create separate pipelines for each NSG value
@@ -2141,9 +2153,9 @@ impl MetalContext {
                 )
             })?;
         let flash_decode_mma_batched_kernel = flash_decode_mma_batched_library
-            .get_function("flash_decode_true_mma_f16", None)
+            .get_function("flash_decode_batched_f16", None)
             .map_err(|e| {
-                format!("Failed to get flash_decode_true_mma_f16 kernel: {}", e)
+                format!("Failed to get flash_decode_batched_f16 kernel: {}", e)
             })?;
         let flash_decode_mma_batched_pipeline = device
             .new_compute_pipeline_state_with_function(
@@ -2577,6 +2589,7 @@ impl MetalContext {
             mv_f16_library,
             mv_f16_short_pipeline,
             mv_f16_basic_pipeline,
+            mv_f16_f16_pipeline,
             mv_f16_4_nsg1_pipeline,
             mv_f16_4_nsg2_pipeline,
             mv_f16_4_nsg4_pipeline,
@@ -13078,6 +13091,146 @@ impl MetalContext {
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
     }
 
+    /// Q4_K GEMM: Y = W @ X
+    /// W is Q4_K quantized [M, K], X is F16 [N, K], Y is F32 [N, M]
+    pub fn mul_mm_q4_k_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize,
+        n: usize,
+        k: usize,
+    ) {
+        let nb_per_row = k / 256;
+        let nb01 = (nb_per_row * std::mem::size_of::<BlockQ4K>()) as u64;
+
+        #[repr(C)]
+        struct MulMmArgs {
+            ne00: i32,
+            ne02: i32,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            r2: i16,
+            r3: i16,
+        }
+
+        let args = MulMmArgs {
+            ne00: k as i32,
+            ne02: 1,
+            nb01,
+            nb02: 0,
+            nb03: 0,
+            ne12: 1,
+            nb10: 2,
+            nb11: (k * 2) as u64,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: n as i32,
+            r2: 1,
+            r3: 1,
+        };
+
+        encoder.set_compute_pipeline_state(&self.gemm_template_q4_k_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<MulMmArgs>() as u64,
+            &args as *const MulMmArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(weights_buffer), 0);
+        encoder.set_buffer(2, Some(input_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+
+        let thread_group_count = MTLSize {
+            width: ((n + 31) / 32) as u64,
+            height: ((m + 63) / 64) as u64,
+            depth: 1,
+        };
+        let thread_group_size = MTLSize { width: 32, height: 2, depth: 1 };
+        encoder.set_threadgroup_memory_length(0, 8192);
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
+    /// Q6_K GEMM: Y = W @ X
+    /// W is Q6_K quantized [M, K], X is F16 [N, K], Y is F32 [N, M]
+    pub fn mul_mm_q6_k_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        weights_buffer: &Buffer,
+        input_buffer: &Buffer,
+        output_buffer: &Buffer,
+        m: usize,
+        n: usize,
+        k: usize,
+    ) {
+        let nb_per_row = k / 256;
+        let nb01 = (nb_per_row * std::mem::size_of::<BlockQ6K>()) as u64;
+
+        #[repr(C)]
+        struct MulMmArgs {
+            ne00: i32,
+            ne02: i32,
+            nb01: u64,
+            nb02: u64,
+            nb03: u64,
+            ne12: i32,
+            nb10: u64,
+            nb11: u64,
+            nb12: u64,
+            nb13: u64,
+            ne0: i32,
+            ne1: i32,
+            r2: i16,
+            r3: i16,
+        }
+
+        let args = MulMmArgs {
+            ne00: k as i32,
+            ne02: 1,
+            nb01,
+            nb02: 0,
+            nb03: 0,
+            ne12: 1,
+            nb10: 2,
+            nb11: (k * 2) as u64,
+            nb12: 0,
+            nb13: 0,
+            ne0: m as i32,
+            ne1: n as i32,
+            r2: 1,
+            r3: 1,
+        };
+
+        encoder.set_compute_pipeline_state(&self.gemm_template_q6_k_pipeline);
+        encoder.set_bytes(
+            0,
+            std::mem::size_of::<MulMmArgs>() as u64,
+            &args as *const MulMmArgs as *const std::ffi::c_void,
+        );
+        encoder.set_buffer(1, Some(weights_buffer), 0);
+        encoder.set_buffer(2, Some(input_buffer), 0);
+        encoder.set_buffer(3, Some(output_buffer), 0);
+
+        let thread_group_count = MTLSize {
+            width: ((n + 31) / 32) as u64,
+            height: ((m + 63) / 64) as u64,
+            depth: 1,
+        };
+        let thread_group_size = MTLSize { width: 32, height: 2, depth: 1 };
+        encoder.set_threadgroup_memory_length(0, 8192);
+        encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+    }
+
     /// Fused GEMV + Add for residual connections
     /// Combines matrix-vector multiply with residual addition in single kernel
     /// Pattern: output = (W @ input) + residual
@@ -13167,5 +13320,147 @@ impl MetalContext {
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         true
+    }
+
+    /// F16 GEMV: y = W @ x
+    /// W is stored row-major as [M, K] in F16 format
+    /// x is F32 vector of size K
+    /// y is F32 vector of size M
+    pub fn mul_mv_f16_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        weights_buffer: &Buffer, // [M, K] in F16
+        input_buffer: &Buffer,   // [K] in F32
+        output_buffer: &Buffer,  // [M] in F32
+        m: usize,                // output size
+        k: usize,                // input size
+    ) {
+        // Choose optimal pipeline based on K size
+        let (pipeline, grid_size) = if k < 32 {
+            // Short vector: use simple kernel, one thread per output
+            let pipeline = &self.mv_f16_short_pipeline;
+            let grid = MTLSize { width: m as u64, height: 1, depth: 1 };
+            (pipeline, grid)
+        } else if k < 256 {
+            // Medium vector: use basic simd kernel
+            let pipeline = &self.mv_f16_basic_pipeline;
+            // One threadgroup per row, 32 threads per threadgroup
+            let grid = MTLSize { width: m as u64, height: 1, depth: 1 };
+            (pipeline, grid)
+        } else {
+            // Large vector: use optimized kernel with adaptive NSG
+            let pipeline = &self.mv_f16_4_nsg2_pipeline;
+            // One threadgroup per row
+            let grid = MTLSize { width: m as u64, height: 1, depth: 1 };
+            (pipeline, grid)
+        };
+
+        encoder.set_compute_pipeline_state(pipeline);
+        encoder.set_buffer(0, Some(weights_buffer), 0);
+        encoder.set_buffer(1, Some(input_buffer), 0);
+        encoder.set_buffer(2, Some(output_buffer), 0);
+        encoder.set_bytes(
+            3,
+            4,
+            &(m as u32) as *const u32 as *const std::ffi::c_void,
+        );
+        encoder.set_bytes(
+            4,
+            4,
+            &(k as u32) as *const u32 as *const std::ffi::c_void,
+        );
+
+        let thread_group_size = MTLSize { width: 32, height: 1, depth: 1 };
+        encoder.dispatch_thread_groups(grid_size, thread_group_size);
+    }
+
+    /// F16 GEMM: Y = W @ X
+    /// W is stored row-major as [M, K] in F16 format
+    /// X is [K, N] in F16 format
+    /// Y is [M, N] in F32 format
+    /// For decode (N=1), uses GEMV; for prefill (N>1), uses batched GEMV
+    pub fn mul_mm_f16_encode(
+        &self,
+        encoder: &ComputeCommandEncoderRef,
+        weights_buffer: &Buffer, // [M, K] in F16
+        input_buffer: &Buffer,   // [N, K] in F16 (batched input)
+        output_buffer: &Buffer,  // [N, M] in F32 (batched output)
+        m: usize,                // output rows (vocab_size)
+        n: usize,                // batch size
+        k: usize,                // reduction dim (hidden_size)
+    ) {
+        // Simple approach: process each batch separately
+        // TODO: Implement proper F16 GEMM using kernel_mul_mm_f16_f16
+        for batch_idx in 0..n {
+            let input_offset = (batch_idx * k * 2) as u64; // F16 = 2 bytes
+            let output_offset = (batch_idx * m * 4) as u64; // F32 = 4 bytes
+
+            // Use F16×F16 GEMV kernel for each batch
+            // Kernel expects mul_mv_args struct as first argument
+            #[repr(C)]
+            struct MulMvArgs {
+                ne00: i32, // K
+                ne01: i32, // M
+                ne02: i32,
+                nb00: u64,
+                nb01: u64, // row stride for weights = K * 2
+                nb02: u64,
+                nb03: u64,
+                ne10: i32,
+                ne11: i32,
+                ne12: i32,
+                nb10: u64,
+                nb11: u64,
+                nb12: u64,
+                nb13: u64,
+                ne0: i32,
+                ne1: i32,
+                nr0: i32,
+                r2: i16,
+                r3: i16,
+                nsg: i16,
+                ne12_batch: i16,
+            }
+
+            let args = MulMvArgs {
+                ne00: k as i32,
+                ne01: m as i32,
+                ne02: 1,
+                nb00: 2,
+                nb01: (k * 2) as u64, // F16 row stride
+                nb02: 0,
+                nb03: 0,
+                ne10: k as i32,
+                ne11: 1,
+                ne12: 1,
+                nb10: 2,
+                nb11: (k * 2) as u64,
+                nb12: 0,
+                nb13: 0,
+                ne0: m as i32,
+                ne1: 1,
+                nr0: 1,
+                r2: 1,
+                r3: 1,
+                nsg: 2,
+                ne12_batch: 1,
+            };
+
+            encoder.set_compute_pipeline_state(&self.mv_f16_f16_pipeline);
+            encoder.set_bytes(
+                0,
+                std::mem::size_of::<MulMvArgs>() as u64,
+                &args as *const MulMvArgs as *const std::ffi::c_void,
+            );
+            encoder.set_buffer(1, Some(weights_buffer), 0);
+            encoder.set_buffer(2, Some(input_buffer), input_offset);
+            encoder.set_buffer(3, Some(output_buffer), output_offset);
+
+            // One threadgroup per output row
+            let grid = MTLSize { width: m as u64, height: 1, depth: 1 };
+            let tg_size = MTLSize { width: 32, height: 1, depth: 1 };
+            encoder.set_threadgroup_memory_length(0, 256);
+            encoder.dispatch_thread_groups(grid, tg_size);
+        }
     }
 }
