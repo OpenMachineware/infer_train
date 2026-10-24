@@ -869,6 +869,34 @@ impl DagExecutor {
             }
 
             Operation::Gemv { input, weight, output, out_size } => {
+                // Debug: check registry state for failed nodes
+                if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                    if ctx.tensor_registry.get(*input).is_none() {
+                        let count = ctx
+                            .tensor_registry
+                            .buffers
+                            .iter()
+                            .filter(|b| b.is_some())
+                            .count();
+                        eprintln!(
+                            "[DAG] Gemv node {}: input tensor {} not found, registry has {} entries",
+                            node.id, input, count
+                        );
+                        // List all tensor IDs in registry
+                        let ids: Vec<_> = ctx
+                            .tensor_registry
+                            .buffers
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, b)| {
+                                if b.is_some() { Some(i) } else { None }
+                            })
+                            .take(20)
+                            .collect();
+                        eprintln!("[DAG] Available tensor IDs: {:?}", ids);
+                    }
+                }
+
                 let input_buf = ctx.tensor_registry.get(*input)?;
                 let weight_buf = ctx.tensor_registry.get(*weight)?;
                 let output_size = *out_size * 4;
@@ -1596,6 +1624,13 @@ impl DagExecutor {
 
                 // Track memory ranges after execution
                 track_memory_ranges(&mut ctx.mem_ranges, &inputs, &outputs);
+
+                if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                    eprintln!(
+                        "[DAG] FlashAttention: registered output tensor {}",
+                        output
+                    );
+                }
 
                 ctx.tensor_registry.insert(*output, output_buf);
                 Some(())
