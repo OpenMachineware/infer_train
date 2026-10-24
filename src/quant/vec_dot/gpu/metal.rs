@@ -197,6 +197,7 @@ pub struct MetalContext {
     flash_decode_f16_80_pipeline: ComputePipelineState,
     flash_decode_f16_128_pipeline: ComputePipelineState,
     flash_decode_f16_160_pipeline: ComputePipelineState,
+    flash_decode_f16_213_pipeline: ComputePipelineState, // Special kernel for head_dim=213
     // MMA-based decode (experimental, for performance comparison)
     flash_decode_mma_pipeline: ComputePipelineState,
     flash_decode_mma_v2_pipeline: ComputePipelineState, // Optimized version
@@ -2047,6 +2048,23 @@ impl MetalContext {
                 )
             })?;
 
+        // Create Flash Attention pipeline for HEAD_DIM=213
+        let flash_decode_f16_213_kernel = flash_attn_library
+            .get_function("flash_decode_vec_f16_213", None)
+            .map_err(|e| {
+                format!("Failed to get flash_decode_vec_f16_213 kernel: {}", e)
+            })?;
+        let flash_decode_f16_213_pipeline = device
+            .new_compute_pipeline_state_with_function(
+                &flash_decode_f16_213_kernel,
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to create flash_decode_vec_f16_213 pipeline: {}",
+                    e
+                )
+            })?;
+
         // Create Flash Attention MMA pipeline (experimental)
         let flash_decode_mma_kernel = flash_attn_mma_library
             .get_function("flash_decode_mma_f16", None)
@@ -2657,6 +2675,7 @@ impl MetalContext {
             flash_decode_f16_80_pipeline,
             flash_decode_f16_128_pipeline,
             flash_decode_f16_160_pipeline,
+            flash_decode_f16_213_pipeline,
             flash_decode_mma_pipeline,
             flash_decode_mma_v2_pipeline,
             flash_decode_mma_true_pipeline,
@@ -10563,9 +10582,10 @@ impl MetalContext {
             80 => &self.flash_decode_f16_80_pipeline,
             128 => &self.flash_decode_f16_128_pipeline,
             160 => &self.flash_decode_f16_160_pipeline,
+            213 => &self.flash_decode_f16_213_pipeline,
             _ => {
                 return Err(format!(
-                    "Flash Attention does not support head_dim={}, only 32/64/80/128/160",
+                    "Flash Attention does not support head_dim={}, only 32/64/80/128/160/213",
                     head_dim
                 ));
             }
@@ -10645,6 +10665,7 @@ impl MetalContext {
             80 => 20,
             128 => 32,
             160 => 40,
+            213 => 32, // Specialized kernel uses 32 items per iteration
             _ => 32,
         };
         let shmem_size = 512 + c_per_iter * 4; // s_query (fixed 512) + s_scores (C floats)
@@ -10698,9 +10719,10 @@ impl MetalContext {
                 80 => &self.flash_decode_f16_80_pipeline,
                 128 => &self.flash_decode_f16_128_pipeline,
                 160 => &self.flash_decode_f16_160_pipeline,
+                213 => &self.flash_decode_f16_213_pipeline,
                 _ => {
                     return Err(format!(
-                        "Flash Attention does not support head_dim={}, only 32/64/80/128/160",
+                        "Flash Attention does not support head_dim={}, only 32/64/80/128/160/213",
                         head_dim
                     ));
                 }
@@ -10784,6 +10806,7 @@ impl MetalContext {
             80 => 20,
             128 => 32,
             160 => 40,
+            213 => 32, // Specialized kernel uses 32 items per iteration
             _ => 32,
         };
         let shmem_size = 512 + c_per_iter * 4; // s_query (fixed 512) + s_scores (C floats)
@@ -12406,6 +12429,7 @@ impl MetalContext {
             80 => &self.flash_decode_f16_80_pipeline,
             128 => &self.flash_decode_f16_128_pipeline,
             160 => &self.flash_decode_f16_160_pipeline,
+            213 => &self.flash_decode_f16_213_pipeline,
             _ => {
                 // GPU kernel not available, return false to indicate CPU fallback needed
                 return false;
@@ -12461,6 +12485,7 @@ impl MetalContext {
             80 => 20,
             128 => 32,
             160 => 40,
+            213 => 32, // Specialized kernel uses 32 items per iteration
             _ => 32,
         };
         let shmem_size = 512 + c_per_iter * 4;

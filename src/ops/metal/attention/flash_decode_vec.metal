@@ -436,6 +436,129 @@ kernel void flash_decode_vec_kernel<
 );
 
 // ============================================================================
+// HEAD_DIM=213 (Special handling for non-4-aligned dimension)
+// Uses NE=1 for simpler thread layout: NL=32, 213/32=6 float4s + 21 scalars
+// ============================================================================
+
+// Specialized kernel for HEAD_DIM=213
+// Process 212 elements as float4 (53 float4s) + 1 element as scalar
+// Thread layout: 32 threads, each processes 53/8 ≈ 7 float4s (need adjustment)
+kernel void flash_decode_vec_f16_213(
+    constant uint& seq_k [[buffer(0)]],
+    constant uint& kv_stride [[buffer(1)]],
+    constant float& scale [[buffer(2)]],
+    constant uint& n_kv_heads [[buffer(7)]],
+    constant uint& n_heads [[buffer(8)]],
+    device const float* query [[buffer(3)]],
+    device const char* key_cache [[buffer(4)]],
+    device const char* value_cache [[buffer(5)]],
+    device float* output [[buffer(6)]],
+    uint3 gid [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]])
+{
+    constexpr int HEAD_DIM = 213;
+    constexpr int ELEM_SIZE = 2; // F16 = 2 bytes
+
+    const int batch = gid.z;
+    const int head = gid.y;
+    const int kv_head = head * n_kv_heads / n_heads;
+
+    // Load query into threadgroup memory
+    // 213 floats, need to load as float4 (53) + 1 float
+    threadgroup float s_query[HEAD_DIM];
+
+    // Load query cooperatively
+    // 32 threads, each loads 7 floats (total 224, some redundant)
+    const int q_base = batch * HEAD_DIM + head * HEAD_DIM;
+    for (int i = tiisg; i < HEAD_DIM; i += 32) {
+        s_query[i] = query[q_base + i];
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Online softmax state
+    float M = -INFINITY;
+    float S = 0.0f;
+    float s_O[HEAD_DIM]; // Per-thread output accumulator
+
+    for (int i = 0; i < HEAD_DIM; i++) {
+        s_O[i] = 0.0f;
+    }
+
+    // KV cache pointers
+    device const half* k_head = (device const half*)(key_cache + kv_head * kv_stride * HEAD_DIM * ELEM_SIZE);
+    device const half* v_head = (device const half*)(value_cache + kv_head * kv_stride * HEAD_DIM * ELEM_SIZE);
+
+    // Process KV cache
+    const int nb_iterations = (seq_k + 31) / 32;
+
+    threadgroup float s_scores[32];
+
+    for (int iter = 0; iter < nb_iterations; iter++) {
+        const int ic = iter * 32;
+
+        // Q*K^T: each thread computes score for one cache item
+        float mqk = 0.0f;
+        const int cache_idx = ic + tiisg;
+
+        if (cache_idx < seq_k) {
+            device const half* k_ptr = k_head + cache_idx * HEAD_DIM;
+
+            // Dot product: each thread processes all 213 dimensions
+            for (int d = 0; d < HEAD_DIM; d++) {
+                mqk += s_query[d] * (float)k_ptr[d];
+            }
+        } else {
+            mqk = -INFINITY;
+        }
+
+        s_scores[tiisg] = mqk * scale;
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Online softmax
+        const float s = s_scores[tiisg];
+        const float m = M;
+        M = simd_max(max(M, s));
+
+        const float ms = exp(m - M);
+        const float vs = exp(s - M);
+
+        S = S * ms + simd_sum(vs);
+
+        s_scores[tiisg] = vs;
+
+        // Scale previous output
+        for (int d = 0; d < HEAD_DIM; d++) {
+            s_O[d] *= ms;
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // V accumulation
+        const float weight = s_scores[tiisg];
+
+        if (cache_idx < seq_k) {
+            device const half* v_ptr = v_head + cache_idx * HEAD_DIM;
+
+            for (int d = 0; d < HEAD_DIM; d++) {
+                s_O[d] += weight * (float)v_ptr[d];
+            }
+        }
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Write output
+    const float norm = 1.0f / S;
+    device float* out_ptr = output + batch * HEAD_DIM + head * HEAD_DIM;
+
+    for (int d = tiisg; d < HEAD_DIM; d += 32) {
+        out_ptr[d] = s_O[d] * norm;
+    }
+}
+
+// ============================================================================
 // HEAD_DIM=128 Q4_0 (existing)
 // ============================================================================
 
