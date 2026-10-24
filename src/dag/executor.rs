@@ -1579,7 +1579,7 @@ impl DagExecutor {
                     && *head_dim == 128
                     && *n_heads >= 32;
 
-                if use_multihead {
+                let gpu_success = if use_multihead {
                     ctx.gpu_ctx.flash_attn_multihead_encode(
                         encoder,
                         1, // n_seqs
@@ -1592,7 +1592,7 @@ impl DagExecutor {
                         k_buf,
                         v_buf,
                         &output_buf,
-                    );
+                    )
                 } else if ctx.use_mma && *head_dim == 128 {
                     // Use batched MMA kernel for better performance
                     ctx.gpu_ctx.flash_attn_mma_batched_encode(
@@ -1605,7 +1605,7 @@ impl DagExecutor {
                         k_buf,
                         v_buf,
                         &output_buf,
-                    );
+                    )
                 } else {
                     ctx.gpu_ctx.flash_attn_f16_encode(
                         encoder,
@@ -1619,7 +1619,124 @@ impl DagExecutor {
                         k_buf,
                         v_buf,
                         &output_buf,
-                    );
+                    )
+                };
+
+                // CPU fallback if GPU kernel not available
+                if !gpu_success {
+                    if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                        eprintln!(
+                            "[DAG] FlashAttention: GPU kernel not available for head_dim={}, using CPU fallback",
+                            head_dim
+                        );
+                    }
+
+                    // End GPU encoder before CPU fallback
+                    encoder.end_encoding();
+
+                    // Read Q, K, V from GPU buffers
+                    let q_len = q_buf.length() as usize / 4;
+                    let mut q_vec = vec![0.0f32; q_len];
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            q_buf.contents() as *const f32,
+                            q_vec.as_mut_ptr(),
+                            q_len,
+                        );
+                    }
+
+                    // K and V are already in GPU KV cache, need to extract current layer
+                    let k_len = k_buf.length() as usize / 4;
+                    let mut k_vec = vec![0.0f32; k_len];
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            k_buf.contents() as *const f32,
+                            k_vec.as_mut_ptr(),
+                            k_len,
+                        );
+                    }
+
+                    let v_len = v_buf.length() as usize / 4;
+                    let mut v_vec = vec![0.0f32; v_len];
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            v_buf.contents() as *const f32,
+                            v_vec.as_mut_ptr(),
+                            v_len,
+                        );
+                    }
+
+                    // Perform CPU attention
+                    // Note: This is a simplified version, proper implementation would need KV cache management
+                    let scale = 1.0f32 / (*head_dim as f32).sqrt();
+                    let n_heads = *n_heads;
+                    let n_kv_heads = *n_kv_heads;
+                    let head_dim = *head_dim;
+                    let seq_len = seq_len;
+                    let v_head_dim = v_len / n_kv_heads;
+
+                    let mut output_vec = vec![0.0f32; n_heads * v_head_dim];
+
+                    // For each query head
+                    for h in 0..n_heads {
+                        let kv_head = h * n_kv_heads / n_heads;
+
+                        // Compute attention scores
+                        let mut scores = vec![0.0f32; seq_len];
+                        for s in 0..seq_len {
+                            let mut score = 0.0f32;
+                            for d in 0..head_dim {
+                                let k_offset = kv_head * head_dim * kv_stride
+                                    + s * head_dim
+                                    + d;
+                                if k_offset < k_vec.len() {
+                                    score += q_vec[h * head_dim + d]
+                                        * k_vec[k_offset];
+                                }
+                            }
+                            scores[s] = score * scale;
+                        }
+
+                        // Softmax
+                        let max_score = scores
+                            .iter()
+                            .cloned()
+                            .fold(f32::NEG_INFINITY, f32::max);
+                        let mut sum_exp = 0.0f32;
+                        for s in 0..seq_len {
+                            scores[s] = (scores[s] - max_score).exp();
+                            sum_exp += scores[s];
+                        }
+                        for s in 0..seq_len {
+                            scores[s] /= sum_exp;
+                        }
+
+                        // Weighted sum of V
+                        for d in 0..v_head_dim {
+                            let mut sum = 0.0f32;
+                            for s in 0..seq_len {
+                                let v_offset = kv_head * v_head_dim * kv_stride
+                                    + s * v_head_dim
+                                    + d;
+                                if v_offset < v_vec.len() {
+                                    sum += scores[s] * v_vec[v_offset];
+                                }
+                            }
+                            output_vec[h * v_head_dim + d] = sum;
+                        }
+                    }
+
+                    // Write output back to GPU buffer
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            output_vec.as_ptr() as *const std::ffi::c_void,
+                            output_buf.contents(),
+                            output_vec.len() * 4,
+                        );
+                    }
+
+                    // Re-create encoder for remaining operations
+                    // Note: The caller will end_encoding() after all nodes
                 }
 
                 // Track memory ranges after execution

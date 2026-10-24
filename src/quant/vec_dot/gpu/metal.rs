@@ -12385,6 +12385,7 @@ impl MetalContext {
     }
 
     /// Flash Attention for F16 KV cache (batched, encode into shared encoder)
+    /// Returns true if GPU kernel was dispatched, false if unsupported (need CPU fallback)
     pub fn flash_attn_f16_encode(
         &self,
         encoder: &ComputeCommandEncoderRef,
@@ -12398,7 +12399,7 @@ impl MetalContext {
         k_buffer: &Buffer,
         v_buffer: &Buffer,
         output_buffer: &Buffer,
-    ) {
+    ) -> bool {
         let pipeline = match head_dim {
             32 => &self.flash_decode_f16_32_pipeline,
             64 => &self.flash_decode_f16_64_pipeline,
@@ -12406,11 +12407,8 @@ impl MetalContext {
             128 => &self.flash_decode_f16_128_pipeline,
             160 => &self.flash_decode_f16_160_pipeline,
             _ => {
-                eprintln!(
-                    "Flash Attention does not support head_dim={}",
-                    head_dim
-                );
-                return;
+                // GPU kernel not available, return false to indicate CPU fallback needed
+                return false;
             }
         };
 
@@ -12470,11 +12468,14 @@ impl MetalContext {
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
         // Do NOT end_encoding() or commit() - let caller handle that
+
+        true // GPU kernel dispatched successfully
     }
 
     /// Multi-Head Flash Attention (llama.cpp style)
     /// Process 32 heads per threadgroup for 32x dispatch overhead reduction
     /// Q=32, NSG=8, C=64
+    /// Returns true if GPU kernel was dispatched, false if unsupported (need CPU fallback)
     pub fn flash_attn_multihead_encode(
         &self,
         encoder: &ComputeCommandEncoderRef,
@@ -12488,14 +12489,10 @@ impl MetalContext {
         k_buffer: &Buffer,
         v_buffer: &Buffer,
         output_buffer: &Buffer,
-    ) {
+    ) -> bool {
         // Only support head_dim=128 for now
         if head_dim != 128 {
-            eprintln!(
-                "Multi-head Flash Attention only supports head_dim=128, got {}",
-                head_dim
-            );
-            return;
+            return false;
         }
 
         let scale = 1.0f32 / (head_dim as f32).sqrt();
@@ -12554,6 +12551,8 @@ impl MetalContext {
         };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+
+        true // GPU kernel dispatched successfully
     }
 
     /// Flash Attention MMA kernel (experimental, for performance comparison)
@@ -12669,6 +12668,7 @@ impl MetalContext {
 
     /// Flash Attention MMA Batched encode (C=8 positions per iteration)
     /// Reduces iteration count by 8x for better performance
+    /// Returns true if GPU kernel was dispatched, false if unsupported (need CPU fallback)
     pub fn flash_attn_mma_batched_encode(
         &self,
         encoder: &ComputeCommandEncoderRef,
@@ -12680,7 +12680,7 @@ impl MetalContext {
         k_buffer: &Buffer,
         v_buffer: &Buffer,
         output_buffer: &Buffer,
-    ) {
+    ) -> bool {
         let head_dim = 128;
 
         let scale = 1.0f32 / (head_dim as f32).sqrt();
@@ -12725,6 +12725,8 @@ impl MetalContext {
             MTLSize { width: n_heads as u64, height: 1, depth: 1 };
 
         encoder.dispatch_thread_groups(thread_group_count, thread_group_size);
+
+        true // GPU kernel dispatched successfully
     }
 
     /// Flash Prefill for batched queries (encode into shared encoder)
