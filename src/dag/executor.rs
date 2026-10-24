@@ -1543,41 +1543,24 @@ impl DagExecutor {
                 let seq_len = ctx.kv_cache.seq_len() + 1; // +1 for current token
                 let kv_stride = ctx.kv_cache.max_seq();
 
-                // Debug: trace FlashAttention inputs for layers 30-31
-                if std::env::var("INFER_TRACE_NAN").is_ok() && *layer_idx >= 30
-                {
+                // Debug: trace FlashAttention inputs for early layers
+                if std::env::var("INFER_TRACE_NAN").is_ok() && *layer_idx < 3 {
+                    // Note: KV cache is F16 format, reading as FP32 will give wrong values
+                    // We only check the Q tensor (which is FP32) for NaN
                     let q_ptr = q_buf.contents() as *const f32;
                     let q_len = q_buf.length() as usize / 4;
                     let q_has_nan = (0..std::cmp::min(10, q_len))
                         .any(|i| unsafe { (*q_ptr.add(i)).is_nan() });
-
-                    let k_ptr = k_buf.contents() as *const f32;
-                    let k_len = k_buf.length() as usize / 4;
-                    let k_has_nan = (0..std::cmp::min(10, k_len))
-                        .any(|i| unsafe { (*k_ptr.add(i)).is_nan() });
-
-                    let v_ptr = v_buf.contents() as *const f32;
-                    let v_len = v_buf.length() as usize / 4;
-                    let v_has_nan = (0..std::cmp::min(10, v_len))
-                        .any(|i| unsafe { (*v_ptr.add(i)).is_nan() });
-
                     let q_first: Vec<f32> =
                         (0..3).map(|i| unsafe { *q_ptr.add(i) }).collect();
-                    let k_first: Vec<f32> =
-                        (0..3).map(|i| unsafe { *k_ptr.add(i) }).collect();
-                    let v_first: Vec<f32> =
-                        (0..3).map(|i| unsafe { *v_ptr.add(i) }).collect();
+
+                    // K/V are F16 - just check buffer length
+                    let k_len = k_buf.length() as usize;
+                    let v_len = v_buf.length() as usize;
 
                     eprintln!(
-                        "[FA] Layer {}: Q(has_nan={}, {:?}), K(has_nan={}, {:?}), V(has_nan={}, {:?}), seq_len={}",
-                        layer_idx,
-                        q_has_nan,
-                        q_first,
-                        k_has_nan,
-                        k_first,
-                        v_has_nan,
-                        v_first,
-                        seq_len
+                        "[FA] Layer {}: Q(has_nan={}, {:?}), K(len={}B), V(len={}B), seq_len={}",
+                        layer_idx, q_has_nan, q_first, k_len, v_len, seq_len
                     );
                 }
 
