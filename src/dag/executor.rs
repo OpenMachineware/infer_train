@@ -532,8 +532,15 @@ impl DagExecutor {
                         Self::execute_node(node, &mut exec_ctx, &encoder);
                 }
 
-                // Insert single barrier for all concurrent kernels
-                MemoryRanges::insert_gpu_barrier(&encoder);
+                // Note: Ideally we would insert a GPU barrier here to ensure
+                // all kernels in this batch complete before the next batch.
+                // However, Metal's memoryBarrierWithScope is not available
+                // in the Rust metal crate, and memory_barrier_with_resources
+                // requires enumerating all conflicting buffers.
+                //
+                // For now, we rely on the encoder's implicit synchronization,
+                // which may not be sufficient for correctness.
+                // This is why dependency dispatch is DISABLED by default.
                 exec_ctx.mem_ranges.reset();
 
                 // Mark as completed and update ready queue
