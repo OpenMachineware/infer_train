@@ -4,6 +4,9 @@
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use metal::Buffer;
 
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use std::rc::Rc;
+
 /// Buffer location in heterogeneous memory hierarchy
 ///
 /// Supports single-GPU inference today, extensible to heterogeneous architectures.

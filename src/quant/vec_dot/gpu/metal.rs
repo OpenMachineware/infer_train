@@ -444,6 +444,9 @@ impl Clone for MetalContext {
             flash_decode_f16_160_pipeline: self
                 .flash_decode_f16_160_pipeline
                 .clone(),
+            flash_decode_f16_213_pipeline: self
+                .flash_decode_f16_213_pipeline
+                .clone(),
             flash_decode_mma_pipeline: self.flash_decode_mma_pipeline.clone(),
             flash_decode_mma_v2_pipeline: self
                 .flash_decode_mma_v2_pipeline

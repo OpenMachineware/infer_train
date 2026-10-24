@@ -4,6 +4,12 @@
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use metal::{Buffer, Device, MTLResourceOptions};
 
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use std::cell::RefCell;
+
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use std::rc::Rc;
+
 /// Buffer pool for a single forward pass
 ///
 /// Keeps all intermediate buffers alive during command buffer encoding.

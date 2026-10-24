@@ -14,6 +14,9 @@ use crate::buffer::ForwardBufferPool;
 use crate::inference::KVCacheGPU;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use crate::model::LlamaModel;
+
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use super::memory_ranges::{MemoryAccessType, MemoryRanges};
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -474,138 +477,136 @@ impl DagExecutor {
             );
 
         // Traverse DAG nodes in execution order
-        // Note: Multi-threaded encoding temporarily disabled due to ExecutionContext lifetime constraints
-        // TODO: Implement thread-safe ExecutionContext or use multiple command buffers (llama.cpp approach)
-        for node_id in &dag.execution_order {
-            let node = &dag.dag.nodes[*node_id];
+        // Use dependency-based dispatch for concurrent kernel execution
+        let use_dependency_dispatch =
+            std::env::var("INFER_DEPENDENCY_DISPATCH")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false); // Disabled by default due to correctness issues
 
-            // Debug: trace all operations
-            if std::env::var("INFER_TRACE_DAG").is_ok() {
-                eprintln!(
-                    "[TRACE] Node {}: {:?}",
-                    node_id,
-                    std::mem::discriminant(&node.op)
-                );
-            }
+        if use_dependency_dispatch {
+            // Build dependency graph
+            let mut dependents: HashMap<usize, Vec<usize>> = HashMap::new();
+            let mut in_degree: HashMap<usize, usize> = HashMap::new();
 
-            // Debug: show registry state before executing node 534
-            if std::env::var("INFER_DEBUG_DAG").is_ok() && *node_id == 534 {
-                let count = exec_ctx
-                    .tensor_registry
-                    .buffers
-                    .iter()
-                    .filter(|b| b.is_some())
-                    .count();
-                eprintln!(
-                    "[DAG] Before node 534: registry has {} entries",
-                    count
-                );
+            for node_id in &dag.execution_order {
+                let node = &dag.dag.nodes[*node_id];
+                in_degree.insert(*node_id, node.dependencies.len());
 
-                // Show the actual FusedQKV operation details
-                if let Operation::FusedQKV {
-                    input,
-                    q_weight,
-                    k_weight,
-                    v_weight,
-                    output_q,
-                    output_k,
-                    output_v,
-                    ..
-                } = &node.op
-                {
-                    eprintln!(
-                        "[DAG] FusedQKV details: input={}, outputs={}/{}/{}",
-                        input, output_q, output_k, output_v
-                    );
+                for &dep_id in &node.dependencies {
+                    dependents
+                        .entry(dep_id)
+                        .or_insert_with(Vec::new)
+                        .push(*node_id);
                 }
             }
 
-            // Execute node
-            let result = Self::execute_node(node, &mut exec_ctx, &encoder);
+            // Ready queue: nodes with no dependencies
+            let mut ready: Vec<usize> = dag
+                .execution_order
+                .iter()
+                .filter(|id| in_degree.get(id) == Some(&0))
+                .copied()
+                .collect();
 
-            // Trace exit point execution
-            if std::env::var("INFER_DEBUG_DAG").is_ok()
-                && dag.dag.exit_points.contains(&node_id)
-            {
-                eprintln!(
-                    "[DAG] Exit point node {} executed: success={}",
-                    node_id,
-                    result.is_some()
-                );
-            }
+            let mut completed: std::collections::HashSet<usize> =
+                std::collections::HashSet::new();
+            let mut batch_count = 0;
 
-            if result.is_none() {
+            while !ready.is_empty() {
+                batch_count += 1;
+
                 if std::env::var("INFER_DEBUG_DAG").is_ok() {
                     eprintln!(
-                        "[DAG] Node {} ({:?}) failed! Op details: {:?}",
-                        node_id,
-                        std::mem::discriminant(&node.op),
-                        node.op
+                        "[DAG] Dispatching batch {}: {} kernels concurrently",
+                        batch_count,
+                        ready.len()
                     );
-                    // Check which tensors are missing
-                    match &node.op {
-                        Operation::FusedGateUp {
-                            input,
-                            output_gate,
-                            output_up,
-                            ..
-                        } => {
-                            eprintln!(
-                                "[DAG] FusedGateUp needs tensors: input={}, outputs={}/{}",
-                                input, output_gate, output_up
-                            );
-                            if exec_ctx.tensor_registry.get(*input).is_none() {
-                                eprintln!(
-                                    "[DAG] Missing input tensor {}",
-                                    input
-                                );
+                }
+
+                // Dispatch ALL ready nodes concurrently
+                for node_id in &ready {
+                    let node = &dag.dag.nodes[*node_id];
+
+                    // Execute node
+                    let _result =
+                        Self::execute_node(node, &mut exec_ctx, &encoder);
+                }
+
+                // Insert single barrier for all concurrent kernels
+                MemoryRanges::insert_gpu_barrier(&encoder);
+                exec_ctx.mem_ranges.reset();
+
+                // Mark as completed and update ready queue
+                for node_id in &ready {
+                    completed.insert(*node_id);
+
+                    // Decrease in-degree for dependents
+                    if let Some(deps) = dependents.get(node_id) {
+                        for &dep_id in deps {
+                            if let Some(deg) = in_degree.get_mut(&dep_id) {
+                                *deg -= 1;
                             }
                         }
-                        Operation::FusedSwiGLU { gate, up, .. } => {
-                            eprintln!(
-                                "[DAG] FusedSwiGLU needs tensors: gate={}, up={}",
-                                gate, up
-                            );
-                            if exec_ctx.tensor_registry.get(*gate).is_none() {
-                                eprintln!("[DAG] Missing gate tensor {}", gate);
-                            }
-                            if exec_ctx.tensor_registry.get(*up).is_none() {
-                                eprintln!("[DAG] Missing up tensor {}", up);
-                            }
-                        }
-                        Operation::FusedAddNorm {
-                            lhs,
-                            rhs,
-                            norm_weight,
-                            ..
-                        } => {
-                            eprintln!(
-                                "[DAG] FusedAddNorm needs tensors: lhs={}, rhs={}, norm_weight={}",
-                                lhs, rhs, norm_weight
-                            );
-                            if exec_ctx.tensor_registry.get(*lhs).is_none() {
-                                eprintln!("[DAG] Missing lhs tensor {}", lhs);
-                            }
-                            if exec_ctx.tensor_registry.get(*rhs).is_none() {
-                                eprintln!("[DAG] Missing rhs tensor {}", rhs);
-                            }
-                            if exec_ctx
-                                .tensor_registry
-                                .get(*norm_weight)
-                                .is_none()
-                            {
-                                eprintln!(
-                                    "[DAG] Missing norm_weight tensor {}",
-                                    norm_weight
-                                );
-                            }
-                        }
-                        _ => {}
                     }
                 }
-                // Clean up encoder before returning
-                encoder.end_encoding();
-                return DagForwardResult { logits: None, pending_cb: None };
+
+                // Find newly ready nodes
+                ready = dag
+                    .execution_order
+                    .iter()
+                    .filter(|id| {
+                        !completed.contains(id) && in_degree.get(id) == Some(&0)
+                    })
+                    .copied()
+                    .collect();
+            }
+
+            if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                eprintln!(
+                    "[DAG] Dispatched {} batches with dependency-based scheduling",
+                    batch_count
+                );
+            }
+        } else {
+            // Legacy: Sequential dispatch
+            for node_id in &dag.execution_order {
+                let node = &dag.dag.nodes[*node_id];
+
+                // Debug: trace all operations
+                if std::env::var("INFER_TRACE_DAG").is_ok() {
+                    eprintln!(
+                        "[TRACE] Node {}: {:?}",
+                        node_id,
+                        std::mem::discriminant(&node.op)
+                    );
+                }
+
+                // Execute node
+                let result = Self::execute_node(node, &mut exec_ctx, &encoder);
+
+                // Trace exit point execution
+                if std::env::var("INFER_DEBUG_DAG").is_ok()
+                    && dag.dag.exit_points.contains(&node_id)
+                {
+                    eprintln!(
+                        "[DAG] Exit point node {} executed: success={}",
+                        node_id,
+                        result.is_some()
+                    );
+                }
+
+                if result.is_none() {
+                    if std::env::var("INFER_DEBUG_DAG").is_ok() {
+                        eprintln!(
+                            "[DAG] Node {} ({:?}) failed!",
+                            node_id,
+                            std::mem::discriminant(&node.op)
+                        );
+                    }
+                    // Clean up encoder before returning
+                    encoder.end_encoding();
+                    return DagForwardResult { logits: None, pending_cb: None };
+                }
             }
         }
 

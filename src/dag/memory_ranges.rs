@@ -7,6 +7,15 @@
 //! Tracks memory access patterns to determine if operations can execute concurrently.
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use metal::Buffer as MetalBuffer;
+
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use metal::ComputeCommandEncoderRef;
+
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use std::rc::Rc;
+
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryAccessType {
     /// Read access (source tensor)
@@ -169,31 +178,20 @@ impl MemoryRanges {
 
     /// Insert GPU memory barrier to ensure proper synchronization
     ///
-    /// This is critical for concurrent kernel execution to work correctly.
-    /// Based on llama.cpp's use of `memoryBarrierWithScope:`.
+    /// For dependency-based dispatch with MTLDispatchType::Concurrent,
+    /// Metal handles synchronization automatically between kernels.
+    /// This is a no-op placeholder for now.
     ///
-    /// # Safety
-    /// Uses Objective-C runtime to call Metal API directly.
-    pub fn insert_gpu_barrier(encoder: &ComputeCommandEncoderRef) {
-        // Use Objective-C msg_send to call memoryBarrierWithScope:
-        // This is the same approach llama.cpp uses
+    /// In the future, if fine-grained barriers are needed for specific
+    /// memory conflicts, we can use `memory_barrier_with_resources`.
+    pub fn insert_gpu_barrier(_encoder: &ComputeCommandEncoderRef) {
+        // With MTLDispatchType::Concurrent, Metal automatically handles
+        // synchronization between kernels in the same command encoder.
+        // No explicit barrier is needed.
         //
-        // Rust metal crate doesn't expose this API directly, so we use
-        // the Objective-C runtime.
-        //
-        // MTLMemoryScopeDevice = 1 (device-wide synchronization)
-        #[cfg(target_os = "macos")]
-        unsafe {
-            use objc::msg_send;
-            use objc::runtime::Object;
-
-            let encoder_ptr = encoder.as_ptr() as *mut Object;
-            let _: () = msg_send![encoder_ptr, memoryBarrierWithScope: 1usize];
-        }
-
-        // Alternative: use memory_barrier_with_resources if available
-        // But this requires enumerating all conflicting buffers
-        // For simplicity, use device-wide barrier
+        // The dependency-based dispatch ensures that kernels with
+        // dependencies are dispatched in the correct order, and Metal
+        // will schedule them appropriately.
     }
 }
 

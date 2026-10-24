@@ -2,6 +2,9 @@
 // Copyright 2026 Jia Liu
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+use std::collections::HashMap;
+
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use std::rc::Rc;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
