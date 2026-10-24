@@ -126,6 +126,9 @@ pub struct AsyncCommandBuffer {
     command_buffer: Option<*mut metal::CommandBufferRef>,
     /// Flag indicating whether GPU execution has completed
     completed: bool,
+    /// Forward buffer pool - kept alive until GPU completes
+    /// This prevents buffers from being reused while GPU is still using them
+    forward_pool: Option<ForwardBufferPool>,
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -134,6 +137,7 @@ impl AsyncCommandBuffer {
         output_buffer: Rc<MetalBuffer>,
         vocab_size: usize,
         command_buffer: &metal::CommandBufferRef,
+        forward_pool: ForwardBufferPool,
     ) -> Self {
         // Retain the command buffer to keep it alive until we wait
         // Using Objective-C retain semantics
@@ -151,6 +155,7 @@ impl AsyncCommandBuffer {
             vocab_size,
             command_buffer: Some(cb_ptr),
             completed: false,
+            forward_pool: Some(forward_pool),
         }
     }
 
@@ -166,6 +171,12 @@ impl AsyncCommandBuffer {
                 cb.wait_until_completed();
             }
             self.completed = true;
+
+            // Release forward pool buffers now that GPU is done
+            // This returns buffers to the reuse pool for the next forward pass
+            if let Some(mut pool) = self.forward_pool.take() {
+                pool.release_all();
+            }
         }
     }
 
@@ -221,12 +232,22 @@ impl Drop for AsyncCommandBuffer {
     fn drop(&mut self) {
         // Command buffer will be released automatically when this drops
         // The output_buffer Rc will keep the data alive
+
+        // Release forward pool buffers if not already done
+        if let Some(mut pool) = self.forward_pool.take() {
+            pool.release_all();
+        }
+
         self.command_buffer.take();
     }
 }
 
 /// Check memory conflicts and insert barrier if needed
 /// Returns true if a barrier was inserted
+///
+/// NOTE: This function should only be called when using dependency-based dispatch
+/// (INFER_DEPENDENCY_DISPATCH=1). For sequential dispatch, Metal's implicit
+/// synchronization handles everything correctly.
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 fn check_memory_and_barrier(
     mem_ranges: &mut MemoryRanges,
@@ -234,6 +255,16 @@ fn check_memory_and_barrier(
     inputs: &[(Rc<MetalBuffer>, usize)],
     outputs: &[(Rc<MetalBuffer>, usize)],
 ) -> bool {
+    // Only insert barriers when dependency dispatch is enabled
+    let use_dependency_dispatch = std::env::var("INFER_DEPENDENCY_DISPATCH")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+
+    if !use_dependency_dispatch {
+        // Sequential dispatch: Metal handles synchronization automatically
+        return false;
+    }
+
     let mut needs_barrier = false;
 
     // Check if any input conflicts with existing dst ranges
@@ -260,7 +291,7 @@ fn check_memory_and_barrier(
         if std::env::var("INFER_DEBUG_MEM_RANGES").is_ok() {
             eprintln!("[MEM] Inserting GPU barrier due to memory conflict");
         }
-        MemoryRanges::insert_gpu_barrier(encoder);
+        mem_ranges.insert_gpu_barrier(encoder);
         mem_ranges.reset();
     }
 
@@ -377,9 +408,9 @@ impl DagExecutor {
             None => return DagForwardResult { logits: None, pending_cb: None },
         };
 
-        // Use cached embed buffer to avoid allocation on every decode
-        let hidden_buffer =
-            Rc::new(gpu_ctx.get_or_create_embed_buffer(hidden_size * 4));
+        // Allocate fresh embed buffer for each forward pass
+        // DO NOT reuse cached buffer to avoid race conditions
+        let hidden_buffer = forward_pool.get(hidden_size * 4);
         unsafe {
             std::ptr::copy_nonoverlapping(
                 hidden.as_ptr() as *const std::ffi::c_void,
@@ -532,15 +563,10 @@ impl DagExecutor {
                         Self::execute_node(node, &mut exec_ctx, &encoder);
                 }
 
-                // Note: Ideally we would insert a GPU barrier here to ensure
-                // all kernels in this batch complete before the next batch.
-                // However, Metal's memoryBarrierWithScope is not available
-                // in the Rust metal crate, and memory_barrier_with_resources
-                // requires enumerating all conflicting buffers.
-                //
-                // For now, we rely on the encoder's implicit synchronization,
-                // which may not be sufficient for correctness.
-                // This is why dependency dispatch is DISABLED by default.
+                // Insert GPU barrier to ensure all kernels in this batch complete
+                // before the next batch starts. This is critical for correctness
+                // with dependency-based dispatch.
+                exec_ctx.mem_ranges.insert_gpu_barrier(&encoder);
                 exec_ctx.mem_ranges.reset();
 
                 // Mark as completed and update ready queue
@@ -656,6 +682,7 @@ impl DagExecutor {
             eprintln!("[DAG] Output tensor ID: {}", output_tensor_id);
         }
 
+        // Get output buffer from tensor registry
         let output_buffer = exec_ctx.tensor_registry.get(output_tensor_id);
 
         if output_buffer.is_none() {
@@ -676,20 +703,25 @@ impl DagExecutor {
         }
         let vocab_size = output_tensor.unwrap().shape[0];
 
-        // Create async command buffer with output buffer retained
-        let async_cb =
-            AsyncCommandBuffer::new(output_buffer, vocab_size, command_buffer);
-
-        // Commit for async execution
-        // Metal executes committed CBs in order
-        command_buffer.commit();
-
-        // CRITICAL: Advance KV cache position
+        // CRITICAL: Advance KV cache position BEFORE creating AsyncCommandBuffer
         // We advance here because the kernel encoding is complete.
         // The actual GPU write will happen asynchronously, but Metal's
         // command queue ordering ensures the next CB won't start
         // until this one completes.
         exec_ctx.kv_cache.advance();
+
+        // Create async command buffer with output buffer retained
+        // Pass forward_pool to keep buffers alive until GPU completes
+        let async_cb = AsyncCommandBuffer::new(
+            output_buffer,
+            vocab_size,
+            command_buffer,
+            forward_pool,
+        );
+
+        // Commit for async execution
+        // Metal executes committed CBs in order
+        command_buffer.commit();
 
         // Return async result - caller must call wait() before get_logits()
         DagForwardResult {
@@ -1517,6 +1549,14 @@ impl DagExecutor {
                 // Get KV cache buffers - clone them to release borrow before check_memory_and_barrier
                 let k_buf = ctx.kv_cache.k_buffer(*layer_idx);
                 let v_buf = ctx.kv_cache.v_buffer(*layer_idx);
+
+                // CRITICAL: Register KV cache buffers to prevent premature deallocation
+                // Metal's set_buffer() doesn't retain references, so we must keep them alive
+                // for the entire forward pass (until GPU execution completes)
+                // This is the same pattern used in prefill (see forward_layer_prefill_batched)
+                ctx.forward_pool.register(k_buf.clone());
+                ctx.forward_pool.register(v_buf.clone());
+
                 let output_size = *n_heads * *head_dim * 4;
                 let output_buf = ctx.forward_pool.get(output_size);
 
@@ -1768,6 +1808,12 @@ impl DagExecutor {
                     ctx.kv_cache.v_buffer(*layer_idx)
                 };
                 let cache_len = cache_buf.length() as usize;
+
+                // CRITICAL: Register KV cache buffer to prevent premature deallocation
+                // Metal's set_buffer() doesn't retain references, so we must keep them alive
+                // for the entire forward pass (until GPU execution completes)
+                // This is the same pattern used in prefill (see forward_layer_prefill_batched)
+                ctx.forward_pool.register(cache_buf.clone());
 
                 // Check for memory conflicts
                 // Input is read, cache is written
