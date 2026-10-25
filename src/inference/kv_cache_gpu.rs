@@ -150,6 +150,11 @@ impl KVCacheGPU {
         &self.v_buffers[layer]
     }
 
+    /// Get number of layers
+    pub fn n_layers(&self) -> usize {
+        self.n_layers
+    }
+
     /// Set K values at current position for a layer
     /// k: [n_kv_heads * head_dim] in F32
     /// This converts to F16 and stores in GPU buffer

@@ -1,111 +1,121 @@
+// Measure Metal dispatch overhead
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-// Measure Metal dispatch overhead by comparing sequential vs batched dispatch
-
-#[cfg(all(target_arch = "aarch64", feature = "metal"))]
-use infer_train::quant::vec_dot::gpu::metal::MetalContext;
+use metal::{Device, MTLSize};
+use std::rc::Rc;
 
 fn main() {
-    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    {
-        println!("=== Metal Dispatch Overhead Measurement ===\n");
+    let device = Device::system_default().expect("No Metal device");
+    let queue = device.new_command_queue();
 
-        let ctx = MetalContext::new().expect("Failed to create MetalContext");
-        let device = ctx.device();
-        let queue = device.new_command_queue();
-
-        // Test with typical decode sizes (M=1536, K=1536 for Qwen1.5B)
-        let m = 1536;
-        let k = 1536;
-
-        // Create test data
-        let total_weights = m * k;
-        let mut weights_f16 = Vec::with_capacity(total_weights);
-        for i in 0..total_weights {
-            let f32_val = ((i as f32 * 0.12345) % 2.0) - 1.0;
-            let f16_val = half::f16::from_f32(f32_val);
-            weights_f16.push(f16_val.to_bits());
+    // Simple kernel that does minimal work
+    let source = r#"
+        kernel void dummy(
+            device float* out [[buffer(0)]],
+            uint idx [[thread_position_in_grid]])
+        {
+            out[idx] = float(idx);
         }
+    "#;
 
-        let mut input_f32 = Vec::with_capacity(k);
-        for i in 0..k {
-            input_f32.push(((i as f32 * 0.98765) % 2.0) - 1.0);
-        }
+    let compile_options = metal::CompileOptions::new();
+    let library =
+        device.new_library_with_source(source, &compile_options).unwrap();
+    let function = library.get_function("dummy", None).unwrap();
+    let pipeline =
+        device.new_compute_pipeline_state_with_function(&function).unwrap();
 
-        // Create GPU buffers
-        let weights_buffer = std::rc::Rc::new(device.new_buffer_with_data(
-            weights_f16.as_ptr() as *const std::ffi::c_void,
-            (total_weights * 2) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
+    let buffer = Rc::new(
+        device
+            .new_buffer(1024 * 4, metal::MTLResourceOptions::StorageModeShared),
+    );
 
-        let input_buffer = std::rc::Rc::new(device.new_buffer_with_data(
-            input_f32.as_ptr() as *const std::ffi::c_void,
-            (k * 4) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
+    println!("Metal Dispatch Overhead Analysis");
+    println!("Device: {}\n", device.name());
 
-        // Warmup
-        for _ in 0..5 {
-            let cb = queue.new_command_buffer();
-            let encoder = cb.new_compute_command_encoder();
-            ctx.mv_encode(&encoder, &weights_buffer, &input_buffer, m, k);
-            encoder.end_encoding();
-            cb.commit();
-            cb.wait_until_completed();
-        }
+    // Test 1: Single dispatch
+    let iterations = 1000;
+    let start = std::time::Instant::now();
 
-        let iterations = 100;
-
-        // Sequential dispatch (one CB per kernel)
-        let seq_start = std::time::Instant::now();
-        for _ in 0..iterations {
-            let cb = queue.new_command_buffer();
-            let encoder = cb.new_compute_command_encoder();
-            ctx.mv_encode(&encoder, &weights_buffer, &input_buffer, m, k);
-            encoder.end_encoding();
-            cb.commit();
-            cb.wait_until_completed();
-        }
-        let seq_time = seq_start.elapsed();
-
-        // Batched dispatch (all kernels in one CB)
-        let batch_start = std::time::Instant::now();
-        let cb = queue.new_command_buffer();
-        for _ in 0..iterations {
-            let encoder = cb.new_compute_command_encoder();
-            ctx.mv_encode(&encoder, &weights_buffer, &input_buffer, m, k);
-            encoder.end_encoding();
-        }
-        cb.commit();
-        cb.wait_until_completed();
-        let batch_time = batch_start.elapsed();
-
-        // Calculate overhead
-        let avg_seq_ms = seq_time.as_secs_f64() * 1000.0 / iterations as f64;
-        let avg_batch_ms =
-            batch_time.as_secs_f64() * 1000.0 / iterations as f64;
-        let overhead_ms = avg_seq_ms - avg_batch_ms;
-        let overhead_pct = (overhead_ms / avg_seq_ms) * 100.0;
-
-        println!("Problem size: {}x{}", m, k);
-        println!("Sequential dispatch: {:.3} ms/kernel", avg_seq_ms);
-        println!("Batched dispatch:    {:.3} ms/kernel", avg_batch_ms);
-        println!(
-            "Dispatch overhead:   {:.3} ms ({:.1}%)",
-            overhead_ms, overhead_pct
+    for _ in 0..iterations {
+        let cmd_buf = queue.new_command_buffer();
+        let encoder = cmd_buf.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&pipeline);
+        encoder.set_buffer(0, Some(&buffer), 0);
+        encoder.dispatch_thread_groups(
+            MTLSize { width: 1, height: 1, depth: 1 },
+            MTLSize { width: 1, height: 1, depth: 1 },
         );
-        println!(
-            "GPU compute time:    {:.3} ms ({:.1}%)",
-            avg_batch_ms,
-            100.0 - overhead_pct
-        );
-
-        // Estimate per-dispatch overhead
-        let dispatch_overhead = overhead_ms / iterations as f64;
-        println!("\nPer-kernel dispatch overhead: {:.3} ms", dispatch_overhead);
-
-        println!("\n=== Measurement Complete ===");
+        encoder.end_encoding();
+        cmd_buf.commit();
+        cmd_buf.wait_until_completed();
     }
+
+    let single_time = start.elapsed();
+    let single_us = single_time.as_micros() as f64 / iterations as f64;
+
+    println!("Single dispatch:");
+    println!("  Total: {:?}", single_time);
+    println!("  Per dispatch: {:.2} us", single_us);
+
+    // Test 2: Multiple dispatches in one command buffer
+    let start = std::time::Instant::now();
+    let dispatches_per_cb = 32; // Match n_heads=32
+
+    for _ in 0..iterations {
+        let cmd_buf = queue.new_command_buffer();
+        for _ in 0..dispatches_per_cb {
+            let encoder = cmd_buf.new_compute_command_encoder();
+            encoder.set_compute_pipeline_state(&pipeline);
+            encoder.set_buffer(0, Some(&buffer), 0);
+            encoder.dispatch_thread_groups(
+                MTLSize { width: 1, height: 1, depth: 1 },
+                MTLSize { width: 1, height: 1, depth: 1 },
+            );
+            encoder.end_encoding();
+        }
+        cmd_buf.commit();
+        cmd_buf.wait_until_completed();
+    }
+
+    let batched_time = start.elapsed();
+    let batched_us = batched_time.as_micros() as f64 / iterations as f64;
+    let per_dispatch_us = batched_us / dispatches_per_cb as f64;
+
+    println!("\nBatched dispatch ({} per CB):", dispatches_per_cb);
+    println!("  Total: {:?}", batched_time);
+    println!("  Per CB: {:.2} us", batched_us);
+    println!("  Per dispatch: {:.2} us", per_dispatch_us);
+
+    // Test 3: Single dispatch with more threads
+    let start = std::time::Instant::now();
+
+    for _ in 0..iterations {
+        let cmd_buf = queue.new_command_buffer();
+        let encoder = cmd_buf.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&pipeline);
+        encoder.set_buffer(0, Some(&buffer), 0);
+        encoder.dispatch_thread_groups(
+            MTLSize { width: 32, height: 1, depth: 1 }, // 32x more threads
+            MTLSize { width: 32, height: 1, depth: 1 },
+        );
+        encoder.end_encoding();
+        cmd_buf.commit();
+        cmd_buf.wait_until_completed();
+    }
+
+    let multi_thread_time = start.elapsed();
+    let multi_thread_us =
+        multi_thread_time.as_micros() as f64 / iterations as f64;
+
+    println!("\nSingle dispatch (32x threads):");
+    println!("  Total: {:?}", multi_thread_time);
+    println!("  Per dispatch: {:.2} us", multi_thread_us);
+
+    // Overhead analysis
+    println!("\nOverhead analysis:");
+    println!("  CB commit + wait overhead: ~{:.0} us", single_us);
+    println!("  Flash Attention kernel time @ seq_k=1024: ~620 us");
+    println!("  Overhead percentage: ~{:.0}%", single_us / 620.0 * 100.0);
 }

@@ -4,6 +4,11 @@
 // Allow unsafe operations in unsafe functions without explicit blocks (Rust 2024)
 #![allow(unsafe_op_in_unsafe_fn)]
 
+// Import objc macros for GPU barrier support (metal feature only)
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+#[macro_use]
+extern crate objc;
+
 pub mod buffer;
 pub mod compute;
 pub mod dag;

@@ -33,8 +33,8 @@ struct FlashDecodeMMAArgs {
 
 kernel void flash_decode_batched_f16(
     constant FlashDecodeMMAArgs& args [[buffer(0)]],
-    device const half* query [[buffer(1)]],
-    device const half* key_cache [[buffer(2)]],
+    device const float* query [[buffer(1)]],       // FP32 for Q (matching vector kernel)
+    device const half* key_cache [[buffer(2)]],    // F16 for KV cache
     device const half* value_cache [[buffer(3)]],
     device float* output [[buffer(4)]],
     uint3 gid [[threadgroup_position_in_grid]],
@@ -53,14 +53,14 @@ kernel void flash_decode_batched_f16(
     const uint kv_head = head / gqa_ratio;
 
     // Pointers
-    device const half* q_ptr = query + head * HEAD_DIM;
+    device const float* q_ptr = query + head * HEAD_DIM;
     device const half* k_head_ptr = key_cache + kv_head * kv_stride * HEAD_DIM;
     device const half* v_head_ptr = value_cache + kv_head * kv_stride * HEAD_DIM;
 
-    // Each thread loads 4 elements of Q (as 1 half4)
+    // Each thread loads 4 elements of Q (as 1 float4)
     const int elem_offset = tiisg * ELEMS_PER_THREAD;
-    device const half4* q_h4 = (device const half4*)(q_ptr + elem_offset);
-    const float4 q_frag = (float4)q_h4[0];
+    device const float4* q_f4 = (device const float4*)(q_ptr + elem_offset);
+    const float4 q_frag = q_f4[0];
 
     // Online softmax state
     float M = -INFINITY;

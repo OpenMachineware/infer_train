@@ -263,3 +263,38 @@ kernel void kernel_mul_mv_f16_f32_4(
     device float * dst_f32 = (device float *) dst + (uint64_t)r1*args.ne0;
     helper_mv_reduce_and_write<NR0>(dst_f32, sumf, r0, args.ne01, tiisg, sgitg, shmem);
 }
+
+// ============================================================================
+// F16×F16 GEMV for output projection with F16 weights and F16 input
+// ============================================================================
+kernel void kernel_mul_mv_f16_f16(
+        constant mul_mv_args & args,
+        device const char * src0,  // F16 weights [M, K]
+        device const char * src1,  // F16 input [K]
+        device       char * dst,   // F32 output [M]
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]],
+        threadgroup  char * shmem [[threadgroup(0)]]) {
+    const int r0 = tgpig.x;
+    if (r0 >= args.ne01) return;
+
+    device const half * ax = (device const half *) (src0 + r0*args.nb01);
+    device const half * y  = (device const half *) src1;
+
+    float sum = 0.0f;
+
+    // Process elements in chunks
+    for (int i = tiisg; i < args.ne00; i += N_SIMDWIDTH) {
+        sum += float(ax[i]) * float(y[i]);
+    }
+
+    // Reduce across simdgroup
+    sum = simd_sum(sum);
+
+    // Write result
+    if (tiisg == 0) {
+        device float * dst_f32 = (device float *) dst;
+        dst_f32[r0] = sum;
+    }
+}

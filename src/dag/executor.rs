@@ -172,11 +172,11 @@ impl AsyncCommandBuffer {
             }
             self.completed = true;
 
-            // Release forward pool buffers now that GPU is done
-            // This returns buffers to the reuse pool for the next forward pass
-            if let Some(mut pool) = self.forward_pool.take() {
-                pool.release_all();
-            }
+            // CRITICAL: Do NOT release forward_pool here!
+            // The output_buffer comes from forward_pool and is needed for get_logits().
+            // forward_pool will be dropped when AsyncCommandBuffer is dropped,
+            // which happens after the caller calls get_logits().
+            // Releasing here causes use-after-free bugs.
         }
     }
 

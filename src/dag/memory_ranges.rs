@@ -178,20 +178,29 @@ impl MemoryRanges {
 
     /// Insert GPU memory barrier to ensure proper synchronization
     ///
-    /// For dependency-based dispatch with MTLDispatchType::Concurrent,
-    /// Metal handles synchronization automatically between kernels.
-    /// This is a no-op placeholder for now.
-    ///
-    /// In the future, if fine-grained barriers are needed for specific
-    /// memory conflicts, we can use `memory_barrier_with_resources`.
-    pub fn insert_gpu_barrier(_encoder: &ComputeCommandEncoderRef) {
-        // With MTLDispatchType::Concurrent, Metal automatically handles
-        // synchronization between kernels in the same command encoder.
-        // No explicit barrier is needed.
-        //
-        // The dependency-based dispatch ensures that kernels with
-        // dependencies are dispatched in the correct order, and Metal
-        // will schedule them appropriately.
+    /// Uses memoryBarrierWithScope:MTLBarrierScopeBuffers to ensure all previous
+    /// GPU operations complete before proceeding. This is the same approach used
+    /// by llama.cpp.
+    pub fn insert_gpu_barrier(&self, encoder: &ComputeCommandEncoderRef) {
+        if self.ranges.is_empty() {
+            return;
+        }
+
+        if self.debug {
+            eprintln!(
+                "[MEM] Inserting GPU barrier (scope=MTLBarrierScopeBuffers)"
+            );
+        }
+
+        // Use memoryBarrierWithScope:MTLBarrierScopeBuffers
+        // This ensures all buffer writes are visible to subsequent kernels
+        // MTLBarrierScopeBuffers = 1 << 0 = 1
+        // See: https://developer.apple.com/documentation/metal/mtlbarrierscope
+        const MTL_BARRIER_SCOPE_BUFFERS: u64 = 1;
+
+        unsafe {
+            let () = msg_send![encoder, memoryBarrierWithScope: MTL_BARRIER_SCOPE_BUFFERS];
+        }
     }
 }
 

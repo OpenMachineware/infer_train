@@ -202,7 +202,7 @@ pub struct MetalContext {
     // MMA-based decode (experimental, for performance comparison)
     flash_decode_mma_pipeline: ComputePipelineState,
     flash_decode_mma_v2_pipeline: ComputePipelineState, // Optimized version
-    flash_decode_mma_true_pipeline: ComputePipelineState, // True MMA with simdgroup_float8x8
+    // flash_decode_mma_true_pipeline: ComputePipelineState, // True MMA with simdgroup_float8x8 (DISABLED)
     flash_decode_mma_batched_pipeline: ComputePipelineState, // Batched processing (C=8)
     // NWG parallelized Flash Attention
     flash_decode_nwg_pass1_pipeline: ComputePipelineState, // First pass: partial results
@@ -453,9 +453,9 @@ impl Clone for MetalContext {
             flash_decode_mma_v2_pipeline: self
                 .flash_decode_mma_v2_pipeline
                 .clone(),
-            flash_decode_mma_true_pipeline: self
-                .flash_decode_mma_true_pipeline
-                .clone(),
+            // flash_decode_mma_true_pipeline: self
+            //     .flash_decode_mma_true_pipeline
+            //     .clone(), // DISABLED
             flash_decode_mma_batched_pipeline: self
                 .flash_decode_mma_batched_pipeline
                 .clone(),
@@ -2107,6 +2107,9 @@ impl MetalContext {
             })?;
 
         // Create Flash Attention MMA True pipeline (with simdgroup_float8x8)
+        // TEMPORARILY DISABLED: kernel has compilation errors
+        // TODO: Fix simdgroup_fill and simdgroup_add usage in flash_decode_mma_true.metal
+        /*
         let flash_decode_mma_true_source = include_str!(
             "../../../ops/metal/attention/flash_decode_mma_true.metal"
         );
@@ -2136,30 +2139,28 @@ impl MetalContext {
                     e
                 )
             })?;
+        */
 
-        // Create Flash Decode MMA Batched pipeline (C=8 positions per iteration)
-        let flash_decode_mma_batched_source = include_str!(
-            "../../../ops/metal/attention/flash_decode_mma_batched.metal"
+        // Create Flash Decode Batched pipeline (C=8 positions per iteration)
+        let flash_decode_batched_source = include_str!(
+            "../../../ops/metal/attention/flash_decode_batched.metal"
         );
-        let flash_decode_mma_batched_library = device
+        let flash_decode_batched_library = device
             .new_library_with_source(
-                flash_decode_mma_batched_source,
+                flash_decode_batched_source,
                 &compile_options,
             )
             .map_err(|e| {
-                format!(
-                    "Failed to compile flash_decode_mma_batched library: {}",
-                    e
-                )
+                format!("Failed to compile flash_decode_batched library: {}", e)
             })?;
-        let flash_decode_mma_batched_kernel = flash_decode_mma_batched_library
+        let flash_decode_batched_kernel = flash_decode_batched_library
             .get_function("flash_decode_batched_f16", None)
             .map_err(|e| {
                 format!("Failed to get flash_decode_batched_f16 kernel: {}", e)
             })?;
         let flash_decode_mma_batched_pipeline = device
             .new_compute_pipeline_state_with_function(
-                &flash_decode_mma_batched_kernel,
+                &flash_decode_batched_kernel,
             )
             .map_err(|e| {
                 format!(
@@ -2694,7 +2695,7 @@ impl MetalContext {
             flash_decode_f16_213_pipeline,
             flash_decode_mma_pipeline,
             flash_decode_mma_v2_pipeline,
-            flash_decode_mma_true_pipeline,
+            // flash_decode_mma_true_pipeline, // DISABLED
             flash_decode_mma_batched_pipeline,
             // NWG parallelized Flash Attention
             flash_decode_nwg_pass1_pipeline,
@@ -10722,26 +10723,23 @@ impl MetalContext {
             );
         }
 
-        // Use MMA pipeline for head_dim=128
-        let use_mma = head_dim == 128;
+        // Use MMA pipeline for head_dim=128 (DISABLED - using standard kernel)
+        // TODO: Re-enable MMA when flash_decode_mma_true.metal is fixed
+        let _use_mma = head_dim == 128; // Placeholder, not used
 
         // Select pipeline based on head_dim
-        let pipeline = if use_mma {
-            &self.flash_decode_mma_true_pipeline
-        } else {
-            match head_dim {
-                32 => &self.flash_decode_f16_32_pipeline,
-                64 => &self.flash_decode_f16_64_pipeline,
-                80 => &self.flash_decode_f16_80_pipeline,
-                128 => &self.flash_decode_f16_128_pipeline,
-                160 => &self.flash_decode_f16_160_pipeline,
-                213 => &self.flash_decode_f16_213_pipeline,
-                _ => {
-                    return Err(format!(
-                        "Flash Attention does not support head_dim={}, only 32/64/80/128/160/213",
-                        head_dim
-                    ));
-                }
+        let pipeline = match head_dim {
+            32 => &self.flash_decode_f16_32_pipeline,
+            64 => &self.flash_decode_f16_64_pipeline,
+            80 => &self.flash_decode_f16_80_pipeline,
+            128 => &self.flash_decode_f16_128_pipeline,
+            160 => &self.flash_decode_f16_160_pipeline,
+            213 => &self.flash_decode_f16_213_pipeline,
+            _ => {
+                return Err(format!(
+                    "Flash Attention does not support head_dim={}, only 32/64/80/128/160/213",
+                    head_dim
+                ));
             }
         };
 

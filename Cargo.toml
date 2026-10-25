@@ -1190,3 +1190,19 @@ path = "tools/check_output_dtype.rs"
 [[bin]]
 name = "test-flash-batched"
 path = "tools/test_flash_batched.rs"
+
+[[bin]]
+name = "test-flash-batched-debug"
+path = "tools/test_flash_batched_debug.rs"
+
+[[bin]]
+name = "analyze-flash-bandwidth"
+path = "tools/analyze_flash_bandwidth.rs"
+
+[[bin]]
+name = "test-flash-multihead"
+path = "tools/test_flash_multihead.rs"
+
+[[bin]]
+name = "trace-decode-nan"
+path = "tools/trace_decode_nan.rs"

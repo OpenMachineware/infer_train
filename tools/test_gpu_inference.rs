@@ -45,7 +45,7 @@ fn main() {
             let start = std::time::Instant::now();
 
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-            let result = ctx.forward_gpu_batched(&tokens);
+            let result = ctx.forward_gpu_native(&tokens);
 
             #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
             let result = {

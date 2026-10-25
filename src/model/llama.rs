@@ -185,6 +185,36 @@ impl LlamaModel {
             .cloned()
             .or_else(|| model.tok_embeddings.clone()); // Tied embeddings
 
+        // Fix vocab_size from actual output tensor shape
+        // GGUF metadata may be incorrect for some models (e.g., Devstral reports 32000 but has 151936)
+        if let Some(output) = &model.output {
+            let actual_vocab_size = if output.shape.len() == 2 {
+                // Output tensor shape is [vocab_size, hidden_size] after transpose
+                // or [hidden_size, vocab_size] before transpose
+                if output.shape[1] == model.config.hidden_size {
+                    // Already transposed: [vocab_size, hidden_size]
+                    output.shape[0]
+                } else if output.shape[0] == model.config.hidden_size {
+                    // Not transposed yet: [hidden_size, vocab_size]
+                    output.shape[1]
+                } else {
+                    // Neither dimension matches hidden_size, use larger dimension as vocab_size
+                    output.shape[0].max(output.shape[1])
+                }
+            } else {
+                // Unexpected shape, use config's vocab_size
+                model.config.vocab_size
+            };
+
+            if actual_vocab_size != model.config.vocab_size {
+                println!(
+                    "Fixing vocab_size from metadata value {} to actual tensor dimension {}",
+                    model.config.vocab_size, actual_vocab_size
+                );
+                model.config.vocab_size = actual_vocab_size;
+            }
+        }
+
         // Transpose output layer if needed (GGUF stores output weights transposed)
         // This enables using standard GEMV kernel instead of transposed kernel
         model.transpose_output_layer();
@@ -2587,14 +2617,31 @@ impl LlamaModel {
             return None;
         }
 
-        // For decode (single token), use DAG executor with kernel fusion
+        // For decode (single token), use async DAG executor with CPU-GPU pipeline
+        // This overlaps CPU encoding with GPU execution for better throughput
         if tokens.len() == 1 {
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
             {
                 use crate::dag::executor::DagExecutor;
-                return DagExecutor::forward_dag(
-                    self, tokens, kv_cache, gpu_ctx,
+                let result = DagExecutor::forward_dag_async(
+                    self, tokens, kv_cache, gpu_ctx, None,
                 );
+
+                // Synchronous fallback: wait immediately
+                // For true async pipeline, use forward_gpu_batched() instead
+                if let Some(mut cb) = result.pending_cb {
+                    cb.wait();
+                    return Some(cb.get_logits());
+                } else {
+                    return result.logits;
+                }
+            }
+            #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
+            {
+                self.forward(
+                    tokens,
+                    &mut KVCache::new(&self.config, 2048, KVCacheFormat::F32),
+                )
             }
         }
 
@@ -2700,15 +2747,60 @@ impl LlamaModel {
             batch_size * hidden_size,
         );
 
-        gpu_ctx.mul_mm_q5_k_encode(
-            encoder,
-            &output_weights,
-            &final_hidden_f16,
-            &logits_buffer,
-            vocab_size,
-            batch_size,
-            hidden_size,
-        );
+        // Select kernel based on output tensor dtype
+        match output.dtype {
+            crate::model::tensor::DataType::F16 => {
+                gpu_ctx.mul_mm_f16_encode(
+                    encoder,
+                    &output_weights,
+                    &final_hidden_f16,
+                    &logits_buffer,
+                    vocab_size,
+                    batch_size,
+                    hidden_size,
+                );
+            }
+            crate::model::tensor::DataType::Q4_K => {
+                gpu_ctx.mul_mm_q4_k_encode(
+                    encoder,
+                    &output_weights,
+                    &final_hidden_f16,
+                    &logits_buffer,
+                    vocab_size,
+                    batch_size,
+                    hidden_size,
+                );
+            }
+            crate::model::tensor::DataType::Q5_K => {
+                gpu_ctx.mul_mm_q5_k_encode(
+                    encoder,
+                    &output_weights,
+                    &final_hidden_f16,
+                    &logits_buffer,
+                    vocab_size,
+                    batch_size,
+                    hidden_size,
+                );
+            }
+            crate::model::tensor::DataType::Q6_K => {
+                gpu_ctx.mul_mm_q6_k_encode(
+                    encoder,
+                    &output_weights,
+                    &final_hidden_f16,
+                    &logits_buffer,
+                    vocab_size,
+                    batch_size,
+                    hidden_size,
+                );
+            }
+            _ => {
+                eprintln!(
+                    "Warning: Unsupported output dtype {:?}, using CPU fallback",
+                    output.dtype
+                );
+                return None;
+            }
+        }
 
         encoder.end_encoding();
 
@@ -3154,6 +3246,16 @@ impl LlamaModel {
         let n_kv_heads = k_out_size / self.config.head_dim;
         let head_dim = self.config.head_dim; // Use explicit head_dim from config
         let intermediate_size = w1.shape[1];
+
+        // CRITICAL: Register all KV cache buffers to prevent premature deallocation
+        // Metal's set_buffer() doesn't retain references, so we must keep them alive
+        // for the entire forward pass (until GPU execution completes)
+        for layer_idx in 0..kv_cache.n_layers() {
+            let k_cache = kv_cache.k_buffer(layer_idx);
+            let v_cache = kv_cache.v_buffer(layer_idx);
+            forward_pool.register(k_cache.clone());
+            forward_pool.register(v_cache.clone());
+        }
 
         // ================================================================
         // Allocate output buffers

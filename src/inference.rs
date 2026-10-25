@@ -181,7 +181,8 @@ impl InferenceContext {
         }
     }
 
-    /// Fully GPU-native forward pass (no CPU-GPU transfers for intermediate tensors)
+    /// Fully GPU-native forward pass with async pipeline (CPU-GPU overlap)
+    /// For decode, uses forward_gpu_batched to overlap CPU encoding with GPU execution
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn forward_gpu_native(&mut self, tokens: &[u32]) -> Option<Vec<f32>> {
         // Fall back to CPU for MQA/MLA architecture (not yet supported on GPU)
@@ -193,10 +194,16 @@ impl InferenceContext {
             );
         }
 
+        // For decode (single token), use async pipeline
+        if tokens.len() == 1 {
+            return self.forward_gpu_batched(tokens);
+        }
+
+        // For prefill, use synchronous batch implementation
         if let (Some(ref gpu_ctx), Some(ref mut kv_cache)) =
             (self.gpu_ctx.as_ref(), self.gpu_kv_cache.as_mut())
         {
-            self.model.forward_gpu_native(tokens, kv_cache, gpu_ctx)
+            self.model.forward_gpu_native_batched(tokens, kv_cache, gpu_ctx)
         } else {
             self.model.forward(
                 tokens,
@@ -212,7 +219,8 @@ impl InferenceContext {
     /// 2. Submit new CB for current tokens (async)
     /// 3. Return previous tokens' logits
     ///
-    /// This keeps GPU busy while CPU prepares next operation.
+    /// For first call, waits synchronously (no overlap).
+    /// For subsequent calls, overlaps CPU encoding with GPU execution.
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn forward_gpu_batched(&mut self, tokens: &[u32]) -> Option<Vec<f32>> {
         // Fall back to CPU for MQA/MLA architecture (not yet supported on GPU)
@@ -224,6 +232,9 @@ impl InferenceContext {
         }
 
         // Step 1: Wait for previous CB and get its logits (if any)
+        // This is where CPU-GPU overlap happens:
+        // - Previous CB was encoding on GPU while CPU was preparing this call
+        // - Now we wait for it and cache the result
         if let Some(mut pending_cb) = self.pending_cb.take() {
             pending_cb.wait();
             let logits = pending_cb.get_logits();
@@ -231,6 +242,7 @@ impl InferenceContext {
         }
 
         // Step 2: Submit new CB asynchronously
+        // GPU starts encoding immediately, CPU continues
         if let (Some(ref gpu_ctx), Some(ref mut kv_cache)) =
             (self.gpu_ctx.as_ref(), self.gpu_kv_cache.as_mut())
         {
@@ -241,22 +253,22 @@ impl InferenceContext {
                 tokens,
                 kv_cache,
                 gpu_ctx,
-                self.pending_cb.as_ref(),
+                None, // No dependency tracking needed for sequential decode
             );
 
             // Store pending CB for next call
             self.pending_cb = result.pending_cb;
+
+            // Return cached logits from previous call
+            // For first call, cached_logits is None (caller should call again)
+            self.cached_logits.take()
         } else {
             // Fallback to CPU
-            return self.model.forward(
+            self.model.forward(
                 tokens,
                 &mut KVCache::new(&self.config, 2048, KVCacheFormat::F32),
-            );
+            )
         }
-
-        // Step 3: Return cached logits from previous call
-        // For first call, cached_logits is None - caller should call again
-        self.cached_logits.take()
     }
 
     /// Batch prefill using GPU GEMM (more efficient for multiple tokens)

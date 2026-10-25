@@ -39,6 +39,39 @@ kernel void kernel_mul_mv_f16_f32(
     output[tid] = sum;
 }
 
+// F16×F16 GEMV: y = W @ x
+// W is stored row-major as [M, K] in F16 format
+// x is F16 vector of size K
+// y is F32 vector of size M
+// Each thread computes one output element
+
+kernel void kernel_mul_mv_f16_f16(
+    device const half* weights [[buffer(0)]],  // [M, K] in F16
+    device const half* input [[buffer(1)]],    // [K] in F16
+    device float* output [[buffer(2)]],         // [M] in F32
+    constant uint& m [[buffer(3)]],             // M (output size)
+    constant uint& k [[buffer(4)]],             // K (input size)
+    uint tid [[thread_position_in_grid]])
+{
+    // Each thread computes one output element
+    if (tid >= m) return;
+
+    // W is stored row-major: W[i, j] is at position i * K + j
+    device const half* row = weights + tid * k;
+
+    float sum = 0.0f;
+
+    // Simple loop: sum += W[tid, i] * x[i]
+    for (uint i = 0; i < k; i++) {
+        // Read both as half and convert to float
+        float w_val = float(row[i]);
+        float x_val = float(input[i]);
+        sum += w_val * x_val;
+    }
+
+    output[tid] = sum;
+}
+
 // Optimized F16 GEMV using simdgroup for better performance
 // Uses simdgroup to process multiple elements in parallel
 
