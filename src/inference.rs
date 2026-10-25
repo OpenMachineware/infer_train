@@ -36,10 +36,11 @@ pub struct InferenceContext {
     pub gpu_ctx: Option<crate::quant::vec_dot::gpu::metal::MetalContext>,
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub gpu_kv_cache: Option<KVCacheGPU>,
-    /// Pending async command buffer (for CPU-GPU overlap)
+    /// Multiple pending command buffers for GPU parallelism
+    /// n_cb = number of concurrent CBs = bandwidth multiplier
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    pending_cb: Option<crate::dag::executor::AsyncCommandBuffer>,
-    /// Cached logits from previous async execution
+    pending_cbs: Vec<crate::dag::executor::AsyncCommandBuffer>,
+    /// Cached logits from completed CBs
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     cached_logits: Option<Vec<f32>>,
 }
@@ -89,7 +90,7 @@ impl InferenceContext {
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
             gpu_kv_cache,
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-            pending_cb: None,
+            pending_cbs: Vec::new(),
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
             cached_logits: None,
         })
@@ -121,7 +122,7 @@ impl InferenceContext {
             device: Device::Gpu,
             gpu_ctx: Some(gpu_ctx),
             gpu_kv_cache: Some(kv),
-            pending_cb: None,
+            pending_cbs: Vec::new(),
             cached_logits: None,
         })
     }
@@ -231,18 +232,25 @@ impl InferenceContext {
             );
         }
 
-        // Step 1: Wait for previous CB and get its logits (if any)
-        // This is where CPU-GPU overlap happens:
-        // - Previous CB was encoding on GPU while CPU was preparing this call
-        // - Now we wait for it and cache the result
-        if let Some(mut pending_cb) = self.pending_cb.take() {
-            pending_cb.wait();
-            let logits = pending_cb.get_logits();
-            self.cached_logits = Some(logits);
+        // Step 1: Wait for oldest CB in pipeline and get its logits
+        // This implements multi-pass pipelining: N CBs can execute in parallel on GPU
+        // Default pipeline depth = 2 (balance between parallelism and latency)
+        let pipeline_depth = std::env::var("INFER_PIPELINE_DEPTH")
+            .map(|v| v.parse().unwrap_or(2))
+            .unwrap_or(2);
+
+        if self.pending_cbs.len() >= pipeline_depth {
+            // Pipeline full: wait for oldest CB
+            if let Some(mut oldest_cb) = self.pending_cbs.pop() {
+                oldest_cb.wait();
+                let logits = oldest_cb.get_logits();
+                self.cached_logits = Some(logits);
+            }
         }
 
         // Step 2: Submit new CB asynchronously
         // GPU starts encoding immediately, CPU continues
+        // Multiple CBs can execute in parallel on GPU
         if let (Some(ref gpu_ctx), Some(ref mut kv_cache)) =
             (self.gpu_ctx.as_ref(), self.gpu_kv_cache.as_mut())
         {
@@ -256,11 +264,13 @@ impl InferenceContext {
                 None, // No dependency tracking needed for sequential decode
             );
 
-            // Store pending CB for next call
-            self.pending_cb = result.pending_cb;
+            // Add new CB to pipeline (GPU can execute multiple CBs in parallel)
+            if let Some(cb) = result.pending_cb {
+                self.pending_cbs.insert(0, cb); // Insert at front (newest)
+            }
 
-            // Return cached logits from previous call
-            // For first call, cached_logits is None (caller should call again)
+            // Return cached logits from completed CB
+            // For first calls, cached_logits is None (pipeline filling)
             self.cached_logits.take()
         } else {
             // Fallback to CPU

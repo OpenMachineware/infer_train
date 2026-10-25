@@ -33,9 +33,18 @@ fn main() {
     let prompt_tokens: Vec<u32> = vec![1];
     let prefill_start = std::time::Instant::now();
 
-    // First call submits CB, returns None
-    let _ = gpu_ctx.forward_gpu_batched(&prompt_tokens);
-    // Second call waits for CB, returns logits
+    // Multi-pass pipeline: need to call multiple times to fill pipeline and get results
+    // Pipeline depth defaults to 2
+    let pipeline_depth = std::env::var("INFER_PIPELINE_DEPTH")
+        .map(|v| v.parse().unwrap_or(2))
+        .unwrap_or(2);
+
+    // Fill pipeline
+    for _ in 0..pipeline_depth {
+        let _ = gpu_ctx.forward_gpu_batched(&prompt_tokens);
+    }
+
+    // Get result (waits for oldest CB in pipeline)
     let logits = gpu_ctx.forward_gpu_batched(&[1]).expect("Prefill failed");
 
     let prefill_time = prefill_start.elapsed();

@@ -1286,3 +1286,13 @@ required-features = ["metal"]
 [[bin]]
 name = "check-q5k-scales"
 path = "tools/check_q5k_scales.rs"
+
+[[bin]]
+name = "verify-q5k-fix"
+path = "tools/verify_q5k_fix.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-async-overlap"
+path = "tools/test_async_overlap.rs"
+required-features = ["metal"]
