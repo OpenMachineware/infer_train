@@ -1,6 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+// =============================================================================
+// STATUS: PRODUCTION - Main decode kernel with multiple head_dim variants
+// =============================================================================
+// Flash Decode Vectorized Kernel - Implements high-performance decode attention.
+//
+// Provides specialized kernels for different head dimensions:
+// - HEAD_DIM=32, 64, 80, 128, 160, 213
+//
+// Primary kernel: flash_decode_vec_f16 (HEAD_DIM=128, default for most models)
+// Supports F16 and Q4_0 quantized KV cache.
+// =============================================================================
+
 // Flash Decode Vectorized Kernel
 // Implements high-performance decode attention based on proven design principles
 //

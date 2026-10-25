@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-// SPDX-FileCopyrightText: 2026 Jia Liu
-// SPDX-License-Identifier: AGPL-3.0-only
+// =============================================================================
+// STATUS: EXPERIMENTAL - Work in progress for server mode
+// =============================================================================
+// Uses Metal Performance Primitives for tensor operations. Requires MPP framework.
+// Not currently used. For prefill, use flash_attn_quant.metal with full format support.
+// =============================================================================
 
 // High-performance Flash Prefill using MPP tensor operations
 // Processes Q queries per threadgroup, C=256 cache items per iteration

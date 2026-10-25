@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+// =============================================================================
+// STATUS: EXPERIMENTAL - Batched prefill for server mode optimization
+// =============================================================================
 // Batched Flash Attention for Prefill
 // Architecture: matches llama.cpp's approach
 // - One threadgroup per 8 queries

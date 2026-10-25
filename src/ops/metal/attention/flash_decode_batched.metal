@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+// =============================================================================
+// STATUS: EXPERIMENTAL - Work in progress for server mode (vLLM-style batching)
+// =============================================================================
+// This kernel batches multiple KV positions per iteration (C=8 positions).
+// Kept for future server-mode implementation where bandwidth saturation via
+// batching is critical. For local inference, use flash_attn_quant.metal.
+// =============================================================================
+
 // Flash Decode with batched processing
 // Processes multiple KV positions per iteration for better memory bandwidth
 //

@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+// =============================================================================
+// STATUS: EXPERIMENTAL - Work in progress for server mode (vLLM-style batching)
+// =============================================================================
+// This kernel implements prefill Flash Attention with MMA operations.
+// Kept for future server-mode implementation. For local inference prefill,
+// use flash_attn_quant.metal which has full format support.
+// =============================================================================
+
 // Flash Decode with Matrix Multiply Accumulate (MMA) operations
 // Based on llama.cpp's approach with simdgroup_float8x8
 

@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+// =============================================================================
+// STATUS: EXPERIMENTAL - Work in progress for server mode (vLLM-style batching)
+// =============================================================================
+// This kernel explores workgroup-level parallelization across KV positions.
+// Not currently used in production. For local inference, use flash_attn_quant.metal
+// which supports all formats (F16, BF16, Q4_K, Q5_K, Q6_K, IQ series, etc.).
+// =============================================================================
+
 // Flash Decode Kernel with NWG parallelization
 // Multiple workgroups process different chunks of KV positions in parallel
 // Final reduction combines partial results using online softmax formula

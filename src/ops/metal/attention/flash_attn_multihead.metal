@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+// =============================================================================
+// STATUS: EXPERIMENTAL - Work in progress for server mode (vLLM-style batching)
+// =============================================================================
+// This kernel processes multiple heads per dispatch (32 heads at once).
+// Reduces dispatch overhead by 32x. Kept for future server-mode implementation.
+// For local inference, use flash_attn_quant.metal with full format support.
+// =============================================================================
+
 // Multi-Head Flash Attention Decode Kernel
 // Based on llama.cpp's tensor-based approach (fa_tensor.metal)
 //

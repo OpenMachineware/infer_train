@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+// =============================================================================
+// STATUS: EXPERIMENTAL - Work in progress for server mode (vLLM-style batching)
+// =============================================================================
+// This kernel is kept for future server-mode implementation where multiple
+// decode positions can be batched together. Not currently used in production.
+// For local inference, use flash_attn_quant.metal which supports all formats.
+// =============================================================================
+
 // Flash Decode using simdgroup operations
 // Optimized for decode (single query per head)
 //

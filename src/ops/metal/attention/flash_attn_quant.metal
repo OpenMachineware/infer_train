@@ -1,6 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+// =============================================================================
+// STATUS: PRODUCTION - Main Flash Attention kernel with full format support
+// =============================================================================
+// Self-written Flash Attention kernels with quantized KV support.
+// Dequantizes K/V on-the-fly during attention computation.
+//
+// Supported formats:
+// - F16, BF16 (full precision)
+// - Q4_0, Q4_1, Q5_0, Q5_1, Q8_0 (block quantization)
+// - Q2_K, Q3_K, Q4_K, Q5_K, Q6_K (K-quant, 256-element blocks)
+// - IQ4_NL (importance-based quantization)
+//
+// Both decode and prefill variants provided.
+// =============================================================================
+
 // Self-written Flash Attention kernels with quantized KV support
 // Dequantizes K/V on-the-fly during attention computation
 //

@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+// =============================================================================
+// STATUS: EXPERIMENTAL - Work in progress for server mode (vLLM-style batching)
+// =============================================================================
+// Combines batched processing with true MMA operations. Not currently used.
+// For local inference, use flash_attn_quant.metal with full format support.
+// =============================================================================
+
 // Flash Decode with True Matrix Multiply Accumulate (MMA)
 // Uses simdgroup_float8x8 for actual matrix operations
 // Processes multiple KV positions per iteration for 2-3x speedup

@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
+// =============================================================================
+// STATUS: DISABLED - Compilation errors in simdgroup operations
+// =============================================================================
+// This kernel attempts to use simdgroup_float8x8 for true MMA operations.
+// Currently has issues with simdgroup_fill and simdgroup_add builtins.
+// Not loaded in production. Kept for future investigation.
+// =============================================================================
+
 // Flash Decode with true Matrix Multiply Accumulate (MMA)
 // Uses simdgroup_float8x8 for hardware-accelerated matrix operations
 //
