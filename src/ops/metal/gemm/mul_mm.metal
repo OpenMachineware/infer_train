@@ -634,6 +634,13 @@ kernel void kernel_mul_mm(
         // Partial tile: write to threadgroup memory first, then copy valid data
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
+        // Each simdgroup stores to a different region:
+        // sgitg=0,2: rows 0-31
+        // sgitg=1,3: rows 32-63
+        // Storage within each region:
+        // - temp_str[0..31] = row (base+0), cols 0-31
+        // - temp_str[64..95] = row (base+1), cols 0-31
+        // etc.
         threadgroup float * temp_str = ((threadgroup float *) shmem) + 32*(sgitg&1) + (16*(sgitg >> 1))*NR0;
 
         for (short i = 0; i < 8; i++) {
@@ -642,23 +649,39 @@ kernel void kernel_mul_mm(
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        if (sgitg == 0) {
-            for (int j = tiitg; j < nr1; j += NR1) {
-                device float  * D  = (device float  *) dst + r0 + (r1 + j)*args.ne0 + im*args.ne1*args.ne0;
-                device float4 * D4 = (device float4 *) D;
+        // Each simdgroup copies its own rows
+        // sgitg=0,2: rows r0 to r0+31
+        // sgitg=1,3: rows r0+32 to r0+63
+        // Base row offset for this simdgroup:
+        const int row_base = r0 + 32*(sgitg&1);
+        // Number of rows this simdgroup handles:
+        const int rows_this_sg = min(32, max(0, nr0 - 32*(sgitg&1)));
 
-                threadgroup float  * C  = temp_str + (j*NR0);
-                threadgroup float4 * C4 = (threadgroup float4 *) C;
-
-                int i = 0;
-                for (; i < nr0/4; i++) {
-                    *(D4 + i) = *(C4 + i);
-                }
-
-                i *= 4;
-                for (; i < nr0; i++) {
-                    *(D + i) = *(C + i);
-                }
+        // Each thread handles one row for all columns
+        // Storage layout: simdgroup_store with stride NR0=64 stores in column-major:
+        // - mc[i] at base offset 8*(i%4) + 8*NR0*(i/4)
+        // - Element (row, col) of mc[i] at base + col*NR0 + row
+        // - Matrix column i%4 stores rows (i%4)*8 + (row % 8), interleaved
+        // For row r within 32 rows:
+        // - row_block = r / 8 (0-3) determines which mc[i] group (i/4)
+        // - row_in_block = r % 8 (0-7) determines matrix column: mc_col = row_in_block
+        // - j/8 (col_block) determines row within matrix: mc_row = j/8
+        // - j%8 + col_block*8 determines base offset component
+        if (tiitg < rows_this_sg) {
+            const int row_idx = row_base + tiitg;
+            const int row_block = tiitg / 8;  // 0, 1, 2, or 3
+            const int row_in_block = tiitg % 8;  // 0-7
+            for (int j = 0; j < nr1; j++) {
+                device float * D = (device float *) dst + row_idx + (r1 + j)*args.ne0 + im*args.ne1*args.ne0;
+                // Matrix column depends on row position (interleaved storage)
+                const int mc_col = row_in_block;  // 0-7
+                // Matrix row depends on column position
+                const int mc_row = j / 8;  // 0-3
+                // Column index within matrix (for offset calculation)
+                const int col_in_matrix = j % 8;  // 0-7
+                // Storage offset: mc_col * NR0 + mc_row * 8 + col_in_matrix + row_block * 8 * NR0
+                const int offset = mc_col * NR0 + mc_row * 8 + col_in_matrix + row_block * 8 * NR0;
+                D[0] = temp_str[offset];
             }
         }
     }

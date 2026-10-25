@@ -2532,7 +2532,7 @@ impl LlamaModel {
                 1,
                 actual_n_heads,
                 head_dim,
-                10000.0,
+                self.config.rope_freq_base,
                 1.0,
             )
             .ok()?;
@@ -2543,7 +2543,7 @@ impl LlamaModel {
                 1,
                 actual_n_kv_heads,
                 head_dim,
-                10000.0,
+                self.config.rope_freq_base,
                 1.0,
             )
             .ok()?;
@@ -3042,7 +3042,7 @@ impl LlamaModel {
             1,
             actual_n_heads,
             head_dim,
-            10000.0,
+            self.config.rope_freq_base,
             1.0,
             &q_rope_buffer,
         );
@@ -3053,7 +3053,7 @@ impl LlamaModel {
             1,
             actual_n_kv_heads,
             head_dim,
-            10000.0,
+            self.config.rope_freq_base,
             1.0,
             &k_rope_buffer,
         );
@@ -3202,6 +3202,74 @@ impl LlamaModel {
         Some(final_buffer)
     }
 
+    /// Dtype-aware GEMM encode for prefill batched path
+    /// Dispatches to correct GEMM kernel based on weight dtype
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+    fn gemm_dtype_aware_encode(
+        gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
+        encoder: &metal::ComputeCommandEncoderRef,
+        weights_buffer: &std::rc::Rc<metal::Buffer>,
+        dtype: crate::model::tensor::DataType,
+        input_buffer: &std::rc::Rc<metal::Buffer>,
+        output_buffer: &std::rc::Rc<metal::Buffer>,
+        m: usize,
+        n: usize,
+        k: usize,
+    ) {
+        match dtype {
+            crate::model::tensor::DataType::Q4_K => {
+                gpu_ctx.mul_mm_q4_k_encode(
+                    encoder,
+                    weights_buffer,
+                    input_buffer,
+                    output_buffer,
+                    m,
+                    n,
+                    k,
+                );
+            }
+            crate::model::tensor::DataType::Q5_K => {
+                gpu_ctx.mul_mm_q5_k_encode(
+                    encoder,
+                    weights_buffer,
+                    input_buffer,
+                    output_buffer,
+                    m,
+                    n,
+                    k,
+                );
+            }
+            crate::model::tensor::DataType::Q6_K => {
+                gpu_ctx.mul_mm_q6_k_encode(
+                    encoder,
+                    weights_buffer,
+                    input_buffer,
+                    output_buffer,
+                    m,
+                    n,
+                    k,
+                );
+            }
+            _ => {
+                // Unsupported dtype - this should not happen in practice
+                // The model should use supported quantization formats
+                eprintln!(
+                    "WARNING: Unsupported dtype {:?} for GEMM, using Q5_K kernel",
+                    dtype
+                );
+                gpu_ctx.mul_mm_q5_k_encode(
+                    encoder,
+                    weights_buffer,
+                    input_buffer,
+                    output_buffer,
+                    m,
+                    n,
+                    k,
+                );
+            }
+        }
+    }
+
     /// Forward one layer with batched prefill
     /// Processes batch tokens in parallel using GEMM instead of GEMV
     /// input: [batch, hidden_size] F32 on GPU
@@ -3336,32 +3404,39 @@ impl LlamaModel {
             batch * hidden_size,
         );
 
-        // 3. QKV projections using GEMM
+        // 3. QKV projections using GEMM (dtype-aware dispatch)
         let wq_buffer = gpu_ctx.get_or_create_buffer(wq);
         let wk_buffer = gpu_ctx.get_or_create_buffer(wk);
         let wv_buffer = gpu_ctx.get_or_create_buffer(wv);
 
-        gpu_ctx.mul_mm_q5_k_encode(
+        // Dispatch to correct GEMM kernel based on weight dtype
+        Self::gemm_dtype_aware_encode(
+            gpu_ctx,
             encoder,
             &wq_buffer,
+            wq.dtype,
             &normed_f16_buffer,
             &q_buffer,
             q_out_size,
             batch,
             hidden_size,
         );
-        gpu_ctx.mul_mm_q5_k_encode(
+        Self::gemm_dtype_aware_encode(
+            gpu_ctx,
             encoder,
             &wk_buffer,
+            wk.dtype,
             &normed_f16_buffer,
             &k_buffer,
             k_out_size,
             batch,
             hidden_size,
         );
-        gpu_ctx.mul_mm_q5_k_encode(
+        Self::gemm_dtype_aware_encode(
+            gpu_ctx,
             encoder,
             &wv_buffer,
+            wv.dtype,
             &normed_f16_buffer,
             &v_buffer,
             v_out_size,
@@ -3393,7 +3468,7 @@ impl LlamaModel {
             batch,
             n_heads,
             head_dim,
-            10000.0,
+            self.config.rope_freq_base,
             1.0,
             &q_rope_buffer,
         );
@@ -3404,7 +3479,7 @@ impl LlamaModel {
             batch,
             n_kv_heads,
             head_dim,
-            10000.0,
+            self.config.rope_freq_base,
             1.0,
             &k_rope_buffer,
         );
@@ -3490,11 +3565,13 @@ impl LlamaModel {
             batch * q_out_size,
         );
 
-        // 9. Output projection (GEMM)
+        // 9. Output projection (GEMM, dtype-aware)
         let wo_buffer = gpu_ctx.get_or_create_buffer(wo);
-        gpu_ctx.mul_mm_q5_k_encode(
+        Self::gemm_dtype_aware_encode(
+            gpu_ctx,
             encoder,
             &wo_buffer,
+            wo.dtype,
             &attn_out_f16_buffer,
             &attn_proj_buffer,
             hidden_size,
@@ -3531,22 +3608,26 @@ impl LlamaModel {
             batch * hidden_size,
         );
 
-        // 13. FFN projections (Gate + Up)
+        // 13. FFN projections (Gate + Up, dtype-aware)
         let w1_buffer = gpu_ctx.get_or_create_buffer(w1);
         let w3_buffer = gpu_ctx.get_or_create_buffer(w3);
 
-        gpu_ctx.mul_mm_q5_k_encode(
+        Self::gemm_dtype_aware_encode(
+            gpu_ctx,
             encoder,
             &w1_buffer,
+            w1.dtype,
             &ffn_normed_f16_buffer,
             &gate_buffer,
             intermediate_size,
             batch,
             hidden_size,
         );
-        gpu_ctx.mul_mm_q5_k_encode(
+        Self::gemm_dtype_aware_encode(
+            gpu_ctx,
             encoder,
             &w3_buffer,
+            w3.dtype,
             &ffn_normed_f16_buffer,
             &up_buffer,
             intermediate_size,
@@ -3583,11 +3664,13 @@ impl LlamaModel {
             batch * intermediate_size,
         );
 
-        // 16. Down projection (GEMM)
+        // 16. Down projection (GEMM, dtype-aware)
         let w2_buffer = gpu_ctx.get_or_create_buffer(w2);
-        gpu_ctx.mul_mm_q5_k_encode(
+        Self::gemm_dtype_aware_encode(
+            gpu_ctx,
             encoder,
             &w2_buffer,
+            w2.dtype,
             &ffn_out_f16_buffer,
             &ffn_out_buffer,
             hidden_size,

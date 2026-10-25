@@ -1206,3 +1206,75 @@ path = "tools/test_flash_multihead.rs"
 [[bin]]
 name = "trace-decode-nan"
 path = "tools/trace_decode_nan.rs"
+
+[[bin]]
+name = "trace-layer-nan"
+path = "tools/trace_layer_nan.rs"
+
+[[bin]]
+name = "test-f16-gemm-sizes"
+path = "tools/test_f16_gemm_sizes.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "check-model-layer-dtypes"
+path = "tools/check_model_layer_dtypes.rs"
+
+[[bin]]
+name = "check-model-config"
+path = "tools/check_model_config.rs"
+
+[[bin]]
+name = "test-layer0-nan"
+path = "tools/test_layer0_nan.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "trace-full-gpu-layers"
+path = "tools/trace_full_gpu_layers.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-prefill-single-token"
+path = "tools/test_prefill_single_token.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "debug-prefill-layers"
+path = "tools/debug_prefill_layers.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "trace-prefill-layer-steps"
+path = "tools/trace_prefill_layer_steps.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-q4k-gemm-batch"
+path = "tools/test_q4k_gemm_batch.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-q5k-gemm-batch"
+path = "tools/test_q5k_gemm_batch.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-gemv-vs-gemm"
+path = "tools/test_gemv_vs_gemm.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-gemm-storage"
+path = "tools/test_gemm_storage.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-f16-gemm-simple"
+path = "tools/test_f16_gemm_simple.rs"
+required-features = ["metal"]
+
+[[bin]]
+name = "test-q5k-gemm-debug"
+path = "tools/test_q5k_gemm_debug.rs"
+required-features = ["metal"]
