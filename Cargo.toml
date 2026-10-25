@@ -260,6 +260,10 @@ name = "test-q4k-gemv"
 path = "tools/test_q4k_gemv.rs"
 
 [[bin]]
+name = "test-q5k-dequant-unit"
+path = "tools/test_q5k_dequant_unit.rs"
+
+[[bin]]
 name = "test-single-layer-debug"
 path = "tools/test_single_layer_debug.rs"
 
@@ -1278,3 +1282,7 @@ required-features = ["metal"]
 name = "test-q5k-gemm-debug"
 path = "tools/test_q5k_gemm_debug.rs"
 required-features = ["metal"]
+
+[[bin]]
+name = "check-q5k-scales"
+path = "tools/check_q5k_scales.rs"

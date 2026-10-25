@@ -429,13 +429,11 @@ kernel void kernel_mul_mv_q5_K_f32(
         }
 
         // Final computation
-        // 6-bit values stored as unsigned (0-63), convert to signed (-32 to 31)
-        // Formula from llama.cpp: d * (sc-32) * q + dmin * (m-32)
-        sumf += (float)dh[0] * ((sc8[0]-32.f) * (acc1[0]      + 16.f*acc2[0]) +
-                               (sc8[1]-32.f) * (acc1[1]/16.f + 16.f*acc2[1]) +
-                               (sc8[4]-32.f) * (acc1[2]      + 16.f*acc2[2]) +
-                               (sc8[5]-32.f) * (acc1[3]/16.f + 16.f*acc2[3])) +
-                (float)dh[1] * (sumy[0] * (sc8[2]-32.f) + sumy[1] * (sc8[3]-32.f) + sumy[2] * (sc8[6]-32.f) + sumy[3] * (sc8[7]-32.f));
+        sumf += (float)dh[0] * (sc8[0] * (acc1[0]      + 16.f*acc2[0]) +
+                               sc8[1] * (acc1[1]/16.f + 16.f*acc2[1]) +
+                               sc8[4] * (acc1[2]      + 16.f*acc2[2]) +
+                               sc8[5] * (acc1[3]/16.f + 16.f*acc2[3])) -
+                (float)dh[1] * (sumy[0] * sc8[2] + sumy[1] * sc8[3] + sumy[2] * sc8[6] + sumy[3] * sc8[7]);
 
         y1 += 4 * QK_K;
     }
