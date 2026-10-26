@@ -1193,11 +1193,11 @@ pub unsafe fn vec_dot_f16_neon(q: &[u16], k: &[u16], n: usize) -> f32 {
         "fcvtl v1.4s, v0.4h",
         "fcvtl2 v2.4s, v0.8h",
         "fadd v0.4s, v1.4s, v2.4s",
-        "faddp v0.4s, v0.4s",
-        // Move result to s20 (safe register, doesn't conflict with v0-v3)
-        "fmov s20, v0.s[0]",
-        // Store to result via pointer
-        "str s20, [x3]",
+        // Pairwise add twice to get sum
+        "faddp v1.4s, v0.4s, v0.4s",
+        "faddp v0.4s, v1.4s, v1.4s",
+        // Store result (s0 is the scalar part of v0)
+        "str s0, [x3]",
 
         inout("x0") q_ptr => _,
         inout("x1") k_ptr => _,
@@ -1215,7 +1215,6 @@ pub unsafe fn vec_dot_f16_neon(q: &[u16], k: &[u16], n: usize) -> f32 {
         out("v17") _,
         out("v18") _,
         out("v19") _,
-        out("v20") _,
         out("x8") _,
         options(nostack)
     );

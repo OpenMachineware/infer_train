@@ -11,6 +11,7 @@ extern crate objc;
 
 pub mod buffer;
 pub mod compute;
+pub mod cpu;
 pub mod dag;
 pub mod executor;
 pub mod inference;

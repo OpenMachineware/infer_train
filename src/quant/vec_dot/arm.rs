@@ -4,6 +4,7 @@
 pub mod fp;
 pub mod iq;
 pub mod k_quant;
+pub mod k_quant_batch; // Batched/interleaved GEMV kernels
 pub mod q_0_1;
 pub mod tq;
 
@@ -25,6 +26,11 @@ pub use iq::{
 pub use k_quant::{
     vec_dot_q2_k_q8_k_neon, vec_dot_q3_k_q8_k_neon, vec_dot_q4_k_q8_k_neon,
     vec_dot_q5_k_q8_k_neon, vec_dot_q6_k_q8_k_neon,
+};
+
+pub use k_quant_batch::{
+    BlockQ4KInterleaved, BlockQ4Kx8, gemv_q4_k_interleaved, repack_q4_k_batch,
+    repack_q4_k_to_interleaved, vec_dot_q4_k_q8_k_interleaved,
 };
 
 pub use q_0_1::{

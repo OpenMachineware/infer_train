@@ -3,6 +3,9 @@
 
 // Inference runtime: connect model layer with operators
 
+pub mod buffer_cache;
+pub mod cpu_executor;
+pub mod cpu_memory_pool;
 pub mod dequant;
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 pub mod gpu_tensor;
@@ -32,6 +35,8 @@ pub struct InferenceContext {
     pub config: ModelConfig,
     pub model: LlamaModel,
     pub device: Device,
+
+    // GPU-specific fields (only for Metal)
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub gpu_ctx: Option<crate::quant::vec_dot::gpu::metal::MetalContext>,
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -43,6 +48,12 @@ pub struct InferenceContext {
     /// Cached logits from completed CBs
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     cached_logits: Option<Vec<f32>>,
+
+    // CPU work buffers (only for CPU path)
+    /// Pre-allocated work buffer for quantized input (Q8_K format)
+    cpu_q8k_input: Option<Vec<u8>>,
+    /// Pre-allocated output buffer for intermediate results
+    cpu_hidden_buffer: Option<Vec<f32>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +104,8 @@ impl InferenceContext {
             pending_cbs: Vec::new(),
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
             cached_logits: None,
+            cpu_q8k_input: None,
+            cpu_hidden_buffer: None,
         })
     }
 
@@ -124,6 +137,8 @@ impl InferenceContext {
             gpu_kv_cache: Some(kv),
             pending_cbs: Vec::new(),
             cached_logits: None,
+            cpu_q8k_input: None,
+            cpu_hidden_buffer: None,
         })
     }
 

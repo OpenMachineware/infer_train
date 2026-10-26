@@ -1266,6 +1266,14 @@ required-features = ["metal"]
 [[bin]]
 name = "test-gemv-vs-gemm"
 path = "tools/test_gemv_vs_gemm.rs"
+
+[[bin]]
+name = "test-gemv-cache"
+path = "tools/test_gemv_cache.rs"
+
+[[bin]]
+name = "test-quant-overhead"
+path = "tools/test_quant_overhead.rs"
 required-features = ["metal"]
 
 [[bin]]
@@ -1296,3 +1304,81 @@ required-features = ["metal"]
 name = "test-async-overlap"
 path = "tools/test_async_overlap.rs"
 required-features = ["metal"]
+
+[[bin]]
+name = "bench-cpu-small"
+path = "tools/bench_cpu_small.rs"
+
+[[bin]]
+name = "profile-cpu-forward"
+path = "tools/profile_cpu_forward.rs"
+
+[[bin]]
+name = "trace-cpu-forward"
+path = "tools/trace_cpu_forward.rs"
+
+[[bin]]
+name = "bench-cpu-executor"
+path = "tools/bench_cpu_executor.rs"
+
+[[bin]]
+name = "bench-cpu-dag"
+path = "tools/bench_cpu_dag.rs"
+
+[[bin]]
+name = "profile-cpu-dag-ops"
+path = "tools/profile_cpu_dag_ops.rs"
+
+[[bin]]
+name = "profile-quant-overhead"
+path = "tools/profile_quant_overhead.rs"
+
+[[bin]]
+name = "bench-rayon-overhead"
+path = "tools/bench_rayon_overhead.rs"
+
+[[bin]]
+name = "measure-memory-bandwidth"
+path = "tools/measure_memory_bandwidth.rs"
+
+[[bin]]
+name = "test-sequential-gemv"
+path = "tools/test_sequential_gemv.rs"
+
+[[bin]]
+name = "test-interleaved-gemv"
+path = "tools/test_interleaved_gemv.rs"
+
+[[bin]]
+name = "bench-interleaved-real"
+path = "tools/bench_interleaved_real.rs"
+
+[[bin]]
+name = "test-cpu-async"
+path = "tools/test_cpu_async.rs"
+
+[[bin]]
+name = "bench-interleaved-layers"
+path = "tools/bench_interleaved_layers.rs"
+
+[dependencies.rayon]
+version = "1.10"
+
+[dependencies.crossbeam]
+version = "0.8"
+
+[[bin]]
+name = "profile-cpu-ops"
+path = "tools/profile_cpu_ops.rs"
+
+[[bin]]
+name = "profile-cpu-detailed"
+path = "tools/profile_cpu_detailed.rs"
+
+[[bin]]
+name = "check-weight-dtypes"
+path = "tools/check_weight_dtypes.rs"
+
+[[bin]]
+name = "bench-cpu-gemv-approach"
+path = "tools/bench_cpu_gemv_approach.rs"

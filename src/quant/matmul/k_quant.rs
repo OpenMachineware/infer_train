@@ -5,8 +5,18 @@
 
 use crate::quant::types::*;
 use crate::quant::vec_dot::arm::*;
+use once_cell::sync::Lazy;
 use std::arch::aarch64::*;
 use std::arch::asm;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+/// Cache for interleaved Q4_K weights
+/// Key: pointer to original weights
+/// Value: interleaved weights (m/8 blocks of BlockQ4Kx8)
+static Q4K_INTERLEAVED_CACHE: Lazy<
+    Arc<Mutex<HashMap<usize, Vec<BlockQ4Kx8>>>>,
+> = Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
 
 /// Manual SDOT implementation via inline asm
 #[inline(always)]
@@ -27,7 +37,7 @@ unsafe fn vdotq_s32_manual(
 }
 
 /// Optimized Q4_K × Q8_K matrix-vector multiplication
-/// Uses block-tiling and processes multiple rows at once
+/// Uses interleaved weight layout when possible for better cache locality
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q4_k_q8_k(
     weights: &[BlockQ4K],
@@ -36,126 +46,64 @@ pub unsafe fn matmul_q4_k_q8_k(
     k: usize,
     m: usize,
 ) {
-    // For small M, use simple vec_dot loop for better performance
-    if m < 16 {
-        let nb = k / QK_K;
-        for i in 0..m {
-            dst[i] =
-                vec_dot_q4_k_q8_k_neon(k, &weights[i * nb..(i + 1) * nb], x);
-        }
-        return;
-    }
-
     let nb = k / QK_K;
 
-    // Process in chunks of 16 rows to improve cache utilization
-    const BLCK_1: usize = 16;
-    let m4b = vdupq_n_u8(0x0F);
-    let vzero = vdupq_n_s32(0);
+    // Use interleaved kernel if m is divisible by 8 and >= 8
+    if m >= 8 && m % 8 == 0 {
+        // Get or create interleaved weights from cache
+        let key = weights.as_ptr() as usize;
+        let cache = Q4K_INTERLEAVED_CACHE.clone();
+        let mut cache_guard = cache.lock().unwrap();
 
-    const KMASK1: u32 = 0x3f3f3f3f;
-    const KMASK2: u32 = 0x0f0f0f0f;
-    const KMASK3: u32 = 0x03030303;
+        let interleaved = if let Some(cached) = cache_guard.get(&key) {
+            cached
+        } else {
+            // Repack weights to interleaved format
+            let interleaved = repack_q4_k_batch(weights, m, nb);
+            cache_guard.insert(key, interleaved);
+            cache_guard.get(&key).unwrap()
+        };
 
-    // Process rows in blocks
-    for ib1 in (0..m).step_by(BLCK_1) {
-        let ib1_end = (ib1 + BLCK_1).min(m);
-
-        // Initialize sums for each row in this block - use stack array
-        let mut row_sums = [0.0f32; BLCK_1];
-
-        // Process all blocks of K dimension
-        for ib in 0..nb {
-            let x_block = &x[ib];
-            let q8 = x_block.qs.as_ptr();
-            let d_x = x_block.d;
-
-            // Precompute q8-related values once for all rows
-            let q8sums = vpaddq_s16(
-                vld1q_s16(x_block.bsums.as_ptr()),
-                vld1q_s16(x_block.bsums.as_ptr().add(8)),
-            );
-
-            // Process each row in the block
-            for ir in ib1..ib1_end {
-                let w_block = &weights[ir * nb + ib];
-
-                let d = d_x * half::f16::from_bits(w_block.d).to_f32();
-                let dmin = d_x * half::f16::from_bits(w_block.dmin).to_f32();
-
-                // Decode scales and mins
-                let mut utmp = [0u32; 4];
-                std::ptr::copy_nonoverlapping(
-                    w_block.scales.as_ptr(),
-                    utmp.as_mut_ptr() as *mut u8,
-                    12,
-                );
-
-                let mut mins8 = vdup_n_u32(0);
-                mins8 = vset_lane_u32(utmp[1] & KMASK1, mins8, 0);
-                mins8 = vset_lane_u32(
-                    ((utmp[2] >> 4) & KMASK2)
-                        | (((utmp[1] >> 6) & KMASK3) << 4),
-                    mins8,
-                    1,
-                );
-
-                utmp[1] = (utmp[2] & KMASK2) | (((utmp[0] >> 6) & KMASK3) << 4);
-                utmp[0] &= KMASK1;
-
-                let mins =
-                    vreinterpretq_s16_u16(vmovl_u8(vreinterpret_u8_u32(mins8)));
-                let prod = vaddq_s32(
-                    vmull_s16(vget_low_s16(q8sums), vget_low_s16(mins)),
-                    vmull_s16(vget_high_s16(q8sums), vget_high_s16(mins)),
-                );
-                let min_sum = vaddvq_s32(prod);
-
-                let scales = utmp.as_ptr() as *const u8;
-                let q4 = w_block.qs.as_ptr();
-
-                let mut sumi1 = 0i32;
-                let mut sumi2 = 0i32;
-
-                for j in 0..(QK_K / 64) {
-                    let q4bits = vld1q_u8_x2(q4.add(j * 32));
-                    let q8bytes_0 = vld1q_s8_x2(q8.add(j * 64));
-
-                    let q4l_0 = vreinterpretq_s8_u8(vandq_u8(q4bits.0, m4b));
-                    let q4l_1 = vreinterpretq_s8_u8(vandq_u8(q4bits.1, m4b));
-
-                    let p1 = vdotq_s32_manual(
-                        vdotq_s32_manual(vzero, q4l_0, q8bytes_0.0),
-                        q4l_1,
-                        q8bytes_0.1,
-                    );
-                    sumi1 += vaddvq_s32(p1) * *scales.add(j * 2) as i32;
-
-                    let q8bytes_1 = vld1q_s8_x2(q8.add(j * 64 + 32));
-                    let q4h_0 = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.0, 4));
-                    let q4h_1 = vreinterpretq_s8_u8(vshrq_n_u8(q4bits.1, 4));
-
-                    let p2 = vdotq_s32_manual(
-                        vdotq_s32_manual(vzero, q4h_0, q8bytes_1.0),
-                        q4h_1,
-                        q8bytes_1.1,
-                    );
-                    sumi2 += vaddvq_s32(p2) * *scales.add(j * 2 + 1) as i32;
-                }
-
-                row_sums[ir - ib1] +=
-                    d * (sumi1 + sumi2) as f32 - dmin * min_sum as f32;
-            }
-        }
-
-        // Store results
-        for ir in ib1..ib1_end {
-            dst[ir] = row_sums[ir - ib1];
-        }
+        // Use interleaved GEMV kernel
+        gemv_q4_k_interleaved(interleaved, x, dst, k, m);
+    } else {
+        // Fallback to standard kernel for non-multiple-of-8 rows
+        matmul_q4_k_q8_k_standard(weights, x, dst, k, m, nb);
     }
 }
 
+/// Standard Q4_K × Q8_K matrix-vector multiplication with llama.cpp style work stealing
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn matmul_q4_k_q8_k_standard(
+    weights: &[BlockQ4K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    nb: usize,
+) {
+    // Use chunk-based processing like llama.cpp
+    let chunk_size = 16; // Match llama.cpp's default chunk size
+    let n_threads = crate::cpu::default_n_threads();
+
+    // Use std::thread::scope with split_at_mut for safe parallel writes
+    crate::cpu::parallel_chunks(dst, n_threads, |_thread_id, chunk| {
+        let base_idx = 0; // Index within the chunk
+        for (idx, out) in chunk.iter_mut().enumerate() {
+            let i = idx + base_idx;
+            if i < m {
+                *out = vec_dot_q4_k_q8_k_neon(
+                    k,
+                    &weights[i * nb..(i + 1) * nb],
+                    x,
+                );
+            }
+        }
+    });
+}
+
 /// Q6_K × Q8_K matrix-vector multiplication
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q6_k_q8_k(
     weights: &[BlockQ6K],
     x: &[BlockQ8K],
@@ -164,15 +112,23 @@ pub unsafe fn matmul_q6_k_q8_k(
     m: usize,
 ) {
     let nb = k / QK_K;
+    let n_threads = crate::cpu::default_n_threads();
 
-    for i in 0..m {
-        let row_sum =
-            vec_dot_q6_k_q8_k_neon(k, &weights[i * nb..(i + 1) * nb], x);
-        dst[i] = row_sum;
-    }
+    crate::cpu::parallel_chunks(dst, n_threads, |_thread_id, chunk| {
+        for (i, out) in chunk.iter_mut().enumerate() {
+            if i < m {
+                *out = vec_dot_q6_k_q8_k_neon(
+                    k,
+                    &weights[i * nb..(i + 1) * nb],
+                    x,
+                );
+            }
+        }
+    });
 }
 
 /// Q5_K × Q8_K matrix-vector multiplication
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q5_k_q8_k(
     weights: &[BlockQ5K],
     x: &[BlockQ8K],
@@ -181,15 +137,23 @@ pub unsafe fn matmul_q5_k_q8_k(
     m: usize,
 ) {
     let nb = k / QK_K;
+    let n_threads = crate::cpu::default_n_threads();
 
-    for i in 0..m {
-        let row_sum =
-            vec_dot_q5_k_q8_k_neon(k, &weights[i * nb..(i + 1) * nb], x);
-        dst[i] = row_sum;
-    }
+    crate::cpu::parallel_chunks(dst, n_threads, |_thread_id, chunk| {
+        for (i, out) in chunk.iter_mut().enumerate() {
+            if i < m {
+                *out = vec_dot_q5_k_q8_k_neon(
+                    k,
+                    &weights[i * nb..(i + 1) * nb],
+                    x,
+                );
+            }
+        }
+    });
 }
 
 /// Q3_K × Q8_K matrix-vector multiplication
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q3_k_q8_k(
     weights: &[BlockQ3K],
     x: &[BlockQ8K],
@@ -207,6 +171,7 @@ pub unsafe fn matmul_q3_k_q8_k(
 }
 
 /// Q2_K × Q8_K matrix-vector multiplication
+#[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q2_k_q8_k(
     weights: &[BlockQ2K],
     x: &[BlockQ8K],
@@ -480,4 +445,41 @@ pub unsafe fn matmul_tq1_0_q8_k(
             vec_dot_tq1_0_q8_k_neon(k, &weights[i * nb..(i + 1) * nb], x);
         dst[i] = row_sum;
     }
+}
+
+// ===== F16 matmul =====
+
+/// F16 matrix-vector multiplication
+///
+/// Optimized GEMV for F16 weight matrices.
+/// - weights: F16 data as u16 slice, shape [m, k]
+/// - x: F32 input vector, length k
+/// - dst: F32 output vector, length m
+/// - k: input dimension
+/// - m: output dimension
+#[target_feature(enable = "neon")]
+pub unsafe fn matmul_f16_f32(
+    weights: &[u16], // F16 data
+    x: &[f32],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    use crate::ops::arm::neon::dup_f32_to_f16_neon;
+    use crate::ops::attention::vec_dot_f16_neon;
+    use half::f16;
+
+    // Convert input x to F16 once (avoids repeated conversion)
+    let mut x_f16 = vec![0u16; k];
+    let x_f16_slice =
+        std::slice::from_raw_parts_mut(x_f16.as_mut_ptr() as *mut f16, k);
+    dup_f32_to_f16_neon(x, x_f16_slice);
+
+    // Parallel computation over rows using Rayon
+    use rayon::prelude::*;
+    dst.par_iter_mut().enumerate().for_each(|(i, out)| {
+        let row_start = i * k;
+        let row_weights = &weights[row_start..row_start + k];
+        *out = vec_dot_f16_neon(x_f16.as_slice(), row_weights, k);
+    });
 }

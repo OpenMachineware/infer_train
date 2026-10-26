@@ -9,12 +9,16 @@
 //! execution planning from execution itself, enabling systematic optimization.
 
 pub mod builder;
+pub mod cpu_executor;
 pub mod executor;
 pub mod graph;
 pub mod memory_ranges;
 pub mod optimizer;
 
 pub use builder::DagBuilder;
+pub use cpu_executor::{
+    CpuDagExecutor, CpuExecutionContext, CpuTensorRegistry,
+};
 pub use executor::DagExecutor;
 pub use graph::{DagEdge, DagNode, Operation, OptimizedDag};
 pub use optimizer::DagOptimizer;

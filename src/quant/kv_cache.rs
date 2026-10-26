@@ -7,7 +7,9 @@
 pub mod blocks;
 pub mod dequant;
 pub mod quant;
+pub mod quant_q8k;
 
 pub use blocks::*;
 pub use dequant::*;
 pub use quant::*;
+pub use quant_q8k::*;

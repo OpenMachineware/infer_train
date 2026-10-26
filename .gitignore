@@ -2,10 +2,17 @@
 .idea/
 .vscode/
 
+.agentic/
+.codebuddy/
+.claude/
+.claw/
+.codegraph/
+.cursor/
+.qoder-cn/
+.trae/
+
 # Build artifacts
 infer_train
-it-server
-it-cli
 
 *.gguf
 devstral-fix.jinja
@@ -16,9 +23,9 @@ devstral-fix.jinja
 # External dependencies (not tracked)
 llama.cpp-0.7.0/
 llvm-project-llvmorg-23.1.0/
-vllm-0.31.0/
+vllm-0.32.0/
 muser/
-Strata-0.1.45/
+Strata-0.2.6/
 
 # Added by cargo
 /target
@@ -44,6 +51,3 @@ tools/*.dylib
 
 # Temporary planning documents
 TMP_*.md
-
-# Qoder workspace files
-.qoder-cn/
