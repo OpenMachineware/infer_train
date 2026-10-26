@@ -2174,116 +2174,81 @@ impl LlamaModel {
             };
             use std::sync::Arc;
 
-            // K-quant GEMV requires input size to be a multiple of QK_K (256)
-            // For non-standard dimensions (e.g., head_dim=213), fall back to FP32 path
-            let use_kquant = in_size % QK_K == 0;
+            // K-quant GEMV with zero-padding for non-standard dimensions
+            let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
+            let nb = in_size_padded / QK_K;
 
-            if use_kquant {
-                match w.dtype {
-                    DataType::Q4_K => {
-                        let nb = in_size / QK_K;
-
-                        // Quantize input once, wrap in Arc for sharing across threads
-                        let mut x_q8k = vec![unsafe { std::mem::zeroed() }; nb];
+            match w.dtype {
+                DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+                    // Quantize input with zero-padding if needed
+                    let mut x_q8k = vec![unsafe { std::mem::zeroed() }; nb];
+                    if in_size != in_size_padded {
+                        let mut x_padded = vec![0.0f32; in_size_padded];
+                        x_padded[..in_size].copy_from_slice(x);
+                        quantize_row_q8_k_neon(&x_padded, &mut x_q8k);
+                    } else {
                         quantize_row_q8_k_neon(x, &mut x_q8k);
-                        let x_q8k = Arc::new(x_q8k);
-
-                        let weights: &[BlockQ4K] = unsafe {
-                            std::slice::from_raw_parts(
-                                w.bytes().as_ptr() as *const BlockQ4K,
-                                out_size * nb,
-                            )
-                        };
-
-                        let mut out = vec![0.0f32; out_size];
-                        unsafe {
-                            matmul_q4_k_q8_k(
-                                weights, &x_q8k, &mut out, in_size, out_size,
-                            );
-                        }
-                        return Some(out);
                     }
-                    DataType::Q5_K => {
-                        let nb = in_size / QK_K;
+                    let x_q8k = Arc::new(x_q8k);
 
-                        let mut x_q8k = vec![unsafe { std::mem::zeroed() }; nb];
-                        quantize_row_q8_k_neon(x, &mut x_q8k);
-                        let x_q8k = Arc::new(x_q8k);
-
-                        let weights: &[BlockQ5K] = unsafe {
-                            std::slice::from_raw_parts(
-                                w.bytes().as_ptr() as *const BlockQ5K,
-                                out_size * nb,
-                            )
-                        };
-
-                        let mut out = vec![0.0f32; out_size];
-                        unsafe {
-                            matmul_q5_k_q8_k(
-                                weights, &x_q8k, &mut out, in_size, out_size,
-                            );
+                    let mut out = vec![0.0f32; out_size];
+                    unsafe {
+                        match w.dtype {
+                            DataType::Q4_K => {
+                                let weights: &[BlockQ4K] =
+                                    std::slice::from_raw_parts(
+                                        w.bytes().as_ptr() as *const BlockQ4K,
+                                        out_size * nb,
+                                    );
+                                matmul_q4_k_q8_k(
+                                    weights,
+                                    &x_q8k,
+                                    &mut out,
+                                    in_size_padded,
+                                    out_size,
+                                );
+                            }
+                            DataType::Q5_K => {
+                                let weights: &[BlockQ5K] =
+                                    std::slice::from_raw_parts(
+                                        w.bytes().as_ptr() as *const BlockQ5K,
+                                        out_size * nb,
+                                    );
+                                matmul_q5_k_q8_k(
+                                    weights,
+                                    &x_q8k,
+                                    &mut out,
+                                    in_size_padded,
+                                    out_size,
+                                );
+                            }
+                            DataType::Q6_K => {
+                                let weights: &[BlockQ6K] =
+                                    std::slice::from_raw_parts(
+                                        w.bytes().as_ptr() as *const BlockQ6K,
+                                        out_size * nb,
+                                    );
+                                matmul_q6_k_q8_k(
+                                    weights,
+                                    &x_q8k,
+                                    &mut out,
+                                    in_size_padded,
+                                    out_size,
+                                );
+                            }
+                            _ => unreachable!(),
                         }
-                        return Some(out);
                     }
-                    DataType::Q6_K => {
-                        let nb = in_size / QK_K;
-
-                        let mut x_q8k = vec![unsafe { std::mem::zeroed() }; nb];
-                        quantize_row_q8_k_neon(x, &mut x_q8k);
-                        let x_q8k = Arc::new(x_q8k);
-
-                        let weights: &[BlockQ6K] = unsafe {
-                            std::slice::from_raw_parts(
-                                w.bytes().as_ptr() as *const BlockQ6K,
-                                out_size * nb,
-                            )
-                        };
-
-                        let mut out = vec![0.0f32; out_size];
-                        unsafe {
-                            matmul_q6_k_q8_k(
-                                weights, &x_q8k, &mut out, in_size, out_size,
-                            );
-                        }
-                        return Some(out);
-                    }
-                    DataType::F16 => {
-                        // F16 GEMV - use direct F16 arithmetic without full dequantization
-                        use crate::quant::matmul::k_quant::matmul_f16_f32;
-
-                        let weights_f16: &[u16] = unsafe {
-                            std::slice::from_raw_parts(
-                                w.bytes().as_ptr() as *const u16,
-                                out_size * in_size,
-                            )
-                        };
-
-                        let mut out = vec![0.0f32; out_size];
-                        unsafe {
-                            matmul_f16_f32(
-                                weights_f16,
-                                x,
-                                &mut out,
-                                in_size,
-                                out_size,
-                            );
-                        }
-                        return Some(out);
-                    }
-                    _ => {}
+                    return Some(out);
                 }
-            } else {
-                // For non-standard dimensions (in_size % QK_K != 0), F16 path is still available
-                if w.dtype == DataType::F16 {
+                DataType::F16 => {
                     use crate::quant::matmul::k_quant::matmul_f16_f32;
-
                     let weights_f16: &[u16] = unsafe {
                         std::slice::from_raw_parts(
                             w.bytes().as_ptr() as *const u16,
                             out_size * in_size,
                         )
                     };
-
                     let mut out = vec![0.0f32; out_size];
                     unsafe {
                         matmul_f16_f32(
@@ -2296,7 +2261,7 @@ impl LlamaModel {
                     }
                     return Some(out);
                 }
-                // For K-quant with non-standard dimensions, fall through to FP32 fallback
+                _ => {}
             }
         }
 
@@ -2340,75 +2305,80 @@ impl LlamaModel {
         };
         use std::sync::Arc;
 
+        // K-quant GEMV with zero-padding for non-standard dimensions
+        let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
+        let nb = in_size_padded / QK_K;
+
         match w.dtype {
-            DataType::Q4_K => {
-                let nb = in_size / QK_K;
-
+            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+                // Quantize input with zero-padding if needed
                 let mut x_q8k = vec![unsafe { std::mem::zeroed() }; nb];
-                quantize_row_q8_k_neon(x, &mut x_q8k);
-                let x_q8k = Arc::new(x_q8k);
-
-                let weights: &[BlockQ4K] = unsafe {
-                    std::slice::from_raw_parts(
-                        w.bytes().as_ptr() as *const BlockQ4K,
-                        out_size * nb,
-                    )
-                };
-
-                unsafe {
-                    matmul_q4_k_q8_k(weights, &x_q8k, out, in_size, out_size);
+                if in_size != in_size_padded {
+                    let mut x_padded = vec![0.0f32; in_size_padded];
+                    x_padded[..in_size].copy_from_slice(x);
+                    quantize_row_q8_k_neon(&x_padded, &mut x_q8k);
+                } else {
+                    quantize_row_q8_k_neon(x, &mut x_q8k);
                 }
-                true
-            }
-            DataType::Q5_K => {
-                let nb = in_size / QK_K;
-
-                let mut x_q8k = vec![unsafe { std::mem::zeroed() }; nb];
-                quantize_row_q8_k_neon(x, &mut x_q8k);
                 let x_q8k = Arc::new(x_q8k);
 
-                let weights: &[BlockQ5K] = unsafe {
-                    std::slice::from_raw_parts(
-                        w.bytes().as_ptr() as *const BlockQ5K,
-                        out_size * nb,
-                    )
-                };
-
                 unsafe {
-                    matmul_q5_k_q8_k(weights, &x_q8k, out, in_size, out_size);
-                }
-                true
-            }
-            DataType::Q6_K => {
-                let nb = in_size / QK_K;
-
-                let mut x_q8k = vec![unsafe { std::mem::zeroed() }; nb];
-                quantize_row_q8_k_neon(x, &mut x_q8k);
-                let x_q8k = Arc::new(x_q8k);
-
-                let weights: &[BlockQ6K] = unsafe {
-                    std::slice::from_raw_parts(
-                        w.bytes().as_ptr() as *const BlockQ6K,
-                        out_size * nb,
-                    )
-                };
-
-                unsafe {
-                    matmul_q6_k_q8_k(weights, &x_q8k, out, in_size, out_size);
+                    match w.dtype {
+                        DataType::Q4_K => {
+                            let weights: &[BlockQ4K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ4K,
+                                    out_size * nb,
+                                );
+                            matmul_q4_k_q8_k(
+                                weights,
+                                &x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        DataType::Q5_K => {
+                            let weights: &[BlockQ5K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ5K,
+                                    out_size * nb,
+                                );
+                            matmul_q5_k_q8_k(
+                                weights,
+                                &x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        DataType::Q6_K => {
+                            let weights: &[BlockQ6K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ6K,
+                                    out_size * nb,
+                                );
+                            matmul_q6_k_q8_k(
+                                weights,
+                                &x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
                 }
                 true
             }
             DataType::F16 => {
-                // F16 GEMV - use direct F16 arithmetic without full dequantization
                 use crate::quant::matmul::k_quant::matmul_f16_f32;
-
                 let weights_f16: &[u16] = unsafe {
                     std::slice::from_raw_parts(
                         w.bytes().as_ptr() as *const u16,
                         out_size * in_size,
                     )
                 };
-
                 unsafe {
                     matmul_f16_f32(weights_f16, x, out, in_size, out_size);
                 }
