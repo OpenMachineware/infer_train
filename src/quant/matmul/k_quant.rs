@@ -84,22 +84,24 @@ unsafe fn matmul_q4_k_q8_k_standard(
 ) {
     // Use chunk-based processing like llama.cpp
     let chunk_size = 16; // Match llama.cpp's default chunk size
-    let n_threads = crate::cpu::default_n_threads();
 
-    // Use std::thread::scope with split_at_mut for safe parallel writes
-    crate::cpu::parallel_chunks(dst, n_threads, |_thread_id, chunk| {
-        let base_idx = 0; // Index within the chunk
-        for (idx, out) in chunk.iter_mut().enumerate() {
-            let i = idx + base_idx;
-            if i < m {
-                *out = vec_dot_q4_k_q8_k_neon(
-                    k,
-                    &weights[i * nb..(i + 1) * nb],
-                    x,
-                );
+    // Use work stealing parallel execution
+    crate::cpu::parallel_chunks(
+        dst,
+        crate::cpu::default_n_threads(),
+        |_, chunk| {
+            for (idx, out) in chunk.iter_mut().enumerate() {
+                let i = idx;
+                if i < m {
+                    *out = vec_dot_q4_k_q8_k_neon(
+                        k,
+                        &weights[i * nb..(i + 1) * nb],
+                        x,
+                    );
+                }
             }
-        }
-    });
+        },
+    );
 }
 
 /// Q6_K × Q8_K matrix-vector multiplication
