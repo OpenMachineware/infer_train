@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // CPU execution model matching llama.cpp
 
+use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -71,13 +72,22 @@ impl WorkStealingCounter {
     }
 }
 
-/// Task for GEMV with work stealing
-struct GemvTask {
-    n_rows: usize,
+/// Task function type matching llama.cpp's approach
+/// Parameters: (counter_ptr, chunk_size, n_items, user_data)
+pub type TaskFn = unsafe fn(*const AtomicUsize, usize, usize, usize);
+
+/// Task for parallel execution
+#[derive(Clone, Copy)]
+struct Task {
+    func: TaskFn,
+    counter: *const AtomicUsize,
+    n_items: usize,
     chunk_size: usize,
-    // Function pointer for the actual computation
-    compute: fn(usize, usize), // row_start, row_end
+    user_data: usize, // User-provided data pointer
 }
+
+unsafe impl Send for Task {}
+unsafe impl Sync for Task {}
 
 /// Persistent thread pool matching llama.cpp's execution model
 /// - Threads are created once and persist
@@ -85,41 +95,55 @@ struct GemvTask {
 /// - Barrier synchronization between tasks
 pub struct CpuThreadPool {
     n_threads: usize,
-    barrier: Arc<SpinBarrier>,
-    counter: Arc<WorkStealingCounter>,
+    _barrier: Arc<SpinBarrier>,
+    counter: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     handles: Vec<JoinHandle<()>>,
-    // Task state
-    task_ready: Arc<(Mutex<Option<GemvTask>>, Condvar)>,
-    task_done: Arc<(Mutex<bool>, Condvar)>,
+    task: Arc<Mutex<Option<Task>>>, // Current task
+    task_state: Arc<(Mutex<TaskState>, Condvar)>, // State machine for synchronization
+    _ready_count: Arc<AtomicUsize>, // Track how many threads are ready
+}
+
+/// Task state machine
+#[derive(Clone, Copy, PartialEq)]
+enum TaskState {
+    NoTask,    // No task available, workers wait
+    TaskReady, // Task is ready for execution
+    TaskDone,  // Task has been completed
 }
 
 impl CpuThreadPool {
     /// Create a new persistent thread pool
     pub fn new(n_threads: usize) -> Self {
         let barrier = Arc::new(SpinBarrier::new(n_threads));
-        let counter = Arc::new(WorkStealingCounter::new(0));
+        let counter = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
-        let task_ready: Arc<(Mutex<Option<GemvTask>>, Condvar)> =
-            Arc::new((Mutex::new(None), Condvar::new()));
-        let task_done: Arc<(Mutex<bool>, Condvar)> =
-            Arc::new((Mutex::new(false), Condvar::new()));
+        let task: Arc<Mutex<Option<Task>>> = Arc::new(Mutex::new(None));
+        let task_state: Arc<(Mutex<TaskState>, Condvar)> =
+            Arc::new((Mutex::new(TaskState::NoTask), Condvar::new()));
+        let ready_count = Arc::new(AtomicUsize::new(0));
 
         let handles: Vec<JoinHandle<()>> = (0..n_threads)
-            .map(|thread_id| {
+            .map(|_| {
                 let barrier = barrier.clone();
-                let counter = counter.clone();
+                let _counter = counter.clone();
                 let stop = stop.clone();
-                let task_ready = task_ready.clone();
-                let task_done = task_done.clone();
+                let task = task.clone();
+                let task_state = task_state.clone();
+                let ready_count = ready_count.clone();
 
                 thread::spawn(move || {
-                    while !stop.load(Ordering::Relaxed) {
-                        // Wait for task
-                        let (lock, cvar) = &*task_ready;
-                        let task = {
+                    // Signal that this thread is ready
+                    ready_count.fetch_add(1, Ordering::SeqCst);
+
+                    loop {
+                        // Wait for task to be ready
+                        // We accept either TaskReady or TaskDone (if we're late)
+                        {
+                            let (lock, cvar) = &*task_state;
                             let mut guard = lock.lock().unwrap();
-                            while guard.is_none()
+                            // Wait until there's a new task (TaskReady means new task available)
+                            while *guard != TaskState::TaskReady
                                 && !stop.load(Ordering::Relaxed)
                             {
                                 guard = cvar.wait(guard).unwrap();
@@ -127,76 +151,132 @@ impl CpuThreadPool {
                             if stop.load(Ordering::Relaxed) {
                                 return;
                             }
-                            guard.take()
+                        }
+
+                        // Get task copy while holding the task lock
+                        let task_copy = {
+                            let guard = task.lock().unwrap();
+                            guard.as_ref().copied()
                         };
 
-                        if let Some(task) = task {
-                            // Work stealing: each thread grabs chunks via atomic counter
-                            let n_chunks = (task.n_rows + task.chunk_size - 1)
-                                / task.chunk_size;
-                            loop {
-                                let chunk_idx = counter.fetch_add();
-                                if chunk_idx >= n_chunks {
-                                    break;
-                                }
-
-                                let row_start = chunk_idx * task.chunk_size;
-                                let row_end = (row_start + task.chunk_size)
-                                    .min(task.n_rows);
-
-                                (task.compute)(row_start, row_end);
+                        if let Some(t) = task_copy {
+                            // Execute task with work stealing
+                            unsafe {
+                                (t.func)(
+                                    t.counter,
+                                    t.chunk_size,
+                                    t.n_items,
+                                    t.user_data,
+                                );
                             }
+                        }
 
-                            // Signal completion
-                            barrier.wait();
-                            if thread_id == 0 {
-                                let (lock, cvar) = &*task_done;
-                                *lock.lock().unwrap() = true;
+                        // Barrier: wait for all threads to finish task execution
+                        barrier.wait();
+
+                        // After barrier: all threads have finished the task
+                        // Only one thread signals completion
+                        {
+                            let (lock, cvar) = &*task_state;
+                            let mut guard = lock.lock().unwrap();
+                            // Transition from TaskReady to TaskDone
+                            if *guard == TaskState::TaskReady {
+                                *guard = TaskState::TaskDone;
                                 cvar.notify_all();
                             }
                         }
+
+                        // Wait for main thread to acknowledge completion
+                        // We wait until state is no longer TaskDone
+                        {
+                            let (lock, cvar) = &*task_state;
+                            let mut guard = lock.lock().unwrap();
+                            while *guard == TaskState::TaskDone
+                                && !stop.load(Ordering::Relaxed)
+                            {
+                                guard = cvar.wait(guard).unwrap();
+                            }
+                        }
+                        // At this point, state could be NoTask or TaskReady (next task)
+                        // Loop back and check for next task
                     }
                 })
             })
             .collect();
 
+        // Wait for all threads to be ready
+        while ready_count.load(Ordering::SeqCst) < n_threads {
+            std::hint::spin_loop();
+        }
+
         Self {
             n_threads,
-            barrier,
+            _barrier: barrier,
             counter,
             stop,
             handles,
-            task_ready,
-            task_done,
+            task,
+            task_state,
+            _ready_count: ready_count,
         }
     }
 
-    /// Execute parallel work with work stealing
-    pub fn parallel_work(
+    /// Execute parallel work with work stealing using raw function pointer
+    /// This matches llama.cpp's approach and avoids 'static closure requirement
+    pub fn execute(
         &self,
-        n_rows: usize,
+        func: TaskFn,
+        n_items: usize,
         chunk_size: usize,
-        compute: fn(usize, usize),
+        user_data: usize,
     ) {
-        self.counter.reset(0);
+        if n_items == 0 {
+            return;
+        }
 
-        // Set task
+        // Reset counter with SeqCst ordering to ensure all threads see it
+        self.counter.store(0, Ordering::SeqCst);
+
+        let task = Task {
+            func,
+            counter: Arc::as_ptr(&self.counter),
+            n_items,
+            chunk_size,
+            user_data,
+        };
+
+        // Store task
+        *self.task.lock().unwrap() = Some(task);
+
+        // Ensure task is visible before signaling
+        std::sync::atomic::fence(Ordering::Release);
+
+        // Signal task ready
         {
-            let (lock, cvar) = &*self.task_ready;
-            *lock.lock().unwrap() =
-                Some(GemvTask { n_rows, chunk_size, compute });
+            let (lock, cvar) = &*self.task_state;
+            *lock.lock().unwrap() = TaskState::TaskReady;
             cvar.notify_all();
         }
 
-        // Wait for completion
+        // Wait for completion (state becomes TaskDone)
         {
-            let (lock, cvar) = &*self.task_done;
+            let (lock, cvar) = &*self.task_state;
             let mut guard = lock.lock().unwrap();
-            while !*guard {
+            while *guard == TaskState::TaskReady {
                 guard = cvar.wait(guard).unwrap();
             }
-            *guard = false;
         }
+
+        // Reset to NoTask so workers can exit their wait loop
+        // Workers are waiting for state != TaskDone
+        {
+            let (lock, cvar) = &*self.task_state;
+            *lock.lock().unwrap() = TaskState::NoTask;
+            cvar.notify_all();
+        }
+
+        // Clear task
+        *self.task.lock().unwrap() = None;
     }
 
     /// Get number of threads
@@ -209,8 +289,8 @@ impl Drop for CpuThreadPool {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         {
-            let (lock, cvar) = &*self.task_ready;
-            *lock.lock().unwrap() = None;
+            let (lock, cvar) = &*self.task_state;
+            *lock.lock().unwrap() = TaskState::NoTask;
             cvar.notify_all();
         }
         for handle in self.handles.drain(..) {
@@ -251,6 +331,203 @@ where
 
             s.spawn(move || {
                 f_ref(tid, chunk);
+            });
+        }
+    });
+}
+
+/// Global thread pool for CPU inference
+/// Created lazily on first use and reused across all operations
+pub static GLOBAL_THREAD_POOL: Lazy<CpuThreadPool> =
+    Lazy::new(|| CpuThreadPool::new(default_n_threads()));
+
+/// Execute work using the global persistent thread pool
+/// Uses raw function pointer to avoid 'static closure requirement
+pub fn parallel_for_raw(
+    func: TaskFn,
+    n_items: usize,
+    chunk_size: usize,
+    user_data: usize,
+) {
+    if n_items == 0 {
+        return;
+    }
+    if n_items <= chunk_size {
+        // Sequential execution for small workloads
+        unsafe {
+            // Create a local counter for sequential execution
+            let counter = AtomicUsize::new(0);
+            (func)(&counter, chunk_size, n_items, user_data);
+        }
+        return;
+    }
+    GLOBAL_THREAD_POOL.execute(func, n_items, chunk_size, user_data);
+}
+
+/// Generic work stealing loop used by task functions
+/// Call this inside task functions to implement work stealing
+#[inline]
+pub unsafe fn work_stealing_loop<F>(
+    counter: *const AtomicUsize,
+    chunk_size: usize,
+    n_items: usize,
+    mut f: F,
+) where
+    F: FnMut(usize, usize),
+{
+    if counter.is_null() {
+        // Sequential execution
+        f(0, n_items);
+        return;
+    }
+
+    let counter = &*counter;
+    loop {
+        let chunk_start = counter.fetch_add(chunk_size, Ordering::Relaxed);
+        if chunk_start >= n_items {
+            break;
+        }
+        let chunk_end = (chunk_start + chunk_size).min(n_items);
+        f(chunk_start, chunk_end);
+    }
+}
+
+/// Execute work in parallel using work stealing
+/// This matches llama.cpp's execution model with dynamic load balancing
+pub fn parallel_work_stealing<F>(n_items: usize, chunk_size: usize, f: &F)
+where
+    F: Fn(usize, usize) + Send + Sync,
+{
+    if n_items == 0 {
+        return;
+    }
+
+    // For small workloads, just use sequential
+    if n_items <= chunk_size {
+        f(0, n_items);
+        return;
+    }
+
+    let n_chunks = (n_items + chunk_size - 1) / chunk_size;
+    let counter = Arc::new(WorkStealingCounter::new(0));
+
+    thread::scope(|s| {
+        let n_threads = default_n_threads().min(n_chunks);
+        for _ in 0..n_threads {
+            let counter = counter.clone();
+            s.spawn(move || {
+                loop {
+                    let chunk_idx = counter.fetch_add();
+                    if chunk_idx >= n_chunks {
+                        break;
+                    }
+                    let start = chunk_idx * chunk_size;
+                    let end = (start + chunk_size).min(n_items);
+                    f(start, end);
+                }
+            });
+        }
+    });
+}
+
+/// Execute element-wise operation in parallel with work stealing
+/// Optimized for element-wise operations over slices
+pub fn parallel_for_each<F>(data: &mut [f32], f: F)
+where
+    F: Fn(usize, &mut f32) + Send + Sync,
+{
+    let len = data.len();
+    if len == 0 {
+        return;
+    }
+
+    // For small arrays, sequential is faster (avoid thread overhead)
+    if len < 1024 {
+        for (i, elem) in data.iter_mut().enumerate() {
+            f(i, elem);
+        }
+        return;
+    }
+
+    let chunk_size = 256;
+    let n_chunks = (len + chunk_size - 1) / chunk_size;
+    let counter = Arc::new(AtomicUsize::new(0));
+    let n_threads = default_n_threads().min(n_chunks);
+    let data_addr = data.as_mut_ptr() as usize;
+
+    thread::scope(|s| {
+        for _ in 0..n_threads {
+            let counter = counter.clone();
+            let f = &f;
+            s.spawn(move || {
+                let data_ptr = data_addr as *mut f32;
+                loop {
+                    let chunk_idx = counter.fetch_add(1, Ordering::Relaxed);
+                    if chunk_idx >= n_chunks {
+                        break;
+                    }
+                    let start = chunk_idx * chunk_size;
+                    let end = (start + chunk_size).min(len);
+                    for i in start..end {
+                        unsafe {
+                            let elem = &mut *data_ptr.add(i);
+                            f(i, elem);
+                        }
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// Execute element-wise operation over two slices in parallel
+pub fn parallel_zip<F>(lhs: &[f32], rhs: &[f32], out: &mut [f32], f: F)
+where
+    F: Fn(f32, f32) -> f32 + Send + Sync,
+{
+    let len = out.len();
+    if len == 0 {
+        return;
+    }
+
+    // For small arrays, sequential is faster
+    if len < 1024 {
+        for i in 0..len {
+            out[i] = f(lhs[i], rhs[i]);
+        }
+        return;
+    }
+
+    let chunk_size = 256;
+    let n_chunks = (len + chunk_size - 1) / chunk_size;
+    let counter = Arc::new(AtomicUsize::new(0));
+    let n_threads = default_n_threads().min(n_chunks);
+    let lhs_addr = lhs.as_ptr() as usize;
+    let rhs_addr = rhs.as_ptr() as usize;
+    let out_addr = out.as_mut_ptr() as usize;
+
+    thread::scope(|s| {
+        for _ in 0..n_threads {
+            let counter = counter.clone();
+            let f = &f;
+            s.spawn(move || {
+                let lhs_ptr = lhs_addr as *const f32;
+                let rhs_ptr = rhs_addr as *const f32;
+                let out_ptr = out_addr as *mut f32;
+                loop {
+                    let chunk_idx = counter.fetch_add(1, Ordering::Relaxed);
+                    if chunk_idx >= n_chunks {
+                        break;
+                    }
+                    let start = chunk_idx * chunk_size;
+                    let end = (start + chunk_size).min(len);
+                    for i in start..end {
+                        unsafe {
+                            *out_ptr.add(i) =
+                                f(*lhs_ptr.add(i), *rhs_ptr.add(i));
+                        }
+                    }
+                }
             });
         }
     });
