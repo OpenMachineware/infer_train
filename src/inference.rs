@@ -50,10 +50,8 @@ pub struct InferenceContext {
     cached_logits: Option<Vec<f32>>,
 
     // CPU work buffers (only for CPU path)
-    /// Pre-allocated work buffer for quantized input (Q8_K format)
-    cpu_q8k_input: Option<Vec<u8>>,
-    /// Pre-allocated output buffer for intermediate results
-    cpu_hidden_buffer: Option<Vec<f32>>,
+    /// Pre-allocated work buffers for zero-allocation CPU inference
+    cpu_buffers: Option<crate::cpu::CpuWorkBuffers>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +90,39 @@ impl InferenceContext {
         #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
         let _ = device; // Silence unused warning
 
+        // Initialize CPU work buffers for zero-allocation inference
+        let cpu_buffers = if device == Device::Cpu {
+            // Get qkv_out_size from first layer if using fused QKV
+            let qkv_out_size = model
+                .layers
+                .first()
+                .and_then(|l| l.attn_qkv.as_ref())
+                .map(|t| t.shape[1])
+                .unwrap_or(0);
+
+            let n_layers = model.layers.len();
+
+            let mut buffers = crate::cpu::CpuWorkBuffers::new(
+                config.hidden_size,
+                config.intermediate_size,
+                config.n_heads,
+                config.n_kv_heads,
+                config.head_dim,
+                config.head_dim, // kv_head_dim = head_dim for standard models
+                config.vocab_size,
+                qkv_out_size,
+                2048, // max_seq_len
+                n_layers,
+            );
+
+            // Pre-dequantize all norm weights
+            buffers.init_norm_weights(&model);
+
+            Some(buffers)
+        } else {
+            None
+        };
+
         Ok(InferenceContext {
             config,
             model,
@@ -104,8 +135,7 @@ impl InferenceContext {
             pending_cbs: Vec::new(),
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
             cached_logits: None,
-            cpu_q8k_input: None,
-            cpu_hidden_buffer: None,
+            cpu_buffers,
         })
     }
 
@@ -137,8 +167,7 @@ impl InferenceContext {
             gpu_kv_cache: Some(kv),
             pending_cbs: Vec::new(),
             cached_logits: None,
-            cpu_q8k_input: None,
-            cpu_hidden_buffer: None,
+            cpu_buffers: None, // GPU path doesn't need CPU buffers
         })
     }
 
@@ -180,6 +209,23 @@ impl InferenceContext {
             }
             Device::Cpu => self.model.forward(tokens, kv_cache),
         }
+    }
+
+    /// Run forward pass using graph-level dispatch (CPU only)
+    /// All threads traverse the DAG together, eliminating thread pool dispatch overhead
+    #[cfg(target_arch = "aarch64")]
+    pub fn forward_graph(
+        &mut self,
+        token: u32,
+        kv_cache: &mut KVCache,
+    ) -> Option<Vec<f32>> {
+        // Fall back to standard forward for MLA architecture (not yet supported in DAG)
+        if self.model.uses_mqa() {
+            return self.model.forward(&[token], kv_cache);
+        }
+
+        let position = kv_cache.seq_len();
+        self.model.forward_graph(token, position, kv_cache)
     }
 
     /// Run forward pass with GPU KV cache (zero-copy Flash Attention)
@@ -371,6 +417,13 @@ impl InferenceContext {
 /// Handles all supported data types including K-quant and standard quantization
 pub fn dequant_to_f32(data: &[u8], dtype: DataType, count: usize) -> Vec<f32> {
     let mut result = vec![0.0f32; count];
+    dequant_to_f32_into(data, dtype, &mut result);
+    result
+}
+
+/// Dequantize data directly into pre-allocated buffer (zero-allocation version)
+pub fn dequant_to_f32_into(data: &[u8], dtype: DataType, out: &mut [f32]) {
+    let count = out.len();
 
     match dtype {
         DataType::F32 => {
@@ -379,7 +432,7 @@ pub fn dequant_to_f32(data: &[u8], dtype: DataType, count: usize) -> Vec<f32> {
                 if offset + 4 <= data.len() {
                     let bytes: [u8; 4] =
                         data[offset..offset + 4].try_into().unwrap();
-                    result[i] = f32::from_le_bytes(bytes);
+                    out[i] = f32::from_le_bytes(bytes);
                 }
             }
         }
@@ -389,7 +442,7 @@ pub fn dequant_to_f32(data: &[u8], dtype: DataType, count: usize) -> Vec<f32> {
                 if offset + 2 <= data.len() {
                     let bytes: [u8; 2] =
                         data[offset..offset + 2].try_into().unwrap();
-                    result[i] = f16::from_le_bytes(bytes).to_f32();
+                    out[i] = f16::from_le_bytes(bytes).to_f32();
                 }
             }
         }
@@ -401,45 +454,45 @@ pub fn dequant_to_f32(data: &[u8], dtype: DataType, count: usize) -> Vec<f32> {
                         data[offset..offset + 2].try_into().unwrap();
                     // BF16 to F32: shift left by 16 bits
                     let bits = u16::from_le_bytes(bytes) as u32;
-                    result[i] = f32::from_bits(bits << 16);
+                    out[i] = f32::from_bits(bits << 16);
                 }
             }
         }
         DataType::Q4_0 => {
-            dequant_q4_0(data, &mut result, count);
+            dequant_q4_0(data, out, count);
         }
         DataType::Q4_1 => {
-            dequant_q4_1(data, &mut result, count);
+            dequant_q4_1(data, out, count);
         }
         DataType::Q5_0 => {
-            dequant_q5_0(data, &mut result, count);
+            dequant_q5_0(data, out, count);
         }
         DataType::Q5_1 => {
-            dequant_q5_1(data, &mut result, count);
+            dequant_q5_1(data, out, count);
         }
         DataType::Q8_0 => {
-            dequant_q8_0(data, &mut result, count);
+            dequant_q8_0(data, out, count);
         }
         DataType::Q2_K => {
-            dequant::dequant_q2_k(data, &mut result, count);
+            dequant::dequant_q2_k(data, out, count);
         }
         DataType::Q3_K => {
-            dequant::dequant_q3_k(data, &mut result, count);
+            dequant::dequant_q3_k(data, out, count);
         }
         DataType::Q4_K => {
-            dequant::dequant_q4_k(data, &mut result, count);
+            dequant::dequant_q4_k(data, out, count);
         }
         DataType::Q5_K => {
-            dequant::dequant_q5_k(data, &mut result, count);
+            dequant::dequant_q5_k(data, out, count);
         }
         DataType::Q6_K => {
-            dequant::dequant_q6_k(data, &mut result, count);
+            dequant::dequant_q6_k(data, out, count);
         }
         DataType::IQ4_NL => {
-            dequant_iq4_nl(data, &mut result, count);
+            dequant_iq4_nl(data, out, count);
         }
         DataType::IQ4_XS => {
-            dequant_iq4_xs(data, &mut result, count);
+            dequant_iq4_xs(data, out, count);
         }
         // IQ formats - placeholder implementation
         // These formats require complex dequantization logic
@@ -456,11 +509,9 @@ pub fn dequant_to_f32(data: &[u8], dtype: DataType, count: usize) -> Vec<f32> {
                 "Dequantization for {:?} not implemented, returning zeros",
                 dtype
             );
-            // Result is already initialized to zeros
+            // out is already initialized to zeros
         }
     }
-
-    result
 }
 
 // Standard Q formats (32 elements per block)

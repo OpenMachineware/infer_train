@@ -70,6 +70,7 @@ impl DagBuilder {
                 weight: q_weight_id,
                 output: q_id,
                 out_size: q_out_size,
+                is_transposed: false,
             },
             dependencies: vec![norm_node_id],
             device_preference: DevicePreference::Gpu,
@@ -86,6 +87,7 @@ impl DagBuilder {
                 weight: k_weight_id,
                 output: k_id,
                 out_size: k_out_size,
+                is_transposed: false,
             },
             dependencies: vec![norm_node_id],
             device_preference: DevicePreference::Gpu,
@@ -102,6 +104,7 @@ impl DagBuilder {
                 weight: v_weight_id,
                 output: v_id,
                 out_size: v_out_size,
+                is_transposed: false,
             },
             dependencies: vec![norm_node_id],
             device_preference: DevicePreference::Gpu,
@@ -208,6 +211,7 @@ impl DagBuilder {
                 weight: wo_weight_id,
                 output: wo_out_id,
                 out_size: hidden_size,
+                is_transposed: false,
             },
             dependencies: vec![attn_node_id],
             device_preference: DevicePreference::Gpu,
@@ -260,6 +264,7 @@ impl DagBuilder {
                 weight: gate_weight_id,
                 output: gate_id,
                 out_size: intermediate_size,
+                is_transposed: false,
             },
             dependencies: vec![ffn_norm_node_id],
             device_preference: DevicePreference::Gpu,
@@ -276,6 +281,7 @@ impl DagBuilder {
                 weight: up_weight_id,
                 output: up_id,
                 out_size: intermediate_size,
+                is_transposed: false,
             },
             dependencies: vec![ffn_norm_node_id],
             device_preference: DevicePreference::Gpu,
@@ -322,6 +328,7 @@ impl DagBuilder {
                 weight: down_weight_id,
                 output: ffn_out_id,
                 out_size: hidden_size,
+                is_transposed: true,
             },
             dependencies: vec![mul_node_id],
             device_preference: DevicePreference::Gpu,
@@ -437,6 +444,7 @@ impl DagBuilder {
                 weight: output_weight_id,
                 output: output_id,
                 out_size: vocab_size,
+                is_transposed: true,
             },
             dependencies: vec![final_norm_node_id],
             device_preference: DevicePreference::Gpu,
@@ -555,8 +563,11 @@ impl DagBuilder {
                 k_out_size,
                 v_out_size,
             )
-        } else {
-            // Separate Q/K/V weights
+        } else if layer.wq.is_some()
+            && layer.wk.is_some()
+            && layer.wv.is_some()
+        {
+            // Standard separate Q/K/V weights (all three must exist)
             let q_out_size =
                 layer.wq.as_ref().map(|w| w.shape[1]).unwrap_or(hidden_size);
             let k_out_size =
@@ -583,6 +594,7 @@ impl DagBuilder {
                     weight: q_weight_id,
                     output: q_id,
                     out_size: q_out_size,
+                    is_transposed: false,
                 },
                 dependencies: vec![norm_node_id],
                 device_preference: DevicePreference::Gpu,
@@ -609,6 +621,7 @@ impl DagBuilder {
                     weight: k_weight_id,
                     output: k_id,
                     out_size: k_out_size,
+                    is_transposed: false,
                 },
                 dependencies: vec![norm_node_id],
                 device_preference: DevicePreference::Gpu,
@@ -635,9 +648,58 @@ impl DagBuilder {
                     weight: v_weight_id,
                     output: v_id,
                     out_size: v_out_size,
+                    is_transposed: false,
                 },
                 dependencies: vec![norm_node_id],
                 device_preference: DevicePreference::Gpu,
+                layer_idx: Some(layer_idx),
+            };
+            let v_node_id = self.dag.add_node(v_node);
+
+            (
+                q_id, k_id, v_id, q_node_id, k_node_id, v_node_id, q_out_size,
+                k_out_size, v_out_size,
+            )
+        } else {
+            // MLA or other unsupported architecture - use placeholder
+            // For now, return zeros to allow graph to continue
+            // TODO: Implement MLA DAG operations
+            if layer_idx == 0 {
+                eprintln!(
+                    "[DAG BUILD] Layer 0: Unsupported architecture (MLA?), using CPU fallback"
+                );
+            }
+            let q_out_size = model.config.n_heads * model.config.head_dim;
+            let k_out_size = model.config.n_kv_heads * model.config.head_dim;
+            let v_out_size = model.config.n_kv_heads * model.config.head_dim;
+
+            // Create placeholder tensors filled with zeros
+            let q_id = self.alloc_tensor();
+            let k_id = self.alloc_tensor();
+            let v_id = self.alloc_tensor();
+
+            // Create NoOp nodes as placeholders
+            let q_node = DagNode {
+                id: self.dag.nodes.len(),
+                op: Operation::NoOp,
+                dependencies: vec![norm_node_id],
+                device_preference: DevicePreference::Cpu,
+                layer_idx: Some(layer_idx),
+            };
+            let q_node_id = self.dag.add_node(q_node);
+            let k_node = DagNode {
+                id: self.dag.nodes.len(),
+                op: Operation::NoOp,
+                dependencies: vec![norm_node_id],
+                device_preference: DevicePreference::Cpu,
+                layer_idx: Some(layer_idx),
+            };
+            let k_node_id = self.dag.add_node(k_node);
+            let v_node = DagNode {
+                id: self.dag.nodes.len(),
+                op: Operation::NoOp,
+                dependencies: vec![norm_node_id],
+                device_preference: DevicePreference::Cpu,
                 layer_idx: Some(layer_idx),
             };
             let v_node_id = self.dag.add_node(v_node);
@@ -750,6 +812,7 @@ impl DagBuilder {
                 weight: wo_weight_id,
                 output: wo_out_id,
                 out_size: hidden_size,
+                is_transposed: false,
             },
             dependencies: vec![attn_node_id],
             device_preference: DevicePreference::Gpu,
@@ -808,6 +871,7 @@ impl DagBuilder {
                 weight: gate_weight_id,
                 output: gate_id,
                 out_size: intermediate_size,
+                is_transposed: false,
             },
             dependencies: vec![ffn_norm_node_id],
             device_preference: DevicePreference::Gpu,
@@ -827,6 +891,7 @@ impl DagBuilder {
                 weight: up_weight_id,
                 output: up_id,
                 out_size: intermediate_size,
+                is_transposed: false,
             },
             dependencies: vec![ffn_norm_node_id],
             device_preference: DevicePreference::Gpu,
@@ -873,6 +938,7 @@ impl DagBuilder {
                 weight: down_weight_id,
                 output: ffn_out_id,
                 out_size: hidden_size,
+                is_transposed: true,
             },
             dependencies: vec![mul_node_id],
             device_preference: DevicePreference::Gpu,
@@ -1016,11 +1082,16 @@ mod tests {
 
         // Exit node should be either Gemv or FusedNormLinear
         match &exit_node.op {
-            Operation::Gemv { out_size, .. } => {
+            Operation::Gemv { out_size, is_transposed, .. } => {
                 // Verify output size is vocab size
                 assert_eq!(
                     *out_size, config.vocab_size,
                     "Exit Gemv output size should be vocab size"
+                );
+                // Output projection should be transposed
+                assert!(
+                    *is_transposed,
+                    "Exit Gemv (output projection) should have is_transposed = true"
                 );
             }
             Operation::FusedNormLinear { out_size, .. } => {

@@ -104,8 +104,7 @@ unsafe fn graph_task_fn(
                 }
             }
 
-            Operation::Gemv { input, weight, output, out_size } => {
-                // Parallel GEMV: all threads participate
+            Operation::Gemv { input, weight, output, out_size, is_transposed } => {
                 let input_data = {
                     let tensors = state.shared_tensors.lock().unwrap();
                     if *input < tensors.len() {
@@ -127,19 +126,31 @@ unsafe fn graph_task_fn(
                 // ALL threads must reach barrier before any GEMV computation
                 barrier.wait();
 
-                // Now do the parallel GEMV
                 if let Some(w) = weights.get(weight) {
-                    let mut tensors = state.shared_tensors.lock().unwrap();
-                    let out_data = &mut tensors[*output];
-                    model.gemv_parallel_row(
-                        ith,
-                        nth,
-                        &input_data,
-                        w,
-                        out_data,
-                        k,
-                        m,
-                    );
+                    if *is_transposed {
+                        // Transposed GEMV: thread 0 computes full result
+                        // Weight shape is [k, m], need to compute y = W^T * x
+                        if ith == 0 {
+                            let result = model.gemv_transposed(&input_data, w, m);
+                            if let Some(r) = result {
+                                let mut tensors = state.shared_tensors.lock().unwrap();
+                                tensors[*output] = r;
+                            }
+                        }
+                    } else {
+                        // Parallel GEMV: all threads participate
+                        let mut tensors = state.shared_tensors.lock().unwrap();
+                        let out_data = &mut tensors[*output];
+                        model.gemv_parallel_row(
+                            ith,
+                            nth,
+                            &input_data,
+                            w,
+                            out_data,
+                            k,
+                            m,
+                        );
+                    }
                 } else if ith == 0 {
                     eprintln!(
                         "[GraphExecutor] Weight {} not found for GEMV!",

@@ -548,19 +548,123 @@ impl LlamaModel {
             // up = hidden @ w3
             let up = self.gemv_impl(hidden, w3, intermediate_size)?;
 
-            // hidden_ffn = gate * silu(up)
-            use rayon::prelude::*;
-            let hidden_ffn: Vec<f32> = (0..intermediate_size)
-                .into_par_iter()
-                .map(|i| {
-                    let silu = up[i] / (1.0 + (-up[i]).exp());
-                    gate[i] * silu
-                })
-                .collect();
+            // hidden_ffn = gate * silu(up) using std::thread::scope
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            use std::thread;
+
+            let n_threads = std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(4);
+            let counter = AtomicUsize::new(0);
+            let chunk_size = 256;
+            let mut hidden_ffn = vec![0.0f32; intermediate_size];
+            let hidden_ffn_addr = hidden_ffn.as_mut_ptr() as usize;
+
+            thread::scope(|s| {
+                for _ in 0..n_threads {
+                    s.spawn(|| {
+                        let hidden_ffn_ptr = hidden_ffn_addr as *mut f32;
+                        loop {
+                            let chunk_start = counter
+                                .fetch_add(chunk_size, Ordering::Relaxed);
+                            if chunk_start >= intermediate_size {
+                                break;
+                            }
+                            let chunk_end = (chunk_start + chunk_size)
+                                .min(intermediate_size);
+                            for i in chunk_start..chunk_end {
+                                let silu = up[i] / (1.0 + (-up[i]).exp());
+                                unsafe {
+                                    *hidden_ffn_ptr.add(i) = gate[i] * silu;
+                                }
+                            }
+                        }
+                    });
+                }
+            });
 
             // output = hidden_ffn @ w2
-            let output = self.gemv_impl(&hidden_ffn, w2, hidden_size);
+            // w2 is stored transposed: [intermediate_size, hidden_size]
+            // So we need gemv_transposed
+            let output = self.gemv_transposed(&hidden_ffn, w2, hidden_size);
             return output;
+        }
+
+        None
+    }
+
+    /// FFN with pre-allocated output buffer (partial zero-allocation)
+    pub fn compute_ffn_into(
+        &self,
+        layer: &LlamaLayer,
+        hidden: &[f32],
+        out: &mut [f32],
+    ) -> Option<()> {
+        let hidden_size = out.len();
+
+        // Only support standard SwiGLU for now
+        if let (Some(w1), Some(w2), Some(w3)) =
+            (&layer.w1, &layer.w2, &layer.w3)
+        {
+            let intermediate_size = w1.shape[1];
+
+            // We still need intermediate buffers for gate/up
+            let gate = self.gemv_impl(hidden, w1, intermediate_size)?;
+            let up = self.gemv_impl(hidden, w3, intermediate_size)?;
+
+            // hidden_ffn = gate * silu(up)
+            let hidden_ffn: Vec<f32> = gate
+                .iter()
+                .zip(up.iter())
+                .map(|(g, u)| g * (u / (1.0 + (-u).exp())))
+                .collect();
+
+            // output = hidden_ffn @ w2 -> out
+            self.gemv_into(&hidden_ffn, w2, out);
+
+            return Some(());
+        }
+
+        None
+    }
+
+    /// FFN with pre-allocated intermediate buffers (true zero-allocation)
+    #[cfg(target_arch = "aarch64")]
+    pub fn compute_ffn_zero_alloc(
+        &self,
+        layer: &LlamaLayer,
+        hidden: &[f32],
+        gate_buf: &mut [f32],
+        up_buf: &mut [f32],
+        out: &mut [f32],
+        q8k_input: &mut [u8],
+        x_padded: &mut [f32],
+    ) -> Option<()> {
+        if let (Some(w1), Some(w2), Some(w3)) =
+            (&layer.w1, &layer.w2, &layer.w3)
+        {
+            let intermediate_size = w1.shape[1];
+
+            // Gate projection into buffer
+            self.gemv_into_with_buffers(
+                hidden, w1, gate_buf, q8k_input, x_padded,
+            );
+
+            // Up projection into buffer
+            self.gemv_into_with_buffers(
+                hidden, w3, up_buf, q8k_input, x_padded,
+            );
+
+            // SwiGLU: gate * silu(up) in-place on gate_buf
+            for i in 0..intermediate_size {
+                let silu = up_buf[i] / (1.0 + (-up_buf[i]).exp());
+                gate_buf[i] = gate_buf[i] * silu;
+            }
+
+            // Down projection: gate_buf @ w2 -> out
+            self.gemv_into_with_buffers(gate_buf, w2, out, q8k_input, x_padded);
+
+            return Some(());
         }
 
         None
@@ -1795,11 +1899,99 @@ impl LlamaModel {
         &self,
         tokens: &[u32],
         kv_cache: &mut crate::inference::KVCache,
+        buffers: &mut crate::cpu::CpuWorkBuffers,
     ) -> Option<Vec<f32>> {
-        // For now, just call regular forward
-        // The pooled version requires significant refactoring of forward_layer
-        // which is a large undertaking. We'll optimize incrementally.
+        if tokens.is_empty() || self.tok_embeddings.is_none() {
+            return None;
+        }
+
+        let hidden_size = self.config.hidden_size;
+        let vocab_size = self.config.vocab_size;
+
+        // Process each token
+        for &token in tokens.iter() {
+            // 1. Embedding lookup into buffer
+            self.embedding_lookup_into(token, &mut buffers.hidden)?;
+
+            // 2. Process through layers
+            for (layer_idx, layer) in self.layers.iter().enumerate() {
+                self.forward_layer_zero_alloc(
+                    layer, layer_idx, kv_cache, buffers,
+                )?;
+            }
+
+            // Advance KV cache position
+            kv_cache.advance();
+        }
+
+        // 3. Final norm (use pre-dequantized weight stored in norm_weight)
+        self.apply_rms_norm_predequant(
+            &buffers.hidden,
+            &buffers.norm_weight,
+            &mut buffers.hidden_alt,
+        );
+
+        // 4. Output projection (hidden_alt -> logits)
+        let output = self.output.as_ref()?;
+        self.gemv_into_with_buffers(
+            &buffers.hidden_alt,
+            output,
+            &mut buffers.logits[..vocab_size],
+            &mut buffers.q8k_input,
+            &mut buffers.x_padded,
+        );
+
+        // Return logits (copy from buffer - still one allocation)
+        Some(buffers.logits[..vocab_size].to_vec())
+    }
+
+    /// Forward pass with pre-allocated buffers (zero-allocation version)
+    /// Fallback for non-aarch64 platforms
+    #[cfg(not(target_arch = "aarch64"))]
+    pub fn forward_pooled(
+        &self,
+        tokens: &[u32],
+        kv_cache: &mut crate::inference::KVCache,
+        _buffers: &mut (),
+    ) -> Option<Vec<f32>> {
         self.forward(tokens, kv_cache)
+    }
+
+    /// Build and cache the optimized DAG for graph-level execution
+    pub fn build_optimized_dag(&mut self) {
+        use crate::dag::{DagBuilder, DagOptimizer};
+
+        let mut builder = DagBuilder::new();
+        let mut dag = builder.build_model_dag(self);
+        DagOptimizer::optimize(&mut dag);
+        self.optimized_dag = Some(dag.into_optimized());
+    }
+
+    /// Forward pass using graph-level dispatch
+    /// All threads traverse the DAG together, processing their portions in parallel
+    /// This eliminates the 160 thread pool dispatches per token
+    #[cfg(target_arch = "aarch64")]
+    pub fn forward_graph(
+        &mut self,
+        token: u32,
+        position: usize,
+        kv_cache: &mut crate::inference::KVCache,
+    ) -> Option<Vec<f32>> {
+        // Build DAG if not cached
+        if self.optimized_dag.is_none() {
+            self.build_optimized_dag();
+        }
+
+        let dag = self.optimized_dag.as_ref()?;
+
+        crate::cpu::execute_graph_parallel(
+            self,
+            token,
+            position,
+            kv_cache,
+            dag,
+            &dag.dag.weight_bindings,
+        )
     }
 
     pub fn embedding_lookup_impl(&self, token: u32) -> Option<Vec<f32>> {
@@ -1855,10 +2047,14 @@ impl LlamaModel {
         }
 
         let data = &bytes[offset..offset + bytes_per_row];
-        let result = dequant_to_f32(data, dtype, hidden_size);
 
-        // Copy to output buffer
-        out[..hidden_size].copy_from_slice(&result);
+        // Dequantize directly into output buffer (zero-allocation)
+        crate::inference::dequant_to_f32_into(
+            data,
+            dtype,
+            &mut out[..hidden_size],
+        );
+
         Some(())
     }
 
@@ -2056,6 +2252,201 @@ impl LlamaModel {
         Some(residual.iter().zip(ffn_out.iter()).map(|(r, f)| r + f).collect())
     }
 
+    /// Zero-allocation forward layer using pre-allocated buffers
+    #[cfg(target_arch = "aarch64")]
+    pub fn forward_layer_zero_alloc(
+        &self,
+        layer: &LlamaLayer,
+        layer_idx: usize,
+        kv_cache: &mut crate::inference::KVCache,
+        buffers: &mut crate::cpu::CpuWorkBuffers,
+    ) -> Option<()> {
+        let hidden_size = self.config.hidden_size;
+        let n_heads = self.config.n_heads;
+        let head_dim = self.config.head_dim;
+        let n_kv_heads = self.config.n_kv_heads;
+        let pos = kv_cache.seq_len();
+
+        // 1. Attention norm (hidden -> hidden_alt) - use pre-dequantized weights
+        let attn_norm_offset = layer_idx * 2 * hidden_size;
+        self.apply_rms_norm_predequant(
+            &buffers.hidden,
+            &buffers.norm_weights
+                [attn_norm_offset..attn_norm_offset + hidden_size],
+            &mut buffers.hidden_alt,
+        );
+
+        // 2. QKV projections (hidden_alt -> q/k/v buffers)
+        // Support both fused QKV (Qwen3.8-style) and separate wq/wk/wv
+        if let Some(ref qkv) = layer.attn_qkv {
+            // Fused QKV: compute actual sizes from tensor shape
+            let qkv_out_size = qkv.shape[1];
+            let q_size = n_heads * head_dim;
+
+            // Compute K/V sizes from remaining dimensions
+            // K and V have equal sizes for standard GQA
+            let kv_total = qkv_out_size - q_size;
+            let k_size = kv_total / 2;
+            let v_size = kv_total / 2;
+
+            // Fused QKV: single GEMV then split
+            self.gemv_into_with_buffers(
+                &buffers.hidden_alt,
+                qkv,
+                &mut buffers.qkv_buffer[..qkv_out_size],
+                &mut buffers.q8k_input,
+                &mut buffers.x_padded,
+            );
+
+            // Split into Q, K, V (using actual sizes)
+            buffers.q_buffer[..q_size]
+                .copy_from_slice(&buffers.qkv_buffer[..q_size]);
+            buffers.k_buffer[..k_size]
+                .copy_from_slice(&buffers.qkv_buffer[q_size..q_size + k_size]);
+            buffers.v_buffer[..v_size].copy_from_slice(
+                &buffers.qkv_buffer[q_size + k_size..q_size + k_size + v_size],
+            );
+
+            // Return early for fused QKV path to avoid size mismatch below
+            // Continue with RoPE and attention using actual sizes
+            self.apply_rope_into(
+                &buffers.q_buffer[..q_size],
+                pos,
+                n_heads,
+                head_dim,
+                &mut buffers.rope_buffer,
+            )?;
+            buffers.q_buffer[..q_size]
+                .copy_from_slice(&buffers.rope_buffer[..q_size]);
+
+            // K head dimension is k_size / n_kv_heads
+            let k_head_dim = k_size / n_kv_heads;
+            self.apply_rope_into(
+                &buffers.k_buffer[..k_size],
+                pos,
+                n_kv_heads,
+                k_head_dim,
+                &mut buffers.rope_buffer,
+            )?;
+            buffers.k_buffer[..k_size]
+                .copy_from_slice(&buffers.rope_buffer[..k_size]);
+
+            // Attention with actual sizes
+            self.attention_zero_alloc(
+                &buffers.q_buffer[..q_size],
+                &buffers.k_buffer[..k_size],
+                &buffers.v_buffer[..v_size],
+                layer_idx,
+                kv_cache,
+                n_heads,
+                head_dim,
+                n_kv_heads,
+                &mut buffers.attn_out,
+                &mut buffers.attn_scores,
+            )?;
+        } else {
+            // Standard separate wq/wk/wv projections
+            let q_size = n_heads * head_dim;
+            let k_size = n_kv_heads * head_dim;
+            let v_size = n_kv_heads * head_dim;
+
+            self.gemv_into_with_buffers(
+                &buffers.hidden_alt,
+                layer.wq.as_ref()?,
+                &mut buffers.q_buffer[..q_size],
+                &mut buffers.q8k_input,
+                &mut buffers.x_padded,
+            );
+
+            self.gemv_into_with_buffers(
+                &buffers.hidden_alt,
+                layer.wk.as_ref()?,
+                &mut buffers.k_buffer[..k_size],
+                &mut buffers.q8k_input,
+                &mut buffers.x_padded,
+            );
+
+            self.gemv_into_with_buffers(
+                &buffers.hidden_alt,
+                layer.wv.as_ref()?,
+                &mut buffers.v_buffer[..v_size],
+                &mut buffers.q8k_input,
+                &mut buffers.x_padded,
+            );
+
+            // 3. RoPE (standard path)
+            self.apply_rope_into(
+                &buffers.q_buffer,
+                pos,
+                n_heads,
+                head_dim,
+                &mut buffers.rope_buffer,
+            )?;
+            buffers.q_buffer[..q_size]
+                .copy_from_slice(&buffers.rope_buffer[..q_size]);
+
+            self.apply_rope_into(
+                &buffers.k_buffer,
+                pos,
+                n_kv_heads,
+                head_dim,
+                &mut buffers.rope_buffer,
+            )?;
+            buffers.k_buffer[..k_size]
+                .copy_from_slice(&buffers.rope_buffer[..k_size]);
+
+            // 4. Attention (standard path)
+            self.attention_zero_alloc(
+                &buffers.q_buffer,
+                &buffers.k_buffer,
+                &buffers.v_buffer,
+                layer_idx,
+                kv_cache,
+                n_heads,
+                head_dim,
+                n_kv_heads,
+                &mut buffers.attn_out,
+                &mut buffers.attn_scores,
+            )?;
+        }
+
+        // 5. Output projection (attn_out -> hidden_alt)
+        self.gemv_into_with_buffers(
+            &buffers.attn_out,
+            layer.wo.as_ref()?,
+            &mut buffers.hidden_alt,
+            &mut buffers.q8k_input,
+            &mut buffers.x_padded,
+        );
+
+        // 6. Residual (hidden + hidden_alt -> hidden)
+        for i in 0..hidden_size {
+            buffers.hidden[i] += buffers.hidden_alt[i];
+        }
+
+        // 7. FFN norm (hidden -> hidden_alt) - use pre-dequantized weights
+        let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
+        self.apply_rms_norm_predequant(
+            &buffers.hidden,
+            &buffers.norm_weights
+                [ffn_norm_offset..ffn_norm_offset + hidden_size],
+            &mut buffers.hidden_alt,
+        );
+
+        // 8. FFN (hidden_alt -> hidden through FFN) - zero-allocation
+        self.compute_ffn_zero_alloc(
+            layer,
+            &buffers.hidden_alt,
+            &mut buffers.ffn_gate,
+            &mut buffers.ffn_up,
+            &mut buffers.hidden,
+            &mut buffers.q8k_input,
+            &mut buffers.x_padded,
+        )?;
+
+        Some(())
+    }
+
     pub fn apply_rms_norm_impl(
         &self,
         x: &[f32],
@@ -2099,6 +2490,28 @@ impl LlamaModel {
             out[i] = (x[i] / rms) * w[i];
         }
         Some(())
+    }
+
+    /// RMS norm with pre-dequantized weight (true zero-allocation)
+    #[cfg(target_arch = "aarch64")]
+    pub fn apply_rms_norm_predequant(
+        &self,
+        x: &[f32],
+        weight: &[f32],
+        out: &mut [f32],
+    ) {
+        let size = x.len();
+        let eps = 1e-5f32;
+
+        let mut sum_sq = 0.0f32;
+        for i in 0..size {
+            sum_sq += x[i] * x[i];
+        }
+        let rms = (sum_sq / size as f32 + eps).sqrt();
+
+        for i in 0..size {
+            out[i] = (x[i] / rms) * weight[i];
+        }
     }
 
     pub fn apply_rope(
@@ -2242,7 +2655,8 @@ impl LlamaModel {
                     return Some(out);
                 }
                 DataType::F16 => {
-                    use crate::quant::matmul::k_quant::matmul_f16_f32;
+                    // Use simple loop implementation to avoid thread pool issues
+                    // The matmul_f16_f32 uses GLOBAL_THREAD_POOL which can conflict
                     let weights_f16: &[u16] = unsafe {
                         std::slice::from_raw_parts(
                             w.bytes().as_ptr() as *const u16,
@@ -2250,15 +2664,51 @@ impl LlamaModel {
                         )
                     };
                     let mut out = vec![0.0f32; out_size];
-                    unsafe {
-                        matmul_f16_f32(
-                            weights_f16,
-                            x,
-                            &mut out,
-                            in_size,
-                            out_size,
-                        );
-                    }
+
+                    // Use std::thread::scope for parallel computation
+                    use std::sync::atomic::{AtomicUsize, Ordering};
+                    use std::thread;
+
+                    let n_threads = std::thread::available_parallelism()
+                        .map(|p| p.get())
+                        .unwrap_or(4);
+                    let counter = AtomicUsize::new(0);
+                    let chunk_size = 64;
+                    let out_addr = out.as_mut_ptr() as usize;
+
+                    thread::scope(|s| {
+                        for _ in 0..n_threads {
+                            s.spawn(|| {
+                                let out_ptr = out_addr as *mut f32;
+                                loop {
+                                    let chunk_start = counter.fetch_add(
+                                        chunk_size,
+                                        Ordering::Relaxed,
+                                    );
+                                    if chunk_start >= out_size {
+                                        break;
+                                    }
+                                    let chunk_end = (chunk_start + chunk_size)
+                                        .min(out_size);
+                                    for i in chunk_start..chunk_end {
+                                        let mut sum = 0.0f32;
+                                        for j in 0..in_size {
+                                            let w_f16 =
+                                                weights_f16[i * in_size + j];
+                                            let w_f32 =
+                                                half::f16::from_bits(w_f16)
+                                                    .to_f32();
+                                            sum += w_f32 * x[j];
+                                        }
+                                        unsafe {
+                                            *out_ptr.add(i) = sum;
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    });
+
                     return Some(out);
                 }
                 _ => {}
@@ -2269,20 +2719,43 @@ impl LlamaModel {
         let total_elems = in_size * out_size;
         let w_data = dequant_to_f32(w.bytes(), w.dtype, total_elems);
 
-        // Use Rayon for parallel computation (multi-threaded)
-        // Each output element is independent, so can be computed in parallel
-        use rayon::prelude::*;
-        let out: Vec<f32> = (0..out_size)
-            .into_par_iter()
-            .map(|i| {
-                let mut sum = 0.0f32;
-                for j in 0..in_size {
-                    // W[i,j] in column-major shape [K, M] is at j + i * K
-                    sum += w_data[j + i * in_size] * x[j];
-                }
-                sum
-            })
-            .collect();
+        // Use std::thread::scope for parallel computation
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+
+        let n_threads =
+            std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4);
+        let counter = AtomicUsize::new(0);
+        let chunk_size = 64;
+        let mut out = vec![0.0f32; out_size];
+        let out_addr = out.as_mut_ptr() as usize;
+
+        thread::scope(|s| {
+            for _ in 0..n_threads {
+                s.spawn(|| {
+                    let out_ptr = out_addr as *mut f32;
+                    loop {
+                        let chunk_start =
+                            counter.fetch_add(chunk_size, Ordering::Relaxed);
+                        if chunk_start >= out_size {
+                            break;
+                        }
+                        let chunk_end =
+                            (chunk_start + chunk_size).min(out_size);
+                        for i in chunk_start..chunk_end {
+                            let mut sum = 0.0f32;
+                            for j in 0..in_size {
+                                // W[i,j] in column-major shape [K, M] is at j + i * K
+                                sum += w_data[j + i * in_size] * x[j];
+                            }
+                            unsafe {
+                                *out_ptr.add(i) = sum;
+                            }
+                        }
+                    }
+                });
+            }
+        });
 
         Some(out)
     }
@@ -2393,16 +2866,307 @@ impl LlamaModel {
                     total_elems,
                 );
 
-                // Use Rayon for parallel computation
-                use rayon::prelude::*;
-                out.par_iter_mut().enumerate().for_each(|(i, out_elem)| {
-                    let mut sum = 0.0f32;
-                    for j in 0..in_size {
-                        sum += w_data[i * in_size + j] * x[j];
+                // Use std::thread::scope for parallel computation
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                use std::thread;
+
+                let n_threads = std::thread::available_parallelism()
+                    .map(|p| p.get())
+                    .unwrap_or(4);
+                let counter = AtomicUsize::new(0);
+                let chunk_size = 64;
+                let out_addr = out.as_mut_ptr() as usize;
+
+                thread::scope(|s| {
+                    for _ in 0..n_threads {
+                        s.spawn(|| {
+                            let out_ptr = out_addr as *mut f32;
+                            loop {
+                                let chunk_start = counter
+                                    .fetch_add(chunk_size, Ordering::Relaxed);
+                                if chunk_start >= out_size {
+                                    break;
+                                }
+                                let chunk_end =
+                                    (chunk_start + chunk_size).min(out_size);
+                                for i in chunk_start..chunk_end {
+                                    let mut sum = 0.0f32;
+                                    for j in 0..in_size {
+                                        sum += w_data[i * in_size + j] * x[j];
+                                    }
+                                    unsafe {
+                                        *out_ptr.add(i) = sum;
+                                    }
+                                }
+                            }
+                        });
                     }
-                    *out_elem = sum;
                 });
                 true
+            }
+        }
+    }
+
+    /// Zero-allocation GEMV with pre-allocated Q8_K and padding buffers
+    /// This is the true zero-allocation version for performance-critical code.
+    #[cfg(target_arch = "aarch64")]
+    pub fn gemv_into_with_buffers(
+        &self,
+        x: &[f32],
+        w: &Tensor,
+        out: &mut [f32],
+        x_q8k: &mut [u8],
+        x_padded: &mut [f32],
+    ) -> bool {
+        let in_size = x.len();
+        let out_size = out.len();
+
+        use crate::quant::kv_cache::quantize_row_q8_k_neon;
+        use crate::quant::matmul::k_quant::{
+            matmul_q4_k_q8_k, matmul_q5_k_q8_k, matmul_q6_k_q8_k,
+        };
+        use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
+
+        // K-quant GEMV with zero-padding for non-standard dimensions
+        let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
+        let nb = in_size_padded / QK_K;
+
+        match w.dtype {
+            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+                // Reuse pre-allocated buffers
+                let x_q8k_blocks = unsafe {
+                    let available_blocks = x_q8k.len()
+                        / std::mem::size_of::<crate::quant::types::BlockQ8K>();
+                    if available_blocks < nb {
+                        eprintln!(
+                            "[ERROR] q8k buffer too small: {} < {} blocks needed for input size {}",
+                            available_blocks, nb, in_size
+                        );
+                        return false;
+                    }
+                    std::slice::from_raw_parts_mut(
+                        x_q8k.as_mut_ptr()
+                            as *mut crate::quant::types::BlockQ8K,
+                        nb,
+                    )
+                };
+
+                if in_size != in_size_padded {
+                    // Zero padding area
+                    for i in in_size..in_size_padded {
+                        x_padded[i] = 0.0;
+                    }
+                    x_padded[..in_size].copy_from_slice(x);
+                    quantize_row_q8_k_neon(x_padded, x_q8k_blocks);
+                } else {
+                    quantize_row_q8_k_neon(x, x_q8k_blocks);
+                }
+
+                unsafe {
+                    match w.dtype {
+                        DataType::Q4_K => {
+                            let weights: &[BlockQ4K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ4K,
+                                    out_size * nb,
+                                );
+                            matmul_q4_k_q8_k(
+                                weights,
+                                x_q8k_blocks,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        DataType::Q5_K => {
+                            let weights: &[BlockQ5K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ5K,
+                                    out_size * nb,
+                                );
+                            matmul_q5_k_q8_k(
+                                weights,
+                                x_q8k_blocks,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        DataType::Q6_K => {
+                            let weights: &[BlockQ6K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ6K,
+                                    out_size * nb,
+                                );
+                            matmul_q6_k_q8_k(
+                                weights,
+                                x_q8k_blocks,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                true
+            }
+            DataType::F16 => {
+                use crate::quant::matmul::k_quant::matmul_f16_f32;
+                let weights_f16: &[u16] = unsafe {
+                    std::slice::from_raw_parts(
+                        w.bytes().as_ptr() as *const u16,
+                        out_size * in_size,
+                    )
+                };
+                unsafe {
+                    matmul_f16_f32(weights_f16, x, out, in_size, out_size);
+                }
+                true
+            }
+            _ => {
+                // Fallback to regular gemv_into for unsupported formats
+                self.gemv_into(x, w, out)
+            }
+        }
+    }
+
+    /// Parallel GEMV for graph-level dispatch
+    /// Thread ith processes rows [ith, ith+nth, ith+2*nth, ...]
+    /// Called from within thread pool - no thread dispatch, just compute
+    #[cfg(target_arch = "aarch64")]
+    pub fn gemv_parallel_row(
+        &self,
+        ith: usize,
+        nth: usize,
+        x: &[f32],
+        w: &Tensor,
+        out: &mut [f32],
+        _k: usize,
+        m: usize,
+    ) {
+        if nth == 0 || m == 0 {
+            return;
+        }
+
+        use crate::quant::kv_cache::quantize_row_q8_k_neon;
+        use crate::quant::types::{
+            BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K,
+        };
+        use crate::quant::vec_dot::arm::{
+            vec_dot_q4_k_q8_k_neon, vec_dot_q5_k_q8_k_neon,
+            vec_dot_q6_k_q8_k_neon,
+        };
+
+        let in_size = x.len();
+        let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
+        let nb = in_size_padded / QK_K;
+
+        match w.dtype {
+            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+                // Quantize input with zero-padding if needed
+                let mut x_q8k = vec![unsafe { std::mem::zeroed() }; nb];
+                if in_size != in_size_padded {
+                    let mut x_padded = vec![0.0f32; in_size_padded];
+                    x_padded[..in_size].copy_from_slice(x);
+                    quantize_row_q8_k_neon(&x_padded, &mut x_q8k);
+                } else {
+                    quantize_row_q8_k_neon(x, &mut x_q8k);
+                }
+
+                unsafe {
+                    match w.dtype {
+                        DataType::Q4_K => {
+                            let weights: &[BlockQ4K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ4K,
+                                    m * nb,
+                                );
+                            let mut row_idx = ith;
+                            while row_idx < m {
+                                out[row_idx] = vec_dot_q4_k_q8_k_neon(
+                                    in_size_padded,
+                                    &weights[row_idx * nb..(row_idx + 1) * nb],
+                                    &x_q8k,
+                                );
+                                row_idx += nth;
+                            }
+                        }
+                        DataType::Q5_K => {
+                            let weights: &[BlockQ5K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ5K,
+                                    m * nb,
+                                );
+                            let mut row_idx = ith;
+                            while row_idx < m {
+                                out[row_idx] = vec_dot_q5_k_q8_k_neon(
+                                    in_size_padded,
+                                    &weights[row_idx * nb..(row_idx + 1) * nb],
+                                    &x_q8k,
+                                );
+                                row_idx += nth;
+                            }
+                        }
+                        DataType::Q6_K => {
+                            let weights: &[BlockQ6K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ6K,
+                                    m * nb,
+                                );
+                            let mut row_idx = ith;
+                            while row_idx < m {
+                                out[row_idx] = vec_dot_q6_k_q8_k_neon(
+                                    in_size_padded,
+                                    &weights[row_idx * nb..(row_idx + 1) * nb],
+                                    &x_q8k,
+                                );
+                                row_idx += nth;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            DataType::F16 => {
+                let weights_f16: &[u16] = unsafe {
+                    std::slice::from_raw_parts(
+                        w.bytes().as_ptr() as *const u16,
+                        m * in_size,
+                    )
+                };
+
+                // F16 dequant and compute
+                let mut row_idx = ith;
+                while row_idx < m {
+                    let mut sum = 0.0f32;
+                    for j in 0..in_size {
+                        let w_f16 = weights_f16[row_idx * in_size + j];
+                        let w_f32 = half::f16::from_bits(w_f16).to_f32();
+                        sum += w_f32 * x[j];
+                    }
+                    out[row_idx] = sum;
+                    row_idx += nth;
+                }
+            }
+            _ => {
+                // Fallback: dequantize and compute
+                let total_elems = m * in_size;
+                let w_data = crate::inference::dequant_to_f32(
+                    w.bytes(),
+                    w.dtype,
+                    total_elems,
+                );
+
+                let mut row_idx = ith;
+                while row_idx < m {
+                    let mut sum = 0.0f32;
+                    for j in 0..in_size {
+                        sum += w_data[row_idx * in_size + j] * x[j];
+                    }
+                    out[row_idx] = sum;
+                    row_idx += nth;
+                }
             }
         }
     }
@@ -2418,14 +3182,39 @@ impl LlamaModel {
         let w_data =
             crate::inference::dequant_to_f32(w.bytes(), w.dtype, total_elems);
 
-        // Use Rayon for parallel computation
-        use rayon::prelude::*;
-        out.par_iter_mut().enumerate().for_each(|(i, out_elem)| {
-            let mut sum = 0.0f32;
-            for j in 0..in_size {
-                sum += w_data[i * in_size + j] * x[j];
+        // Use std::thread::scope for parallel computation
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+
+        let n_threads =
+            std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4);
+        let counter = AtomicUsize::new(0);
+        let chunk_size = 64;
+        let out_ptr = out.as_mut_ptr();
+
+        thread::scope(|s| {
+            for _ in 0..n_threads {
+                s.spawn(|| {
+                    loop {
+                        let chunk_start =
+                            counter.fetch_add(chunk_size, Ordering::Relaxed);
+                        if chunk_start >= out_size {
+                            break;
+                        }
+                        let chunk_end =
+                            (chunk_start + chunk_size).min(out_size);
+                        for i in chunk_start..chunk_end {
+                            let mut sum = 0.0f32;
+                            for j in 0..in_size {
+                                sum += w_data[i * in_size + j] * x[j];
+                            }
+                            unsafe {
+                                *out_ptr.add(i) = sum;
+                            }
+                        }
+                    }
+                });
             }
-            *out_elem = sum;
         });
         true
     }
@@ -2459,18 +3248,44 @@ impl LlamaModel {
                 // Weight shape is [in_size, out_size], so row stride is out_size
                 let row_stride = w.shape[1];
 
-                // Use Rayon for parallel computation
-                use rayon::prelude::*;
-                let out: Vec<f32> = (0..out_size)
-                    .into_par_iter()
-                    .map(|i| {
-                        let mut sum = 0.0f32;
-                        for j in 0..in_size {
-                            sum += w_data[j * row_stride + i] * x[j];
-                        }
-                        sum
-                    })
-                    .collect();
+                // Use std::thread::scope for parallel computation
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                use std::thread;
+
+                let n_threads = std::thread::available_parallelism()
+                    .map(|p| p.get())
+                    .unwrap_or(4);
+                let counter = AtomicUsize::new(0);
+                let chunk_size = 256;
+                let mut out = vec![0.0f32; out_size];
+                let out_addr = out.as_mut_ptr() as usize;
+
+                thread::scope(|s| {
+                    for _ in 0..n_threads {
+                        s.spawn(|| {
+                            let out_ptr = out_addr as *mut f32;
+                            loop {
+                                let chunk_start = counter
+                                    .fetch_add(chunk_size, Ordering::Relaxed);
+                                if chunk_start >= out_size {
+                                    break;
+                                }
+                                let chunk_end =
+                                    (chunk_start + chunk_size).min(out_size);
+                                for i in chunk_start..chunk_end {
+                                    let mut sum = 0.0f32;
+                                    for j in 0..in_size {
+                                        sum +=
+                                            w_data[j * row_stride + i] * x[j];
+                                    }
+                                    unsafe {
+                                        *out_ptr.add(i) = sum;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
                 Some(out)
             }
             _ => {
@@ -2485,19 +3300,45 @@ impl LlamaModel {
                 // Weight shape is [in_size, out_size], so row stride is out_size
                 let row_stride = w.shape[1]; // vocab_size for embeddings
 
-                // Use Rayon for parallel computation
-                use rayon::prelude::*;
-                let out: Vec<f32> = (0..out_size)
-                    .into_par_iter()
-                    .map(|i| {
-                        let mut sum = 0.0f32;
-                        for j in 0..in_size {
-                            // Weight[j, i] is at position j * row_stride + i
-                            sum += w_data[j * row_stride + i] * x[j];
-                        }
-                        sum
-                    })
-                    .collect();
+                // Use std::thread::scope for parallel computation
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                use std::thread;
+
+                let n_threads = std::thread::available_parallelism()
+                    .map(|p| p.get())
+                    .unwrap_or(4);
+                let counter = AtomicUsize::new(0);
+                let chunk_size = 256;
+                let mut out = vec![0.0f32; out_size];
+                let out_addr = out.as_mut_ptr() as usize;
+
+                thread::scope(|s| {
+                    for _ in 0..n_threads {
+                        s.spawn(|| {
+                            let out_ptr = out_addr as *mut f32;
+                            loop {
+                                let chunk_start = counter
+                                    .fetch_add(chunk_size, Ordering::Relaxed);
+                                if chunk_start >= out_size {
+                                    break;
+                                }
+                                let chunk_end =
+                                    (chunk_start + chunk_size).min(out_size);
+                                for i in chunk_start..chunk_end {
+                                    let mut sum = 0.0f32;
+                                    for j in 0..in_size {
+                                        // Weight[j, i] is at position j * row_stride + i
+                                        sum +=
+                                            w_data[j * row_stride + i] * x[j];
+                                    }
+                                    unsafe {
+                                        *out_ptr.add(i) = sum;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
                 Some(out)
             }
         }
@@ -2578,6 +3419,144 @@ impl LlamaModel {
         Some(out)
     }
 
+    /// Attention with pre-allocated output buffer
+    pub fn attention_into(
+        &self,
+        q: &[f32],
+        k: &[f32],
+        v: &[f32],
+        layer_idx: usize,
+        kv_cache: &mut crate::inference::KVCache,
+        n_heads: usize,
+        q_head_dim: usize,
+        n_kv_heads: usize,
+        out: &mut [f32],
+    ) -> Option<()> {
+        let k_head_dim = k.len() / n_kv_heads;
+        let v_head_dim = v.len() / n_kv_heads;
+
+        kv_cache.set_k(layer_idx, k, n_kv_heads, k_head_dim);
+        kv_cache.set_v(layer_idx, v, n_kv_heads, v_head_dim);
+
+        let seq_len = kv_cache.seq_len() + 1;
+        let dot_dim = q_head_dim.min(k_head_dim);
+        let scale = 1.0f32 / (dot_dim as f32).sqrt();
+
+        // Clear output
+        for elem in out.iter_mut() {
+            *elem = 0.0;
+        }
+
+        for h in 0..n_heads {
+            let kv_head = h * n_kv_heads / n_heads;
+
+            // Still allocate scores (small, seq_len floats)
+            let mut scores = vec![0.0f32; seq_len];
+            for s in 0..seq_len {
+                let k_s = kv_cache.get_k(layer_idx, kv_head, s);
+                let mut score = 0.0f32;
+                for d in 0..dot_dim {
+                    score += q[h * q_head_dim + d] * k_s[d];
+                }
+                scores[s] = score * scale;
+            }
+
+            let max_score =
+                scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum_exp = 0.0f32;
+            for s in 0..seq_len {
+                scores[s] = (scores[s] - max_score).exp();
+                sum_exp += scores[s];
+            }
+            for s in 0..seq_len {
+                scores[s] /= sum_exp;
+            }
+
+            for d in 0..v_head_dim {
+                let mut sum = 0.0f32;
+                for s in 0..seq_len {
+                    let v_s = kv_cache.get_v(layer_idx, kv_head, s);
+                    sum += scores[s] * v_s[d];
+                }
+                out[h * v_head_dim + d] = sum;
+            }
+        }
+
+        Some(())
+    }
+
+    /// Attention with pre-allocated scores buffer (true zero-allocation)
+    #[cfg(target_arch = "aarch64")]
+    pub fn attention_zero_alloc(
+        &self,
+        q: &[f32],
+        k: &[f32],
+        v: &[f32],
+        layer_idx: usize,
+        kv_cache: &mut crate::inference::KVCache,
+        n_heads: usize,
+        q_head_dim: usize,
+        n_kv_heads: usize,
+        out: &mut [f32],
+        scores_buf: &mut [f32],
+    ) -> Option<()> {
+        let k_head_dim = k.len() / n_kv_heads;
+        let v_head_dim = v.len() / n_kv_heads;
+
+        kv_cache.set_k(layer_idx, k, n_kv_heads, k_head_dim);
+        kv_cache.set_v(layer_idx, v, n_kv_heads, v_head_dim);
+
+        let seq_len = kv_cache.seq_len() + 1;
+        let dot_dim = q_head_dim.min(k_head_dim);
+        let scale = 1.0f32 / (dot_dim as f32).sqrt();
+
+        // Clear output
+        for elem in out.iter_mut() {
+            *elem = 0.0;
+        }
+
+        for h in 0..n_heads {
+            let kv_head = h * n_kv_heads / n_heads;
+
+            // Use pre-allocated scores buffer
+            let scores = &mut scores_buf[..seq_len];
+
+            // Compute attention scores
+            for s in 0..seq_len {
+                let k_s = kv_cache.get_k(layer_idx, kv_head, s);
+                let mut score = 0.0f32;
+                for d in 0..dot_dim {
+                    score += q[h * q_head_dim + d] * k_s[d];
+                }
+                scores[s] = score * scale;
+            }
+
+            // Softmax
+            let max_score =
+                scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum_exp = 0.0f32;
+            for s in 0..seq_len {
+                scores[s] = (scores[s] - max_score).exp();
+                sum_exp += scores[s];
+            }
+            for s in 0..seq_len {
+                scores[s] /= sum_exp;
+            }
+
+            // Compute output
+            for d in 0..v_head_dim {
+                let mut sum = 0.0f32;
+                for s in 0..seq_len {
+                    let v_s = kv_cache.get_v(layer_idx, kv_head, s);
+                    sum += scores[s] * v_s[d];
+                }
+                out[h * v_head_dim + d] = sum;
+            }
+        }
+
+        Some(())
+    }
+
     pub fn ffn_swiglu(
         &self,
         x: &[f32],
@@ -2616,12 +3595,14 @@ impl LlamaModel {
     ) -> Option<Vec<f32>> {
         let output = self.output.as_ref()?;
         // Detect weight format and use appropriate gemv
+        // After transpose_output_layer: shape = [vocab_size, hidden_size]
+        // Before transpose: shape = [hidden_size, vocab_size]
         if output.shape.len() == 2 && output.shape[1] == hidden.len() {
-            // Weight is [vocab_size, hidden_size] - transposed
-            self.gemv_transposed(hidden, output, output.shape[0])
-        } else {
-            // Weight is [hidden_size, vocab_size] - normal
+            // Weight is [vocab_size, hidden_size] - standard format (use gemv)
             self.gemv(hidden, output, vocab_size)
+        } else {
+            // Weight is [hidden_size, vocab_size] - transposed (needs gemv_transposed)
+            self.gemv_transposed(hidden, output, vocab_size)
         }
     }
 
@@ -4767,7 +5748,7 @@ impl LlamaModel {
     /// The ComputeGraph infrastructure is in place for future optimizations
     /// like kernel fusion and batched dispatch.
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    pub fn forward_graph(
+    pub fn forward_graph_gpu(
         &self,
         tokens: &[u32],
         kv_cache: &mut crate::inference::KVCacheGPU,

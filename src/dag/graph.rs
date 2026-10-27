@@ -27,6 +27,7 @@ pub enum Operation {
         weight: usize,
         output: usize,
         out_size: usize,
+        is_transposed: bool, // true if weight is stored as [in_size, out_size]
     },
     /// Fused QKV projection: combines Q, K, V projections into single GEMM
     /// output_q, output_k, output_v are tensor IDs for each projection
