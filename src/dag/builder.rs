@@ -437,6 +437,8 @@ impl DagBuilder {
         }
         let vocab_size =
             model.output.as_ref().map(|o| o.shape[0]).unwrap_or(hidden_size);
+        // After transpose_output_layer: shape = [vocab_size, hidden_size]
+        // This is STANDARD format, so is_transposed = false
         let output_node = DagNode {
             id: self.dag.nodes.len(),
             op: Operation::Gemv {
@@ -444,7 +446,7 @@ impl DagBuilder {
                 weight: output_weight_id,
                 output: output_id,
                 out_size: vocab_size,
-                is_transposed: true,
+                is_transposed: false,
             },
             dependencies: vec![final_norm_node_id],
             device_preference: DevicePreference::Gpu,
@@ -563,9 +565,7 @@ impl DagBuilder {
                 k_out_size,
                 v_out_size,
             )
-        } else if layer.wq.is_some()
-            && layer.wk.is_some()
-            && layer.wv.is_some()
+        } else if layer.wq.is_some() && layer.wk.is_some() && layer.wv.is_some()
         {
             // Standard separate Q/K/V weights (all three must exist)
             let q_out_size =
