@@ -191,16 +191,16 @@ kernel void kernel_gelu_quick_f32_4_tg(
 // Reduces dispatch overhead and intermediate memory writes
 kernel void kernel_fused_swiglu_f32(
     device const float* gate [[buffer(0)]],   // Gate projection output
-    device const float* up [[buffer(1)]],     // Up projection output
-    device float* dst [[buffer(2)]],          // Output: SiLU(gate) * up
+    device const float* up [[buffer(1)]],     // Up projection output (SiLU applied to this)
+    device float* dst [[buffer(2)]],          // Output: gate * SiLU(up)
     constant int & ne00 [[buffer(3)]],        // Size
     uint gid [[thread_position_in_grid]]
 ) {
     if (gid >= (uint)ne00) return;
     float g = gate[gid];
     float u = up[gid];
-    float silu_g = g / (1.0f + exp(-g));  // SiLU activation
-    dst[gid] = silu_g * u;               // Element-wise multiplication
+    float silu_u = u / (1.0f + exp(-u));  // SiLU on up
+    dst[gid] = g * silu_u;               // gate * silu(up)
 }
 
 // Fused SwiGLU with float4 for better memory throughput
@@ -214,8 +214,8 @@ kernel void kernel_fused_swiglu_f32_4(
     if (gid * 4 >= (uint)ne00) return;
     float4 g = gate[gid];
     float4 u = up[gid];
-    float4 silu_g = g / (1.0f + exp(-g));
-    dst[gid] = silu_g * u;
+    float4 silu_u = u / (1.0f + exp(-u));  // SiLU on up
+    dst[gid] = g * silu_u;                // gate * silu(up)
 }
 
 // Fused SwiGLU with threadgroups for large sizes
@@ -232,8 +232,8 @@ kernel void kernel_fused_swiglu_f32_tg(
     if (i0 >= ne00) return;
     float g = gate[i0];
     float u = up[i0];
-    float silu_g = g / (1.0f + exp(-g));
-    dst[i0] = silu_g * u;
+    float silu_u = u / (1.0f + exp(-u));  // SiLU on up
+    dst[i0] = g * silu_u;                // gate * silu(up)
 }
 
 // Fused SwiGLU with float4 and threadgroups
@@ -250,8 +250,8 @@ kernel void kernel_fused_swiglu_f32_4_tg(
     if (i0 * 4 >= ne00) return;
     float4 g = gate[i0];
     float4 u = up[i0];
-    float4 silu_g = g / (1.0f + exp(-g));
-    dst[i0] = silu_g * u;
+    float4 silu_u = u / (1.0f + exp(-u));  // SiLU on up
+    dst[i0] = g * silu_u;                // gate * silu(up)
 }
 
 // ========== Batched kernels for prefill ==========

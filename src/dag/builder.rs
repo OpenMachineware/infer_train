@@ -152,6 +152,8 @@ impl DagBuilder {
                 input: k_rope_id,
                 layer_idx,
                 is_key: true, // K cache update
+                n_kv_heads,
+                head_dim,
             },
             dependencies: vec![k_rope_node_id],
             device_preference: DevicePreference::Gpu,
@@ -165,6 +167,8 @@ impl DagBuilder {
                 input: v_id,
                 layer_idx,
                 is_key: false, // V cache update
+                n_kv_heads,
+                head_dim,
             },
             dependencies: vec![v_node_id],
             device_preference: DevicePreference::Gpu,
@@ -279,27 +283,27 @@ impl DagBuilder {
         };
         let up_node_id = self.dag.add_node(up_node);
 
-        // 10. SiLU activation
+        // 10. SiLU activation (applied to UP, not gate)
         let silu_id = self.alloc_tensor();
         let silu_node = DagNode {
             id: self.dag.nodes.len(),
-            op: Operation::SiLU { input: gate_id, output: silu_id },
-            dependencies: vec![gate_node_id],
+            op: Operation::SiLU { input: up_id, output: silu_id },
+            dependencies: vec![up_node_id],
             device_preference: DevicePreference::Gpu,
             layer_idx: None,
         };
         let silu_node_id = self.dag.add_node(silu_node);
 
-        // 11. Element-wise mul
+        // 11. Element-wise mul: gate * silu(up)
         let ffn_hidden_id = self.alloc_tensor();
         let mul_node = DagNode {
             id: self.dag.nodes.len(),
             op: Operation::Mul {
-                lhs: silu_id,
-                rhs: up_id,
+                lhs: gate_id,
+                rhs: silu_id,
                 output: ffn_hidden_id,
             },
-            dependencies: vec![silu_node_id, up_node_id],
+            dependencies: vec![gate_node_id, silu_node_id],
             device_preference: DevicePreference::Gpu,
             layer_idx: None,
         };
@@ -687,6 +691,8 @@ impl DagBuilder {
                 input: k_rope_id,
                 layer_idx,
                 is_key: true, // K cache update
+                n_kv_heads,
+                head_dim,
             },
             dependencies: vec![k_rope_node_id],
             device_preference: DevicePreference::Gpu,
@@ -700,6 +706,8 @@ impl DagBuilder {
                 input: v_id,
                 layer_idx,
                 is_key: false, // V cache update
+                n_kv_heads,
+                head_dim,
             },
             dependencies: vec![v_node_id],
             device_preference: DevicePreference::Gpu,
@@ -826,27 +834,27 @@ impl DagBuilder {
         };
         let up_node_id = self.dag.add_node(up_node);
 
-        // 10. SiLU activation
+        // 10. SiLU activation (applied to UP, not gate)
         let silu_id = self.alloc_tensor();
         let silu_node = DagNode {
             id: self.dag.nodes.len(),
-            op: Operation::SiLU { input: gate_id, output: silu_id },
-            dependencies: vec![gate_node_id],
+            op: Operation::SiLU { input: up_id, output: silu_id },
+            dependencies: vec![up_node_id],
             device_preference: DevicePreference::Gpu,
             layer_idx: Some(layer_idx),
         };
         let silu_node_id = self.dag.add_node(silu_node);
 
-        // 11. Element-wise mul
+        // 11. Element-wise mul: gate * silu(up)
         let ffn_hidden_id = self.alloc_tensor();
         let mul_node = DagNode {
             id: self.dag.nodes.len(),
             op: Operation::Mul {
-                lhs: silu_id,
-                rhs: up_id,
+                lhs: gate_id,
+                rhs: silu_id,
                 output: ffn_hidden_id,
             },
-            dependencies: vec![silu_node_id, up_node_id],
+            dependencies: vec![gate_node_id, silu_node_id],
             device_preference: DevicePreference::Gpu,
             layer_idx: Some(layer_idx),
         };

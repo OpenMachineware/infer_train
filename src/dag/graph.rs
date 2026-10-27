@@ -89,6 +89,8 @@ pub enum Operation {
         input: usize,     // Input tensor ID (K or V after RoPE)
         layer_idx: usize, // Which layer's cache to update
         is_key: bool,     // true for K cache, false for V cache
+        n_kv_heads: usize,
+        head_dim: usize,
     },
 
     // FFN operations
@@ -108,11 +110,11 @@ pub enum Operation {
     },
 
     // Fused operations
-    /// FusedSwiGLU: output = SiLU(gate) * up
-    /// Combines SiLU activation and element-wise multiplication
+    /// FusedSwiGLU: output = gate * SiLU(up)
+    /// Correct SwiGLU formula: gate * (up / (1 + exp(-up)))
     FusedSwiGLU {
         gate: usize, // Gate projection output
-        up: usize,   // Up projection output
+        up: usize,   // Up projection output (SiLU is applied to this)
         output: usize,
         layer_idx: usize,
     },

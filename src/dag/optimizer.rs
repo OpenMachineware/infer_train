@@ -19,17 +19,10 @@ impl DagOptimizer {
     pub fn optimize(dag: &mut ComputeDag) -> usize {
         let mut fused_count = 0;
 
-        // Apply fusion patterns
-        fused_count += Self::fuse_qkv_projections(dag);
-        // TEMPORARILY DISABLED: Investigating NaN issue
-        // fused_count += Self::fuse_gate_up_projections(dag);
-        fused_count += Self::fuse_silu_mul(dag);
-        // TEMPORARILY DISABLED: FusedNormLinear causes 10% performance regression
-        // fused_count += Self::fuse_norm_gemv(dag);
-        // TEMPORARILY DISABLED: GEMV+Add fusion needs debugging - causes 19% regression
-        // fused_count += Self::fuse_gemv_add(dag);
-        // Enable FusedAddNorm with safety check (only fuse when Add output has single consumer)
-        fused_count += Self::fuse_add_norm(dag);
+        // DISABLE ALL FUSION for debugging - ensure basic execution works first
+        // fused_count += Self::fuse_qkv_projections(dag);
+        // fused_count += Self::fuse_silu_mul(dag);
+        // fused_count += Self::fuse_add_norm(dag);
 
         fused_count
     }
@@ -262,8 +255,12 @@ impl DagOptimizer {
                     {
                         if *lhs == *silu_output || *rhs == *silu_output {
                             // Found SiLU + Mul pattern
-                            let up_input =
+                            // After fix: SiLU is applied to up, Mul is gate * silu(up)
+                            // So the OTHER operand (not silu_output) is gate
+                            let gate_input =
                                 if *lhs == *silu_output { *rhs } else { *lhs };
+                            // And silu_input is the up tensor
+                            let up_input = *silu_input;
 
                             // Mark these nodes for removal
                             nodes_to_remove.push(silu_node.id);
@@ -291,8 +288,8 @@ impl DagOptimizer {
                             let fused_node = DagNode {
                                 id: dag.nodes.len() + nodes_to_add.len(), // Temporary ID
                                 op: Operation::FusedSwiGLU {
-                                    gate: *silu_input,
-                                    up: up_input,
+                                    gate: gate_input, // gate * silu(up)
+                                    up: up_input,     // SiLU is applied to this
                                     output: *mul_output,
                                     layer_idx: layer_idx.unwrap_or(0),
                                 },
