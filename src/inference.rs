@@ -108,7 +108,8 @@ impl InferenceContext {
                 config.n_heads,
                 config.n_kv_heads,
                 config.head_dim,
-                config.head_dim, // kv_head_dim = head_dim for standard models
+                config.key_length,
+                config.value_length,
                 config.vocab_size,
                 qkv_out_size,
                 2048, // max_seq_len

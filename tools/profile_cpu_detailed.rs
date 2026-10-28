@@ -70,7 +70,8 @@ fn main() {
         ctx.config.n_heads,
         ctx.config.n_kv_heads,
         ctx.config.head_dim,
-        ctx.config.head_dim, // kv_head_dim same as head_dim for non-DeepSeek
+        ctx.config.key_length,
+        ctx.config.value_length,
         ctx.config.vocab_size,
         0,    // qkv_out_size - auto-calculate
         2048, // max_seq_len

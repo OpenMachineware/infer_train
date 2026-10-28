@@ -65,7 +65,8 @@ fn main() {
         n_heads,
         n_kv_heads,
         head_dim,
-        head_dim, // kv_head_dim = head_dim for standard
+        ctx.config.key_length,
+        ctx.config.value_length,
         vocab_size,
         qkv_out_size,
         2048, // max_seq_len
@@ -83,6 +84,13 @@ fn main() {
         buffers.k_buffer.len(),
         buffers.v_buffer.len(),
         buffers.attn_out.len()
+    );
+
+    // Initialize pre-dequantized norm weights
+    buffers.init_norm_weights(&ctx.model);
+    println!(
+        "Norm weights initialized: {} elements",
+        buffers.norm_weights.len()
     );
 
     let mut kv_cache = KVCache::new(&ctx.config, 2048, KVCacheFormat::F32);

@@ -366,14 +366,17 @@ impl LlamaModel {
         n_heads: usize,
         n_kv_heads: usize,
         head_dim: usize,
+        key_length: usize,
+        value_length: usize,
     ) -> Option<(Vec<f32>, Vec<f32>, Vec<f32>, usize, usize, usize)> {
         // Try fused QKV first (Qwen3.8-style)
         if let Some(ref qkv) = layer.attn_qkv {
             // Fused QKV: shape = [hidden_size, q_size + k_size + v_size]
             let qkv_out_size = qkv.shape[1];
             let q_out_size = n_heads * head_dim;
-            let k_out_size = n_kv_heads * head_dim;
-            let v_out_size = n_kv_heads * head_dim;
+            // Use key_length and value_length for K/V (Qwen3.8-style)
+            let k_out_size = n_kv_heads * key_length;
+            let v_out_size = n_kv_heads * value_length;
 
             // Compute fused projection
             let qkv_proj = self.gemv_impl(hidden, qkv, qkv_out_size)?;
@@ -2141,6 +2144,8 @@ impl LlamaModel {
                 self.config.n_heads,
                 n_kv_heads,
                 head_dim,
+                self.config.key_length,
+                self.config.value_length,
             ) {
             Some(r) => r,
             None => {
@@ -2311,15 +2316,14 @@ impl LlamaModel {
         // 2. QKV projections (hidden_alt -> q/k/v buffers)
         // Support both fused QKV (Qwen3.8-style) and separate wq/wk/wv
         if let Some(ref qkv) = layer.attn_qkv {
-            // Fused QKV: compute actual sizes from tensor shape
+            // Fused QKV: compute actual sizes from tensor shape and config
             let qkv_out_size = qkv.shape[1];
             let q_size = n_heads * head_dim;
 
-            // Compute K/V sizes from remaining dimensions
-            // K and V have equal sizes for standard GQA
-            let kv_total = qkv_out_size - q_size;
-            let k_size = kv_total / 2;
-            let v_size = kv_total / 2;
+            // Use config's key_length and value_length for K/V (Qwen3.8-style)
+            // These may differ from head_dim
+            let k_size = n_kv_heads * self.config.key_length;
+            let v_size = n_kv_heads * self.config.value_length;
 
             // Fused QKV: single GEMV then split
             self.gemv_into_with_buffers(
@@ -2523,6 +2527,178 @@ impl LlamaModel {
         );
 
         // 8. FFN (hidden_alt -> hidden through FFN) - zero-allocation
+        self.compute_ffn_zero_alloc(
+            layer,
+            &buffers.hidden_alt,
+            &mut buffers.ffn_gate,
+            &mut buffers.ffn_up,
+            &mut buffers.hidden,
+            &mut buffers.q8k_input,
+            &mut buffers.x_padded,
+        )?;
+
+        Some(())
+    }
+
+    /// Zero-allocation forward with barrier-synchronized batch GEMV
+    /// Uses single thread dispatch for multiple GEMVs with barriers between them
+    #[cfg(target_arch = "aarch64")]
+    pub fn forward_layer_barrier(
+        &self,
+        layer: &LlamaLayer,
+        layer_idx: usize,
+        kv_cache: &mut crate::inference::KVCache,
+        buffers: &mut crate::cpu::CpuWorkBuffers,
+    ) -> Option<()> {
+        let hidden_size = self.config.hidden_size;
+        let n_heads = self.config.n_heads;
+        let head_dim = self.config.head_dim;
+        let n_kv_heads = self.config.n_kv_heads;
+        let pos = kv_cache.seq_len();
+        let num_threads = crate::cpu::default_n_threads();
+
+        // 1. Attention norm
+        let attn_norm_offset = layer_idx * 2 * hidden_size;
+        self.apply_rms_norm_predequant(
+            &buffers.hidden,
+            &buffers.norm_weights
+                [attn_norm_offset..attn_norm_offset + hidden_size],
+            &mut buffers.hidden_alt,
+        );
+
+        // 2. Pre-quantize hidden_alt once for QKV
+        let x_q8k_blocks = unsafe {
+            use crate::quant::types::{BlockQ8K, QK_K};
+            let in_size_padded = ((hidden_size + QK_K - 1) / QK_K) * QK_K;
+            let nb = in_size_padded / QK_K;
+            std::slice::from_raw_parts_mut(
+                buffers.q8k_input.as_mut_ptr() as *mut BlockQ8K,
+                nb,
+            )
+        };
+        Self::quantize_input_to_q8k(
+            &buffers.hidden_alt,
+            x_q8k_blocks,
+            &mut buffers.x_padded,
+        );
+
+        // 3. Batch QKV projections with barrier synchronization
+        if layer.attn_qkv.is_none() {
+            // Standard separate wq/wk/wv - check all are K-quant
+            let wq = layer.wq.as_ref()?;
+            let wk = layer.wk.as_ref()?;
+            let wv = layer.wv.as_ref()?;
+
+            let q_size = n_heads * head_dim;
+            let k_size = n_kv_heads * head_dim;
+            let v_size = n_kv_heads * head_dim;
+
+            let all_k_quant = matches!(
+                (wq.dtype, wk.dtype, wv.dtype),
+                (
+                    DataType::Q4_K | DataType::Q5_K | DataType::Q6_K,
+                    DataType::Q4_K | DataType::Q5_K | DataType::Q6_K,
+                    DataType::Q4_K | DataType::Q5_K | DataType::Q6_K
+                )
+            );
+
+            if all_k_quant {
+                // Batch GEMV with barrier synchronization
+                let barrier = crate::cpu::SpinBarrier::new(num_threads);
+                Self::gemv_batch_with_barrier(
+                    x_q8k_blocks,
+                    hidden_size,
+                    &[wq, wk, wv],
+                    &mut [
+                        &mut buffers.q_buffer[..q_size],
+                        &mut buffers.k_buffer[..k_size],
+                        &mut buffers.v_buffer[..v_size],
+                    ],
+                    &barrier,
+                    num_threads,
+                );
+            } else {
+                // Fallback for mixed dtypes
+                self.gemv_with_prequant(
+                    x_q8k_blocks,
+                    hidden_size,
+                    wq,
+                    &mut buffers.q_buffer[..q_size],
+                );
+                self.gemv_with_prequant(
+                    x_q8k_blocks,
+                    hidden_size,
+                    wk,
+                    &mut buffers.k_buffer[..k_size],
+                );
+                self.gemv_with_prequant(
+                    x_q8k_blocks,
+                    hidden_size,
+                    wv,
+                    &mut buffers.v_buffer[..v_size],
+                );
+            }
+
+            // 4. RoPE
+            self.apply_rope_into(
+                &buffers.q_buffer,
+                pos,
+                n_heads,
+                head_dim,
+                &mut buffers.rope_buffer,
+            )?;
+            buffers.q_buffer[..q_size]
+                .copy_from_slice(&buffers.rope_buffer[..q_size]);
+
+            self.apply_rope_into(
+                &buffers.k_buffer,
+                pos,
+                n_kv_heads,
+                head_dim,
+                &mut buffers.rope_buffer,
+            )?;
+            buffers.k_buffer[..k_size]
+                .copy_from_slice(&buffers.rope_buffer[..k_size]);
+
+            // 5. Attention
+            self.attention_zero_alloc(
+                &buffers.q_buffer,
+                &buffers.k_buffer,
+                &buffers.v_buffer,
+                layer_idx,
+                kv_cache,
+                n_heads,
+                head_dim,
+                n_kv_heads,
+                &mut buffers.attn_out,
+                &mut buffers.attn_scores,
+            )?;
+        }
+
+        // 6. Output projection
+        self.gemv_into_with_buffers(
+            &buffers.attn_out,
+            layer.wo.as_ref()?,
+            &mut buffers.hidden_alt,
+            &mut buffers.q8k_input,
+            &mut buffers.x_padded,
+        );
+
+        // 7. Residual
+        for i in 0..hidden_size {
+            buffers.hidden[i] += buffers.hidden_alt[i];
+        }
+
+        // 8. FFN norm
+        let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
+        self.apply_rms_norm_predequant(
+            &buffers.hidden,
+            &buffers.norm_weights
+                [ffn_norm_offset..ffn_norm_offset + hidden_size],
+            &mut buffers.hidden_alt,
+        );
+
+        // 9. FFN with pre-quantization
         self.compute_ffn_zero_alloc(
             layer,
             &buffers.hidden_alt,
@@ -3225,6 +3401,122 @@ impl LlamaModel {
         } else {
             quantize_row_q8_k_neon(x, &mut x_q8k[..nb]);
         }
+    }
+
+    /// Process multiple GEMVs with same pre-quantized input using barrier synchronization
+    /// Dispatches threads once and processes all GEMVs with barriers between them
+    #[cfg(target_arch = "aarch64")]
+    pub fn gemv_batch_with_barrier(
+        x_q8k: &[crate::quant::types::BlockQ8K],
+        in_size: usize,
+        weights: &[&Tensor],
+        outputs: &mut [&mut [f32]],
+        barrier: &crate::cpu::SpinBarrier,
+        num_threads: usize,
+    ) {
+        use crate::cpu::SyncPtr;
+        use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
+        use crate::quant::vec_dot::arm::{
+            vec_dot_q4_k_q8_k_neon, vec_dot_q5_k_q8_k_neon,
+            vec_dot_q6_k_q8_k_neon,
+        };
+
+        let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
+        let nb = in_size_padded / QK_K;
+
+        // Collect output pointers wrapped in SyncPtr for thread safety
+        let output_ptrs: Vec<(SyncPtr<f32>, usize)> = outputs
+            .iter_mut()
+            .map(|o| (SyncPtr::new(o.as_mut_ptr()), o.len()))
+            .collect();
+
+        std::thread::scope(|s| {
+            for thread_id in 0..num_threads {
+                let barrier = barrier;
+                let output_ptrs = &output_ptrs;
+                let x_q8k = x_q8k;
+
+                s.spawn(move || {
+                    for (weight_idx, (w, (out_ptr, out_size))) in
+                        weights.iter().zip(output_ptrs.iter()).enumerate()
+                    {
+                        let out_size = *out_size;
+
+                        match w.dtype {
+                            DataType::Q4_K => {
+                                let weights: &[BlockQ4K] = unsafe {
+                                    std::slice::from_raw_parts(
+                                        w.bytes().as_ptr() as *const BlockQ4K,
+                                        out_size * nb,
+                                    )
+                                };
+                                let mut row = thread_id;
+                                while row < out_size {
+                                    unsafe {
+                                        *out_ptr.get().add(row) =
+                                            vec_dot_q4_k_q8_k_neon(
+                                                in_size_padded,
+                                                &weights
+                                                    [row * nb..(row + 1) * nb],
+                                                x_q8k,
+                                            );
+                                    }
+                                    row += num_threads;
+                                }
+                            }
+                            DataType::Q5_K => {
+                                let weights: &[BlockQ5K] = unsafe {
+                                    std::slice::from_raw_parts(
+                                        w.bytes().as_ptr() as *const BlockQ5K,
+                                        out_size * nb,
+                                    )
+                                };
+                                let mut row = thread_id;
+                                while row < out_size {
+                                    unsafe {
+                                        *out_ptr.get().add(row) =
+                                            vec_dot_q5_k_q8_k_neon(
+                                                in_size_padded,
+                                                &weights
+                                                    [row * nb..(row + 1) * nb],
+                                                x_q8k,
+                                            );
+                                    }
+                                    row += num_threads;
+                                }
+                            }
+                            DataType::Q6_K => {
+                                let weights: &[BlockQ6K] = unsafe {
+                                    std::slice::from_raw_parts(
+                                        w.bytes().as_ptr() as *const BlockQ6K,
+                                        out_size * nb,
+                                    )
+                                };
+                                let mut row = thread_id;
+                                while row < out_size {
+                                    unsafe {
+                                        *out_ptr.get().add(row) =
+                                            vec_dot_q6_k_q8_k_neon(
+                                                in_size_padded,
+                                                &weights
+                                                    [row * nb..(row + 1) * nb],
+                                                x_q8k,
+                                            );
+                                    }
+                                    row += num_threads;
+                                }
+                            }
+                            _ => {}
+                        }
+
+                        // Wait at barrier before next GEMV (skip for last)
+                        if weight_idx < weights.len() - 1 {
+                            barrier.wait();
+                        }
+                    }
+                });
+            }
+        });
     }
 
     /// Parallel GEMV for graph-level dispatch

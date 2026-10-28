@@ -43,14 +43,31 @@ impl CpuWorkBuffers {
         n_heads: usize,
         n_kv_heads: usize,
         head_dim: usize,
-        _kv_head_dim: usize,
+        key_length: usize,
+        value_length: usize,
         vocab_size: usize,
         qkv_out_size: usize,
         _max_seq_len: usize,
         n_layers: usize,
     ) -> Self {
         let q_size = n_heads * head_dim;
-        let kv_size = n_kv_heads * head_dim;
+        // Use key_length and value_length for K/V buffer sizes (Qwen3.8-style)
+        // Fall back to head_dim if key_length/value_length are 0
+        let k_size = if key_length > 0 {
+            n_kv_heads * key_length
+        } else {
+            n_kv_heads * head_dim
+        };
+        let v_size = if value_length > 0 {
+            n_kv_heads * value_length
+        } else {
+            n_kv_heads * head_dim
+        };
+        let kv_size = k_size.max(v_size);
+
+        // Attention output size: n_heads * v_head_dim
+        let v_head_dim = if value_length > 0 { value_length } else { head_dim };
+        let attn_out_size = n_heads * v_head_dim;
 
         Self {
             hidden: vec![0.0; hidden_size],
@@ -59,7 +76,7 @@ impl CpuWorkBuffers {
             q: vec![0.0; q_size],
             k: vec![0.0; kv_size],
             v: vec![0.0; kv_size],
-            attn_out: vec![0.0; n_heads * head_dim],
+            attn_out: vec![0.0; attn_out_size],
             ffn_gate: vec![0.0; intermediate_size],
             ffn_up: vec![0.0; intermediate_size],
             ffn_hidden: vec![0.0; intermediate_size],

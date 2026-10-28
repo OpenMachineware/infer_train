@@ -323,3 +323,73 @@ impl<T> SyncPtr<T> {
         self.0
     }
 }
+
+/// Barrier-synchronized batch GEMV execution
+/// Executes multiple GEMV operations with a single thread dispatch
+/// Threads wait at barrier between operations, eliminating dispatch overhead
+pub fn gemv_batch_barrier<F>(
+    ops: &[GEMVOp],
+    num_threads: usize,
+    barrier: &SpinBarrier,
+) where
+    F: Fn(usize, usize) + Send + Sync,
+{
+    if ops.is_empty() || num_threads == 0 {
+        return;
+    }
+
+    std::thread::scope(|s| {
+        for thread_id in 0..num_threads {
+            let barrier = barrier;
+            s.spawn(move || {
+                for op in ops {
+                    // Process assigned rows for this operation
+                    let mut row = thread_id;
+                    while row < op.num_rows {
+                        (op.compute)(row);
+                        row += num_threads;
+                    }
+                    // Wait at barrier for all threads to complete this operation
+                    barrier.wait();
+                }
+            });
+        }
+    });
+}
+
+/// Single GEMV operation for batch execution
+pub struct GEMVOp {
+    pub num_rows: usize,
+    pub compute: fn(usize),
+}
+
+/// Barrier-synchronized layer execution
+/// Processes an entire layer with minimal thread dispatch overhead
+pub fn execute_layer_with_barrier<F>(
+    num_threads: usize,
+    num_ops: usize,
+    op_fn: F,
+) where
+    F: Fn(usize, usize) + Send + Sync,
+{
+    if num_threads == 0 || num_ops == 0 {
+        return;
+    }
+
+    let barrier = SpinBarrier::new(num_threads);
+
+    std::thread::scope(|s| {
+        for thread_id in 0..num_threads {
+            let op_fn = &op_fn;
+            let barrier = &barrier;
+            s.spawn(move || {
+                for op_idx in 0..num_ops {
+                    // Execute operation for this thread
+                    op_fn(thread_id, op_idx);
+                    // Wait at barrier
+                    barrier.wait();
+                }
+            });
+        }
+    });
+}

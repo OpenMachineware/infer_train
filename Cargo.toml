@@ -1476,6 +1476,10 @@ name = "bench-cpu-zero-alloc-forward"
 path = "tools/bench_cpu_zero_alloc_forward.rs"
 
 [[bin]]
+name = "bench-cpu-prefill"
+path = "tools/bench_cpu_prefill.rs"
+
+[[bin]]
 name = "bench-silu"
 path = "tools/bench_silu.rs"
 
