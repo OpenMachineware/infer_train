@@ -3,7 +3,6 @@
 
 //! Correctness test for self-written K-quant MV kernels
 
-use bytemuck::Zeroable;
 use infer_train::quant::types::{
     BlockQ2K, BlockQ3K, BlockQ4K, BlockQ5K, BlockQ6K, QK_K,
 };

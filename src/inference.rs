@@ -211,6 +211,20 @@ impl InferenceContext {
         }
     }
 
+    /// Run forward pass using pre-allocated buffers (zero-allocation CPU inference)
+    #[cfg(target_arch = "aarch64")]
+    pub fn forward_pooled(
+        &mut self,
+        tokens: &[u32],
+        kv_cache: &mut KVCache,
+    ) -> Option<Vec<f32>> {
+        if let Some(ref mut buffers) = self.cpu_buffers {
+            self.model.forward_pooled(tokens, kv_cache, buffers)
+        } else {
+            self.model.forward(tokens, kv_cache)
+        }
+    }
+
     /// Run forward pass using graph-level dispatch (CPU only)
     /// All threads traverse the DAG together, eliminating thread pool dispatch overhead
     #[cfg(target_arch = "aarch64")]

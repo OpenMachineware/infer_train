@@ -20,7 +20,7 @@ fn main() {
 
     // Load model
     let model =
-        LlamaModel::from_gguf_path(model_path).expect("Failed to load model");
+        LlamaModel::from_gguf(model_path).expect("Failed to load model");
     println!(
         "Model loaded: hidden={}, layers={}",
         model.config.hidden_size, model.config.n_layers

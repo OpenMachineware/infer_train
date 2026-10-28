@@ -49,7 +49,9 @@ pub fn execute_graph_parallel(
     let state_ptr = Box::into_raw(state);
 
     crate::cpu::thread_pool::GLOBAL_THREAD_POOL.execute_graph(
-        graph_task_fn,
+        |ith, nth, state_ptr, graph_id| unsafe {
+            graph_task_fn(ith, nth, state_ptr, graph_id);
+        },
         state_ptr as usize,
         0,
     );
@@ -104,7 +106,13 @@ unsafe fn graph_task_fn(
                 }
             }
 
-            Operation::Gemv { input, weight, output, out_size, is_transposed } => {
+            Operation::Gemv {
+                input,
+                weight,
+                output,
+                out_size,
+                is_transposed,
+            } => {
                 let input_data = {
                     let tensors = state.shared_tensors.lock().unwrap();
                     if *input < tensors.len() {
@@ -131,9 +139,11 @@ unsafe fn graph_task_fn(
                         // Transposed GEMV: thread 0 computes full result
                         // Weight shape is [k, m], need to compute y = W^T * x
                         if ith == 0 {
-                            let result = model.gemv_transposed(&input_data, w, m);
+                            let result =
+                                model.gemv_transposed(&input_data, w, m);
                             if let Some(r) = result {
-                                let mut tensors = state.shared_tensors.lock().unwrap();
+                                let mut tensors =
+                                    state.shared_tensors.lock().unwrap();
                                 tensors[*output] = r;
                             }
                         }

@@ -910,7 +910,13 @@ impl DagExecutor {
                 Some(())
             }
 
-            Operation::Gemv { input, weight, output, out_size } => {
+            Operation::Gemv {
+                input,
+                weight,
+                output,
+                out_size,
+                is_transposed: _,
+            } => {
                 // Debug: check registry state for failed nodes
                 if std::env::var("INFER_DEBUG_DAG").is_ok() {
                     if ctx.tensor_registry.get(*input).is_none() {
@@ -1786,18 +1792,15 @@ impl DagExecutor {
                 Some(())
             }
 
-            Operation::KVCacheUpdate { input, layer_idx, is_key } => {
+            Operation::KVCacheUpdate {
+                input,
+                layer_idx,
+                is_key,
+                n_kv_heads,
+                head_dim,
+            } => {
                 let input_buf = ctx.tensor_registry.get(*input)?;
 
-                // Get model config
-                let n_kv_heads = ctx
-                    .model
-                    .layers
-                    .get(*layer_idx)
-                    .and_then(|l| l.wk.as_ref())
-                    .map(|w| w.shape[1] / ctx.model.config.head_dim)
-                    .unwrap_or(ctx.model.config.n_heads);
-                let head_dim = ctx.model.config.head_dim;
                 let pos = ctx.kv_cache.seq_len();
                 let max_seq = ctx.kv_cache.max_seq();
 
@@ -1871,14 +1874,24 @@ impl DagExecutor {
                 if *is_key {
                     // Update K cache
                     ctx.gpu_ctx.kv_update_k_encode(
-                        encoder, &input_buf, cache_buf, pos, max_seq,
-                        n_kv_heads, head_dim,
+                        encoder,
+                        &input_buf,
+                        cache_buf,
+                        pos,
+                        max_seq,
+                        *n_kv_heads,
+                        *head_dim,
                     );
                 } else {
                     // Update V cache
                     ctx.gpu_ctx.kv_update_v_encode(
-                        encoder, &input_buf, cache_buf, pos, max_seq,
-                        n_kv_heads, head_dim,
+                        encoder,
+                        &input_buf,
+                        cache_buf,
+                        pos,
+                        max_seq,
+                        *n_kv_heads,
+                        *head_dim,
                     );
                 }
 

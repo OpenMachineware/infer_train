@@ -43,8 +43,15 @@ fn main() {
                 infer_train::dag::Operation::RmsNorm { .. } => {
                     println!("   RmsNorm")
                 }
-                infer_train::dag::Operation::Gemv { out_size, .. } => {
-                    println!("   Gemv (out_size: {})", out_size)
+                infer_train::dag::Operation::Gemv {
+                    out_size,
+                    is_transposed,
+                    ..
+                } => {
+                    println!(
+                        "   Gemv (out_size: {}, is_transposed: {})",
+                        out_size, is_transposed
+                    )
                 }
                 infer_train::dag::Operation::RoPE { n_heads, .. } => {
                     println!("   RoPE (n_heads: {})", n_heads)

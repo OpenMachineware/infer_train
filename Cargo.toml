@@ -4,6 +4,10 @@ version = "0.1.30"
 edition = "2024"
 
 [[bin]]
+name = "bench-gemv-simple"
+path = "tools/bench_gemv_simple.rs"
+
+[[bin]]
 name = "inspect-gguf"
 path = "tools/inspect_gguf.rs"
 
@@ -114,6 +118,46 @@ path = "tools/debug_layer_by_layer.rs"
 [[bin]]
 name = "debug-layer-ops"
 path = "tools/debug_layer_ops.rs"
+
+[[bin]]
+name = "debug-graph-correctness"
+path = "tools/debug_graph_correctness.rs"
+
+[[bin]]
+name = "check-final-token"
+path = "tools/check_final_token.rs"
+
+[[bin]]
+name = "trace-deepseek-zeros"
+path = "tools/trace_deepseek_zeros.rs"
+
+[[bin]]
+name = "compare-layer-outputs"
+path = "tools/compare_layer_outputs.rs"
+
+[[bin]]
+name = "trace-ffn-step"
+path = "tools/trace_ffn_step.rs"
+
+[[bin]]
+name = "test-q6k-down"
+path = "tools/test_q6k_down.rs"
+
+[[bin]]
+name = "test-w3-gemv"
+path = "tools/test_w3_gemv.rs"
+
+[[bin]]
+name = "check-normed"
+path = "tools/check_normed.rs"
+
+[[bin]]
+name = "compare-gemv"
+path = "tools/compare_gemv.rs"
+
+[[bin]]
+name = "trace-layer"
+path = "tools/trace_layer.rs"
 
 [[bin]]
 name = "test-kquant-mv-correctness"
@@ -1310,6 +1354,10 @@ name = "bench-cpu-small"
 path = "tools/bench_cpu_small.rs"
 
 [[bin]]
+name = "bench-cpu-pooled"
+path = "tools/bench_cpu_pooled.rs"
+
+[[bin]]
 name = "profile-cpu-forward"
 path = "tools/profile_cpu_forward.rs"
 
@@ -1372,6 +1420,18 @@ name = "profile-cpu-ops"
 path = "tools/profile_cpu_ops.rs"
 
 [[bin]]
+name = "profile-cpu-steps"
+path = "tools/profile_cpu_steps.rs"
+
+[[bin]]
+name = "profile-gemv-time"
+path = "tools/profile_gemv_time.rs"
+
+[[bin]]
+name = "profile-layer-steps"
+path = "tools/profile_layer_steps.rs"
+
+[[bin]]
 name = "profile-cpu-detailed"
 path = "tools/profile_cpu_detailed.rs"
 
@@ -1382,3 +1442,71 @@ path = "tools/check_weight_dtypes.rs"
 [[bin]]
 name = "bench-cpu-gemv-approach"
 path = "tools/bench_cpu_gemv_approach.rs"
+
+[[bin]]
+name = "bench-cpu-zero-alloc"
+path = "tools/bench_cpu_zero_alloc.rs"
+
+[[bin]]
+name = "bench-thread-overhead"
+path = "tools/bench_thread_overhead.rs"
+
+[[bin]]
+name = "bench-rayon-vs-scope"
+path = "tools/bench_rayon_vs_scope.rs"
+
+[[bin]]
+name = "bench-cpu-simple"
+path = "tools/bench_cpu_simple.rs"
+
+[[bin]]
+name = "bench-cpu-profile"
+path = "tools/bench_cpu_profile.rs"
+
+[[bin]]
+name = "profile-alloc-overhead"
+path = "tools/profile_alloc_overhead.rs"
+
+[[bin]]
+name = "est-gemv-time"
+path = "tools/est_gemv_time.rs"
+
+[[bin]]
+name = "bench-cpu-zero-alloc-forward"
+path = "tools/bench_cpu_zero_alloc_forward.rs"
+
+[[bin]]
+name = "bench-silu"
+path = "tools/bench_silu.rs"
+
+[[bin]]
+name = "bench-ffn-simple"
+path = "tools/bench_ffn_simple.rs"
+
+[[bin]]
+name = "profile-ffn-compare"
+path = "tools/profile_ffn_compare.rs"
+
+[[bin]]
+name = "profile-ffn-detailed"
+path = "tools/profile_ffn_detailed.rs"
+
+[[bin]]
+name = "debug-profile-timing"
+path = "tools/debug_profile_timing.rs"
+
+[[bin]]
+name = "bench-graph-dispatch"
+path = "tools/bench_graph_dispatch.rs"
+
+[[bin]]
+name = "test-gemv-compare"
+path = "tools/test_gemv_compare.rs"
+
+[[bin]]
+name = "trace-first-ops"
+path = "tools/trace_first_ops.rs"
+
+[[bin]]
+name = "debug-k-projection"
+path = "tools/debug_k_projection.rs"

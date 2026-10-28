@@ -127,6 +127,7 @@ fn main() {
                     .gemv_encode(
                         enc,
                         &normed_buffer,
+                        hidden_size,
                         wq,
                         q_out_size,
                         gpu_ctx,
@@ -146,6 +147,7 @@ fn main() {
                     .gemv_encode(
                         enc,
                         &normed_buffer,
+                        hidden_size,
                         wk,
                         k_out_size,
                         gpu_ctx,
@@ -165,6 +167,7 @@ fn main() {
                     .gemv_encode(
                         enc,
                         &normed_buffer,
+                        hidden_size,
                         wv,
                         v_out_size,
                         gpu_ctx,
@@ -268,6 +271,7 @@ fn main() {
                     .gemv_encode(
                         enc,
                         &attn_out_buffer,
+                        q_out_size,
                         wo,
                         hidden_size,
                         gpu_ctx,
@@ -300,6 +304,7 @@ fn main() {
                     .gemv_encode(
                         enc,
                         &ffn_normed_buffer,
+                        hidden_size,
                         w1,
                         intermediate_size,
                         gpu_ctx,
@@ -310,6 +315,7 @@ fn main() {
                     .gemv_encode(
                         enc,
                         &ffn_normed_buffer,
+                        hidden_size,
                         w3,
                         intermediate_size,
                         gpu_ctx,
@@ -336,6 +342,7 @@ fn main() {
                     .gemv_encode(
                         enc,
                         &hidden_ffn_buffer,
+                        intermediate_size,
                         w2,
                         hidden_size,
                         gpu_ctx,

@@ -644,16 +644,48 @@ impl LlamaModel {
             (&layer.w1, &layer.w2, &layer.w3)
         {
             let intermediate_size = w1.shape[1];
+            let hidden_size = hidden.len();
 
-            // Gate projection into buffer
-            self.gemv_into_with_buffers(
-                hidden, w1, gate_buf, q8k_input, x_padded,
+            // Check if w1 and w3 are both K-quant
+            let both_k_quant = matches!(
+                (w1.dtype, w3.dtype),
+                (
+                    DataType::Q4_K | DataType::Q5_K | DataType::Q6_K,
+                    DataType::Q4_K | DataType::Q5_K | DataType::Q6_K
+                )
             );
 
-            // Up projection into buffer
-            self.gemv_into_with_buffers(
-                hidden, w3, up_buf, q8k_input, x_padded,
-            );
+            if both_k_quant {
+                // Pre-quantize hidden once for w1 and w3
+                let x_q8k_blocks = unsafe {
+                    use crate::quant::types::{BlockQ8K, QK_K};
+                    let in_size_padded =
+                        ((hidden_size + QK_K - 1) / QK_K) * QK_K;
+                    let nb = in_size_padded / QK_K;
+                    std::slice::from_raw_parts_mut(
+                        q8k_input.as_mut_ptr() as *mut BlockQ8K,
+                        nb,
+                    )
+                };
+                Self::quantize_input_to_q8k(hidden, x_q8k_blocks, x_padded);
+
+                // Gate and up projections with pre-quantized input
+                self.gemv_with_prequant(
+                    x_q8k_blocks,
+                    hidden_size,
+                    w1,
+                    gate_buf,
+                );
+                self.gemv_with_prequant(x_q8k_blocks, hidden_size, w3, up_buf);
+            } else {
+                // Fallback for mixed dtypes
+                self.gemv_into_with_buffers(
+                    hidden, w1, gate_buf, q8k_input, x_padded,
+                );
+                self.gemv_into_with_buffers(
+                    hidden, w3, up_buf, q8k_input, x_padded,
+                );
+            }
 
             // SwiGLU: gate * silu(up) in-place on gate_buf
             for i in 0..intermediate_size {
@@ -2350,29 +2382,86 @@ impl LlamaModel {
             let k_size = n_kv_heads * head_dim;
             let v_size = n_kv_heads * head_dim;
 
-            self.gemv_into_with_buffers(
-                &buffers.hidden_alt,
-                layer.wq.as_ref()?,
-                &mut buffers.q_buffer[..q_size],
-                &mut buffers.q8k_input,
-                &mut buffers.x_padded,
+            // Pre-quantize hidden_alt to Q8_K once for all projections
+            // Only do this if all weights are K-quant format
+            let wq_dtype = layer.wq.as_ref()?.dtype;
+            let wk_dtype = layer.wk.as_ref()?.dtype;
+            let wv_dtype = layer.wv.as_ref()?.dtype;
+
+            let all_k_quant = matches!(
+                (wq_dtype, wk_dtype, wv_dtype),
+                (
+                    DataType::Q4_K | DataType::Q5_K | DataType::Q6_K,
+                    DataType::Q4_K | DataType::Q5_K | DataType::Q6_K,
+                    DataType::Q4_K | DataType::Q5_K | DataType::Q6_K
+                )
             );
 
-            self.gemv_into_with_buffers(
-                &buffers.hidden_alt,
-                layer.wk.as_ref()?,
-                &mut buffers.k_buffer[..k_size],
-                &mut buffers.q8k_input,
-                &mut buffers.x_padded,
-            );
+            if all_k_quant {
+                // Pre-quantize once
+                let x_q8k_blocks = unsafe {
+                    use crate::quant::types::{BlockQ8K, QK_K};
+                    let in_size_padded =
+                        ((hidden_size + QK_K - 1) / QK_K) * QK_K;
+                    let nb = in_size_padded / QK_K;
+                    std::slice::from_raw_parts_mut(
+                        buffers.q8k_input.as_mut_ptr() as *mut BlockQ8K,
+                        nb,
+                    )
+                };
+                Self::quantize_input_to_q8k(
+                    &buffers.hidden_alt,
+                    x_q8k_blocks,
+                    &mut buffers.x_padded,
+                );
 
-            self.gemv_into_with_buffers(
-                &buffers.hidden_alt,
-                layer.wv.as_ref()?,
-                &mut buffers.v_buffer[..v_size],
-                &mut buffers.q8k_input,
-                &mut buffers.x_padded,
-            );
+                // Use pre-quantized input for all projections
+                self.gemv_with_prequant(
+                    x_q8k_blocks,
+                    hidden_size,
+                    layer.wq.as_ref()?,
+                    &mut buffers.q_buffer[..q_size],
+                );
+
+                self.gemv_with_prequant(
+                    x_q8k_blocks,
+                    hidden_size,
+                    layer.wk.as_ref()?,
+                    &mut buffers.k_buffer[..k_size],
+                );
+
+                self.gemv_with_prequant(
+                    x_q8k_blocks,
+                    hidden_size,
+                    layer.wv.as_ref()?,
+                    &mut buffers.v_buffer[..v_size],
+                );
+            } else {
+                // Fallback to per-projection quantization for mixed dtypes
+                self.gemv_into_with_buffers(
+                    &buffers.hidden_alt,
+                    layer.wq.as_ref()?,
+                    &mut buffers.q_buffer[..q_size],
+                    &mut buffers.q8k_input,
+                    &mut buffers.x_padded,
+                );
+
+                self.gemv_into_with_buffers(
+                    &buffers.hidden_alt,
+                    layer.wk.as_ref()?,
+                    &mut buffers.k_buffer[..k_size],
+                    &mut buffers.q8k_input,
+                    &mut buffers.x_padded,
+                );
+
+                self.gemv_into_with_buffers(
+                    &buffers.hidden_alt,
+                    layer.wv.as_ref()?,
+                    &mut buffers.v_buffer[..v_size],
+                    &mut buffers.q8k_input,
+                    &mut buffers.x_padded,
+                );
+            }
 
             // 3. RoPE (standard path)
             self.apply_rope_into(
@@ -3028,6 +3117,113 @@ impl LlamaModel {
                 // Fallback to regular gemv_into for unsupported formats
                 self.gemv_into(x, w, out)
             }
+        }
+    }
+
+    /// GEMV with pre-quantized Q8_K input (for avoiding repeated quantization)
+    /// Input must be quantized to Q8_K format with proper padding
+    #[cfg(target_arch = "aarch64")]
+    pub fn gemv_with_prequant(
+        &self,
+        x_q8k: &[crate::quant::types::BlockQ8K],
+        in_size: usize,
+        w: &Tensor,
+        out: &mut [f32],
+    ) -> bool {
+        use crate::quant::matmul::k_quant::{
+            matmul_q4_k_q8_k, matmul_q5_k_q8_k, matmul_q6_k_q8_k,
+        };
+        use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
+
+        let out_size = out.len();
+        let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
+        let nb = in_size_padded / QK_K;
+
+        if x_q8k.len() != nb {
+            return false;
+        }
+
+        match w.dtype {
+            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+                unsafe {
+                    match w.dtype {
+                        DataType::Q4_K => {
+                            let weights: &[BlockQ4K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ4K,
+                                    out_size * nb,
+                                );
+                            matmul_q4_k_q8_k(
+                                weights,
+                                x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        DataType::Q5_K => {
+                            let weights: &[BlockQ5K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ5K,
+                                    out_size * nb,
+                                );
+                            matmul_q5_k_q8_k(
+                                weights,
+                                x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        DataType::Q6_K => {
+                            let weights: &[BlockQ6K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ6K,
+                                    out_size * nb,
+                                );
+                            matmul_q6_k_q8_k(
+                                weights,
+                                x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Quantize input to Q8_K format (helper for pre-quantization)
+    #[cfg(target_arch = "aarch64")]
+    pub fn quantize_input_to_q8k(
+        x: &[f32],
+        x_q8k: &mut [crate::quant::types::BlockQ8K],
+        x_padded: &mut [f32],
+    ) {
+        use crate::quant::kv_cache::quantize_row_q8_k_neon;
+        use crate::quant::types::QK_K;
+
+        let in_size = x.len();
+        let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
+        let nb = in_size_padded / QK_K;
+
+        if in_size != in_size_padded {
+            // Zero padding
+            for i in in_size..in_size_padded {
+                x_padded[i] = 0.0;
+            }
+            x_padded[..in_size].copy_from_slice(x);
+            quantize_row_q8_k_neon(
+                &x_padded[..in_size_padded],
+                &mut x_q8k[..nb],
+            );
+        } else {
+            quantize_row_q8_k_neon(x, &mut x_q8k[..nb]);
         }
     }
 

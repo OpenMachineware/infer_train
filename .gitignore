@@ -4,12 +4,15 @@
 
 .agentic/
 .codebuddy/
+.codebuddy-cn/
 .claude/
 .claw/
 .codegraph/
 .cursor/
+.qoder/
 .qoder-cn/
 .trae/
+.trae-cn/
 
 # Build artifacts
 infer_train

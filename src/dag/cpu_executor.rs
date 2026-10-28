@@ -188,7 +188,11 @@ pub fn execute_operation(
 
             if *is_transposed {
                 // Transposed GEMV: weight is stored as [in_size, out_size]
-                let result = ctx.model.gemv_transposed(&input_data, weight_tensor, *out_size)?;
+                let result = ctx.model.gemv_transposed(
+                    &input_data,
+                    weight_tensor,
+                    *out_size,
+                )?;
                 ctx.tensor_registry.ensure_tensor(*output, result.len());
                 let out_tensor = ctx.tensor_registry.get_mut(*output)?;
                 out_tensor.as_mut_slice().copy_from_slice(&result);

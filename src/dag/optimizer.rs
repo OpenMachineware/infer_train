@@ -67,19 +67,20 @@ impl DagOptimizer {
                             weight,
                             output,
                             out_size,
+                            is_transposed,
                             ..
                         } = &node.op
                         {
-                            Some((*weight, *output, *out_size))
+                            Some((*weight, *output, *out_size, *is_transposed))
                         } else {
                             None
                         }
                     };
 
                     if let (
-                        Some((q_weight, q_out, q_size)),
-                        Some((k_weight, k_out, k_size)),
-                        Some((v_weight, v_out, v_size)),
+                        Some((q_weight, q_out, q_size, _q_transposed)),
+                        Some((k_weight, k_out, k_size, _k_transposed)),
+                        Some((v_weight, v_out, v_size, _v_transposed)),
                     ) = (
                         get_info(projections[0]),
                         get_info(projections[1]),
@@ -150,8 +151,13 @@ impl DagOptimizer {
 
         // Find pairs of Gemv operations that use the same input
         for node in &dag.nodes {
-            if let Operation::Gemv { input, weight, output, out_size } =
-                &node.op
+            if let Operation::Gemv {
+                input,
+                weight,
+                output,
+                out_size,
+                is_transposed: _,
+            } = &node.op
             {
                 if nodes_to_remove.contains(&node.id) {
                     continue;
@@ -180,6 +186,7 @@ impl DagOptimizer {
                                 weight: other_weight,
                                 output: other_output,
                                 out_size: _other_out_size,
+                                is_transposed: _,
                                 ..
                             } = other_op
                             {
@@ -359,6 +366,7 @@ impl DagOptimizer {
                     weight: gemv_weight,
                     output: gemv_output,
                     out_size,
+                    is_transposed,
                 } = &gemv_node.op
                 {
                     // Verify the input matches
@@ -554,6 +562,7 @@ impl DagOptimizer {
                 weight: gemv_weight,
                 output: gemv_output,
                 out_size,
+                is_transposed,
             } = &gemv_node.op
             {
                 if nodes_to_remove.contains(&gemv_node.id) {
@@ -761,7 +770,7 @@ impl DagOptimizer {
         match op {
             Operation::EmbeddingLookup { output, .. } => vec![*output],
             Operation::RmsNorm { output, .. } => vec![*output],
-            Operation::Gemv { output, .. } => vec![*output],
+            Operation::Gemv { output, is_transposed: _, .. } => vec![*output],
             Operation::FusedQKV { output_q, output_k, output_v, .. } => {
                 vec![*output_q, *output_k, *output_v]
             }

@@ -5,6 +5,7 @@
 
 use infer_train::inference::{Device, InferenceContext, KVCacheGPU};
 use std::cell::RefCell;
+#[allow(unused_imports)]
 use std::rc::Rc;
 
 fn check_buffer(name: &str, buf: &metal::BufferRef, size: usize) -> usize {
