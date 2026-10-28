@@ -16,8 +16,8 @@ impl DagOptimizer {
 
     /// Find and apply all fusion patterns to the DAG
     /// Returns the number of nodes that were fused
-    pub fn optimize(dag: &mut ComputeDag) -> usize {
-        let mut fused_count = 0;
+    pub fn optimize(_dag: &mut ComputeDag) -> usize {
+        let fused_count = 0;
 
         // DISABLE ALL FUSION for debugging - ensure basic execution works first
         // fused_count += Self::fuse_qkv_projections(dag);
@@ -366,7 +366,7 @@ impl DagOptimizer {
                     weight: gemv_weight,
                     output: gemv_output,
                     out_size,
-                    is_transposed,
+                    is_transposed: _,
                 } = &gemv_node.op
                 {
                     // Verify the input matches
@@ -562,7 +562,7 @@ impl DagOptimizer {
                 weight: gemv_weight,
                 output: gemv_output,
                 out_size,
-                is_transposed,
+                is_transposed: _,
             } = &gemv_node.op
             {
                 if nodes_to_remove.contains(&gemv_node.id) {

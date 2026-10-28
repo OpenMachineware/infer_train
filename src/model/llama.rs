@@ -603,7 +603,7 @@ impl LlamaModel {
         hidden: &[f32],
         out: &mut [f32],
     ) -> Option<()> {
-        let hidden_size = out.len();
+        let _hidden_size = out.len();
 
         // Only support standard SwiGLU for now
         if let (Some(w1), Some(w2), Some(w3)) =
@@ -1940,7 +1940,7 @@ impl LlamaModel {
             return None;
         }
 
-        let hidden_size = self.config.hidden_size;
+        let _hidden_size = self.config.hidden_size;
         let vocab_size = self.config.vocab_size;
 
         // Process each token
@@ -2847,9 +2847,7 @@ impl LlamaModel {
             use crate::quant::matmul::k_quant::{
                 matmul_q4_k_q8_k, matmul_q5_k_q8_k, matmul_q6_k_q8_k,
             };
-            use crate::quant::types::{
-                BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K,
-            };
+            use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
             use std::sync::Arc;
 
             // K-quant GEMV with zero-padding for non-standard dimensions
@@ -3038,9 +3036,7 @@ impl LlamaModel {
         use crate::quant::matmul::k_quant::{
             matmul_q4_k_q8_k, matmul_q5_k_q8_k, matmul_q6_k_q8_k,
         };
-        use crate::quant::types::{
-            BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K,
-        };
+        use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
         use std::sync::Arc;
 
         // K-quant GEMV with zero-padding for non-standard dimensions
@@ -3538,9 +3534,7 @@ impl LlamaModel {
         }
 
         use crate::quant::kv_cache::quantize_row_q8_k_neon;
-        use crate::quant::types::{
-            BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K,
-        };
+        use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
         use crate::quant::vec_dot::arm::{
             vec_dot_q4_k_q8_k_neon, vec_dot_q5_k_q8_k_neon,
             vec_dot_q6_k_q8_k_neon,

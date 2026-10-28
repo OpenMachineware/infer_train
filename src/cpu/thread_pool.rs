@@ -168,7 +168,7 @@ impl PersistentThreadPool {
         for _ in 0..self.num_threads {
             let f_clone = f.clone();
             let counter = counter.clone();
-            let barrier = barrier.clone();
+            let _barrier = barrier.clone();
 
             self.sender
                 .send(Command::Work(Box::new(move || {

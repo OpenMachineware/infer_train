@@ -5,8 +5,8 @@
 // This executor reuses the existing DAG infrastructure for CPU path,
 // providing graph plan optimization benefits to CPU inference.
 
-use super::graph::{ComputeDag, DagNode, Operation, OptimizedDag};
-use crate::inference::{KVCache, KVCacheBase};
+use super::graph::{ComputeDag, Operation, OptimizedDag};
+use crate::inference::KVCache;
 use crate::model::LlamaModel;
 use std::collections::HashMap;
 

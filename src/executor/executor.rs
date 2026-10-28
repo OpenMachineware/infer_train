@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-use crate::buffer::{BufferId, BufferLocation, BufferManager, ComputeDevice};
+use crate::buffer::{BufferId, BufferManager, ComputeDevice};
 use crate::executor::Op;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]

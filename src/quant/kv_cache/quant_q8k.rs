@@ -107,7 +107,7 @@ pub fn quantize_row_q8_k_neon(x: &[f32], y: &mut [BlockQ8K]) {
             }
 
             // Reduce to single max
-            let max_dup = vdupq_n_f32(vmaxvq_f32(max_vals));
+            let _max_dup = vdupq_n_f32(vmaxvq_f32(max_vals));
             let amax = vmaxvq_f32(max_vals);
 
             if amax == 0.0 {

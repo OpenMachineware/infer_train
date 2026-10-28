@@ -6,10 +6,8 @@
 // for CPU inference, eliminating per-forward allocation overhead.
 
 use crate::inference::KVCache;
-use crate::inference::dequant_to_f32;
 use crate::inference::kv_cache::KVCacheBase;
 use crate::model::llama::{LlamaLayer, LlamaModel};
-use crate::model::tensor::Tensor;
 
 /// CPU Executor with pre-allocated work buffers
 ///

@@ -31,26 +31,10 @@ muser/
 Strata-0.2.6/
 
 # Added by cargo
-/target
-/tools/target
-
-# Benchmark tools (llama.cpp binaries)
-.llama-cpp-tools/
-
-# Native build artifacts
-*.o
-*.a
-native/bin/
-native/bench_*
-native/llama_metal_test
-native/compare_*
-
-# Tools build artifacts
-tools/*/build/
-tools/*.dylib
-
-# Root directory test/debug Rust files (should be in src/bin/)
-/test_*.rs
+target/
+tools/
+native/
 
 # Temporary planning documents
 TMP_*.md
+tmp_code_to_remove/

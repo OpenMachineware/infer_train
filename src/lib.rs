@@ -9,6 +9,7 @@
 #[macro_use]
 extern crate objc;
 
+pub mod backend;
 pub mod buffer;
 pub mod compute;
 pub mod cpu;
@@ -21,4 +22,5 @@ pub mod orchestrator;
 pub mod platform;
 pub mod profiling;
 pub mod quant;
+pub mod strategy;
 pub mod tokenize;
