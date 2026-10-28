@@ -19,6 +19,7 @@ static Q4K_INTERLEAVED_CACHE: Lazy<
 > = Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
 
 /// Manual SDOT implementation via inline asm
+#[allow(dead_code)]
 #[inline(always)]
 unsafe fn vdotq_s32_manual(
     acc: int32x4_t,

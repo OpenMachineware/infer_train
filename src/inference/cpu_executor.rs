@@ -13,6 +13,7 @@ use crate::model::llama::{LlamaLayer, LlamaModel};
 ///
 /// This executor eliminates allocation overhead by pre-allocating all
 /// intermediate buffers needed for forward pass.
+#[allow(dead_code)]
 pub struct CpuExecutor {
     // Pre-allocated work buffers
     hidden: Vec<f32>,

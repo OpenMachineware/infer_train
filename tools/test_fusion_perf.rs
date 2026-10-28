@@ -9,6 +9,7 @@ use infer_train::inference::InferenceContext;
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use infer_train::quant::vec_dot::gpu::metal::MetalContext;
 
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {

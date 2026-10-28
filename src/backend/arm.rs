@@ -9,6 +9,7 @@ use super::operator::{Cost, Operator, OperatorResult};
 use super::trait_impl::{Backend, TensorRef};
 
 /// ARM CPU backend.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ArmCpuBackend {
     device: Device,
@@ -17,6 +18,7 @@ pub struct ArmCpuBackend {
 
 impl ArmCpuBackend {
     /// Create a new ARM CPU backend.
+    #[allow(dead_code)]
     pub fn new(memory_region: MemoryRegionId) -> Self {
         let device = Device::detect_best();
         Self { device, memory_region }

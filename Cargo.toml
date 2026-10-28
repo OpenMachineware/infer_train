@@ -136,10 +136,6 @@ name = "check-final-token"
 path = "tools/check_final_token.rs"
 
 [[bin]]
-name = "trace-deepseek-zeros"
-path = "tools/trace_deepseek_zeros.rs"
-
-[[bin]]
 name = "compare-layer-outputs"
 path = "tools/compare_layer_outputs.rs"
 
@@ -206,10 +202,6 @@ path = "tools/trace_nan.rs"
 [[bin]]
 name = "test-q6k-gemm"
 path = "tools/test_q6k_gemm.rs"
-
-[[bin]]
-name = "debug-batch-forward"
-path = "tools/debug_batch_forward.rs"
 
 [[bin]]
 name = "debug-gemm"
@@ -770,10 +762,6 @@ name = "test-gpu-forward-detailed"
 path = "tools/test_gpu_forward_detailed.rs"
 
 [[bin]]
-name = "test-gpu-final-hidden"
-path = "tools/test_gpu_final_hidden.rs"
-
-[[bin]]
 name = "test-rms-norm"
 path = "tools/test_rms_norm.rs"
 
@@ -963,10 +951,6 @@ required-features = ["metal"]
 [[bin]]
 name = "test-nan-issue"
 path = "tools/test_nan_issue.rs"
-
-[[bin]]
-name = "test-single-context"
-path = "tools/test_single_context.rs"
 
 [[bin]]
 name = "test-step-by-step"

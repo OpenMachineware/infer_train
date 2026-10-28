@@ -29,6 +29,7 @@ impl DagOptimizer {
 
     /// Fuse Q, K, V projections into FusedQKV
     /// Finds three GEMV operations that all use the same input tensor
+    #[allow(dead_code)]
     fn fuse_qkv_projections(dag: &mut ComputeDag) -> usize {
         let mut fused_count = 0;
         let mut nodes_to_remove = Vec::new();
@@ -243,6 +244,7 @@ impl DagOptimizer {
     }
 
     /// Fuse SiLU + Mul → FusedSwiGLU
+    #[allow(dead_code)]
     fn fuse_silu_mul(dag: &mut ComputeDag) -> usize {
         let mut fused_count = 0;
         let mut nodes_to_remove = Vec::new();
@@ -430,6 +432,7 @@ impl DagOptimizer {
     /// Pattern: residual = Add(layer_input, wo_output); ffn_norm = RMSNorm(residual, weight)
     /// This is from vLLM's fused_add_rms_norm kernel
     /// Only fuses when the Add output has exactly ONE consumer (the RmsNorm)
+    #[allow(dead_code)]
     fn fuse_add_norm(dag: &mut ComputeDag) -> usize {
         let mut fused_count = 0;
         let mut nodes_to_remove = Vec::new();

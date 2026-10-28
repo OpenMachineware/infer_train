@@ -37,7 +37,7 @@ pub enum Priority {
 ///
 /// Each request has its own:
 /// - Input/output tokens
-/// - KV cache blocks
+/// - KV cache (reference to external cache or owned cache)
 /// - Inference parameters
 /// - Scratch buffer (for intermediate results)
 #[derive(Debug)]
@@ -56,10 +56,6 @@ pub struct RequestContext {
 
     /// Generated output tokens.
     pub generated_tokens: Vec<u32>,
-
-    /// KV cache blocks for this request.
-    /// Structure: [layer][block]
-    pub kv_blocks: Vec<Vec<usize>>,
 
     /// Maximum tokens to generate.
     pub max_tokens: usize,
@@ -86,7 +82,6 @@ impl RequestContext {
         temperature: f32,
         priority: Priority,
         memory_region: MemoryRegionId,
-        n_layers: usize,
     ) -> Self {
         Self {
             request_id,
@@ -94,7 +89,6 @@ impl RequestContext {
             prompt_tokens,
             prompt_pos: 0,
             generated_tokens: Vec::with_capacity(max_tokens),
-            kv_blocks: vec![Vec::new(); n_layers],
             max_tokens,
             temperature,
             priority,

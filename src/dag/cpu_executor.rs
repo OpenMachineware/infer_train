@@ -495,6 +495,7 @@ fn find_output_tensor_id(
 }
 
 /// CPU DAG Executor
+#[allow(dead_code)]
 pub struct CpuDagExecutor {
     tensor_registry: CpuTensorRegistry,
 }

@@ -67,6 +67,7 @@ impl Buffer {
 /// 2. Write operator output to the buffer
 /// 3. Pass buffer slice to next operator
 /// 4. Call `reset()` after forward pass
+#[allow(dead_code)]
 pub struct CpuMemoryPool {
     buffers: Vec<Buffer>,
 

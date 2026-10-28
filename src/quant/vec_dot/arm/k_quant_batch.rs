@@ -117,6 +117,7 @@ pub fn repack_q4_k_to_interleaved(input: &[BlockQ4K; 8]) -> BlockQ4Kx8 {
 }
 
 /// Manual vdotq_s32 implementation using native SDOT instruction
+#[allow(asm_sub_register)]
 #[target_feature(enable = "neon,dotprod")]
 unsafe fn vdotq_s32_manual(
     a: int32x4_t,

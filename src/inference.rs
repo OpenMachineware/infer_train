@@ -13,6 +13,7 @@ pub mod kv_cache;
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 pub mod kv_cache_gpu;
 pub mod request;
+pub mod request_executor;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 pub use gpu_tensor::GpuTensor;
@@ -23,6 +24,7 @@ pub use request::{
     Priority, RequestContext, RequestQueue, RequestScratch, RequestScratchPool,
     RequestState,
 };
+pub use request_executor::RequestExecutor;
 
 use crate::model::config::ModelConfig;
 use crate::model::llama::LlamaModel;

@@ -21,7 +21,6 @@ mod tests {
             0.7,
             Priority::Normal,
             region,
-            32, // n_layers
         );
 
         assert_eq!(request.request_id, 1);
@@ -39,15 +38,8 @@ mod tests {
     fn test_request_advance() {
         let region = MemoryRegionId(0);
         let prompt = vec![1, 2, 3];
-        let mut request = RequestContext::new(
-            1,
-            prompt,
-            10,
-            0.7,
-            Priority::Normal,
-            region,
-            32,
-        );
+        let mut request =
+            RequestContext::new(1, prompt, 10, 0.7, Priority::Normal, region);
 
         assert_eq!(request.current_token(), Some(1));
         request.advance_prompt();
@@ -62,15 +54,8 @@ mod tests {
     fn test_request_generation() {
         let region = MemoryRegionId(0);
         let prompt = vec![1];
-        let mut request = RequestContext::new(
-            1,
-            prompt,
-            3,
-            0.7,
-            Priority::Normal,
-            region,
-            32,
-        );
+        let mut request =
+            RequestContext::new(1, prompt, 3, 0.7, Priority::Normal, region);
 
         // Complete prefill
         request.advance_prompt();
