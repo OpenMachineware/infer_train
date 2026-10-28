@@ -90,6 +90,15 @@ pub fn sample(logits: &[f32], strategy: &SamplingStrategy) -> usize {
     }
 }
 
+/// Simple temperature-based sampling (top-k with k=40)
+pub fn sample_token(logits: &[f32], temperature: f32) -> usize {
+    if temperature <= 0.0 {
+        sample_greedy(logits)
+    } else {
+        sample(logits, &SamplingStrategy::TopK { k: 40, temperature })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
