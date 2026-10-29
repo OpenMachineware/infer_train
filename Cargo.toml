@@ -70,6 +70,7 @@ path = "tools/test_gpu_inference.rs"
 [[bin]]
 name = "test-gpu-single-layer"
 path = "tools/test_gpu_single_layer.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-gpu-forward-debug"
@@ -82,6 +83,7 @@ path = "tools/test_perf.rs"
 [[bin]]
 name = "test-gpu-zerocopy"
 path = "tools/test_gpu_zerocopy.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "debug-nan"
@@ -546,6 +548,7 @@ required-features = ["metal"]
 [[bin]]
 name = "test-batched-dispatch"
 path = "tools/test_batched_dispatch.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "ssm-perf"
@@ -963,6 +966,7 @@ path = "tools/test_single_context_steps.rs"
 [[bin]]
 name = "profile-layer-kernels"
 path = "tools/profile_layer_kernels.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "measure-dispatch-overhead"
@@ -1238,6 +1242,7 @@ path = "tools/test_flash_batched.rs"
 [[bin]]
 name = "test-flash-batched-debug"
 path = "tools/test_flash_batched_debug.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "analyze-flash-bandwidth"
@@ -1254,6 +1259,7 @@ path = "tools/trace_decode_nan.rs"
 [[bin]]
 name = "trace-layer-nan"
 path = "tools/trace_layer_nan.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-f16-gemm-sizes"

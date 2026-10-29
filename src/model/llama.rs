@@ -302,7 +302,7 @@ impl LlamaModel {
         // Clear any cached GPU buffer
         #[cfg(all(target_arch = "aarch64", feature = "metal"))]
         {
-            *output.gpu_buffer.borrow_mut() = None;
+            *output.gpu_buffer.write().unwrap() = None;
         }
 
         println!("Output layer transposed successfully");
@@ -1071,7 +1071,7 @@ impl LlamaModel {
                     .to_vec(),
             ),
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-            gpu_buffer: std::cell::RefCell::new(None),
+            gpu_buffer: std::sync::RwLock::new(None),
         })
     }
 

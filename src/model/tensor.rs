@@ -15,7 +15,7 @@ pub struct Tensor {
     pub dtype: DataType,
     pub data: TensorData,
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    pub gpu_buffer: std::cell::RefCell<Option<std::rc::Rc<Buffer>>>,
+    pub gpu_buffer: std::sync::RwLock<Option<Arc<Buffer>>>,
 }
 
 #[allow(non_camel_case_types)]

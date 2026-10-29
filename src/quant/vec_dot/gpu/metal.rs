@@ -2846,7 +2846,7 @@ impl MetalContext {
         &self,
         tensor: &crate::model::tensor::Tensor,
     ) -> std::rc::Rc<Buffer> {
-        let mut gpu_buffer = tensor.gpu_buffer.borrow_mut();
+        let mut gpu_buffer = tensor.gpu_buffer.write().unwrap();
 
         if let Some(ref buffer) = *gpu_buffer {
             std::rc::Rc::clone(buffer)

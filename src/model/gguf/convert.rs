@@ -44,6 +44,6 @@ pub fn tensor_from_gguf(info: &TensorInfo, data: &[u8]) -> Tensor {
         dtype: DataType::from(info.dtype),
         data: TensorData::Mmap(Arc::from(data.to_vec().into_boxed_slice())),
         #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-        gpu_buffer: std::cell::RefCell::new(None),
+        gpu_buffer: std::sync::RwLock::new(None),
     }
 }
