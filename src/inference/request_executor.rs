@@ -3,10 +3,9 @@
 
 //! Request executor for multi-request inference.
 
-use crate::backend::MemoryRegionId;
+use crate::cpu::CpuWorkBuffersPool;
 use crate::inference::{
     InferenceContext, KVCache, KVCacheFormat, RequestContext,
-    RequestScratchPool,
 };
 use crate::ops::sampling::{SamplingStrategy, sample};
 
@@ -20,45 +19,34 @@ pub struct RequestExecutor {
     /// Inference context (shared model).
     ctx: InferenceContext,
 
-    /// Scratch buffer pool.
-    scratch_pool: RequestScratchPool,
+    /// Work buffer pool for zero-allocation inference.
+    buffer_pool: CpuWorkBuffersPool,
 }
 
 impl RequestExecutor {
     /// Create a new request executor.
-    pub fn new(ctx: InferenceContext, memory_region: MemoryRegionId) -> Self {
-        let config = &ctx.config;
+    pub fn new(ctx: InferenceContext) -> Self {
+        // Create buffer pool from model
+        let mut buffer_pool = CpuWorkBuffersPool::new(ctx.model());
 
-        let mut scratch_pool = RequestScratchPool::new(
-            config.hidden_size,
-            config.intermediate_size,
-            config.n_heads,
-            config.n_kv_heads,
-            config.head_dim,
-            config.key_length,
-            config.value_length,
-            config.vocab_size,
-            2048, // max_seq_len
-            memory_region,
-        );
+        // Pre-allocate 4 buffers for concurrent requests
+        buffer_pool.preallocate(4);
 
-        // Pre-allocate 4 scratch buffers
-        scratch_pool.preallocate(4);
-
-        Self { ctx, scratch_pool }
+        Self { ctx, buffer_pool }
     }
 
     /// Execute one step of a request (prefill or decode).
     ///
     /// Returns the generated token (if any) and updates request state.
+    #[cfg(target_arch = "aarch64")]
     pub fn step(
         &mut self,
         request: &mut RequestContext,
         kv_cache: &mut KVCache,
         strategy: &SamplingStrategy,
     ) -> Option<u32> {
-        // Allocate scratch buffer for this request
-        let _scratch = self.scratch_pool.allocate()?;
+        // Allocate work buffer for this request
+        let mut buffers = self.buffer_pool.allocate()?;
 
         // Determine current token(s) to process
         let tokens = if !request.is_prefill_complete() {
@@ -69,8 +57,12 @@ impl RequestExecutor {
             vec![*request.generated_tokens.last()?]
         };
 
-        // Run forward pass
-        let logits = self.ctx.forward(&tokens, kv_cache)?;
+        // Run zero-allocation forward pass
+        let logits =
+            self.ctx.model().forward_pooled(&tokens, kv_cache, &mut buffers)?;
+
+        // Release buffer back to pool
+        self.buffer_pool.release(buffers);
 
         // Sample next token
         let next_token = sample(&logits, strategy) as u32;
@@ -82,8 +74,36 @@ impl RequestExecutor {
             request.add_generated_token(next_token);
         }
 
-        // Release scratch buffer
-        // scratch_pool.release(scratch);
+        Some(next_token)
+    }
+
+    /// Execute one step (fallback for non-aarch64).
+    #[cfg(not(target_arch = "aarch64"))]
+    pub fn step(
+        &mut self,
+        request: &mut RequestContext,
+        kv_cache: &mut KVCache,
+        strategy: &SamplingStrategy,
+    ) -> Option<u32> {
+        // Determine current token(s) to process
+        let tokens = if !request.is_prefill_complete() {
+            vec![request.prompt_tokens[request.prompt_pos]]
+        } else {
+            vec![*request.generated_tokens.last()?]
+        };
+
+        // Run standard forward pass
+        let logits = self.ctx.forward(&tokens, kv_cache)?;
+
+        // Sample next token
+        let next_token = sample(&logits, strategy) as u32;
+
+        // Update request state
+        if !request.is_prefill_complete() {
+            request.advance_prompt();
+        } else {
+            request.add_generated_token(next_token);
+        }
 
         Some(next_token)
     }
@@ -123,8 +143,7 @@ impl RequestExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{Device, MemoryTopology};
-    use crate::inference::{Priority, RequestState};
+    use crate::inference::Priority;
 
     #[test]
     fn test_request_executor_creation() {
@@ -133,35 +152,8 @@ mod tests {
     }
 
     #[test]
-    fn test_scratch_pool_integration() {
-        let topology = MemoryTopology::detect();
-        let region = topology
-            .regions
-            .first()
-            .map(|r| r.id())
-            .unwrap_or_else(|| MemoryRegionId(0));
-
-        // Create pool with typical small model config
-        let mut pool = RequestScratchPool::new(
-            4096,   // hidden_size
-            16384,  // intermediate_size
-            32,     // n_heads
-            8,      // n_kv_heads
-            128,    // head_dim
-            128,    // key_length
-            128,    // value_length
-            151936, // vocab_size
-            2048,   // max_seq_len
-            region,
-        );
-        pool.preallocate(2);
-
-        assert_eq!(pool.available(), 2);
-
-        let scratch1 = pool.allocate().unwrap();
-        assert_eq!(pool.available(), 1);
-
-        pool.release(scratch1);
-        assert_eq!(pool.available(), 2);
+    fn test_buffer_pool() {
+        // This test is now in tests/test_request_context.rs
+        // CpuWorkBuffersPool requires a model, so we can't test it here
     }
 }

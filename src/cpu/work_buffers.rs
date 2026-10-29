@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // CPU work buffers for zero-allocation inference
 
+use crate::model::LlamaModel;
+
 /// Pre-allocated work buffers for CPU inference
 pub struct CpuWorkBuffers {
     pub hidden: Vec<f32>,
@@ -136,5 +138,187 @@ impl CpuWorkBuffers {
             );
             self.norm_weight = data;
         }
+    }
+}
+
+/// Pool of CpuWorkBuffers for multi-request inference.
+///
+/// Pre-allocates buffers to avoid per-request allocation overhead.
+pub struct CpuWorkBuffersPool {
+    /// Available buffers.
+    free: Vec<CpuWorkBuffers>,
+
+    /// Configuration for creating new buffers.
+    config: BufferConfig,
+
+    /// Norm weights shared across all buffers (pre-dequantized).
+    norm_weights: Vec<f32>,
+    norm_weight: Vec<f32>,
+}
+
+/// Configuration for creating CpuWorkBuffers.
+struct BufferConfig {
+    hidden_size: usize,
+    intermediate_size: usize,
+    n_heads: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
+    key_length: usize,
+    value_length: usize,
+    vocab_size: usize,
+    qkv_out_size: usize,
+    max_seq_len: usize,
+    n_layers: usize,
+}
+
+impl CpuWorkBuffersPool {
+    /// Create a new pool from model configuration.
+    pub fn new(model: &LlamaModel) -> Self {
+        let config = &model.config;
+
+        let qkv_out_size = model
+            .layers
+            .first()
+            .and_then(|l| l.attn_qkv.as_ref())
+            .map(|t| t.shape[1])
+            .unwrap_or(0);
+
+        let buffer_config = BufferConfig {
+            hidden_size: config.hidden_size,
+            intermediate_size: config.intermediate_size,
+            n_heads: config.n_heads,
+            n_kv_heads: config.n_kv_heads,
+            head_dim: config.head_dim,
+            key_length: config.key_length,
+            value_length: config.value_length,
+            vocab_size: config.vocab_size,
+            qkv_out_size,
+            max_seq_len: 2048,
+            n_layers: model.layers.len(),
+        };
+
+        // Pre-dequantize norm weights once
+        let mut norm_weights = Vec::with_capacity(
+            buffer_config.n_layers * 2 * buffer_config.hidden_size,
+        );
+        let mut norm_weight = vec![0.0; buffer_config.hidden_size];
+
+        let hidden_size = buffer_config.hidden_size;
+        for layer in model.layers.iter() {
+            // Attention norm
+            if let Some(ref norm) = layer.attention_norm {
+                let data = crate::inference::dequant_to_f32(
+                    norm.bytes(),
+                    norm.dtype,
+                    norm.elem_count(),
+                );
+                norm_weights.extend_from_slice(&data);
+            } else {
+                norm_weights.extend_from_slice(&vec![0.0; hidden_size]);
+            }
+            // FFN norm
+            if let Some(ref norm) = layer.ffn_norm {
+                let data = crate::inference::dequant_to_f32(
+                    norm.bytes(),
+                    norm.dtype,
+                    norm.elem_count(),
+                );
+                norm_weights.extend_from_slice(&data);
+            } else {
+                norm_weights.extend_from_slice(&vec![0.0; hidden_size]);
+            }
+        }
+        // Final output norm
+        if let Some(ref norm) = model.norm {
+            let data = crate::inference::dequant_to_f32(
+                norm.bytes(),
+                norm.dtype,
+                norm.elem_count(),
+            );
+            norm_weight = data;
+        }
+
+        Self {
+            free: Vec::new(),
+            config: buffer_config,
+            norm_weights,
+            norm_weight,
+        }
+    }
+
+    /// Pre-allocate a number of buffers.
+    pub fn preallocate(&mut self, count: usize) {
+        for _ in 0..count {
+            let mut buffers = CpuWorkBuffers::new(
+                self.config.hidden_size,
+                self.config.intermediate_size,
+                self.config.n_heads,
+                self.config.n_kv_heads,
+                self.config.head_dim,
+                self.config.key_length,
+                self.config.value_length,
+                self.config.vocab_size,
+                self.config.qkv_out_size,
+                self.config.max_seq_len,
+                self.config.n_layers,
+            );
+            // Share pre-dequantized norm weights
+            buffers.norm_weights = self.norm_weights.clone();
+            buffers.norm_weight = self.norm_weight.clone();
+            self.free.push(buffers);
+        }
+    }
+
+    /// Allocate a buffer from the pool.
+    pub fn allocate(&mut self) -> Option<CpuWorkBuffers> {
+        if let Some(mut buffers) = self.free.pop() {
+            // Reset buffers to zero (keep norm weights)
+            buffers.hidden.fill(0.0);
+            buffers.hidden_alt.fill(0.0);
+            buffers.normed.fill(0.0);
+            buffers.q.fill(0.0);
+            buffers.k.fill(0.0);
+            buffers.v.fill(0.0);
+            buffers.attn_out.fill(0.0);
+            buffers.ffn_gate.fill(0.0);
+            buffers.ffn_up.fill(0.0);
+            buffers.ffn_hidden.fill(0.0);
+            buffers.logits.fill(0.0);
+            buffers.qkv_buffer.fill(0.0);
+            buffers.q_buffer.fill(0.0);
+            buffers.k_buffer.fill(0.0);
+            buffers.v_buffer.fill(0.0);
+            buffers.rope_buffer.fill(0.0);
+            buffers.attn_scores.fill(0.0);
+            Some(buffers)
+        } else {
+            // Pool exhausted, allocate new buffer
+            let mut buffers = CpuWorkBuffers::new(
+                self.config.hidden_size,
+                self.config.intermediate_size,
+                self.config.n_heads,
+                self.config.n_kv_heads,
+                self.config.head_dim,
+                self.config.key_length,
+                self.config.value_length,
+                self.config.vocab_size,
+                self.config.qkv_out_size,
+                self.config.max_seq_len,
+                self.config.n_layers,
+            );
+            buffers.norm_weights = self.norm_weights.clone();
+            buffers.norm_weight = self.norm_weight.clone();
+            Some(buffers)
+        }
+    }
+
+    /// Release a buffer back to the pool.
+    pub fn release(&mut self, buffers: CpuWorkBuffers) {
+        self.free.push(buffers);
+    }
+
+    /// Get number of available buffers.
+    pub fn available(&self) -> usize {
+        self.free.len()
     }
 }

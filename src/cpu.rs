@@ -11,4 +11,4 @@ pub use thread_pool::{
     execute_layer_with_barrier, gemv_batch_barrier, gemv_persistent,
     gemv_work_stealing, parallel_chunks, parallel_work_stealing,
 };
-pub use work_buffers::CpuWorkBuffers;
+pub use work_buffers::{CpuWorkBuffers, CpuWorkBuffersPool};
