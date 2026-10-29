@@ -3,6 +3,7 @@
 
 // Inference runtime: connect model layer with operators
 
+pub mod batcher;
 pub mod buffer_cache;
 pub mod cpu_executor;
 pub mod cpu_memory_pool;
@@ -15,6 +16,7 @@ pub mod kv_cache_gpu;
 pub mod request;
 pub mod request_executor;
 
+pub use batcher::ContinuousBatcher;
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 pub use gpu_tensor::GpuTensor;
 pub use kv_cache::{KVCache, KVCacheBase, KVCacheFormat};
