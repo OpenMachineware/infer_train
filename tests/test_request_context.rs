@@ -74,7 +74,18 @@ mod tests {
     #[test]
     fn test_scratch_pool() {
         let region = MemoryRegionId(0);
-        let mut pool = RequestScratchPool::new(4096, 16384, region);
+        let mut pool = RequestScratchPool::new(
+            4096,   // hidden_size
+            16384,  // intermediate_size
+            32,     // n_heads
+            8,      // n_kv_heads
+            128,    // head_dim
+            128,    // key_length
+            128,    // value_length
+            151936, // vocab_size
+            2048,   // max_seq_len
+            region,
+        );
 
         // Preallocate 4 buffers
         pool.preallocate(4);

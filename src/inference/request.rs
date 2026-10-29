@@ -153,9 +153,17 @@ pub struct RequestScratch {
     /// Scratch buffer ID.
     pub id: usize,
 
+    // === Hidden states ===
     /// Hidden state buffer.
     pub hidden: Vec<f32>,
 
+    /// Alternate hidden state buffer.
+    pub hidden_alt: Vec<f32>,
+
+    /// Normed hidden state.
+    pub normed: Vec<f32>,
+
+    // === Attention buffers ===
     /// Query buffer for attention.
     pub query: Vec<f32>,
 
@@ -168,14 +176,37 @@ pub struct RequestScratch {
     /// Attention output buffer.
     pub attn_out: Vec<f32>,
 
+    /// Attention scores buffer.
+    pub attn_scores: Vec<f32>,
+
+    // === FFN buffers ===
     /// FFN gate buffer.
     pub ffn_gate: Vec<f32>,
 
     /// FFN up buffer.
     pub ffn_up: Vec<f32>,
 
-    /// FFN down buffer.
+    /// FFN down / hidden buffer.
     pub ffn_down: Vec<f32>,
+
+    // === Output buffers ===
+    /// Logits buffer.
+    pub logits: Vec<f32>,
+
+    // === Work buffers for quantization ===
+    /// Q8_K input buffer.
+    pub q8k_input: Vec<u8>,
+
+    /// Padded input buffer.
+    pub x_padded: Vec<f32>,
+
+    // === RoPE buffer ===
+    /// RoPE output buffer.
+    pub rope_buffer: Vec<f32>,
+
+    // === QKV buffer for fused QKV ===
+    /// Fused QKV output buffer.
+    pub qkv_buffer: Vec<f32>,
 
     /// Memory region for GPU buffers (if applicable).
     pub memory_region: MemoryRegionId,
@@ -187,18 +218,56 @@ impl RequestScratch {
         id: usize,
         hidden_size: usize,
         intermediate_size: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        key_length: usize,
+        value_length: usize,
+        vocab_size: usize,
+        max_seq_len: usize,
         memory_region: MemoryRegionId,
     ) -> Self {
+        // Calculate buffer sizes
+        let q_size = n_heads * head_dim;
+        let k_size = if key_length > 0 {
+            n_kv_heads * key_length
+        } else {
+            n_kv_heads * head_dim
+        };
+        let v_size = if value_length > 0 {
+            n_kv_heads * value_length
+        } else {
+            n_kv_heads * head_dim
+        };
+        let kv_size = k_size.max(v_size);
+        let v_head_dim = if value_length > 0 { value_length } else { head_dim };
+        let attn_out_size = n_heads * v_head_dim;
+
         Self {
             id,
+            // Hidden states
             hidden: vec![0.0; hidden_size],
-            query: vec![0.0; hidden_size],
-            key: vec![0.0; hidden_size],
-            value: vec![0.0; hidden_size],
-            attn_out: vec![0.0; hidden_size],
+            hidden_alt: vec![0.0; hidden_size],
+            normed: vec![0.0; hidden_size],
+            // Attention
+            query: vec![0.0; q_size],
+            key: vec![0.0; kv_size],
+            value: vec![0.0; kv_size],
+            attn_out: vec![0.0; attn_out_size],
+            attn_scores: vec![0.0; max_seq_len * n_heads],
+            // FFN
             ffn_gate: vec![0.0; intermediate_size],
             ffn_up: vec![0.0; intermediate_size],
             ffn_down: vec![0.0; hidden_size],
+            // Output
+            logits: vec![0.0; vocab_size],
+            // Work buffers
+            q8k_input: vec![0; 65536],
+            x_padded: vec![0.0; 65536],
+            // RoPE
+            rope_buffer: vec![0.0; q_size.max(kv_size)],
+            // Fused QKV
+            qkv_buffer: vec![0.0; q_size + k_size + v_size],
             memory_region,
         }
     }
@@ -206,14 +275,22 @@ impl RequestScratch {
     /// Get total buffer size in bytes.
     pub fn total_size(&self) -> usize {
         (self.hidden.len()
+            + self.hidden_alt.len()
+            + self.normed.len()
             + self.query.len()
             + self.key.len()
             + self.value.len()
             + self.attn_out.len()
+            + self.attn_scores.len()
             + self.ffn_gate.len()
             + self.ffn_up.len()
-            + self.ffn_down.len())
+            + self.ffn_down.len()
+            + self.logits.len()
+            + self.x_padded.len()
+            + self.rope_buffer.len()
+            + self.qkv_buffer.len())
             * std::mem::size_of::<f32>()
+            + self.q8k_input.len()
     }
 }
 
@@ -225,24 +302,48 @@ pub struct RequestScratchPool {
     /// Available scratch buffers.
     free: Vec<RequestScratch>,
 
-    /// Hidden size for each buffer.
+    /// Buffer configuration.
     hidden_size: usize,
-
-    /// Intermediate size for each buffer.
     intermediate_size: usize,
+    n_heads: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
+    key_length: usize,
+    value_length: usize,
+    vocab_size: usize,
+    max_seq_len: usize,
 
     /// Memory region for GPU buffers.
     memory_region: MemoryRegionId,
 }
 
 impl RequestScratchPool {
-    /// Create a new scratch pool.
+    /// Create a new scratch pool with model configuration.
     pub fn new(
         hidden_size: usize,
         intermediate_size: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        key_length: usize,
+        value_length: usize,
+        vocab_size: usize,
+        max_seq_len: usize,
         memory_region: MemoryRegionId,
     ) -> Self {
-        Self { free: Vec::new(), hidden_size, intermediate_size, memory_region }
+        Self {
+            free: Vec::new(),
+            hidden_size,
+            intermediate_size,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            key_length,
+            value_length,
+            vocab_size,
+            max_seq_len,
+            memory_region,
+        }
     }
 
     /// Pre-allocate a number of scratch buffers.
@@ -252,6 +353,13 @@ impl RequestScratchPool {
                 i,
                 self.hidden_size,
                 self.intermediate_size,
+                self.n_heads,
+                self.n_kv_heads,
+                self.head_dim,
+                self.key_length,
+                self.value_length,
+                self.vocab_size,
+                self.max_seq_len,
                 self.memory_region,
             );
             self.free.push(scratch);
@@ -263,13 +371,19 @@ impl RequestScratchPool {
         if let Some(mut scratch) = self.free.pop() {
             // Reset buffers to zero
             scratch.hidden.fill(0.0);
+            scratch.hidden_alt.fill(0.0);
+            scratch.normed.fill(0.0);
             scratch.query.fill(0.0);
             scratch.key.fill(0.0);
             scratch.value.fill(0.0);
             scratch.attn_out.fill(0.0);
+            scratch.attn_scores.fill(0.0);
             scratch.ffn_gate.fill(0.0);
             scratch.ffn_up.fill(0.0);
             scratch.ffn_down.fill(0.0);
+            scratch.logits.fill(0.0);
+            scratch.rope_buffer.fill(0.0);
+            scratch.qkv_buffer.fill(0.0);
             Some(scratch)
         } else {
             // Pool exhausted, allocate new buffer
@@ -278,6 +392,13 @@ impl RequestScratchPool {
                 id,
                 self.hidden_size,
                 self.intermediate_size,
+                self.n_heads,
+                self.n_kv_heads,
+                self.head_dim,
+                self.key_length,
+                self.value_length,
+                self.vocab_size,
+                self.max_seq_len,
                 self.memory_region,
             ))
         }

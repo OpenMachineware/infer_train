@@ -27,12 +27,18 @@ pub struct RequestExecutor {
 impl RequestExecutor {
     /// Create a new request executor.
     pub fn new(ctx: InferenceContext, memory_region: MemoryRegionId) -> Self {
-        let hidden_size = ctx.config.hidden_size;
-        let intermediate_size = ctx.config.intermediate_size;
+        let config = &ctx.config;
 
         let mut scratch_pool = RequestScratchPool::new(
-            hidden_size,
-            intermediate_size,
+            config.hidden_size,
+            config.intermediate_size,
+            config.n_heads,
+            config.n_kv_heads,
+            config.head_dim,
+            config.key_length,
+            config.value_length,
+            config.vocab_size,
+            2048, // max_seq_len
             memory_region,
         );
 
@@ -135,7 +141,19 @@ mod tests {
             .map(|r| r.id())
             .unwrap_or_else(|| MemoryRegionId(0));
 
-        let mut pool = RequestScratchPool::new(4096, 16384, region);
+        // Create pool with typical small model config
+        let mut pool = RequestScratchPool::new(
+            4096,   // hidden_size
+            16384,  // intermediate_size
+            32,     // n_heads
+            8,      // n_kv_heads
+            128,    // head_dim
+            128,    // key_length
+            128,    // value_length
+            151936, // vocab_size
+            2048,   // max_seq_len
+            region,
+        );
         pool.preallocate(2);
 
         assert_eq!(pool.available(), 2);
