@@ -3968,6 +3968,7 @@ impl LlamaModel {
     }
 
     /// Attention with pre-allocated scores buffer (true zero-allocation)
+    /// Parallelized across heads using work-stealing
     #[cfg(target_arch = "aarch64")]
     pub fn attention_zero_alloc(
         &self,
@@ -3997,18 +3998,33 @@ impl LlamaModel {
             *elem = 0.0;
         }
 
-        for h in 0..n_heads {
+        // Parallelize across heads using work-stealing
+        use crate::cpu::{SyncPtr, gemv_work_stealing};
+
+        let n_threads = crate::cpu::default_n_threads();
+        let out_ptr = SyncPtr::new(out.as_mut_ptr());
+        let q_ptr = SyncPtr::new(q.as_ptr() as *mut f32);
+        let scores_ptr = SyncPtr::new(scores_buf.as_mut_ptr());
+
+        gemv_work_stealing(n_heads, n_threads, |h| {
             let kv_head = h * n_kv_heads / n_heads;
 
-            // Use pre-allocated scores buffer
-            let scores = &mut scores_buf[..seq_len];
+            // Use pre-allocated scores buffer (each head gets its own slice)
+            let scores = unsafe {
+                std::slice::from_raw_parts_mut(
+                    scores_ptr.get().add(h * seq_len),
+                    seq_len,
+                )
+            };
 
             // Compute attention scores
             for s in 0..seq_len {
                 let k_s = kv_cache.get_k(layer_idx, kv_head, s);
                 let mut score = 0.0f32;
                 for d in 0..dot_dim {
-                    score += q[h * q_head_dim + d] * k_s[d];
+                    unsafe {
+                        score += *q_ptr.get().add(h * q_head_dim + d) * k_s[d];
+                    }
                 }
                 scores[s] = score * scale;
             }
@@ -4032,9 +4048,11 @@ impl LlamaModel {
                     let v_s = kv_cache.get_v(layer_idx, kv_head, s);
                     sum += scores[s] * v_s[d];
                 }
-                out[h * v_head_dim + d] = sum;
+                unsafe {
+                    *out_ptr.get().add(h * v_head_dim + d) = sum;
+                }
             }
-        }
+        });
 
         Some(())
     }

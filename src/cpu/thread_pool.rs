@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Persistent thread pool for CPU inference
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier};
 use std::thread::{self, JoinHandle};
 
 /// Get the default number of threads to use
@@ -10,32 +10,53 @@ pub fn default_n_threads() -> usize {
     std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4)
 }
 
-/// A simple spin barrier for low-latency synchronization
+/// Atomic spin barrier - matches llama.cpp's ggml_barrier
+/// Uses two counters for proper reusability
 pub struct SpinBarrier {
-    count: AtomicUsize,
-    target: usize,
+    n_barrier: AtomicUsize,
+    n_barrier_passed: AtomicUsize,
+    n_threads: usize,
 }
 
+// SpinBarrier is Send + Sync because it only contains atomic types
+unsafe impl Send for SpinBarrier {}
+unsafe impl Sync for SpinBarrier {}
+
 impl SpinBarrier {
-    pub fn new(n: usize) -> Self {
-        SpinBarrier { count: AtomicUsize::new(0), target: n }
-    }
-
-    pub fn wait(&self) {
-        let ticket = self.count.fetch_add(1, Ordering::SeqCst);
-        let target = self.target;
-
-        // Spin until all threads have arrived
-        while self.count.load(Ordering::Acquire) % target != 0
-            && self.count.load(Ordering::Acquire)
-                < ticket + target - ticket % target + target
-        {
-            std::hint::spin_loop();
+    pub fn new(n_threads: usize) -> Self {
+        SpinBarrier {
+            n_barrier: AtomicUsize::new(0),
+            n_barrier_passed: AtomicUsize::new(0),
+            n_threads,
         }
     }
 
-    pub fn reset(&self) {
-        self.count.store(0, Ordering::Release);
+    /// Wait for all threads to reach the barrier
+    /// Uses spin loop for low latency - matches llama.cpp exactly
+    pub fn wait(&self) {
+        if self.n_threads == 1 {
+            return;
+        }
+
+        let n_passed = self.n_barrier_passed.load(Ordering::Relaxed);
+
+        // Enter barrier with seq-cst fence
+        let n_barrier = self.n_barrier.fetch_add(1, Ordering::SeqCst);
+
+        if n_barrier == (self.n_threads - 1) {
+            // Last thread - reset and signal
+            self.n_barrier.store(0, Ordering::Relaxed);
+            self.n_barrier_passed.fetch_add(1, Ordering::SeqCst);
+            return;
+        }
+
+        // Wait for other threads
+        while self.n_barrier_passed.load(Ordering::Relaxed) == n_passed {
+            std::hint::spin_loop();
+        }
+
+        // Exit barrier with seq-cst fence
+        std::sync::atomic::fence(Ordering::SeqCst);
     }
 }
 
@@ -73,16 +94,24 @@ pub fn parallel_work_stealing<F>(
 }
 
 /// Parallel chunks with fixed distribution
+/// Uses std::thread::scope for low-overhead execution
+/// Falls back to single-threaded for small workloads to avoid spawn overhead
 pub fn parallel_chunks<F>(n_items: usize, n_threads: usize, f: F)
 where
-    F: Fn(usize, usize) + Send + Sync,
+    F: Fn(usize, usize) + Send + Sync + Clone,
 {
     if n_items == 0 {
         return;
     }
 
+    // Single-threaded for small workloads to avoid thread spawn overhead
+    // Threshold tuned for decode: GEMV with m < 2048 is memory-bound, threads don't help
+    if n_items < 2048 || n_threads == 1 {
+        f(0, n_items);
+        return;
+    }
+
     let chunk_size = (n_items + n_threads - 1) / n_threads;
-    let f_ref = &f;
 
     std::thread::scope(|s| {
         for thread_id in 0..n_threads {
@@ -93,8 +122,9 @@ where
                 break;
             }
 
+            let f_clone = f.clone();
             s.spawn(move || {
-                f_ref(start, end);
+                f_clone(start, end);
             });
         }
     });
@@ -113,7 +143,7 @@ enum Command {
 pub struct PersistentThreadPool {
     handles: Vec<JoinHandle<()>>,
     sender: crossbeam::channel::Sender<Command>,
-    barrier: Arc<Barrier>,
+    barrier: Arc<SpinBarrier>,
     num_threads: usize,
 }
 
@@ -121,7 +151,8 @@ impl PersistentThreadPool {
     /// Create a new persistent thread pool
     pub fn new(num_threads: usize) -> Self {
         let (sender, receiver) = crossbeam::channel::bounded(num_threads * 2);
-        let barrier = Arc::new(Barrier::new(num_threads));
+        // Barrier for num_threads workers + 1 main thread participant
+        let barrier = Arc::new(SpinBarrier::new(num_threads + 1));
         let receiver = Arc::new(receiver);
 
         let handles: Vec<_> = (0..num_threads)
@@ -195,7 +226,7 @@ impl PersistentThreadPool {
     }
 
     /// Get the barrier for external synchronization
-    pub fn barrier(&self) -> Arc<Barrier> {
+    pub fn barrier(&self) -> Arc<SpinBarrier> {
         self.barrier.clone()
     }
 
@@ -217,6 +248,39 @@ impl PersistentThreadPool {
             self.sender
                 .send(Command::Work(Box::new(move || {
                     task_fn(ith, nth, user_data, graph_id);
+                })))
+                .expect("Failed to send work");
+        }
+
+        // Wait for barrier (main thread participates too)
+        self.barrier.wait();
+    }
+
+    /// Execute GEMV with fixed chunk assignment (cache-friendly)
+    /// Each thread processes a contiguous chunk of rows
+    /// NO work stealing - each thread has fixed assignment
+    pub fn gemv_chunks<F>(&self, num_rows: usize, f: F)
+    where
+        F: Fn(usize, usize) + Send + Sync + Clone + 'static,
+    {
+        if num_rows == 0 {
+            return;
+        }
+
+        let chunk_size = (num_rows + self.num_threads - 1) / self.num_threads;
+
+        for ith in 0..self.num_threads {
+            let f_clone = f.clone();
+            let start = ith * chunk_size;
+            let end = (start + chunk_size).min(num_rows);
+
+            if start >= num_rows {
+                break;
+            }
+
+            self.sender
+                .send(Command::Work(Box::new(move || {
+                    f_clone(start, end);
                 })))
                 .expect("Failed to send work");
         }
@@ -281,7 +345,7 @@ where
 }
 
 /// Execute GEMV with work stealing (better load balancing)
-/// Uses atomic counter for dynamic work distribution
+/// Uses std::thread::scope for parallel execution (no Rayon)
 pub fn gemv_work_stealing<F>(num_rows: usize, num_threads: usize, f: F)
 where
     F: Fn(usize) + Send + Sync,
@@ -290,25 +354,41 @@ where
         return;
     }
 
-    let counter = std::sync::atomic::AtomicUsize::new(0);
-
+    // Use std::thread::scope instead of Rayon
     std::thread::scope(|s| {
+        let counter =
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let f_ref = &f;
+
         for _ in 0..num_threads {
-            s.spawn(|| {
+            let counter = counter.clone();
+            s.spawn(move || {
                 loop {
                     let row = counter
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if row >= num_rows {
                         break;
                     }
-                    f(row);
+                    f_ref(row);
                 }
             });
         }
     });
 }
 
+/// Global persistent thread pool for CPU inference
+/// This eliminates thread creation overhead for repeated GEMV calls
+pub fn get_persistent_pool() -> &'static PersistentThreadPool {
+    use once_cell::sync::Lazy;
+
+    static POOL: Lazy<PersistentThreadPool> =
+        Lazy::new(|| PersistentThreadPool::new(default_n_threads()));
+
+    &POOL
+}
+
 /// Wrapper for mutable slice pointer that is Send + Sync
+#[derive(Clone, Copy)]
 pub struct SyncPtr<T>(*mut T);
 
 unsafe impl<T: Send> Send for SyncPtr<T> {}

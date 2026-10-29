@@ -38,7 +38,7 @@ unsafe fn vdotq_s32_manual(
 }
 
 /// Optimized Q4_K × Q8_K matrix-vector multiplication
-/// Uses interleaved weight layout when possible for better cache locality
+/// Uses chunk-based parallel execution for cache-friendly memory access
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q4_k_q8_k(
     weights: &[BlockQ4K],
@@ -48,33 +48,12 @@ pub unsafe fn matmul_q4_k_q8_k(
     m: usize,
 ) {
     let nb = k / QK_K;
-
-    // Use interleaved kernel if m is divisible by 8 and >= 8
-    if m >= 8 && m % 8 == 0 {
-        // Get or create interleaved weights from cache
-        let key = weights.as_ptr() as usize;
-        let cache = Q4K_INTERLEAVED_CACHE.clone();
-        let mut cache_guard = cache.lock().unwrap();
-
-        let interleaved = if let Some(cached) = cache_guard.get(&key) {
-            cached
-        } else {
-            // Repack weights to interleaved format
-            let interleaved = repack_q4_k_batch(weights, m, nb);
-            cache_guard.insert(key, interleaved);
-            cache_guard.get(&key).unwrap()
-        };
-
-        // Use interleaved GEMV kernel
-        gemv_q4_k_interleaved(interleaved, x, dst, k, m);
-    } else {
-        // Fallback to standard kernel for non-multiple-of-8 rows
-        matmul_q4_k_q8_k_standard(weights, x, dst, k, m, nb);
-    }
+    // Use standard parallel kernel - interleaved kernel is not parallelized
+    matmul_q4_k_q8_k_standard(weights, x, dst, k, m, nb);
 }
 
 /// Standard Q4_K × Q8_K matrix-vector multiplication
-/// Uses work-stealing parallel execution (no Rayon overhead)
+/// Uses std::thread::scope for low-overhead parallel execution
 #[target_feature(enable = "neon,dotprod")]
 unsafe fn matmul_q4_k_q8_k_standard(
     weights: &[BlockQ4K],
@@ -84,22 +63,25 @@ unsafe fn matmul_q4_k_q8_k_standard(
     m: usize,
     nb: usize,
 ) {
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
+    use crate::cpu::{SyncPtr, default_n_threads, parallel_chunks};
 
-    let n_threads = crate::cpu::default_n_threads();
     let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ4K);
+    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_q4_k_q8_k_neon(
-            k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
-            x,
-        );
+    parallel_chunks(m, default_n_threads(), move |start, end| {
+        for row in start..end {
+            *dst_ptr.get().add(row) = vec_dot_q4_k_q8_k_neon(
+                k,
+                std::slice::from_raw_parts(weights_ptr.get().add(row * nb), nb),
+                std::slice::from_raw_parts(x_ptr.get(), nb),
+            );
+        }
     });
 }
 
 /// Q6_K × Q8_K matrix-vector multiplication
-/// Uses work-stealing parallel execution (no Rayon overhead)
+/// Uses std::thread::scope for low-overhead parallel execution
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q6_k_q8_k(
     weights: &[BlockQ6K],
@@ -108,23 +90,26 @@ pub unsafe fn matmul_q6_k_q8_k(
     k: usize,
     m: usize,
 ) {
+    use crate::cpu::{SyncPtr, default_n_threads, parallel_chunks};
+
     let nb = k / QK_K;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-
-    let n_threads = crate::cpu::default_n_threads();
     let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ6K);
+    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_q6_k_q8_k_neon(
-            k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
-            x,
-        );
+    parallel_chunks(m, default_n_threads(), move |start, end| {
+        for row in start..end {
+            *dst_ptr.get().add(row) = vec_dot_q6_k_q8_k_neon(
+                k,
+                std::slice::from_raw_parts(weights_ptr.get().add(row * nb), nb),
+                std::slice::from_raw_parts(x_ptr.get(), nb),
+            );
+        }
     });
 }
 
 /// Q5_K × Q8_K matrix-vector multiplication
-/// Uses work-stealing parallel execution (no Rayon overhead)
+/// Uses std::thread::scope for low-overhead parallel execution
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q5_k_q8_k(
     weights: &[BlockQ5K],
@@ -133,23 +118,26 @@ pub unsafe fn matmul_q5_k_q8_k(
     k: usize,
     m: usize,
 ) {
+    use crate::cpu::{SyncPtr, default_n_threads, parallel_chunks};
+
     let nb = k / QK_K;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-
-    let n_threads = crate::cpu::default_n_threads();
     let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5K);
+    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_q5_k_q8_k_neon(
-            k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
-            x,
-        );
+    parallel_chunks(m, default_n_threads(), move |start, end| {
+        for row in start..end {
+            *dst_ptr.get().add(row) = vec_dot_q5_k_q8_k_neon(
+                k,
+                std::slice::from_raw_parts(weights_ptr.get().add(row * nb), nb),
+                std::slice::from_raw_parts(x_ptr.get(), nb),
+            );
+        }
     });
 }
 
 /// Q3_K × Q8_K matrix-vector multiplication
-/// Uses work-stealing parallel execution (no Rayon overhead)
+/// Uses std::thread::scope for low-overhead parallel execution
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q3_k_q8_k(
     weights: &[BlockQ3K],
@@ -158,23 +146,26 @@ pub unsafe fn matmul_q3_k_q8_k(
     k: usize,
     m: usize,
 ) {
+    use crate::cpu::{SyncPtr, default_n_threads, parallel_chunks};
+
     let nb = k / QK_K;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-
-    let n_threads = crate::cpu::default_n_threads();
     let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ3K);
+    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_q3_k_q8_k_neon(
-            k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
-            x,
-        );
+    parallel_chunks(m, default_n_threads(), move |start, end| {
+        for row in start..end {
+            *dst_ptr.get().add(row) = vec_dot_q3_k_q8_k_neon(
+                k,
+                std::slice::from_raw_parts(weights_ptr.get().add(row * nb), nb),
+                std::slice::from_raw_parts(x_ptr.get(), nb),
+            );
+        }
     });
 }
 
 /// Q2_K × Q8_K matrix-vector multiplication
-/// Uses work-stealing parallel execution (no Rayon overhead)
+/// Uses std::thread::scope for low-overhead parallel execution
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q2_k_q8_k(
     weights: &[BlockQ2K],
@@ -183,22 +174,26 @@ pub unsafe fn matmul_q2_k_q8_k(
     k: usize,
     m: usize,
 ) {
+    use crate::cpu::{SyncPtr, default_n_threads, parallel_chunks};
+
     let nb = k / QK_K;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-
-    let n_threads = crate::cpu::default_n_threads();
     let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ2K);
+    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_q2_k_q8_k_neon(
-            k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
-            x,
-        );
+    parallel_chunks(m, default_n_threads(), move |start, end| {
+        for row in start..end {
+            *dst_ptr.get().add(row) = vec_dot_q2_k_q8_k_neon(
+                k,
+                std::slice::from_raw_parts(weights_ptr.get().add(row * nb), nb),
+                std::slice::from_raw_parts(x_ptr.get(), nb),
+            );
+        }
     });
 }
 
 /// Q4_0 × Q8_0 matrix-vector multiplication
+/// Uses std::thread::scope for low-overhead parallel execution
 pub unsafe fn matmul_q4_0_q8_0(
     weights: &[BlockQ4_0],
     x: &[BlockQ8_0],
@@ -206,16 +201,26 @@ pub unsafe fn matmul_q4_0_q8_0(
     k: usize,
     m: usize,
 ) {
-    let nb = k / QK4_0;
+    use crate::cpu::{SyncPtr, default_n_threads, parallel_chunks};
 
-    for i in 0..m {
-        let row_sum =
-            vec_dot_q4_0_q8_0_neon(k, &weights[i * nb..(i + 1) * nb], x);
-        dst[i] = row_sum;
-    }
+    let nb = k / QK4_0;
+    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ4_0);
+    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8_0);
+
+    parallel_chunks(m, default_n_threads(), move |start, end| {
+        for i in start..end {
+            *dst_ptr.get().add(i) = vec_dot_q4_0_q8_0_neon(
+                k,
+                std::slice::from_raw_parts(weights_ptr.get().add(i * nb), nb),
+                std::slice::from_raw_parts(x_ptr.get(), nb),
+            );
+        }
+    });
 }
 
 /// Q5_0 × Q8_0 matrix-vector multiplication
+/// Uses std::thread::scope for low-overhead parallel execution
 pub unsafe fn matmul_q5_0_q8_0(
     weights: &[BlockQ5_0],
     x: &[BlockQ8_0],
@@ -223,16 +228,26 @@ pub unsafe fn matmul_q5_0_q8_0(
     k: usize,
     m: usize,
 ) {
-    let nb = k / QK8_0;
+    use crate::cpu::{SyncPtr, default_n_threads, parallel_chunks};
 
-    for i in 0..m {
-        let row_sum =
-            vec_dot_q5_0_q8_0_neon(k, &weights[i * nb..(i + 1) * nb], x);
-        dst[i] = row_sum;
-    }
+    let nb = k / QK8_0;
+    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5_0);
+    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8_0);
+
+    parallel_chunks(m, default_n_threads(), move |start, end| {
+        for i in start..end {
+            *dst_ptr.get().add(i) = vec_dot_q5_0_q8_0_neon(
+                k,
+                std::slice::from_raw_parts(weights_ptr.get().add(i * nb), nb),
+                std::slice::from_raw_parts(x_ptr.get(), nb),
+            );
+        }
+    });
 }
 
 /// Q4_1 × Q8_1 matrix-vector multiplication
+/// Uses std::thread::scope for low-overhead parallel execution
 pub unsafe fn matmul_q4_1_q8_1(
     weights: &[BlockQ4_1],
     x: &[BlockQ8_1],
@@ -240,16 +255,26 @@ pub unsafe fn matmul_q4_1_q8_1(
     k: usize,
     m: usize,
 ) {
-    let nb = k / QK4_0;
+    use crate::cpu::{SyncPtr, default_n_threads, parallel_chunks};
 
-    for i in 0..m {
-        let row_sum =
-            vec_dot_q4_1_q8_1_neon(k, &weights[i * nb..(i + 1) * nb], x);
-        dst[i] = row_sum;
-    }
+    let nb = k / QK4_0;
+    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ4_1);
+    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8_1);
+
+    parallel_chunks(m, default_n_threads(), move |start, end| {
+        for i in start..end {
+            *dst_ptr.get().add(i) = vec_dot_q4_1_q8_1_neon(
+                k,
+                std::slice::from_raw_parts(weights_ptr.get().add(i * nb), nb),
+                std::slice::from_raw_parts(x_ptr.get(), nb),
+            );
+        }
+    });
 }
 
 /// Q5_1 × Q8_1 matrix-vector multiplication
+/// Uses std::thread::scope for low-overhead parallel execution
 pub unsafe fn matmul_q5_1_q8_1(
     weights: &[BlockQ5_1],
     x: &[BlockQ8_1],
@@ -257,13 +282,22 @@ pub unsafe fn matmul_q5_1_q8_1(
     k: usize,
     m: usize,
 ) {
-    let nb = k / QK8_0;
+    use crate::cpu::{SyncPtr, default_n_threads, parallel_chunks};
 
-    for i in 0..m {
-        let row_sum =
-            vec_dot_q5_1_q8_1_neon(k, &weights[i * nb..(i + 1) * nb], x);
-        dst[i] = row_sum;
-    }
+    let nb = k / QK8_0;
+    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5_1);
+    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8_1);
+
+    parallel_chunks(m, default_n_threads(), move |start, end| {
+        for i in start..end {
+            *dst_ptr.get().add(i) = vec_dot_q5_1_q8_1_neon(
+                k,
+                std::slice::from_raw_parts(weights_ptr.get().add(i * nb), nb),
+                std::slice::from_raw_parts(x_ptr.get(), nb),
+            );
+        }
+    });
 }
 
 // ===== IQ series matmul =====

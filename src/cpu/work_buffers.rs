@@ -91,7 +91,7 @@ impl CpuWorkBuffers {
             k_buffer: vec![0.0; kv_size],
             v_buffer: vec![0.0; kv_size],
             rope_buffer: vec![0.0; q_size.max(kv_size)],
-            attn_scores: vec![0.0; 2048], // max_seq_len
+            attn_scores: vec![0.0; n_heads * 2048], // n_heads * max_seq_len for parallel execution
             norm_weights: Vec::with_capacity(n_layers * 2 * hidden_size),
             norm_weight: vec![0.0; hidden_size],
             hidden_size,
