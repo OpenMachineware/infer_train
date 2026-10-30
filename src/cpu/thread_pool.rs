@@ -191,15 +191,17 @@ impl PersistentThreadPool {
                         let n = num_items.load(Ordering::Acquire);
                         let nth = num_threads;
 
+                        // Calculate chunk for this thread
+                        let chunk_size = (n + nth - 1) / nth;
+                        let start = thread_id * chunk_size;
+                        let end = (start + chunk_size).min(n);
+
                         // Get function reference (Arc cloned) - use read lock
                         let func_opt = work_fn.read().unwrap().clone();
                         if let Some(func) = func_opt {
-                            // Process rows assigned to this thread
-                            // Round-robin: thread i handles rows i, i+nth, i+2*nth, ...
-                            let mut row = thread_id;
-                            while row < n {
-                                func(row, row + 1);
-                                row += nth;
+                            // Process chunk assigned to this thread
+                            if start < n {
+                                func(start, end);
                             }
                         }
 

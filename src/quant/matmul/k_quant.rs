@@ -101,6 +101,51 @@ pub unsafe fn matmul_q4_k_q8_k_single_thread(
     }
 }
 
+/// Persistent thread pool Q4_K × Q8_K matrix-vector multiplication
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q4_k_q8_k_persistent(
+    weights: &[BlockQ4K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    use crate::cpu::SyncPtr;
+
+    let pool = crate::cpu::global_pool();
+    let nb = k / QK_K;
+
+    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ4K);
+    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
+
+    pool.execute(m, move |start, end| {
+        for row in start..end {
+            *dst_ptr.get().add(row) = vec_dot_q4_k_q8_k_neon(
+                k,
+                std::slice::from_raw_parts(weights_ptr.get().add(row * nb), nb),
+                std::slice::from_raw_parts(x_ptr.get(), nb),
+            );
+        }
+    });
+}
+
+/// Hybrid Q4_K × Q8_K: ST for small, MT with persistent pool for large
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q4_k_q8_k_hybrid(
+    weights: &[BlockQ4K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    if m < 2048 {
+        matmul_q4_k_q8_k_single_thread(weights, x, dst, k, m);
+    } else {
+        matmul_q4_k_q8_k_persistent(weights, x, dst, k, m);
+    }
+}
+
 /// Q6_K × Q8_K matrix-vector multiplication
 /// Uses std::thread::scope for low-overhead parallel execution
 #[target_feature(enable = "neon,dotprod")]
@@ -150,6 +195,51 @@ pub unsafe fn matmul_q6_k_q8_k_single_thread(
     }
 }
 
+/// Persistent thread pool Q6_K × Q8_K matrix-vector multiplication
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q6_k_q8_k_persistent(
+    weights: &[BlockQ6K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    use crate::cpu::SyncPtr;
+
+    let pool = crate::cpu::global_pool();
+    let nb = k / QK_K;
+
+    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ6K);
+    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
+
+    pool.execute(m, move |start, end| {
+        for row in start..end {
+            *dst_ptr.get().add(row) = vec_dot_q6_k_q8_k_neon(
+                k,
+                std::slice::from_raw_parts(weights_ptr.get().add(row * nb), nb),
+                std::slice::from_raw_parts(x_ptr.get(), nb),
+            );
+        }
+    });
+}
+
+/// Hybrid Q6_K × Q8_K: ST for small, MT with persistent pool for large
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q6_k_q8_k_hybrid(
+    weights: &[BlockQ6K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    if m < 2048 {
+        matmul_q6_k_q8_k_single_thread(weights, x, dst, k, m);
+    } else {
+        matmul_q6_k_q8_k_persistent(weights, x, dst, k, m);
+    }
+}
+
 /// Q5_K × Q8_K matrix-vector multiplication
 /// Uses std::thread::scope for low-overhead parallel execution
 #[target_feature(enable = "neon,dotprod")]
@@ -196,6 +286,53 @@ pub unsafe fn matmul_q5_k_q8_k_single_thread(
             std::slice::from_raw_parts(weights.as_ptr().add(row * nb), nb),
             x,
         );
+    }
+}
+
+/// Persistent thread pool Q5_K × Q8_K matrix-vector multiplication
+/// Zero thread spawn overhead - uses global persistent thread pool
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q5_k_q8_k_persistent(
+    weights: &[BlockQ5K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    use crate::cpu::SyncPtr;
+
+    let pool = crate::cpu::global_pool();
+    let nb = k / QK_K;
+
+    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5K);
+    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
+
+    pool.execute(m, move |start, end| {
+        for row in start..end {
+            *dst_ptr.get().add(row) = vec_dot_q5_k_q8_k_neon(
+                k,
+                std::slice::from_raw_parts(weights_ptr.get().add(row * nb), nb),
+                std::slice::from_raw_parts(x_ptr.get(), nb),
+            );
+        }
+    });
+}
+
+/// Hybrid Q5_K × Q8_K: ST for small matrices, MT with persistent pool for large
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q5_k_q8_k_hybrid(
+    weights: &[BlockQ5K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    // Threshold: if m < 2048, thread overhead exceeds compute time
+    if m < 2048 {
+        matmul_q5_k_q8_k_single_thread(weights, x, dst, k, m);
+    } else {
+        matmul_q5_k_q8_k_persistent(weights, x, dst, k, m);
     }
 }
 

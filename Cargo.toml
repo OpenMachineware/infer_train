@@ -1714,6 +1714,18 @@ name = "bench-thread-pool-perf"
 path = "tools/bench_thread_pool_perf.rs"
 
 [[bin]]
+name = "bench-graph-executor"
+path = "tools/bench_graph_executor.rs"
+
+[[bin]]
+name = "bench-persistent-gemv"
+path = "tools/bench_persistent_gemv.rs"
+
+[[bin]]
+name = "test-pool-overhead"
+path = "tools/test_pool_overhead.rs"
+
+[[bin]]
 name = "debug-pool"
 path = "tools/debug_pool.rs"
 

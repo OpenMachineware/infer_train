@@ -3760,6 +3760,7 @@ impl LlamaModel {
 
     /// GEMV with pre-quantized Q8_K input (for avoiding repeated quantization)
     /// Input must be quantized to Q8_K format with proper padding
+    /// Uses hybrid ST/MT strategy: single-thread for small matrices, parallel for large
     #[cfg(target_arch = "aarch64")]
     pub fn gemv_with_prequant(
         &self,
@@ -3769,7 +3770,9 @@ impl LlamaModel {
         out: &mut [f32],
     ) -> bool {
         use crate::quant::matmul::k_quant::{
-            matmul_q4_k_q8_k, matmul_q5_k_q8_k, matmul_q6_k_q8_k,
+            matmul_q4_k_q8_k, matmul_q4_k_q8_k_single_thread, matmul_q5_k_q8_k,
+            matmul_q5_k_q8_k_single_thread, matmul_q6_k_q8_k,
+            matmul_q6_k_q8_k_single_thread,
         };
         use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
 
@@ -3781,6 +3784,10 @@ impl LlamaModel {
             return false;
         }
 
+        // Hybrid strategy: use single-thread for small matrices (< 2048 rows)
+        // Thread overhead ~150µs, small matrix compute < overhead
+        let use_single_thread = out_size < 2048;
+
         match w.dtype {
             DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
                 unsafe {
@@ -3791,13 +3798,23 @@ impl LlamaModel {
                                     w.bytes().as_ptr() as *const BlockQ4K,
                                     out_size * nb,
                                 );
-                            matmul_q4_k_q8_k(
-                                weights,
-                                x_q8k,
-                                out,
-                                in_size_padded,
-                                out_size,
-                            );
+                            if use_single_thread {
+                                matmul_q4_k_q8_k_single_thread(
+                                    weights,
+                                    x_q8k,
+                                    out,
+                                    in_size_padded,
+                                    out_size,
+                                );
+                            } else {
+                                matmul_q4_k_q8_k(
+                                    weights,
+                                    x_q8k,
+                                    out,
+                                    in_size_padded,
+                                    out_size,
+                                );
+                            }
                         }
                         DataType::Q5_K => {
                             let weights: &[BlockQ5K] =
@@ -3805,13 +3822,23 @@ impl LlamaModel {
                                     w.bytes().as_ptr() as *const BlockQ5K,
                                     out_size * nb,
                                 );
-                            matmul_q5_k_q8_k(
-                                weights,
-                                x_q8k,
-                                out,
-                                in_size_padded,
-                                out_size,
-                            );
+                            if use_single_thread {
+                                matmul_q5_k_q8_k_single_thread(
+                                    weights,
+                                    x_q8k,
+                                    out,
+                                    in_size_padded,
+                                    out_size,
+                                );
+                            } else {
+                                matmul_q5_k_q8_k(
+                                    weights,
+                                    x_q8k,
+                                    out,
+                                    in_size_padded,
+                                    out_size,
+                                );
+                            }
                         }
                         DataType::Q6_K => {
                             let weights: &[BlockQ6K] =
@@ -3819,13 +3846,23 @@ impl LlamaModel {
                                     w.bytes().as_ptr() as *const BlockQ6K,
                                     out_size * nb,
                                 );
-                            matmul_q6_k_q8_k(
-                                weights,
-                                x_q8k,
-                                out,
-                                in_size_padded,
-                                out_size,
-                            );
+                            if use_single_thread {
+                                matmul_q6_k_q8_k_single_thread(
+                                    weights,
+                                    x_q8k,
+                                    out,
+                                    in_size_padded,
+                                    out_size,
+                                );
+                            } else {
+                                matmul_q6_k_q8_k(
+                                    weights,
+                                    x_q8k,
+                                    out,
+                                    in_size_padded,
+                                    out_size,
+                                );
+                            }
                         }
                         _ => unreachable!(),
                     }
