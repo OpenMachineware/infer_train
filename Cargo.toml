@@ -1726,6 +1726,10 @@ name = "bench-persistent-gemv"
 path = "tools/bench_persistent_gemv.rs"
 
 [[bin]]
+name = "bench-tiled-gemv"
+path = "tools/bench_tiled_gemv.rs"
+
+[[bin]]
 name = "test-pool-overhead"
 path = "tools/test_pool_overhead.rs"
 
