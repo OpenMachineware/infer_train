@@ -10,6 +10,7 @@ path = "src/main.rs"
 [[bin]]
 name = "test-dag"
 path = "tools/test_dag.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "bench-gemv-simple"
@@ -75,10 +76,12 @@ required-features = ["metal"]
 [[bin]]
 name = "test-gpu-forward-debug"
 path = "tools/test_gpu_forward_debug.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-perf"
 path = "tools/test_perf.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-gpu-zerocopy"
@@ -96,10 +99,12 @@ path = "tools/profile_gpu.rs"
 [[bin]]
 name = "generate"
 path = "tools/generate.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "debug-nan-gpu"
 path = "tools/debug_nan_gpu.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "debug-embed-shape"
@@ -108,10 +113,12 @@ path = "tools/debug_embed_shape.rs"
 [[bin]]
 name = "debug-nan-detailed"
 path = "tools/debug_nan_detailed.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-gemm-batch"
 path = "tools/test_gemm_batch.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "debug-weight-shapes"
@@ -168,26 +175,32 @@ path = "tools/trace_layer.rs"
 [[bin]]
 name = "test-kquant-mv-correctness"
 path = "tests/test_kquant_mv_correctness.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-kquant-mv-quantized"
 path = "tests/test_kquant_mv_quantized.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-kv-update-gpu"
 path = "tests/test_kv_update_gpu.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-kquant-mv-debug"
 path = "tests/test_kquant_mv_debug.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "kquant-mv-size-comparison"
 path = "benches/kquant_mv_size_comparison.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-transposed-gemv"
 path = "tests/test_transposed_gemv.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "debug-gpu-inference"
@@ -200,54 +213,67 @@ path = "tools/trace_gemv.rs"
 [[bin]]
 name = "trace-nan"
 path = "tools/trace_nan.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-q6k-gemm"
 path = "tools/test_q6k_gemm.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "debug-gemm"
 path = "tools/debug_gemm.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-new-gpu-path"
 path = "tools/test_new_gpu_path.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "bench-gpu-prefill"
 path = "tools/bench_gpu_prefill.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-fewer-command-buffers"
 path = "tools/test_fewer_command_buffers.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-gpu-forward"
 path = "tools/profile_gpu_forward.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-layer-detailed"
 path = "tools/profile_layer_detailed.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "compare-timing"
 path = "tools/compare_timing.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-dispatch-overhead"
 path = "tools/profile_dispatch_overhead.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-full-pass"
 path = "tools/profile_full_pass.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-three-layers"
 path = "tools/test_three_layers.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "compare-layer0-layer3"
 path = "tools/compare_layer0_layer3.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "bench-decode"
@@ -271,6 +297,7 @@ required-features = ["metal"]
 [[bin]]
 name = "kernel-timing"
 path = "tools/kernel_timing.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "check-layer-weights"
@@ -304,6 +331,7 @@ required-features = ["metal"]
 [[bin]]
 name = "test-q4k-gemv"
 path = "tools/test_q4k_gemv.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-q5k-dequant-unit"
@@ -312,46 +340,57 @@ path = "tools/test_q5k_dequant_unit.rs"
 [[bin]]
 name = "test-single-layer-debug"
 path = "tools/test_single_layer_debug.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-sequential-layers"
 path = "tools/test_sequential_layers.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-minimal-chain"
 path = "tools/test_minimal_chain.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-chain-forward"
 path = "tools/test_chain_forward.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-buffer-debug"
 path = "tools/test_buffer_debug.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layer1-input"
 path = "tools/test_layer1_input.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-trace-operations"
 path = "tools/test_trace_operations.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-exact-pattern"
 path = "tools/test_exact_pattern.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-buffer-reuse"
 path = "tools/test_buffer_reuse.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layer0-buffer"
 path = "tools/test_layer0_buffer.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-register-issue"
 path = "tools/test_register_issue.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-cpu-layer0"
@@ -360,10 +399,12 @@ path = "tools/test_cpu_layer0.rs"
 [[bin]]
 name = "test-layer-by-layer"
 path = "tools/test_layer_by_layer.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layer1-kcache"
 path = "tools/test_layer1_kcache.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-buffer-pointers"
@@ -372,78 +413,97 @@ path = "tools/test_buffer_pointers.rs"
 [[bin]]
 name = "test-layer-chain-debug"
 path = "tools/test_layer_chain_debug.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layer0-nan-source"
 path = "tools/test_layer0_nan_source.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-two-layers-manual"
 path = "tools/test_two_layers_manual.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-many-kernels"
 path = "tools/test_many_kernels.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-two-flash-attn"
 path = "tools/test_two_flash_attn.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-two-ffn"
 path = "tools/test_two_ffn.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-gemv-k1024"
 path = "tools/test_gemv_k1024.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-separate-encode"
 path = "tools/test_separate_encode.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-two-gemv"
 path = "tools/test_two_gemv.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-two-encoders"
 path = "tools/test_two_encoders.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layer-separate-cb"
 path = "tools/test_layer_separate_cb.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-forward-pool"
 path = "tools/test_forward_pool.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-gpu-layer0"
 path = "tools/test_gpu_layer0.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-gpu-q-proj"
 path = "tools/test_gpu_q_proj.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-gpu-rope"
 path = "tools/test_gpu_rope.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-gpu-kv-update"
 path = "tools/test_gpu_kv_update.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-kv-update-simple"
 path = "tools/test_kv_update_simple.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "debug-gpu-forward"
 path = "tools/debug_gpu_forward.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "debug-gpu-forward-step"
 path = "tools/debug_gpu_forward_step.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "debug-mla-layer"
@@ -457,26 +517,32 @@ required-features = ["metal"]
 [[bin]]
 name = "test-flash-mma"
 path = "tools/test_flash_mma.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "bench-dispatch"
 path = "tools/bench_dispatch.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "bench-gemv-dispatch"
 path = "tools/bench_gemv_dispatch.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "bench-forward"
 path = "tools/bench_forward.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "bench-flash-decode"
 path = "tools/bench_flash_decode.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-forward"
 path = "tools/profile_forward.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-flash-attn"
@@ -491,10 +557,12 @@ required-features = ["metal"]
 [[bin]]
 name = "test-gemm-prefill"
 path = "tools/test_gemm_prefill.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-flash-prefill-only"
 path = "tools/test_flash_prefill_only.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "compare-prefill"
@@ -504,6 +572,7 @@ required-features = ["metal"]
 [[bin]]
 name = "measure-dispatch-breakdown"
 path = "tools/measure_dispatch_breakdown.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-operation-breakdown"
@@ -553,30 +622,37 @@ required-features = ["metal"]
 [[bin]]
 name = "ssm-perf"
 path = "benches/ssm_perf.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "ssm-llama-compare"
 path = "benches/ssm_llama_compare.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "ssd-perf-isolated"
 path = "benches/ssd_perf_isolated.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "ssd-llama-direct"
 path = "benches/ssd_llama_direct.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "ssd-mma-compare"
 path = "benches/ssd_mma_compare.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "ssm-scan-compare"
 path = "benches/ssm_scan_compare.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "conv1d-direct-compare"
 path = "benches/conv1d_direct_compare.rs"
+required-features = ["metal"]
 
 [features]
 default = []
@@ -647,6 +723,7 @@ harness = false
 [[bin]]
 name = "f16-gemv-basic-vs-short"
 path = "benches/f16_gemv_basic_vs_short.rs"
+required-features = ["metal"]
 
 [[bench]]
 name = "gpu_kernel_comparison"
@@ -671,22 +748,27 @@ harness = false
 [[bin]]
 name = "test-batched-encode"
 path = "tools/test_batched_encode.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "debug-model"
 path = "tools/debug_model.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "debug-batched"
 path = "tools/debug_batched.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "q5k-gemv-perf"
 path = "benches/q5k_gemv_perf.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "compare-q5k-llama"
 path = "tools/compare_q5k_llama.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "stability-test"
@@ -695,46 +777,57 @@ path = "tools/stability_test.rs"
 [[bin]]
 name = "f16-gemv-bench"
 path = "benches/f16_gemv_bench.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "f16-gemv-roofline"
 path = "benches/f16_gemv_roofline.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "f16-gemv-adaptive-bench"
 path = "tools/f16_gemv_adaptive_bench.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "f16-gemv-correctness-test"
 path = "benches/f16_gemv_correctness_test.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "f16-gemv-short-correctness"
 path = "benches/f16_gemv_short_correctness.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "f16-gemv-basic-correctness"
 path = "benches/f16_gemv_basic_correctness.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "f16-gemv-4-correctness"
 path = "benches/f16_gemv_4_correctness.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "f16-gemv-basic-perf"
 path = "benches/f16_gemv_basic_perf.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "f16-gemv-short-perf"
 path = "benches/f16_gemv_short_perf.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "f16-gemv-vs-llama-native"
 path = "benches/f16_gemv_vs_llama_native.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "f16-gemv-vs-llama-real"
 path = "benches/f16_gemv_vs_llama_real.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-gpu-perf"
@@ -743,46 +836,57 @@ path = "tools/profile_gpu_perf.rs"
 [[bin]]
 name = "test-gemm-perf"
 path = "tools/test_gemm_perf.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-buffer-manager"
 path = "tools/test_buffer_manager.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-buffer-manager-correctness"
 path = "tools/test_buffer_manager_correctness.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-operation-executor"
 path = "tools/test_operation_executor.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layer-integration"
 path = "tools/test_layer_integration.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-gpu-forward-detailed"
+required-features = ["metal"]
 path = "tools/test_gpu_forward_detailed.rs"
 
 [[bin]]
 name = "test-rms-norm"
 path = "tools/test_rms_norm.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-n-layers"
 path = "tools/test_n_layers.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layer1"
 path = "tools/test_layer1.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-buffer-conflict"
 path = "tools/test_buffer_conflict.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-kv-cache-update"
 path = "tools/test_kv_cache_update.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-kv-dims"
@@ -790,6 +894,7 @@ path = "tools/test_kv_dims.rs"
 [[bin]]
 name = "test-layer-debug"
 path = "tools/test_layer_debug.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-dag-executor"
@@ -813,46 +918,57 @@ required-features = ["metal"]
 [[bin]]
 name = "test-first-layer"
 path = "tools/test_first_layer.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-reuse-pool"
 path = "tools/test_reuse_pool.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-fresh-context"
 path = "tools/test_fresh_context.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-fresh-metal-context"
 path = "tools/test_fresh_metal_context.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-reuse-pool-sharing"
 path = "tools/test_reuse_pool_sharing.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-multi-layer"
 path = "tools/test_multi_layer.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-nan-positions"
 path = "tools/test_nan_positions.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-two-layers"
 path = "tools/test_two_layers.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layer-threshold"
 path = "tools/test_layer_threshold.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-pool-lifecycle"
 path = "tools/test_pool_lifecycle.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layer-chain"
 path = "tools/test_layer_chain.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-determinism"
@@ -861,6 +977,7 @@ path = "tools/test_determinism.rs"
 [[bin]]
 name = "test-nondet"
 path = "tools/test_nondet.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-two-contexts"
@@ -869,82 +986,102 @@ path = "tools/test_two_contexts.rs"
 [[bin]]
 name = "test-layer0-only"
 path = "tools/test_layer0_only.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layers-progressive"
 path = "tools/test_layers_progressive.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-full-forward"
 path = "tools/test_full_forward.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-single-prefill"
 path = "tools/test_single_prefill.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-multi-prefill"
 path = "tools/test_multi_prefill.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-single-context-twice"
 path = "tools/test_single_context_twice.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layer-nan-trace"
 path = "tools/test_layer_nan_trace.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-fresh-metal-each"
 path = "tools/test_fresh_metal_each.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-embedding-only"
 path = "tools/test_embedding_only.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-thread-isolation"
 path = "tools/test_thread_isolation.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-cache-clear"
 path = "tools/test_cache_clear.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-threaded-inference"
 path = "tools/test_threaded_inference.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "benchmark-throughput"
 path = "tools/benchmark_throughput.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "benchmark-inference"
 path = "tools/benchmark_inference.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "benchmark-decode"
 path = "tools/benchmark_decode.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-timing"
 path = "tools/profile_timing.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "check-output-layer"
 path = "tools/check_output_layer.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-detailed"
 path = "tools/profile_detailed.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-decode"
 path = "tools/profile_decode.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-decode-breakdown"
 path = "tools/profile_decode_breakdown.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-decode-kernels"
@@ -954,14 +1091,17 @@ required-features = ["metal"]
 [[bin]]
 name = "test-nan-issue"
 path = "tools/test_nan_issue.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-step-by-step"
 path = "tools/test_step_by_step.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-single-context-steps"
 path = "tools/test_single_context_steps.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-layer-kernels"
@@ -971,34 +1111,42 @@ required-features = ["metal"]
 [[bin]]
 name = "measure-dispatch-overhead"
 path = "tools/measure_dispatch_overhead.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-all-gemv-sizes"
 path = "tools/test_all_gemv_sizes.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-fusion-perf"
 path = "tools/test_fusion_perf.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "benchmark-flash-attn"
 path = "tools/benchmark_flash_attn.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "measure-throughput"
 path = "tools/measure_throughput.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "debug-decode-nan"
 path = "tools/debug_decode_nan.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "debug-batch-flow"
 path = "tools/debug_batch_flow.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "check-weight-corruption"
 path = "tools/check_weight_corruption.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "check-weight-load-time"
@@ -1007,34 +1155,42 @@ path = "tools/check_weight_load_time.rs"
 [[bin]]
 name = "test-layer0-breakdown"
 path = "tools/test_layer0_breakdown.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-ffn-only"
 path = "tools/test_ffn_only.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-attention-only"
 path = "tools/test_attention_only.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-context-reset"
 path = "tools/test_context_reset.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layer0-output"
 path = "tools/test_layer0_output.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layer1-only"
 path = "tools/test_layer1_only.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layer1-skip"
 path = "tools/test_layer1_skip.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-layer2-only"
 path = "tools/test_layer2_only.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "check-layer-dtypes"
@@ -1043,10 +1199,12 @@ path = "tools/check_layer_dtypes.rs"
 [[bin]]
 name = "test-q5k-direct"
 path = "tools/test_q5k_direct.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "check-layer1-weights"
 path = "tools/check_layer1_weights.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-metal-device"
@@ -1055,37 +1213,48 @@ path = "tools/test_metal_device.rs"
 [[bin]]
 name = "test-swap-weights"
 path = "tools/test_swap_weights.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-shared-context"
 path = "tools/test_shared_context.rs"
+required-features = ["metal"]
 [[bin]]
 name = "analyze-gemv-sizes"
 path = "tools/analyze_gemv_sizes.rs"
+required-features = ["metal"]
 [[bin]]
 name = "profile-output-layer"
 path = "tools/profile_output_layer.rs"
+required-features = ["metal"]
 [[bin]]
 name = "profile-layer-breakdown"
 path = "tools/profile_layer_breakdown.rs"
+required-features = ["metal"]
 [[bin]]
 name = "test-q5k-perf"
 path = "tools/test_q5k_perf.rs"
+required-features = ["metal"]
 [[bin]]
 name = "test-q5k-batch"
 path = "tools/test_q5k_batch.rs"
+required-features = ["metal"]
 [[bin]]
 name = "test-q5k-batch-prealloc"
 path = "tools/test_q5k_batch_prealloc.rs"
+required-features = ["metal"]
 [[bin]]
 name = "test-layer-time"
 path = "tools/test_layer_time.rs"
+required-features = ["metal"]
 [[bin]]
 name = "profile-rope-time"
 path = "tools/profile_rope_time.rs"
+required-features = ["metal"]
 [[bin]]
 name = "profile-attention-time"
 path = "tools/profile_attention_time.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "bench-batched-prefill"
@@ -1100,7 +1269,7 @@ required-features = ["metal"]
 [[bin]]
 name = "bench-decode-prefill"
 path = "tools/bench_decode_prefill.rs"
-
+required-features = ["metal"]
 [[bin]]
 name = "benchmark-gemv-single"
 path = "tools/benchmark_gemv_single.rs"
@@ -1109,10 +1278,12 @@ required-features = ["metal"]
 [[bin]]
 name = "profile-prefill"
 path = "tools/profile_prefill.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-decode-ops"
 path = "tools/profile_decode_ops.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "trace-q5k-scales"
@@ -1121,38 +1292,47 @@ path = "tools/trace_q5k_scales.rs"
 [[bin]]
 name = "bench-detailed-decode"
 path = "tools/bench_detailed_decode.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "bench-q4k-gemv-vs-llama"
 path = "tools/bench_q4k_gemv_vs_llama.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "bench-operator-breakdown"
 path = "tools/bench_operator_breakdown.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-flash-attn-perf"
 path = "tools/test_flash_attn_perf.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-rope-perf"
 path = "tools/test_rope_perf.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-kv-update-perf"
 path = "tools/test_kv_update_perf.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-mma-batched"
 path = "tools/test_mma_batched.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "profile-decode-layer"
 path = "tools/profile_decode_layer.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-embedding-perf"
 path = "tools/test_embedding_perf.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-fused-qkv-perf"
@@ -1205,6 +1385,7 @@ path = "tools/analyze_fusion_patterns.rs"
 [[bin]]
 name = "compare-decode-timing"
 path = "tools/compare_decode_timing.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "analyze-weight-access"
@@ -1224,7 +1405,6 @@ required-features = ["metal"]
 [[bin]]
 name = "test-q6k-gemv"
 path = "tools/test_q6k_gemv.rs"
-required-features = ["metal"]
 
 [[bin]]
 name = "check-nan-after-gpu"
@@ -1238,6 +1418,7 @@ path = "tools/check_output_dtype.rs"
 [[bin]]
 name = "test-flash-batched"
 path = "tools/test_flash_batched.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-flash-batched-debug"
@@ -1247,10 +1428,12 @@ required-features = ["metal"]
 [[bin]]
 name = "analyze-flash-bandwidth"
 path = "tools/analyze_flash_bandwidth.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-flash-multihead"
 path = "tools/test_flash_multihead.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "trace-decode-nan"
@@ -1312,6 +1495,7 @@ required-features = ["metal"]
 [[bin]]
 name = "test-gemv-vs-gemm"
 path = "tools/test_gemv_vs_gemm.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "test-gemv-cache"
@@ -1320,7 +1504,6 @@ path = "tools/test_gemv_cache.rs"
 [[bin]]
 name = "test-quant-overhead"
 path = "tools/test_quant_overhead.rs"
-required-features = ["metal"]
 
 [[bin]]
 name = "test-gemm-storage"
@@ -1478,8 +1661,16 @@ name = "bench-cpu-zero-alloc-forward"
 path = "tools/bench_cpu_zero_alloc_forward.rs"
 
 [[bin]]
+name = "compare-vecdot-perf"
+path = "tools/compare_vecdot_perf.rs"
+
+[[bin]]
 name = "bench-cpu-prefill"
 path = "tools/bench_cpu_prefill.rs"
+
+[[bin]]
+name = "bench-q5k-vecdot"
+path = "tools/bench_q5k_vecdot.rs"
 
 [[bin]]
 name = "bench-silu"
@@ -1499,6 +1690,7 @@ path = "tools/profile_ffn_detailed.rs"
 
 [[bin]]
 name = "debug-profile-timing"
+required-features = ["metal"]
 path = "tools/debug_profile_timing.rs"
 
 [[bin]]
@@ -1516,3 +1708,27 @@ path = "tools/trace_first_ops.rs"
 [[bin]]
 name = "debug-k-projection"
 path = "tools/debug_k_projection.rs"
+
+[[bin]]
+name = "bench-thread-pool-perf"
+path = "tools/bench_thread_pool_perf.rs"
+
+[[bin]]
+name = "debug-pool"
+path = "tools/debug_pool.rs"
+
+[[bin]]
+name = "test-barrier"
+path = "tools/test_barrier.rs"
+
+[[bin]]
+name = "debug-barrier"
+path = "tools/debug_barrier.rs"
+
+[[bin]]
+name = "isolated-barrier"
+path = "tools/isolated_barrier.rs"
+
+[[bin]]
+name = "final-bench"
+path = "tools/final_bench.rs"

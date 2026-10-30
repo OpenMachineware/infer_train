@@ -32,7 +32,7 @@ Strata-0.2.6/
 
 # Added by cargo
 target/
-tools/
+tools/target
 native/
 
 # Temporary planning documents

@@ -3003,7 +3003,7 @@ impl LlamaModel {
 
     /// FFN computation with single-thread GEMV for decode
     #[cfg(target_arch = "aarch64")]
-    fn compute_ffn_zero_alloc_single_thread(
+    pub fn compute_ffn_zero_alloc_single_thread(
         &self,
         layer: &LlamaLayer,
         hidden: &[f32],
