@@ -1,10 +1,10 @@
-// Detailed CPU profiling - breakdown by operation
+// Profile CPU forward pass with detailed timing - enhanced version
 
+use infer_train::cpu::CpuWorkBuffers;
 use infer_train::inference::{
     Device, InferenceContext, KVCache, KVCacheBase, KVCacheFormat,
 };
-use infer_train::quant::kv_cache::quantize_row_q8_k_neon;
-use infer_train::quant::types::{BlockQ8K, QK_K};
+use infer_train::model::LlamaModel;
 use std::time::Instant;
 
 fn main() {
@@ -15,255 +15,469 @@ fn main() {
     }
 
     let model_path = &args[1];
-    println!("=== Detailed CPU Profiling ===\n");
-    println!("Model: {}", model_path);
+    println!("=== CPU Detailed Profile v2 ===\n");
 
-    // Load model
     let ctx = InferenceContext::from_gguf(model_path, Device::Cpu)
         .expect("Failed to load model");
+    println!(
+        "Model: {} layers, hidden={}, intermediate={}",
+        ctx.model.layers.len(),
+        ctx.config.hidden_size,
+        ctx.config.intermediate_size
+    );
+
     let hidden_size = ctx.config.hidden_size;
-    println!("Hidden size: {}", hidden_size);
+    let intermediate_size = ctx.config.intermediate_size;
+    let n_heads = ctx.config.n_heads;
+    let n_kv_heads = ctx.config.n_kv_heads;
+    let head_dim = ctx.config.head_dim;
+    let n_layers = ctx.model.layers.len();
+    let vocab_size = ctx.config.vocab_size;
+
+    let qkv_out_size =
+        ctx.model.layers[0].attn_qkv.as_ref().map(|t| t.shape[1]).unwrap_or(0);
+
+    let mut buffers = CpuWorkBuffers::new(
+        hidden_size,
+        intermediate_size,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        ctx.config.key_length,
+        ctx.config.value_length,
+        vocab_size,
+        qkv_out_size,
+        2048,
+        n_layers,
+    );
+    buffers.init_norm_weights(&ctx.model);
 
     let mut kv_cache = KVCache::new(&ctx.config, 2048, KVCacheFormat::F32);
 
     // Warmup
-    println!("\n=== Warmup ===");
-    let tokens: Vec<u32> = vec![1, 2, 3];
-    let _ = ctx.model.forward(&tokens, &mut kv_cache);
-    kv_cache.clear();
-    println!("Warmup complete");
-
-    // Profile quantization
-    println!("\n=== Profile Input Quantization ===");
-    let x: Vec<f32> = vec![0.1; hidden_size];
-    let nb = (hidden_size + QK_K - 1) / QK_K;
-    let mut x_q8k = vec![0u8; nb * std::mem::size_of::<BlockQ8K>()];
-    let x_q8k_blocks = unsafe {
-        std::slice::from_raw_parts_mut(x_q8k.as_mut_ptr() as *mut BlockQ8K, nb)
-    };
-
-    // Measure quantization time
-    let n_iter = 100;
-    let start = Instant::now();
-    for _ in 0..n_iter {
-        quantize_row_q8_k_neon(&x, x_q8k_blocks);
-    }
-    let quant_time = start.elapsed() / n_iter;
-    println!(
-        "quantize_row_q8_k_neon: {:?} per call ({} iterations)",
-        quant_time, n_iter
-    );
-    println!("  Elements: {}", hidden_size);
-    println!(
-        "  Throughput: {:.2} GB/s",
-        (hidden_size * 4) as f64 / quant_time.as_secs_f64() / 1e9
-    );
-
-    // Profile single layer
-    println!("\n=== Profile Single Layer ===");
+    let _ = ctx.model.forward(&[1, 2, 3], &mut kv_cache);
     kv_cache.clear();
 
-    // Create work buffers similar to forward_pooled
-    let mut buffers = infer_train::cpu::CpuWorkBuffers::new(
-        hidden_size,
-        ctx.config.intermediate_size,
-        ctx.config.n_heads,
-        ctx.config.n_kv_heads,
-        ctx.config.head_dim,
-        ctx.config.key_length,
-        ctx.config.value_length,
-        ctx.config.vocab_size,
-        0,    // qkv_out_size - auto-calculate
-        2048, // max_seq_len
-        ctx.config.n_layers,
-    );
-
-    // Get first layer
+    // Detailed breakdown for first layer
+    println!("\n=== First Layer Breakdown ===");
     let layer = &ctx.model.layers[0];
 
-    // Manual single token forward with timing
-    let token = 1u32;
-    ctx.model
-        .embedding_lookup_into(token, &mut buffers.hidden)
-        .expect("Embedding failed");
-
-    let mut total_norm_time = std::time::Duration::ZERO;
-    let mut total_quant_time = std::time::Duration::ZERO;
-    let mut total_gemv_time = std::time::Duration::ZERO;
-    let mut total_rope_time = std::time::Duration::ZERO;
-    let mut total_attn_time = std::time::Duration::ZERO;
-    let mut total_ffn_time = std::time::Duration::ZERO;
-
-    // Measure attention norm
-    let start = Instant::now();
-    let attn_norm_offset = 0 * 2 * hidden_size;
+    // Attention norm
+    let t = Instant::now();
+    let attn_norm_offset = 0;
     ctx.model.apply_rms_norm_predequant(
         &buffers.hidden,
         &buffers.norm_weights[attn_norm_offset..attn_norm_offset + hidden_size],
         &mut buffers.hidden_alt,
     );
-    total_norm_time += start.elapsed();
+    println!("Attn norm: {} µs", t.elapsed().as_micros());
 
-    // Measure QKV projection
+    // QKV projections individually
+    let mut total_qkv = 0u64;
+
+    let t = Instant::now();
     if let Some(ref qkv) = layer.attn_qkv {
-        let start = Instant::now();
-        // The quantization happens inside gemv_into_with_buffers
-        // We need to instrument it separately
-        let gemv_start = Instant::now();
         ctx.model.gemv_into_with_buffers(
             &buffers.hidden_alt,
             qkv,
-            &mut buffers.qkv_buffer,
+            &mut buffers.qkv_buffer[..qkv.shape[1]],
             &mut buffers.q8k_input,
             &mut buffers.x_padded,
         );
-        let gemv_elapsed = gemv_start.elapsed();
-        total_gemv_time += gemv_elapsed;
+    } else {
+        // Separate wq/wk/wv
+        let x_q8k_blocks = unsafe {
+            use infer_train::quant::types::{BlockQ8K, QK_K};
+            let in_size_padded = ((hidden_size + QK_K - 1) / QK_K) * QK_K;
+            let nb = in_size_padded / QK_K;
+            std::slice::from_raw_parts_mut(
+                buffers.q8k_input.as_mut_ptr() as *mut BlockQ8K,
+                nb,
+            )
+        };
+        LlamaModel::quantize_input_to_q8k(
+            &buffers.hidden_alt,
+            x_q8k_blocks,
+            &mut buffers.x_padded,
+        );
+
+        let t1 = Instant::now();
+        ctx.model.gemv_with_prequant(
+            x_q8k_blocks,
+            hidden_size,
+            layer.wq.as_ref().unwrap(),
+            &mut buffers.q_buffer[..n_heads * head_dim],
+        );
+        let wq_time = t1.elapsed().as_micros();
+        println!(
+            "wq GEMV ({}x{}): {} µs",
+            hidden_size,
+            n_heads * head_dim,
+            wq_time
+        );
+        total_qkv += wq_time as u64;
+
+        let t2 = Instant::now();
+        ctx.model.gemv_with_prequant(
+            x_q8k_blocks,
+            hidden_size,
+            layer.wk.as_ref().unwrap(),
+            &mut buffers.k_buffer[..n_kv_heads * head_dim],
+        );
+        let wk_time = t2.elapsed().as_micros();
+        println!(
+            "wk GEMV ({}x{}): {} µs",
+            hidden_size,
+            n_kv_heads * head_dim,
+            wk_time
+        );
+        total_qkv += wk_time as u64;
+
+        let t3 = Instant::now();
+        ctx.model.gemv_with_prequant(
+            x_q8k_blocks,
+            hidden_size,
+            layer.wv.as_ref().unwrap(),
+            &mut buffers.v_buffer[..n_kv_heads * head_dim],
+        );
+        let wv_time = t3.elapsed().as_micros();
+        println!(
+            "wv GEMV ({}x{}): {} µs",
+            hidden_size,
+            n_kv_heads * head_dim,
+            wv_time
+        );
+        total_qkv += wv_time as u64;
+    }
+    let qkv_time = t.elapsed().as_micros();
+    if total_qkv > 0 {
+        println!(
+            "QKV quant + GEMV total: {} µs (quant: {} µs)",
+            qkv_time,
+            qkv_time as i64 - total_qkv as i64
+        );
+    } else {
+        println!("QKV fused GEMV: {} µs", qkv_time);
     }
 
-    // Measure RoPE
-    let start = Instant::now();
-    // ... (simplified, actual RoPE call would be here)
-    total_rope_time += start.elapsed();
+    // RoPE
+    let t = Instant::now();
+    let pos = 0;
+    let q_size = n_heads * head_dim;
+    ctx.model
+        .apply_rope_into(
+            &buffers.q_buffer[..q_size],
+            pos,
+            n_heads,
+            head_dim,
+            &mut buffers.rope_buffer,
+        )
+        .unwrap();
+    buffers.q_buffer[..q_size].copy_from_slice(&buffers.rope_buffer[..q_size]);
+    let k_size = n_kv_heads * head_dim;
+    ctx.model
+        .apply_rope_into(
+            &buffers.k_buffer[..k_size],
+            pos,
+            n_kv_heads,
+            head_dim,
+            &mut buffers.rope_buffer,
+        )
+        .unwrap();
+    buffers.k_buffer[..k_size].copy_from_slice(&buffers.rope_buffer[..k_size]);
+    println!("RoPE: {} µs", t.elapsed().as_micros());
 
-    // Measure attention
-    let start = Instant::now();
-    // ... (simplified, actual attention call would be here)
-    total_attn_time += start.elapsed();
-
-    // Measure FFN
-    let start = Instant::now();
-    // ... (simplified, actual FFN call would be here)
-    total_ffn_time += start.elapsed();
-
-    println!("\n  Layer 0 breakdown:");
-    println!("    Norm:    {:?}", total_norm_time);
-    println!("    GEMV:    {:?}", total_gemv_time);
-    println!("    RoPE:    {:?}", total_rope_time);
-    println!("    Attn:    {:?}", total_attn_time);
-    println!("    FFN:     {:?}", total_ffn_time);
-
-    // Full decode profiling with timing breakdown
-    println!("\n=== Full Decode Profiling ===");
-    kv_cache.clear();
-
-    let mut decode_tokens = vec![1u32];
-    let n_decode = 10;
-
-    let mut total_decode_time = std::time::Duration::ZERO;
-    let mut total_quant_all = std::time::Duration::ZERO;
-    let mut total_gemv_all = std::time::Duration::ZERO;
-    let mut total_other = std::time::Duration::ZERO;
-
-    for i in 0..n_decode {
-        let token_start = Instant::now();
-        let _ = ctx.model.forward_pooled(
-            &decode_tokens,
+    // Attention
+    let t = Instant::now();
+    ctx.model
+        .attention_zero_alloc(
+            &buffers.q_buffer,
+            &buffers.k_buffer,
+            &buffers.v_buffer,
+            0,
             &mut kv_cache,
-            &mut buffers,
-        );
-        total_decode_time += token_start.elapsed();
+            n_heads,
+            head_dim,
+            n_kv_heads,
+            &mut buffers.attn_out,
+            &mut buffers.attn_scores,
+        )
+        .unwrap();
+    println!("Attention: {} µs", t.elapsed().as_micros());
 
-        decode_tokens.clear();
-        decode_tokens.push(100 + i as u32);
+    // wo projection
+    let t = Instant::now();
+    ctx.model.gemv_into_with_buffers(
+        &buffers.attn_out,
+        layer.wo.as_ref().unwrap(),
+        &mut buffers.hidden_alt,
+        &mut buffers.q8k_input,
+        &mut buffers.x_padded,
+    );
+    println!(
+        "wo GEMV ({}x{}): {} µs",
+        hidden_size,
+        hidden_size,
+        t.elapsed().as_micros()
+    );
+
+    // Residual
+    for i in 0..hidden_size {
+        buffers.hidden[i] += buffers.hidden_alt[i];
     }
 
-    println!("\nAverage decode time: {:?}", total_decode_time / n_decode);
-
-    // Estimate operations
-    let n_layers = ctx.config.n_layers;
-    let gemv_per_token = n_layers * 3 + n_layers * 2; // QKV + FFN (gate + up)
-    let quant_per_token = gemv_per_token; // Each GEMV needs input quantization
-
-    println!("\n  Operations per token:");
-    println!("    Layers: {}", n_layers);
-    println!("    GEMV calls: {}", gemv_per_token);
-    println!("    Quant calls: {}", quant_per_token);
-    println!(
-        "    Estimated quant time: {:?}",
-        quant_time * quant_per_token as u32
+    // FFN norm
+    let t = Instant::now();
+    let ffn_norm_offset = hidden_size;
+    ctx.model.apply_rms_norm_predequant(
+        &buffers.hidden,
+        &buffers.norm_weights[ffn_norm_offset..ffn_norm_offset + hidden_size],
+        &mut buffers.hidden_alt,
     );
-    println!(
-        "    Estimated GEMV time: {:?}",
-        total_gemv_time * n_layers as u32
-    );
+    println!("FFN norm: {} µs", t.elapsed().as_micros());
 
-    // Calculate breakdown
-    let est_quant = quant_time * quant_per_token as u32;
-    let est_gemv = total_gemv_time * n_layers as u32;
-    let est_other = total_decode_time - est_quant - est_gemv;
-
-    println!("\n  Time breakdown estimate:");
-    println!(
-        "    Quantization: {:?} ({:.1}%)",
-        est_quant,
-        est_quant.as_secs_f64() / total_decode_time.as_secs_f64() * 100.0
-    );
-    println!(
-        "    GEMV:         {:?} ({:.1}%)",
-        est_gemv,
-        est_gemv.as_secs_f64() / total_decode_time.as_secs_f64() * 100.0
-    );
-    println!(
-        "    Other:        {:?} ({:.1}%)",
-        est_other,
-        est_other.as_secs_f64() / total_decode_time.as_secs_f64() * 100.0
+    // FFN breakdown
+    println!("\nFFN Breakdown:");
+    let x_q8k_blocks = unsafe {
+        use infer_train::quant::types::{BlockQ8K, QK_K};
+        let in_size_padded = ((hidden_size + QK_K - 1) / QK_K) * QK_K;
+        let nb = in_size_padded / QK_K;
+        std::slice::from_raw_parts_mut(
+            buffers.q8k_input.as_mut_ptr() as *mut BlockQ8K,
+            nb,
+        )
+    };
+    LlamaModel::quantize_input_to_q8k(
+        &buffers.hidden_alt,
+        x_q8k_blocks,
+        &mut buffers.x_padded,
     );
 
-    // Check thread pool overhead
-    println!("\n=== Thread Pool Overhead Check ===");
-    let pool = &*infer_train::cpu::thread_pool::GLOBAL_THREAD_POOL;
+    let t = Instant::now();
+    ctx.model.gemv_with_prequant(
+        x_q8k_blocks,
+        hidden_size,
+        layer.w1.as_ref().unwrap(),
+        &mut buffers.ffn_gate,
+    );
+    println!(
+        "w1 GEMV ({}x{}): {} µs",
+        hidden_size,
+        intermediate_size,
+        t.elapsed().as_micros()
+    );
 
-    // Simple test - measure thread pool execute overhead
-    let n_threads = pool.n_threads();
-    println!("Thread pool threads: {}", n_threads);
+    let t = Instant::now();
+    ctx.model.gemv_with_prequant(
+        x_q8k_blocks,
+        hidden_size,
+        layer.w3.as_ref().unwrap(),
+        &mut buffers.ffn_up,
+    );
+    println!(
+        "w3 GEMV ({}x{}): {} µs",
+        hidden_size,
+        intermediate_size,
+        t.elapsed().as_micros()
+    );
 
-    let mut counter = std::sync::atomic::AtomicUsize::new(0);
-    let n_items = 1000;
+    // SiLU + mul
+    let t = Instant::now();
+    for i in 0..intermediate_size {
+        let silu = buffers.ffn_gate[i] / (1.0 + buffers.ffn_gate[i].exp());
+        buffers.ffn_up[i] = silu * buffers.ffn_up[i];
+    }
+    println!("SiLU+mul: {} µs", t.elapsed().as_micros());
+
+    let t = Instant::now();
+    ctx.model.gemv_with_prequant(
+        x_q8k_blocks,
+        hidden_size,
+        layer.w2.as_ref().unwrap(),
+        &mut buffers.hidden,
+    );
+    println!(
+        "w2 GEMV ({}x{}): {} µs",
+        intermediate_size,
+        hidden_size,
+        t.elapsed().as_micros()
+    );
+
+    // Full token benchmark
+    println!("\n=== Full Token Benchmark ===");
+    kv_cache.clear();
+    buffers.hidden.fill(0.0);
+    buffers.hidden_alt.fill(0.0);
 
     let start = Instant::now();
-    for _ in 0..n_iter {
-        counter.store(0, std::sync::atomic::Ordering::Relaxed);
-        pool.execute(
-            |counter_ptr, chunk_size, n_items, _user_data| unsafe {
-                let counter =
-                    &*(counter_ptr as *const std::sync::atomic::AtomicUsize);
-                loop {
-                    let chunk_start = counter.fetch_add(
-                        chunk_size,
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
-                    if chunk_start >= n_items {
-                        break;
-                    }
-                }
-            },
-            n_items,
-            64,
-            &counter as *const _ as usize,
+    for _ in 0..5 {
+        let mut total_gemv = 0u64;
+        let mut total_attn = 0u64;
+        let mut total_norm = 0u64;
+        let mut total_ffn = 0u64;
+
+        for (layer_idx, layer) in ctx.model.layers.iter().enumerate() {
+            let t1 = Instant::now();
+            let attn_norm_offset = layer_idx * 2 * hidden_size;
+            ctx.model.apply_rms_norm_predequant(
+                &buffers.hidden,
+                &buffers.norm_weights
+                    [attn_norm_offset..attn_norm_offset + hidden_size],
+                &mut buffers.hidden_alt,
+            );
+            total_norm += t1.elapsed().as_micros() as u64;
+
+            let t2 = Instant::now();
+            if let Some(ref qkv) = layer.attn_qkv {
+                // Use single-thread GEMV for decode
+                ctx.model.gemv_into_with_buffers_single_thread(
+                    &buffers.hidden_alt,
+                    qkv,
+                    &mut buffers.qkv_buffer[..qkv.shape[1]],
+                    &mut buffers.q8k_input,
+                    &mut buffers.x_padded,
+                );
+            } else {
+                let x_q8k_blocks = unsafe {
+                    use infer_train::quant::types::{BlockQ8K, QK_K};
+                    let in_size_padded =
+                        ((hidden_size + QK_K - 1) / QK_K) * QK_K;
+                    let nb = in_size_padded / QK_K;
+                    std::slice::from_raw_parts_mut(
+                        buffers.q8k_input.as_mut_ptr() as *mut BlockQ8K,
+                        nb,
+                    )
+                };
+                LlamaModel::quantize_input_to_q8k(
+                    &buffers.hidden_alt,
+                    x_q8k_blocks,
+                    &mut buffers.x_padded,
+                );
+                // Use single-thread GEMV for decode (eliminates thread creation overhead)
+                ctx.model.gemv_with_prequant_single_thread(
+                    x_q8k_blocks,
+                    hidden_size,
+                    layer.wq.as_ref().unwrap(),
+                    &mut buffers.q_buffer[..n_heads * head_dim],
+                );
+                ctx.model.gemv_with_prequant_single_thread(
+                    x_q8k_blocks,
+                    hidden_size,
+                    layer.wk.as_ref().unwrap(),
+                    &mut buffers.k_buffer[..n_kv_heads * head_dim],
+                );
+                ctx.model.gemv_with_prequant_single_thread(
+                    x_q8k_blocks,
+                    hidden_size,
+                    layer.wv.as_ref().unwrap(),
+                    &mut buffers.v_buffer[..n_kv_heads * head_dim],
+                );
+            }
+
+            let pos = kv_cache.seq_len();
+            let q_size = n_heads * head_dim;
+            ctx.model
+                .apply_rope_into(
+                    &buffers.q_buffer[..q_size],
+                    pos,
+                    n_heads,
+                    head_dim,
+                    &mut buffers.rope_buffer,
+                )
+                .unwrap();
+            buffers.q_buffer[..q_size]
+                .copy_from_slice(&buffers.rope_buffer[..q_size]);
+
+            let k_size = n_kv_heads * head_dim;
+            ctx.model
+                .apply_rope_into(
+                    &buffers.k_buffer[..k_size],
+                    pos,
+                    n_kv_heads,
+                    head_dim,
+                    &mut buffers.rope_buffer,
+                )
+                .unwrap();
+            buffers.k_buffer[..k_size]
+                .copy_from_slice(&buffers.rope_buffer[..k_size]);
+
+            ctx.model
+                .attention_zero_alloc(
+                    &buffers.q_buffer,
+                    &buffers.k_buffer,
+                    &buffers.v_buffer,
+                    layer_idx,
+                    &mut kv_cache,
+                    n_heads,
+                    head_dim,
+                    n_kv_heads,
+                    &mut buffers.attn_out,
+                    &mut buffers.attn_scores,
+                )
+                .unwrap();
+
+            // Use single-thread GEMV for wo projection
+            ctx.model.gemv_into_with_buffers_single_thread(
+                &buffers.attn_out,
+                layer.wo.as_ref().unwrap(),
+                &mut buffers.hidden_alt,
+                &mut buffers.q8k_input,
+                &mut buffers.x_padded,
+            );
+            total_gemv += t2.elapsed().as_micros() as u64;
+
+            for i in 0..hidden_size {
+                buffers.hidden[i] += buffers.hidden_alt[i];
+            }
+
+            let t3 = Instant::now();
+            let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
+            ctx.model.apply_rms_norm_predequant(
+                &buffers.hidden,
+                &buffers.norm_weights
+                    [ffn_norm_offset..ffn_norm_offset + hidden_size],
+                &mut buffers.hidden_alt,
+            );
+
+            // For FFN: use multi-thread for large matrices (compute > thread overhead)
+            // w1 and w3: 1536x8960 (large, use multi-thread)
+            // w2: 8960x1536 (large, use multi-thread)
+            ctx.model
+                .compute_ffn_zero_alloc(
+                    layer,
+                    &buffers.hidden_alt,
+                    &mut buffers.ffn_gate,
+                    &mut buffers.ffn_up,
+                    &mut buffers.hidden,
+                    &mut buffers.q8k_input,
+                    &mut buffers.x_padded,
+                )
+                .unwrap();
+            total_ffn += t3.elapsed().as_micros() as u64;
+        }
+
+        kv_cache.advance();
+
+        println!(
+            "GEMV: {} µs, Attn: {} µs, Norm: {} µs, FFN: {} µs",
+            total_gemv, total_attn, total_norm, total_ffn
         );
     }
-    let pool_overhead = start.elapsed() / n_iter;
-    println!(
-        "Thread pool execute (empty work): {:?} per call ({} iterations)",
-        pool_overhead, n_iter
-    );
 
-    println!("\n=== Summary ===");
-    println!("Total decode time: {:?}", total_decode_time / n_decode);
-    println!(
-        "Thread pool overhead per token: {:?}",
-        pool_overhead * (gemv_per_token as u32)
-    );
-    println!("Quantization time per token: {:?}", est_quant);
-    println!();
-    println!("Bandwidth analysis:");
-    let weights_bytes = 7.0 * 1024.0 * 1024.0 * 1024.0; // ~7GB for 7B model
-    let time_per_token = total_decode_time / n_decode;
-    let bandwidth = weights_bytes / time_per_token.as_secs_f64();
-    println!("  Estimated bandwidth: {:.2} GB/s", bandwidth);
-    println!(
-        "  Theoretical (100 GB/s): {:.1}% utilization",
-        bandwidth / 100.0 * 100.0
-    );
+    let elapsed = start.elapsed();
+    println!("\nTotal 5 tokens: {:?}", elapsed);
+    println!("Per token: {} µs", elapsed.as_micros() / 5);
+    println!("Speed: {:.1} t/s", 5.0 / elapsed.as_secs_f64());
+
+    println!("\n=== Memory Bandwidth Estimate ===");
+    // For 1.5B model: ~1.5B parameters
+    // Q5_K: ~0.7 bytes per parameter
+    // Total weight size: ~1GB
+    // Per token: all weights touched once
+    let weight_size_gb = 1.5 * 0.7 / 1.0; // 1.05 GB
+    let time_s = (elapsed.as_micros() / 5) as f64 / 1_000_000.0;
+    let bandwidth_gbs = weight_size_gb / time_s;
+    println!("Weight size: {:.2} GB", weight_size_gb);
+    println!("Time per token: {:.3} ms", time_s * 1000.0);
+    println!("Memory bandwidth: {:.1} GB/s", bandwidth_gbs);
 }

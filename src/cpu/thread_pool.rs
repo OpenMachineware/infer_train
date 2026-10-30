@@ -94,7 +94,7 @@ pub fn parallel_work_stealing<F>(
 }
 
 /// Parallel chunks with fixed distribution using std::thread::scope
-/// Falls back to single-threaded for small workloads
+/// Falls back to single-threaded only for n_threads == 1
 pub fn parallel_chunks<F>(n_items: usize, n_threads: usize, f: F)
 where
     F: Fn(usize, usize) + Send + Sync + Clone,
@@ -103,8 +103,8 @@ where
         return;
     }
 
-    // Single-threaded for small workloads
-    if n_items < 2048 || n_threads == 1 {
+    // Single-threaded only if explicitly requested
+    if n_threads == 1 {
         f(0, n_items);
         return;
     }
