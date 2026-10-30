@@ -80,6 +80,27 @@ unsafe fn matmul_q4_k_q8_k_standard(
     });
 }
 
+/// Single-thread Q4_K × Q8_K matrix-vector multiplication
+/// For decode (batch=1) where thread overhead dominates
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q4_k_q8_k_single_thread(
+    weights: &[BlockQ4K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    let nb = k / QK_K;
+
+    for row in 0..m {
+        dst[row] = vec_dot_q4_k_q8_k_neon(
+            k,
+            std::slice::from_raw_parts(weights.as_ptr().add(row * nb), nb),
+            x,
+        );
+    }
+}
+
 /// Q6_K × Q8_K matrix-vector multiplication
 /// Uses std::thread::scope for low-overhead parallel execution
 #[target_feature(enable = "neon,dotprod")]
@@ -106,6 +127,27 @@ pub unsafe fn matmul_q6_k_q8_k(
             );
         }
     });
+}
+
+/// Single-thread Q6_K × Q8_K matrix-vector multiplication
+/// For decode (batch=1) where thread overhead dominates
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q6_k_q8_k_single_thread(
+    weights: &[BlockQ6K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    let nb = k / QK_K;
+
+    for row in 0..m {
+        dst[row] = vec_dot_q6_k_q8_k_neon(
+            k,
+            std::slice::from_raw_parts(weights.as_ptr().add(row * nb), nb),
+            x,
+        );
+    }
 }
 
 /// Q5_K × Q8_K matrix-vector multiplication
@@ -136,6 +178,27 @@ pub unsafe fn matmul_q5_k_q8_k(
     });
 }
 
+/// Single-thread Q5_K × Q8_K matrix-vector multiplication
+/// For decode (batch=1) where thread overhead dominates
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q5_k_q8_k_single_thread(
+    weights: &[BlockQ5K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    let nb = k / QK_K;
+
+    for row in 0..m {
+        dst[row] = vec_dot_q5_k_q8_k_neon(
+            k,
+            std::slice::from_raw_parts(weights.as_ptr().add(row * nb), nb),
+            x,
+        );
+    }
+}
+
 /// Q3_K × Q8_K matrix-vector multiplication
 /// Uses std::thread::scope for low-overhead parallel execution
 #[target_feature(enable = "neon,dotprod")]
@@ -162,6 +225,27 @@ pub unsafe fn matmul_q3_k_q8_k(
             );
         }
     });
+}
+
+/// Single-thread Q3_K × Q8_K matrix-vector multiplication
+/// For decode (batch=1) where thread overhead dominates
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q3_k_q8_k_single_thread(
+    weights: &[BlockQ3K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    let nb = k / QK_K;
+
+    for row in 0..m {
+        dst[row] = vec_dot_q3_k_q8_k_neon(
+            k,
+            std::slice::from_raw_parts(weights.as_ptr().add(row * nb), nb),
+            x,
+        );
+    }
 }
 
 /// Q2_K × Q8_K matrix-vector multiplication
@@ -192,6 +276,27 @@ pub unsafe fn matmul_q2_k_q8_k(
     });
 }
 
+/// Single-thread Q2_K × Q8_K matrix-vector multiplication
+/// For decode (batch=1) where thread overhead dominates
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q2_k_q8_k_single_thread(
+    weights: &[BlockQ2K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    let nb = k / QK_K;
+
+    for row in 0..m {
+        dst[row] = vec_dot_q2_k_q8_k_neon(
+            k,
+            std::slice::from_raw_parts(weights.as_ptr().add(row * nb), nb),
+            x,
+        );
+    }
+}
+
 /// Q4_0 × Q8_0 matrix-vector multiplication
 /// Uses std::thread::scope for low-overhead parallel execution
 pub unsafe fn matmul_q4_0_q8_0(
@@ -217,6 +322,26 @@ pub unsafe fn matmul_q4_0_q8_0(
             );
         }
     });
+}
+
+/// Single-thread Q4_0 × Q8_0 matrix-vector multiplication
+/// For decode (batch=1) where thread overhead dominates
+pub unsafe fn matmul_q4_0_q8_0_single_thread(
+    weights: &[BlockQ4_0],
+    x: &[BlockQ8_0],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    let nb = k / QK4_0;
+
+    for i in 0..m {
+        dst[i] = vec_dot_q4_0_q8_0_neon(
+            k,
+            std::slice::from_raw_parts(weights.as_ptr().add(i * nb), nb),
+            x,
+        );
+    }
 }
 
 /// Q5_0 × Q8_0 matrix-vector multiplication
@@ -246,6 +371,26 @@ pub unsafe fn matmul_q5_0_q8_0(
     });
 }
 
+/// Single-thread Q5_0 × Q8_0 matrix-vector multiplication
+/// For decode (batch=1) where thread overhead dominates
+pub unsafe fn matmul_q5_0_q8_0_single_thread(
+    weights: &[BlockQ5_0],
+    x: &[BlockQ8_0],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    let nb = k / QK8_0;
+
+    for i in 0..m {
+        dst[i] = vec_dot_q5_0_q8_0_neon(
+            k,
+            std::slice::from_raw_parts(weights.as_ptr().add(i * nb), nb),
+            x,
+        );
+    }
+}
+
 /// Q4_1 × Q8_1 matrix-vector multiplication
 /// Uses std::thread::scope for low-overhead parallel execution
 pub unsafe fn matmul_q4_1_q8_1(
@@ -273,6 +418,26 @@ pub unsafe fn matmul_q4_1_q8_1(
     });
 }
 
+/// Single-thread Q4_1 × Q8_1 matrix-vector multiplication
+/// For decode (batch=1) where thread overhead dominates
+pub unsafe fn matmul_q4_1_q8_1_single_thread(
+    weights: &[BlockQ4_1],
+    x: &[BlockQ8_1],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    let nb = k / QK4_0;
+
+    for i in 0..m {
+        dst[i] = vec_dot_q4_1_q8_1_neon(
+            k,
+            std::slice::from_raw_parts(weights.as_ptr().add(i * nb), nb),
+            x,
+        );
+    }
+}
+
 /// Q5_1 × Q8_1 matrix-vector multiplication
 /// Uses std::thread::scope for low-overhead parallel execution
 pub unsafe fn matmul_q5_1_q8_1(
@@ -298,6 +463,26 @@ pub unsafe fn matmul_q5_1_q8_1(
             );
         }
     });
+}
+
+/// Single-thread Q5_1 × Q8_1 matrix-vector multiplication
+/// For decode (batch=1) where thread overhead dominates
+pub unsafe fn matmul_q5_1_q8_1_single_thread(
+    weights: &[BlockQ5_1],
+    x: &[BlockQ8_1],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    let nb = k / QK8_0;
+
+    for i in 0..m {
+        dst[i] = vec_dot_q5_1_q8_1_neon(
+            k,
+            std::slice::from_raw_parts(weights.as_ptr().add(i * nb), nb),
+            x,
+        );
+    }
 }
 
 // ===== IQ series matmul =====
@@ -596,4 +781,33 @@ pub unsafe fn matmul_f16_f32(
             k,
         );
     });
+}
+
+/// Single-thread F16 matrix-vector multiplication
+/// For decode (batch=1) where thread overhead dominates
+#[target_feature(enable = "neon")]
+pub unsafe fn matmul_f16_f32_single_thread(
+    weights: &[u16], // F16 data
+    x: &[f32],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    use crate::ops::arm::neon::dup_f32_to_f16_neon;
+    use crate::ops::attention::vec_dot_f16_neon;
+    use half::f16;
+
+    // Convert input x to F16 once
+    let mut x_f16 = vec![0u16; k];
+    let x_f16_slice =
+        std::slice::from_raw_parts_mut(x_f16.as_mut_ptr() as *mut f16, k);
+    dup_f32_to_f16_neon(x, x_f16_slice);
+
+    for i in 0..m {
+        dst[i] = vec_dot_f16_neon(
+            weights.get_unchecked(i * k..(i + 1) * k),
+            &x_f16,
+            k,
+        );
+    }
 }
