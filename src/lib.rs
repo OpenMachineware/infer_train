@@ -24,3 +24,6 @@ pub mod profiling;
 pub mod quant;
 pub mod strategy;
 pub mod tokenize;
+
+// Re-export commonly used types for convenience
+pub use inference::{Device, InferenceContext};

@@ -55,6 +55,31 @@ fn main() {
         // Use actual tensor dimension
         qkv.shape[1]
     } else {
+        println!("No fused QKV, checking separate weights:");
+        println!(
+            "  wq: {:?}",
+            ctx.model.layers[0].wq.as_ref().map(|t| &t.shape)
+        );
+        println!(
+            "  wk: {:?}",
+            ctx.model.layers[0].wk.as_ref().map(|t| &t.shape)
+        );
+        println!(
+            "  wv: {:?}",
+            ctx.model.layers[0].wv.as_ref().map(|t| &t.shape)
+        );
+        println!(
+            "  attn_kv_a_mqa: {:?}",
+            ctx.model.layers[0].attn_kv_a_mqa.as_ref().map(|t| &t.shape)
+        );
+        println!(
+            "  attn_kv_b: {:?}",
+            ctx.model.layers[0].attn_kv_b.as_ref().map(|t| &t.shape)
+        );
+        println!(
+            "  wo: {:?}",
+            ctx.model.layers[0].wo.as_ref().map(|t| &t.shape)
+        );
         0 // Will use calculated size
     };
 
@@ -141,6 +166,27 @@ fn main() {
             Some(_) => {}
             None => {
                 eprintln!("Zero-alloc forward failed at token {}", i);
+                // Debug: check which step failed
+                if i == 0 {
+                    eprintln!("Debug: Testing embedding lookup...");
+                    if ctx.model.tok_embeddings.is_some() {
+                        eprintln!("  tok_embeddings: exists");
+                    } else {
+                        eprintln!("  tok_embeddings: NONE");
+                    }
+                    eprintln!("Debug: Testing norm...");
+                    if ctx.model.norm.is_some() {
+                        eprintln!("  norm: exists");
+                    } else {
+                        eprintln!("  norm: NONE");
+                    }
+                    eprintln!("Debug: Testing output...");
+                    if ctx.model.output.is_some() {
+                        eprintln!("  output: exists");
+                    } else {
+                        eprintln!("  output: NONE");
+                    }
+                }
                 break;
             }
         }
@@ -174,26 +220,39 @@ fn forward_zero_alloc(
 ) -> Option<Vec<f32>> {
     let hidden_size = model.config.hidden_size;
 
-    for &token in tokens {
+    for (tok_idx, &token) in tokens.iter().enumerate() {
         // 1. Embedding lookup into buffers.hidden
-        model.embedding_lookup_into(token, &mut buffers.hidden)?;
+        if model.embedding_lookup_into(token, &mut buffers.hidden).is_none() {
+            eprintln!("  [Token {}] Embedding lookup failed", tok_idx);
+            return None;
+        }
 
         // 2. Process through layers
         for (layer_idx, layer) in model.layers.iter().enumerate() {
-            model.forward_layer_zero_alloc(
-                layer, layer_idx, kv_cache, buffers,
-            )?;
+            if model
+                .forward_layer_zero_alloc(layer, layer_idx, kv_cache, buffers)
+                .is_none()
+            {
+                eprintln!("  [Token {}] Layer {} failed", tok_idx, layer_idx);
+                return None;
+            }
         }
 
         kv_cache.advance();
     }
 
     // 3. Final norm
-    model.apply_rms_norm_into(
-        &buffers.hidden,
-        model.norm.as_ref()?,
-        &mut buffers.hidden_alt,
-    )?;
+    if model
+        .apply_rms_norm_into(
+            &buffers.hidden,
+            model.norm.as_ref()?,
+            &mut buffers.hidden_alt,
+        )
+        .is_none()
+    {
+        eprintln!("  Final norm failed");
+        return None;
+    }
 
     // 4. Output projection (still allocates for logits)
     let vocab_size = model.config.vocab_size;

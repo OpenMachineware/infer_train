@@ -26,7 +26,7 @@ pub struct GraphExecutionState {
 unsafe impl Send for GraphExecutionState {}
 unsafe impl Sync for GraphExecutionState {}
 
-/// Execute entire DAG with all threads
+/// Execute entire DAG with all threads using std::thread::scope
 pub fn execute_graph_parallel(
     model: &LlamaModel,
     token: u32,
@@ -35,7 +35,10 @@ pub fn execute_graph_parallel(
     dag: &crate::dag::OptimizedDag,
     weights: &HashMap<usize, Tensor>,
 ) -> Option<Vec<f32>> {
-    let state = Box::new(GraphExecutionState {
+    let num_threads = crate::cpu::default_n_threads();
+    let barrier = crate::cpu::SpinBarrier::new(num_threads);
+
+    let state = Arc::new(Mutex::new(GraphExecutionState {
         model: model as *const _,
         kv_cache: kv_cache as *mut _,
         dag: dag as *const _,
@@ -44,35 +47,43 @@ pub fn execute_graph_parallel(
         position,
         output: Arc::new(Mutex::new(None)),
         shared_tensors: Arc::new(Mutex::new(vec![Vec::new(); 1024])),
+    }));
+
+    std::thread::scope(|s| {
+        for ith in 0..num_threads {
+            let barrier = &barrier;
+            let state = state.clone();
+
+            s.spawn(move || {
+                graph_task_fn(ith, num_threads, state, barrier);
+            });
+        }
     });
 
-    let state_ptr = Box::into_raw(state);
-
-    crate::cpu::thread_pool::GLOBAL_THREAD_POOL.execute_graph(
-        |ith, nth, state_ptr, graph_id| unsafe {
-            graph_task_fn(ith, nth, state_ptr, graph_id);
-        },
-        state_ptr as usize,
-        0,
-    );
-
-    let state = unsafe { Box::from_raw(state_ptr) };
-    state.output.lock().unwrap().take()
+    state.lock().unwrap().output.lock().unwrap().take()
 }
 
 /// Task function for graph execution
-unsafe fn graph_task_fn(
+fn graph_task_fn(
     ith: usize,
     nth: usize,
-    state_ptr: usize,
-    _user_data: usize,
+    state: Arc<Mutex<GraphExecutionState>>,
+    barrier: &crate::cpu::SpinBarrier,
 ) {
-    let state = &*(state_ptr as *const GraphExecutionState);
-    let model = &*state.model;
-    let kv_cache = &mut *state.kv_cache;
-    let dag = &*state.dag;
-    let weights = &*state.weights;
-    let barrier = crate::cpu::thread_pool::GLOBAL_THREAD_POOL.barrier();
+    let state_guard = state.lock().unwrap();
+    let model = unsafe { &*state_guard.model };
+    let dag = unsafe { &*state_guard.dag };
+    let weights = unsafe { &*state_guard.weights };
+    let token = state_guard.token;
+    let position = state_guard.position;
+    let shared_tensors = state_guard.shared_tensors.clone();
+    let final_output = state_guard.output.clone();
+    let position = state_guard.position;
+    drop(state_guard);
+
+    // Get KV cache as mutable - need to be careful here
+    let kv_cache_ptr = state.lock().unwrap().kv_cache;
+    let kv_cache = unsafe { &mut *kv_cache_ptr };
 
     for (_idx, node_id) in dag.execution_order.iter().enumerate() {
         let node = &dag.dag.nodes[*node_id];
@@ -80,10 +91,8 @@ unsafe fn graph_task_fn(
         match &node.op {
             Operation::EmbeddingLookup { output, .. } => {
                 if ith == 0 {
-                    if let Some(embed) =
-                        model.embedding_lookup_impl(state.token)
-                    {
-                        let mut tensors = state.shared_tensors.lock().unwrap();
+                    if let Some(embed) = model.embedding_lookup_impl(token) {
+                        let mut tensors = shared_tensors.lock().unwrap();
                         tensors[*output].resize(embed.len(), 0.0);
                         tensors[*output][..].copy_from_slice(&embed);
                     }
@@ -93,9 +102,9 @@ unsafe fn graph_task_fn(
             Operation::RmsNorm { input, weight, output, .. } => {
                 if ith == 0 {
                     let input_data =
-                        state.shared_tensors.lock().unwrap()[*input].clone();
+                        shared_tensors.lock().unwrap()[*input].clone();
                     if let Some(w) = weights.get(weight) {
-                        let mut tensors = state.shared_tensors.lock().unwrap();
+                        let mut tensors = shared_tensors.lock().unwrap();
                         tensors[*output].resize(input_data.len(), 0.0);
                         model.apply_rms_norm_into(
                             &input_data,
@@ -114,7 +123,7 @@ unsafe fn graph_task_fn(
                 is_transposed,
             } => {
                 let input_data = {
-                    let tensors = state.shared_tensors.lock().unwrap();
+                    let tensors = shared_tensors.lock().unwrap();
                     if *input < tensors.len() {
                         tensors[*input].clone()
                     } else {
@@ -127,7 +136,7 @@ unsafe fn graph_task_fn(
 
                 // Thread 0 allocates output tensor
                 if ith == 0 {
-                    let mut tensors = state.shared_tensors.lock().unwrap();
+                    let mut tensors = shared_tensors.lock().unwrap();
                     tensors[*output].resize(m, 0.0);
                 }
 
@@ -143,13 +152,13 @@ unsafe fn graph_task_fn(
                                 model.gemv_transposed(&input_data, w, m);
                             if let Some(r) = result {
                                 let mut tensors =
-                                    state.shared_tensors.lock().unwrap();
+                                    shared_tensors.lock().unwrap();
                                 tensors[*output] = r;
                             }
                         }
                     } else {
                         // Parallel GEMV: all threads participate
-                        let mut tensors = state.shared_tensors.lock().unwrap();
+                        let mut tensors = shared_tensors.lock().unwrap();
                         let out_data = &mut tensors[*output];
                         model.gemv_parallel_row(
                             ith,
@@ -183,7 +192,7 @@ unsafe fn graph_task_fn(
                 ..
             } => {
                 let input_data = {
-                    let tensors = state.shared_tensors.lock().unwrap();
+                    let tensors = shared_tensors.lock().unwrap();
                     if *input < tensors.len() {
                         tensors[*input].clone()
                     } else {
@@ -193,7 +202,7 @@ unsafe fn graph_task_fn(
                 let k = input_data.len();
 
                 if ith == 0 {
-                    let mut tensors = state.shared_tensors.lock().unwrap();
+                    let mut tensors = shared_tensors.lock().unwrap();
                     tensors[*output_q].resize(*q_out_size, 0.0);
                     tensors[*output_k].resize(*k_out_size, 0.0);
                     tensors[*output_v].resize(*v_out_size, 0.0);
@@ -201,7 +210,7 @@ unsafe fn graph_task_fn(
                 barrier.wait();
 
                 if let Some(q_w) = weights.get(q_weight) {
-                    let mut tensors = state.shared_tensors.lock().unwrap();
+                    let mut tensors = shared_tensors.lock().unwrap();
                     let out = &mut tensors[*output_q];
                     model.gemv_parallel_row(
                         ith,
@@ -216,7 +225,7 @@ unsafe fn graph_task_fn(
                 barrier.wait();
 
                 if let Some(k_w) = weights.get(k_weight) {
-                    let mut tensors = state.shared_tensors.lock().unwrap();
+                    let mut tensors = shared_tensors.lock().unwrap();
                     let out = &mut tensors[*output_k];
                     model.gemv_parallel_row(
                         ith,
@@ -231,7 +240,7 @@ unsafe fn graph_task_fn(
                 barrier.wait();
 
                 if let Some(v_w) = weights.get(v_weight) {
-                    let mut tensors = state.shared_tensors.lock().unwrap();
+                    let mut tensors = shared_tensors.lock().unwrap();
                     let out = &mut tensors[*output_v];
                     model.gemv_parallel_row(
                         ith,
@@ -258,7 +267,7 @@ unsafe fn graph_task_fn(
             } => {
                 // Fused QKV with merged weight: single GEMV, split result
                 let input_data = {
-                    let tensors = state.shared_tensors.lock().unwrap();
+                    let tensors = shared_tensors.lock().unwrap();
                     if *input < tensors.len() {
                         tensors[*input].clone()
                     } else {
@@ -273,7 +282,7 @@ unsafe fn graph_task_fn(
 
                 // Thread 0 allocates output tensors
                 if ith == 0 {
-                    let mut tensors = state.shared_tensors.lock().unwrap();
+                    let mut tensors = shared_tensors.lock().unwrap();
                     tensors[*output_q].resize(*q_out_size, 0.0);
                     tensors[*output_k].resize(*k_out_size, 0.0);
                     tensors[*output_v].resize(*v_out_size, 0.0);
@@ -283,7 +292,7 @@ unsafe fn graph_task_fn(
 
                 // Do single GEMV into temp buffer
                 if let Some(w) = weights.get(qkv_weight) {
-                    let mut tensors = state.shared_tensors.lock().unwrap();
+                    let mut tensors = shared_tensors.lock().unwrap();
                     let qkv_out = &mut tensors[temp_id];
                     model.gemv_parallel_row(
                         ith,
@@ -299,7 +308,7 @@ unsafe fn graph_task_fn(
 
                 // Thread 0 splits the result
                 if ith == 0 {
-                    let tensors = state.shared_tensors.lock().unwrap();
+                    let tensors = shared_tensors.lock().unwrap();
                     let qkv_out = &tensors[temp_id];
 
                     // Split into Q, K, V
@@ -313,7 +322,7 @@ unsafe fn graph_task_fn(
 
                     // We need mutable access to write, drop the immutable borrow first
                     drop(tensors);
-                    let mut tensors = state.shared_tensors.lock().unwrap();
+                    let mut tensors = shared_tensors.lock().unwrap();
                     tensors[*output_q] = q_data;
                     tensors[*output_k] = k_data;
                     tensors[*output_v] = v_data;
@@ -323,18 +332,18 @@ unsafe fn graph_task_fn(
             Operation::RoPE { input, output, n_heads, head_dim, .. } => {
                 if ith == 0 {
                     let input_data = {
-                        let tensors = state.shared_tensors.lock().unwrap();
+                        let tensors = shared_tensors.lock().unwrap();
                         if *input < tensors.len() {
                             tensors[*input].clone()
                         } else {
                             Vec::new()
                         }
                     };
-                    let mut tensors = state.shared_tensors.lock().unwrap();
+                    let mut tensors = shared_tensors.lock().unwrap();
                     tensors[*output].resize(input_data.len(), 0.0);
                     let _ = model.apply_rope_into(
                         &input_data,
-                        state.position,
+                        position,
                         *n_heads,
                         *head_dim,
                         &mut tensors[*output],
@@ -351,7 +360,7 @@ unsafe fn graph_task_fn(
             } => {
                 if ith == 0 {
                     let input_data = {
-                        let tensors = state.shared_tensors.lock().unwrap();
+                        let tensors = shared_tensors.lock().unwrap();
                         if *input < tensors.len() {
                             tensors[*input].clone()
                         } else {
@@ -386,7 +395,7 @@ unsafe fn graph_task_fn(
             } => {
                 if ith == 0 {
                     let q_data = {
-                        let tensors = state.shared_tensors.lock().unwrap();
+                        let tensors = shared_tensors.lock().unwrap();
                         if *q < tensors.len() {
                             tensors[*q].clone()
                         } else {
@@ -431,7 +440,7 @@ unsafe fn graph_task_fn(
                             out_data[h * head_dim + d] = sum;
                         }
                     }
-                    state.shared_tensors.lock().unwrap()[*output] = out_data;
+                    shared_tensors.lock().unwrap()[*output] = out_data;
                 }
             }
 
@@ -445,7 +454,7 @@ unsafe fn graph_task_fn(
                 ..
             } => {
                 let input_data = {
-                    let tensors = state.shared_tensors.lock().unwrap();
+                    let tensors = shared_tensors.lock().unwrap();
                     if *input < tensors.len() {
                         tensors[*input].clone()
                     } else {
@@ -454,14 +463,14 @@ unsafe fn graph_task_fn(
                 };
 
                 if ith == 0 {
-                    let mut tensors = state.shared_tensors.lock().unwrap();
+                    let mut tensors = shared_tensors.lock().unwrap();
                     tensors[*output_gate].resize(*intermediate_size, 0.0);
                     tensors[*output_up].resize(*intermediate_size, 0.0);
                 }
                 barrier.wait();
 
                 if let Some(gate_w) = weights.get(gate_weight) {
-                    let mut tensors = state.shared_tensors.lock().unwrap();
+                    let mut tensors = shared_tensors.lock().unwrap();
                     let out = &mut tensors[*output_gate];
                     model.gemv_parallel_row(
                         ith,
@@ -476,7 +485,7 @@ unsafe fn graph_task_fn(
                 barrier.wait();
 
                 if let Some(up_w) = weights.get(up_weight) {
-                    let mut tensors = state.shared_tensors.lock().unwrap();
+                    let mut tensors = shared_tensors.lock().unwrap();
                     let out = &mut tensors[*output_up];
                     model.gemv_parallel_row(
                         ith,
@@ -493,7 +502,7 @@ unsafe fn graph_task_fn(
             Operation::FusedSwiGLU { gate, up, output, .. } => {
                 if ith == 0 {
                     let gate_data = {
-                        let tensors = state.shared_tensors.lock().unwrap();
+                        let tensors = shared_tensors.lock().unwrap();
                         if *gate < tensors.len() {
                             tensors[*gate].clone()
                         } else {
@@ -501,7 +510,7 @@ unsafe fn graph_task_fn(
                         }
                     };
                     let up_data = {
-                        let tensors = state.shared_tensors.lock().unwrap();
+                        let tensors = shared_tensors.lock().unwrap();
                         if *up < tensors.len() {
                             tensors[*up].clone()
                         } else {
@@ -516,14 +525,14 @@ unsafe fn graph_task_fn(
                         let silu = up_data[i] / (1.0 + (-up_data[i]).exp());
                         result[i] = gate_data[i] * silu;
                     }
-                    state.shared_tensors.lock().unwrap()[*output] = result;
+                    shared_tensors.lock().unwrap()[*output] = result;
                 }
             }
 
             Operation::Add { lhs, rhs, output } => {
                 if ith == 0 {
                     let lhs_data = {
-                        let tensors = state.shared_tensors.lock().unwrap();
+                        let tensors = shared_tensors.lock().unwrap();
                         if *lhs < tensors.len() {
                             tensors[*lhs].clone()
                         } else {
@@ -531,7 +540,7 @@ unsafe fn graph_task_fn(
                         }
                     };
                     let rhs_data = {
-                        let tensors = state.shared_tensors.lock().unwrap();
+                        let tensors = shared_tensors.lock().unwrap();
                         if *rhs < tensors.len() {
                             tensors[*rhs].clone()
                         } else {
@@ -543,14 +552,14 @@ unsafe fn graph_task_fn(
                     for i in 0..len {
                         result[i] = lhs_data[i] + rhs_data[i];
                     }
-                    state.shared_tensors.lock().unwrap()[*output] = result;
+                    shared_tensors.lock().unwrap()[*output] = result;
                 }
             }
 
             Operation::SiLU { input, output } => {
                 if ith == 0 {
                     let input_data = {
-                        let tensors = state.shared_tensors.lock().unwrap();
+                        let tensors = shared_tensors.lock().unwrap();
                         if *input < tensors.len() {
                             tensors[*input].clone()
                         } else {
@@ -562,14 +571,14 @@ unsafe fn graph_task_fn(
                         result[i] =
                             input_data[i] / (1.0 + (-input_data[i]).exp());
                     }
-                    state.shared_tensors.lock().unwrap()[*output] = result;
+                    shared_tensors.lock().unwrap()[*output] = result;
                 }
             }
 
             Operation::Mul { lhs, rhs, output } => {
                 if ith == 0 {
                     let lhs_data = {
-                        let tensors = state.shared_tensors.lock().unwrap();
+                        let tensors = shared_tensors.lock().unwrap();
                         if *lhs < tensors.len() {
                             tensors[*lhs].clone()
                         } else {
@@ -577,7 +586,7 @@ unsafe fn graph_task_fn(
                         }
                     };
                     let rhs_data = {
-                        let tensors = state.shared_tensors.lock().unwrap();
+                        let tensors = shared_tensors.lock().unwrap();
                         if *rhs < tensors.len() {
                             tensors[*rhs].clone()
                         } else {
@@ -589,7 +598,7 @@ unsafe fn graph_task_fn(
                     for i in 0..len {
                         result[i] = lhs_data[i] * rhs_data[i];
                     }
-                    state.shared_tensors.lock().unwrap()[*output] = result;
+                    shared_tensors.lock().unwrap()[*output] = result;
                 }
             }
 
@@ -612,11 +621,11 @@ unsafe fn graph_task_fn(
         for node_id in dag.execution_order.iter().rev() {
             let node = &dag.dag.nodes[*node_id];
             if let Operation::Gemv { output, out_size, .. } = &node.op {
-                let tensors = state.shared_tensors.lock().unwrap();
+                let tensors = shared_tensors.lock().unwrap();
                 let out_tensor = &tensors[*output];
                 if !out_tensor.is_empty() {
                     let result = out_tensor[..*out_size].to_vec();
-                    *state.output.lock().unwrap() = Some(result);
+                    *final_output.lock().unwrap() = Some(result);
                     found_output = true;
                 } else {
                     eprintln!(
@@ -627,10 +636,10 @@ unsafe fn graph_task_fn(
                 break;
             }
             if let Operation::Add { output, .. } = &node.op {
-                let tensors = state.shared_tensors.lock().unwrap();
+                let tensors = shared_tensors.lock().unwrap();
                 if !tensors[*output].is_empty() {
                     let result = tensors[*output].clone();
-                    *state.output.lock().unwrap() = Some(result);
+                    *final_output.lock().unwrap() = Some(result);
                     found_output = true;
                 }
                 break;

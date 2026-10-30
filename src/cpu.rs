@@ -7,8 +7,8 @@ pub mod work_buffers;
 
 pub use graph_executor::{GraphExecutionState, execute_graph_parallel};
 pub use thread_pool::{
-    GEMVOp, SpinBarrier, SyncPtr, default_n_threads,
-    execute_layer_with_barrier, gemv_batch_barrier, gemv_persistent,
-    gemv_work_stealing, global_pool, parallel_chunks, parallel_work_stealing,
+    GEMVOp, PersistentThreadPool, SpinBarrier, SyncPtr, default_n_threads,
+    execute_layer_with_barrier, gemv_batch_barrier, gemv_work_stealing,
+    global_pool, parallel_chunks, parallel_work_stealing,
 };
 pub use work_buffers::{CpuWorkBuffers, CpuWorkBuffersPool};
