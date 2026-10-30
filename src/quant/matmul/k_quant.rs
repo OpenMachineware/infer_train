@@ -101,6 +101,30 @@ pub unsafe fn matmul_q4_k_q8_k_single_thread(
     }
 }
 
+/// Wrapper function for lock-free thread pool
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn gemv_q4_k_q8_k_kernel(
+    weights: *const u8,
+    input: *const u8,
+    output: *mut f32,
+    k: usize,
+    m: usize,
+    start: usize,
+    end: usize,
+) {
+    let nb = k / QK_K;
+    let weights = weights as *const BlockQ4K;
+    let input = input as *const BlockQ8K;
+
+    for row in start..end {
+        *output.add(row) = vec_dot_q4_k_q8_k_neon(
+            k,
+            std::slice::from_raw_parts(weights.add(row * nb), nb),
+            std::slice::from_raw_parts(input, nb),
+        );
+    }
+}
+
 /// Persistent thread pool Q4_K × Q8_K matrix-vector multiplication
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q4_k_q8_k_persistent(
@@ -110,24 +134,15 @@ pub unsafe fn matmul_q4_k_q8_k_persistent(
     k: usize,
     m: usize,
 ) {
-    use crate::cpu::SyncPtr;
-
     let pool = crate::cpu::global_pool();
-    let nb = k / QK_K;
-
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
-    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ4K);
-    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
-
-    pool.execute(m, move |start, end| {
-        for row in start..end {
-            *dst_ptr.get().add(row) = vec_dot_q4_k_q8_k_neon(
-                k,
-                std::slice::from_raw_parts(weights_ptr.get().add(row * nb), nb),
-                std::slice::from_raw_parts(x_ptr.get(), nb),
-            );
-        }
-    });
+    pool.execute_gemv(
+        gemv_q4_k_q8_k_kernel,
+        weights.as_ptr() as *const u8,
+        x.as_ptr() as *const u8,
+        dst.as_mut_ptr(),
+        k,
+        m,
+    );
 }
 
 /// Hybrid Q4_K × Q8_K: ST for small, MT with persistent pool for large
@@ -195,6 +210,30 @@ pub unsafe fn matmul_q6_k_q8_k_single_thread(
     }
 }
 
+/// Wrapper function for lock-free thread pool
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn gemv_q6_k_q8_k_kernel(
+    weights: *const u8,
+    input: *const u8,
+    output: *mut f32,
+    k: usize,
+    m: usize,
+    start: usize,
+    end: usize,
+) {
+    let nb = k / QK_K;
+    let weights = weights as *const BlockQ6K;
+    let input = input as *const BlockQ8K;
+
+    for row in start..end {
+        *output.add(row) = vec_dot_q6_k_q8_k_neon(
+            k,
+            std::slice::from_raw_parts(weights.add(row * nb), nb),
+            std::slice::from_raw_parts(input, nb),
+        );
+    }
+}
+
 /// Persistent thread pool Q6_K × Q8_K matrix-vector multiplication
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q6_k_q8_k_persistent(
@@ -204,24 +243,15 @@ pub unsafe fn matmul_q6_k_q8_k_persistent(
     k: usize,
     m: usize,
 ) {
-    use crate::cpu::SyncPtr;
-
     let pool = crate::cpu::global_pool();
-    let nb = k / QK_K;
-
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
-    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ6K);
-    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
-
-    pool.execute(m, move |start, end| {
-        for row in start..end {
-            *dst_ptr.get().add(row) = vec_dot_q6_k_q8_k_neon(
-                k,
-                std::slice::from_raw_parts(weights_ptr.get().add(row * nb), nb),
-                std::slice::from_raw_parts(x_ptr.get(), nb),
-            );
-        }
-    });
+    pool.execute_gemv(
+        gemv_q6_k_q8_k_kernel,
+        weights.as_ptr() as *const u8,
+        x.as_ptr() as *const u8,
+        dst.as_mut_ptr(),
+        k,
+        m,
+    );
 }
 
 /// Hybrid Q6_K × Q8_K: ST for small, MT with persistent pool for large
@@ -289,6 +319,31 @@ pub unsafe fn matmul_q5_k_q8_k_single_thread(
     }
 }
 
+/// Wrapper function for lock-free thread pool
+/// Matches the signature: fn(*const u8, *const u8, *mut f32, usize, usize, usize, usize)
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn gemv_q5_k_q8_k_kernel(
+    weights: *const u8,
+    input: *const u8,
+    output: *mut f32,
+    k: usize,
+    m: usize,
+    start: usize,
+    end: usize,
+) {
+    let nb = k / QK_K;
+    let weights = weights as *const BlockQ5K;
+    let input = input as *const BlockQ8K;
+
+    for row in start..end {
+        *output.add(row) = vec_dot_q5_k_q8_k_neon(
+            k,
+            std::slice::from_raw_parts(weights.add(row * nb), nb),
+            std::slice::from_raw_parts(input, nb),
+        );
+    }
+}
+
 /// Persistent thread pool Q5_K × Q8_K matrix-vector multiplication
 /// Zero thread spawn overhead - uses global persistent thread pool
 #[target_feature(enable = "neon,dotprod")]
@@ -299,24 +354,15 @@ pub unsafe fn matmul_q5_k_q8_k_persistent(
     k: usize,
     m: usize,
 ) {
-    use crate::cpu::SyncPtr;
-
     let pool = crate::cpu::global_pool();
-    let nb = k / QK_K;
-
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
-    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5K);
-    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
-
-    pool.execute(m, move |start, end| {
-        for row in start..end {
-            *dst_ptr.get().add(row) = vec_dot_q5_k_q8_k_neon(
-                k,
-                std::slice::from_raw_parts(weights_ptr.get().add(row * nb), nb),
-                std::slice::from_raw_parts(x_ptr.get(), nb),
-            );
-        }
-    });
+    pool.execute_gemv(
+        gemv_q5_k_q8_k_kernel,
+        weights.as_ptr() as *const u8,
+        x.as_ptr() as *const u8,
+        dst.as_mut_ptr(),
+        k,
+        m,
+    );
 }
 
 /// Hybrid Q5_K × Q8_K: ST for small matrices, MT with persistent pool for large

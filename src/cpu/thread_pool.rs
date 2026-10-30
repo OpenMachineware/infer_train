@@ -128,22 +128,57 @@ where
     });
 }
 
-/// Persistent thread pool - matches llama.cpp's ggml_threadpool exactly
+/// Lock-free work descriptor for GEMV operations
+/// No locks - all fields are atomic or plain data
+#[derive(Clone, Copy)]
+struct WorkDescriptor {
+    /// Function pointer (GEMV kernel) - unsafe fn for kernel functions
+    func: Option<
+        unsafe fn(*const u8, *const u8, *mut f32, usize, usize, usize, usize),
+    >,
+    /// Weight matrix pointer
+    weights: *const u8,
+    /// Input vector pointer
+    input: *const u8,
+    /// Output vector pointer
+    output: *mut f32,
+    /// K dimension (input size)
+    k: usize,
+    /// M dimension (output size / rows)
+    m: usize,
+}
+
+impl Default for WorkDescriptor {
+    fn default() -> Self {
+        WorkDescriptor {
+            func: None,
+            weights: std::ptr::null(),
+            input: std::ptr::null(),
+            output: std::ptr::null_mut(),
+            k: 0,
+            m: 0,
+        }
+    }
+}
+
+unsafe impl Send for WorkDescriptor {}
+unsafe impl Sync for WorkDescriptor {}
+
+/// Persistent thread pool - LOCK-FREE version matching llama.cpp exactly
 ///
 /// Key design from llama.cpp:
 /// 1. Threads wait on atomic "current_op" counter (spin loop)
-/// 2. Main thread increments counter to wake all workers simultaneously
-/// 3. Workers process op, then increment completion counter
-/// 4. NO channel overhead - atomic spin for sub-microsecond wake
+/// 2. Main thread stores work descriptor, then increments counter
+/// 3. Workers read descriptor, process work, increment completion
+/// 4. NO locks - pure atomic operations for sub-microsecond wake
 pub struct PersistentThreadPool {
     handles: Vec<JoinHandle<()>>,
     /// Current operation number - workers spin-wait until this changes
     current_op: Arc<AtomicUsize>,
-    /// Function pointer stored in RwLock for concurrent reads
-    work_fn:
-        Arc<std::sync::RwLock<Option<Arc<dyn Fn(usize, usize) + Send + Sync>>>>,
-    /// Number of items to process
-    num_items: Arc<AtomicUsize>,
+    /// Work descriptor - lock-free, written before signaling
+    work: Arc<std::sync::atomic::AtomicPtr<WorkDescriptor>>,
+    /// Pre-allocated work descriptor slot
+    work_slot: Arc<std::cell::UnsafeCell<WorkDescriptor>>,
     /// Completion counter - workers increment after finishing
     completed: Arc<AtomicUsize>,
     num_threads: usize,
@@ -156,21 +191,21 @@ impl PersistentThreadPool {
     /// Create a new persistent thread pool
     pub fn new(num_threads: usize) -> Self {
         let current_op = Arc::new(AtomicUsize::new(0));
-        let work_fn: Arc<
-            std::sync::RwLock<Option<Arc<dyn Fn(usize, usize) + Send + Sync>>>,
-        > = Arc::new(std::sync::RwLock::new(None));
-        let num_items = Arc::new(AtomicUsize::new(0));
+        let work_slot =
+            Arc::new(std::cell::UnsafeCell::new(WorkDescriptor::default()));
+        let work =
+            Arc::new(std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()));
         let completed = Arc::new(AtomicUsize::new(0));
 
         let handles: Vec<_> = (0..num_threads)
             .map(|thread_id| {
                 let current_op = current_op.clone();
-                let work_fn = work_fn.clone();
-                let num_items = num_items.clone();
+                let work = work.clone();
                 let completed = completed.clone();
 
                 thread::spawn(move || {
                     let mut last_op = 0;
+                    let mut spin_count = 0;
 
                     loop {
                         // Spin-wait for new operation (sub-microsecond, matches llama.cpp)
@@ -181,27 +216,50 @@ impl PersistentThreadPool {
                         }
 
                         if op == last_op {
-                            // No new work yet - spin
-                            std::hint::spin_loop();
+                            // No new work yet - spin for a bit then yield
+                            spin_count += 1;
+                            if spin_count < 100 {
+                                std::hint::spin_loop();
+                            } else {
+                                std::thread::yield_now();
+                                spin_count = 0;
+                            }
                             continue;
                         }
 
-                        // New operation - get work parameters
+                        spin_count = 0;
+
+                        // New operation - read work descriptor (lock-free!)
                         last_op = op;
-                        let n = num_items.load(Ordering::Acquire);
+                        let work_ptr: *const WorkDescriptor =
+                            work.load(Ordering::Acquire);
+                        if work_ptr.is_null() {
+                            continue;
+                        }
+
+                        let work_desc = unsafe { &*work_ptr };
+                        let m = work_desc.m;
                         let nth = num_threads;
 
                         // Calculate chunk for this thread
-                        let chunk_size = (n + nth - 1) / nth;
+                        let chunk_size = (m + nth - 1) / nth;
                         let start = thread_id * chunk_size;
-                        let end = (start + chunk_size).min(n);
+                        let end = (start + chunk_size).min(m);
 
-                        // Get function reference (Arc cloned) - use read lock
-                        let func_opt = work_fn.read().unwrap().clone();
-                        if let Some(func) = func_opt {
-                            // Process chunk assigned to this thread
-                            if start < n {
-                                func(start, end);
+                        // Execute GEMV for assigned rows
+                        if start < m {
+                            if let Some(func) = work_desc.func {
+                                unsafe {
+                                    func(
+                                        work_desc.weights,
+                                        work_desc.input,
+                                        work_desc.output,
+                                        work_desc.k,
+                                        m,
+                                        start,
+                                        end,
+                                    );
+                                }
                             }
                         }
 
@@ -215,39 +273,79 @@ impl PersistentThreadPool {
         PersistentThreadPool {
             handles,
             current_op,
-            work_fn,
-            num_items,
+            work,
+            work_slot,
             completed,
             num_threads,
         }
     }
 
-    /// Execute work on all threads
-    /// Main thread sets work then signals workers via atomic increment
-    pub fn execute<F>(&self, num_items: usize, f: F)
-    where
-        F: Fn(usize, usize) + Send + Sync + 'static,
-    {
-        if num_items == 0 {
+    /// Execute GEMV operation - lock-free
+    /// Main thread stores work descriptor, then signals via atomic increment
+    pub fn execute_gemv(
+        &self,
+        func: unsafe fn(
+            *const u8,
+            *const u8,
+            *mut f32,
+            usize,
+            usize,
+            usize,
+            usize,
+        ),
+        weights: *const u8,
+        input: *const u8,
+        output: *mut f32,
+        k: usize,
+        m: usize,
+    ) {
+        if m == 0 {
             return;
         }
 
         // Reset completion counter
         self.completed.store(0, Ordering::Release);
 
-        // Set work parameters
-        self.num_items.store(num_items, Ordering::Release);
+        // Store work descriptor
+        unsafe {
+            *self.work_slot.get() = WorkDescriptor {
+                func: Some(func),
+                weights,
+                input,
+                output,
+                k,
+                m,
+            };
 
-        // Store function in Arc for safe lifetime - use write lock
-        *self.work_fn.write().unwrap() = Some(Arc::new(f));
+            // Publish work descriptor via atomic store
+            self.work.store(self.work_slot.get(), Ordering::Release);
+        }
 
         // Signal workers by incrementing operation counter
         self.current_op.fetch_add(1, Ordering::Release);
 
         // Main thread waits for all workers to complete
+        let mut spin_count = 0;
         while self.completed.load(Ordering::Acquire) < self.num_threads {
-            std::hint::spin_loop();
+            spin_count += 1;
+            if spin_count < 100 {
+                std::hint::spin_loop();
+            } else {
+                std::thread::yield_now();
+                spin_count = 0;
+            }
         }
+    }
+
+    /// Legacy execute method - uses generic closure (still has some overhead)
+    /// For critical paths, use execute_gemv instead
+    pub fn execute<F>(&self, num_items: usize, f: F)
+    where
+        F: Fn(usize, usize) + Send + Sync + Clone + 'static,
+    {
+        // Fallback: this still has allocation overhead
+        // For zero-overhead, use execute_gemv
+        parallel_chunks(num_items, self.num_threads, f);
     }
 
     /// Get number of threads

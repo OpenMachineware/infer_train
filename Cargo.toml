@@ -102,6 +102,10 @@ path = "tools/generate.rs"
 required-features = ["metal"]
 
 [[bin]]
+name = "bench-lockfree-pool"
+path = "tools/bench_lockfree_pool.rs"
+
+[[bin]]
 name = "debug-nan-gpu"
 path = "tools/debug_nan_gpu.rs"
 required-features = ["metal"]
