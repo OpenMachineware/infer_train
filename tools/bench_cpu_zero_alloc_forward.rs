@@ -131,23 +131,33 @@ fn main() {
     println!("\n=== Regular Forward (20 tokens) ===");
     let mut decode_tokens = vec![1u32];
 
-    let start = std::time::Instant::now();
-    for i in 0..20 {
-        match ctx.model.forward(&decode_tokens, &mut kv_cache) {
-            Some(_) => {}
-            None => {
-                eprintln!("Forward failed at token {}", i);
-                break;
-            }
-        }
-        decode_tokens.clear();
-        decode_tokens.push(100 + (kv_cache.seq_len() as u32) % 100);
-    }
-    let elapsed_regular = start.elapsed();
-    let regular_tps = 20.0 / elapsed_regular.as_secs_f64();
+    // For large models (>5B), skip regular forward to save time
+    let skip_regular = ctx.model.param_count() > 5_000_000_000;
+    let elapsed_regular;
+    let regular_tps;
 
-    println!("Time: {:?}", elapsed_regular);
-    println!("Speed: {:.2} t/s", regular_tps);
+    if skip_regular {
+        println!("Skipping regular forward (large model, would take too long)");
+        elapsed_regular = std::time::Duration::from_secs(0);
+        regular_tps = 0.0;
+    } else {
+        let start = std::time::Instant::now();
+        for i in 0..20 {
+            match ctx.model.forward(&decode_tokens, &mut kv_cache) {
+                Some(_) => {}
+                None => {
+                    eprintln!("Forward failed at token {}", i);
+                    break;
+                }
+            }
+            decode_tokens.clear();
+            decode_tokens.push(100 + (kv_cache.seq_len() as u32) % 100);
+        }
+        elapsed_regular = start.elapsed();
+        regular_tps = 20.0 / elapsed_regular.as_secs_f64();
+        println!("Time: {:?}", elapsed_regular);
+        println!("Speed: {:.2} t/s", regular_tps);
+    }
 
     // Benchmark zero-allocation forward
     println!("\n=== Zero-Allocation Forward (20 tokens) ===");
@@ -201,12 +211,17 @@ fn main() {
 
     // Comparison
     println!("\n=== Comparison ===");
-    println!("Regular: {:.2} t/s", regular_tps);
-    println!("Zero-alloc: {:.2} t/s", zero_alloc_tps);
-    if zero_alloc_tps > regular_tps {
-        println!("Improvement: {:.2}x", zero_alloc_tps / regular_tps);
+    if skip_regular {
+        println!("Regular: skipped (large model)");
+        println!("Zero-alloc: {:.2} t/s", zero_alloc_tps);
     } else {
-        println!("Regression: {:.2}x", regular_tps / zero_alloc_tps);
+        println!("Regular: {:.2} t/s", regular_tps);
+        println!("Zero-alloc: {:.2} t/s", zero_alloc_tps);
+        if zero_alloc_tps > regular_tps {
+            println!("Improvement: {:.2}x", zero_alloc_tps / regular_tps);
+        } else {
+            println!("Regression: {:.2}x", regular_tps / zero_alloc_tps);
+        }
     }
 }
 
@@ -254,12 +269,16 @@ fn forward_zero_alloc(
         return None;
     }
 
-    // 4. Output projection (still allocates for logits)
-    let vocab_size = model.config.vocab_size;
-    let mut logits = vec![0.0f32; vocab_size];
-    model.gemv_into(&buffers.hidden_alt, model.output.as_ref()?, &mut logits);
+    // 4. Output projection - reuse pre-allocated logits buffer
+    model.gemv_into_with_buffers_single_thread(
+        &buffers.hidden_alt,
+        model.output.as_ref()?,
+        &mut buffers.logits,
+        &mut buffers.q8k_input,
+        &mut buffers.x_padded,
+    );
 
-    Some(logits)
+    Some(buffers.logits.clone())
 }
 
 #[cfg(not(target_arch = "aarch64"))]
