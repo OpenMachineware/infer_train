@@ -8,5 +8,6 @@ pub mod dtype;
 pub mod parser;
 
 pub use convert::tensor_from_gguf;
+pub use convert::tensor_from_gguf_mmap;
 pub use dtype::{GgufDtype, GgufError};
 pub use parser::{GgufFile, MetadataValue, TensorInfo};

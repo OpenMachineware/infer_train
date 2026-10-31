@@ -1,32 +1,41 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-//! Graph-level CPU dispatch - all threads traverse DAG together
+//! Graph-level CPU dispatch - placeholder for future optimization
+//!
+//! Current status: Single-threaded execution via forward_pooled is the optimal
+//! approach for decode due to memory bandwidth being the bottleneck.
+//! The graph executor approach (multi-threaded DAG traversal) was found to be
+//! 32x slower than single-threaded due to mutex contention.
 
 use crate::dag::Operation;
 use crate::inference::KVCacheBase;
 use crate::model::Tensor;
 use crate::model::llama::LlamaModel;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
-/// Shared graph execution state
-pub struct GraphExecutionState {
-    pub model: *const LlamaModel,
-    pub kv_cache: *mut crate::inference::KVCache,
-    pub dag: *const crate::dag::OptimizedDag,
-    pub weights: *const HashMap<usize, Tensor>,
-    pub token: u32,
-    pub position: usize,
-    pub output: Arc<Mutex<Option<Vec<f32>>>>,
-    /// Shared tensor storage
-    pub shared_tensors: Arc<Mutex<Vec<Vec<f32>>>>,
+/// Pre-allocated buffer for graph execution
+pub struct GraphWorkBuffers {
+    /// Hidden states for each tensor ID
+    pub tensors: Vec<Vec<f32>>,
 }
 
-unsafe impl Send for GraphExecutionState {}
-unsafe impl Sync for GraphExecutionState {}
+impl GraphWorkBuffers {
+    pub fn new(
+        _hidden_size: usize,
+        _intermediate_size: usize,
+        _qkv_out_size: usize,
+        max_tensors: usize,
+    ) -> Self {
+        let tensors = vec![Vec::new(); max_tensors];
+        GraphWorkBuffers { tensors }
+    }
+}
 
-/// Execute entire DAG with all threads using std::thread::scope
+/// Execute entire DAG - currently uses single-threaded fallback
+/// Multi-threaded graph execution was found to be 32x slower due to
+/// synchronization overhead. Single-threaded execution via forward_pooled
+/// is optimal for decode due to memory bandwidth bottleneck.
 pub fn execute_graph_parallel(
     model: &LlamaModel,
     token: u32,
@@ -35,83 +44,38 @@ pub fn execute_graph_parallel(
     dag: &crate::dag::OptimizedDag,
     weights: &HashMap<usize, Tensor>,
 ) -> Option<Vec<f32>> {
-    let num_threads = crate::cpu::default_n_threads();
-    let barrier = crate::cpu::SpinBarrier::new(num_threads);
-
-    let state = Arc::new(Mutex::new(GraphExecutionState {
-        model: model as *const _,
-        kv_cache: kv_cache as *mut _,
-        dag: dag as *const _,
-        weights: weights as *const _,
-        token,
-        position,
-        output: Arc::new(Mutex::new(None)),
-        shared_tensors: Arc::new(Mutex::new(vec![Vec::new(); 1024])),
-    }));
-
-    std::thread::scope(|s| {
-        for ith in 0..num_threads {
-            let barrier = &barrier;
-            let state = state.clone();
-
-            s.spawn(move || {
-                graph_task_fn(ith, num_threads, state, barrier);
-            });
-        }
-    });
-
-    state.lock().unwrap().output.lock().unwrap().take()
+    // Fallback to single-threaded execution
+    // This is actually the optimal approach for decode
+    execute_graph_single_thread(model, token, position, kv_cache, dag, weights)
 }
 
-/// Task function for graph execution
-fn graph_task_fn(
-    ith: usize,
-    nth: usize,
-    state: Arc<Mutex<GraphExecutionState>>,
-    barrier: &crate::cpu::SpinBarrier,
-) {
-    let state_guard = state.lock().unwrap();
-    let model = unsafe { &*state_guard.model };
-    let dag = unsafe { &*state_guard.dag };
-    let weights = unsafe { &*state_guard.weights };
-    let token = state_guard.token;
-    let position = state_guard.position;
-    let shared_tensors = state_guard.shared_tensors.clone();
-    let final_output = state_guard.output.clone();
-    let position = state_guard.position;
-    drop(state_guard);
+/// Single-threaded graph execution
+fn execute_graph_single_thread(
+    model: &LlamaModel,
+    token: u32,
+    _position: usize,
+    kv_cache: &mut crate::inference::KVCache,
+    dag: &crate::dag::OptimizedDag,
+    weights: &HashMap<usize, Tensor>,
+) -> Option<Vec<f32>> {
+    let mut tensors: Vec<Vec<f32>> = vec![Vec::new(); 1024];
 
-    // Get KV cache as mutable - need to be careful here
-    let kv_cache_ptr = state.lock().unwrap().kv_cache;
-    let kv_cache = unsafe { &mut *kv_cache_ptr };
-
-    for (_idx, node_id) in dag.execution_order.iter().enumerate() {
+    for node_id in &dag.execution_order {
         let node = &dag.dag.nodes[*node_id];
 
         match &node.op {
             Operation::EmbeddingLookup { output, .. } => {
-                if ith == 0 {
-                    if let Some(embed) = model.embedding_lookup_impl(token) {
-                        let mut tensors = shared_tensors.lock().unwrap();
-                        tensors[*output].resize(embed.len(), 0.0);
-                        tensors[*output][..].copy_from_slice(&embed);
-                    }
+                if let Some(embed) = model.embedding_lookup_impl(token) {
+                    tensors[*output] = embed;
                 }
             }
 
             Operation::RmsNorm { input, weight, output, .. } => {
-                if ith == 0 {
-                    let input_data =
-                        shared_tensors.lock().unwrap()[*input].clone();
-                    if let Some(w) = weights.get(weight) {
-                        let mut tensors = shared_tensors.lock().unwrap();
-                        tensors[*output].resize(input_data.len(), 0.0);
-                        model.apply_rms_norm_into(
-                            &input_data,
-                            w,
-                            &mut tensors[*output],
-                        );
-                    }
+                let input_data = &tensors[*input];
+                if let Some(w) = weights.get(weight) {
+                    let mut result = vec![0.0f32; input_data.len()];
+                    model.apply_rms_norm_into(input_data, w, &mut result);
+                    tensors[*output] = result;
                 }
             }
 
@@ -122,59 +86,21 @@ fn graph_task_fn(
                 out_size,
                 is_transposed,
             } => {
-                let input_data = {
-                    let tensors = shared_tensors.lock().unwrap();
-                    if *input < tensors.len() {
-                        tensors[*input].clone()
-                    } else {
-                        Vec::new()
-                    }
-                };
-
+                let input_data = &tensors[*input];
                 let m = *out_size;
-                let k = input_data.len();
-
-                // Thread 0 allocates output tensor
-                if ith == 0 {
-                    let mut tensors = shared_tensors.lock().unwrap();
-                    tensors[*output].resize(m, 0.0);
-                }
-
-                // ALL threads must reach barrier before any GEMV computation
-                barrier.wait();
 
                 if let Some(w) = weights.get(weight) {
                     if *is_transposed {
-                        // Transposed GEMV: thread 0 computes full result
-                        // Weight shape is [k, m], need to compute y = W^T * x
-                        if ith == 0 {
-                            let result =
-                                model.gemv_transposed(&input_data, w, m);
-                            if let Some(r) = result {
-                                let mut tensors =
-                                    shared_tensors.lock().unwrap();
-                                tensors[*output] = r;
-                            }
+                        if let Some(result) =
+                            model.gemv_transposed(input_data, w, m)
+                        {
+                            tensors[*output] = result;
                         }
                     } else {
-                        // Parallel GEMV: all threads participate
-                        let mut tensors = shared_tensors.lock().unwrap();
-                        let out_data = &mut tensors[*output];
-                        model.gemv_parallel_row(
-                            ith,
-                            nth,
-                            &input_data,
-                            w,
-                            out_data,
-                            k,
-                            m,
-                        );
+                        let mut result = vec![0.0f32; m];
+                        model.gemv_into(input_data, w, &mut result);
+                        tensors[*output] = result;
                     }
-                } else if ith == 0 {
-                    eprintln!(
-                        "[GraphExecutor] Weight {} not found for GEMV!",
-                        weight
-                    );
                 }
             }
 
@@ -191,66 +117,24 @@ fn graph_task_fn(
                 v_out_size,
                 ..
             } => {
-                let input_data = {
-                    let tensors = shared_tensors.lock().unwrap();
-                    if *input < tensors.len() {
-                        tensors[*input].clone()
-                    } else {
-                        Vec::new()
-                    }
-                };
-                let k = input_data.len();
-
-                if ith == 0 {
-                    let mut tensors = shared_tensors.lock().unwrap();
-                    tensors[*output_q].resize(*q_out_size, 0.0);
-                    tensors[*output_k].resize(*k_out_size, 0.0);
-                    tensors[*output_v].resize(*v_out_size, 0.0);
-                }
-                barrier.wait();
+                let input_data = tensors[*input].clone();
 
                 if let Some(q_w) = weights.get(q_weight) {
-                    let mut tensors = shared_tensors.lock().unwrap();
-                    let out = &mut tensors[*output_q];
-                    model.gemv_parallel_row(
-                        ith,
-                        nth,
-                        &input_data,
-                        q_w,
-                        out,
-                        k,
-                        *q_out_size,
-                    );
+                    let mut q_out = vec![0.0f32; *q_out_size];
+                    model.gemv_into(&input_data, q_w, &mut q_out);
+                    tensors[*output_q] = q_out;
                 }
-                barrier.wait();
 
                 if let Some(k_w) = weights.get(k_weight) {
-                    let mut tensors = shared_tensors.lock().unwrap();
-                    let out = &mut tensors[*output_k];
-                    model.gemv_parallel_row(
-                        ith,
-                        nth,
-                        &input_data,
-                        k_w,
-                        out,
-                        k,
-                        *k_out_size,
-                    );
+                    let mut k_out = vec![0.0f32; *k_out_size];
+                    model.gemv_into(&input_data, k_w, &mut k_out);
+                    tensors[*output_k] = k_out;
                 }
-                barrier.wait();
 
                 if let Some(v_w) = weights.get(v_weight) {
-                    let mut tensors = shared_tensors.lock().unwrap();
-                    let out = &mut tensors[*output_v];
-                    model.gemv_parallel_row(
-                        ith,
-                        nth,
-                        &input_data,
-                        v_w,
-                        out,
-                        k,
-                        *v_out_size,
-                    );
+                    let mut v_out = vec![0.0f32; *v_out_size];
+                    model.gemv_into(&input_data, v_w, &mut v_out);
+                    tensors[*output_v] = v_out;
                 }
             }
 
@@ -265,90 +149,34 @@ fn graph_task_fn(
                 v_out_size,
                 ..
             } => {
-                // Fused QKV with merged weight: single GEMV, split result
-                let input_data = {
-                    let tensors = shared_tensors.lock().unwrap();
-                    if *input < tensors.len() {
-                        tensors[*input].clone()
-                    } else {
-                        Vec::new()
-                    }
-                };
-                let k = input_data.len();
+                let input_data = tensors[*input].clone();
                 let total_out_size = q_out_size + k_out_size + v_out_size;
 
-                // Allocate temporary buffer in the LAST tensor slot to avoid collision
-                let temp_id = 1023;
-
-                // Thread 0 allocates output tensors
-                if ith == 0 {
-                    let mut tensors = shared_tensors.lock().unwrap();
-                    tensors[*output_q].resize(*q_out_size, 0.0);
-                    tensors[*output_k].resize(*k_out_size, 0.0);
-                    tensors[*output_v].resize(*v_out_size, 0.0);
-                    tensors[temp_id].resize(total_out_size, 0.0);
-                }
-                barrier.wait();
-
-                // Do single GEMV into temp buffer
                 if let Some(w) = weights.get(qkv_weight) {
-                    let mut tensors = shared_tensors.lock().unwrap();
-                    let qkv_out = &mut tensors[temp_id];
-                    model.gemv_parallel_row(
-                        ith,
-                        nth,
-                        &input_data,
-                        w,
-                        qkv_out,
-                        k,
-                        total_out_size,
-                    );
-                }
-                barrier.wait();
+                    let mut qkv_out = vec![0.0f32; total_out_size];
+                    model.gemv_into(&input_data, w, &mut qkv_out);
 
-                // Thread 0 splits the result
-                if ith == 0 {
-                    let tensors = shared_tensors.lock().unwrap();
-                    let qkv_out = &tensors[temp_id];
-
-                    // Split into Q, K, V
-                    let q_data = qkv_out[0..*q_out_size].to_vec();
-                    let k_data = qkv_out
+                    tensors[*output_q] = qkv_out[..*q_out_size].to_vec();
+                    tensors[*output_k] = qkv_out
                         [*q_out_size..*q_out_size + *k_out_size]
                         .to_vec();
-                    let v_data = qkv_out
-                        [*q_out_size + *k_out_size..total_out_size]
-                        .to_vec();
-
-                    // We need mutable access to write, drop the immutable borrow first
-                    drop(tensors);
-                    let mut tensors = shared_tensors.lock().unwrap();
-                    tensors[*output_q] = q_data;
-                    tensors[*output_k] = k_data;
-                    tensors[*output_v] = v_data;
+                    tensors[*output_v] =
+                        qkv_out[*q_out_size + *k_out_size..].to_vec();
                 }
             }
 
             Operation::RoPE { input, output, n_heads, head_dim, .. } => {
-                if ith == 0 {
-                    let input_data = {
-                        let tensors = shared_tensors.lock().unwrap();
-                        if *input < tensors.len() {
-                            tensors[*input].clone()
-                        } else {
-                            Vec::new()
-                        }
-                    };
-                    let mut tensors = shared_tensors.lock().unwrap();
-                    tensors[*output].resize(input_data.len(), 0.0);
-                    let _ = model.apply_rope_into(
-                        &input_data,
-                        position,
-                        *n_heads,
-                        *head_dim,
-                        &mut tensors[*output],
-                    );
-                }
+                let input_data = &tensors[*input];
+                let mut result = vec![0.0f32; input_data.len()];
+                let pos = kv_cache.seq_len();
+                let _ = model.apply_rope_into(
+                    input_data,
+                    pos,
+                    *n_heads,
+                    *head_dim,
+                    &mut result,
+                );
+                tensors[*output] = result;
             }
 
             Operation::KVCacheUpdate {
@@ -358,30 +186,21 @@ fn graph_task_fn(
                 n_kv_heads,
                 head_dim,
             } => {
-                if ith == 0 {
-                    let input_data = {
-                        let tensors = shared_tensors.lock().unwrap();
-                        if *input < tensors.len() {
-                            tensors[*input].clone()
-                        } else {
-                            Vec::new()
-                        }
-                    };
-                    if *is_key {
-                        kv_cache.set_k(
-                            *layer_idx,
-                            &input_data,
-                            *n_kv_heads,
-                            *head_dim,
-                        );
-                    } else {
-                        kv_cache.set_v(
-                            *layer_idx,
-                            &input_data,
-                            *n_kv_heads,
-                            *head_dim,
-                        );
-                    }
+                let input_data = &tensors[*input];
+                if *is_key {
+                    kv_cache.set_k(
+                        *layer_idx,
+                        input_data,
+                        *n_kv_heads,
+                        *head_dim,
+                    );
+                } else {
+                    kv_cache.set_v(
+                        *layer_idx,
+                        input_data,
+                        *n_kv_heads,
+                        *head_dim,
+                    );
                 }
             }
 
@@ -393,55 +212,48 @@ fn graph_task_fn(
                 n_kv_heads,
                 head_dim,
             } => {
-                if ith == 0 {
-                    let q_data = {
-                        let tensors = shared_tensors.lock().unwrap();
-                        if *q < tensors.len() {
-                            tensors[*q].clone()
-                        } else {
-                            Vec::new()
-                        }
-                    };
-                    let seq_len = kv_cache.seq_len() + 1;
-                    let out_size = *n_heads * head_dim;
-                    let scale = 1.0f32 / (*head_dim as f32).sqrt();
+                let q_data = &tensors[*q];
+                let seq_len = kv_cache.seq_len() + 1;
+                let out_size = *n_heads * head_dim;
+                let scale = 1.0f32 / (*head_dim as f32).sqrt();
 
-                    let mut out_data = vec![0.0f32; out_size];
-                    for h in 0..*n_heads {
-                        let kv_head = h * n_kv_heads / n_heads;
-                        let mut scores = vec![0.0f32; seq_len];
-                        for s in 0..seq_len {
-                            let k_s = kv_cache.get_k(*layer_idx, kv_head, s);
-                            let mut score = 0.0f32;
-                            for d in 0..*head_dim {
-                                score += q_data[h * head_dim + d] * k_s[d];
-                            }
-                            scores[s] = score * scale;
-                        }
-                        let max_score = scores
-                            .iter()
-                            .cloned()
-                            .fold(f32::NEG_INFINITY, f32::max);
-                        let mut sum_exp = 0.0f32;
-                        for s in 0..seq_len {
-                            scores[s] = (scores[s] - max_score).exp();
-                            sum_exp += scores[s];
-                        }
-                        for s in 0..seq_len {
-                            scores[s] /= sum_exp;
-                        }
+                let mut out_data = vec![0.0f32; out_size];
+                for h in 0..*n_heads {
+                    let kv_head = h * n_kv_heads / n_heads;
+                    let mut scores = vec![0.0f32; seq_len];
+
+                    for s in 0..seq_len {
+                        let k_s = kv_cache.get_k(*layer_idx, kv_head, s);
+                        let mut score = 0.0f32;
                         for d in 0..*head_dim {
-                            let mut sum = 0.0f32;
-                            for s in 0..seq_len {
-                                let v_s =
-                                    kv_cache.get_v(*layer_idx, kv_head, s);
-                                sum += scores[s] * v_s[d];
-                            }
-                            out_data[h * head_dim + d] = sum;
+                            score += q_data[h * head_dim + d] * k_s[d];
                         }
+                        scores[s] = score * scale;
                     }
-                    shared_tensors.lock().unwrap()[*output] = out_data;
+
+                    let max_score = scores
+                        .iter()
+                        .cloned()
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    let mut sum_exp = 0.0f32;
+                    for s in 0..seq_len {
+                        scores[s] = (scores[s] - max_score).exp();
+                        sum_exp += scores[s];
+                    }
+                    for s in 0..seq_len {
+                        scores[s] /= sum_exp;
+                    }
+
+                    for d in 0..*head_dim {
+                        let mut sum = 0.0f32;
+                        for s in 0..seq_len {
+                            let v_s = kv_cache.get_v(*layer_idx, kv_head, s);
+                            sum += scores[s] * v_s[d];
+                        }
+                        out_data[h * head_dim + d] = sum;
+                    }
                 }
+                tensors[*output] = out_data;
             }
 
             Operation::FusedGateUp {
@@ -453,200 +265,94 @@ fn graph_task_fn(
                 intermediate_size,
                 ..
             } => {
-                let input_data = {
-                    let tensors = shared_tensors.lock().unwrap();
-                    if *input < tensors.len() {
-                        tensors[*input].clone()
-                    } else {
-                        Vec::new()
-                    }
-                };
-
-                if ith == 0 {
-                    let mut tensors = shared_tensors.lock().unwrap();
-                    tensors[*output_gate].resize(*intermediate_size, 0.0);
-                    tensors[*output_up].resize(*intermediate_size, 0.0);
-                }
-                barrier.wait();
+                let input_data = tensors[*input].clone();
 
                 if let Some(gate_w) = weights.get(gate_weight) {
-                    let mut tensors = shared_tensors.lock().unwrap();
-                    let out = &mut tensors[*output_gate];
-                    model.gemv_parallel_row(
-                        ith,
-                        nth,
-                        &input_data,
-                        gate_w,
-                        out,
-                        input_data.len(),
-                        *intermediate_size,
-                    );
+                    let mut gate_out = vec![0.0f32; *intermediate_size];
+                    model.gemv_into(&input_data, gate_w, &mut gate_out);
+                    tensors[*output_gate] = gate_out;
                 }
-                barrier.wait();
 
                 if let Some(up_w) = weights.get(up_weight) {
-                    let mut tensors = shared_tensors.lock().unwrap();
-                    let out = &mut tensors[*output_up];
-                    model.gemv_parallel_row(
-                        ith,
-                        nth,
-                        &input_data,
-                        up_w,
-                        out,
-                        input_data.len(),
-                        *intermediate_size,
-                    );
+                    let mut up_out = vec![0.0f32; *intermediate_size];
+                    model.gemv_into(&input_data, up_w, &mut up_out);
+                    tensors[*output_up] = up_out;
                 }
             }
 
             Operation::FusedSwiGLU { gate, up, output, .. } => {
-                if ith == 0 {
-                    let gate_data = {
-                        let tensors = shared_tensors.lock().unwrap();
-                        if *gate < tensors.len() {
-                            tensors[*gate].clone()
-                        } else {
-                            Vec::new()
-                        }
-                    };
-                    let up_data = {
-                        let tensors = shared_tensors.lock().unwrap();
-                        if *up < tensors.len() {
-                            tensors[*up].clone()
-                        } else {
-                            Vec::new()
-                        }
-                    };
-                    let len = gate_data.len().min(up_data.len());
-                    let mut result = vec![0.0f32; len];
-                    for i in 0..len {
-                        // Correct: SiLU is applied to UP, not gate
-                        // result = gate * silu(up)
-                        let silu = up_data[i] / (1.0 + (-up_data[i]).exp());
-                        result[i] = gate_data[i] * silu;
-                    }
-                    shared_tensors.lock().unwrap()[*output] = result;
+                let gate_data = &tensors[*gate];
+                let up_data = &tensors[*up];
+                let len = gate_data.len().min(up_data.len());
+
+                let mut result = vec![0.0f32; len];
+                for i in 0..len {
+                    let silu = up_data[i] / (1.0 + (-up_data[i]).exp());
+                    result[i] = gate_data[i] * silu;
                 }
+                tensors[*output] = result;
             }
 
             Operation::Add { lhs, rhs, output } => {
-                if ith == 0 {
-                    let lhs_data = {
-                        let tensors = shared_tensors.lock().unwrap();
-                        if *lhs < tensors.len() {
-                            tensors[*lhs].clone()
-                        } else {
-                            Vec::new()
-                        }
-                    };
-                    let rhs_data = {
-                        let tensors = shared_tensors.lock().unwrap();
-                        if *rhs < tensors.len() {
-                            tensors[*rhs].clone()
-                        } else {
-                            Vec::new()
-                        }
-                    };
-                    let len = lhs_data.len().min(rhs_data.len());
-                    let mut result = vec![0.0f32; len];
-                    for i in 0..len {
-                        result[i] = lhs_data[i] + rhs_data[i];
-                    }
-                    shared_tensors.lock().unwrap()[*output] = result;
+                let lhs_data = &tensors[*lhs];
+                let rhs_data = &tensors[*rhs];
+                let len = lhs_data.len().min(rhs_data.len());
+
+                let mut result = vec![0.0f32; len];
+                for i in 0..len {
+                    result[i] = lhs_data[i] + rhs_data[i];
                 }
+                tensors[*output] = result;
             }
 
             Operation::SiLU { input, output } => {
-                if ith == 0 {
-                    let input_data = {
-                        let tensors = shared_tensors.lock().unwrap();
-                        if *input < tensors.len() {
-                            tensors[*input].clone()
-                        } else {
-                            Vec::new()
-                        }
-                    };
-                    let mut result = vec![0.0f32; input_data.len()];
-                    for i in 0..input_data.len() {
-                        result[i] =
-                            input_data[i] / (1.0 + (-input_data[i]).exp());
-                    }
-                    shared_tensors.lock().unwrap()[*output] = result;
+                let input_data = &tensors[*input];
+                let mut result = vec![0.0f32; input_data.len()];
+                for i in 0..input_data.len() {
+                    result[i] = input_data[i] / (1.0 + (-input_data[i]).exp());
                 }
+                tensors[*output] = result;
             }
 
             Operation::Mul { lhs, rhs, output } => {
-                if ith == 0 {
-                    let lhs_data = {
-                        let tensors = shared_tensors.lock().unwrap();
-                        if *lhs < tensors.len() {
-                            tensors[*lhs].clone()
-                        } else {
-                            Vec::new()
-                        }
-                    };
-                    let rhs_data = {
-                        let tensors = shared_tensors.lock().unwrap();
-                        if *rhs < tensors.len() {
-                            tensors[*rhs].clone()
-                        } else {
-                            Vec::new()
-                        }
-                    };
-                    let len = lhs_data.len().min(rhs_data.len());
-                    let mut result = vec![0.0f32; len];
-                    for i in 0..len {
-                        result[i] = lhs_data[i] * rhs_data[i];
-                    }
-                    shared_tensors.lock().unwrap()[*output] = result;
+                let lhs_data = &tensors[*lhs];
+                let rhs_data = &tensors[*rhs];
+                let len = lhs_data.len().min(rhs_data.len());
+
+                let mut result = vec![0.0f32; len];
+                for i in 0..len {
+                    result[i] = lhs_data[i] * rhs_data[i];
                 }
+                tensors[*output] = result;
             }
 
             Operation::NoOp => {}
 
             _ => {}
         }
-
-        // Barrier after each node - ALL threads must reach this
-        barrier.wait();
     }
 
-    if ith == 0 {
-        kv_cache.advance();
-    }
+    kv_cache.advance();
 
-    if ith == 0 {
-        // Find output from the exit node (output projection)
-        let mut found_output = false;
-        for node_id in dag.execution_order.iter().rev() {
-            let node = &dag.dag.nodes[*node_id];
-            if let Operation::Gemv { output, out_size, .. } = &node.op {
-                let tensors = shared_tensors.lock().unwrap();
-                let out_tensor = &tensors[*output];
-                if !out_tensor.is_empty() {
-                    let result = out_tensor[..*out_size].to_vec();
-                    *final_output.lock().unwrap() = Some(result);
-                    found_output = true;
-                } else {
-                    eprintln!(
-                        "[GraphExecutor] Output tensor {} is empty, out_size={}",
-                        output, out_size
-                    );
-                }
-                break;
-            }
-            if let Operation::Add { output, .. } = &node.op {
-                let tensors = shared_tensors.lock().unwrap();
+    // Find output from the exit node
+    for node_id in dag.execution_order.iter().rev() {
+        let node = &dag.dag.nodes[*node_id];
+        match &node.op {
+            Operation::Gemv { output, out_size, .. } => {
                 if !tensors[*output].is_empty() {
-                    let result = tensors[*output].clone();
-                    *final_output.lock().unwrap() = Some(result);
-                    found_output = true;
+                    return Some(tensors[*output][..*out_size].to_vec());
                 }
                 break;
             }
-        }
-        if !found_output {
-            eprintln!("[GraphExecutor] Failed to find output!");
+            Operation::Add { output, .. } => {
+                if !tensors[*output].is_empty() {
+                    return Some(tensors[*output].clone());
+                }
+                break;
+            }
+            _ => {}
         }
     }
+
+    None
 }

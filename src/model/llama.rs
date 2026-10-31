@@ -2880,22 +2880,24 @@ impl LlamaModel {
                     &mut buffers.x_padded,
                 );
 
-                // Tiled GEMV for all projections (cache-optimized)
-                self.gemv_with_prequant_tiled(
+                // Use hybrid ST/MT GEMV for better performance
+                // Small matrices (<2048): single-thread to avoid overhead
+                // Large matrices (>=2048): multi-thread for parallelism
+                self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wq.as_ref()?,
                     &mut buffers.q_buffer[..q_size],
                 );
 
-                self.gemv_with_prequant_tiled(
+                self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wk.as_ref()?,
                     &mut buffers.k_buffer[..k_size],
                 );
 
-                self.gemv_with_prequant_tiled(
+                self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wv.as_ref()?,
@@ -2987,8 +2989,10 @@ impl LlamaModel {
             &mut buffers.hidden_alt,
         );
 
-        // 8. FFN (single-thread)
-        self.compute_ffn_zero_alloc_single_thread(
+        // 8. FFN with hybrid ST/MT GEMV
+        // Large matrices (w1, w3: m=3072) use multi-thread
+        // Small matrices (w2: m=1024) use single-thread
+        self.compute_ffn_zero_alloc(
             layer,
             &buffers.hidden_alt,
             &mut buffers.ffn_gate,
@@ -3184,7 +3188,12 @@ impl LlamaModel {
         #[cfg(target_arch = "aarch64")]
         {
             use crate::quant::kv_cache::quantize_row_q8_k_neon;
+            use crate::quant::matmul::k_quant::{
+                matmul_q4_k_q8_k_hybrid, matmul_q5_k_q8_k_hybrid,
+                matmul_q6_k_q8_k_hybrid,
+            };
             use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
+            use std::sync::Arc;
 
             // K-quant GEMV with zero-padding for non-standard dimensions
             let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
@@ -3201,6 +3210,7 @@ impl LlamaModel {
                     } else {
                         quantize_row_q8_k_neon(x, &mut x_q8k);
                     }
+                    let x_q8k = Arc::new(x_q8k);
 
                     let mut out = vec![0.0f32; out_size];
                     unsafe {
@@ -3211,8 +3221,7 @@ impl LlamaModel {
                                         w.bytes().as_ptr() as *const BlockQ4K,
                                         out_size * nb,
                                     );
-                                // Use tiled GEMV for better cache locality
-                                crate::cpu::gemv_q4k_q8k_tiled(
+                                matmul_q4_k_q8_k_hybrid(
                                     weights,
                                     &x_q8k,
                                     &mut out,
@@ -3226,7 +3235,7 @@ impl LlamaModel {
                                         w.bytes().as_ptr() as *const BlockQ5K,
                                         out_size * nb,
                                     );
-                                crate::cpu::gemv_q5k_q8k_tiled(
+                                matmul_q5_k_q8_k_hybrid(
                                     weights,
                                     &x_q8k,
                                     &mut out,
@@ -3240,7 +3249,7 @@ impl LlamaModel {
                                         w.bytes().as_ptr() as *const BlockQ6K,
                                         out_size * nb,
                                     );
-                                crate::cpu::gemv_q6k_q8k_tiled(
+                                matmul_q6_k_q8_k_hybrid(
                                     weights,
                                     &x_q8k,
                                     &mut out,

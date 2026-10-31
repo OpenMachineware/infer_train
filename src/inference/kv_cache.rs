@@ -52,6 +52,24 @@ pub trait KVCacheBase {
     /// Get V cache for a specific layer and head (FP32 for compatibility)
     fn get_v(&self, layer: usize, head: usize, pos: usize) -> Vec<f32>;
 
+    /// Get K cache into pre-allocated buffer (zero-allocation)
+    fn get_k_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    );
+
+    /// Get V cache into pre-allocated buffer (zero-allocation)
+    fn get_v_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    );
+
     /// Set K cache for a specific layer (quantizes internally)
     fn set_k(
         &mut self,
@@ -232,6 +250,30 @@ impl KVCacheBase for KVCacheF32 {
         self.v_cache[layer][head][pos].clone()
     }
 
+    fn get_k_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        let k = &self.k_cache[layer][head][pos];
+        let len = k.len().min(out.len());
+        out[..len].copy_from_slice(&k[..len]);
+    }
+
+    fn get_v_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        let v = &self.v_cache[layer][head][pos];
+        let len = v.len().min(out.len());
+        out[..len].copy_from_slice(&v[..len]);
+    }
+
     fn set_k(
         &mut self,
         layer: usize,
@@ -338,6 +380,26 @@ impl KVCacheBase for KVCacheF16 {
         let mut out = vec![0.0f32; self.head_dim];
         dequantize_row_f16(&self.v_cache[layer][head][pos], &mut out);
         out
+    }
+
+    fn get_k_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        dequantize_row_f16(&self.k_cache[layer][head][pos], out);
+    }
+
+    fn get_v_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        dequantize_row_f16(&self.v_cache[layer][head][pos], out);
     }
 
     fn set_k(
@@ -450,6 +512,28 @@ impl KVCacheBase for KVCacheQ8_0 {
         out
     }
 
+    fn get_k_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        let blocks = &self.k_cache[layer][head][pos];
+        dequantize_row_q8_0(blocks, out);
+    }
+
+    fn get_v_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        let blocks = &self.v_cache[layer][head][pos];
+        dequantize_row_q8_0(blocks, out);
+    }
+
     fn set_k(
         &mut self,
         layer: usize,
@@ -554,6 +638,26 @@ impl KVCacheBase for KVCacheQ4_0 {
         let mut out = vec![0.0f32; self.head_dim];
         dequantize_row_q4_0(&self.v_cache[layer][head][pos], &mut out);
         out
+    }
+
+    fn get_k_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        dequantize_row_q4_0(&self.k_cache[layer][head][pos], out);
+    }
+
+    fn get_v_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        dequantize_row_q4_0(&self.v_cache[layer][head][pos], out);
     }
 
     fn set_k(
@@ -662,6 +766,26 @@ impl KVCacheBase for KVCacheQ4_1 {
         out
     }
 
+    fn get_k_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        dequantize_row_q4_1(&self.k_cache[layer][head][pos], out);
+    }
+
+    fn get_v_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        dequantize_row_q4_1(&self.v_cache[layer][head][pos], out);
+    }
+
     fn set_k(
         &mut self,
         layer: usize,
@@ -768,6 +892,26 @@ impl KVCacheBase for KVCacheQ5_0 {
         out
     }
 
+    fn get_k_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        dequantize_row_q5_0(&self.k_cache[layer][head][pos], out);
+    }
+
+    fn get_v_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        dequantize_row_q5_0(&self.v_cache[layer][head][pos], out);
+    }
+
     fn set_k(
         &mut self,
         layer: usize,
@@ -872,6 +1016,26 @@ impl KVCacheBase for KVCacheQ5_1 {
         let mut out = vec![0.0f32; self.head_dim];
         dequantize_row_q5_1(&self.v_cache[layer][head][pos], &mut out);
         out
+    }
+
+    fn get_k_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        dequantize_row_q5_1(&self.k_cache[layer][head][pos], out);
+    }
+
+    fn get_v_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        dequantize_row_q5_1(&self.v_cache[layer][head][pos], out);
     }
 
     fn set_k(
@@ -1030,6 +1194,42 @@ impl KVCacheBase for KVCache {
             KVCache::Q4_1(cache) => cache.get_v(layer, head, pos),
             KVCache::Q5_0(cache) => cache.get_v(layer, head, pos),
             KVCache::Q5_1(cache) => cache.get_v(layer, head, pos),
+        }
+    }
+
+    fn get_k_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        match self {
+            KVCache::F32(cache) => cache.get_k_into(layer, head, pos, out),
+            KVCache::F16(cache) => cache.get_k_into(layer, head, pos, out),
+            KVCache::Q8_0(cache) => cache.get_k_into(layer, head, pos, out),
+            KVCache::Q4_0(cache) => cache.get_k_into(layer, head, pos, out),
+            KVCache::Q4_1(cache) => cache.get_k_into(layer, head, pos, out),
+            KVCache::Q5_0(cache) => cache.get_k_into(layer, head, pos, out),
+            KVCache::Q5_1(cache) => cache.get_k_into(layer, head, pos, out),
+        }
+    }
+
+    fn get_v_into(
+        &self,
+        layer: usize,
+        head: usize,
+        pos: usize,
+        out: &mut [f32],
+    ) {
+        match self {
+            KVCache::F32(cache) => cache.get_v_into(layer, head, pos, out),
+            KVCache::F16(cache) => cache.get_v_into(layer, head, pos, out),
+            KVCache::Q8_0(cache) => cache.get_v_into(layer, head, pos, out),
+            KVCache::Q4_0(cache) => cache.get_v_into(layer, head, pos, out),
+            KVCache::Q4_1(cache) => cache.get_v_into(layer, head, pos, out),
+            KVCache::Q5_0(cache) => cache.get_v_into(layer, head, pos, out),
+            KVCache::Q5_1(cache) => cache.get_v_into(layer, head, pos, out),
         }
     }
 

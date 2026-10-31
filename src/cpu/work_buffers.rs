@@ -28,6 +28,9 @@ pub struct CpuWorkBuffers {
     pub rope_buffer: Vec<f32>,
     pub attn_scores: Vec<f32>,
 
+    // KV cache dequantization buffer (reused for each head)
+    pub kv_dequant: Vec<f32>,
+
     // Dequantized norm weights (flat array: each norm is hidden_size elements)
     pub norm_weights: Vec<f32>,
     pub norm_weight: Vec<f32>, // Final output norm
@@ -92,6 +95,7 @@ impl CpuWorkBuffers {
             v_buffer: vec![0.0; kv_size],
             rope_buffer: vec![0.0; q_size.max(kv_size)],
             attn_scores: vec![0.0; n_heads * 2048], // n_heads * max_seq_len for parallel execution
+            kv_dequant: vec![0.0; head_dim.max(key_length).max(value_length)], // Reusable K/V dequant buffer
             norm_weights: Vec::with_capacity(n_layers * 2 * hidden_size),
             norm_weight: vec![0.0; hidden_size],
             hidden_size,

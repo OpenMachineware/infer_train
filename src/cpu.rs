@@ -6,7 +6,7 @@ pub mod thread_pool;
 pub mod tiled_gemv;
 pub mod work_buffers;
 
-pub use graph_executor::{GraphExecutionState, execute_graph_parallel};
+pub use graph_executor::{GraphWorkBuffers, execute_graph_parallel};
 pub use thread_pool::{
     GEMVOp, PersistentThreadPool, SpinBarrier, SyncPtr, default_n_threads,
     execute_layer_with_barrier, gemv_batch_barrier, gemv_work_stealing,

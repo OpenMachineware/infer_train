@@ -17,6 +17,10 @@ name = "bench-gemv-simple"
 path = "tools/bench_gemv_simple.rs"
 
 [[bin]]
+name = "bench-gemv-detailed"
+path = "tools/bench_gemv_detailed.rs"
+
+[[bin]]
 name = "inspect-gguf"
 path = "tools/inspect_gguf.rs"
 
