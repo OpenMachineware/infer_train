@@ -25,6 +25,7 @@ devstral-fix.jinja
 
 # External dependencies (not tracked)
 llama.cpp-0.7.0/
+llama.cpp-0.8.0/
 llvm-project-llvmorg-23.1.0/
 vllm-0.32.0/
 muser/
@@ -38,3 +39,18 @@ native/
 # Temporary planning documents
 TMP_*.md
 tmp_code_to_remove/
+
+# Debug tools
+/tools/bench_*.rs
+/tools/debug_*.rs
+/tools/profile_*.rs
+/tools/test_*.rs
+/tools/check_*.rs
+/tools/compare_*.rs
+/tools/trace_*.rs
+/tools/simple_*.rs
+/tools/condvar_*.rs
+/tools/isolated_*.rs
+/tools/final_*.rs
+/tools/build_*.rs
+/tools/verify_*.rs
