@@ -31,6 +31,10 @@ pub struct CpuExecutor {
     // Attention scores buffer (variable size)
     attn_scores: Vec<f32>,
 
+    // Pre-allocated quantization buffers for GEMV
+    q8k_input: Vec<u8>, // Q8_K quantized input
+    x_padded: Vec<f32>, // Padded input for quantization
+
     // MLA buffers (Multi-head Latent Attention)
     kv_a_proj: Vec<f32>,   // kv_lora_rank + qk_rope_head_dim
     kv_a_normed: Vec<f32>, // kv_lora_rank
@@ -116,6 +120,21 @@ impl CpuExecutor {
         let logits = vec![0.0f32; vocab_size];
         let attn_scores = vec![0.0f32; 2048]; // max_seq_len
 
+        // Pre-allocate quantization buffers for GEMV
+        use crate::quant::types::QK_K;
+        // Size for the maximum dimension used in any GEMV:
+        // - QKV projections: hidden_size
+        // - FFN w2 projection: intermediate_size
+        let max_dim = hidden_size.max(intermediate_size);
+        let max_dim_padded = ((max_dim + QK_K - 1) / QK_K) * QK_K;
+        let nb = max_dim_padded / QK_K;
+        let q8k_input =
+            vec![
+                0u8;
+                nb * std::mem::size_of::<crate::quant::types::BlockQ8K>()
+            ];
+        let x_padded = vec![0.0f32; max_dim_padded];
+
         // MLA buffers
         let kv_a_proj = if uses_mla {
             vec![0.0f32; kv_lora_rank + qk_rope_head_dim]
@@ -144,6 +163,8 @@ impl CpuExecutor {
             ffn_hidden,
             logits,
             attn_scores,
+            q8k_input,
+            x_padded,
             kv_a_proj,
             kv_a_normed,
             kv,
@@ -212,7 +233,13 @@ impl CpuExecutor {
             model.norm.as_ref()?,
             &mut self.normed,
         )?;
-        model.gemv_into(&self.normed, model.output.as_ref()?, &mut self.logits);
+        model.gemv_into_with_buffers_single_thread(
+            &self.normed,
+            model.output.as_ref()?,
+            &mut self.logits,
+            &mut self.q8k_input,
+            &mut self.x_padded,
+        );
 
         // Return logits (copy, since buffers are reused)
         Some(self.logits.clone())
@@ -296,10 +323,12 @@ impl CpuExecutor {
         self.forward_attention(layer_idx, kv_cache)?;
 
         // 5. Output projection
-        model.gemv_into(
+        model.gemv_into_with_buffers_single_thread(
             &self.attn_out,
             layer.wo.as_ref()?,
             &mut self.hidden_alt,
+            &mut self.q8k_input,
+            &mut self.x_padded,
         );
 
         // 6. Residual
@@ -333,21 +362,24 @@ impl CpuExecutor {
     ) -> Option<()> {
         if self.uses_mla {
             // MLA (Multi-head Latent Attention) - DeepSeek-Coder-V2 style
-            // Flow:
-            // 1. Q = hidden @ attn_q
-            // 2. KV_A = hidden @ attn_kv_a_mqa → [kv_lora_rank + qk_rope_head_dim]
-            // 3. KV_A_normed = RMSNorm(KV_A[:kv_lora_rank], attn_kv_a_norm)
-            // 4. KV = KV_A_normed @ attn_kv_b
-            // 5. Construct K, V
+            // Use zero-allocation GEMV with pre-allocated buffers
 
             // 1. Q projection
-            model.gemv_into(&self.normed, layer.wq.as_ref()?, &mut self.q);
+            model.gemv_into_with_buffers_single_thread(
+                &self.normed,
+                layer.wq.as_ref()?,
+                &mut self.q,
+                &mut self.q8k_input,
+                &mut self.x_padded,
+            );
 
             // 2. KV_A projection (compressed)
-            model.gemv_into(
+            model.gemv_into_with_buffers_single_thread(
                 &self.normed,
                 layer.attn_kv_a_mqa.as_ref()?,
                 &mut self.kv_a_proj,
+                &mut self.q8k_input,
+                &mut self.x_padded,
             );
 
             // 3. KV_A normalization (RMSNorm on the first kv_lora_rank elements)
@@ -369,10 +401,12 @@ impl CpuExecutor {
             }
 
             // 4. KV_B projection (decompress to full KV)
-            model.gemv_into(
+            model.gemv_into_with_buffers_single_thread(
                 &self.kv_a_normed,
                 layer.attn_kv_b.as_ref()?,
                 &mut self.kv,
+                &mut self.q8k_input,
+                &mut self.x_padded,
             );
 
             // 5. Construct K and V
@@ -409,10 +443,87 @@ impl CpuExecutor {
                 self.v[i] = self.kv[k_nope_size + i];
             }
         } else {
-            // Standard attention
-            model.gemv_into(&self.normed, layer.wq.as_ref()?, &mut self.q);
-            model.gemv_into(&self.normed, layer.wk.as_ref()?, &mut self.k);
-            model.gemv_into(&self.normed, layer.wv.as_ref()?, &mut self.v);
+            // Standard attention - use pre-quantized input for K-quant weights
+            let wq_dtype = layer.wq.as_ref()?.dtype;
+            let wk_dtype = layer.wk.as_ref()?.dtype;
+            let wv_dtype = layer.wv.as_ref()?.dtype;
+
+            let all_k_quant = matches!(
+                (wq_dtype, wk_dtype, wv_dtype),
+                (
+                    crate::model::tensor::DataType::Q4_K
+                        | crate::model::tensor::DataType::Q5_K
+                        | crate::model::tensor::DataType::Q6_K,
+                    crate::model::tensor::DataType::Q4_K
+                        | crate::model::tensor::DataType::Q5_K
+                        | crate::model::tensor::DataType::Q6_K,
+                    crate::model::tensor::DataType::Q4_K
+                        | crate::model::tensor::DataType::Q5_K
+                        | crate::model::tensor::DataType::Q6_K
+                )
+            );
+
+            if all_k_quant {
+                // Pre-quantize once for all three projections
+                use crate::quant::types::{BlockQ8K, QK_K};
+                let in_size_padded =
+                    ((self.hidden_size + QK_K - 1) / QK_K) * QK_K;
+                let nb = in_size_padded / QK_K;
+                let x_q8k_blocks = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        self.q8k_input.as_mut_ptr() as *mut BlockQ8K,
+                        nb,
+                    )
+                };
+                LlamaModel::quantize_input_to_q8k(
+                    &self.normed,
+                    x_q8k_blocks,
+                    &mut self.x_padded,
+                );
+
+                // Use pre-quantized input for all projections
+                model.gemv_with_prequant_single_thread(
+                    x_q8k_blocks,
+                    self.hidden_size,
+                    layer.wq.as_ref()?,
+                    &mut self.q,
+                );
+                model.gemv_with_prequant_single_thread(
+                    x_q8k_blocks,
+                    self.hidden_size,
+                    layer.wk.as_ref()?,
+                    &mut self.k,
+                );
+                model.gemv_with_prequant_single_thread(
+                    x_q8k_blocks,
+                    self.hidden_size,
+                    layer.wv.as_ref()?,
+                    &mut self.v,
+                );
+            } else {
+                // Mixed dtypes - use per-call quantization
+                model.gemv_into_with_buffers_single_thread(
+                    &self.normed,
+                    layer.wq.as_ref()?,
+                    &mut self.q,
+                    &mut self.q8k_input,
+                    &mut self.x_padded,
+                );
+                model.gemv_into_with_buffers_single_thread(
+                    &self.normed,
+                    layer.wk.as_ref()?,
+                    &mut self.k,
+                    &mut self.q8k_input,
+                    &mut self.x_padded,
+                );
+                model.gemv_into_with_buffers_single_thread(
+                    &self.normed,
+                    layer.wv.as_ref()?,
+                    &mut self.v,
+                    &mut self.q8k_input,
+                    &mut self.x_padded,
+                );
+            }
         }
         Some(())
     }
@@ -502,11 +613,14 @@ impl CpuExecutor {
         model: &LlamaModel,
         layer: &LlamaLayer,
     ) -> Option<()> {
-        // Use model's compute_ffn which handles both standard FFN and MoE
-        // (not zero-allocation for MoE but functional)
-        let output =
-            model.compute_ffn(layer, &self.normed, self.hidden_size)?;
-        self.hidden_alt.copy_from_slice(&output);
-        Some(())
+        model.compute_ffn_zero_alloc(
+            layer,
+            &self.normed,
+            &mut self.ffn_gate,
+            &mut self.ffn_up,
+            &mut self.hidden_alt,
+            &mut self.q8k_input,
+            &mut self.x_padded,
+        )
     }
 }
