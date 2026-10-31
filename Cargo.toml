@@ -1677,6 +1677,10 @@ name = "bench-cpu-zero-alloc-forward"
 path = "tools/bench_cpu_zero_alloc_forward.rs"
 
 [[bin]]
+name = "time-output-proj"
+path = "tools/time_output_proj.rs"
+
+[[bin]]
 name = "compare-vecdot-perf"
 path = "tools/compare_vecdot_perf.rs"
 
@@ -1784,3 +1788,7 @@ path = "tools/profile_single_gemv.rs"
 [[bin]]
 name = "profile-all-gemvs"
 path = "tools/profile_all_gemvs.rs"
+
+[[bin]]
+name = "time-embedding"
+path = "tools/time_embedding.rs"
