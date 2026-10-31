@@ -3,7 +3,7 @@
 
 // Weight store: tensor manager for model weights
 
-use crate::model::gguf::{GgufError, GgufFile, tensor_from_gguf};
+use crate::model::gguf::{GgufError, GgufFile, tensor_from_gguf_mmap};
 use crate::model::tensor::{DataType, Tensor};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -75,10 +75,18 @@ impl WeightStore {
             let part_path =
                 format!("{}-{:05}-of-{:05}.gguf", base_path, part, count);
             let gguf = Arc::new(GgufFile::open(&part_path)?);
+            let mmap = gguf.mmap();
 
             for tensor_info in &gguf.tensors {
-                if let Some(data) = gguf.get_tensor_data(&tensor_info.name) {
-                    let tensor = tensor_from_gguf(tensor_info, data);
+                if let Some((offset, len)) =
+                    gguf.get_tensor_offset_len(&tensor_info.name)
+                {
+                    let tensor = tensor_from_gguf_mmap(
+                        tensor_info,
+                        mmap.clone(),
+                        offset,
+                        len,
+                    );
                     store.tensors.insert(tensor_info.name.clone(), tensor);
                 }
             }
@@ -146,9 +154,17 @@ impl WeightStore {
             name: "GGUF file".to_string(),
         })?;
 
+        let mmap = gguf.mmap();
         for tensor_info in &gguf.tensors {
-            if let Some(data) = gguf.get_tensor_data(&tensor_info.name) {
-                let tensor = tensor_from_gguf(tensor_info, data);
+            if let Some((offset, len)) =
+                gguf.get_tensor_offset_len(&tensor_info.name)
+            {
+                let tensor = tensor_from_gguf_mmap(
+                    tensor_info,
+                    mmap.clone(),
+                    offset,
+                    len,
+                );
                 self.tensors.insert(tensor_info.name.clone(), tensor);
             }
         }

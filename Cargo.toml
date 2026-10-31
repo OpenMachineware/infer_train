@@ -247,7 +247,14 @@ required-features = ["metal"]
 [[bin]]
 name = "profile-gpu-forward"
 path = "tools/profile_gpu_forward.rs"
-required-features = ["metal"]
+
+[[bin]]
+name = "bench-narrow-path"
+path = "tools/bench_narrow_path.rs"
+
+[[bin]]
+name = "bench-graph-execution"
+path = "tools/bench_graph_execution.rs"
 
 [[bin]]
 name = "profile-layer-detailed"
@@ -1085,7 +1092,22 @@ required-features = ["metal"]
 [[bin]]
 name = "profile-decode-breakdown"
 path = "tools/profile_decode_breakdown.rs"
-required-features = ["metal"]
+
+[[bin]]
+name = "profile-weight-shapes"
+path = "tools/profile_weight_shapes.rs"
+
+[[bin]]
+name = "profile-cache-behavior"
+path = "tools/profile_cache_behavior.rs"
+
+[[bin]]
+name = "profile-quant-vs-gemv"
+path = "tools/profile_quant_vs_gemv.rs"
+
+[[bin]]
+name = "profile-attention-timing"
+path = "tools/profile_attention_timing.rs"
 
 [[bin]]
 name = "profile-decode-kernels"
@@ -1197,10 +1219,6 @@ path = "tools/test_layer2_only.rs"
 required-features = ["metal"]
 
 [[bin]]
-name = "check-layer-dtypes"
-path = "tools/check_layer_dtypes.rs"
-
-[[bin]]
 name = "test-q5k-direct"
 path = "tools/test_q5k_direct.rs"
 required-features = ["metal"]
@@ -1282,11 +1300,6 @@ required-features = ["metal"]
 [[bin]]
 name = "profile-prefill"
 path = "tools/profile_prefill.rs"
-required-features = ["metal"]
-
-[[bin]]
-name = "profile-decode-ops"
-path = "tools/profile_decode_ops.rs"
 required-features = ["metal"]
 
 [[bin]]
@@ -1375,7 +1388,6 @@ required-features = ["metal"]
 [[bin]]
 name = "profile-decode-ops-detailed"
 path = "tools/profile_decode_ops_detailed.rs"
-required-features = ["metal"]
 
 [[bin]]
 name = "profile-kernel-overlap"
@@ -1534,6 +1546,10 @@ path = "tools/verify_q5k_fix.rs"
 required-features = ["metal"]
 
 [[bin]]
+name = "verify-tiled-gemv"
+path = "tools/verify_tiled_gemv.rs"
+
+[[bin]]
 name = "test-async-overlap"
 path = "tools/test_async_overlap.rs"
 required-features = ["metal"]
@@ -1579,20 +1595,12 @@ name = "measure-memory-bandwidth"
 path = "tools/measure_memory_bandwidth.rs"
 
 [[bin]]
-name = "test-sequential-gemv"
-path = "tools/test_sequential_gemv.rs"
-
-[[bin]]
 name = "test-interleaved-gemv"
 path = "tools/test_interleaved_gemv.rs"
 
 [[bin]]
 name = "bench-interleaved-real"
 path = "tools/bench_interleaved_real.rs"
-
-[[bin]]
-name = "test-cpu-async"
-path = "tools/test_cpu_async.rs"
 
 [[bin]]
 name = "bench-interleaved-layers"
@@ -1693,6 +1701,10 @@ name = "profile-ffn-detailed"
 path = "tools/profile_ffn_detailed.rs"
 
 [[bin]]
+name = "profile-ffn-only"
+path = "tools/profile_ffn_only.rs"
+
+[[bin]]
 name = "debug-profile-timing"
 required-features = ["metal"]
 path = "tools/debug_profile_timing.rs"
@@ -1752,3 +1764,19 @@ path = "tools/isolated_barrier.rs"
 [[bin]]
 name = "final-bench"
 path = "tools/final_bench.rs"
+
+[[bin]]
+name = "debug-model-arch"
+path = "tools/debug_model_arch.rs"
+
+[[bin]]
+name = "profile-ffn-st-vs-mt"
+path = "tools/profile_ffn_st_vs_mt.rs"
+
+[[bin]]
+name = "profile-single-gemv"
+path = "tools/profile_single_gemv.rs"
+
+[[bin]]
+name = "profile-all-gemvs"
+path = "tools/profile_all_gemvs.rs"

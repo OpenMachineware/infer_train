@@ -7,6 +7,7 @@ use super::dtype::{GgufDtype, GgufError};
 use memmap2::Mmap;
 use std::collections::HashMap;
 use std::fs::File;
+use std::sync::Arc;
 
 const GGUF_MAGIC: u32 = 0x46554747; // "GGUF" in little-endian
 
@@ -45,7 +46,7 @@ pub struct GgufFile {
     pub tensors: Vec<TensorInfo>,
     pub data_offset: u64,
     alignment: usize, // Alignment in bytes
-    mmap: Mmap,
+    mmap: Arc<Mmap>,
 }
 
 impl GgufFile {
@@ -55,6 +56,22 @@ impl GgufFile {
         let _len = metadata.len() as usize;
 
         let mmap = unsafe { Mmap::map(&file)? };
+
+        // Prefetch the entire file into memory (llama.cpp uses MADV_WILLNEED)
+        // This tells the OS to start loading pages asynchronously
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            use std::os::unix::io::AsRawFd;
+            // Use madvise to hint OS to prefetch all pages
+            // On macOS, MADV_WILLNEED triggers asynchronous readahead
+            unsafe {
+                libc::madvise(
+                    mmap.as_ptr() as *mut libc::c_void,
+                    mmap.len(),
+                    libc::MADV_WILLNEED,
+                );
+            }
+        }
 
         let mut cursor = 0usize;
 
@@ -112,7 +129,7 @@ impl GgufFile {
             tensors,
             data_offset,
             alignment,
-            mmap,
+            mmap: Arc::new(mmap),
         })
     }
 
@@ -133,6 +150,27 @@ impl GgufFile {
         } else {
             None
         }
+    }
+
+    /// Get tensor data offset and length for zero-copy access
+    pub fn get_tensor_offset_len(&self, name: &str) -> Option<(usize, usize)> {
+        let tensor = self.tensors.iter().find(|t| t.name == name)?;
+
+        // Calculate aligned data start
+        let data_offset = self.data_offset as usize;
+        let aligned_start = data_offset
+            + (self.alignment - (data_offset % self.alignment))
+                % self.alignment;
+
+        let start = aligned_start + tensor.offset as usize;
+        let size = self.tensor_size(tensor);
+
+        if start + size <= self.mmap.len() { Some((start, size)) } else { None }
+    }
+
+    /// Get the mmap as Arc for zero-copy tensor creation
+    pub fn mmap(&self) -> Arc<Mmap> {
+        self.mmap.clone()
     }
 
     fn tensor_size(&self, tensor: &TensorInfo) -> usize {

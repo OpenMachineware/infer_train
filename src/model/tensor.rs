@@ -136,6 +136,14 @@ impl DataType {
 #[derive(Debug, Clone)]
 pub enum TensorData {
     Owned(Vec<u8>),
+    /// Zero-copy mmap reference: (mmap, offset, length)
+    /// This avoids copying weight data, preserving OS cache benefits
+    MmapRef {
+        base: Arc<memmap2::Mmap>,
+        offset: usize,
+        len: usize,
+    },
+    /// Legacy: copied data (deprecated, for compatibility)
     Mmap(Arc<[u8]>),
 }
 
@@ -144,6 +152,9 @@ impl TensorData {
         match self {
             TensorData::Owned(v) => v,
             TensorData::Mmap(m) => m,
+            TensorData::MmapRef { base, offset, len } => {
+                &base[*offset..*offset + *len]
+            }
         }
     }
 }

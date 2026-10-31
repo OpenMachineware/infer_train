@@ -37,6 +37,24 @@ impl From<GgufDtype> for DataType {
     }
 }
 
+/// Create tensor from GGUF with zero-copy mmap reference
+/// This preserves OS cache benefits by not copying weight data
+pub fn tensor_from_gguf_mmap(
+    info: &TensorInfo,
+    mmap: Arc<memmap2::Mmap>,
+    offset: usize,
+    len: usize,
+) -> Tensor {
+    Tensor {
+        name: info.name.clone(),
+        shape: info.dims.iter().map(|&d| d as usize).collect(),
+        dtype: DataType::from(info.dtype),
+        data: TensorData::MmapRef { base: mmap, offset, len },
+        #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+        gpu_buffer: std::sync::RwLock::new(None),
+    }
+}
+
 pub fn tensor_from_gguf(info: &TensorInfo, data: &[u8]) -> Tensor {
     Tensor {
         name: info.name.clone(),
