@@ -31,6 +31,9 @@ pub struct CpuExecutor {
     // Attention scores buffer (variable size)
     attn_scores: Vec<f32>,
 
+    // RoPE temp buffer (avoid cloning)
+    rope_buffer: Vec<f32>,
+
     // Pre-allocated quantization buffers for GEMV
     q8k_input: Vec<u8>, // Q8_K quantized input
     x_padded: Vec<f32>, // Padded input for quantization
@@ -120,6 +123,9 @@ impl CpuExecutor {
         let logits = vec![0.0f32; vocab_size];
         let attn_scores = vec![0.0f32; 2048]; // max_seq_len
 
+        // RoPE temp buffer (max of q_size and k_size)
+        let rope_buffer = vec![0.0f32; q_size.max(k_size)];
+
         // Pre-allocate quantization buffers for GEMV
         use crate::quant::types::QK_K;
         // Size for the maximum dimension used in any GEMV:
@@ -163,6 +169,7 @@ impl CpuExecutor {
             ffn_hidden,
             logits,
             attn_scores,
+            rope_buffer,
             q8k_input,
             x_padded,
             kv_a_proj,
@@ -203,6 +210,8 @@ impl CpuExecutor {
     }
 
     /// Execute forward pass with zero allocation
+    /// For standard attention models, delegates to the optimized forward_pooled path.
+    /// For MLA models (DeepSeek-Coder-V2), uses custom implementation.
     pub fn forward(
         &mut self,
         model: &LlamaModel,
@@ -213,6 +222,27 @@ impl CpuExecutor {
             return None;
         }
 
+        if !self.uses_mla {
+            // Standard attention - use optimized forward_pooled path
+            // This is ~2x faster due to pre-dequantized norm weights
+            let mut buffers = crate::cpu::CpuWorkBuffers::new(
+                self.hidden_size,
+                self.intermediate_size,
+                self.n_heads,
+                self.n_kv_heads,
+                self.head_dim,
+                self.key_length,
+                self.value_length,
+                self.vocab_size,
+                self.q_size + self.k_size + self.v_size,
+                2048,
+                model.layers.len(),
+            );
+            buffers.init_norm_weights(model);
+            return model.forward_pooled(tokens, kv_cache, &mut buffers);
+        }
+
+        // MLA: use custom implementation
         // Process each token
         for &token in tokens.iter() {
             // 1. Embedding lookup
@@ -268,55 +298,59 @@ impl CpuExecutor {
 
         if self.uses_mla {
             // MLA: Q gets full RoPE, K only applies RoPE to the rope part
-            let q_copy = self.q.clone();
-
-            // Apply RoPE to Q with q_head_dim
+            // Use pre-allocated buffer to avoid cloning
             model.apply_rope_into(
-                &q_copy,
+                &self.q,
                 pos,
                 self.n_heads,
                 self.q_head_dim,
-                &mut self.q,
+                &mut self.rope_buffer,
             )?;
+            self.q.copy_from_slice(&self.rope_buffer[..self.q_size]);
 
             // For K, apply RoPE only to the rope part of each head
             // K structure per head: [qk_rope_head_dim (rope), qk_nope_head_dim (non-rope)]
             for head in 0..self.n_kv_heads {
                 let k_head_start = head * self.key_length;
+                let rope_len = self.qk_rope_head_dim;
 
-                // Extract rope part of this head
-                let mut k_rope: Vec<f32> = self.k
-                    [k_head_start..k_head_start + self.qk_rope_head_dim]
-                    .to_vec();
+                // Use local array for this small slice to avoid borrow conflict
+                let mut k_rope: Vec<f32> =
+                    self.k[k_head_start..k_head_start + rope_len].to_vec();
 
-                // Apply RoPE to rope part
+                // Apply RoPE
                 model.apply_rope_into(
                     &k_rope,
                     pos,
                     1, // single head
-                    self.qk_rope_head_dim,
-                    &mut self.k
-                        [k_head_start..k_head_start + self.qk_rope_head_dim],
+                    rope_len,
+                    &mut self.rope_buffer,
                 )?;
+
+                // Copy back
+                self.k[k_head_start..k_head_start + rope_len]
+                    .copy_from_slice(&self.rope_buffer[..rope_len]);
             }
         } else {
             // Standard attention: apply RoPE to full Q and K
-            let q_copy = self.q.clone();
-            let k_copy = self.k.clone();
+            // Use pre-allocated buffer to avoid cloning
             model.apply_rope_into(
-                &q_copy,
+                &self.q,
                 pos,
                 self.n_heads,
                 self.head_dim,
-                &mut self.q,
+                &mut self.rope_buffer,
             )?;
+            self.q.copy_from_slice(&self.rope_buffer[..self.q_size]);
+
             model.apply_rope_into(
-                &k_copy,
+                &self.k,
                 pos,
                 self.n_kv_heads,
                 self.head_dim,
-                &mut self.k,
+                &mut self.rope_buffer,
             )?;
+            self.k.copy_from_slice(&self.rope_buffer[..self.k_size]);
         }
 
         // 4. Attention
