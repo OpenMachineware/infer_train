@@ -395,6 +395,378 @@ pub fn global_pool() -> &'static PersistentThreadPool {
     GLOBAL_POOL.get_or_init(|| PersistentThreadPool::new(default_n_threads()))
 }
 
+/// Forward pass operation types for barrier-synchronized execution
+#[derive(Clone, Copy, Debug)]
+pub enum ForwardOp {
+    /// GEMV operation: weights, input, output, k, m
+    Gemv {
+        weights: *const u8,
+        input: *const u8,
+        output: *mut f32,
+        k: usize,
+        m: usize,
+        dtype: u8, // 0=Q4_K, 1=Q5_K, 2=Q6_K
+    },
+    /// RMS Norm operation (single-thread, no parallelism needed)
+    RmsNorm {
+        input: *const f32,
+        weight: *const f32,
+        output: *mut f32,
+        size: usize,
+        eps: f32,
+    },
+    /// Barrier point - all threads must sync here
+    Barrier,
+    /// End of forward pass
+    End,
+}
+
+unsafe impl Send for ForwardOp {}
+unsafe impl Sync for ForwardOp {}
+
+/// Work descriptor for full forward pass execution
+/// Pre-computed list of all operations, threads process together
+/// Work descriptor for full forward pass execution
+/// Pre-computed list of all operations, threads process together
+pub struct ForwardPassWork {
+    /// List of operations to execute
+    pub ops: Vec<ForwardOp>,
+    /// Number of threads
+    pub n_threads: usize,
+    /// Barrier for synchronization
+    barrier: Arc<SpinBarrier>,
+}
+
+impl Clone for ForwardPassWork {
+    fn clone(&self) -> Self {
+        ForwardPassWork {
+            ops: self.ops.clone(),
+            n_threads: self.n_threads,
+            barrier: Arc::new(SpinBarrier::new(self.n_threads)),
+        }
+    }
+}
+
+impl ForwardPassWork {
+    pub fn new(n_threads: usize) -> Self {
+        ForwardPassWork {
+            ops: Vec::with_capacity(256),
+            n_threads,
+            barrier: Arc::new(SpinBarrier::new(n_threads)),
+        }
+    }
+
+    pub fn with_ops(ops: Vec<ForwardOp>, n_threads: usize) -> Self {
+        ForwardPassWork {
+            ops,
+            n_threads,
+            barrier: Arc::new(SpinBarrier::new(n_threads)),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.ops.clear();
+    }
+
+    pub fn add_gemv(
+        &mut self,
+        weights: *const u8,
+        input: *const u8,
+        output: *mut f32,
+        k: usize,
+        m: usize,
+        dtype: u8,
+    ) {
+        self.ops.push(ForwardOp::Gemv { weights, input, output, k, m, dtype });
+    }
+
+    pub fn add_barrier(&mut self) {
+        self.ops.push(ForwardOp::Barrier);
+    }
+
+    pub fn add_end(&mut self) {
+        self.ops.push(ForwardOp::End);
+    }
+}
+
+/// Forward pass executor with barrier synchronization
+/// All threads process the same operation together, like llama.cpp
+pub struct ForwardPassExecutor {
+    handles: Vec<JoinHandle<()>>,
+    /// Current pass number - workers wait for this to change
+    current_pass: Arc<AtomicUsize>,
+    /// Work descriptor for the current pass
+    work: Arc<std::sync::RwLock<Option<ForwardPassWork>>>,
+    /// Completion counter
+    completed: Arc<AtomicUsize>,
+    /// Number of threads
+    n_threads: usize,
+}
+
+impl ForwardPassExecutor {
+    /// Create a new forward pass executor
+    pub fn new(n_threads: usize) -> Self {
+        let current_pass = Arc::new(AtomicUsize::new(0));
+        let work = Arc::new(std::sync::RwLock::new(None));
+        let completed = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..n_threads)
+            .map(|thread_id| {
+                let current_pass = current_pass.clone();
+                let work = work.clone();
+                let completed = completed.clone();
+                let n_threads = n_threads;
+
+                thread::spawn(move || {
+                    let mut last_pass = 0;
+                    let mut spin_count = 0;
+
+                    loop {
+                        // Spin-wait for new pass
+                        let pass = current_pass.load(Ordering::Acquire);
+                        if pass == usize::MAX {
+                            // Shutdown signal
+                            break;
+                        }
+
+                        if pass == last_pass {
+                            spin_count += 1;
+                            if spin_count < 100 {
+                                std::hint::spin_loop();
+                            } else {
+                                std::thread::yield_now();
+                                spin_count = 0;
+                            }
+                            continue;
+                        }
+
+                        spin_count = 0;
+                        last_pass = pass;
+
+                        // Get work descriptor
+                        let work_guard = work.read().unwrap();
+                        let work_desc: &ForwardPassWork = match work_guard.as_ref() {
+                            Some(w) => w,
+                            None => continue,
+                        };
+
+                        // Process all operations
+                        let ops = &work_desc.ops;
+                        let n_threads_actual = work_desc.n_threads;
+                        let barrier = &work_desc.barrier;
+
+                        for op_idx in 0..ops.len() {
+                            let op = ops[op_idx];
+
+                            match op {
+                                ForwardOp::Gemv {
+                                    weights,
+                                    input,
+                                    output,
+                                    k,
+                                    m,
+                                    dtype,
+                                } => {
+                                    // Parallel GEMV - each thread processes a chunk of rows
+                                    let chunk_size = (m + n_threads_actual - 1) / n_threads_actual;
+                                    let start = thread_id * chunk_size;
+                                    let end = (start + chunk_size).min(m);
+
+                                    if start < m {
+                                        unsafe {
+                                            match dtype {
+                                                0 => {
+                                                    // Q4_K
+                                                    use crate::quant::types::BlockQ4K;
+                                                    let nb = k / 256;
+                                                    let weights_blocks = std::slice::from_raw_parts(
+                                                        weights as *const BlockQ4K,
+                                                        m * nb,
+                                                    );
+                                                    let input_blocks = std::slice::from_raw_parts(
+                                                        input as *const crate::quant::types::BlockQ8K,
+                                                        nb,
+                                                    );
+                                                    let output_slice =
+                                                        std::slice::from_raw_parts_mut(output, m);
+
+                                                    for row in start..end {
+                                                        use crate::quant::vec_dot::arm::vec_dot_q4_k_q8_k_neon;
+                                                        output_slice[row] = vec_dot_q4_k_q8_k_neon(
+                                                            k,
+                                                            &weights_blocks[row * nb..(row + 1) * nb],
+                                                            input_blocks,
+                                                        );
+                                                    }
+                                                }
+                                                1 => {
+                                                    // Q5_K
+                                                    use crate::quant::types::BlockQ5K;
+                                                    let nb = k / 256;
+                                                    let weights_blocks = std::slice::from_raw_parts(
+                                                        weights as *const BlockQ5K,
+                                                        m * nb,
+                                                    );
+                                                    let input_blocks = std::slice::from_raw_parts(
+                                                        input as *const crate::quant::types::BlockQ8K,
+                                                        nb,
+                                                    );
+                                                    let output_slice =
+                                                        std::slice::from_raw_parts_mut(output, m);
+
+                                                    for row in start..end {
+                                                        use crate::quant::vec_dot::arm::vec_dot_q5_k_q8_k_neon;
+                                                        output_slice[row] = vec_dot_q5_k_q8_k_neon(
+                                                            k,
+                                                            &weights_blocks[row * nb..(row + 1) * nb],
+                                                            input_blocks,
+                                                        );
+                                                    }
+                                                }
+                                                2 => {
+                                                    // Q6_K
+                                                    use crate::quant::types::BlockQ6K;
+                                                    let nb = k / 256;
+                                                    let weights_blocks = std::slice::from_raw_parts(
+                                                        weights as *const BlockQ6K,
+                                                        m * nb,
+                                                    );
+                                                    let input_blocks = std::slice::from_raw_parts(
+                                                        input as *const crate::quant::types::BlockQ8K,
+                                                        nb,
+                                                    );
+                                                    let output_slice =
+                                                        std::slice::from_raw_parts_mut(output, m);
+
+                                                    for row in start..end {
+                                                        use crate::quant::vec_dot::arm::vec_dot_q6_k_q8_k_neon;
+                                                        output_slice[row] = vec_dot_q6_k_q8_k_neon(
+                                                            k,
+                                                            &weights_blocks[row * nb..(row + 1) * nb],
+                                                            input_blocks,
+                                                        );
+                                                    }
+                                                }
+                                                3 => {
+                                                    // F16 - use F16 FMLA like matmul_f16_f32_single_thread
+                                                    use crate::ops::attention::vec_dot_f16_neon;
+                                                    use crate::ops::arm::neon::dup_f32_to_f16_neon;
+                                                    use half::f16;
+
+                                                    let weights_f16 = std::slice::from_raw_parts(
+                                                        weights as *const u16, m * k
+                                                    );
+                                                    let input_f32 = std::slice::from_raw_parts(input as *const f32, k);
+                                                    let output_slice = std::slice::from_raw_parts_mut(output, m);
+
+                                                    // Convert input F32 to F16 once per thread
+                                                    let mut input_f16 = vec![0u16; k];
+                                                    {
+                                                        let input_f16_slice = std::slice::from_raw_parts_mut(
+                                                            input_f16.as_mut_ptr() as *mut f16, k
+                                                        );
+                                                        dup_f32_to_f16_neon(input_f32, input_f16_slice);
+                                                    }
+
+                                                    // Process rows using F16 FMLA
+                                                    for row in start..end {
+                                                        output_slice[row] = vec_dot_f16_neon(
+                                                            &weights_f16[row * k..(row + 1) * k],
+                                                            &input_f16,
+                                                            k,
+                                                        );
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                                ForwardOp::Barrier => {
+                                    // Wait for all threads
+                                    barrier.wait();
+                                }
+                                ForwardOp::End => {
+                                    // Signal completion and exit loop
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // Signal completion
+                        completed.fetch_add(1, Ordering::Release);
+                    }
+                })
+            })
+            .collect();
+
+        ForwardPassExecutor {
+            handles,
+            current_pass,
+            work,
+            completed,
+            n_threads,
+        }
+    }
+
+    /// Execute a forward pass
+    /// All threads process the operations together
+    pub fn execute(&self, mut work: ForwardPassWork) {
+        // Add end marker
+        work.add_end();
+
+        // Reset completion counter
+        self.completed.store(0, Ordering::Release);
+
+        // Store work
+        *self.work.write().unwrap() = Some(work);
+
+        // Signal start by incrementing pass counter
+        self.current_pass.fetch_add(1, Ordering::Release);
+
+        // Wait for all threads to complete
+        let mut spin_count = 0;
+        while self.completed.load(Ordering::Acquire) < self.n_threads {
+            spin_count += 1;
+            if spin_count < 100 {
+                std::hint::spin_loop();
+            } else {
+                std::thread::yield_now();
+                spin_count = 0;
+            }
+        }
+
+        // Clear work
+        *self.work.write().unwrap() = None;
+    }
+
+    /// Get number of threads
+    pub fn n_threads(&self) -> usize {
+        self.n_threads
+    }
+}
+
+impl Drop for ForwardPassExecutor {
+    fn drop(&mut self) {
+        // Signal shutdown
+        self.current_pass.store(usize::MAX, Ordering::Release);
+        for handle in self.handles.drain(..) {
+            let _ = handle.join();
+        }
+    }
+}
+
+// Global forward pass executor
+static GLOBAL_FORWARD_EXECUTOR: std::sync::OnceLock<ForwardPassExecutor> =
+    std::sync::OnceLock::new();
+
+/// Get or create the global forward pass executor
+pub fn global_forward_executor() -> &'static ForwardPassExecutor {
+    GLOBAL_FORWARD_EXECUTOR
+        .get_or_init(|| ForwardPassExecutor::new(default_n_threads()))
+}
+
 /// Execute GEMV with work stealing (better load balancing)
 /// Uses std::thread::scope for parallel execution (no Rayon)
 pub fn gemv_work_stealing<F>(num_rows: usize, num_threads: usize, f: F)
