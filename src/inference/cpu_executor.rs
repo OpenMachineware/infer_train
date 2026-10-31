@@ -31,6 +31,11 @@ pub struct CpuExecutor {
     // Attention scores buffer (variable size)
     attn_scores: Vec<f32>,
 
+    // MLA buffers (Multi-head Latent Attention)
+    kv_a_proj: Vec<f32>,   // kv_lora_rank + qk_rope_head_dim
+    kv_a_normed: Vec<f32>, // kv_lora_rank
+    kv: Vec<f32>,          // n_kv_heads * (qk_nope_head_dim + value_length)
+
     // Configuration
     hidden_size: usize,
     intermediate_size: usize,
@@ -42,6 +47,14 @@ pub struct CpuExecutor {
     n_kv_heads: usize,
     head_dim: usize,
     v_head_dim: usize,
+
+    // MLA configuration
+    uses_mla: bool,
+    kv_lora_rank: usize,
+    qk_rope_head_dim: usize,
+    key_length: usize,
+    value_length: usize,
+    q_head_dim: usize, // Q's head_dim (different from K/V for MLA)
 }
 
 impl CpuExecutor {
@@ -54,10 +67,40 @@ impl CpuExecutor {
         let n_kv_heads = model.config.n_kv_heads;
         let head_dim = model.config.head_dim;
 
-        let q_size = n_heads * head_dim;
-        let k_size = n_kv_heads * head_dim;
-        let v_size = n_kv_heads * head_dim;
-        let v_head_dim = v_size / n_kv_heads;
+        // Check if model uses MLA (Multi-head Latent Attention)
+        let uses_mla = model.uses_mqa();
+        let kv_lora_rank = model.config.kv_lora_rank;
+        let qk_rope_head_dim = model.config.qk_rope_head_dim;
+        let key_length = model.config.key_length;
+        let value_length = model.config.value_length;
+
+        // For MLA, Q's head_dim is different from K/V
+        // Q uses q_head_dim (from wq shape), K uses key_length, V uses value_length
+        let q_head_dim = if uses_mla && model.layers.first().is_some() {
+            let layer = model.layers.first().unwrap();
+            if let Some(wq) = &layer.wq {
+                wq.shape[1] / n_heads
+            } else {
+                head_dim
+            }
+        } else {
+            head_dim
+        };
+
+        // Calculate buffer sizes based on architecture
+        let q_size = n_heads * q_head_dim;
+        let (k_size, v_size, v_head_dim) = if uses_mla {
+            // MLA: K and V have different dimensions
+            let k_size = n_kv_heads * key_length;
+            let v_size = n_kv_heads * value_length;
+            let v_head_dim = value_length;
+            (k_size, v_size, v_head_dim)
+        } else {
+            let k_size = n_kv_heads * head_dim;
+            let v_size = n_kv_heads * head_dim;
+            let v_head_dim = v_size / n_kv_heads;
+            (k_size, v_size, v_head_dim)
+        };
 
         // Pre-allocate all buffers
         let hidden = vec![0.0f32; hidden_size];
@@ -73,6 +116,21 @@ impl CpuExecutor {
         let logits = vec![0.0f32; vocab_size];
         let attn_scores = vec![0.0f32; 2048]; // max_seq_len
 
+        // MLA buffers
+        let kv_a_proj = if uses_mla {
+            vec![0.0f32; kv_lora_rank + qk_rope_head_dim]
+        } else {
+            vec![]
+        };
+        let kv_a_normed =
+            if uses_mla { vec![0.0f32; kv_lora_rank] } else { vec![] };
+        let kv = if uses_mla {
+            let qk_nope_head_dim = key_length - qk_rope_head_dim;
+            vec![0.0f32; n_kv_heads * (qk_nope_head_dim + value_length)]
+        } else {
+            vec![]
+        };
+
         CpuExecutor {
             hidden,
             hidden_alt,
@@ -86,6 +144,9 @@ impl CpuExecutor {
             ffn_hidden,
             logits,
             attn_scores,
+            kv_a_proj,
+            kv_a_normed,
+            kv,
             hidden_size,
             intermediate_size,
             vocab_size,
@@ -96,6 +157,12 @@ impl CpuExecutor {
             n_kv_heads,
             head_dim,
             v_head_dim,
+            uses_mla,
+            kv_lora_rank,
+            qk_rope_head_dim,
+            key_length,
+            value_length,
+            q_head_dim,
         }
     }
 
@@ -169,24 +236,61 @@ impl CpuExecutor {
         // 2. QKV projections
         self.forward_qkv(model, layer)?;
 
-        // 3. RoPE (need temp buffer for in-place)
+        // 3. RoPE
         let pos = kv_cache.seq_len();
-        let q_copy = self.q.clone();
-        let k_copy = self.k.clone();
-        model.apply_rope_into(
-            &q_copy,
-            pos,
-            self.n_heads,
-            self.head_dim,
-            &mut self.q,
-        )?;
-        model.apply_rope_into(
-            &k_copy,
-            pos,
-            self.n_kv_heads,
-            self.head_dim,
-            &mut self.k,
-        )?;
+
+        if self.uses_mla {
+            // MLA: Q gets full RoPE, K only applies RoPE to the rope part
+            let q_copy = self.q.clone();
+
+            // Apply RoPE to Q with q_head_dim
+            model.apply_rope_into(
+                &q_copy,
+                pos,
+                self.n_heads,
+                self.q_head_dim,
+                &mut self.q,
+            )?;
+
+            // For K, apply RoPE only to the rope part of each head
+            // K structure per head: [qk_rope_head_dim (rope), qk_nope_head_dim (non-rope)]
+            for head in 0..self.n_kv_heads {
+                let k_head_start = head * self.key_length;
+
+                // Extract rope part of this head
+                let mut k_rope: Vec<f32> = self.k
+                    [k_head_start..k_head_start + self.qk_rope_head_dim]
+                    .to_vec();
+
+                // Apply RoPE to rope part
+                model.apply_rope_into(
+                    &k_rope,
+                    pos,
+                    1, // single head
+                    self.qk_rope_head_dim,
+                    &mut self.k
+                        [k_head_start..k_head_start + self.qk_rope_head_dim],
+                )?;
+            }
+        } else {
+            // Standard attention: apply RoPE to full Q and K
+            let q_copy = self.q.clone();
+            let k_copy = self.k.clone();
+            model.apply_rope_into(
+                &q_copy,
+                pos,
+                self.n_heads,
+                self.head_dim,
+                &mut self.q,
+            )?;
+            model.apply_rope_into(
+                &k_copy,
+                pos,
+                self.n_kv_heads,
+                self.head_dim,
+                &mut self.k,
+            )?;
+        }
 
         // 4. Attention
         self.forward_attention(layer_idx, kv_cache)?;
@@ -227,9 +331,89 @@ impl CpuExecutor {
         model: &LlamaModel,
         layer: &LlamaLayer,
     ) -> Option<()> {
-        model.gemv_into(&self.normed, layer.wq.as_ref()?, &mut self.q);
-        model.gemv_into(&self.normed, layer.wk.as_ref()?, &mut self.k);
-        model.gemv_into(&self.normed, layer.wv.as_ref()?, &mut self.v);
+        if self.uses_mla {
+            // MLA (Multi-head Latent Attention) - DeepSeek-Coder-V2 style
+            // Flow:
+            // 1. Q = hidden @ attn_q
+            // 2. KV_A = hidden @ attn_kv_a_mqa → [kv_lora_rank + qk_rope_head_dim]
+            // 3. KV_A_normed = RMSNorm(KV_A[:kv_lora_rank], attn_kv_a_norm)
+            // 4. KV = KV_A_normed @ attn_kv_b
+            // 5. Construct K, V
+
+            // 1. Q projection
+            model.gemv_into(&self.normed, layer.wq.as_ref()?, &mut self.q);
+
+            // 2. KV_A projection (compressed)
+            model.gemv_into(
+                &self.normed,
+                layer.attn_kv_a_mqa.as_ref()?,
+                &mut self.kv_a_proj,
+            );
+
+            // 3. KV_A normalization (RMSNorm on the first kv_lora_rank elements)
+            let kv_a_norm = layer.attn_kv_a_norm.as_ref()?;
+            let norm_data: &[f32] = bytemuck::cast_slice(kv_a_norm.bytes());
+            let eps = model.config.rms_norm_eps;
+
+            // Compute RMS
+            let mut ss = 0.0f32;
+            for i in 0..self.kv_lora_rank {
+                ss += self.kv_a_proj[i] * self.kv_a_proj[i];
+            }
+            ss /= self.kv_lora_rank as f32;
+            let rms = 1.0 / (ss + eps).sqrt();
+
+            // Normalize and scale
+            for i in 0..self.kv_lora_rank {
+                self.kv_a_normed[i] = self.kv_a_proj[i] * rms * norm_data[i];
+            }
+
+            // 4. KV_B projection (decompress to full KV)
+            model.gemv_into(
+                &self.kv_a_normed,
+                layer.attn_kv_b.as_ref()?,
+                &mut self.kv,
+            );
+
+            // 5. Construct K and V
+            // qk_nope_head_dim = key_length - qk_rope_head_dim
+            let qk_nope_head_dim = self.key_length - self.qk_rope_head_dim;
+
+            // The RoPE part of the key is shared across all heads
+            let k_rope_start = self.kv_lora_rank;
+            let k_rope_end = k_rope_start + self.qk_rope_head_dim;
+
+            // The non-RoPE part of the key and value come from kv
+            // kv layout: [k_nope_head_0, ..., k_nope_head_n, v_head_0, ..., v_head_n]
+            let k_nope_size = self.n_kv_heads * qk_nope_head_dim;
+
+            // Construct K: for each head, concat(k_rope, k_nope[head])
+            for head in 0..self.n_kv_heads {
+                let k_head_start = head * self.key_length;
+
+                // Add RoPE part (shared)
+                for d in 0..self.qk_rope_head_dim {
+                    self.k[k_head_start + d] = self.kv_a_proj[k_rope_start + d];
+                }
+
+                // Add non-RoPE part (per-head)
+                let nope_start = head * qk_nope_head_dim;
+                for d in 0..qk_nope_head_dim {
+                    self.k[k_head_start + self.qk_rope_head_dim + d] =
+                        self.kv[nope_start + d];
+                }
+            }
+
+            // V is the remaining part of kv
+            for i in 0..self.v_size {
+                self.v[i] = self.kv[k_nope_size + i];
+            }
+        } else {
+            // Standard attention
+            model.gemv_into(&self.normed, layer.wq.as_ref()?, &mut self.q);
+            model.gemv_into(&self.normed, layer.wk.as_ref()?, &mut self.k);
+            model.gemv_into(&self.normed, layer.wv.as_ref()?, &mut self.v);
+        }
         Some(())
     }
 
@@ -239,12 +423,20 @@ impl CpuExecutor {
         layer_idx: usize,
         kv_cache: &mut KVCache,
     ) -> Option<()> {
-        // Store K, V in cache
-        kv_cache.set_k(layer_idx, &self.k, self.n_kv_heads, self.head_dim);
-        kv_cache.set_v(layer_idx, &self.v, self.n_kv_heads, self.head_dim);
+        // Determine dimensions based on architecture
+        let (k_head_dim, k_dim_for_q) = if self.uses_mla {
+            // MLA: K uses key_length, Q uses q_head_dim for K matching
+            (self.key_length, self.key_length)
+        } else {
+            (self.head_dim, self.head_dim)
+        };
+
+        // Store K, V in cache with correct dimensions
+        kv_cache.set_k(layer_idx, &self.k, self.n_kv_heads, k_head_dim);
+        kv_cache.set_v(layer_idx, &self.v, self.n_kv_heads, self.v_head_dim);
 
         let seq_len = kv_cache.seq_len() + 1;
-        let scale = 1.0f32 / (self.head_dim as f32).sqrt();
+        let scale = 1.0f32 / (k_dim_for_q as f32).sqrt();
 
         // Clear output
         for elem in self.attn_out.iter_mut() {
@@ -265,11 +457,15 @@ impl CpuExecutor {
                 &mut self.attn_scores[scores_start..scores_start + seq_len];
 
             // Compute scores
+            // Q uses q_head_dim (different from K for MLA)
+            let q_dim =
+                if self.uses_mla { self.q_head_dim } else { self.head_dim };
+
             for s in 0..seq_len {
                 let k_s = kv_cache.get_k(layer_idx, kv_head, s);
                 let mut score = 0.0f32;
-                for d in 0..self.head_dim {
-                    score += self.q[h * self.head_dim + d] * k_s[d];
+                for d in 0..q_dim.min(k_head_dim) {
+                    score += self.q[h * q_dim + d] * k_s[d];
                 }
                 scores[s] = score * scale;
             }
@@ -306,54 +502,11 @@ impl CpuExecutor {
         model: &LlamaModel,
         layer: &LlamaLayer,
     ) -> Option<()> {
-        // Gate and up projections
-        model.gemv_into(&self.normed, layer.w1.as_ref()?, &mut self.ffn_gate);
-        model.gemv_into(&self.normed, layer.w3.as_ref()?, &mut self.ffn_up);
-
-        // SwiGLU activation using std::thread::scope
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::thread;
-
-        let intermediate_size = self.ffn_hidden.len();
-        let n_threads =
-            std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4);
-        let counter = AtomicUsize::new(0);
-        let chunk_size = 256;
-
-        let ffn_gate = &self.ffn_gate;
-        let ffn_up = &self.ffn_up;
-        let ffn_hidden_addr = self.ffn_hidden.as_mut_ptr() as usize;
-
-        thread::scope(|s| {
-            for _ in 0..n_threads {
-                s.spawn(|| {
-                    let ffn_hidden_ptr = ffn_hidden_addr as *mut f32;
-                    loop {
-                        let chunk_start =
-                            counter.fetch_add(chunk_size, Ordering::Relaxed);
-                        if chunk_start >= intermediate_size {
-                            break;
-                        }
-                        let chunk_end =
-                            (chunk_start + chunk_size).min(intermediate_size);
-                        for i in chunk_start..chunk_end {
-                            let silu = ffn_up[i] / (1.0 + (-ffn_up[i]).exp());
-                            unsafe {
-                                *ffn_hidden_ptr.add(i) = ffn_gate[i] * silu;
-                            }
-                        }
-                    }
-                });
-            }
-        });
-
-        // Down projection
-        model.gemv_into(
-            &self.ffn_hidden,
-            layer.w2.as_ref()?,
-            &mut self.hidden_alt,
-        );
-
+        // Use model's compute_ffn which handles both standard FFN and MoE
+        // (not zero-allocation for MoE but functional)
+        let output =
+            model.compute_ffn(layer, &self.normed, self.hidden_size)?;
+        self.hidden_alt.copy_from_slice(&output);
         Some(())
     }
 }
