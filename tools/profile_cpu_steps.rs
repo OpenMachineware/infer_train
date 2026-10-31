@@ -17,7 +17,7 @@ fn main() {
     println!("Model: {}", model_path);
 
     // Load model
-    let ctx = InferenceContext::from_gguf(model_path, Device::Cpu)
+    let mut ctx = InferenceContext::from_gguf(model_path, Device::Cpu)
         .expect("Failed to load model");
     println!(
         "Model loaded: {} layers, hidden={}",
@@ -36,7 +36,7 @@ fn main() {
     // Warmup
     println!("\n=== Warmup (3 tokens) ===");
     let tokens: Vec<u32> = vec![1, 2, 3];
-    let _ = ctx.model.forward(&tokens, &mut kv_cache);
+    let _ = ctx.forward_pooled(&tokens, &mut kv_cache);
     kv_cache.clear();
     println!("Warmup complete\n");
 
@@ -49,7 +49,7 @@ fn main() {
         kv_cache.clear();
 
         let t0 = Instant::now();
-        let _ = ctx.model.forward(&[1u32], &mut kv_cache);
+        let _ = ctx.forward_pooled(&[1u32], &mut kv_cache);
         let elapsed = t0.elapsed();
         total_times.push(elapsed.as_nanos());
 

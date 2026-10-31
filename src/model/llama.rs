@@ -3184,12 +3184,7 @@ impl LlamaModel {
         #[cfg(target_arch = "aarch64")]
         {
             use crate::quant::kv_cache::quantize_row_q8_k_neon;
-            use crate::quant::matmul::k_quant::{
-                matmul_q4_k_q8_k_hybrid, matmul_q5_k_q8_k_hybrid,
-                matmul_q6_k_q8_k_hybrid,
-            };
             use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
-            use std::sync::Arc;
 
             // K-quant GEMV with zero-padding for non-standard dimensions
             let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
@@ -3206,7 +3201,6 @@ impl LlamaModel {
                     } else {
                         quantize_row_q8_k_neon(x, &mut x_q8k);
                     }
-                    let x_q8k = Arc::new(x_q8k);
 
                     let mut out = vec![0.0f32; out_size];
                     unsafe {
@@ -3217,7 +3211,8 @@ impl LlamaModel {
                                         w.bytes().as_ptr() as *const BlockQ4K,
                                         out_size * nb,
                                     );
-                                matmul_q4_k_q8_k_hybrid(
+                                // Use tiled GEMV for better cache locality
+                                crate::cpu::gemv_q4k_q8k_tiled(
                                     weights,
                                     &x_q8k,
                                     &mut out,
@@ -3231,7 +3226,7 @@ impl LlamaModel {
                                         w.bytes().as_ptr() as *const BlockQ5K,
                                         out_size * nb,
                                     );
-                                matmul_q5_k_q8_k_hybrid(
+                                crate::cpu::gemv_q5k_q8k_tiled(
                                     weights,
                                     &x_q8k,
                                     &mut out,
@@ -3245,7 +3240,7 @@ impl LlamaModel {
                                         w.bytes().as_ptr() as *const BlockQ6K,
                                         out_size * nb,
                                     );
-                                matmul_q6_k_q8_k_hybrid(
+                                crate::cpu::gemv_q6k_q8k_tiled(
                                     weights,
                                     &x_q8k,
                                     &mut out,
