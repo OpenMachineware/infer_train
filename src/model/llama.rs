@@ -672,20 +672,25 @@ impl LlamaModel {
                 };
                 Self::quantize_input_to_q8k(hidden, x_q8k_blocks, x_padded);
 
-                // Gate and up projections with pre-quantized input
-                self.gemv_with_prequant(
+                // Gate and up projections with pre-quantized input (single-thread for decode)
+                self.gemv_with_prequant_single_thread(
                     x_q8k_blocks,
                     hidden_size,
                     w1,
                     gate_buf,
                 );
-                self.gemv_with_prequant(x_q8k_blocks, hidden_size, w3, up_buf);
+                self.gemv_with_prequant_single_thread(
+                    x_q8k_blocks,
+                    hidden_size,
+                    w3,
+                    up_buf,
+                );
             } else {
-                // Fallback for mixed dtypes
-                self.gemv_into_with_buffers(
+                // Fallback for mixed dtypes (single-thread for decode)
+                self.gemv_into_with_buffers_single_thread(
                     hidden, w1, gate_buf, q8k_input, x_padded,
                 );
-                self.gemv_into_with_buffers(
+                self.gemv_into_with_buffers_single_thread(
                     hidden, w3, up_buf, q8k_input, x_padded,
                 );
             }
@@ -696,8 +701,10 @@ impl LlamaModel {
                 gate_buf[i] = gate_buf[i] * silu;
             }
 
-            // Down projection: gate_buf @ w2 -> out
-            self.gemv_into_with_buffers(gate_buf, w2, out, q8k_input, x_padded);
+            // Down projection: gate_buf @ w2 -> out (single-thread for decode)
+            self.gemv_into_with_buffers_single_thread(
+                gate_buf, w2, out, q8k_input, x_padded,
+            );
 
             return Some(());
         }
@@ -2466,30 +2473,30 @@ impl LlamaModel {
                     &mut buffers.x_padded,
                 );
 
-                // Use pre-quantized input for all projections
-                self.gemv_with_prequant(
+                // Use pre-quantized input for all projections (single-thread for decode)
+                self.gemv_with_prequant_single_thread(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wq.as_ref()?,
                     &mut buffers.q_buffer[..q_size],
                 );
 
-                self.gemv_with_prequant(
+                self.gemv_with_prequant_single_thread(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wk.as_ref()?,
                     &mut buffers.k_buffer[..k_size],
                 );
 
-                self.gemv_with_prequant(
+                self.gemv_with_prequant_single_thread(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wv.as_ref()?,
                     &mut buffers.v_buffer[..v_size],
                 );
             } else {
-                // Fallback to per-projection quantization for mixed dtypes
-                self.gemv_into_with_buffers(
+                // Fallback to per-projection quantization for mixed dtypes (single-thread for decode)
+                self.gemv_into_with_buffers_single_thread(
                     &buffers.hidden_alt,
                     layer.wq.as_ref()?,
                     &mut buffers.q_buffer[..q_size],
@@ -2497,7 +2504,7 @@ impl LlamaModel {
                     &mut buffers.x_padded,
                 );
 
-                self.gemv_into_with_buffers(
+                self.gemv_into_with_buffers_single_thread(
                     &buffers.hidden_alt,
                     layer.wk.as_ref()?,
                     &mut buffers.k_buffer[..k_size],
@@ -2505,7 +2512,7 @@ impl LlamaModel {
                     &mut buffers.x_padded,
                 );
 
-                self.gemv_into_with_buffers(
+                self.gemv_into_with_buffers_single_thread(
                     &buffers.hidden_alt,
                     layer.wv.as_ref()?,
                     &mut buffers.v_buffer[..v_size],
@@ -2550,8 +2557,8 @@ impl LlamaModel {
             )?;
         }
 
-        // 5. Output projection (attn_out -> hidden_alt)
-        self.gemv_into_with_buffers(
+        // 5. Output projection (attn_out -> hidden_alt) - single-thread for decode
+        self.gemv_into_with_buffers_single_thread(
             &buffers.attn_out,
             layer.wo.as_ref()?,
             &mut buffers.hidden_alt,
