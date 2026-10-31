@@ -34,6 +34,9 @@ pub struct CpuExecutor {
     // RoPE temp buffer (avoid cloning)
     rope_buffer: Vec<f32>,
 
+    // Cached CpuWorkBuffers for standard attention (avoid allocation per forward)
+    work_buffers: Option<crate::cpu::CpuWorkBuffers>,
+
     // Pre-allocated quantization buffers for GEMV
     q8k_input: Vec<u8>, // Q8_K quantized input
     x_padded: Vec<f32>, // Padded input for quantization
@@ -170,6 +173,7 @@ impl CpuExecutor {
             logits,
             attn_scores,
             rope_buffer,
+            work_buffers: None, // Initialized on first use
             q8k_input,
             x_padded,
             kv_a_proj,
@@ -224,22 +228,28 @@ impl CpuExecutor {
 
         if !self.uses_mla {
             // Standard attention - use optimized forward_pooled path
-            // This is ~2x faster due to pre-dequantized norm weights
-            let mut buffers = crate::cpu::CpuWorkBuffers::new(
-                self.hidden_size,
-                self.intermediate_size,
-                self.n_heads,
-                self.n_kv_heads,
-                self.head_dim,
-                self.key_length,
-                self.value_length,
-                self.vocab_size,
-                self.q_size + self.k_size + self.v_size,
-                2048,
-                model.layers.len(),
-            );
-            buffers.init_norm_weights(model);
-            return model.forward_pooled(tokens, kv_cache, &mut buffers);
+            // Use cached buffers to avoid allocation per forward
+            if self.work_buffers.is_none() {
+                let mut buffers = crate::cpu::CpuWorkBuffers::new(
+                    self.hidden_size,
+                    self.intermediate_size,
+                    self.n_heads,
+                    self.n_kv_heads,
+                    self.head_dim,
+                    self.key_length,
+                    self.value_length,
+                    self.vocab_size,
+                    self.q_size + self.k_size + self.v_size,
+                    2048,
+                    model.layers.len(),
+                );
+                buffers.init_norm_weights(model);
+                self.work_buffers = Some(buffers);
+            }
+
+            if let Some(ref mut buffers) = self.work_buffers {
+                return model.forward_pooled(tokens, kv_cache, buffers);
+            }
         }
 
         // MLA: use custom implementation
