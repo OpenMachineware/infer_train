@@ -2841,7 +2841,7 @@ impl LlamaModel {
                 head_dim,
                 n_kv_heads,
                 &mut buffers.attn_out,
-                &mut buffers.attn_scores,
+                &mut buffers.kv_dequant,
             )?;
         } else {
             // Standard separate wq/wk/wv projections
@@ -2880,22 +2880,22 @@ impl LlamaModel {
                     &mut buffers.x_padded,
                 );
 
-                // Single-thread GEMV for all projections
-                self.gemv_with_prequant_single_thread(
+                // Tiled GEMV for all projections (cache-optimized)
+                self.gemv_with_prequant_tiled(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wq.as_ref()?,
                     &mut buffers.q_buffer[..q_size],
                 );
 
-                self.gemv_with_prequant_single_thread(
+                self.gemv_with_prequant_tiled(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wk.as_ref()?,
                     &mut buffers.k_buffer[..k_size],
                 );
 
-                self.gemv_with_prequant_single_thread(
+                self.gemv_with_prequant_tiled(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wv.as_ref()?,
@@ -2960,7 +2960,7 @@ impl LlamaModel {
                 head_dim,
                 n_kv_heads,
                 &mut buffers.attn_out,
-                &mut buffers.attn_scores,
+                &mut buffers.kv_dequant,
             )?;
         }
 
@@ -3920,6 +3920,84 @@ impl LlamaModel {
         }
     }
 
+    /// Tiled GEMV with pre-quantized input for better cache locality
+    /// Processes multiple rows at a time to keep weights in L1 cache
+    #[cfg(target_arch = "aarch64")]
+    pub fn gemv_with_prequant_tiled(
+        &self,
+        x_q8k: &[crate::quant::types::BlockQ8K],
+        in_size: usize,
+        w: &Tensor,
+        out: &mut [f32],
+    ) -> bool {
+        use crate::cpu::{
+            gemv_q4k_q8k_tiled, gemv_q5k_q8k_tiled, gemv_q6k_q8k_tiled,
+        };
+        use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
+
+        let out_size = out.len();
+        let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
+        let nb = in_size_padded / QK_K;
+
+        if x_q8k.len() != nb {
+            return false;
+        }
+
+        match w.dtype {
+            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+                unsafe {
+                    match w.dtype {
+                        DataType::Q4_K => {
+                            let weights: &[BlockQ4K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ4K,
+                                    out_size * nb,
+                                );
+                            gemv_q4k_q8k_tiled(
+                                weights,
+                                x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        DataType::Q5_K => {
+                            let weights: &[BlockQ5K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ5K,
+                                    out_size * nb,
+                                );
+                            gemv_q5k_q8k_tiled(
+                                weights,
+                                x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        DataType::Q6_K => {
+                            let weights: &[BlockQ6K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ6K,
+                                    out_size * nb,
+                                );
+                            gemv_q6k_q8k_tiled(
+                                weights,
+                                x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Quantize input to Q8_K format (helper for pre-quantization)
     #[cfg(target_arch = "aarch64")]
     pub fn quantize_input_to_q8k(
@@ -4517,8 +4595,8 @@ impl LlamaModel {
         Some(())
     }
 
-    /// Attention with pre-allocated scores buffer (true zero-allocation)
-    /// Parallelized across heads using work-stealing
+    /// Zero-allocation attention for decode
+    /// Single-threaded, uses pre-allocated buffers, no Vec allocations
     #[cfg(target_arch = "aarch64")]
     pub fn attention_zero_alloc(
         &self,
@@ -4531,11 +4609,14 @@ impl LlamaModel {
         q_head_dim: usize,
         n_kv_heads: usize,
         out: &mut [f32],
-        scores_buf: &mut [f32],
+        kv_dequant: &mut [f32],
     ) -> Option<()> {
+        use crate::inference::KVCacheBase;
+
         let k_head_dim = k.len() / n_kv_heads;
         let v_head_dim = v.len() / n_kv_heads;
 
+        // Store K, V in cache
         kv_cache.set_k(layer_idx, k, n_kv_heads, k_head_dim);
         kv_cache.set_v(layer_idx, v, n_kv_heads, v_head_dim);
 
@@ -4548,33 +4629,24 @@ impl LlamaModel {
             *elem = 0.0;
         }
 
-        // Parallelize across heads using work-stealing
-        use crate::cpu::{SyncPtr, gemv_work_stealing};
-
-        let n_threads = crate::cpu::default_n_threads();
-        let out_ptr = SyncPtr::new(out.as_mut_ptr());
-        let q_ptr = SyncPtr::new(q.as_ptr() as *mut f32);
-        let scores_ptr = SyncPtr::new(scores_buf.as_mut_ptr());
-
-        gemv_work_stealing(n_heads, n_threads, |h| {
+        // Process each head sequentially
+        for h in 0..n_heads {
             let kv_head = h * n_kv_heads / n_heads;
+            let q_offset = h * q_head_dim;
+            let out_offset = h * v_head_dim;
 
-            // Use pre-allocated scores buffer (each head gets its own slice)
-            let scores = unsafe {
-                std::slice::from_raw_parts_mut(
-                    scores_ptr.get().add(h * seq_len),
-                    seq_len,
-                )
-            };
+            // Stack-allocated scores for each position
+            // For decode, seq_len is typically small
+            let mut scores = [0.0f32; 2048];
+            let scores = &mut scores[..seq_len];
 
-            // Compute attention scores
+            // Compute attention scores for all positions
             for s in 0..seq_len {
-                let k_s = kv_cache.get_k(layer_idx, kv_head, s);
+                kv_cache.get_k_into(layer_idx, kv_head, s, kv_dequant);
+
                 let mut score = 0.0f32;
                 for d in 0..dot_dim {
-                    unsafe {
-                        score += *q_ptr.get().add(h * q_head_dim + d) * k_s[d];
-                    }
+                    score += q[q_offset + d] * kv_dequant[d];
                 }
                 scores[s] = score * scale;
             }
@@ -4591,18 +4663,15 @@ impl LlamaModel {
                 scores[s] /= sum_exp;
             }
 
-            // Compute output
-            for d in 0..v_head_dim {
-                let mut sum = 0.0f32;
-                for s in 0..seq_len {
-                    let v_s = kv_cache.get_v(layer_idx, kv_head, s);
-                    sum += scores[s] * v_s[d];
-                }
-                unsafe {
-                    *out_ptr.get().add(h * v_head_dim + d) = sum;
+            // Compute weighted sum of V
+            for s in 0..seq_len {
+                kv_cache.get_v_into(layer_idx, kv_head, s, kv_dequant);
+
+                for d in 0..v_head_dim {
+                    out[out_offset + d] += scores[s] * kv_dequant[d];
                 }
             }
-        });
+        }
 
         Some(())
     }
