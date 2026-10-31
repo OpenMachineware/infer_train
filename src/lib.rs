@@ -16,6 +16,7 @@ pub mod cpu;
 pub mod dag;
 pub mod executor;
 pub mod inference;
+pub mod memory;
 pub mod model;
 pub mod ops;
 pub mod orchestrator;

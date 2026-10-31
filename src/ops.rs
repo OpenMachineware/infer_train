@@ -18,13 +18,16 @@ pub mod binary;
 pub mod conv;
 pub mod dup;
 pub mod gelu;
+pub mod linear;
 pub mod moe;
 pub mod rms_norm;
+pub mod rms_norm_op;
 pub mod rope;
 pub mod sampling;
 pub mod scalar;
 pub mod silu;
 pub mod softmax;
+pub mod swiglu_op;
 pub mod tensor;
 
 // Re-exports
