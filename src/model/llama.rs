@@ -90,12 +90,18 @@ pub struct LlamaLayer {
 
     // MoE FFN (for models like DeepSeek-Coder-V2)
     pub ffn_gate_inp: Option<Tensor>, // Expert routing
-    pub ffn_gate_exps: Option<Tensor>, // Expert gate weights
-    pub ffn_up_exps: Option<Tensor>,  // Expert up weights
-    pub ffn_down_exps: Option<Tensor>, // Expert down weights
+    pub ffn_gate_exps: Option<Tensor>, // Expert gate weights (interleaved)
+    pub ffn_up_exps: Option<Tensor>,  // Expert up weights (interleaved)
+    pub ffn_down_exps: Option<Tensor>, // Expert down weights (interleaved)
     pub ffn_gate_shexp: Option<Tensor>, // Shared expert gate
     pub ffn_up_shexp: Option<Tensor>, // Shared expert up
     pub ffn_down_shexp: Option<Tensor>, // Shared expert down
+
+    // Repacked MoE weights for efficient GEMV (expert-contiguous)
+    // Each expert's weights stored contiguously for cache-friendly access
+    pub ffn_gate_exps_repacked: Option<Vec<Tensor>>, // [n_experts] tensors
+    pub ffn_up_exps_repacked: Option<Vec<Tensor>>,
+    pub ffn_down_exps_repacked: Option<Vec<Tensor>>,
 }
 
 impl LlamaModel {
@@ -386,7 +392,7 @@ impl LlamaModel {
     }
 
     /// Pre-populate expert weight cache for MoE models
-    /// This avoids dequantizing expert weights on every forward pass
+    /// Dequantizes and repacks to expert-contiguous format for cache-friendly access
     fn prepopulate_expert_cache(&mut self) {
         let mut cache = self.expert_weight_cache.lock().unwrap();
         let hidden_size = self.config.hidden_size;
@@ -394,58 +400,101 @@ impl LlamaModel {
         for layer in &self.layers {
             // Check if this layer has MoE
             if layer.ffn_gate_exps.is_some() {
-                // Cache gate_exps
+                // Repack gate_exps to expert-contiguous format
                 if let Some(gate_exps) = &layer.ffn_gate_exps {
                     let intermediate_size = gate_exps.shape[1];
                     let n_experts = gate_exps.shape[2];
-                    let key = format!("layer_{}_gate_exps", layer.layer_idx);
-                    if !cache.contains_key(&key) {
-                        let weights = dequant_to_f32(
-                            gate_exps.bytes(),
-                            gate_exps.dtype,
-                            intermediate_size * hidden_size * n_experts,
-                        );
-                        cache.insert(key, weights);
+
+                    // Dequantize interleaved weights
+                    let all_weights = dequant_to_f32(
+                        gate_exps.bytes(),
+                        gate_exps.dtype,
+                        intermediate_size * hidden_size * n_experts,
+                    );
+
+                    // Repack: for each expert, extract contiguous weights
+                    for e in 0..n_experts {
+                        let key =
+                            format!("layer_{}_gate_exp_{}", layer.layer_idx, e);
+                        let mut expert_weights =
+                            vec![0.0f32; intermediate_size * hidden_size];
+                        for i in 0..intermediate_size {
+                            for j in 0..hidden_size {
+                                // Source: interleaved index
+                                let src_idx = i * hidden_size * n_experts
+                                    + j * n_experts
+                                    + e;
+                                // Destination: row-major for this expert
+                                let dst_idx = i * hidden_size + j;
+                                expert_weights[dst_idx] = all_weights[src_idx];
+                            }
+                        }
+                        cache.insert(key, expert_weights);
                     }
                 }
 
-                // Cache up_exps
+                // Repack up_exps
                 if let Some(up_exps) = &layer.ffn_up_exps {
                     let intermediate_size = up_exps.shape[1];
                     let n_experts = up_exps.shape[2];
-                    let key = format!("layer_{}_up_exps", layer.layer_idx);
-                    if !cache.contains_key(&key) {
-                        let weights = dequant_to_f32(
-                            up_exps.bytes(),
-                            up_exps.dtype,
-                            intermediate_size * hidden_size * n_experts,
-                        );
-                        cache.insert(key, weights);
+
+                    let all_weights = dequant_to_f32(
+                        up_exps.bytes(),
+                        up_exps.dtype,
+                        intermediate_size * hidden_size * n_experts,
+                    );
+
+                    for e in 0..n_experts {
+                        let key =
+                            format!("layer_{}_up_exp_{}", layer.layer_idx, e);
+                        let mut expert_weights =
+                            vec![0.0f32; intermediate_size * hidden_size];
+                        for i in 0..intermediate_size {
+                            for j in 0..hidden_size {
+                                let src_idx = i * hidden_size * n_experts
+                                    + j * n_experts
+                                    + e;
+                                let dst_idx = i * hidden_size + j;
+                                expert_weights[dst_idx] = all_weights[src_idx];
+                            }
+                        }
+                        cache.insert(key, expert_weights);
                     }
                 }
 
-                // Cache down_exps
+                // Repack down_exps
                 if let Some(down_exps) = &layer.ffn_down_exps {
                     let intermediate_size = down_exps.shape[1];
                     let n_experts = down_exps.shape[2];
-                    let key = format!("layer_{}_down_exps", layer.layer_idx);
-                    if !cache.contains_key(&key) {
-                        let weights = dequant_to_f32(
-                            down_exps.bytes(),
-                            down_exps.dtype,
-                            hidden_size * intermediate_size * n_experts,
-                        );
-                        cache.insert(key, weights);
+
+                    let all_weights = dequant_to_f32(
+                        down_exps.bytes(),
+                        down_exps.dtype,
+                        hidden_size * intermediate_size * n_experts,
+                    );
+
+                    for e in 0..n_experts {
+                        let key =
+                            format!("layer_{}_down_exp_{}", layer.layer_idx, e);
+                        let mut expert_weights =
+                            vec![0.0f32; hidden_size * intermediate_size];
+                        for i in 0..hidden_size {
+                            for j in 0..intermediate_size {
+                                let src_idx = i * intermediate_size * n_experts
+                                    + j * n_experts
+                                    + e;
+                                let dst_idx = i * intermediate_size + j;
+                                expert_weights[dst_idx] = all_weights[src_idx];
+                            }
+                        }
+                        cache.insert(key, expert_weights);
                     }
                 }
             }
         }
 
         if !cache.is_empty() {
-            println!(
-                "Pre-populated expert weight cache: {} tensors",
-                cache.len()
-            );
+            println!("Repacked expert weights: {} expert tensors", cache.len());
         }
     }
 
@@ -1116,24 +1165,21 @@ impl LlamaModel {
             let n_experts = gate_exps.shape[2];
 
             for (expert_idx, routing_weight) in &top_k {
-                // Dequantize only this expert's weights (not all experts)
-                let expert_gate = self.gemv_expert_interleaved(
+                // Use repacked expert-contiguous weights
+                let expert_gate = self.gemv_expert_contiguous(
                     hidden,
-                    gate_exps,
-                    &format!("layer_{}_gate_exps", layer.layer_idx),
-                    *expert_idx,
+                    &format!(
+                        "layer_{}_gate_exp_{}",
+                        layer.layer_idx, expert_idx
+                    ),
                     intermediate_size,
                     hidden_size,
-                    n_experts,
                 )?;
-                let expert_up = self.gemv_expert_interleaved(
+                let expert_up = self.gemv_expert_contiguous(
                     hidden,
-                    up_exps,
-                    &format!("layer_{}_up_exps", layer.layer_idx),
-                    *expert_idx,
+                    &format!("layer_{}_up_exp_{}", layer.layer_idx, expert_idx),
                     intermediate_size,
                     hidden_size,
-                    n_experts,
                 )?;
 
                 // SwiGLU
@@ -1144,14 +1190,14 @@ impl LlamaModel {
                 }
 
                 // Down projection
-                let expert_down = self.gemv_expert_interleaved(
+                let expert_down = self.gemv_expert_contiguous(
                     &hidden_ffn,
-                    down_exps,
-                    &format!("layer_{}_down_exps", layer.layer_idx),
-                    *expert_idx,
+                    &format!(
+                        "layer_{}_down_exp_{}",
+                        layer.layer_idx, expert_idx
+                    ),
                     hidden_size,
                     intermediate_size,
-                    n_experts,
                 )?;
 
                 // Add weighted output
@@ -1199,6 +1245,123 @@ impl LlamaModel {
             let mut sum = 0.0f32;
             for j in 0..in_size {
                 sum += all_weights[w_base + j * n_experts] * x[j];
+            }
+            out[i] = sum;
+        }
+
+        Some(out)
+    }
+
+    /// GEMV with expert-contiguous weights (repacked at load time)
+    /// Cache-friendly access with stride-1 memory reads
+    #[cfg(target_arch = "aarch64")]
+    fn gemv_expert_contiguous(
+        &self,
+        x: &[f32],
+        cache_key: &str,
+        out_size: usize,
+        in_size: usize,
+    ) -> Option<Vec<f32>> {
+        use std::arch::aarch64::*;
+
+        let cache = self.expert_weight_cache.lock().unwrap();
+        let weights = cache.get(cache_key)?;
+
+        let mut out = vec![0.0f32; out_size];
+
+        // Process 4 output rows at a time using NEON
+        let out_chunks = out_size / 4;
+        for chunk in 0..out_chunks {
+            let i_base = chunk * 4;
+
+            unsafe {
+                let mut sum0 = vdupq_n_f32(0.0);
+                let mut sum1 = vdupq_n_f32(0.0);
+                let mut sum2 = vdupq_n_f32(0.0);
+                let mut sum3 = vdupq_n_f32(0.0);
+
+                // Process input in chunks of 4
+                let in_chunks = in_size / 4;
+                for j_chunk in 0..in_chunks {
+                    let j_base = j_chunk * 4;
+
+                    // Load 4 input values
+                    let x_vec = vld1q_f32(x.as_ptr().add(j_base));
+
+                    // Load weights for each output row (contiguous access!)
+                    let w0 = vld1q_f32(
+                        weights[i_base * in_size + j_base..].as_ptr(),
+                    );
+                    let w1 = vld1q_f32(
+                        weights[(i_base + 1) * in_size + j_base..].as_ptr(),
+                    );
+                    let w2 = vld1q_f32(
+                        weights[(i_base + 2) * in_size + j_base..].as_ptr(),
+                    );
+                    let w3 = vld1q_f32(
+                        weights[(i_base + 3) * in_size + j_base..].as_ptr(),
+                    );
+
+                    // FMA: sum += w * x
+                    sum0 = vfmaq_f32(sum0, w0, x_vec);
+                    sum1 = vfmaq_f32(sum1, w1, x_vec);
+                    sum2 = vfmaq_f32(sum2, w2, x_vec);
+                    sum3 = vfmaq_f32(sum3, w3, x_vec);
+                }
+
+                // Handle remaining input elements
+                let j_start = in_chunks * 4;
+                for j in j_start..in_size {
+                    let x_val = x[j];
+                    for k in 0..4 {
+                        let i = i_base + k;
+                        out[i] += weights[i * in_size + j] * x_val;
+                    }
+                }
+
+                // Horizontal sum of each vector
+                let sum0 = vaddvq_f32(sum0);
+                let sum1 = vaddvq_f32(sum1);
+                let sum2 = vaddvq_f32(sum2);
+                let sum3 = vaddvq_f32(sum3);
+
+                out[i_base] = sum0;
+                out[i_base + 1] = sum1;
+                out[i_base + 2] = sum2;
+                out[i_base + 3] = sum3;
+            }
+        }
+
+        // Handle remaining output rows
+        for i in (out_chunks * 4)..out_size {
+            let w_row = &weights[i * in_size..(i + 1) * in_size];
+            let mut sum = 0.0f32;
+            for j in 0..in_size {
+                sum += w_row[j] * x[j];
+            }
+            out[i] = sum;
+        }
+
+        Some(out)
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    fn gemv_expert_contiguous(
+        &self,
+        x: &[f32],
+        cache_key: &str,
+        out_size: usize,
+        in_size: usize,
+    ) -> Option<Vec<f32>> {
+        let cache = self.expert_weight_cache.lock().unwrap();
+        let weights = cache.get(cache_key)?;
+
+        let mut out = vec![0.0f32; out_size];
+        for i in 0..out_size {
+            let w_row = &weights[i * in_size..(i + 1) * in_size];
+            let mut sum = 0.0f32;
+            for j in 0..in_size {
+                sum += w_row[j] * x[j];
             }
             out[i] = sum;
         }
@@ -7493,6 +7656,11 @@ impl LlamaLayer {
             ffn_down_shexp: store
                 .get(&format!("{}.ffn_down_shexp.weight", qwen_prefix))
                 .cloned(),
+
+            // Repacked MoE weights (populated at model load time)
+            ffn_gate_exps_repacked: None,
+            ffn_up_exps_repacked: None,
+            ffn_down_exps_repacked: None,
         }
     }
 
