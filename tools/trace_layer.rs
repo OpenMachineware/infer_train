@@ -43,16 +43,51 @@ fn main() {
 
     // Step 2: Q/K/V projections
     println!("\n=== Step 2: Q/K/V projections ===");
+    println!(
+        "  layer.wq: {:?}",
+        layer.wq.as_ref().map(|t| (&t.shape, t.dtype))
+    );
+    println!(
+        "  layer.wk: {:?}",
+        layer.wk.as_ref().map(|t| (&t.shape, t.dtype))
+    );
+    println!(
+        "  layer.wv: {:?}",
+        layer.wv.as_ref().map(|t| (&t.shape, t.dtype))
+    );
+    println!(
+        "  layer.attn_qkv: {:?}",
+        layer.attn_qkv.as_ref().map(|t| (&t.shape, t.dtype))
+    );
     let (q, k, v, q_out_size, k_out_size, v_out_size) = ctx
         .model
-        .get_qkv_proj(layer, &normed, n_heads, n_kv_heads, head_dim)
+        .get_qkv_proj(
+            layer,
+            &normed,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            ctx.config.key_length,
+            ctx.config.value_length,
+        )
         .unwrap();
-    println!("  Q size: {}, Q[0..5]: {:?}", q.len(), &q[..5]);
+    println!(
+        "  Q size: {} (reported: {}), Q[0..5]: {:?}",
+        q.len(),
+        q_out_size,
+        &q[..5]
+    );
     println!("  K size: {}, K[0..5]: {:?}", k.len(), &k[..5]);
     println!("  V size: {}, V[0..5]: {:?}", v.len(), &v[..5]);
 
     // Step 3: RoPE
     println!("\n=== Step 3: RoPE ===");
+    println!(
+        "  n_heads={}, head_dim={}, q.len()={}",
+        n_heads,
+        head_dim,
+        q.len()
+    );
     let pos = 0;
     let q_rope = ctx.model.apply_rope(&q, pos, n_heads, head_dim).unwrap();
     let k_rope = ctx.model.apply_rope(&k, pos, n_kv_heads, head_dim).unwrap();

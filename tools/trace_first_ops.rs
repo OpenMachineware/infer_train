@@ -243,7 +243,7 @@ fn main() {
                     sum
                 );
             }
-            Operation::Gemv { input, weight, output, out_size } => {
+            Operation::Gemv { input, weight, output, out_size, .. } => {
                 let input_data = tensors[*input].clone();
                 let w = weights.get(weight).expect("Weight not found");
                 println!(

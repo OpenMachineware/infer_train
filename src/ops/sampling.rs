@@ -25,6 +25,16 @@ pub fn sample_top_k(
 ) -> (usize, f32) {
     let vocab_size = logits.len();
 
+    // Check for NaN/Inf values
+    let nan_count = logits.iter().filter(|x| x.is_nan()).count();
+    let inf_count = logits.iter().filter(|x| x.is_infinite()).count();
+    if nan_count > 0 || inf_count > 0 {
+        eprintln!(
+            "Warning: logits contain {} NaN and {} Inf values",
+            nan_count, inf_count
+        );
+    }
+
     // Apply temperature
     let scaled: Vec<f32> = if temperature > 0.0 {
         logits.iter().map(|&x| x / temperature).collect()
@@ -38,8 +48,10 @@ pub fn sample_top_k(
         indices[i] = i;
     }
 
-    // Partial sort to get top-k
-    indices.sort_by(|&a, &b| scaled[b].partial_cmp(&scaled[a]).unwrap());
+    // Partial sort to get top-k (handle NaN with total_order)
+    indices.sort_by(|&a, &b| {
+        scaled[b].partial_cmp(&scaled[a]).unwrap_or(std::cmp::Ordering::Equal)
+    });
     let top_k_indices: Vec<usize> = indices.iter().take(k).copied().collect();
 
     // Softmax over top-k
@@ -66,7 +78,9 @@ pub fn sample_top_k(
     let best_idx = probs
         .iter()
         .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .max_by(|(_, a), (_, b)| {
+            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        })
         .map(|(idx, _)| idx)
         .unwrap_or(0);
 

@@ -52,19 +52,22 @@ fn main() {
     println!("Weight has {} blocks", weights.len());
 
     // Compute first row
-    let result =
-        vec_dot_q6_k_q8_k_neon(intermediate_size, &weights[0..nb], &x_q8k);
+    let result = unsafe {
+        vec_dot_q6_k_q8_k_neon(intermediate_size, &weights[0..nb], &x_q8k)
+    };
 
     println!("First row result: {:.4}", result);
 
     // Full GEMV
     let mut output = vec![0.0f32; hidden_size];
     for i in 0..hidden_size {
-        output[i] = vec_dot_q6_k_q8_k_neon(
-            intermediate_size,
-            &weights[i * nb..(i + 1) * nb],
-            &x_q8k,
-        );
+        output[i] = unsafe {
+            vec_dot_q6_k_q8_k_neon(
+                intermediate_size,
+                &weights[i * nb..(i + 1) * nb],
+                &x_q8k,
+            )
+        };
     }
 
     println!(

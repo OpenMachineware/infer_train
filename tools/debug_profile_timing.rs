@@ -40,6 +40,8 @@ fn main() {
             ctx.config.n_heads,
             ctx.config.n_kv_heads,
             ctx.config.head_dim,
+            ctx.config.key_length,
+            ctx.config.value_length,
         )
         .unwrap();
 
@@ -174,6 +176,8 @@ fn main() {
             ctx3.config.n_heads,
             ctx3.config.n_kv_heads,
             ctx3.config.head_dim,
+            ctx3.config.key_length,
+            ctx3.config.value_length,
         )
         .unwrap();
     let qkv_time = t2.elapsed();

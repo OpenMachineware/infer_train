@@ -100,6 +100,8 @@ fn main() {
             model.config.n_heads,
             model.config.n_kv_heads,
             model.config.head_dim,
+            model.config.key_length,
+            model.config.value_length,
         )
         .expect("QKV projection failed");
 

@@ -28,7 +28,7 @@ fn main() {
     println!("After norm sum: {:.4}", normed.iter().sum::<f32>());
 
     // Get QKV
-    let (q, k, v, _, _, _) = ctx.model.get_qkv_proj(layer0, &normed, ctx.config.n_heads, ctx.config.n_kv_heads, ctx.config.head_dim).unwrap();
+    let (q, k, v, _, _, _) = ctx.model.get_qkv_proj(layer0, &normed, ctx.config.n_heads, ctx.config.n_kv_heads, ctx.config.head_dim, ctx.config.key_length, ctx.config.value_length).unwrap();
     println!("Q sum: {:.4}, len: {}", q.iter().sum::<f32>(), q.len());
     println!("K sum: {:.4}, len: {}", k.iter().sum::<f32>(), k.len());
     println!("V sum: {:.4}, len: {}", v.iter().sum::<f32>(), v.len());
