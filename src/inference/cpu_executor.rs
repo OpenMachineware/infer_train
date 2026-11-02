@@ -254,13 +254,28 @@ impl CpuExecutor {
 
         // MLA: use custom implementation
         // Process each token
-        for &token in tokens.iter() {
+        'token_loop: for &token in tokens.iter() {
             // 1. Embedding lookup
-            model.embedding_lookup_into(token, &mut self.hidden)?;
+            if model.embedding_lookup_into(token, &mut self.hidden).is_none() {
+                eprintln!(
+                    "[MLA DEBUG] embedding_lookup_into failed for token {}",
+                    token
+                );
+                return None;
+            }
 
             // 2. Process through layers
             for (layer_idx, layer) in model.layers.iter().enumerate() {
-                self.forward_layer(model, layer, layer_idx, kv_cache)?;
+                if self
+                    .forward_layer(model, layer, layer_idx, kv_cache)
+                    .is_none()
+                {
+                    eprintln!(
+                        "[MLA DEBUG] forward_layer failed at layer {}",
+                        layer_idx
+                    );
+                    return None;
+                }
             }
 
             // Advance KV cache
@@ -268,18 +283,28 @@ impl CpuExecutor {
         }
 
         // 3. Final norm and output projection
-        model.apply_rms_norm_into(
-            &self.hidden,
-            model.norm.as_ref()?,
-            &mut self.normed,
-        )?;
-        model.gemv_into_with_buffers_single_thread(
+        if model
+            .apply_rms_norm_into(
+                &self.hidden,
+                model.norm.as_ref()?,
+                &mut self.normed,
+            )
+            .is_none()
+        {
+            eprintln!("[MLA DEBUG] apply_rms_norm_into failed");
+            return None;
+        }
+
+        if !model.gemv_into_with_buffers_single_thread(
             &self.normed,
             model.output.as_ref()?,
             &mut self.logits,
             &mut self.q8k_input,
             &mut self.x_padded,
-        );
+        ) {
+            eprintln!("[MLA DEBUG] output gemv failed");
+            return None;
+        }
 
         // Return logits (copy, since buffers are reused)
         Some(self.logits.clone())
@@ -294,14 +319,24 @@ impl CpuExecutor {
         kv_cache: &mut KVCache,
     ) -> Option<()> {
         // 1. Attention norm
+        if layer.attention_norm.is_none() {
+            eprintln!(
+                "[MLA DEBUG] Layer {}: attention_norm is None",
+                layer_idx
+            );
+            return None;
+        }
         model.apply_rms_norm_into(
             &self.hidden,
             layer.attention_norm.as_ref()?,
             &mut self.normed,
-        )?;
+        );
 
         // 2. QKV projections
-        self.forward_qkv(model, layer)?;
+        if self.forward_qkv(model, layer).is_none() {
+            eprintln!("[MLA DEBUG] Layer {}: forward_qkv failed", layer_idx);
+            return None;
+        }
 
         // 3. RoPE
         let pos = kv_cache.seq_len();
@@ -409,22 +444,30 @@ impl CpuExecutor {
             // Use zero-allocation GEMV with pre-allocated buffers
 
             // 1. Q projection
-            model.gemv_into_with_buffers_single_thread(
+            let wq = layer.wq.as_ref()?;
+            if !model.gemv_into_with_buffers_single_thread(
                 &self.normed,
-                layer.wq.as_ref()?,
+                wq,
                 &mut self.q,
                 &mut self.q8k_input,
                 &mut self.x_padded,
-            );
+            ) {
+                eprintln!("[MLA DEBUG] Q projection GEMV failed");
+                return None;
+            }
 
             // 2. KV_A projection (compressed)
-            model.gemv_into_with_buffers_single_thread(
+            let kv_a = layer.attn_kv_a_mqa.as_ref()?;
+            if !model.gemv_into_with_buffers_single_thread(
                 &self.normed,
-                layer.attn_kv_a_mqa.as_ref()?,
+                kv_a,
                 &mut self.kv_a_proj,
                 &mut self.q8k_input,
                 &mut self.x_padded,
-            );
+            ) {
+                eprintln!("[MLA DEBUG] KV_A projection GEMV failed");
+                return None;
+            }
 
             // 3. KV_A normalization (RMSNorm on the first kv_lora_rank elements)
             let kv_a_norm = layer.attn_kv_a_norm.as_ref()?;
@@ -445,13 +488,17 @@ impl CpuExecutor {
             }
 
             // 4. KV_B projection (decompress to full KV)
-            model.gemv_into_with_buffers_single_thread(
+            let kv_b = layer.attn_kv_b.as_ref()?;
+            if !model.gemv_into_with_buffers_single_thread(
                 &self.kv_a_normed,
-                layer.attn_kv_b.as_ref()?,
+                kv_b,
                 &mut self.kv,
                 &mut self.q8k_input,
                 &mut self.x_padded,
-            );
+            ) {
+                eprintln!("[MLA DEBUG] KV_B projection GEMV failed");
+                return None;
+            }
 
             // 5. Construct K and V
             // qk_nope_head_dim = key_length - qk_rope_head_dim
@@ -657,6 +704,16 @@ impl CpuExecutor {
         model: &LlamaModel,
         layer: &LlamaLayer,
     ) -> Option<()> {
+        // Check for MoE layer
+        if layer.ffn_gate_inp.is_some() || layer.ffn_gate_exps.is_some() {
+            // MoE FFN
+            let result =
+                model.compute_moe_ffn(layer, &self.normed, self.hidden_size)?;
+            self.hidden_alt.copy_from_slice(&result);
+            return Some(());
+        }
+
+        // Standard FFN
         model.compute_ffn_zero_alloc(
             layer,
             &self.normed,

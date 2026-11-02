@@ -10,7 +10,9 @@ use crate::inference::{KVCacheBase, dequant_to_f32};
 use crate::model::config::ModelConfig;
 use crate::model::tensor::{DataType, Tensor, TensorData};
 use crate::model::weights::WeightStore;
+use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use crate::compute::MetalBackend;
@@ -42,6 +44,10 @@ pub struct LlamaModel {
     /// Cached optimized DAG for forward pass
     /// Built once at model load, reused for all forward passes
     pub optimized_dag: Option<OptimizedDag>,
+
+    /// Cache for dequantized MoE expert weights
+    /// Key: "layer_{idx}_{gate|up|down}_exps", Value: dequantized weights
+    pub expert_weight_cache: Arc<Mutex<HashMap<String, Vec<f32>>>>,
 }
 
 impl LlamaModel {
@@ -101,6 +107,7 @@ impl LlamaModel {
             norm: None,
             output: None,
             optimized_dag: None,
+            expert_weight_cache: Arc::new(Mutex::new(HashMap::new())),
         };
 
         // Load embeddings - try multiple naming conventions
@@ -220,6 +227,7 @@ impl LlamaModel {
         // Transpose output layer if needed (GGUF stores output weights transposed)
         // This enables using standard GEMV kernel instead of transposed kernel
         model.transpose_output_layer();
+        model.transpose_attention_weights();
 
         // Build and optimize DAG for GPU inference
         #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -239,6 +247,9 @@ impl LlamaModel {
             // Convert to optimized DAG with pre-computed execution order
             model.optimized_dag = Some(dag.into_optimized());
         }
+
+        // Pre-populate expert weight cache for MoE models
+        model.prepopulate_expert_cache();
 
         model
     }
@@ -306,6 +317,336 @@ impl LlamaModel {
         }
 
         println!("Output layer transposed successfully");
+    }
+
+    /// Transpose attention weights if stored in column-major format
+    /// GGUF stores weights as [in_features, out_features] (column-major)
+    /// We transpose to [out_features, in_features] for standard GEMV
+    fn transpose_attention_weights(&mut self) {
+        let hidden_size = self.config.hidden_size;
+        let mut transposed_count = 0;
+
+        for layer in &mut self.layers {
+            // Transpose attention weights
+            if let Some(ref mut wq) = layer.wq {
+                if wq.shape.len() == 2 && wq.shape[0] == hidden_size {
+                    Self::transpose_quantized_tensor(wq);
+                    transposed_count += 1;
+                }
+            }
+            if let Some(ref mut wk) = layer.wk {
+                if wk.shape.len() == 2 && wk.shape[0] == hidden_size {
+                    Self::transpose_quantized_tensor(wk);
+                    transposed_count += 1;
+                }
+            }
+            if let Some(ref mut wv) = layer.wv {
+                if wv.shape.len() == 2 && wv.shape[0] == hidden_size {
+                    Self::transpose_quantized_tensor(wv);
+                    transposed_count += 1;
+                }
+            }
+            if let Some(ref mut wo) = layer.wo {
+                // wo has shape [q_size, hidden_size], check against q_size
+                let wo_in_size = wo.shape[0];
+                if wo.shape.len() == 2 {
+                    Self::transpose_quantized_tensor(wo);
+                    transposed_count += 1;
+                }
+            }
+
+            // Transpose FFN weights
+            if let Some(ref mut w1) = layer.w1 {
+                if w1.shape.len() == 2 && w1.shape[0] == hidden_size {
+                    Self::transpose_quantized_tensor(w1);
+                    transposed_count += 1;
+                }
+            }
+            if let Some(ref mut w2) = layer.w2 {
+                // w2 has shape [intermediate_size, hidden_size]
+                if w2.shape.len() == 2 {
+                    Self::transpose_quantized_tensor(w2);
+                    transposed_count += 1;
+                }
+            }
+            if let Some(ref mut w3) = layer.w3 {
+                if w3.shape.len() == 2 && w3.shape[0] == hidden_size {
+                    Self::transpose_quantized_tensor(w3);
+                    transposed_count += 1;
+                }
+            }
+        }
+
+        if transposed_count > 0 {
+            println!(
+                "Transposed {} weight tensors for correct GEMV format",
+                transposed_count
+            );
+        }
+    }
+
+    /// Pre-populate expert weight cache for MoE models
+    /// This avoids dequantizing expert weights on every forward pass
+    fn prepopulate_expert_cache(&mut self) {
+        let mut cache = self.expert_weight_cache.lock().unwrap();
+        let hidden_size = self.config.hidden_size;
+
+        for layer in &self.layers {
+            // Check if this layer has MoE
+            if layer.ffn_gate_exps.is_some() {
+                // Cache gate_exps
+                if let Some(gate_exps) = &layer.ffn_gate_exps {
+                    let intermediate_size = gate_exps.shape[1];
+                    let n_experts = gate_exps.shape[2];
+                    let key = format!("layer_{}_gate_exps", layer.layer_idx);
+                    if !cache.contains_key(&key) {
+                        let weights = dequant_to_f32(
+                            gate_exps.bytes(),
+                            gate_exps.dtype,
+                            intermediate_size * hidden_size * n_experts,
+                        );
+                        cache.insert(key, weights);
+                    }
+                }
+
+                // Cache up_exps
+                if let Some(up_exps) = &layer.ffn_up_exps {
+                    let intermediate_size = up_exps.shape[1];
+                    let n_experts = up_exps.shape[2];
+                    let key = format!("layer_{}_up_exps", layer.layer_idx);
+                    if !cache.contains_key(&key) {
+                        let weights = dequant_to_f32(
+                            up_exps.bytes(),
+                            up_exps.dtype,
+                            intermediate_size * hidden_size * n_experts,
+                        );
+                        cache.insert(key, weights);
+                    }
+                }
+
+                // Cache down_exps
+                if let Some(down_exps) = &layer.ffn_down_exps {
+                    let intermediate_size = down_exps.shape[1];
+                    let n_experts = down_exps.shape[2];
+                    let key = format!("layer_{}_down_exps", layer.layer_idx);
+                    if !cache.contains_key(&key) {
+                        let weights = dequant_to_f32(
+                            down_exps.bytes(),
+                            down_exps.dtype,
+                            hidden_size * intermediate_size * n_experts,
+                        );
+                        cache.insert(key, weights);
+                    }
+                }
+            }
+        }
+
+        if !cache.is_empty() {
+            println!(
+                "Pre-populated expert weight cache: {} tensors",
+                cache.len()
+            );
+        }
+    }
+
+    /// Transpose a quantized tensor from column-major to row-major
+    fn transpose_quantized_tensor(tensor: &mut Tensor) {
+        if tensor.shape.len() != 2 {
+            return;
+        }
+
+        let in_features = tensor.shape[0];
+        let out_features = tensor.shape[1];
+
+        // For K-quant formats, transpose at block level
+        // GGUF stores weights in column-major: blocks[col * out_features + row]
+        // GEMV expects row-major: blocks[row * nb + col]
+        match tensor.dtype {
+            DataType::Q4_K => {
+                Self::transpose_k_quant_blocks::<BlockQ4K>(
+                    tensor,
+                    in_features,
+                    out_features,
+                );
+            }
+            DataType::Q5_K => {
+                Self::transpose_k_quant_blocks::<BlockQ5K>(
+                    tensor,
+                    in_features,
+                    out_features,
+                );
+            }
+            DataType::Q6_K => {
+                Self::transpose_k_quant_blocks::<BlockQ6K>(
+                    tensor,
+                    in_features,
+                    out_features,
+                );
+            }
+            DataType::IQ4_XS => {
+                // IQ4_XS is 128 bytes per 256 elements
+                Self::transpose_iq4_xs_blocks(
+                    tensor,
+                    in_features,
+                    out_features,
+                );
+            }
+            _ => {
+                // Fallback to F32 transpose for other formats
+                Self::transpose_dequantized(tensor, in_features, out_features);
+            }
+        }
+    }
+
+    /// Transpose K-quant blocks from GGUF column-major to GEMV row-major
+    /// GGUF: blocks[col * m + row] where col = input_block_index, row = output_row
+    /// GEMV: blocks[row * nb + col] where row = output_row, col = input_block_index
+    fn transpose_k_quant_blocks<T: Clone>(
+        tensor: &mut Tensor,
+        in_features: usize,
+        out_features: usize,
+    ) {
+        use crate::quant::types::QK_K;
+
+        let nb = (in_features + QK_K - 1) / QK_K; // Number of blocks per row (in input dim)
+        let m = out_features; // Number of output rows
+        let total_blocks = nb * m;
+
+        let bytes = tensor.bytes();
+        let block_size = std::mem::size_of::<T>();
+
+        // Verify we have enough data
+        if bytes.len() < total_blocks * block_size {
+            // Not enough blocks, don't transpose
+            tensor.shape = vec![out_features, in_features];
+            return;
+        }
+
+        // Cast to block slice
+        let blocks: &[T] = unsafe {
+            std::slice::from_raw_parts(bytes.as_ptr() as *const T, total_blocks)
+        };
+
+        // Transpose from column-major to row-major
+        // GGUF column-major: block for (col, row) is at index col * m + row
+        // We want row-major: block for (row, col) is at index row * nb + col
+        let mut transposed: Vec<T> =
+            vec![unsafe { std::mem::zeroed() }; total_blocks];
+        for row in 0..m {
+            for col in 0..nb {
+                // Source: GGUF column-major layout
+                let src_idx = col * m + row;
+                // Destination: row-major layout for GEMV
+                let dst_idx = row * nb + col;
+                transposed[dst_idx] = blocks[src_idx].clone();
+            }
+        }
+
+        // Update tensor
+        tensor.shape = vec![out_features, in_features];
+        tensor.data = TensorData::Owned(unsafe {
+            std::slice::from_raw_parts(
+                transposed.as_ptr() as *const u8,
+                total_blocks * block_size,
+            )
+            .to_vec()
+        });
+
+        #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+        {
+            *tensor.gpu_buffer.write().unwrap() = None;
+        }
+    }
+
+    /// Transpose IQ4_XS blocks (128 bytes per 256 elements)
+    fn transpose_iq4_xs_blocks(
+        tensor: &mut Tensor,
+        in_features: usize,
+        out_features: usize,
+    ) {
+        use crate::quant::types::QK_K;
+
+        let nb = (in_features + QK_K - 1) / QK_K;
+        let m = out_features;
+        let total_blocks = nb * m;
+        let block_size = 128; // IQ4_XS block size
+
+        let bytes = tensor.bytes();
+
+        if bytes.len() < total_blocks * block_size {
+            tensor.shape = vec![out_features, in_features];
+            return;
+        }
+
+        // Transpose as raw bytes
+        let mut transposed = vec![0u8; bytes.len()];
+        for row in 0..m {
+            for col in 0..nb {
+                let src_idx = col * m + row;
+                let dst_idx = row * nb + col;
+                transposed[dst_idx * block_size..(dst_idx + 1) * block_size]
+                    .copy_from_slice(
+                        &bytes
+                            [src_idx * block_size..(src_idx + 1) * block_size],
+                    );
+            }
+        }
+
+        tensor.shape = vec![out_features, in_features];
+        tensor.data = TensorData::Owned(transposed);
+
+        #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+        {
+            *tensor.gpu_buffer.write().unwrap() = None;
+        }
+    }
+
+    /// Transpose by dequantizing to F32, then converting to F16
+    fn transpose_dequantized(
+        tensor: &mut Tensor,
+        in_features: usize,
+        out_features: usize,
+    ) {
+        let total_elems = in_features * out_features;
+
+        // Dequantize to F32
+        let data_f32 =
+            dequant_to_f32(tensor.bytes(), tensor.dtype, total_elems);
+
+        // Transpose: column-major [K, M] -> row-major [M, K]
+        let mut transposed = vec![0.0f32; total_elems];
+        for m in 0..out_features {
+            for k in 0..in_features {
+                // Original: column-major [K, M] -> index = k + m * K
+                // Transposed: row-major [M, K] -> index = m * K + k
+                transposed[m * in_features + k] = data_f32[k + m * in_features];
+            }
+        }
+
+        // Convert to F16 and store
+        let data_f16: Vec<u16> = transposed
+            .iter()
+            .map(|&v| half::f16::from_f32(v).to_bits())
+            .collect();
+
+        // Update tensor
+        tensor.shape = vec![out_features, in_features];
+        tensor.dtype = DataType::F16;
+        tensor.data = TensorData::Owned(
+            unsafe {
+                std::slice::from_raw_parts(
+                    data_f16.as_ptr() as *const u8,
+                    data_f16.len() * 2,
+                )
+            }
+            .to_vec(),
+        );
+
+        // Clear any cached GPU buffer
+        #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+        {
+            *tensor.gpu_buffer.write().unwrap() = None;
+        }
     }
 
     pub fn layer_count(&self) -> usize {
@@ -714,7 +1055,7 @@ impl LlamaModel {
 
     /// Compute MoE FFN output
     /// DeepSeek-Coder-V2 uses routed experts + shared experts
-    fn compute_moe_ffn(
+    pub fn compute_moe_ffn(
         &self,
         layer: &LlamaLayer,
         hidden: &[f32],
@@ -774,38 +1115,21 @@ impl LlamaModel {
             let intermediate_size = gate_exps.shape[1];
             let n_experts = gate_exps.shape[2];
 
-            // Dequantize the 3D tensors ONCE (this is the key optimization)
-            // Shape: [out_features, in_features, n_experts]
-            // For gate_exps: [intermediate_size, hidden_size, n_experts]
-            let gate_dequant = dequant_to_f32(
-                gate_exps.bytes(),
-                gate_exps.dtype,
-                intermediate_size * hidden_size * n_experts,
-            );
-            let up_dequant = dequant_to_f32(
-                up_exps.bytes(),
-                up_exps.dtype,
-                intermediate_size * hidden_size * n_experts,
-            );
-            let down_dequant = dequant_to_f32(
-                down_exps.bytes(),
-                down_exps.dtype,
-                hidden_size * intermediate_size * n_experts,
-            );
-
             for (expert_idx, routing_weight) in &top_k {
-                // Compute expert output using pre-dequantized weights
-                let expert_gate = self.gemv_dequant_expert(
+                // Dequantize only this expert's weights (not all experts)
+                let expert_gate = self.gemv_expert_interleaved(
                     hidden,
-                    &gate_dequant,
+                    gate_exps,
+                    &format!("layer_{}_gate_exps", layer.layer_idx),
                     *expert_idx,
                     intermediate_size,
                     hidden_size,
                     n_experts,
                 )?;
-                let expert_up = self.gemv_dequant_expert(
+                let expert_up = self.gemv_expert_interleaved(
                     hidden,
-                    &up_dequant,
+                    up_exps,
+                    &format!("layer_{}_up_exps", layer.layer_idx),
                     *expert_idx,
                     intermediate_size,
                     hidden_size,
@@ -820,9 +1144,10 @@ impl LlamaModel {
                 }
 
                 // Down projection
-                let expert_down = self.gemv_dequant_expert(
+                let expert_down = self.gemv_expert_interleaved(
                     &hidden_ffn,
-                    &down_dequant,
+                    down_exps,
+                    &format!("layer_{}_down_exps", layer.layer_idx),
                     *expert_idx,
                     hidden_size,
                     intermediate_size,
@@ -847,6 +1172,38 @@ impl LlamaModel {
         }
 
         Some(final_output)
+    }
+
+    /// GEMV with interleaved expert weights, using cached dequantized weights
+    fn gemv_expert_interleaved(
+        &self,
+        _x: &[f32],
+        _expert_tensor: &Tensor,
+        cache_key: &str,
+        expert_idx: usize,
+        out_size: usize,
+        in_size: usize,
+        n_experts: usize,
+    ) -> Option<Vec<f32>> {
+        // Check cache for dequantized weights
+        let cache = self.expert_weight_cache.lock().unwrap();
+        let all_weights = cache.get(cache_key)?;
+
+        // Simple scalar GEMV with interleaved access
+        // W[i, j, e] = all_weights[i * in_size * n_experts + j * n_experts + e]
+        let x = _x;
+        let mut out = vec![0.0f32; out_size];
+
+        for i in 0..out_size {
+            let w_base = i * in_size * n_experts + expert_idx;
+            let mut sum = 0.0f32;
+            for j in 0..in_size {
+                sum += all_weights[w_base + j * n_experts] * x[j];
+            }
+            out[i] = sum;
+        }
+
+        Some(out)
     }
 
     /// GEMV with pre-dequantized expert weights (interleaved format)
@@ -2397,6 +2754,41 @@ impl LlamaModel {
                 &buffers.qkv_buffer[q_size + k_size..q_size + k_size + v_size],
             );
 
+            // Apply Q/K norms (Qwen-style) before RoPE
+            if let Some(ref q_norm) = layer.q_norm {
+                let norm_data: &[f32] = bytemuck::cast_slice(q_norm.bytes());
+                for h in 0..n_heads {
+                    let start = h * head_dim;
+                    let end = start + head_dim;
+                    let mut ss = 0.0f32;
+                    for i in start..end {
+                        ss += buffers.q_buffer[i] * buffers.q_buffer[i];
+                    }
+                    let rms = 1.0 / (ss / head_dim as f32 + 1e-5).sqrt();
+                    for i in start..end {
+                        buffers.q_buffer[i] =
+                            buffers.q_buffer[i] * rms * norm_data[i - start];
+                    }
+                }
+            }
+            if let Some(ref k_norm) = layer.k_norm {
+                let k_head_dim = k_size / n_kv_heads;
+                let norm_data: &[f32] = bytemuck::cast_slice(k_norm.bytes());
+                for h in 0..n_kv_heads {
+                    let start = h * k_head_dim;
+                    let end = start + k_head_dim;
+                    let mut ss = 0.0f32;
+                    for i in start..end {
+                        ss += buffers.k_buffer[i] * buffers.k_buffer[i];
+                    }
+                    let rms = 1.0 / (ss / k_head_dim as f32 + 1e-5).sqrt();
+                    for i in start..end {
+                        buffers.k_buffer[i] =
+                            buffers.k_buffer[i] * rms * norm_data[i - start];
+                    }
+                }
+            }
+
             // Return early for fused QKV path to avoid size mismatch below
             // Continue with RoPE and attention using actual sizes
             self.apply_rope_into(
@@ -2519,6 +2911,40 @@ impl LlamaModel {
                     &mut buffers.q8k_input,
                     &mut buffers.x_padded,
                 );
+            }
+
+            // Apply Q/K norms (Qwen-style) before RoPE
+            if let Some(ref q_norm) = layer.q_norm {
+                let norm_data: &[f32] = bytemuck::cast_slice(q_norm.bytes());
+                for h in 0..n_heads {
+                    let start = h * head_dim;
+                    let end = start + head_dim;
+                    let mut ss = 0.0f32;
+                    for i in start..end {
+                        ss += buffers.q_buffer[i] * buffers.q_buffer[i];
+                    }
+                    let rms = 1.0 / (ss / head_dim as f32 + 1e-5).sqrt();
+                    for i in start..end {
+                        buffers.q_buffer[i] =
+                            buffers.q_buffer[i] * rms * norm_data[i - start];
+                    }
+                }
+            }
+            if let Some(ref k_norm) = layer.k_norm {
+                let norm_data: &[f32] = bytemuck::cast_slice(k_norm.bytes());
+                for h in 0..n_kv_heads {
+                    let start = h * head_dim;
+                    let end = start + head_dim;
+                    let mut ss = 0.0f32;
+                    for i in start..end {
+                        ss += buffers.k_buffer[i] * buffers.k_buffer[i];
+                    }
+                    let rms = 1.0 / (ss / head_dim as f32 + 1e-5).sqrt();
+                    for i in start..end {
+                        buffers.k_buffer[i] =
+                            buffers.k_buffer[i] * rms * norm_data[i - start];
+                    }
+                }
             }
 
             // 3. RoPE (standard path)
@@ -2937,6 +3363,43 @@ impl LlamaModel {
                 );
             }
 
+            // Apply Q/K norms (Qwen-style) before RoPE
+            // Qwen models require normalizing Q and K per-head after projection
+            if let Some(ref q_norm) = layer.q_norm {
+                let norm_data: &[f32] = bytemuck::cast_slice(q_norm.bytes());
+                for h in 0..n_heads {
+                    let start = h * head_dim;
+                    let end = start + head_dim;
+                    // RMS norm this head
+                    let mut ss = 0.0f32;
+                    for i in start..end {
+                        ss += buffers.q_buffer[i] * buffers.q_buffer[i];
+                    }
+                    let rms = 1.0 / (ss / head_dim as f32 + 1e-5).sqrt();
+                    for i in start..end {
+                        buffers.q_buffer[i] =
+                            buffers.q_buffer[i] * rms * norm_data[i - start];
+                    }
+                }
+            }
+            if let Some(ref k_norm) = layer.k_norm {
+                let norm_data: &[f32] = bytemuck::cast_slice(k_norm.bytes());
+                for h in 0..n_kv_heads {
+                    let start = h * head_dim;
+                    let end = start + head_dim;
+                    // RMS norm this head
+                    let mut ss = 0.0f32;
+                    for i in start..end {
+                        ss += buffers.k_buffer[i] * buffers.k_buffer[i];
+                    }
+                    let rms = 1.0 / (ss / head_dim as f32 + 1e-5).sqrt();
+                    for i in start..end {
+                        buffers.k_buffer[i] =
+                            buffers.k_buffer[i] * rms * norm_data[i - start];
+                    }
+                }
+            }
+
             // RoPE
             self.apply_rope_into(
                 &buffers.q_buffer,
@@ -3168,8 +3631,9 @@ impl LlamaModel {
         for h in 0..n_heads {
             for d in (0..head_dim).step_by(2) {
                 let idx = h * head_dim + d;
-                let theta =
-                    pos as f32 / 10000.0f32.powf(d as f32 / head_dim as f32);
+                // freq = 1 / (theta_base^(d/dim))
+                let freq = 1.0f32 / 10000.0f32.powf(d as f32 / head_dim as f32);
+                let theta = pos as f32 * freq;
                 let cos_theta = theta.cos();
                 let sin_theta = theta.sin();
 
