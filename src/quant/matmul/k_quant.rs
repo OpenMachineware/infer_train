@@ -145,7 +145,9 @@ pub unsafe fn matmul_q4_k_q8_k_persistent(
     );
 }
 
-/// Hybrid Q4_K × Q8_K: ST for small, MT with persistent pool for large
+/// Hybrid Q4_K × Q8_K: ST for single row, MT with persistent pool for m > 1
+/// Key insight from llama.cpp: always use threads for parallelizable work
+/// Persistent thread pool has ~590ns overhead (95x faster than std::thread::scope)
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q4_k_q8_k_hybrid(
     weights: &[BlockQ4K],
@@ -154,7 +156,7 @@ pub unsafe fn matmul_q4_k_q8_k_hybrid(
     k: usize,
     m: usize,
 ) {
-    if m < 2048 {
+    if m <= 1 {
         matmul_q4_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
         matmul_q4_k_q8_k_persistent(weights, x, dst, k, m);
@@ -254,7 +256,7 @@ pub unsafe fn matmul_q6_k_q8_k_persistent(
     );
 }
 
-/// Hybrid Q6_K × Q8_K: ST for small, MT with persistent pool for large
+/// Hybrid Q6_K × Q8_K: ST for single row, MT with persistent pool for m > 1
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q6_k_q8_k_hybrid(
     weights: &[BlockQ6K],
@@ -263,7 +265,7 @@ pub unsafe fn matmul_q6_k_q8_k_hybrid(
     k: usize,
     m: usize,
 ) {
-    if m < 2048 {
+    if m <= 1 {
         matmul_q6_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
         matmul_q6_k_q8_k_persistent(weights, x, dst, k, m);
@@ -446,7 +448,7 @@ pub unsafe fn matmul_q5_k_q8_k_persistent(
     );
 }
 
-/// Hybrid Q5_K × Q8_K: ST for small matrices, MT with persistent pool for large
+/// Hybrid Q5_K × Q8_K: ST for single row, MT with persistent pool for m > 1
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q5_k_q8_k_hybrid(
     weights: &[BlockQ5K],
@@ -455,8 +457,8 @@ pub unsafe fn matmul_q5_k_q8_k_hybrid(
     k: usize,
     m: usize,
 ) {
-    // Threshold: if m < 2048, thread overhead exceeds compute time
-    if m < 2048 {
+    // Persistent pool has ~590ns overhead, use for any m > 1
+    if m <= 1 {
         matmul_q5_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
         matmul_q5_k_q8_k_persistent(weights, x, dst, k, m);

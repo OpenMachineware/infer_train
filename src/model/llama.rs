@@ -122,6 +122,9 @@ impl LlamaModel {
             model.layers.push(layer);
         }
 
+        // Transpose weights BEFORE config fix so shapes are correct
+        model.transpose_attention_weights();
+
         // Fix config n_heads/n_kv_heads from actual weight shapes
         // GGUF metadata may be incorrect for some models
         if let Some(first_layer) = model.layers.first() {
@@ -227,7 +230,6 @@ impl LlamaModel {
         // Transpose output layer if needed (GGUF stores output weights transposed)
         // This enables using standard GEMV kernel instead of transposed kernel
         model.transpose_output_layer();
-        model.transpose_attention_weights();
 
         // Build and optimize DAG for GPU inference
         #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -558,7 +560,7 @@ impl LlamaModel {
         }
     }
 
-    /// Transpose IQ4_XS blocks (128 bytes per 256 elements)
+    /// Transpose IQ4_XS blocks (136 bytes per 256 elements)
     fn transpose_iq4_xs_blocks(
         tensor: &mut Tensor,
         in_features: usize,
@@ -569,7 +571,7 @@ impl LlamaModel {
         let nb = (in_features + QK_K - 1) / QK_K;
         let m = out_features;
         let total_blocks = nb * m;
-        let block_size = 128; // IQ4_XS block size
+        let block_size = 136; // IQ4_XS block size: 2 + 2 + 4 + 128 = 136 bytes
 
         let bytes = tensor.bytes();
 
@@ -1014,19 +1016,15 @@ impl LlamaModel {
                 };
                 Self::quantize_input_to_q8k(hidden, x_q8k_blocks, x_padded);
 
-                // Gate and up projections with pre-quantized input (single-thread for decode)
-                self.gemv_with_prequant_single_thread(
+                // Gate and up projections with pre-quantized input
+                // Hybrid GEMV uses persistent thread pool for m > 1
+                self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     w1,
                     gate_buf,
                 );
-                self.gemv_with_prequant_single_thread(
-                    x_q8k_blocks,
-                    hidden_size,
-                    w3,
-                    up_buf,
-                );
+                self.gemv_with_prequant(x_q8k_blocks, hidden_size, w3, up_buf);
             } else {
                 // Fallback for mixed dtypes (single-thread for decode)
                 self.gemv_into_with_buffers_single_thread(
@@ -1043,10 +1041,9 @@ impl LlamaModel {
                 gate_buf[i] = gate_buf[i] * silu;
             }
 
-            // Down projection: gate_buf @ w2 -> out (single-thread for decode)
-            self.gemv_into_with_buffers_single_thread(
-                gate_buf, w2, out, q8k_input, x_padded,
-            );
+            // Down projection: gate_buf @ w2 -> out
+            // Uses hybrid GEMV for better performance
+            self.gemv_into_with_buffers(gate_buf, w2, out, q8k_input, x_padded);
 
             return Some(());
         }
@@ -2866,22 +2863,23 @@ impl LlamaModel {
                     &mut buffers.x_padded,
                 );
 
-                // Use pre-quantized input for all projections (single-thread for decode)
-                self.gemv_with_prequant_single_thread(
+                // Use pre-quantized input for all projections
+                // Hybrid GEMV uses persistent thread pool for m > 1 (minimal overhead)
+                self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wq.as_ref()?,
                     &mut buffers.q_buffer[..q_size],
                 );
 
-                self.gemv_with_prequant_single_thread(
+                self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wk.as_ref()?,
                     &mut buffers.k_buffer[..k_size],
                 );
 
-                self.gemv_with_prequant_single_thread(
+                self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wv.as_ref()?,

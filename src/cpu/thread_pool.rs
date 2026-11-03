@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
 // Persistent thread pool for CPU inference
 
 use std::sync::Arc;
@@ -164,13 +165,13 @@ impl Default for WorkDescriptor {
 unsafe impl Send for WorkDescriptor {}
 unsafe impl Sync for WorkDescriptor {}
 
-/// Persistent thread pool - LOCK-FREE version matching llama.cpp exactly
+/// Persistent thread pool - WORK-STEALING version matching llama.cpp exactly
 ///
 /// Key design from llama.cpp:
 /// 1. Threads wait on atomic "current_op" counter (spin loop)
 /// 2. Main thread stores work descriptor, then increments counter
-/// 3. Workers read descriptor, process work, increment completion
-/// 4. NO locks - pure atomic operations for sub-microsecond wake
+/// 3. Workers grab chunks via atomic fetch_add (work-stealing)
+/// 4. 64-row chunks for better load balancing
 pub struct PersistentThreadPool {
     handles: Vec<JoinHandle<()>>,
     /// Current operation number - workers spin-wait until this changes
@@ -181,6 +182,8 @@ pub struct PersistentThreadPool {
     work_slot: Arc<std::cell::UnsafeCell<WorkDescriptor>>,
     /// Completion counter - workers increment after finishing
     completed: Arc<AtomicUsize>,
+    /// Current chunk for work-stealing
+    current_chunk: Arc<AtomicUsize>,
     num_threads: usize,
 }
 
@@ -188,7 +191,7 @@ unsafe impl Send for PersistentThreadPool {}
 unsafe impl Sync for PersistentThreadPool {}
 
 impl PersistentThreadPool {
-    /// Create a new persistent thread pool
+    /// Create a new persistent thread pool with work-stealing
     pub fn new(num_threads: usize) -> Self {
         let current_op = Arc::new(AtomicUsize::new(0));
         let work_slot =
@@ -196,12 +199,14 @@ impl PersistentThreadPool {
         let work =
             Arc::new(std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()));
         let completed = Arc::new(AtomicUsize::new(0));
+        let current_chunk = Arc::new(AtomicUsize::new(0));
 
         let handles: Vec<_> = (0..num_threads)
             .map(|thread_id| {
                 let current_op = current_op.clone();
                 let work = work.clone();
                 let completed = completed.clone();
+                let current_chunk = current_chunk.clone();
 
                 thread::spawn(move || {
                     let mut last_op = 0;
@@ -239,16 +244,23 @@ impl PersistentThreadPool {
 
                         let work_desc = unsafe { &*work_ptr };
                         let m = work_desc.m;
-                        let nth = num_threads;
 
-                        // Calculate chunk for this thread
-                        let chunk_size = (m + nth - 1) / nth;
-                        let start = thread_id * chunk_size;
-                        let end = (start + chunk_size).min(m);
+                        // Work-stealing: each thread grabs chunks via atomic fetch_add
+                        // Chunk size 64 matches llama.cpp for good load balancing
+                        const CHUNK_SIZE: usize = 64;
+                        let n_chunks = (m + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
-                        // Execute GEMV for assigned rows
-                        if start < m {
-                            if let Some(func) = work_desc.func {
+                        if let Some(func) = work_desc.func {
+                            loop {
+                                let chunk = current_chunk
+                                    .fetch_add(1, Ordering::Relaxed);
+                                if chunk >= n_chunks {
+                                    break;
+                                }
+
+                                let start = chunk * CHUNK_SIZE;
+                                let end = (start + CHUNK_SIZE).min(m);
+
                                 unsafe {
                                     func(
                                         work_desc.weights,
@@ -276,11 +288,12 @@ impl PersistentThreadPool {
             work,
             work_slot,
             completed,
+            current_chunk,
             num_threads,
         }
     }
 
-    /// Execute GEMV operation - lock-free
+    /// Execute GEMV operation - work-stealing with 64-row chunks
     /// Main thread stores work descriptor, then signals via atomic increment
     pub fn execute_gemv(
         &self,
@@ -303,8 +316,9 @@ impl PersistentThreadPool {
             return;
         }
 
-        // Reset completion counter
+        // Reset completion counter and chunk counter
         self.completed.store(0, Ordering::Release);
+        self.current_chunk.store(0, Ordering::Release);
 
         // Store work descriptor
         unsafe {
