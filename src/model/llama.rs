@@ -2523,6 +2523,114 @@ impl LlamaModel {
 
                     kv_cache.advance();
                 }
+            } else {
+                // Separate wq/wk/wv projections - use batch GEMM for each
+                let q_size = self.config.n_heads * self.config.head_dim;
+                let k_size = self.config.n_kv_heads * self.config.key_length;
+                let v_size = self.config.n_kv_heads * self.config.value_length;
+
+                let inputs: Vec<&[f32]> = (0..n_tokens)
+                    .map(|i| {
+                        &batch_hidden[i * hidden_size..(i + 1) * hidden_size]
+                    })
+                    .collect();
+
+                // Batch Q projection
+                let mut q_outputs = vec![0.0f32; n_tokens * q_size];
+                if let Some(ref wq) = layer.wq {
+                    self.gemm_batch_prefill(
+                        &inputs,
+                        wq,
+                        &mut q_outputs,
+                        &mut buffers.q8k_input,
+                        &mut buffers.x_padded,
+                    );
+                }
+
+                // Batch K projection
+                let mut k_outputs = vec![0.0f32; n_tokens * k_size];
+                if let Some(ref wk) = layer.wk {
+                    self.gemm_batch_prefill(
+                        &inputs,
+                        wk,
+                        &mut k_outputs,
+                        &mut buffers.q8k_input,
+                        &mut buffers.x_padded,
+                    );
+                }
+
+                // Batch V projection
+                let mut v_outputs = vec![0.0f32; n_tokens * v_size];
+                if let Some(ref wv) = layer.wv {
+                    self.gemm_batch_prefill(
+                        &inputs,
+                        wv,
+                        &mut v_outputs,
+                        &mut buffers.q8k_input,
+                        &mut buffers.x_padded,
+                    );
+                }
+
+                // Process each token's attention (sequential due to position dependency)
+                for (token_idx, pos) in (0..n_tokens).zip(kv_cache.seq_len()..)
+                {
+                    // Copy Q, K, V from batch outputs
+                    buffers.q_buffer[..q_size].copy_from_slice(
+                        &q_outputs
+                            [token_idx * q_size..(token_idx + 1) * q_size],
+                    );
+                    buffers.k_buffer[..k_size].copy_from_slice(
+                        &k_outputs
+                            [token_idx * k_size..(token_idx + 1) * k_size],
+                    );
+                    buffers.v_buffer[..v_size].copy_from_slice(
+                        &v_outputs
+                            [token_idx * v_size..(token_idx + 1) * v_size],
+                    );
+
+                    // RoPE
+                    self.apply_rope_into(
+                        &buffers.q_buffer,
+                        pos,
+                        self.config.n_heads,
+                        self.config.head_dim,
+                        &mut buffers.rope_buffer,
+                    )?;
+                    buffers.q_buffer[..q_size]
+                        .copy_from_slice(&buffers.rope_buffer[..q_size]);
+
+                    let k_head_dim = k_size / self.config.n_kv_heads;
+                    self.apply_rope_into(
+                        &buffers.k_buffer,
+                        pos,
+                        self.config.n_kv_heads,
+                        k_head_dim,
+                        &mut buffers.rope_buffer,
+                    )?;
+                    buffers.k_buffer[..k_size]
+                        .copy_from_slice(&buffers.rope_buffer[..k_size]);
+
+                    // Attention
+                    self.attention_zero_alloc(
+                        &buffers.q_buffer,
+                        &buffers.k_buffer,
+                        &buffers.v_buffer,
+                        layer_idx,
+                        kv_cache,
+                        self.config.n_heads,
+                        self.config.head_dim,
+                        self.config.n_kv_heads,
+                        &mut buffers.attn_out,
+                        &mut buffers.attn_scores,
+                    )?;
+
+                    // Store attention output back
+                    batch_hidden[token_idx * hidden_size
+                        ..(token_idx + 1) * hidden_size]
+                        .copy_from_slice(&buffers.attn_out);
+
+                    kv_cache.advance();
+                }
             }
 
             // Attention output projection (wo) - batch GEMM
