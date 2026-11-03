@@ -3,7 +3,7 @@
 
 // Verify IQ3_XXS GEMM with llama.cpp generated data
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0-or-later
 
 use half::f16;
 use infer_train::quant::types::*;

@@ -2845,22 +2845,22 @@ impl MetalContext {
     pub fn get_or_create_buffer(
         &self,
         tensor: &crate::model::tensor::Tensor,
-    ) -> std::rc::Rc<Buffer> {
+    ) -> std::sync::Arc<Buffer> {
         let mut gpu_buffer = tensor.gpu_buffer.write().unwrap();
 
         if let Some(ref buffer) = *gpu_buffer {
-            std::rc::Rc::clone(buffer)
+            std::sync::Arc::clone(buffer)
         } else {
             // Create new buffer with zero-copy mapping
             // Tensor data is owned by the model and persists for the model's lifetime
             let buffer =
-                std::rc::Rc::new(self.device.new_buffer_with_bytes_no_copy(
+                std::sync::Arc::new(self.device.new_buffer_with_bytes_no_copy(
                     tensor.bytes().as_ptr() as *const std::ffi::c_void,
                     tensor.bytes().len() as u64,
                     metal::MTLResourceOptions::StorageModeShared,
                     None, // No deallocator - tensor owns the memory
                 ));
-            *gpu_buffer = Some(std::rc::Rc::clone(&buffer));
+            *gpu_buffer = Some(std::sync::Arc::clone(&buffer));
             buffer
         }
     }

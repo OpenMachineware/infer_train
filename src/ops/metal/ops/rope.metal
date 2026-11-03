@@ -8,7 +8,7 @@
 //     x0' = x0*cos(theta) - x1*sin(theta)
 //     x1' = x0*sin(theta) + x1*cos(theta)
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0-or-later
 
 #include <metal_stdlib>
 using namespace metal;

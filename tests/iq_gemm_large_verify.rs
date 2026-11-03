@@ -4,7 +4,7 @@
 // Verify IQ GEMM correctness at large sizes (M=4096)
 // Investigate NaN and large max_diff issues
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0-or-later
 
 use half::f16;
 use infer_train::quant::types::*;

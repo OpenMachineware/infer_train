@@ -4,7 +4,7 @@
 // Verify all GEMM kernels exist and work
 // Q1_0, Q2_0, F32, F16
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0-or-later
 
 use half::f16;
 use metal::{Device, MTLSize};

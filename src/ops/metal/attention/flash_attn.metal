@@ -4,8 +4,6 @@
 // Self-written Flash Attention kernels from first principles
 // Uses online softmax to avoid materializing full attention matrix
 //
-// SPDX-License-Identifier: AGPL-3.0
-// SPDX-FileCopyrightText: Copyright (c) 2025 Jia Liu
 
 #include <metal_stdlib>
 using namespace metal;

@@ -4,7 +4,7 @@
 // Compare IQ1_S quantization output with llama.cpp
 // Uses same test data as iq1_s_llama_dump.c
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0-or-later
 
 use half::f16;
 

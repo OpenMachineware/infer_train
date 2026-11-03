@@ -19,8 +19,6 @@
 // Self-written Flash Attention kernels with quantized KV support
 // Dequantizes K/V on-the-fly during attention computation
 //
-// SPDX-License-Identifier: AGPL-3.0
-// SPDX-FileCopyrightText: Copyright (c) 2025 Jia Liu
 
 #include <metal_stdlib>
 using namespace metal;

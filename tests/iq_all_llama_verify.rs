@@ -4,7 +4,7 @@
 // Verify all IQ quantization formats against llama.cpp
 // Calls llama.cpp directly and compares outputs
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0-or-later
 
 use std::process::Command;
 

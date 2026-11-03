@@ -4,7 +4,7 @@
 // GPU Self-written Operator Performance Benchmark
 // Tests absolute performance of self-written GPU operators
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0-or-later
 
 use metal::{Device, MTLSize};
 use std::time::Instant;

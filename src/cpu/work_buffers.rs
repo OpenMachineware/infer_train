@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
 // CPU work buffers for zero-allocation inference
 
 use crate::model::LlamaModel;

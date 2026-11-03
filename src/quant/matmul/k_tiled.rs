@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
 // K-tiled GEMV for better cache locality
 // Key insight: Process K (columns) in tiles, not M (rows)
 //

@@ -8,7 +8,7 @@ use std::sync::Arc;
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use metal::Buffer;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Tensor {
     pub name: String,
     pub shape: Vec<usize>,
@@ -16,6 +16,21 @@ pub struct Tensor {
     pub data: TensorData,
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub gpu_buffer: std::sync::RwLock<Option<Arc<Buffer>>>,
+}
+
+impl Clone for Tensor {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            shape: self.shape.clone(),
+            dtype: self.dtype,
+            data: self.data.clone(),
+            #[cfg(all(target_arch = "aarch64", feature = "metal"))]
+            gpu_buffer: std::sync::RwLock::new(
+                self.gpu_buffer.read().unwrap().clone(),
+            ),
+        }
+    }
 }
 
 #[allow(non_camel_case_types)]

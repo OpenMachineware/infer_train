@@ -103,7 +103,7 @@ path = "tools/profile_gpu.rs"
 [[bin]]
 name = "generate"
 path = "tools/generate.rs"
-required-features = ["metal"]
+# No required-features - works with or without metal
 
 [[bin]]
 name = "bench-lockfree-pool"
@@ -179,6 +179,10 @@ path = "tools/compare_gemv.rs"
 [[bin]]
 name = "trace-layer"
 path = "tools/trace_layer.rs"
+
+[[bin]]
+name = "test-gemv-timing"
+path = "tools/test_gemv_timing.rs"
 
 [[bin]]
 name = "test-kquant-mv-correctness"
@@ -1792,3 +1796,15 @@ path = "tools/profile_all_gemvs.rs"
 [[bin]]
 name = "time-embedding"
 path = "tools/time_embedding.rs"
+
+[[bin]]
+name = "test-q6k-dequant-simple"
+path = "tools/test_q6k_dequant_simple.rs"
+
+[[bin]]
+name = "test-transpose"
+path = "tools/test_transpose.rs"
+
+[[bin]]
+name = "trace-full-forward"
+path = "tools/trace_full_forward.rs"

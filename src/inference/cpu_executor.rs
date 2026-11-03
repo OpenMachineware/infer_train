@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
 //
 // CPU Executor - Zero-allocation CPU inference execution
 //
@@ -573,41 +574,42 @@ impl CpuExecutor {
                 );
 
                 // Use pre-quantized input for all projections
-                model.gemv_with_prequant_single_thread(
+                // Hybrid GEMV uses persistent thread pool for m > 1
+                model.gemv_with_prequant(
                     x_q8k_blocks,
                     self.hidden_size,
                     layer.wq.as_ref()?,
                     &mut self.q,
                 );
-                model.gemv_with_prequant_single_thread(
+                model.gemv_with_prequant(
                     x_q8k_blocks,
                     self.hidden_size,
                     layer.wk.as_ref()?,
                     &mut self.k,
                 );
-                model.gemv_with_prequant_single_thread(
+                model.gemv_with_prequant(
                     x_q8k_blocks,
                     self.hidden_size,
                     layer.wv.as_ref()?,
                     &mut self.v,
                 );
             } else {
-                // Mixed dtypes - use per-call quantization
-                model.gemv_into_with_buffers_single_thread(
+                // Mixed dtypes - use per-call quantization with hybrid GEMV
+                model.gemv_into_with_buffers(
                     &self.normed,
                     layer.wq.as_ref()?,
                     &mut self.q,
                     &mut self.q8k_input,
                     &mut self.x_padded,
                 );
-                model.gemv_into_with_buffers_single_thread(
+                model.gemv_into_with_buffers(
                     &self.normed,
                     layer.wk.as_ref()?,
                     &mut self.k,
                     &mut self.q8k_input,
                     &mut self.x_padded,
                 );
-                model.gemv_into_with_buffers_single_thread(
+                model.gemv_into_with_buffers(
                     &self.normed,
                     layer.wv.as_ref()?,
                     &mut self.v,

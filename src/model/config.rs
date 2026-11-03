@@ -130,10 +130,24 @@ impl ModelConfig {
         // DeepSeek MQA parameters
         let kv_lora_rank =
             get_u64(&arch_meta, "attention.kv_lora_rank").unwrap_or(0) as usize;
-        let key_length = get_u64(&arch_meta, "attention.key_length")
-            .unwrap_or(head_dim as u64) as usize;
-        let value_length = get_u64(&arch_meta, "attention.value_length")
-            .unwrap_or(head_dim as u64) as usize;
+
+        // For non-MLA architectures, key_length and value_length should be 0
+        // This signals to use head_dim instead
+        // MLA is identified by kv_lora_rank > 0 (DeepSeek architecture)
+        let key_length = if kv_lora_rank > 0 {
+            get_u64(&arch_meta, "attention.key_length")
+                .unwrap_or(head_dim as u64) as usize
+        } else {
+            // Standard attention - don't use key_length from metadata
+            0
+        };
+        let value_length = if kv_lora_rank > 0 {
+            get_u64(&arch_meta, "attention.value_length")
+                .unwrap_or(head_dim as u64) as usize
+        } else {
+            // Standard attention - don't use value_length from metadata
+            0
+        };
         // qk_rope_head_dim is derived from rope_dim for DeepSeek models
         // For MLA, kv_a_mqa output = kv_lora_rank + qk_rope_head_dim
         let qk_rope_head_dim = if kv_lora_rank > 0 {

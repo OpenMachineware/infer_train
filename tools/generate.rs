@@ -34,9 +34,14 @@ fn main() {
     let force_cpu = std::env::var("FORCE_CPU").is_ok();
     println!("FORCE_CPU: {}", force_cpu);
 
-    // Load model on GPU
+    // Load model on GPU or CPU
     let start_model = Instant::now();
-    let mut ctx = InferenceContext::from_gguf(model_path, Device::Gpu)
+    let device = if force_cpu {
+        infer_train::inference::Device::Cpu
+    } else {
+        infer_train::inference::Device::Gpu
+    };
+    let mut ctx = InferenceContext::from_gguf(model_path, device)
         .expect("Failed to load model");
     println!("Model loaded in {:?}", start_model.elapsed());
     println!("  Architecture: {}", ctx.config.architecture);
@@ -60,28 +65,56 @@ fn main() {
     let is_mqa = ctx.config.architecture == "deepseek2";
 
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    let logits = if is_mqa || force_cpu {
+    let (logits, mut kv_cache) = if is_mqa || force_cpu {
         println!("Using CPU fallback for prefill");
         let mut kv_cache = infer_train::inference::KVCache::new(
             &ctx.config,
             prompt_tokens.len() + max_tokens,
             infer_train::inference::KVCacheFormat::F32,
         );
-        ctx.forward(&prompt_tokens, &mut kv_cache).expect("Prefill failed")
+        #[cfg(target_arch = "aarch64")]
+        {
+            let logits = ctx
+                .forward_pooled(&prompt_tokens, &mut kv_cache)
+                .expect("Prefill failed");
+            (logits, Some(kv_cache))
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let logits = ctx
+                .forward(&prompt_tokens, &mut kv_cache)
+                .expect("Prefill failed");
+            (logits, Some(kv_cache))
+        }
     } else {
         println!("Using GPU batched prefill");
         // Use true batched prefill for GPU
-        ctx.forward_prefill_batch(&prompt_tokens).expect("Prefill failed")
+        let logits =
+            ctx.forward_prefill_batch(&prompt_tokens).expect("Prefill failed");
+        (logits, None)
     };
 
     #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
-    let logits = {
+    let (logits, mut kv_cache) = {
         let mut kv_cache = infer_train::inference::KVCache::new(
             &ctx.config,
             prompt_tokens.len() + max_tokens,
             infer_train::inference::KVCacheFormat::F32,
         );
-        ctx.forward(&prompt_tokens, &mut kv_cache).expect("Prefill failed")
+        #[cfg(target_arch = "aarch64")]
+        {
+            let logits = ctx
+                .forward_pooled(&prompt_tokens, &mut kv_cache)
+                .expect("Prefill failed");
+            (logits, Some(kv_cache))
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let logits = ctx
+                .forward(&prompt_tokens, &mut kv_cache)
+                .expect("Prefill failed");
+            (logits, Some(kv_cache))
+        }
     };
 
     let prefill_time = start_prefill.elapsed();
@@ -97,25 +130,6 @@ fn main() {
     let mut current_tokens = prompt_tokens.clone();
     let start_gen = Instant::now();
 
-    // Create KV cache for CPU fallback
-    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-    let mut kv_cache = if force_cpu {
-        Some(infer_train::inference::KVCache::new(
-            &ctx.config,
-            prompt_tokens.len() + max_tokens,
-            infer_train::inference::KVCacheFormat::F32,
-        ))
-    } else {
-        None
-    };
-
-    #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
-    let mut kv_cache = Some(infer_train::inference::KVCache::new(
-        &ctx.config,
-        prompt_tokens.len() + max_tokens,
-        infer_train::inference::KVCacheFormat::F32,
-    ));
-
     for i in 0..max_tokens {
         // Get logits for last token
         let decode_logits;
@@ -124,13 +138,26 @@ fn main() {
         } else {
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
             {
-                if force_cpu {
-                    decode_logits = ctx
-                        .forward(
-                            &[current_tokens[current_tokens.len() - 1]],
-                            kv_cache.as_mut().unwrap(),
-                        )
-                        .expect("CPU decode failed");
+                if let Some(ref mut cache) = kv_cache {
+                    // CPU decode with zero-allocation path
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        decode_logits = ctx
+                            .forward_pooled(
+                                &[current_tokens[current_tokens.len() - 1]],
+                                cache,
+                            )
+                            .expect("CPU decode failed");
+                    }
+                    #[cfg(not(target_arch = "aarch64"))]
+                    {
+                        decode_logits = ctx
+                            .forward(
+                                &[current_tokens[current_tokens.len() - 1]],
+                                cache,
+                            )
+                            .expect("CPU decode failed");
+                    }
                 } else {
                     decode_logits = match ctx.forward_gpu_batched(&[
                         current_tokens[current_tokens.len() - 1],
@@ -146,12 +173,24 @@ fn main() {
             }
             #[cfg(not(all(target_arch = "aarch64", feature = "metal")))]
             {
-                decode_logits = ctx
-                    .forward(
-                        &[current_tokens[current_tokens.len() - 1]],
-                        kv_cache.as_mut().unwrap(),
-                    )
-                    .expect("Decode failed");
+                #[cfg(target_arch = "aarch64")]
+                {
+                    decode_logits = ctx
+                        .forward_pooled(
+                            &[current_tokens[current_tokens.len() - 1]],
+                            kv_cache.as_mut().unwrap(),
+                        )
+                        .expect("Decode failed");
+                }
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    decode_logits = ctx
+                        .forward(
+                            &[current_tokens[current_tokens.len() - 1]],
+                            kv_cache.as_mut().unwrap(),
+                        )
+                        .expect("Decode failed");
+                }
                 &decode_logits
             }
         };

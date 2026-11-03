@@ -3,7 +3,7 @@
 
 // 快速验证所有 IQ 格式的量化输出
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0-or-later
 
 use std::process::Command;
 

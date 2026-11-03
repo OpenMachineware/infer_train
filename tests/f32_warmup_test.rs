@@ -3,7 +3,7 @@
 
 // Test if warmup causes F32 kernel issues
 // SPDX-FileCopyrightText: Copyright (c) 2026 Jia Liu
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0-or-later
 
 use half::f16;
 use metal::{Device, MTLSize};
