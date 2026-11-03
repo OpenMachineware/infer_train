@@ -2302,7 +2302,7 @@ impl LlamaModel {
             return None;
         }
 
-        let _hidden_size = self.config.hidden_size;
+        let hidden_size = self.config.hidden_size;
         let vocab_size = self.config.vocab_size;
 
         // Detect decode mode (single token at a time)
@@ -2311,81 +2311,360 @@ impl LlamaModel {
         // Check if model uses MLA architecture - currently not supported by zero-allocation path
         let uses_mla = self.uses_mqa();
 
+        // Use tiled GEMM for batch prefill (>= 8 tokens) on non-MLA models
+        const TILED_THRESHOLD: usize = 8;
+        let use_tiled = tokens.len() >= TILED_THRESHOLD && !uses_mla;
+
         // Get config values for MLA fallback
         let n_heads = self.config.n_heads;
         let head_dim = self.config.head_dim;
         let n_kv_heads = self.config.n_kv_heads;
 
-        // Process each token
-        for &token in tokens.iter() {
-            // 1. Embedding lookup into buffer
-            self.embedding_lookup_into(token, &mut buffers.hidden)?;
+        if use_tiled {
+            // Batch prefill path using tiled GEMM
+            self.forward_pooled_batch_tiled(tokens, kv_cache, buffers)
+        } else {
+            // Standard token-by-token processing
+            // Process each token
+            for &token in tokens.iter() {
+                // 1. Embedding lookup into buffer
+                self.embedding_lookup_into(token, &mut buffers.hidden)?;
 
-            // 2. Process through layers
-            // Use single-thread path for decode (eliminates thread overhead)
-            // But fall back to regular path for MLA architecture (not yet supported)
-            if is_decode && !uses_mla {
-                for (layer_idx, layer) in self.layers.iter().enumerate() {
-                    self.forward_layer_decode_single_thread(
-                        layer, layer_idx, kv_cache, buffers,
-                    )?;
+                // 2. Process through layers
+                // Use single-thread path for decode (eliminates thread overhead)
+                // But fall back to regular path for MLA architecture (not yet supported)
+                if is_decode && !uses_mla {
+                    for (layer_idx, layer) in self.layers.iter().enumerate() {
+                        self.forward_layer_decode_single_thread(
+                            layer, layer_idx, kv_cache, buffers,
+                        )?;
+                    }
+                } else if !uses_mla {
+                    for (layer_idx, layer) in self.layers.iter().enumerate() {
+                        self.forward_layer_zero_alloc(
+                            layer, layer_idx, kv_cache, buffers,
+                        )?;
+                    }
+                } else {
+                    // MLA architecture - use regular forward (not zero-allocation)
+                    // This handles DeepSeek-Coder-V2 and other MLA models
+                    for (layer_idx, layer) in self.layers.iter().enumerate() {
+                        // Use the regular forward_layer which has MLA support
+                        buffers.hidden = self.forward_layer(
+                            layer,
+                            layer_idx,
+                            &buffers.hidden.clone(),
+                            kv_cache,
+                            n_heads,
+                            head_dim,
+                            n_kv_heads,
+                        )?;
+                    }
                 }
-            } else if !uses_mla {
-                for (layer_idx, layer) in self.layers.iter().enumerate() {
-                    self.forward_layer_zero_alloc(
-                        layer, layer_idx, kv_cache, buffers,
-                    )?;
-                }
+
+                // Advance KV cache position
+                kv_cache.advance();
+            }
+
+            // 3. Final norm (use pre-dequantized weight stored in norm_weight)
+            self.apply_rms_norm_predequant(
+                &buffers.hidden,
+                &buffers.norm_weight,
+                &mut buffers.hidden_alt,
+            );
+
+            // 4. Output projection (hidden_alt -> logits)
+            let output = self.output.as_ref()?;
+            // Use single-thread GEMV for decode, parallel for prefill
+            if is_decode {
+                self.gemv_into_with_buffers_single_thread(
+                    &buffers.hidden_alt,
+                    output,
+                    &mut buffers.logits[..vocab_size],
+                    &mut buffers.q8k_input,
+                    &mut buffers.x_padded,
+                );
             } else {
-                // MLA architecture - use regular forward (not zero-allocation)
-                // This handles DeepSeek-Coder-V2 and other MLA models
-                for (layer_idx, layer) in self.layers.iter().enumerate() {
-                    // Use the regular forward_layer which has MLA support
-                    buffers.hidden = self.forward_layer(
-                        layer,
-                        layer_idx,
-                        &buffers.hidden.clone(),
-                        kv_cache,
-                        n_heads,
-                        head_dim,
-                        n_kv_heads,
+                self.gemv_into_with_buffers(
+                    &buffers.hidden_alt,
+                    output,
+                    &mut buffers.logits[..vocab_size],
+                    &mut buffers.q8k_input,
+                    &mut buffers.x_padded,
+                );
+            }
+
+            // Return logits (copy from buffer - still one allocation)
+            Some(buffers.logits[..vocab_size].to_vec())
+        }
+    }
+
+    /// Batch prefill using tiled GEMM for improved cache efficiency
+    /// Only used when batch >= 8 tokens
+    #[cfg(target_arch = "aarch64")]
+    fn forward_pooled_batch_tiled(
+        &self,
+        tokens: &[u32],
+        kv_cache: &mut crate::inference::KVCache,
+        buffers: &mut crate::cpu::CpuWorkBuffers,
+    ) -> Option<Vec<f32>> {
+        let hidden_size = self.config.hidden_size;
+        let vocab_size = self.config.vocab_size;
+        let n_tokens = tokens.len();
+
+        // Step 1: Batch embedding lookup
+        let mut batch_hidden = vec![0.0f32; n_tokens * hidden_size];
+        for (i, &token) in tokens.iter().enumerate() {
+            self.embedding_lookup_into(
+                token,
+                &mut batch_hidden[i * hidden_size..(i + 1) * hidden_size],
+            )?;
+        }
+
+        // Step 2: Process each layer
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            // Apply RMS norm to all tokens (can be parallelized)
+            let attn_norm_offset = layer_idx * 2 * hidden_size;
+            for i in 0..n_tokens {
+                self.apply_rms_norm_predequant(
+                    &batch_hidden[i * hidden_size..(i + 1) * hidden_size],
+                    &buffers.norm_weights
+                        [attn_norm_offset..attn_norm_offset + hidden_size],
+                    &mut buffers.hidden_alt,
+                );
+                batch_hidden[i * hidden_size..(i + 1) * hidden_size]
+                    .copy_from_slice(&buffers.hidden_alt);
+            }
+
+            // QKV projection - use tiled GEMM for batch
+            if let Some(ref qkv) = layer.attn_qkv {
+                let qkv_out_size = qkv.shape[1];
+                let mut qkv_outputs = vec![0.0f32; n_tokens * qkv_out_size];
+
+                // Prepare input slices for batch GEMM
+                let inputs: Vec<&[f32]> = (0..n_tokens)
+                    .map(|i| {
+                        &batch_hidden[i * hidden_size..(i + 1) * hidden_size]
+                    })
+                    .collect();
+
+                // Use tiled GEMM
+                self.gemm_batch_prefill(
+                    &inputs,
+                    qkv,
+                    &mut qkv_outputs,
+                    &mut buffers.q8k_input,
+                    &mut buffers.x_padded,
+                );
+
+                // Process each token's attention (still sequential due to position dependency)
+                for (token_idx, pos) in (0..n_tokens).zip(kv_cache.seq_len()..)
+                {
+                    // Extract Q, K, V from fused output
+                    let qkv_offset = token_idx * qkv_out_size;
+                    let q_size = self.config.n_heads * self.config.head_dim;
+                    let k_size =
+                        self.config.n_kv_heads * self.config.key_length;
+                    let v_size =
+                        self.config.n_kv_heads * self.config.value_length;
+
+                    buffers.q_buffer[..q_size].copy_from_slice(
+                        &qkv_outputs[qkv_offset..qkv_offset + q_size],
+                    );
+                    buffers.k_buffer[..k_size].copy_from_slice(
+                        &qkv_outputs
+                            [qkv_offset + q_size..qkv_offset + q_size + k_size],
+                    );
+                    buffers.v_buffer[..v_size].copy_from_slice(
+                        &qkv_outputs[qkv_offset + q_size + k_size
+                            ..qkv_offset + q_size + k_size + v_size],
+                    );
+
+                    // RoPE and attention
+                    self.apply_rope_into(
+                        &buffers.q_buffer,
+                        pos,
+                        self.config.n_heads,
+                        self.config.head_dim,
+                        &mut buffers.rope_buffer,
                     )?;
+                    buffers.q_buffer[..q_size]
+                        .copy_from_slice(&buffers.rope_buffer[..q_size]);
+
+                    let k_head_dim = k_size / self.config.n_kv_heads;
+                    self.apply_rope_into(
+                        &buffers.k_buffer,
+                        pos,
+                        self.config.n_kv_heads,
+                        k_head_dim,
+                        &mut buffers.rope_buffer,
+                    )?;
+                    buffers.k_buffer[..k_size]
+                        .copy_from_slice(&buffers.rope_buffer[..k_size]);
+
+                    // Attention
+                    self.attention_zero_alloc(
+                        &buffers.q_buffer,
+                        &buffers.k_buffer,
+                        &buffers.v_buffer,
+                        layer_idx,
+                        kv_cache,
+                        self.config.n_heads,
+                        self.config.head_dim,
+                        self.config.n_kv_heads,
+                        &mut buffers.attn_out,
+                        &mut buffers.attn_scores,
+                    )?;
+
+                    // Store attention output back to batch_hidden for next layer
+                    batch_hidden[token_idx * hidden_size
+                        ..(token_idx + 1) * hidden_size]
+                        .copy_from_slice(&buffers.attn_out);
+
+                    kv_cache.advance();
                 }
             }
 
-            // Advance KV cache position
-            kv_cache.advance();
+            // Attention output projection (wo) - batch GEMM
+            if let Some(ref wo) = layer.wo {
+                let wo_out_size = wo.shape[1];
+                let attn_inputs: Vec<&[f32]> = (0..n_tokens)
+                    .map(|i| {
+                        &batch_hidden[i * hidden_size..(i + 1) * hidden_size]
+                    })
+                    .collect();
+
+                let mut wo_outputs = vec![0.0f32; n_tokens * wo_out_size];
+                self.gemm_batch_prefill(
+                    &attn_inputs,
+                    wo,
+                    &mut wo_outputs,
+                    &mut buffers.q8k_input,
+                    &mut buffers.x_padded,
+                );
+
+                // Residual add
+                for i in 0..n_tokens {
+                    for j in 0..hidden_size {
+                        batch_hidden[i * hidden_size + j] +=
+                            wo_outputs[i * wo_out_size + j];
+                    }
+                }
+            }
+
+            // FFN norm
+            let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
+            for i in 0..n_tokens {
+                self.apply_rms_norm_predequant(
+                    &batch_hidden[i * hidden_size..(i + 1) * hidden_size],
+                    &buffers.norm_weights
+                        [ffn_norm_offset..ffn_norm_offset + hidden_size],
+                    &mut buffers.hidden_alt,
+                );
+                batch_hidden[i * hidden_size..(i + 1) * hidden_size]
+                    .copy_from_slice(&buffers.hidden_alt);
+            }
+
+            // FFN - batch GEMM for gate/up, then activation and down projection
+            // For MoE models, we still need sequential processing (experts per token)
+            // For dense FFN, we can batch all projections
+            if layer.ffn_gate_inp.is_none() {
+                // Dense FFN - batch gate and up projections
+                let ffn_inputs: Vec<&[f32]> = (0..n_tokens)
+                    .map(|i| {
+                        &batch_hidden[i * hidden_size..(i + 1) * hidden_size]
+                    })
+                    .collect();
+
+                // Gate projection (w1)
+                if let Some(ref w1) = layer.w1 {
+                    let intermediate_size = w1.shape[1];
+                    let mut gate_outputs =
+                        vec![0.0f32; n_tokens * intermediate_size];
+                    self.gemm_batch_prefill(
+                        &ffn_inputs,
+                        w1,
+                        &mut gate_outputs,
+                        &mut buffers.q8k_input,
+                        &mut buffers.x_padded,
+                    );
+
+                    // Up projection (w3)
+                    let mut up_outputs =
+                        vec![0.0f32; n_tokens * intermediate_size];
+                    if let Some(ref w3) = layer.w3 {
+                        self.gemm_batch_prefill(
+                            &ffn_inputs,
+                            w3,
+                            &mut up_outputs,
+                            &mut buffers.q8k_input,
+                            &mut buffers.x_padded,
+                        );
+                    }
+
+                    // SiLU activation and element-wise multiply
+                    for i in 0..gate_outputs.len() {
+                        gate_outputs[i] = (1.0
+                            / (1.0 + (-gate_outputs[i]).exp()))
+                            * gate_outputs[i]
+                            * up_outputs[i];
+                    }
+
+                    // Down projection (w2)
+                    if let Some(ref w2) = layer.w2 {
+                        let down_inputs: Vec<&[f32]> = (0..n_tokens)
+                            .map(|i| {
+                                &gate_outputs[i * intermediate_size
+                                    ..(i + 1) * intermediate_size]
+                            })
+                            .collect();
+
+                        self.gemm_batch_prefill(
+                            &down_inputs,
+                            w2,
+                            &mut batch_hidden,
+                            &mut buffers.q8k_input,
+                            &mut buffers.x_padded,
+                        );
+                    }
+                }
+            } else {
+                // MoE - process tokens sequentially (different experts per token)
+                for token_idx in 0..n_tokens {
+                    self.compute_ffn_zero_alloc(
+                        layer,
+                        &batch_hidden[token_idx * hidden_size
+                            ..(token_idx + 1) * hidden_size],
+                        &mut buffers.ffn_gate,
+                        &mut buffers.ffn_up,
+                        &mut buffers.hidden_alt,
+                        &mut buffers.q8k_input,
+                        &mut buffers.x_padded,
+                    )?;
+                    // Copy result back
+                    batch_hidden[token_idx * hidden_size
+                        ..(token_idx + 1) * hidden_size]
+                        .copy_from_slice(&buffers.hidden_alt[..hidden_size]);
+                }
+            }
         }
 
-        // 3. Final norm (use pre-dequantized weight stored in norm_weight)
+        // Step 3: Final norm and output projection for last token
         self.apply_rms_norm_predequant(
-            &buffers.hidden,
+            &batch_hidden[(n_tokens - 1) * hidden_size..],
             &buffers.norm_weight,
             &mut buffers.hidden_alt,
         );
 
-        // 4. Output projection (hidden_alt -> logits)
         let output = self.output.as_ref()?;
-        // Use single-thread GEMV for decode, parallel for prefill
-        if is_decode {
-            self.gemv_into_with_buffers_single_thread(
-                &buffers.hidden_alt,
-                output,
-                &mut buffers.logits[..vocab_size],
-                &mut buffers.q8k_input,
-                &mut buffers.x_padded,
-            );
-        } else {
-            self.gemv_into_with_buffers(
-                &buffers.hidden_alt,
-                output,
-                &mut buffers.logits[..vocab_size],
-                &mut buffers.q8k_input,
-                &mut buffers.x_padded,
-            );
-        }
+        self.gemv_into_with_buffers(
+            &buffers.hidden_alt,
+            output,
+            &mut buffers.logits[..vocab_size],
+            &mut buffers.q8k_input,
+            &mut buffers.x_padded,
+        );
 
-        // Return logits (copy from buffer - still one allocation)
         Some(buffers.logits[..vocab_size].to_vec())
     }
 
