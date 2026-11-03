@@ -4755,6 +4755,131 @@ impl LlamaModel {
         }
     }
 
+    /// Batch GEMM for prefill: weights (m x k) x inputs (k x n) -> outputs (m x n)
+    /// Quantizes all inputs to Q8_K and performs tiled matrix-matrix multiplication
+    #[cfg(target_arch = "aarch64")]
+    pub fn gemm_batch_prefill(
+        &self,
+        inputs: &[&[f32]], // n input vectors, each of size k
+        w: &Tensor,
+        outputs: &mut [f32],    // m x n outputs (row-major)
+        x_q8k_batch: &mut [u8], // workspace for quantized inputs
+        x_padded: &mut [f32],   // workspace for padding
+    ) -> bool {
+        use crate::quant::kv_cache::quantize_row_q8_k_neon;
+        use crate::quant::matmul::tiled::matmul_q5k_q8k_tiled;
+        use crate::quant::types::{
+            BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K,
+        };
+
+        let n = inputs.len(); // batch size
+        if n == 0 {
+            return true;
+        }
+
+        let in_size = inputs[0].len(); // k
+        let out_size = w.shape[1]; // m (weight rows)
+        let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
+        let nb = in_size_padded / QK_K;
+
+        // Check workspace size
+        let x_q8k_blocks_needed = n * nb;
+        let x_q8k_blocks_available =
+            x_q8k_batch.len() / std::mem::size_of::<BlockQ8K>();
+        if x_q8k_blocks_available < x_q8k_blocks_needed {
+            eprintln!(
+                "[ERROR] q8k batch buffer too small: {} < {} blocks",
+                x_q8k_blocks_available, x_q8k_blocks_needed
+            );
+            return false;
+        }
+
+        match w.dtype {
+            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+                // Quantize all inputs to Q8_K (row by row)
+                let x_q8k_blocks: &mut [BlockQ8K] = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        x_q8k_batch.as_mut_ptr() as *mut BlockQ8K,
+                        x_q8k_blocks_needed,
+                    )
+                };
+
+                for (i, input) in inputs.iter().enumerate() {
+                    let row_blocks = &mut x_q8k_blocks[i * nb..(i + 1) * nb];
+
+                    if input.len() != in_size_padded {
+                        // Zero padding
+                        for j in input.len()..in_size_padded {
+                            x_padded[j] = 0.0;
+                        }
+                        x_padded[..input.len()].copy_from_slice(input);
+                        quantize_row_q8_k_neon(
+                            &x_padded[..in_size_padded],
+                            row_blocks,
+                        );
+                    } else {
+                        quantize_row_q8_k_neon(input, row_blocks);
+                    }
+                }
+
+                // Perform GEMM: weights (m x k) x inputs (k x n) -> outputs (m x n)
+                unsafe {
+                    match w.dtype {
+                        DataType::Q5_K => {
+                            let weights: &[BlockQ5K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ5K,
+                                    out_size * nb,
+                                );
+                            matmul_q5k_q8k_tiled(
+                                weights,
+                                x_q8k_blocks,
+                                outputs,
+                                in_size_padded,
+                                out_size,
+                                n,
+                            );
+                        }
+                        DataType::Q4_K | DataType::Q6_K => {
+                            // Fall back to row-by-row GEMV for now
+                            for (col, input) in inputs.iter().enumerate() {
+                                let out_col = &mut outputs
+                                    [col * out_size..(col + 1) * out_size];
+                                self.gemv_into_with_buffers(
+                                    input,
+                                    w,
+                                    out_col,
+                                    x_q8k_batch,
+                                    x_padded,
+                                );
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                true
+            }
+            DataType::F16 => {
+                // For F16, use row-by-row GEMV (no batch optimization yet)
+                for (col, input) in inputs.iter().enumerate() {
+                    let out_col =
+                        &mut outputs[col * out_size..(col + 1) * out_size];
+                    self.gemv_into(input, w, out_col);
+                }
+                true
+            }
+            _ => {
+                // Fallback: process each input separately
+                for (col, input) in inputs.iter().enumerate() {
+                    let out_col =
+                        &mut outputs[col * out_size..(col + 1) * out_size];
+                    self.gemv_into(input, w, out_col);
+                }
+                true
+            }
+        }
+    }
+
     /// Non-NEON fallback for gemv_into
     #[cfg(not(target_arch = "aarch64"))]
     pub fn gemv_into(&self, x: &[f32], w: &Tensor, out: &mut [f32]) -> bool {
