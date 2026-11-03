@@ -201,7 +201,7 @@ impl PersistentThreadPool {
         let completed = Arc::new(AtomicUsize::new(0));
         let current_chunk = Arc::new(AtomicUsize::new(0));
 
-        let handles: Vec<_> = (0..num_threads)
+        let handles: Vec<_> = (0..num_threads - 1) // num_threads - 1 workers, caller is thread 0
             .map(|thread_id| {
                 let current_op = current_op.clone();
                 let work = work.clone();
@@ -293,8 +293,8 @@ impl PersistentThreadPool {
         }
     }
 
-    /// Execute GEMV operation - work-stealing with 64-row chunks
-    /// Main thread stores work descriptor, then signals via atomic increment
+    /// Execute GEMV operation - CALLER PARTICIPATES
+    /// Main thread participates in computation, no idle waiting
     pub fn execute_gemv(
         &self,
         func: unsafe fn(
@@ -316,7 +316,7 @@ impl PersistentThreadPool {
             return;
         }
 
-        // Reset completion counter and chunk counter
+        // Reset counters
         self.completed.store(0, Ordering::Release);
         self.current_chunk.store(0, Ordering::Release);
 
@@ -338,7 +338,28 @@ impl PersistentThreadPool {
         // Signal workers by incrementing operation counter
         self.current_op.fetch_add(1, Ordering::Release);
 
-        // Main thread waits for all workers to complete
+        // CALLER ALSO PARTICIPATES - process chunks
+        const CHUNK_SIZE: usize = 64;
+        let n_chunks = (m + CHUNK_SIZE - 1) / CHUNK_SIZE;
+
+        loop {
+            let chunk = self.current_chunk.fetch_add(1, Ordering::Relaxed);
+            if chunk >= n_chunks {
+                break;
+            }
+
+            let start = chunk * CHUNK_SIZE;
+            let end = (start + CHUNK_SIZE).min(m);
+
+            unsafe {
+                func(weights, input, output, k, m, start, end);
+            }
+        }
+
+        // Signal completion (caller = thread 0)
+        self.completed.fetch_add(1, Ordering::Release);
+
+        // Wait for all workers to complete
         let mut spin_count = 0;
         while self.completed.load(Ordering::Acquire) < self.num_threads {
             spin_count += 1;
