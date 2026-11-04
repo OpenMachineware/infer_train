@@ -2423,6 +2423,9 @@ impl LlamaModel {
 
         // Step 2: Process each layer
         for (layer_idx, layer) in self.layers.iter().enumerate() {
+            // Save pre-norm values for residual connection
+            let batch_residual: Vec<f32> = batch_hidden.clone();
+
             // Apply RMS norm to all tokens (can be parallelized)
             let attn_norm_offset = layer_idx * 2 * hidden_size;
             for i in 0..n_tokens {
@@ -2456,6 +2459,16 @@ impl LlamaModel {
                     &mut buffers.q8k_input,
                     &mut buffers.x_padded,
                 );
+
+                // Collect all attention outputs for batch wo projection
+                // attn_out size = n_heads * v_head_dim
+                let v_head_dim = if self.config.value_length > 0 {
+                    self.config.value_length
+                } else {
+                    self.config.head_dim
+                };
+                let attn_out_size = self.config.n_heads * v_head_dim;
+                let mut all_attn_outs = vec![0.0f32; n_tokens * attn_out_size];
 
                 // Process each token's attention (still sequential due to position dependency)
                 for (token_idx, pos) in (0..n_tokens).zip(kv_cache.seq_len()..)
@@ -2516,18 +2529,48 @@ impl LlamaModel {
                         &mut buffers.attn_scores,
                     )?;
 
-                    // Store attention output back to batch_hidden for next layer
-                    batch_hidden[token_idx * hidden_size
-                        ..(token_idx + 1) * hidden_size]
-                        .copy_from_slice(&buffers.attn_out);
+                    // Store attention output for batch wo projection
+                    all_attn_outs[token_idx * attn_out_size
+                        ..(token_idx + 1) * attn_out_size]
+                        .copy_from_slice(&buffers.attn_out[..attn_out_size]);
 
                     kv_cache.advance();
+                }
+
+                // Batch wo projection
+                if let Some(ref wo) = layer.wo {
+                    let attn_inputs: Vec<&[f32]> = (0..n_tokens)
+                        .map(|i| {
+                            &all_attn_outs
+                                [i * attn_out_size..(i + 1) * attn_out_size]
+                        })
+                        .collect();
+
+                    self.gemm_batch_prefill(
+                        &attn_inputs,
+                        wo,
+                        &mut batch_hidden,
+                        &mut buffers.q8k_input,
+                        &mut buffers.x_padded,
+                    );
+                } else {
+                    // No wo layer - copy attention outputs directly
+                    batch_hidden.copy_from_slice(&all_attn_outs);
                 }
             } else {
                 // Separate wq/wk/wv projections - use batch GEMM for each
                 let q_size = self.config.n_heads * self.config.head_dim;
-                let k_size = self.config.n_kv_heads * self.config.key_length;
-                let v_size = self.config.n_kv_heads * self.config.value_length;
+                // For standard attention, key_length/value_length are 0, use head_dim
+                let k_size = if self.config.key_length > 0 {
+                    self.config.n_kv_heads * self.config.key_length
+                } else {
+                    self.config.n_kv_heads * self.config.head_dim
+                };
+                let v_size = if self.config.value_length > 0 {
+                    self.config.n_kv_heads * self.config.value_length
+                } else {
+                    self.config.n_kv_heads * self.config.head_dim
+                };
 
                 let inputs: Vec<&[f32]> = (0..n_tokens)
                     .map(|i| {
@@ -2570,6 +2613,16 @@ impl LlamaModel {
                         &mut buffers.x_padded,
                     );
                 }
+
+                // Collect all attention outputs for batch wo projection
+                // attn_out size = n_heads * v_head_dim
+                let v_head_dim = if self.config.value_length > 0 {
+                    self.config.value_length
+                } else {
+                    self.config.head_dim
+                };
+                let attn_out_size = self.config.n_heads * v_head_dim;
+                let mut all_attn_outs = vec![0.0f32; n_tokens * attn_out_size];
 
                 // Process each token's attention (sequential due to position dependency)
                 for (token_idx, pos) in (0..n_tokens).zip(kv_cache.seq_len()..)
@@ -2624,39 +2677,42 @@ impl LlamaModel {
                         &mut buffers.attn_scores,
                     )?;
 
-                    // Store attention output back
-                    batch_hidden[token_idx * hidden_size
-                        ..(token_idx + 1) * hidden_size]
-                        .copy_from_slice(&buffers.attn_out);
+                    // Store attention output for batch wo projection
+                    all_attn_outs[token_idx * attn_out_size
+                        ..(token_idx + 1) * attn_out_size]
+                        .copy_from_slice(&buffers.attn_out[..attn_out_size]);
 
                     kv_cache.advance();
                 }
+
+                // Batch wo projection
+                if let Some(ref wo) = layer.wo {
+                    let attn_inputs: Vec<&[f32]> = (0..n_tokens)
+                        .map(|i| {
+                            &all_attn_outs
+                                [i * attn_out_size..(i + 1) * attn_out_size]
+                        })
+                        .collect();
+
+                    self.gemm_batch_prefill(
+                        &attn_inputs,
+                        wo,
+                        &mut batch_hidden,
+                        &mut buffers.q8k_input,
+                        &mut buffers.x_padded,
+                    );
+                } else {
+                    // No wo layer (rare) - just copy attention outputs
+                    batch_hidden.copy_from_slice(&all_attn_outs);
+                }
             }
 
-            // Attention output projection (wo) - batch GEMM
-            if let Some(ref wo) = layer.wo {
-                let wo_out_size = wo.shape[1];
-                let attn_inputs: Vec<&[f32]> = (0..n_tokens)
-                    .map(|i| {
-                        &batch_hidden[i * hidden_size..(i + 1) * hidden_size]
-                    })
-                    .collect();
-
-                let mut wo_outputs = vec![0.0f32; n_tokens * wo_out_size];
-                self.gemm_batch_prefill(
-                    &attn_inputs,
-                    wo,
-                    &mut wo_outputs,
-                    &mut buffers.q8k_input,
-                    &mut buffers.x_padded,
-                );
-
-                // Residual add
-                for i in 0..n_tokens {
-                    for j in 0..hidden_size {
-                        batch_hidden[i * hidden_size + j] +=
-                            wo_outputs[i * wo_out_size + j];
-                    }
+            // Residual add from attention (wo output already stored in batch_hidden)
+            // Add the original input (residual connection)
+            for i in 0..n_tokens {
+                for j in 0..hidden_size {
+                    batch_hidden[i * hidden_size + j] +=
+                        batch_residual[i * hidden_size + j];
                 }
             }
 
@@ -2686,7 +2742,8 @@ impl LlamaModel {
 
                 // Gate projection (w1)
                 if let Some(ref w1) = layer.w1 {
-                    let intermediate_size = w1.shape[1];
+                    // After transpose: shape = [out_features, in_features]
+                    let intermediate_size = w1.shape[0];
                     let mut gate_outputs =
                         vec![0.0f32; n_tokens * intermediate_size];
                     self.gemm_batch_prefill(
@@ -5165,7 +5222,8 @@ impl LlamaModel {
         }
 
         let in_size = inputs[0].len(); // k
-        let out_size = w.shape[1]; // m (weight rows)
+        // After transpose, shape = [out_features, in_features]
+        let out_size = w.shape[0]; // m (weight rows = output dimension)
         let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
         let nb = in_size_padded / QK_K;
 
@@ -5227,19 +5285,38 @@ impl LlamaModel {
                                 n,
                             );
                         }
-                        DataType::Q4_K | DataType::Q6_K => {
-                            // Fall back to row-by-row GEMV for now
-                            for (col, input) in inputs.iter().enumerate() {
-                                let out_col = &mut outputs
-                                    [col * out_size..(col + 1) * out_size];
-                                self.gemv_into_with_buffers(
-                                    input,
-                                    w,
-                                    out_col,
-                                    x_q8k_batch,
-                                    x_padded,
+                        DataType::Q4_K => {
+                            // Use tiled GEMM for Q4_K
+                            use crate::quant::matmul::tiled::matmul_q4k_q8k_tiled;
+                            let weights: &[BlockQ4K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ4K,
+                                    out_size * nb,
                                 );
-                            }
+                            matmul_q4k_q8k_tiled(
+                                weights,
+                                x_q8k_blocks,
+                                outputs,
+                                in_size_padded,
+                                out_size,
+                                n,
+                            );
+                        }
+                        DataType::Q6_K => {
+                            use crate::quant::matmul::tiled::matmul_q6k_q8k_tiled;
+                            let weights: &[BlockQ6K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ6K,
+                                    out_size * nb,
+                                );
+                            matmul_q6k_q8k_tiled(
+                                weights,
+                                x_q8k_blocks,
+                                outputs,
+                                in_size_padded,
+                                out_size,
+                                n,
+                            );
                         }
                         _ => unreachable!(),
                     }
