@@ -2,7 +2,6 @@
 // Copyright 2026 Jia Liu
 // CPU work buffers for zero-allocation inference
 
-use super::flash_attention::FlashAttnPrefillScratch;
 use crate::model::LlamaModel;
 
 /// Pre-allocated work buffers for CPU inference
@@ -36,19 +35,6 @@ pub struct CpuWorkBuffers {
     // Dequantized norm weights (flat array: each norm is hidden_size elements)
     pub norm_weights: Vec<f32>,
     pub norm_weight: Vec<f32>, // Final output norm
-
-    // Batch prefill buffers (pre-allocated to avoid per-layer allocations)
-    pub batch_residual: Vec<f32>,
-    pub qkv_batch_output: Vec<f32>,
-    pub q_batch_output: Vec<f32>,
-    pub k_batch_output: Vec<f32>,
-    pub v_batch_output: Vec<f32>,
-    pub attn_batch_output: Vec<f32>,
-    pub ffn_gate_batch: Vec<f32>,
-    pub ffn_up_batch: Vec<f32>,
-
-    // Flash attention scratch for prefill
-    pub flash_attn_prefill: FlashAttnPrefillScratch,
 
     // Config
     pub hidden_size: usize,
@@ -101,15 +87,9 @@ impl CpuWorkBuffers {
             ffn_up: vec![0.0; intermediate_size],
             ffn_hidden: vec![0.0; intermediate_size],
             logits: vec![0.0; vocab_size],
-            x_q8k: vec![0; 262144],
-            x_padded: vec![0.0; 256 * 1024], // 256K elements for large intermediate_size
-            // Buffer for batch GEMM quantization
-            // Need enough for large intermediate_size models:
-            // Qwen3.8-27B: intermediate_size = 3072, but some models have larger
-            // 128 tokens * 4864 intermediate / 256 = 2432 blocks
-            // 2432 * 292 bytes = 710KB
-            // For safety, allocate 20MB to handle various model sizes
-            q8k_input: vec![0; 20 * 1024 * 1024],
+            x_q8k: vec![0; 65536],
+            x_padded: vec![0.0; 65536],
+            q8k_input: vec![0; 65536],
             qkv_buffer: vec![0.0; qkv_out_size.max(q_size + 2 * kv_size)],
             q_buffer: vec![0.0; q_size],
             k_buffer: vec![0.0; kv_size],
@@ -119,22 +99,6 @@ impl CpuWorkBuffers {
             kv_dequant: vec![0.0; head_dim.max(key_length).max(value_length)], // Reusable K/V dequant buffer
             norm_weights: Vec::with_capacity(n_layers * 2 * hidden_size),
             norm_weight: vec![0.0; hidden_size],
-            // Batch prefill buffers - allocate for max 128 tokens
-            batch_residual: vec![0.0; 128 * hidden_size],
-            qkv_batch_output: vec![
-                0.0;
-                128 * qkv_out_size.max(q_size + 2 * kv_size)
-            ],
-            q_batch_output: vec![0.0; 128 * q_size],
-            k_batch_output: vec![0.0; 128 * kv_size],
-            v_batch_output: vec![0.0; 128 * kv_size],
-            attn_batch_output: vec![0.0; 128 * attn_out_size],
-            ffn_gate_batch: vec![0.0; 128 * intermediate_size],
-            ffn_up_batch: vec![0.0; 128 * intermediate_size],
-            flash_attn_prefill: FlashAttnPrefillScratch::new(
-                head_dim,
-                _max_seq_len,
-            ),
             hidden_size,
             intermediate_size,
             vocab_size,

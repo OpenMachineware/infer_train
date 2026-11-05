@@ -2344,35 +2344,8 @@ impl LlamaModel {
         let n_kv_heads = self.config.n_kv_heads;
 
         if use_tiled {
-            // Chunked batch prefill for L2 cache efficiency
-            // llama.cpp splits prompts into micro-batches that fit in L2 cache
-            // Working set per token: hidden + qkv + attn_out + ffn_intermediate
-            // For 0.6B: ~36KB per token, M4 L2 = 4MB, optimal chunk = 64-128 tokens
-            const CHUNK_SIZE: usize = 64;
-
-            let n_tokens = tokens.len();
-            if n_tokens <= CHUNK_SIZE {
-                // Single chunk - use existing batch path
-                self.forward_pooled_batch_tiled(tokens, kv_cache, buffers)
-            } else {
-                // Process in chunks for L2 cache efficiency
-                let mut logits = None;
-                let chunks = (n_tokens + CHUNK_SIZE - 1) / CHUNK_SIZE;
-
-                for chunk_idx in 0..chunks {
-                    let start = chunk_idx * CHUNK_SIZE;
-                    let end = (start + CHUNK_SIZE).min(n_tokens);
-                    let chunk_tokens = &tokens[start..end];
-
-                    logits = self.forward_pooled_batch_tiled(
-                        chunk_tokens,
-                        kv_cache,
-                        buffers,
-                    );
-                }
-
-                logits
-            }
+            // Batch prefill path using tiled GEMM
+            self.forward_pooled_batch_tiled(tokens, kv_cache, buffers)
         } else {
             // Standard token-by-token processing
             // Process each token
@@ -2522,31 +2495,38 @@ impl LlamaModel {
                 let attn_out_size = self.config.n_heads * v_head_dim;
                 let all_attn_outs_len = n_tokens * attn_out_size;
 
-                // Apply RoPE to all Q and K in batch
-                // Then use batch flash attention
-                let q_size = self.config.n_heads * self.config.head_dim;
-                let k_size = if self.config.key_length > 0 {
-                    self.config.n_kv_heads * self.config.key_length
-                } else {
-                    self.config.n_kv_heads * self.config.head_dim
-                };
-                let v_size = if self.config.value_length > 0 {
-                    self.config.n_kv_heads * self.config.value_length
-                } else {
-                    self.config.n_kv_heads * self.config.head_dim
-                };
+                // Clear attention output buffer
+                for elem in
+                    buffers.attn_batch_output[..all_attn_outs_len].iter_mut()
+                {
+                    *elem = 0.0;
+                }
 
-                // Extract and apply RoPE to all Q, K
-                let start_pos = kv_cache.seq_len();
-                for token_idx in 0..n_tokens {
-                    let pos = start_pos + token_idx;
+                // Process each token's attention (still sequential due to position dependency)
+                for (token_idx, pos) in (0..n_tokens).zip(kv_cache.seq_len()..)
+                {
+                    // Extract Q, K, V from fused output
                     let qkv_offset = token_idx * qkv_out_size;
+                    let q_size = self.config.n_heads * self.config.head_dim;
+                    let k_size =
+                        self.config.n_kv_heads * self.config.key_length;
+                    let v_size =
+                        self.config.n_kv_heads * self.config.value_length;
 
-                    // Extract Q and apply RoPE
                     buffers.q_buffer[..q_size].copy_from_slice(
                         &buffers.qkv_batch_output
                             [qkv_offset..qkv_offset + q_size],
                     );
+                    buffers.k_buffer[..k_size].copy_from_slice(
+                        &buffers.qkv_batch_output
+                            [qkv_offset + q_size..qkv_offset + q_size + k_size],
+                    );
+                    buffers.v_buffer[..v_size].copy_from_slice(
+                        &buffers.qkv_batch_output[qkv_offset + q_size + k_size
+                            ..qkv_offset + q_size + k_size + v_size],
+                    );
+
+                    // RoPE and attention
                     self.apply_rope_into(
                         &buffers.q_buffer,
                         pos,
@@ -2554,15 +2534,9 @@ impl LlamaModel {
                         self.config.head_dim,
                         &mut buffers.rope_buffer,
                     )?;
-                    buffers.q_batch_output
-                        [token_idx * q_size..(token_idx + 1) * q_size]
+                    buffers.q_buffer[..q_size]
                         .copy_from_slice(&buffers.rope_buffer[..q_size]);
 
-                    // Extract K and apply RoPE
-                    buffers.k_buffer[..k_size].copy_from_slice(
-                        &buffers.qkv_batch_output
-                            [qkv_offset + q_size..qkv_offset + q_size + k_size],
-                    );
                     let k_head_dim = k_size / self.config.n_kv_heads;
                     self.apply_rope_into(
                         &buffers.k_buffer,
@@ -2571,65 +2545,47 @@ impl LlamaModel {
                         k_head_dim,
                         &mut buffers.rope_buffer,
                     )?;
-                    buffers.k_batch_output
-                        [token_idx * k_size..(token_idx + 1) * k_size]
+                    buffers.k_buffer[..k_size]
                         .copy_from_slice(&buffers.rope_buffer[..k_size]);
 
-                    // Extract V (no RoPE for V)
-                    buffers.v_batch_output
-                        [token_idx * v_size..(token_idx + 1) * v_size]
-                        .copy_from_slice(
-                            &buffers.qkv_batch_output[qkv_offset
-                                + q_size
-                                + k_size
-                                ..qkv_offset + q_size + k_size + v_size],
-                        );
-                }
-
-                // Batch flash attention - processes all tokens at once with head parallelism
-                #[cfg(target_arch = "aarch64")]
-                {
-                    crate::cpu::flash_attention_prefill_optimized(
-                        &buffers.q_batch_output[..n_tokens * q_size],
-                        &buffers.k_batch_output[..n_tokens * k_size],
-                        &buffers.v_batch_output[..n_tokens * v_size],
-                        layer_idx,
-                        kv_cache,
-                        n_tokens,
-                        self.config.n_heads,
-                        self.config.n_kv_heads,
-                        self.config.head_dim,
-                        &mut buffers.attn_batch_output[..all_attn_outs_len],
-                        &mut buffers.flash_attn_prefill,
-                    );
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                {
-                    // Fallback: sequential attention
-                    for token_idx in 0..n_tokens {
-                        let q_offset = token_idx * q_size;
-                        let k_offset = token_idx * k_size;
-                        let v_offset = token_idx * v_size;
-                        let out_offset = token_idx * attn_out_size;
-
-                        self.attention_zero_alloc(
-                            &buffers.q_batch_output
-                                [q_offset..q_offset + q_size],
-                            &buffers.k_batch_output
-                                [k_offset..k_offset + k_size],
-                            &buffers.v_batch_output
-                                [v_offset..v_offset + v_size],
+                    // Attention - use optimized tiled flash attention
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        crate::cpu::flash_attention_single(
+                            &buffers.q_buffer,
+                            &buffers.k_buffer,
+                            &buffers.v_buffer,
                             layer_idx,
                             kv_cache,
                             self.config.n_heads,
                             self.config.head_dim,
                             self.config.n_kv_heads,
-                            &mut buffers.attn_batch_output
-                                [out_offset..out_offset + attn_out_size],
+                            &mut buffers.attn_out,
+                            &mut buffers.flash_attn_prefill,
+                        );
+                    }
+                    #[cfg(not(target_arch = "aarch64"))]
+                    {
+                        self.attention_zero_alloc(
+                            &buffers.q_buffer,
+                            &buffers.k_buffer,
+                            &buffers.v_buffer,
+                            layer_idx,
+                            kv_cache,
+                            self.config.n_heads,
+                            self.config.head_dim,
+                            self.config.n_kv_heads,
+                            &mut buffers.attn_out,
                             &mut buffers.attn_scores,
                         )?;
-                        kv_cache.advance();
                     }
+
+                    // Store attention output for batch wo projection
+                    buffers.attn_batch_output[token_idx * attn_out_size
+                        ..(token_idx + 1) * attn_out_size]
+                        .copy_from_slice(&buffers.attn_out[..attn_out_size]);
+
+                    kv_cache.advance();
                 }
 
                 // Batch wo projection

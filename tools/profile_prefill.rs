@@ -1,25 +1,56 @@
-use infer_train::inference::{
-    Device, InferenceContext, KVCache, KVCacheFormat,
-};
-use infer_train::model::GgufFile;
-use std::time::Instant;
+// Profile prefill performance
+// SPDX-License-Identifier: Apache-2.0-or-later
+// Copyright 2026 Jia Liu
+
+use infer_train::inference::{Device, InferenceContext};
 
 fn main() {
-    let model_path = "./Qwen3-0.6B-UD-Q4_K_XL.gguf";
-    println!("Loading model...");
-    let mut ctx = InferenceContext::from_gguf(model_path, Device::Cpu).unwrap();
-    println!("Model loaded");
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 3 {
+        eprintln!("Usage: {} <model.gguf> <prompt>", args[0]);
+        std::process::exit(1);
+    }
 
-    // Test with different batch sizes
-    for n_tokens in [2, 4, 8, 16, 32].iter() {
-        let tokens: Vec<u32> = (0..*n_tokens as u32).collect();
-        let mut kv_cache = KVCache::new(&ctx.config, 2048, KVCacheFormat::F32);
+    let model_path = &args[1];
+    let prompt = &args[2];
 
-        let start = Instant::now();
-        let _ = ctx.forward_pooled(&tokens, &mut kv_cache);
-        let elapsed = start.elapsed();
+    println!("Loading model: {}", model_path);
+    let mut ctx = InferenceContext::from_gguf(model_path, Device::Gpu)
+        .expect("Failed to load model");
 
-        let tps = *n_tokens as f64 / elapsed.as_secs_f64();
-        println!("Prefill {} tokens: {:?} ({:.1} t/s)", n_tokens, elapsed, tps);
+    println!("GPU context: {}", ctx.gpu_ctx.is_some());
+    println!("GPU KV cache: {}", ctx.gpu_kv_cache.is_some());
+    println!("Tok embeddings: {}", ctx.model.tok_embeddings.is_some());
+
+    // Tokenize
+    let tokenizer = infer_train::tokenize::BpeTokenizer::from_gguf(
+        &infer_train::model::GgufFile::open(model_path).unwrap(),
+    )
+    .expect("Failed to load tokenizer");
+    let tokens = tokenizer.encode(prompt);
+    println!("\nPrompt: \"{}\"", prompt);
+    println!(
+        "Tokens: {} ({:?})",
+        tokens.len(),
+        &tokens[..std::cmp::min(5, tokens.len())]
+    );
+
+    // Profile prefill
+    println!("\n=== Prefill ===");
+    let start = std::time::Instant::now();
+
+    let result = ctx.forward_prefill_batch(&tokens);
+
+    let elapsed = start.elapsed();
+    println!("Time: {:?}", elapsed);
+    println!(
+        "Result: {:?}",
+        result.as_ref().map(|v| format!("{} logits", v.len()))
+    );
+
+    if let Some(logits) = result {
+        let nan_count = logits.iter().filter(|&&x| x.is_nan()).count();
+        println!("NaN count: {}", nan_count);
+        println!("First 5: {:?}", &logits[..5]);
     }
 }

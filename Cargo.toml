@@ -230,6 +230,7 @@ required-features = ["metal"]
 [[bin]]
 name = "test-q6k-gemm"
 path = "tools/test_q6k_gemm.rs"
+required-features = ["metal"]
 
 [[bin]]
 name = "debug-gemm"
@@ -272,10 +273,6 @@ required-features = ["metal"]
 name = "compare-timing"
 path = "tools/compare_timing.rs"
 required-features = ["metal"]
-
-[[bin]]
-name = "bench-q6k-gemm"
-path = "tools/bench_q6k_gemm.rs"
 
 [[bin]]
 name = "profile-dispatch-overhead"
@@ -706,7 +703,6 @@ uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
-num_cpus = "1.16"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 num_cpus = "1.16"
@@ -1758,10 +1754,6 @@ name = "bench-tiled-gemv"
 path = "tools/bench_tiled_gemv.rs"
 
 [[bin]]
-name = "bench-q4k-tiled"
-path = "tools/bench_q4k_tiled.rs"
-
-[[bin]]
 name = "test-pool-overhead"
 path = "tools/test_pool_overhead.rs"
 
@@ -1816,59 +1808,3 @@ path = "tools/test_transpose.rs"
 [[bin]]
 name = "trace-full-forward"
 path = "tools/trace_full_forward.rs"
-
-[[bin]]
-name = "profile-prefill-timing"
-path = "tools/profile_prefill_timing.rs"
-
-[[bin]]
-name = "check-qkv-weights"
-path = "tools/check_qkv_weights.rs"
-
-[[bin]]
-name = "profile-prefill-breakdown"
-path = "tools/profile_prefill_breakdown.rs"
-
-[[bin]]
-name = "profile-prefill-operations"
-path = "tools/profile_prefill_operations.rs"
-
-[[bin]]
-name = "profile-output-gemv"
-path = "tools/profile_output_gemv.rs"
-
-[[bin]]
-name = "measure-decode"
-path = "tools/measure_decode.rs"
-
-[[bin]]
-name = "profile-prefill-gemms"
-path = "tools/profile_prefill_gemms.rs"
-
-[[bin]]
-name = "profile-attention-ops"
-path = "tools/profile_attention_ops.rs"
-
-[[bin]]
-name = "profile-quantization"
-path = "tools/profile_quantization.rs"
-
-[[bin]]
-name = "profile-real-quant"
-path = "tools/profile_real_quant.rs"
-
-[[bin]]
-name = "profile-forward-detailed"
-path = "tools/profile_forward_detailed.rs"
-
-[[bin]]
-name = "profile-prefill-detailed"
-path = "tools/profile_prefill_detailed.rs"
-
-[[bin]]
-name = "measure-attention"
-path = "tools/profile_attention.rs"
-
-[[bin]]
-name = "measure-gemv-time"
-path = "tools/measure_gemv.rs"

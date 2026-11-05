@@ -70,48 +70,6 @@ pub trait KVCacheBase {
         out: &mut [f32],
     );
 
-    /// Batch get K cache for multiple positions (cache-efficient)
-    /// Returns K data for positions [0..seq_len) for a specific head
-    /// Default implementation: loop over get_k_into
-    fn get_k_batch(
-        &self,
-        layer: usize,
-        head: usize,
-        seq_len: usize,
-        out: &mut [f32], // [seq_len * head_dim]
-    ) {
-        // Default: use get_k_into for each position
-        let head_dim = out.len() / seq_len.max(1);
-        for pos in 0..seq_len {
-            let start = pos * head_dim;
-            let end = (start + head_dim).min(out.len());
-            if end <= out.len() {
-                self.get_k_into(layer, head, pos, &mut out[start..end]);
-            }
-        }
-    }
-
-    /// Batch get V cache for multiple positions (cache-efficient)
-    /// Returns V data for positions [0..seq_len) for a specific head
-    /// Default implementation: loop over get_v_into
-    fn get_v_batch(
-        &self,
-        layer: usize,
-        head: usize,
-        seq_len: usize,
-        out: &mut [f32], // [seq_len * head_dim]
-    ) {
-        // Default: use get_v_into for each position
-        let head_dim = out.len() / seq_len.max(1);
-        for pos in 0..seq_len {
-            let start = pos * head_dim;
-            let end = (start + head_dim).min(out.len());
-            if end <= out.len() {
-                self.get_v_into(layer, head, pos, &mut out[start..end]);
-            }
-        }
-    }
-
     /// Set K cache for a specific layer (quantizes internally)
     fn set_k(
         &mut self,
@@ -355,46 +313,6 @@ impl KVCacheBase for KVCacheF32 {
             }
             self.v_cache[layer][head][self.seq_len]
                 .copy_from_slice(&v[src_start..src_end]);
-        }
-    }
-
-    fn get_k_batch(
-        &self,
-        layer: usize,
-        head: usize,
-        seq_len: usize,
-        out: &mut [f32],
-    ) {
-        // Batch load K for positions 0..seq_len
-        // Data is stored as [n_layers][n_kv_heads][max_seq][head_dim]
-        // So positions for the same head are sequential in memory
-        let k_head_dim = self.k_head_dim;
-        for pos in 0..seq_len {
-            let dst_start = pos * k_head_dim;
-            let dst_end = dst_start + k_head_dim;
-            if dst_end <= out.len() {
-                out[dst_start..dst_end]
-                    .copy_from_slice(&self.k_cache[layer][head][pos]);
-            }
-        }
-    }
-
-    fn get_v_batch(
-        &self,
-        layer: usize,
-        head: usize,
-        seq_len: usize,
-        out: &mut [f32],
-    ) {
-        // Batch load V for positions 0..seq_len
-        let v_head_dim = self.v_head_dim;
-        for pos in 0..seq_len {
-            let dst_start = pos * v_head_dim;
-            let dst_end = dst_start + v_head_dim;
-            if dst_end <= out.len() {
-                out[dst_start..dst_end]
-                    .copy_from_slice(&self.v_cache[layer][head][pos]);
-            }
         }
     }
 }
