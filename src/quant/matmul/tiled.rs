@@ -354,18 +354,72 @@ pub unsafe fn matmul_q5k_q8k_tiled(
 ) {
     let nb = k / QK_K;
 
-    WORKSPACE.with(|ws_cell| {
-        let mut ws = ws_cell.borrow_mut();
+    // Use multithreading for larger matrices
+    let n_threads = crate::cpu::default_n_threads();
+    if n_threads > 1 && m >= 256 {
+        use crate::cpu::{SyncPtr, parallel_chunks};
+        let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+        let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5K);
+        let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
+        let weights_len = weights.len();
 
-        // Determine path: narrow (N <= 16) or standard
-        if n <= MICRO {
-            // Narrow path: optimize for decode
-            matmul_q5k_q8k_narrow(&mut ws, weights, x, dst, m, n, nb);
-        } else {
-            // Standard path: tiled 256x256
-            matmul_q5k_q8k_standard(&mut ws, weights, x, dst, m, n, nb);
-        }
-    });
+        parallel_chunks(m, n_threads, move |row_start, row_end| {
+            WORKSPACE.with(|ws_cell| {
+                let mut ws = ws_cell.borrow_mut();
+                let tile_m = row_end - row_start;
+
+                // Process this chunk of rows
+                if n <= MICRO {
+                    matmul_q5k_q8k_narrow_chunk(
+                        &mut ws,
+                        std::slice::from_raw_parts(
+                            weights_ptr.get(),
+                            weights_len,
+                        ),
+                        std::slice::from_raw_parts(x_ptr.get(), x.len()),
+                        std::slice::from_raw_parts_mut(
+                            dst_ptr.get().add(row_start * n),
+                            tile_m * n,
+                        ),
+                        row_start,
+                        tile_m,
+                        n,
+                        nb,
+                    );
+                } else {
+                    matmul_q5k_q8k_standard_chunk(
+                        &mut ws,
+                        std::slice::from_raw_parts(
+                            weights_ptr.get(),
+                            weights_len,
+                        ),
+                        std::slice::from_raw_parts(x_ptr.get(), x.len()),
+                        std::slice::from_raw_parts_mut(
+                            dst_ptr.get().add(row_start * n),
+                            tile_m * n,
+                        ),
+                        row_start,
+                        tile_m,
+                        n,
+                        nb,
+                    );
+                }
+            });
+        });
+    } else {
+        WORKSPACE.with(|ws_cell| {
+            let mut ws = ws_cell.borrow_mut();
+
+            // Determine path: narrow (N <= 16) or standard
+            if n <= MICRO {
+                // Narrow path: optimize for decode
+                matmul_q5k_q8k_narrow(&mut ws, weights, x, dst, m, n, nb);
+            } else {
+                // Standard path: tiled 256x256
+                matmul_q5k_q8k_standard(&mut ws, weights, x, dst, m, n, nb);
+            }
+        });
+    }
 }
 
 /// Narrow path: N <= 16 (small batch), optimize for decode
@@ -474,6 +528,146 @@ unsafe fn matmul_q5k_q8k_standard(
             for ib in 0..nb {
                 // Unpack src0 and src1 for this K block
                 unpack_src0_q5k(weights, iir0, n_src0, ib, 1, ws);
+                unpack_src1_q8k(x, iir1, n_src1, ib, 1, ws);
+
+                // Run 16x16 microtiles
+                for ir1 in (0..n_src1).step_by(MICRO) {
+                    for ir0 in (0..n_src0).step_by(MICRO) {
+                        let r1_end = (ir1 + MICRO).min(n_src1);
+                        let r0_end = (ir0 + MICRO).min(n_src0);
+
+                        let result = run_microtile_q5k_q8k(
+                            ws,
+                            ir0,
+                            ir1,
+                            1,
+                            0,
+                            r0_end - ir0,
+                            r1_end - ir1,
+                        );
+
+                        // Accumulate
+                        for i in 0..(r0_end - ir0) {
+                            for j in 0..(r1_end - ir1) {
+                                ws.acc[(ir0 + i) * TILE_ROWS + ir1 + j] +=
+                                    result[i][j];
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Store accumulator to dst
+            for ir1 in 0..n_src1 {
+                for ir0 in 0..n_src0 {
+                    dst[(iir0 + ir0) * n + (iir1 + ir1)] =
+                        ws.acc[ir0 * TILE_ROWS + ir1];
+                }
+            }
+        }
+    }
+}
+
+/// Narrow path for Q5_K chunk: N <= 16, processes rows [row_start, row_start + tile_m)
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn matmul_q5k_q8k_narrow_chunk(
+    ws: &mut TiledWorkspace,
+    weights: &[BlockQ5K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    row_start: usize,
+    tile_m: usize,
+    n: usize,
+    nb: usize,
+) {
+    let num_k = if n <= 4 { 4.min(nb) } else { 2.min(nb) };
+    if num_k == 0 {
+        return;
+    }
+
+    // Clear accumulator for this tile
+    ws.clear_acc(tile_m, n);
+
+    // Process K dimension in num_k chunks
+    for k0 in (0..nb).step_by(num_k) {
+        let k_end = (k0 + num_k).min(nb);
+        let actual_num_k = k_end - k0;
+
+        // Unpack input vectors (only once per K chunk)
+        unpack_src1_q8k(x, 0, n, k0, actual_num_k, ws);
+
+        // Process weight rows in 16-row chunks
+        for iir0 in (0..tile_m).step_by(MICRO) {
+            let ir0_end = (iir0 + MICRO).min(tile_m);
+            let n_src0 = ir0_end - iir0;
+
+            // Unpack weights for this chunk (offset by row_start for global row index)
+            unpack_src0_q5k(
+                weights,
+                row_start + iir0,
+                n_src0,
+                k0,
+                actual_num_k,
+                ws,
+            );
+
+            // Run microkernel for each slab
+            for slab in 0..actual_num_k {
+                let result = run_microtile_q5k_q8k(
+                    ws,
+                    0,
+                    0,
+                    actual_num_k,
+                    slab,
+                    n_src0,
+                    n,
+                );
+
+                for i in 0..n_src0 {
+                    for j in 0..n {
+                        ws.acc[(iir0 + i) * n + j] += result[i][j];
+                    }
+                }
+            }
+        }
+    }
+
+    // Store to dst
+    for i in 0..tile_m {
+        for j in 0..n {
+            dst[i * n + j] = ws.acc[i * n + j];
+        }
+    }
+}
+
+/// Standard path for Q5_K chunk: processes rows [row_start, row_start + tile_m)
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn matmul_q5k_q8k_standard_chunk(
+    ws: &mut TiledWorkspace,
+    weights: &[BlockQ5K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    row_start: usize,
+    tile_m: usize,
+    n: usize,
+    nb: usize,
+) {
+    // Process 256x256 macrotiles
+    for iir1 in (0..n).step_by(TILE_ROWS) {
+        let ir1_end = (iir1 + TILE_ROWS).min(n);
+        let n_src1 = ir1_end - iir1;
+
+        for iir0 in (0..tile_m).step_by(TILE_ROWS) {
+            let ir0_end = (iir0 + TILE_ROWS).min(tile_m);
+            let n_src0 = ir0_end - iir0;
+
+            // Clear accumulator
+            ws.clear_acc(n_src0, n_src1);
+
+            // Process K dimension one block at a time
+            for ib in 0..nb {
+                // Unpack src0 and src1 for this K block
+                unpack_src0_q5k(weights, row_start + iir0, n_src0, ib, 1, ws);
                 unpack_src1_q8k(x, iir1, n_src1, ib, 1, ws);
 
                 // Run 16x16 microtiles
@@ -1105,6 +1299,145 @@ unsafe fn matmul_q6k_q8k_narrow(
     }
 }
 
+/// Narrow path for Q6_K chunk: N <= 16, processes rows [row_start, row_start + tile_m)
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn matmul_q6k_q8k_narrow_chunk(
+    ws: &mut TiledWorkspace,
+    weights: &[BlockQ6K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    row_start: usize,
+    tile_m: usize,
+    n: usize,
+    nb: usize,
+) {
+    let num_k = if n <= 4 { 4.min(nb) } else { 2.min(nb) };
+    if num_k == 0 {
+        return;
+    }
+
+    // Clear accumulator for this tile
+    ws.clear_acc(tile_m, n);
+
+    // Process K dimension in num_k chunks
+    for k0 in (0..nb).step_by(num_k) {
+        let k_end = (k0 + num_k).min(nb);
+        let actual_num_k = k_end - k0;
+
+        // Unpack input vectors (only once per K chunk)
+        unpack_src1_q8k(x, 0, n, k0, actual_num_k, ws);
+
+        // Process weight rows in 16-row chunks
+        for iir0 in (0..tile_m).step_by(MICRO) {
+            let ir0_end = (iir0 + MICRO).min(tile_m);
+            let n_src0 = ir0_end - iir0;
+
+            // Unpack weights for this chunk (offset by row_start for global row index)
+            unpack_src0_q6k(
+                weights,
+                row_start + iir0,
+                n_src0,
+                k0,
+                actual_num_k,
+                ws,
+            );
+
+            // Run microkernel for each slab
+            for slab in 0..actual_num_k {
+                let result = run_microtile_q6k_q8k(
+                    ws,
+                    0,
+                    0,
+                    actual_num_k,
+                    slab,
+                    n_src0,
+                    n,
+                );
+
+                for i in 0..n_src0 {
+                    for j in 0..n {
+                        ws.acc[(iir0 + i) * n + j] += result[i][j];
+                    }
+                }
+            }
+        }
+    }
+
+    // Store to dst
+    for i in 0..tile_m {
+        for j in 0..n {
+            dst[i * n + j] = ws.acc[i * n + j];
+        }
+    }
+}
+
+/// Standard path for Q6_K chunk: processes rows [row_start, row_start + tile_m)
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn matmul_q6k_q8k_standard_chunk(
+    ws: &mut TiledWorkspace,
+    weights: &[BlockQ6K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    row_start: usize,
+    tile_m: usize,
+    n: usize,
+    nb: usize,
+) {
+    // Process 256x256 macrotiles
+    for iir1 in (0..n).step_by(TILE_ROWS) {
+        let ir1_end = (iir1 + TILE_ROWS).min(n);
+        let n_src1 = ir1_end - iir1;
+
+        for iir0 in (0..tile_m).step_by(TILE_ROWS) {
+            let ir0_end = (iir0 + TILE_ROWS).min(tile_m);
+            let n_src0 = ir0_end - iir0;
+
+            // Clear accumulator
+            ws.clear_acc(n_src0, n_src1);
+
+            // Process K dimension one block at a time
+            for ib in 0..nb {
+                // Unpack src0 and src1 for this K block
+                unpack_src0_q6k(weights, row_start + iir0, n_src0, ib, 1, ws);
+                unpack_src1_q8k(x, iir1, n_src1, ib, 1, ws);
+
+                // Run 16x16 microtiles
+                for ir1 in (0..n_src1).step_by(MICRO) {
+                    for ir0 in (0..n_src0).step_by(MICRO) {
+                        let r1_end = (ir1 + MICRO).min(n_src1);
+                        let r0_end = (ir0 + MICRO).min(n_src0);
+
+                        let result = run_microtile_q6k_q8k(
+                            ws,
+                            ir0,
+                            ir1,
+                            1,
+                            0,
+                            r0_end - ir0,
+                            r1_end - ir1,
+                        );
+
+                        // Accumulate
+                        for i in 0..(r0_end - ir0) {
+                            for j in 0..(r1_end - ir1) {
+                                ws.acc[(ir0 + i) * TILE_ROWS + ir1 + j] +=
+                                    result[i][j];
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Store to dst
+            for i in 0..n_src0 {
+                for j in 0..n_src1 {
+                    dst[(iir0 + i) * n + iir1 + j] = ws.acc[i * TILE_ROWS + j];
+                }
+            }
+        }
+    }
+}
+
 /// Standard path for Q6_K: 256x256 tiles
 #[target_feature(enable = "neon,dotprod")]
 unsafe fn matmul_q6k_q8k_standard(
@@ -1184,13 +1517,67 @@ pub unsafe fn matmul_q6k_q8k_tiled(
 ) {
     let nb = k / QK_K;
 
-    WORKSPACE.with(|ws_cell| {
-        let mut ws = ws_cell.borrow_mut();
+    // Use multithreading for larger matrices
+    let n_threads = crate::cpu::default_n_threads();
+    if n_threads > 1 && m >= 256 {
+        use crate::cpu::{SyncPtr, parallel_chunks};
+        let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+        let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ6K);
+        let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
+        let weights_len = weights.len();
 
-        if n <= MICRO {
-            matmul_q6k_q8k_narrow(&mut ws, weights, x, dst, m, n, nb);
-        } else {
-            matmul_q6k_q8k_standard(&mut ws, weights, x, dst, m, n, nb);
-        }
-    });
+        parallel_chunks(m, n_threads, move |row_start, row_end| {
+            WORKSPACE.with(|ws_cell| {
+                let mut ws = ws_cell.borrow_mut();
+                let tile_m = row_end - row_start;
+
+                // Process this chunk of rows
+                if n <= MICRO {
+                    matmul_q6k_q8k_narrow_chunk(
+                        &mut ws,
+                        std::slice::from_raw_parts(
+                            weights_ptr.get(),
+                            weights_len,
+                        ),
+                        std::slice::from_raw_parts(x_ptr.get(), x.len()),
+                        std::slice::from_raw_parts_mut(
+                            dst_ptr.get().add(row_start * n),
+                            tile_m * n,
+                        ),
+                        row_start,
+                        tile_m,
+                        n,
+                        nb,
+                    );
+                } else {
+                    matmul_q6k_q8k_standard_chunk(
+                        &mut ws,
+                        std::slice::from_raw_parts(
+                            weights_ptr.get(),
+                            weights_len,
+                        ),
+                        std::slice::from_raw_parts(x_ptr.get(), x.len()),
+                        std::slice::from_raw_parts_mut(
+                            dst_ptr.get().add(row_start * n),
+                            tile_m * n,
+                        ),
+                        row_start,
+                        tile_m,
+                        n,
+                        nb,
+                    );
+                }
+            });
+        });
+    } else {
+        WORKSPACE.with(|ws_cell| {
+            let mut ws = ws_cell.borrow_mut();
+
+            if n <= MICRO {
+                matmul_q6k_q8k_narrow(&mut ws, weights, x, dst, m, n, nb);
+            } else {
+                matmul_q6k_q8k_standard(&mut ws, weights, x, dst, m, n, nb);
+            }
+        });
+    }
 }
