@@ -11,7 +11,7 @@ const Q_TILE_SZ: usize = 8; // Process 8 Q rows at once
 const KV_TILE_SZ: usize = 8; // Process 8 KV positions at once
 
 /// Optimized prefill attention - processes all tokens at once
-/// This replaces the token-by-token loop with a tiled batch approach
+/// Uses batch K/V loading for better cache efficiency
 #[cfg(target_arch = "aarch64")]
 pub fn flash_attention_prefill_optimized(
     q_outputs: &[f32], // [n_tokens, n_heads, head_dim] - Q projections
@@ -61,106 +61,118 @@ pub fn flash_attention_prefill_optimized(
     for token_idx in 0..n_tokens {
         let seq_len = token_idx + 1; // Number of K/V positions this token attends to
 
-        // For each head
-        for h in 0..n_heads {
-            let kv_head = h * n_kv_heads / n_heads;
-            let q_offset = token_idx * q_size + h * head_dim;
-            let out_offset = token_idx * q_size + h * head_dim;
+        // For each KV head, batch load K and V for all positions
+        for kv_head in 0..n_kv_heads {
+            // Batch load K for this head: [seq_len, head_dim]
+            kv_cache.get_k_batch(
+                layer_idx,
+                kv_head,
+                seq_len,
+                &mut scratch.k_batch,
+            );
+            // Batch load V for this head: [seq_len, head_dim]
+            kv_cache.get_v_batch(
+                layer_idx,
+                kv_head,
+                seq_len,
+                &mut scratch.v_batch,
+            );
 
-            // Flash attention state
-            let mut max_score = f32::NEG_INFINITY;
-            let mut sum_exp = 0.0f32;
+            // Now process all heads that map to this KV head
+            let heads_per_kv = n_heads / n_kv_heads;
+            for h_offset in 0..heads_per_kv {
+                let h = kv_head * heads_per_kv + h_offset;
+                let q_offset = token_idx * q_size + h * head_dim;
+                let out_offset = token_idx * q_size + h * head_dim;
 
-            // Process KV positions in tiles for better cache utilization
-            for kv_tile_start in (0..seq_len).step_by(KV_TILE_SZ) {
-                let kv_tile_end = (kv_tile_start + KV_TILE_SZ).min(seq_len);
-                let kv_tile_size = kv_tile_end - kv_tile_start;
+                // Flash attention state
+                let mut max_score = f32::NEG_INFINITY;
+                let mut sum_exp = 0.0f32;
 
-                // Compute attention scores for this tile
-                for tk in 0..kv_tile_size {
-                    let kv_pos = kv_tile_start + tk;
-                    kv_cache.get_k_into(
-                        layer_idx,
-                        kv_head,
-                        kv_pos,
-                        &mut scratch.k_row,
-                    );
+                // Process KV positions in tiles
+                for kv_tile_start in (0..seq_len).step_by(KV_TILE_SZ) {
+                    let kv_tile_end = (kv_tile_start + KV_TILE_SZ).min(seq_len);
+                    let kv_tile_size = kv_tile_end - kv_tile_start;
 
-                    // NEON-optimized dot product
-                    let mut score = 0.0f32;
-                    unsafe {
-                        let q_ptr = q_outputs[q_offset..].as_ptr();
-                        let k_ptr = scratch.k_row.as_ptr();
-                        let mut sum_vec = std::arch::aarch64::vdupq_n_f32(0.0);
+                    // Compute attention scores for this tile using batch-loaded K
+                    for tk in 0..kv_tile_size {
+                        let kv_pos = kv_tile_start + tk;
+                        // Access K from batch buffer instead of per-position cache read
+                        let k_row_offset = kv_pos * head_dim;
 
-                        for d in (0..head_dim).step_by(4) {
-                            if d + 4 <= head_dim {
-                                let q_vec =
-                                    std::arch::aarch64::vld1q_f32(q_ptr.add(d));
-                                let k_vec =
-                                    std::arch::aarch64::vld1q_f32(k_ptr.add(d));
-                                sum_vec = std::arch::aarch64::vfmaq_f32(
-                                    sum_vec, q_vec, k_vec,
-                                );
-                            } else {
-                                for dd in d..head_dim {
-                                    score += q_outputs[q_offset + dd]
-                                        * scratch.k_row[dd];
+                        // NEON-optimized dot product
+                        let mut score = 0.0f32;
+                        unsafe {
+                            let q_ptr = q_outputs[q_offset..].as_ptr();
+                            let k_ptr =
+                                scratch.k_batch[k_row_offset..].as_ptr();
+                            let mut sum_vec = vdupq_n_f32(0.0);
+
+                            for d in (0..head_dim).step_by(4) {
+                                if d + 4 <= head_dim {
+                                    let q_vec = vld1q_f32(q_ptr.add(d));
+                                    let k_vec = vld1q_f32(k_ptr.add(d));
+                                    sum_vec = vfmaq_f32(sum_vec, q_vec, k_vec);
+                                } else {
+                                    for dd in d..head_dim {
+                                        score += q_outputs[q_offset + dd]
+                                            * scratch.k_batch
+                                                [k_row_offset + dd];
+                                    }
                                 }
                             }
+
+                            let sum_arr: [f32; 4] =
+                                std::mem::transmute(sum_vec);
+                            score += sum_arr[0]
+                                + sum_arr[1]
+                                + sum_arr[2]
+                                + sum_arr[3];
                         }
 
-                        let sum_arr: [f32; 4] = std::mem::transmute(sum_vec);
-                        score +=
-                            sum_arr[0] + sum_arr[1] + sum_arr[2] + sum_arr[3];
+                        scratch.scores[tk] = score * scale;
                     }
 
-                    scratch.scores[tk] = score * scale;
+                    // Online softmax (Flash Attention style)
+                    let tile_max = scratch.scores[..kv_tile_size]
+                        .iter()
+                        .cloned()
+                        .fold(f32::NEG_INFINITY, f32::max);
+
+                    if tile_max > max_score {
+                        let rescale = (max_score - tile_max).exp();
+                        for d in 0..head_dim {
+                            attn_outputs[out_offset + d] *= rescale;
+                        }
+                        sum_exp *= rescale;
+                        max_score = tile_max;
+                    }
+
+                    // Compute exponentials
+                    for tk in 0..kv_tile_size {
+                        scratch.scores[tk] =
+                            (scratch.scores[tk] - max_score).exp();
+                        sum_exp += scratch.scores[tk];
+                    }
+
+                    // Accumulate weighted V using batch-loaded V
+                    for tk in 0..kv_tile_size {
+                        let kv_pos = kv_tile_start + tk;
+                        let v_row_offset = kv_pos * head_dim;
+
+                        let weight = scratch.scores[tk];
+                        for d in 0..head_dim {
+                            attn_outputs[out_offset + d] +=
+                                weight * scratch.v_batch[v_row_offset + d];
+                        }
+                    }
                 }
 
-                // Online softmax (Flash Attention style)
-                let tile_max = scratch.scores[..kv_tile_size]
-                    .iter()
-                    .cloned()
-                    .fold(f32::NEG_INFINITY, f32::max);
-
-                if tile_max > max_score {
-                    let rescale = (max_score - tile_max).exp();
+                // Normalize
+                if sum_exp > 0.0 {
                     for d in 0..head_dim {
-                        attn_outputs[out_offset + d] *= rescale;
+                        attn_outputs[out_offset + d] /= sum_exp;
                     }
-                    sum_exp *= rescale;
-                    max_score = tile_max;
-                }
-
-                // Compute exponentials
-                for tk in 0..kv_tile_size {
-                    scratch.scores[tk] = (scratch.scores[tk] - max_score).exp();
-                    sum_exp += scratch.scores[tk];
-                }
-
-                // Accumulate weighted V
-                for tk in 0..kv_tile_size {
-                    let kv_pos = kv_tile_start + tk;
-                    kv_cache.get_v_into(
-                        layer_idx,
-                        kv_head,
-                        kv_pos,
-                        &mut scratch.v_row,
-                    );
-
-                    let weight = scratch.scores[tk];
-                    for d in 0..head_dim {
-                        attn_outputs[out_offset + d] +=
-                            weight * scratch.v_row[d];
-                    }
-                }
-            }
-
-            // Normalize
-            if sum_exp > 0.0 {
-                for d in 0..head_dim {
-                    attn_outputs[out_offset + d] /= sum_exp;
                 }
             }
         }
@@ -460,14 +472,19 @@ pub struct FlashAttnPrefillScratch {
     pub scores: Vec<f32>, // [KV_TILE_SZ]
     pub k_row: Vec<f32>,  // [head_dim]
     pub v_row: Vec<f32>,  // [head_dim]
+    // Batch K/V buffers for efficient cache access
+    pub k_batch: Vec<f32>, // [max_seq_len * head_dim]
+    pub v_batch: Vec<f32>, // [max_seq_len * head_dim]
 }
 
 impl FlashAttnPrefillScratch {
-    pub fn new(head_dim: usize) -> Self {
+    pub fn new(head_dim: usize, max_seq_len: usize) -> Self {
         Self {
             scores: vec![0.0; KV_TILE_SZ],
             k_row: vec![0.0; head_dim],
             v_row: vec![0.0; head_dim],
+            k_batch: vec![0.0; max_seq_len * head_dim],
+            v_batch: vec![0.0; max_seq_len * head_dim],
         }
     }
 }

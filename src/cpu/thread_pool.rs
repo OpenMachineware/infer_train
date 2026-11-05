@@ -1,550 +1,302 @@
-// SPDX-License-Identifier: Apache-2.0-or-later
-// Copyright 2026 Jia Liu
-// Persistent thread pool for CPU inference
+// CPU thread pool with work-stealing GEMM
+// Matches llama.cpp architecture: persistent threads, barrier sync, atomic work stealing
+//
+// Key design:
+// - Idle waiting: cond_wait (sleep, has syscall) - correct for long waits
+// - Barrier sync: spin + PAUSE/YIELD (no syscall) - correct for short waits
+// - Work stealing: atomic fetch_add (no lock) - dynamic load balancing
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
-/// Get the default number of threads to use
-pub fn default_n_threads() -> usize {
-    std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4)
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn cpu_relax() {
+    unsafe { std::arch::asm!("yield", options(nostack, preserves_flags)) }
 }
 
-/// Atomic spin barrier - matches llama.cpp's ggml_barrier
-/// Uses two counters for proper reusability
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn cpu_relax() {
+    unsafe { std::arch::asm!("pause", options(nostack, preserves_flags)) }
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+#[inline(always)]
+fn cpu_relax() {
+    std::hint::spin_loop()
+}
+
+/// Barrier using spin-wait (no system calls)
 pub struct SpinBarrier {
-    n_barrier: AtomicUsize,
-    n_barrier_passed: AtomicUsize,
     n_threads: usize,
+    counter: AtomicUsize,
+    passed: AtomicUsize,
 }
-
-// SpinBarrier is Send + Sync because it only contains atomic types
-unsafe impl Send for SpinBarrier {}
-unsafe impl Sync for SpinBarrier {}
 
 impl SpinBarrier {
     pub fn new(n_threads: usize) -> Self {
-        SpinBarrier {
-            n_barrier: AtomicUsize::new(0),
-            n_barrier_passed: AtomicUsize::new(0),
+        Self {
             n_threads,
+            counter: AtomicUsize::new(0),
+            passed: AtomicUsize::new(0),
         }
     }
 
-    /// Wait for all threads to reach the barrier
-    /// Uses spin loop for low latency - matches llama.cpp exactly
     pub fn wait(&self) {
         if self.n_threads == 1 {
             return;
         }
 
-        let n_passed = self.n_barrier_passed.load(Ordering::Relaxed);
+        let n_passed = self.passed.load(Ordering::Relaxed);
+        let n = self.counter.fetch_add(1, Ordering::SeqCst);
 
-        // Enter barrier with seq-cst fence
-        let n_barrier = self.n_barrier.fetch_add(1, Ordering::SeqCst);
-
-        if n_barrier == (self.n_threads - 1) {
-            // Last thread - reset and signal
-            self.n_barrier.store(0, Ordering::Relaxed);
-            self.n_barrier_passed.fetch_add(1, Ordering::SeqCst);
-            return;
+        if n == self.n_threads - 1 {
+            self.counter.store(0, Ordering::Relaxed);
+            self.passed.fetch_add(1, Ordering::SeqCst);
+        } else {
+            while self.passed.load(Ordering::Relaxed) == n_passed {
+                cpu_relax();
+            }
         }
+    }
 
-        // Wait for other threads
-        while self.n_barrier_passed.load(Ordering::Relaxed) == n_passed {
-            std::hint::spin_loop();
-        }
-
-        // Exit barrier with seq-cst fence
-        std::sync::atomic::fence(Ordering::SeqCst);
+    pub fn reset(&self) {
+        self.counter.store(0, Ordering::Relaxed);
+        self.passed.store(0, Ordering::Relaxed);
     }
 }
 
-/// Parallel chunks using work stealing with atomic counter
-pub fn parallel_work_stealing<F>(
-    n_items: usize,
-    chunk_size: usize,
+struct WorkItem {
+    func: Box<dyn Fn(usize) + Send + Sync>,
+}
+
+pub struct ThreadPoolState {
+    pub current_chunk: AtomicUsize,
+    pub barrier: SpinBarrier,
+    pub stop: AtomicBool,
+    work: Mutex<Option<WorkItem>>,
+    cond: Condvar,
+    work_ready: AtomicBool,
+}
+
+pub struct ThreadPool {
+    handles: Vec<JoinHandle<()>>,
+    state: Arc<ThreadPoolState>,
     n_threads: usize,
-    f: F,
-) where
-    F: Fn(usize, usize) + Send + Sync,
-{
-    if n_items == 0 {
-        return;
-    }
+}
 
-    let counter = AtomicUsize::new(0);
-    let f_ref = &f;
+impl ThreadPool {
+    pub fn new(n_threads: usize) -> Self {
+        let state = Arc::new(ThreadPoolState {
+            current_chunk: AtomicUsize::new(0),
+            barrier: SpinBarrier::new(n_threads),
+            stop: AtomicBool::new(false),
+            work: Mutex::new(None),
+            cond: Condvar::new(),
+            work_ready: AtomicBool::new(false),
+        });
 
-    std::thread::scope(|s| {
-        for _ in 0..n_threads {
-            s.spawn(|| {
+        let mut handles = Vec::with_capacity(n_threads - 1);
+
+        for ith in 1..n_threads {
+            let state = Arc::clone(&state);
+            let handle = thread::spawn(move || {
                 loop {
-                    let start =
-                        counter.fetch_add(chunk_size, Ordering::Relaxed);
-                    if start >= n_items {
-                        break;
+                    let mut work_lock = state.work.lock().unwrap();
+                    while !state.work_ready.load(Ordering::Relaxed)
+                        && !state.stop.load(Ordering::Relaxed)
+                    {
+                        work_lock = state.cond.wait(work_lock).unwrap();
                     }
-                    let end = (start + chunk_size).min(n_items);
-                    f_ref(start, end);
+
+                    if state.stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+
+                    let work = work_lock.take();
+                    drop(work_lock);
+
+                    if let Some(item) = work {
+                        (item.func)(ith);
+                    }
+
+                    state.barrier.wait();
                 }
             });
+            handles.push(handle);
         }
-    });
-}
 
-/// Parallel chunks with fixed distribution using std::thread::scope
-/// Falls back to single-threaded only for n_threads == 1
-pub fn parallel_chunks<F>(n_items: usize, n_threads: usize, f: F)
-where
-    F: Fn(usize, usize) + Send + Sync + Clone,
-{
-    if n_items == 0 {
-        return;
+        Self { handles, state, n_threads }
     }
 
-    // Single-threaded only if explicitly requested
-    if n_threads == 1 {
-        f(0, n_items);
-        return;
+    pub fn state(&self) -> &ThreadPoolState {
+        &self.state
     }
 
-    let chunk_size = (n_items + n_threads - 1) / n_threads;
-
-    std::thread::scope(|s| {
-        for thread_id in 0..n_threads {
-            let start = thread_id * chunk_size;
-            let end = (start + chunk_size).min(n_items);
-
-            if start >= n_items {
-                break;
-            }
-
-            let f_clone = f.clone();
-            s.spawn(move || {
-                f_clone(start, end);
-            });
-        }
-    });
-}
-
-/// Lock-free work descriptor for GEMV operations
-/// No locks - all fields are atomic or plain data
-#[derive(Clone, Copy)]
-struct WorkDescriptor {
-    /// Function pointer (GEMV kernel) - unsafe fn for kernel functions
-    func: Option<
-        unsafe fn(*const u8, *const u8, *mut f32, usize, usize, usize, usize),
-    >,
-    /// Weight matrix pointer
-    weights: *const u8,
-    /// Input vector pointer
-    input: *const u8,
-    /// Output vector pointer
-    output: *mut f32,
-    /// K dimension (input size)
-    k: usize,
-    /// M dimension (output size / rows)
-    m: usize,
-}
-
-impl Default for WorkDescriptor {
-    fn default() -> Self {
-        WorkDescriptor {
-            func: None,
-            weights: std::ptr::null(),
-            input: std::ptr::null(),
-            output: std::ptr::null_mut(),
-            k: 0,
-            m: 0,
-        }
-    }
-}
-
-unsafe impl Send for WorkDescriptor {}
-unsafe impl Sync for WorkDescriptor {}
-
-/// Persistent thread pool - WORK-STEALING version matching llama.cpp exactly
-///
-/// Key design from llama.cpp:
-/// 1. Threads wait on atomic "current_op" counter (spin loop)
-/// 2. Main thread stores work descriptor, then increments counter
-/// 3. Workers grab chunks via atomic fetch_add (work-stealing)
-/// 4. 64-row chunks for better load balancing
-pub struct PersistentThreadPool {
-    handles: Vec<JoinHandle<()>>,
-    /// Current operation number - workers spin-wait until this changes
-    current_op: Arc<AtomicUsize>,
-    /// Work descriptor - lock-free, written before signaling
-    work: Arc<std::sync::atomic::AtomicPtr<WorkDescriptor>>,
-    /// Pre-allocated work descriptor slot
-    work_slot: Arc<std::cell::UnsafeCell<WorkDescriptor>>,
-    /// Completion counter - workers increment after finishing
-    completed: Arc<AtomicUsize>,
-    /// Current chunk for work-stealing
-    current_chunk: Arc<AtomicUsize>,
-    num_threads: usize,
-}
-
-unsafe impl Send for PersistentThreadPool {}
-unsafe impl Sync for PersistentThreadPool {}
-
-impl PersistentThreadPool {
-    /// Create a new persistent thread pool with work-stealing
-    pub fn new(num_threads: usize) -> Self {
-        let current_op = Arc::new(AtomicUsize::new(0));
-        let work_slot =
-            Arc::new(std::cell::UnsafeCell::new(WorkDescriptor::default()));
-        let work =
-            Arc::new(std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()));
-        let completed = Arc::new(AtomicUsize::new(0));
-        let current_chunk = Arc::new(AtomicUsize::new(0));
-
-        let handles: Vec<_> = (0..num_threads - 1) // num_threads - 1 workers, caller is thread 0
-            .map(|thread_id| {
-                let current_op = current_op.clone();
-                let work = work.clone();
-                let completed = completed.clone();
-                let current_chunk = current_chunk.clone();
-
-                thread::spawn(move || {
-                    let mut last_op = 0;
-                    let mut spin_count = 0;
-
-                    loop {
-                        // Spin-wait for new operation (sub-microsecond, matches llama.cpp)
-                        let op = current_op.load(Ordering::Acquire);
-                        if op == usize::MAX {
-                            // Shutdown signal
-                            break;
-                        }
-
-                        if op == last_op {
-                            // No new work yet - spin for a bit then yield
-                            spin_count += 1;
-                            if spin_count < 100 {
-                                std::hint::spin_loop();
-                            } else {
-                                std::thread::yield_now();
-                                spin_count = 0;
-                            }
-                            continue;
-                        }
-
-                        spin_count = 0;
-
-                        // New operation - read work descriptor (lock-free!)
-                        last_op = op;
-                        let work_ptr: *const WorkDescriptor =
-                            work.load(Ordering::Acquire);
-                        if work_ptr.is_null() {
-                            continue;
-                        }
-
-                        let work_desc = unsafe { &*work_ptr };
-                        let m = work_desc.m;
-
-                        // Work-stealing: each thread grabs chunks via atomic fetch_add
-                        // Chunk size 64 matches llama.cpp for good load balancing
-                        const CHUNK_SIZE: usize = 64;
-                        let n_chunks = (m + CHUNK_SIZE - 1) / CHUNK_SIZE;
-
-                        if let Some(func) = work_desc.func {
-                            loop {
-                                let chunk = current_chunk
-                                    .fetch_add(1, Ordering::Relaxed);
-                                if chunk >= n_chunks {
-                                    break;
-                                }
-
-                                let start = chunk * CHUNK_SIZE;
-                                let end = (start + CHUNK_SIZE).min(m);
-
-                                unsafe {
-                                    func(
-                                        work_desc.weights,
-                                        work_desc.input,
-                                        work_desc.output,
-                                        work_desc.k,
-                                        m,
-                                        start,
-                                        end,
-                                    );
-                                }
-                            }
-                        }
-
-                        // Signal completion
-                        completed.fetch_add(1, Ordering::Release);
-                    }
-                })
-            })
-            .collect();
-
-        PersistentThreadPool {
-            handles,
-            current_op,
-            work,
-            work_slot,
-            completed,
-            current_chunk,
-            num_threads,
-        }
+    pub fn n_threads(&self) -> usize {
+        self.n_threads
     }
 
-    /// Execute GEMV operation - CALLER PARTICIPATES
-    /// Main thread participates in computation, no idle waiting
-    pub fn execute_gemv(
-        &self,
-        func: unsafe fn(
-            *const u8,
-            *const u8,
-            *mut f32,
-            usize,
-            usize,
-            usize,
-            usize,
-        ),
-        weights: *const u8,
-        input: *const u8,
-        output: *mut f32,
-        k: usize,
-        m: usize,
-    ) {
-        if m == 0 {
-            return;
-        }
-
-        // Reset counters
-        self.completed.store(0, Ordering::Release);
-        self.current_chunk.store(0, Ordering::Release);
-
-        // Store work descriptor
-        unsafe {
-            *self.work_slot.get() = WorkDescriptor {
-                func: Some(func),
-                weights,
-                input,
-                output,
-                k,
-                m,
-            };
-
-            // Publish work descriptor via atomic store
-            self.work.store(self.work_slot.get(), Ordering::Release);
-        }
-
-        // Signal workers by incrementing operation counter
-        self.current_op.fetch_add(1, Ordering::Release);
-
-        // CALLER ALSO PARTICIPATES - process chunks
-        const CHUNK_SIZE: usize = 64;
-        let n_chunks = (m + CHUNK_SIZE - 1) / CHUNK_SIZE;
-
-        loop {
-            let chunk = self.current_chunk.fetch_add(1, Ordering::Relaxed);
-            if chunk >= n_chunks {
-                break;
-            }
-
-            let start = chunk * CHUNK_SIZE;
-            let end = (start + CHUNK_SIZE).min(m);
-
-            unsafe {
-                func(weights, input, output, k, m, start, end);
-            }
-        }
-
-        // Signal completion (caller = thread 0)
-        self.completed.fetch_add(1, Ordering::Release);
-
-        // Wait for all workers to complete
-        let mut spin_count = 0;
-        while self.completed.load(Ordering::Acquire) < self.num_threads {
-            spin_count += 1;
-            if spin_count < 100 {
-                std::hint::spin_loop();
-            } else {
-                std::thread::yield_now();
-                spin_count = 0;
-            }
-        }
-    }
-
-    /// Legacy execute method - uses generic closure (still has some overhead)
-    /// For critical paths, use execute_gemv instead
-    pub fn execute<F>(&self, num_items: usize, f: F)
+    pub fn parallel<F>(&self, f: F)
     where
-        F: Fn(usize, usize) + Send + Sync + Clone + 'static,
+        F: Fn(usize) + Send + Sync + Clone + 'static,
     {
-        // Fallback: this still has allocation overhead
-        // For zero-overhead, use execute_gemv
-        parallel_chunks(num_items, self.num_threads, f);
-    }
+        self.state.current_chunk.store(self.n_threads, Ordering::Relaxed);
+        self.state.barrier.reset();
 
-    /// Get number of threads
-    pub fn num_threads(&self) -> usize {
-        self.num_threads
-    }
+        {
+            let mut work_lock = self.state.work.lock().unwrap();
+            *work_lock = Some(WorkItem { func: Box::new(f.clone()) });
+        }
+        self.state.work_ready.store(true, Ordering::Release);
+        self.state.cond.notify_all();
 
-    /// Execute GEMV-style work where each thread processes rows
-    /// Uses work stealing with atomic counter
-    pub fn gemv_rows_stealing<F>(
-        &self,
-        num_rows: usize,
-        chunk_size: usize,
-        f: F,
-    ) where
-        F: Fn(usize, usize) + Send + Sync + Clone + 'static,
-    {
-        self.execute(num_rows, f);
-    }
+        f(0);
 
-    /// Execute GEMV with fixed chunk assignment (cache-friendly)
-    /// Each thread processes a contiguous chunk of rows
-    pub fn gemv_chunks<F>(&self, num_rows: usize, f: F)
-    where
-        F: Fn(usize, usize) + Send + Sync + Clone + 'static,
-    {
-        self.execute(num_rows, f);
+        self.state.barrier.wait();
+        self.state.work_ready.store(false, Ordering::Relaxed);
     }
 }
 
-impl Drop for PersistentThreadPool {
+impl Drop for ThreadPool {
     fn drop(&mut self) {
-        // Signal shutdown
-        self.current_op.store(usize::MAX, Ordering::Release);
+        self.state.stop.store(true, Ordering::Relaxed);
+        self.state.work_ready.store(true, Ordering::Relaxed);
+        self.state.cond.notify_all();
         for handle in self.handles.drain(..) {
             let _ = handle.join();
         }
     }
 }
 
-// Global thread pool instance
-static GLOBAL_POOL: std::sync::OnceLock<PersistentThreadPool> =
-    std::sync::OnceLock::new();
+use std::sync::OnceLock;
 
-/// Get or create the global thread pool
-pub fn global_pool() -> &'static PersistentThreadPool {
-    GLOBAL_POOL.get_or_init(|| PersistentThreadPool::new(default_n_threads()))
+static THREAD_POOL: OnceLock<ThreadPool> = OnceLock::new();
+
+pub fn global_pool(n_threads: usize) -> &'static ThreadPool {
+    THREAD_POOL.get_or_init(|| ThreadPool::new(n_threads))
 }
 
-/// Execute GEMV with work stealing (better load balancing)
-/// Uses std::thread::scope for parallel execution (no Rayon)
-pub fn gemv_work_stealing<F>(num_rows: usize, num_threads: usize, f: F)
+pub fn parallel_work_stealing<F>(n_chunks: usize, n_threads: usize, f: F)
 where
-    F: Fn(usize) + Send + Sync,
+    F: Fn(usize) + Send + Sync + Clone,
 {
-    if num_rows == 0 {
+    if n_threads == 1 || n_chunks <= 1 {
+        for chunk in 0..n_chunks {
+            f(chunk);
+        }
         return;
     }
 
-    // Use std::thread::scope instead of Rayon
-    std::thread::scope(|s| {
-        let counter =
-            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let f_ref = &f;
+    let chunk_size = (n_chunks + n_threads - 1) / n_threads;
 
-        for _ in 0..num_threads {
-            let counter = counter.clone();
+    std::thread::scope(|s| {
+        for ith in 0..n_threads {
+            let f_clone = f.clone();
             s.spawn(move || {
-                loop {
-                    let row = counter
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if row >= num_rows {
-                        break;
-                    }
-                    f_ref(row);
+                let mut chunk = ith * chunk_size;
+                let end = (chunk + chunk_size).min(n_chunks);
+                while chunk < end {
+                    f_clone(chunk);
+                    chunk += 1;
                 }
             });
         }
     });
 }
 
-/// Wrapper for mutable slice pointer that is Send + Sync
-#[derive(Clone, Copy)]
-pub struct SyncPtr<T>(*mut T);
+pub fn parallel_chunks<F>(n_chunks: usize, n_threads: usize, f: F)
+where
+    F: Fn(usize, usize) + Send + Sync + Clone,
+{
+    if n_threads == 1 || n_chunks <= n_threads {
+        f(0, n_chunks);
+        return;
+    }
+
+    let chunk_size = (n_chunks + n_threads - 1) / n_threads;
+
+    std::thread::scope(|s| {
+        for ith in 0..n_threads {
+            let f_clone = f.clone();
+            s.spawn(move || {
+                let start = ith * chunk_size;
+                let end = (start + chunk_size).min(n_chunks);
+                if start < n_chunks {
+                    f_clone(start, end);
+                }
+            });
+        }
+    });
+}
+
+pub fn default_n_threads() -> usize {
+    let n = num_cpus::get();
+    (n - 1).max(1).min(8)
+}
+
+pub trait GEMVOp: Send + Sync {
+    fn execute(&self, row_start: usize, row_end: usize);
+}
+
+pub fn gemv_batch_barrier(op: &dyn GEMVOp, m: usize, n_threads: usize) {
+    let chunk_size = (m + n_threads - 1) / n_threads;
+
+    parallel_work_stealing(n_threads, n_threads, |ith: usize| {
+        let row_start = ith * chunk_size;
+        let row_end = (row_start + chunk_size).min(m);
+        if row_start < m {
+            op.execute(row_start, row_end);
+        }
+    });
+}
+
+pub fn execute_layer_with_barrier<F>(n_ops: usize, n_threads: usize, f: F)
+where
+    F: Fn(usize) + Send + Sync + Clone + 'static,
+{
+    parallel_work_stealing(n_ops, n_threads, f);
+}
+
+pub struct SyncPtr<T> {
+    ptr: *mut T,
+}
 
 unsafe impl<T: Send> Send for SyncPtr<T> {}
-unsafe impl<T: Send> Sync for SyncPtr<T> {}
+unsafe impl<T: Sync> Sync for SyncPtr<T> {}
 
 impl<T> SyncPtr<T> {
     pub fn new(ptr: *mut T) -> Self {
-        SyncPtr(ptr)
+        Self { ptr }
+    }
+
+    pub fn as_ptr(&self) -> *const T {
+        self.ptr
+    }
+
+    pub fn as_mut_ptr(&self) -> *mut T {
+        self.ptr
     }
 
     pub fn get(&self) -> *mut T {
-        self.0
+        self.ptr
+    }
+
+    pub unsafe fn as_ref(&self) -> &T {
+        &*self.ptr
+    }
+
+    pub unsafe fn as_mut(&self) -> &mut T {
+        &mut *self.ptr
     }
 }
 
-/// Barrier-synchronized batch GEMV execution
-/// Executes multiple GEMV operations with a single thread dispatch
-/// Threads wait at barrier between operations, eliminating dispatch overhead
-pub fn gemv_batch_barrier<F>(
-    ops: &[GEMVOp],
-    num_threads: usize,
-    barrier: &SpinBarrier,
-) where
-    F: Fn(usize, usize) + Send + Sync,
-{
-    if ops.is_empty() || num_threads == 0 {
-        return;
+impl<T> Clone for SyncPtr<T> {
+    fn clone(&self) -> Self {
+        Self { ptr: self.ptr }
     }
-
-    std::thread::scope(|s| {
-        for thread_id in 0..num_threads {
-            let barrier = barrier;
-            s.spawn(move || {
-                for op in ops {
-                    // Process assigned rows for this operation
-                    let mut row = thread_id;
-                    while row < op.num_rows {
-                        (op.compute)(row);
-                        row += num_threads;
-                    }
-                    // Wait at barrier for all threads to complete this operation
-                    barrier.wait();
-                }
-            });
-        }
-    });
 }
 
-/// Single GEMV operation for batch execution
-pub struct GEMVOp {
-    pub num_rows: usize,
-    pub compute: fn(usize),
-}
-
-/// Barrier-synchronized layer execution
-/// Processes an entire layer with minimal thread dispatch overhead
-pub fn execute_layer_with_barrier<F>(
-    num_threads: usize,
-    num_ops: usize,
-    op_fn: F,
-) where
-    F: Fn(usize, usize) + Send + Sync,
-{
-    if num_threads == 0 || num_ops == 0 {
-        return;
-    }
-
-    let barrier = SpinBarrier::new(num_threads);
-
-    std::thread::scope(|s| {
-        for thread_id in 0..num_threads {
-            let op_fn = &op_fn;
-            let barrier = &barrier;
-            s.spawn(move || {
-                for op_idx in 0..num_ops {
-                    // Execute operation for this thread
-                    op_fn(thread_id, op_idx);
-                    // Wait at barrier
-                    barrier.wait();
-                }
-            });
-        }
-    });
-}
+impl<T> Copy for SyncPtr<T> {}
