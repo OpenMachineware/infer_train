@@ -25,6 +25,9 @@ use crate::compute::{OpNode, OpType};
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use metal::Buffer;
 
+#[cfg(target_arch = "aarch64")]
+use crate::cpu::flash_attention_single;
+
 /// Llama model layers
 pub struct LlamaModel {
     pub config: ModelConfig,
@@ -273,52 +276,66 @@ impl LlamaModel {
         }
 
         let vocab_size = output.shape[1];
+        let dtype = output.dtype;
         println!(
-            "Transposing output layer: [{}, {}] -> [{}, {}]",
-            hidden_size, vocab_size, vocab_size, hidden_size
+            "Transposing output layer: [{}, {}] -> [{}, {}] (dtype: {:?})",
+            hidden_size, vocab_size, vocab_size, hidden_size, dtype
         );
 
-        // Dequantize to F32
-        let total_elems = hidden_size * vocab_size;
-        let data_f32 =
-            dequant_to_f32(output.bytes(), output.dtype, total_elems);
+        // Use block-level transpose for quantized formats (keeps original format)
+        match dtype {
+            DataType::Q4_K
+            | DataType::Q5_K
+            | DataType::Q6_K
+            | DataType::IQ4_XS => {
+                // Transpose blocks directly without dequantization
+                Self::transpose_quantized_tensor(output);
+                println!(
+                    "Output layer transposed in-place (quantized format preserved)"
+                );
+            }
+            _ => {
+                // Fallback to F16 for other formats
+                let total_elems = hidden_size * vocab_size;
+                let data_f32 =
+                    dequant_to_f32(output.bytes(), dtype, total_elems);
 
-        // Transpose: column-major [H, V] -> row-major [V, H]
-        let mut transposed = vec![0.0f32; total_elems];
-        for v in 0..vocab_size {
-            for h in 0..hidden_size {
-                // Original: column-major [H, V] -> index = h + v * H
-                // Transposed: row-major [V, H] -> index = v * H + h
-                transposed[v * hidden_size + h] = data_f32[h + v * hidden_size];
+                // Transpose: column-major [H, V] -> row-major [V, H]
+                let mut transposed = vec![0.0f32; total_elems];
+                for v in 0..vocab_size {
+                    for h in 0..hidden_size {
+                        transposed[v * hidden_size + h] =
+                            data_f32[h + v * hidden_size];
+                    }
+                }
+
+                // Convert to F16 and store
+                let data_f16: Vec<u16> = transposed
+                    .iter()
+                    .map(|&v| half::f16::from_f32(v).to_bits())
+                    .collect();
+
+                // Update tensor
+                output.shape = vec![vocab_size, hidden_size];
+                output.dtype = DataType::F16;
+                output.data = TensorData::Owned(
+                    unsafe {
+                        std::slice::from_raw_parts(
+                            data_f16.as_ptr() as *const u8,
+                            data_f16.len() * 2,
+                        )
+                    }
+                    .to_vec(),
+                );
+                println!("Output layer transposed to F16");
             }
         }
-
-        // Convert to F16 and store
-        let data_f16: Vec<u16> = transposed
-            .iter()
-            .map(|&v| half::f16::from_f32(v).to_bits())
-            .collect();
-
-        // Update tensor
-        output.shape = vec![vocab_size, hidden_size];
-        output.dtype = DataType::F16;
-        output.data = TensorData::Owned(
-            unsafe {
-                std::slice::from_raw_parts(
-                    data_f16.as_ptr() as *const u8,
-                    data_f16.len() * 2,
-                )
-            }
-            .to_vec(),
-        );
 
         // Clear any cached GPU buffer
         #[cfg(all(target_arch = "aarch64", feature = "metal"))]
         {
-            *output.gpu_buffer.write().unwrap() = None;
+            *self.output.as_mut().unwrap().gpu_buffer.write().unwrap() = None;
         }
-
-        println!("Output layer transposed successfully");
     }
 
     /// Transpose attention weights if stored in column-major format
@@ -993,12 +1010,18 @@ impl LlamaModel {
             let intermediate_size = w1.shape[1];
             let hidden_size = hidden.len();
 
-            // Check if w1 and w3 are both K-quant
+            // Check if w1 and w3 are both K-quant (or IQ4_XS which also uses Q8_K input)
             let both_k_quant = matches!(
                 (w1.dtype, w3.dtype),
                 (
-                    DataType::Q4_K | DataType::Q5_K | DataType::Q6_K,
-                    DataType::Q4_K | DataType::Q5_K | DataType::Q6_K
+                    DataType::Q4_K
+                        | DataType::Q5_K
+                        | DataType::Q6_K
+                        | DataType::IQ4_XS,
+                    DataType::Q4_K
+                        | DataType::Q5_K
+                        | DataType::Q6_K
+                        | DataType::IQ4_XS
                 )
             );
 
@@ -2423,8 +2446,10 @@ impl LlamaModel {
 
         // Step 2: Process each layer
         for (layer_idx, layer) in self.layers.iter().enumerate() {
-            // Save pre-norm values for residual connection
-            let batch_residual: Vec<f32> = batch_hidden.clone();
+            // Save pre-norm values for residual connection (use pre-allocated buffer)
+            let residual_len = n_tokens * hidden_size;
+            buffers.batch_residual[..residual_len]
+                .copy_from_slice(&batch_hidden[..residual_len]);
 
             // Apply RMS norm to all tokens (can be parallelized)
             let attn_norm_offset = layer_idx * 2 * hidden_size;
@@ -2442,20 +2467,20 @@ impl LlamaModel {
             // QKV projection - use tiled GEMM for batch
             if let Some(ref qkv) = layer.attn_qkv {
                 let qkv_out_size = qkv.shape[1];
-                let mut qkv_outputs = vec![0.0f32; n_tokens * qkv_out_size];
+                let qkv_output_len = n_tokens * qkv_out_size;
 
-                // Prepare input slices for batch GEMM
+                // Prepare input slices for batch GEMM (no allocation)
                 let inputs: Vec<&[f32]> = (0..n_tokens)
                     .map(|i| {
                         &batch_hidden[i * hidden_size..(i + 1) * hidden_size]
                     })
                     .collect();
 
-                // Use tiled GEMM
+                // Use tiled GEMM with pre-allocated buffer
                 self.gemm_batch_prefill(
                     &inputs,
                     qkv,
-                    &mut qkv_outputs,
+                    &mut buffers.qkv_batch_output[..qkv_output_len],
                     &mut buffers.q8k_input,
                     &mut buffers.x_padded,
                 );
@@ -2468,7 +2493,14 @@ impl LlamaModel {
                     self.config.head_dim
                 };
                 let attn_out_size = self.config.n_heads * v_head_dim;
-                let mut all_attn_outs = vec![0.0f32; n_tokens * attn_out_size];
+                let all_attn_outs_len = n_tokens * attn_out_size;
+
+                // Clear attention output buffer
+                for elem in
+                    buffers.attn_batch_output[..all_attn_outs_len].iter_mut()
+                {
+                    *elem = 0.0;
+                }
 
                 // Process each token's attention (still sequential due to position dependency)
                 for (token_idx, pos) in (0..n_tokens).zip(kv_cache.seq_len()..)
@@ -2482,14 +2514,15 @@ impl LlamaModel {
                         self.config.n_kv_heads * self.config.value_length;
 
                     buffers.q_buffer[..q_size].copy_from_slice(
-                        &qkv_outputs[qkv_offset..qkv_offset + q_size],
+                        &buffers.qkv_batch_output
+                            [qkv_offset..qkv_offset + q_size],
                     );
                     buffers.k_buffer[..k_size].copy_from_slice(
-                        &qkv_outputs
+                        &buffers.qkv_batch_output
                             [qkv_offset + q_size..qkv_offset + q_size + k_size],
                     );
                     buffers.v_buffer[..v_size].copy_from_slice(
-                        &qkv_outputs[qkv_offset + q_size + k_size
+                        &buffers.qkv_batch_output[qkv_offset + q_size + k_size
                             ..qkv_offset + q_size + k_size + v_size],
                     );
 
@@ -2515,22 +2548,40 @@ impl LlamaModel {
                     buffers.k_buffer[..k_size]
                         .copy_from_slice(&buffers.rope_buffer[..k_size]);
 
-                    // Attention
-                    self.attention_zero_alloc(
-                        &buffers.q_buffer,
-                        &buffers.k_buffer,
-                        &buffers.v_buffer,
-                        layer_idx,
-                        kv_cache,
-                        self.config.n_heads,
-                        self.config.head_dim,
-                        self.config.n_kv_heads,
-                        &mut buffers.attn_out,
-                        &mut buffers.attn_scores,
-                    )?;
+                    // Attention - use optimized tiled flash attention
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        crate::cpu::flash_attention_single(
+                            &buffers.q_buffer,
+                            &buffers.k_buffer,
+                            &buffers.v_buffer,
+                            layer_idx,
+                            kv_cache,
+                            self.config.n_heads,
+                            self.config.head_dim,
+                            self.config.n_kv_heads,
+                            &mut buffers.attn_out,
+                            &mut buffers.flash_attn_prefill,
+                        );
+                    }
+                    #[cfg(not(target_arch = "aarch64"))]
+                    {
+                        self.attention_zero_alloc(
+                            &buffers.q_buffer,
+                            &buffers.k_buffer,
+                            &buffers.v_buffer,
+                            layer_idx,
+                            kv_cache,
+                            self.config.n_heads,
+                            self.config.head_dim,
+                            self.config.n_kv_heads,
+                            &mut buffers.attn_out,
+                            &mut buffers.attn_scores,
+                        )?;
+                    }
 
                     // Store attention output for batch wo projection
-                    all_attn_outs[token_idx * attn_out_size
+                    buffers.attn_batch_output[token_idx * attn_out_size
                         ..(token_idx + 1) * attn_out_size]
                         .copy_from_slice(&buffers.attn_out[..attn_out_size]);
 
@@ -2541,7 +2592,7 @@ impl LlamaModel {
                 if let Some(ref wo) = layer.wo {
                     let attn_inputs: Vec<&[f32]> = (0..n_tokens)
                         .map(|i| {
-                            &all_attn_outs
+                            &buffers.attn_batch_output
                                 [i * attn_out_size..(i + 1) * attn_out_size]
                         })
                         .collect();
@@ -2555,7 +2606,9 @@ impl LlamaModel {
                     );
                 } else {
                     // No wo layer - copy attention outputs directly
-                    batch_hidden.copy_from_slice(&all_attn_outs);
+                    batch_hidden[..all_attn_outs_len].copy_from_slice(
+                        &buffers.attn_batch_output[..all_attn_outs_len],
+                    );
                 }
             } else {
                 // Separate wq/wk/wv projections - use batch GEMM for each
@@ -2578,37 +2631,38 @@ impl LlamaModel {
                     })
                     .collect();
 
+                let q_output_len = n_tokens * q_size;
+                let k_output_len = n_tokens * k_size;
+                let v_output_len = n_tokens * v_size;
+
                 // Batch Q projection
-                let mut q_outputs = vec![0.0f32; n_tokens * q_size];
                 if let Some(ref wq) = layer.wq {
                     self.gemm_batch_prefill(
                         &inputs,
                         wq,
-                        &mut q_outputs,
+                        &mut buffers.q_batch_output[..q_output_len],
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
                     );
                 }
 
                 // Batch K projection
-                let mut k_outputs = vec![0.0f32; n_tokens * k_size];
                 if let Some(ref wk) = layer.wk {
                     self.gemm_batch_prefill(
                         &inputs,
                         wk,
-                        &mut k_outputs,
+                        &mut buffers.k_batch_output[..k_output_len],
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
                     );
                 }
 
                 // Batch V projection
-                let mut v_outputs = vec![0.0f32; n_tokens * v_size];
                 if let Some(ref wv) = layer.wv {
                     self.gemm_batch_prefill(
                         &inputs,
                         wv,
-                        &mut v_outputs,
+                        &mut buffers.v_batch_output[..v_output_len],
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
                     );
@@ -2622,22 +2676,29 @@ impl LlamaModel {
                     self.config.head_dim
                 };
                 let attn_out_size = self.config.n_heads * v_head_dim;
-                let mut all_attn_outs = vec![0.0f32; n_tokens * attn_out_size];
+                let all_attn_outs_len = n_tokens * attn_out_size;
+
+                // Clear attention output buffer
+                for elem in
+                    buffers.attn_batch_output[..all_attn_outs_len].iter_mut()
+                {
+                    *elem = 0.0;
+                }
 
                 // Process each token's attention (sequential due to position dependency)
                 for (token_idx, pos) in (0..n_tokens).zip(kv_cache.seq_len()..)
                 {
                     // Copy Q, K, V from batch outputs
                     buffers.q_buffer[..q_size].copy_from_slice(
-                        &q_outputs
+                        &buffers.q_batch_output
                             [token_idx * q_size..(token_idx + 1) * q_size],
                     );
                     buffers.k_buffer[..k_size].copy_from_slice(
-                        &k_outputs
+                        &buffers.k_batch_output
                             [token_idx * k_size..(token_idx + 1) * k_size],
                     );
                     buffers.v_buffer[..v_size].copy_from_slice(
-                        &v_outputs
+                        &buffers.v_batch_output
                             [token_idx * v_size..(token_idx + 1) * v_size],
                     );
 
@@ -2663,22 +2724,40 @@ impl LlamaModel {
                     buffers.k_buffer[..k_size]
                         .copy_from_slice(&buffers.rope_buffer[..k_size]);
 
-                    // Attention
-                    self.attention_zero_alloc(
-                        &buffers.q_buffer,
-                        &buffers.k_buffer,
-                        &buffers.v_buffer,
-                        layer_idx,
-                        kv_cache,
-                        self.config.n_heads,
-                        self.config.head_dim,
-                        self.config.n_kv_heads,
-                        &mut buffers.attn_out,
-                        &mut buffers.attn_scores,
-                    )?;
+                    // Attention - use optimized tiled flash attention
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        crate::cpu::flash_attention_single(
+                            &buffers.q_buffer,
+                            &buffers.k_buffer,
+                            &buffers.v_buffer,
+                            layer_idx,
+                            kv_cache,
+                            self.config.n_heads,
+                            self.config.head_dim,
+                            self.config.n_kv_heads,
+                            &mut buffers.attn_out,
+                            &mut buffers.flash_attn_prefill,
+                        );
+                    }
+                    #[cfg(not(target_arch = "aarch64"))]
+                    {
+                        self.attention_zero_alloc(
+                            &buffers.q_buffer,
+                            &buffers.k_buffer,
+                            &buffers.v_buffer,
+                            layer_idx,
+                            kv_cache,
+                            self.config.n_heads,
+                            self.config.head_dim,
+                            self.config.n_kv_heads,
+                            &mut buffers.attn_out,
+                            &mut buffers.attn_scores,
+                        )?;
+                    }
 
                     // Store attention output for batch wo projection
-                    all_attn_outs[token_idx * attn_out_size
+                    buffers.attn_batch_output[token_idx * attn_out_size
                         ..(token_idx + 1) * attn_out_size]
                         .copy_from_slice(&buffers.attn_out[..attn_out_size]);
 
@@ -2689,7 +2768,7 @@ impl LlamaModel {
                 if let Some(ref wo) = layer.wo {
                     let attn_inputs: Vec<&[f32]> = (0..n_tokens)
                         .map(|i| {
-                            &all_attn_outs
+                            &buffers.attn_batch_output
                                 [i * attn_out_size..(i + 1) * attn_out_size]
                         })
                         .collect();
@@ -2703,7 +2782,9 @@ impl LlamaModel {
                     );
                 } else {
                     // No wo layer (rare) - just copy attention outputs
-                    batch_hidden.copy_from_slice(&all_attn_outs);
+                    batch_hidden[..all_attn_outs_len].copy_from_slice(
+                        &buffers.attn_batch_output[..all_attn_outs_len],
+                    );
                 }
             }
 
@@ -2712,7 +2793,7 @@ impl LlamaModel {
             for i in 0..n_tokens {
                 for j in 0..hidden_size {
                     batch_hidden[i * hidden_size + j] +=
-                        batch_residual[i * hidden_size + j];
+                        buffers.batch_residual[i * hidden_size + j];
                 }
             }
 
@@ -2744,42 +2825,40 @@ impl LlamaModel {
                 if let Some(ref w1) = layer.w1 {
                     // After transpose: shape = [out_features, in_features]
                     let intermediate_size = w1.shape[0];
-                    let mut gate_outputs =
-                        vec![0.0f32; n_tokens * intermediate_size];
+                    let ffn_output_len = n_tokens * intermediate_size;
+
                     self.gemm_batch_prefill(
                         &ffn_inputs,
                         w1,
-                        &mut gate_outputs,
+                        &mut buffers.ffn_gate_batch[..ffn_output_len],
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
                     );
 
                     // Up projection (w3)
-                    let mut up_outputs =
-                        vec![0.0f32; n_tokens * intermediate_size];
                     if let Some(ref w3) = layer.w3 {
                         self.gemm_batch_prefill(
                             &ffn_inputs,
                             w3,
-                            &mut up_outputs,
+                            &mut buffers.ffn_up_batch[..ffn_output_len],
                             &mut buffers.q8k_input,
                             &mut buffers.x_padded,
                         );
                     }
 
                     // SiLU activation and element-wise multiply
-                    for i in 0..gate_outputs.len() {
-                        gate_outputs[i] = (1.0
-                            / (1.0 + (-gate_outputs[i]).exp()))
-                            * gate_outputs[i]
-                            * up_outputs[i];
+                    for i in 0..ffn_output_len {
+                        buffers.ffn_gate_batch[i] = (1.0
+                            / (1.0 + (-buffers.ffn_gate_batch[i]).exp()))
+                            * buffers.ffn_gate_batch[i]
+                            * buffers.ffn_up_batch[i];
                     }
 
                     // Down projection (w2)
                     if let Some(ref w2) = layer.w2 {
                         let down_inputs: Vec<&[f32]> = (0..n_tokens)
                             .map(|i| {
-                                &gate_outputs[i * intermediate_size
+                                &buffers.ffn_gate_batch[i * intermediate_size
                                     ..(i + 1) * intermediate_size]
                             })
                             .collect();
@@ -3255,19 +3334,37 @@ impl LlamaModel {
             buffers.k_buffer[..k_size]
                 .copy_from_slice(&buffers.rope_buffer[..k_size]);
 
-            // Attention with actual sizes
-            self.attention_zero_alloc(
-                &buffers.q_buffer[..q_size],
-                &buffers.k_buffer[..k_size],
-                &buffers.v_buffer[..v_size],
-                layer_idx,
-                kv_cache,
-                n_heads,
-                head_dim,
-                n_kv_heads,
-                &mut buffers.attn_out,
-                &mut buffers.attn_scores,
-            )?;
+            // Attention with actual sizes - use optimized tiled flash attention
+            #[cfg(target_arch = "aarch64")]
+            {
+                crate::cpu::flash_attention_single(
+                    &buffers.q_buffer[..q_size],
+                    &buffers.k_buffer[..k_size],
+                    &buffers.v_buffer[..v_size],
+                    layer_idx,
+                    kv_cache,
+                    n_heads,
+                    head_dim,
+                    n_kv_heads,
+                    &mut buffers.attn_out,
+                    &mut buffers.flash_attn_prefill,
+                );
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                self.attention_zero_alloc(
+                    &buffers.q_buffer[..q_size],
+                    &buffers.k_buffer[..k_size],
+                    &buffers.v_buffer[..v_size],
+                    layer_idx,
+                    kv_cache,
+                    n_heads,
+                    head_dim,
+                    n_kv_heads,
+                    &mut buffers.attn_out,
+                    &mut buffers.attn_scores,
+                )?;
+            }
         } else {
             // Standard separate wq/wk/wv projections
             let q_size = n_heads * head_dim;
@@ -3411,19 +3508,37 @@ impl LlamaModel {
             buffers.k_buffer[..k_size]
                 .copy_from_slice(&buffers.rope_buffer[..k_size]);
 
-            // 4. Attention (standard path)
-            self.attention_zero_alloc(
-                &buffers.q_buffer,
-                &buffers.k_buffer,
-                &buffers.v_buffer,
-                layer_idx,
-                kv_cache,
-                n_heads,
-                head_dim,
-                n_kv_heads,
-                &mut buffers.attn_out,
-                &mut buffers.attn_scores,
-            )?;
+            // 4. Attention (standard path) - use optimized tiled flash attention
+            #[cfg(target_arch = "aarch64")]
+            {
+                crate::cpu::flash_attention_single(
+                    &buffers.q_buffer,
+                    &buffers.k_buffer,
+                    &buffers.v_buffer,
+                    layer_idx,
+                    kv_cache,
+                    n_heads,
+                    head_dim,
+                    n_kv_heads,
+                    &mut buffers.attn_out,
+                    &mut buffers.flash_attn_prefill,
+                );
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                self.attention_zero_alloc(
+                    &buffers.q_buffer,
+                    &buffers.k_buffer,
+                    &buffers.v_buffer,
+                    layer_idx,
+                    kv_cache,
+                    n_heads,
+                    head_dim,
+                    n_kv_heads,
+                    &mut buffers.attn_out,
+                    &mut buffers.attn_scores,
+                )?;
+            }
         }
 
         // 5. Output projection (attn_out -> hidden_alt) - single-thread for decode
@@ -3583,19 +3698,37 @@ impl LlamaModel {
             buffers.k_buffer[..k_size]
                 .copy_from_slice(&buffers.rope_buffer[..k_size]);
 
-            // 5. Attention
-            self.attention_zero_alloc(
-                &buffers.q_buffer,
-                &buffers.k_buffer,
-                &buffers.v_buffer,
-                layer_idx,
-                kv_cache,
-                n_heads,
-                head_dim,
-                n_kv_heads,
-                &mut buffers.attn_out,
-                &mut buffers.attn_scores,
-            )?;
+            // 5. Attention - use optimized tiled flash attention
+            #[cfg(target_arch = "aarch64")]
+            {
+                crate::cpu::flash_attention_single(
+                    &buffers.q_buffer,
+                    &buffers.k_buffer,
+                    &buffers.v_buffer,
+                    layer_idx,
+                    kv_cache,
+                    n_heads,
+                    head_dim,
+                    n_kv_heads,
+                    &mut buffers.attn_out,
+                    &mut buffers.flash_attn_prefill,
+                );
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                self.attention_zero_alloc(
+                    &buffers.q_buffer,
+                    &buffers.k_buffer,
+                    &buffers.v_buffer,
+                    layer_idx,
+                    kv_cache,
+                    n_heads,
+                    head_dim,
+                    n_kv_heads,
+                    &mut buffers.attn_out,
+                    &mut buffers.attn_scores,
+                )?;
+            }
         }
 
         // 6. Output projection
@@ -3706,19 +3839,37 @@ impl LlamaModel {
             buffers.k_buffer[..k_size]
                 .copy_from_slice(&buffers.rope_buffer[..k_size]);
 
-            // Attention
-            self.attention_zero_alloc(
-                &buffers.q_buffer[..q_size],
-                &buffers.k_buffer[..k_size],
-                &buffers.v_buffer[..v_size],
-                layer_idx,
-                kv_cache,
-                n_heads,
-                head_dim,
-                n_kv_heads,
-                &mut buffers.attn_out,
-                &mut buffers.kv_dequant,
-            )?;
+            // Attention - use optimized tiled flash attention
+            #[cfg(target_arch = "aarch64")]
+            {
+                crate::cpu::flash_attention_single(
+                    &buffers.q_buffer[..q_size],
+                    &buffers.k_buffer[..k_size],
+                    &buffers.v_buffer[..v_size],
+                    layer_idx,
+                    kv_cache,
+                    n_heads,
+                    head_dim,
+                    n_kv_heads,
+                    &mut buffers.attn_out,
+                    &mut buffers.flash_attn_prefill,
+                );
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                self.attention_zero_alloc(
+                    &buffers.q_buffer[..q_size],
+                    &buffers.k_buffer[..k_size],
+                    &buffers.v_buffer[..v_size],
+                    layer_idx,
+                    kv_cache,
+                    n_heads,
+                    head_dim,
+                    n_kv_heads,
+                    &mut buffers.attn_out,
+                    &mut buffers.kv_dequant,
+                )?;
+            }
         } else {
             // Standard separate wq/wk/wv projections
             let q_size = n_heads * head_dim;
@@ -3864,19 +4015,37 @@ impl LlamaModel {
             buffers.k_buffer[..k_size]
                 .copy_from_slice(&buffers.rope_buffer[..k_size]);
 
-            // Attention
-            self.attention_zero_alloc(
-                &buffers.q_buffer,
-                &buffers.k_buffer,
-                &buffers.v_buffer,
-                layer_idx,
-                kv_cache,
-                n_heads,
-                head_dim,
-                n_kv_heads,
-                &mut buffers.attn_out,
-                &mut buffers.kv_dequant,
-            )?;
+            // Attention - use optimized tiled flash attention
+            #[cfg(target_arch = "aarch64")]
+            {
+                crate::cpu::flash_attention_single(
+                    &buffers.q_buffer,
+                    &buffers.k_buffer,
+                    &buffers.v_buffer,
+                    layer_idx,
+                    kv_cache,
+                    n_heads,
+                    head_dim,
+                    n_kv_heads,
+                    &mut buffers.attn_out,
+                    &mut buffers.flash_attn_prefill,
+                );
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                self.attention_zero_alloc(
+                    &buffers.q_buffer,
+                    &buffers.k_buffer,
+                    &buffers.v_buffer,
+                    layer_idx,
+                    kv_cache,
+                    n_heads,
+                    head_dim,
+                    n_kv_heads,
+                    &mut buffers.attn_out,
+                    &mut buffers.kv_dequant,
+                )?;
+            }
         }
 
         // 5. Output projection (single-thread GEMV)
@@ -3902,10 +4071,9 @@ impl LlamaModel {
             &mut buffers.hidden_alt,
         );
 
-        // 8. FFN with hybrid ST/MT GEMV
-        // Large matrices (w1, w3: m=3072) use multi-thread
-        // Small matrices (w2: m=1024) use single-thread
-        self.compute_ffn_zero_alloc(
+        // 8. FFN with single-thread GEMV for decode
+        // Thread creation overhead (127µs per scope) exceeds compute time for small matrices
+        self.compute_ffn_zero_alloc_single_thread(
             layer,
             &buffers.hidden_alt,
             &mut buffers.ffn_gate,
@@ -3933,40 +4101,76 @@ impl LlamaModel {
         let hidden_size = self.config.hidden_size;
         let intermediate_size = self.config.intermediate_size;
 
-        // Gate projection (single-thread)
-        self.gemv_into_with_buffers_single_thread(
-            hidden,
-            layer.w1.as_ref()?,
-            gate_out,
-            q8k_input,
-            x_padded,
-        );
+        if let (Some(w1), Some(w2), Some(w3)) =
+            (&layer.w1, &layer.w2, &layer.w3)
+        {
+            // Check if w1 and w3 are both K-quant
+            let both_k_quant = matches!(
+                (w1.dtype, w3.dtype),
+                (
+                    DataType::Q4_K
+                        | DataType::Q5_K
+                        | DataType::Q6_K
+                        | DataType::IQ4_XS,
+                    DataType::Q4_K
+                        | DataType::Q5_K
+                        | DataType::Q6_K
+                        | DataType::IQ4_XS
+                )
+            );
 
-        // Up projection (single-thread)
-        self.gemv_into_with_buffers_single_thread(
-            hidden,
-            layer.w3.as_ref()?,
-            up_out,
-            q8k_input,
-            x_padded,
-        );
+            if both_k_quant {
+                // Pre-quantize hidden once for w1 and w3
+                let x_q8k_blocks = unsafe {
+                    use crate::quant::types::{BlockQ8K, QK_K};
+                    let in_size_padded =
+                        ((hidden_size + QK_K - 1) / QK_K) * QK_K;
+                    let nb = in_size_padded / QK_K;
+                    std::slice::from_raw_parts_mut(
+                        q8k_input.as_mut_ptr() as *mut BlockQ8K,
+                        nb,
+                    )
+                };
+                Self::quantize_input_to_q8k(hidden, x_q8k_blocks, x_padded);
 
-        // SiLU activation + element-wise multiply
-        for i in 0..intermediate_size {
-            let silu = gate_out[i] / (1.0 + gate_out[i].exp());
-            up_out[i] = silu * up_out[i];
+                // Gate and up projections with pre-quantized input
+                self.gemv_with_prequant_single_thread(
+                    x_q8k_blocks,
+                    hidden_size,
+                    w1,
+                    gate_out,
+                );
+                self.gemv_with_prequant_single_thread(
+                    x_q8k_blocks,
+                    hidden_size,
+                    w3,
+                    up_out,
+                );
+            } else {
+                // Fallback for mixed dtypes
+                self.gemv_into_with_buffers_single_thread(
+                    hidden, w1, gate_out, q8k_input, x_padded,
+                );
+                self.gemv_into_with_buffers_single_thread(
+                    hidden, w3, up_out, q8k_input, x_padded,
+                );
+            }
+
+            // SwiGLU: gate * silu(up) in-place on gate_buf
+            for i in 0..intermediate_size {
+                let silu = gate_out[i] / (1.0 + gate_out[i].exp());
+                up_out[i] = silu * up_out[i];
+            }
+
+            // Down projection (single-thread)
+            self.gemv_into_with_buffers_single_thread(
+                up_out, w2, result, q8k_input, x_padded,
+            );
+
+            return Some(());
         }
 
-        // Down projection (single-thread)
-        self.gemv_into_with_buffers_single_thread(
-            up_out,
-            layer.w2.as_ref()?,
-            result,
-            q8k_input,
-            x_padded,
-        );
-
-        Some(())
+        None
     }
 
     pub fn apply_rms_norm_impl(
@@ -4444,17 +4648,22 @@ impl LlamaModel {
 
         use crate::quant::kv_cache::quantize_row_q8_k_neon;
         use crate::quant::matmul::k_quant::{
-            matmul_q4_k_q8_k_hybrid, matmul_q5_k_q8_k_hybrid,
-            matmul_q6_k_q8_k_hybrid,
+            matmul_iq4_xs_q8_k_hybrid, matmul_q4_k_q8_k_hybrid,
+            matmul_q5_k_q8_k_hybrid, matmul_q6_k_q8_k_hybrid,
         };
-        use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
+        use crate::quant::types::{
+            BlockIQ4XS, BlockQ4K, BlockQ5K, BlockQ6K, QK_K,
+        };
 
         // K-quant GEMV with zero-padding for non-standard dimensions
         let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
         let nb = in_size_padded / QK_K;
 
         match w.dtype {
-            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+            DataType::Q4_K
+            | DataType::Q5_K
+            | DataType::Q6_K
+            | DataType::IQ4_XS => {
                 // Reuse pre-allocated buffers
                 let x_q8k_blocks = unsafe {
                     let available_blocks = x_q8k.len()
@@ -4528,6 +4737,20 @@ impl LlamaModel {
                                 out_size,
                             );
                         }
+                        DataType::IQ4_XS => {
+                            let weights: &[BlockIQ4XS] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockIQ4XS,
+                                    out_size * nb,
+                                );
+                            matmul_iq4_xs_q8_k_hybrid(
+                                weights,
+                                x_q8k_blocks,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
                         _ => unreachable!(),
                     }
                 }
@@ -4569,17 +4792,23 @@ impl LlamaModel {
 
         use crate::quant::kv_cache::quantize_row_q8_k_neon;
         use crate::quant::matmul::k_quant::{
-            matmul_f16_f32_single_thread, matmul_q4_k_q8_k_single_thread,
-            matmul_q5_k_q8_k_single_thread, matmul_q6_k_q8_k_single_thread,
+            matmul_f16_f32_single_thread, matmul_iq4_xs_q8_k_single_thread,
+            matmul_q4_k_q8_k_single_thread, matmul_q5_k_q8_k_single_thread,
+            matmul_q6_k_q8_k_single_thread,
         };
-        use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
+        use crate::quant::types::{
+            BlockIQ4XS, BlockQ4K, BlockQ5K, BlockQ6K, QK_K,
+        };
 
         // K-quant GEMV with zero-padding for non-standard dimensions
         let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
         let nb = in_size_padded / QK_K;
 
         match w.dtype {
-            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+            DataType::Q4_K
+            | DataType::Q5_K
+            | DataType::Q6_K
+            | DataType::IQ4_XS => {
                 // Reuse pre-allocated buffers
                 let x_q8k_blocks = unsafe {
                     let available_blocks = x_q8k.len()
@@ -4649,6 +4878,20 @@ impl LlamaModel {
                                 out_size,
                             );
                         }
+                        DataType::IQ4_XS => {
+                            let weights: &[BlockIQ4XS] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockIQ4XS,
+                                    out_size * nb,
+                                );
+                            matmul_iq4_xs_q8_k_single_thread(
+                                weights,
+                                x_q8k_blocks,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
                         _ => unreachable!(),
                     }
                 }
@@ -4691,10 +4934,12 @@ impl LlamaModel {
         out: &mut [f32],
     ) -> bool {
         use crate::quant::matmul::k_quant::{
-            matmul_q4_k_q8_k_hybrid, matmul_q5_k_q8_k_hybrid,
-            matmul_q6_k_q8_k_hybrid,
+            matmul_iq4_xs_q8_k_hybrid, matmul_q4_k_q8_k_hybrid,
+            matmul_q5_k_q8_k_hybrid, matmul_q6_k_q8_k_hybrid,
         };
-        use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
+        use crate::quant::types::{
+            BlockIQ4XS, BlockQ4K, BlockQ5K, BlockQ6K, QK_K,
+        };
 
         let out_size = out.len();
         let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
@@ -4705,7 +4950,10 @@ impl LlamaModel {
         }
 
         match w.dtype {
-            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+            DataType::Q4_K
+            | DataType::Q5_K
+            | DataType::Q6_K
+            | DataType::IQ4_XS => {
                 unsafe {
                     match w.dtype {
                         DataType::Q4_K => {
@@ -4750,6 +4998,20 @@ impl LlamaModel {
                                 out_size,
                             );
                         }
+                        DataType::IQ4_XS => {
+                            let weights: &[BlockIQ4XS] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockIQ4XS,
+                                    out_size * nb,
+                                );
+                            matmul_iq4_xs_q8_k_hybrid(
+                                weights,
+                                x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
                         _ => unreachable!(),
                     }
                 }
@@ -4770,10 +5032,12 @@ impl LlamaModel {
         out: &mut [f32],
     ) -> bool {
         use crate::quant::matmul::k_quant::{
-            matmul_q4_k_q8_k_single_thread, matmul_q5_k_q8_k_single_thread,
-            matmul_q6_k_q8_k_single_thread,
+            matmul_iq4_xs_q8_k_single_thread, matmul_q4_k_q8_k_single_thread,
+            matmul_q5_k_q8_k_single_thread, matmul_q6_k_q8_k_single_thread,
         };
-        use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
+        use crate::quant::types::{
+            BlockIQ4XS, BlockQ4K, BlockQ5K, BlockQ6K, QK_K,
+        };
 
         let out_size = out.len();
         let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
@@ -4784,7 +5048,10 @@ impl LlamaModel {
         }
 
         match w.dtype {
-            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+            DataType::Q4_K
+            | DataType::Q5_K
+            | DataType::Q6_K
+            | DataType::IQ4_XS => {
                 unsafe {
                     match w.dtype {
                         DataType::Q4_K => {
@@ -4822,6 +5089,20 @@ impl LlamaModel {
                                     out_size * nb,
                                 );
                             matmul_q6_k_q8_k_single_thread(
+                                weights,
+                                x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        DataType::IQ4_XS => {
+                            let weights: &[BlockIQ4XS] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockIQ4XS,
+                                    out_size * nb,
+                                );
+                            matmul_iq4_xs_q8_k_single_thread(
                                 weights,
                                 x_q8k,
                                 out,

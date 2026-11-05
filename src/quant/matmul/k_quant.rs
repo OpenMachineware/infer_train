@@ -101,53 +101,7 @@ pub unsafe fn matmul_q4_k_q8_k_single_thread(
     }
 }
 
-/// Wrapper function for lock-free thread pool
-#[target_feature(enable = "neon,dotprod")]
-unsafe fn gemv_q4_k_q8_k_kernel(
-    weights: *const u8,
-    input: *const u8,
-    output: *mut f32,
-    k: usize,
-    m: usize,
-    start: usize,
-    end: usize,
-) {
-    let nb = k / QK_K;
-    let weights = weights as *const BlockQ4K;
-    let input = input as *const BlockQ8K;
-
-    for row in start..end {
-        *output.add(row) = vec_dot_q4_k_q8_k_neon(
-            k,
-            std::slice::from_raw_parts(weights.add(row * nb), nb),
-            std::slice::from_raw_parts(input, nb),
-        );
-    }
-}
-
-/// Persistent thread pool Q4_K × Q8_K matrix-vector multiplication
-#[target_feature(enable = "neon,dotprod")]
-pub unsafe fn matmul_q4_k_q8_k_persistent(
-    weights: &[BlockQ4K],
-    x: &[BlockQ8K],
-    dst: &mut [f32],
-    k: usize,
-    m: usize,
-) {
-    let pool = crate::cpu::global_pool();
-    pool.execute_gemv(
-        gemv_q4_k_q8_k_kernel,
-        weights.as_ptr() as *const u8,
-        x.as_ptr() as *const u8,
-        dst.as_mut_ptr(),
-        k,
-        m,
-    );
-}
-
-/// Hybrid Q4_K × Q8_K: ST for single row, MT with persistent pool for m > 1
-/// Key insight from llama.cpp: always use threads for parallelizable work
-/// Persistent thread pool has ~590ns overhead (95x faster than std::thread::scope)
+/// Hybrid Q4_K × Q8_K: ST for single row, MT for m > 1
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q4_k_q8_k_hybrid(
     weights: &[BlockQ4K],
@@ -159,7 +113,8 @@ pub unsafe fn matmul_q4_k_q8_k_hybrid(
     if m <= 1 {
         matmul_q4_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
-        matmul_q4_k_q8_k_persistent(weights, x, dst, k, m);
+        let nb = k / QK_K;
+        matmul_q4_k_q8_k_standard(weights, x, dst, k, m, nb);
     }
 }
 
@@ -212,51 +167,7 @@ pub unsafe fn matmul_q6_k_q8_k_single_thread(
     }
 }
 
-/// Wrapper function for lock-free thread pool
-#[target_feature(enable = "neon,dotprod")]
-unsafe fn gemv_q6_k_q8_k_kernel(
-    weights: *const u8,
-    input: *const u8,
-    output: *mut f32,
-    k: usize,
-    m: usize,
-    start: usize,
-    end: usize,
-) {
-    let nb = k / QK_K;
-    let weights = weights as *const BlockQ6K;
-    let input = input as *const BlockQ8K;
-
-    for row in start..end {
-        *output.add(row) = vec_dot_q6_k_q8_k_neon(
-            k,
-            std::slice::from_raw_parts(weights.add(row * nb), nb),
-            std::slice::from_raw_parts(input, nb),
-        );
-    }
-}
-
-/// Persistent thread pool Q6_K × Q8_K matrix-vector multiplication
-#[target_feature(enable = "neon,dotprod")]
-pub unsafe fn matmul_q6_k_q8_k_persistent(
-    weights: &[BlockQ6K],
-    x: &[BlockQ8K],
-    dst: &mut [f32],
-    k: usize,
-    m: usize,
-) {
-    let pool = crate::cpu::global_pool();
-    pool.execute_gemv(
-        gemv_q6_k_q8_k_kernel,
-        weights.as_ptr() as *const u8,
-        x.as_ptr() as *const u8,
-        dst.as_mut_ptr(),
-        k,
-        m,
-    );
-}
-
-/// Hybrid Q6_K × Q8_K: ST for single row, MT with persistent pool for m > 1
+/// Hybrid Q6_K × Q8_K: ST for single row, MT for m > 1
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q6_k_q8_k_hybrid(
     weights: &[BlockQ6K],
@@ -268,7 +179,7 @@ pub unsafe fn matmul_q6_k_q8_k_hybrid(
     if m <= 1 {
         matmul_q6_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
-        matmul_q6_k_q8_k_persistent(weights, x, dst, k, m);
+        matmul_q6_k_q8_k(weights, x, dst, k, m);
     }
 }
 
@@ -402,53 +313,7 @@ pub unsafe fn matmul_q5_k_q8_k_narrow(
     }
 }
 
-/// Wrapper function for lock-free thread pool
-/// Matches the signature: fn(*const u8, *const u8, *mut f32, usize, usize, usize, usize)
-#[target_feature(enable = "neon,dotprod")]
-unsafe fn gemv_q5_k_q8_k_kernel(
-    weights: *const u8,
-    input: *const u8,
-    output: *mut f32,
-    k: usize,
-    m: usize,
-    start: usize,
-    end: usize,
-) {
-    let nb = k / QK_K;
-    let weights = weights as *const BlockQ5K;
-    let input = input as *const BlockQ8K;
-
-    for row in start..end {
-        *output.add(row) = vec_dot_q5_k_q8_k_neon(
-            k,
-            std::slice::from_raw_parts(weights.add(row * nb), nb),
-            std::slice::from_raw_parts(input, nb),
-        );
-    }
-}
-
-/// Persistent thread pool Q5_K × Q8_K matrix-vector multiplication
-/// Zero thread spawn overhead - uses global persistent thread pool
-#[target_feature(enable = "neon,dotprod")]
-pub unsafe fn matmul_q5_k_q8_k_persistent(
-    weights: &[BlockQ5K],
-    x: &[BlockQ8K],
-    dst: &mut [f32],
-    k: usize,
-    m: usize,
-) {
-    let pool = crate::cpu::global_pool();
-    pool.execute_gemv(
-        gemv_q5_k_q8_k_kernel,
-        weights.as_ptr() as *const u8,
-        x.as_ptr() as *const u8,
-        dst.as_mut_ptr(),
-        k,
-        m,
-    );
-}
-
-/// Hybrid Q5_K × Q8_K: ST for single row, MT with persistent pool for m > 1
+/// Hybrid Q5_K × Q8_K: ST for single row, MT for m > 1
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q5_k_q8_k_hybrid(
     weights: &[BlockQ5K],
@@ -457,11 +322,10 @@ pub unsafe fn matmul_q5_k_q8_k_hybrid(
     k: usize,
     m: usize,
 ) {
-    // Persistent pool has ~590ns overhead, use for any m > 1
     if m <= 1 {
         matmul_q5_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
-        matmul_q5_k_q8_k_persistent(weights, x, dst, k, m);
+        matmul_q5_k_q8_k(weights, x, dst, k, m);
     }
 }
 
@@ -753,7 +617,7 @@ pub unsafe fn matmul_q5_1_q8_1_single_thread(
 
 // ===== IQ series matmul =====
 
-/// IQ4_XS × Q8_K matrix-vector multiplication
+/// IQ4_XS × Q8_K matrix-vector multiplication (parallel)
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_iq4_xs_q8_k(
     weights: &[BlockIQ4XS],
@@ -774,6 +638,43 @@ pub unsafe fn matmul_iq4_xs_q8_k(
             x,
         );
     });
+}
+
+/// Single-thread IQ4_XS × Q8_K matrix-vector multiplication
+/// For decode (batch=1) where thread overhead dominates
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_iq4_xs_q8_k_single_thread(
+    weights: &[BlockIQ4XS],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    let nb = k / QK_K;
+
+    for row in 0..m {
+        dst[row] = vec_dot_iq4_xs_q8_k_neon(
+            k,
+            std::slice::from_raw_parts(weights.as_ptr().add(row * nb), nb),
+            x,
+        );
+    }
+}
+
+/// Hybrid IQ4_XS × Q8_K: ST for single row, MT for m > 1
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_iq4_xs_q8_k_hybrid(
+    weights: &[BlockIQ4XS],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    if m <= 1 {
+        matmul_iq4_xs_q8_k_single_thread(weights, x, dst, k, m);
+    } else {
+        matmul_iq4_xs_q8_k(weights, x, dst, k, m);
+    }
 }
 
 /// IQ4_NL × Q8_0 matrix-vector multiplication
