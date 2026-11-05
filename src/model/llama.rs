@@ -10,7 +10,7 @@ use crate::inference::{KVCacheBase, dequant_to_f32};
 use crate::model::config::ModelConfig;
 use crate::model::tensor::{DataType, Tensor, TensorData};
 use crate::model::weights::WeightStore;
-use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K};
+use crate::quant::types::{BlockIQ4XS, BlockQ4K, BlockQ5K, BlockQ6K};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -4497,10 +4497,12 @@ impl LlamaModel {
 
         use crate::quant::kv_cache::quantize_row_q8_k_neon;
         use crate::quant::matmul::k_quant::{
-            matmul_q4_k_q8_k_hybrid, matmul_q5_k_q8_k_hybrid,
-            matmul_q6_k_q8_k_hybrid,
+            matmul_iq4_xs_q8_k_hybrid, matmul_q4_k_q8_k_hybrid,
+            matmul_q5_k_q8_k_hybrid, matmul_q6_k_q8_k_hybrid,
         };
-        use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
+        use crate::quant::types::{
+            BlockIQ4XS, BlockQ4K, BlockQ5K, BlockQ6K, QK_K,
+        };
         use std::sync::Arc;
 
         // K-quant GEMV with zero-padding for non-standard dimensions
@@ -4508,7 +4510,10 @@ impl LlamaModel {
         let nb = in_size_padded / QK_K;
 
         match w.dtype {
-            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+            DataType::Q4_K
+            | DataType::Q5_K
+            | DataType::Q6_K
+            | DataType::IQ4_XS => {
                 // Quantize input with zero-padding if needed
                 let mut x_q8k = vec![unsafe { std::mem::zeroed() }; nb];
                 if in_size != in_size_padded {
@@ -4557,6 +4562,20 @@ impl LlamaModel {
                                     out_size * nb,
                                 );
                             matmul_q6_k_q8_k_hybrid(
+                                weights,
+                                &x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        DataType::IQ4_XS => {
+                            let weights: &[BlockIQ4XS] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockIQ4XS,
+                                    out_size * nb,
+                                );
+                            matmul_iq4_xs_q8_k_hybrid(
                                 weights,
                                 &x_q8k,
                                 out,
@@ -5521,7 +5540,10 @@ impl LlamaModel {
         }
 
         match w.dtype {
-            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+            DataType::Q4_K
+            | DataType::Q5_K
+            | DataType::Q6_K
+            | DataType::IQ4_XS => {
                 // Quantize all inputs to Q8_K (row by row)
                 let x_q8k_blocks: &mut [BlockQ8K] = unsafe {
                     std::slice::from_raw_parts_mut(
@@ -5598,6 +5620,28 @@ impl LlamaModel {
                                 out_size,
                                 n,
                             );
+                        }
+                        DataType::IQ4_XS => {
+                            use crate::quant::matmul::k_quant::matmul_iq4_xs_q8_k;
+                            let weights: &[BlockIQ4XS] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockIQ4XS,
+                                    out_size * nb,
+                                );
+                            // Process each input vector with parallel GEMV
+                            let x_blocks: &[BlockQ8K] = x_q8k_blocks;
+                            for col in 0..n {
+                                let x_vec = &x_blocks[col * nb..(col + 1) * nb];
+                                let out_col = &mut outputs
+                                    [col * out_size..(col + 1) * out_size];
+                                matmul_iq4_xs_q8_k(
+                                    weights,
+                                    x_vec,
+                                    out_col,
+                                    in_size_padded,
+                                    out_size,
+                                );
+                            }
                         }
                         _ => unreachable!(),
                     }
