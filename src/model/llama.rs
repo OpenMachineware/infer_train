@@ -2494,24 +2494,14 @@ impl LlamaModel {
                 };
                 let attn_out_size = self.config.n_heads * v_head_dim;
                 let all_attn_outs_len = n_tokens * attn_out_size;
+                let q_size = self.config.n_heads * self.config.head_dim;
+                let k_size = self.config.n_kv_heads * self.config.key_length;
+                let v_size = self.config.n_kv_heads * self.config.value_length;
 
-                // Clear attention output buffer
-                for elem in
-                    buffers.attn_batch_output[..all_attn_outs_len].iter_mut()
-                {
-                    *elem = 0.0;
-                }
-
-                // Process each token's attention (still sequential due to position dependency)
+                // Apply RoPE to all Q and K vectors
                 for (token_idx, pos) in (0..n_tokens).zip(kv_cache.seq_len()..)
                 {
-                    // Extract Q, K, V from fused output
                     let qkv_offset = token_idx * qkv_out_size;
-                    let q_size = self.config.n_heads * self.config.head_dim;
-                    let k_size =
-                        self.config.n_kv_heads * self.config.key_length;
-                    let v_size =
-                        self.config.n_kv_heads * self.config.value_length;
 
                     buffers.q_buffer[..q_size].copy_from_slice(
                         &buffers.qkv_batch_output
@@ -2526,7 +2516,6 @@ impl LlamaModel {
                             ..qkv_offset + q_size + k_size + v_size],
                     );
 
-                    // RoPE and attention
                     self.apply_rope_into(
                         &buffers.q_buffer,
                         pos,
@@ -2534,7 +2523,7 @@ impl LlamaModel {
                         self.config.head_dim,
                         &mut buffers.rope_buffer,
                     )?;
-                    buffers.q_buffer[..q_size]
+                    buffers.qkv_batch_output[qkv_offset..qkv_offset + q_size]
                         .copy_from_slice(&buffers.rope_buffer[..q_size]);
 
                     let k_head_dim = k_size / self.config.n_kv_heads;
@@ -2545,27 +2534,52 @@ impl LlamaModel {
                         k_head_dim,
                         &mut buffers.rope_buffer,
                     )?;
-                    buffers.k_buffer[..k_size]
+                    buffers.qkv_batch_output
+                        [qkv_offset + q_size..qkv_offset + q_size + k_size]
                         .copy_from_slice(&buffers.rope_buffer[..k_size]);
+                }
 
-                    // Attention - use optimized tiled flash attention
-                    #[cfg(target_arch = "aarch64")]
+                // Tiled flash attention - processes all tokens at once
+                #[cfg(target_arch = "aarch64")]
+                {
+                    crate::cpu::flash_attention_prefill_tiled(
+                        &buffers.qkv_batch_output[..n_tokens * q_size], // Q outputs
+                        &buffers.qkv_batch_output
+                            [n_tokens * q_size..n_tokens * (q_size + k_size)], // K outputs
+                        &buffers.qkv_batch_output[n_tokens * (q_size + k_size)
+                            ..n_tokens * (q_size + k_size + v_size)], // V outputs
+                        layer_idx,
+                        kv_cache,
+                        n_tokens,
+                        self.config.n_heads,
+                        self.config.n_kv_heads,
+                        self.config.head_dim,
+                        &mut buffers.attn_batch_output[..all_attn_outs_len],
+                        &mut buffers.flash_attn_prefill,
+                    );
+                }
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    // Fallback for non-aarch64: still process token-by-token
+                    for (token_idx, _pos) in
+                        (0..n_tokens).zip(kv_cache.seq_len()..)
                     {
-                        crate::cpu::flash_attention_single(
-                            &buffers.q_buffer,
-                            &buffers.k_buffer,
-                            &buffers.v_buffer,
-                            layer_idx,
-                            kv_cache,
-                            self.config.n_heads,
-                            self.config.head_dim,
-                            self.config.n_kv_heads,
-                            &mut buffers.attn_out,
-                            &mut buffers.flash_attn_prefill,
+                        let qkv_offset = token_idx * qkv_out_size;
+                        buffers.q_buffer[..q_size].copy_from_slice(
+                            &buffers.qkv_batch_output
+                                [qkv_offset..qkv_offset + q_size],
                         );
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
+                        buffers.k_buffer[..k_size].copy_from_slice(
+                            &buffers.qkv_batch_output[qkv_offset + q_size
+                                ..qkv_offset + q_size + k_size],
+                        );
+                        buffers.v_buffer[..v_size].copy_from_slice(
+                            &buffers.qkv_batch_output[qkv_offset
+                                + q_size
+                                + k_size
+                                ..qkv_offset + q_size + k_size + v_size],
+                        );
+
                         self.attention_zero_alloc(
                             &buffers.q_buffer,
                             &buffers.k_buffer,
@@ -2578,14 +2592,13 @@ impl LlamaModel {
                             &mut buffers.attn_out,
                             &mut buffers.attn_scores,
                         )?;
+
+                        buffers.attn_batch_output[token_idx * attn_out_size
+                            ..(token_idx + 1) * attn_out_size]
+                            .copy_from_slice(
+                                &buffers.attn_out[..attn_out_size],
+                            );
                     }
-
-                    // Store attention output for batch wo projection
-                    buffers.attn_batch_output[token_idx * attn_out_size
-                        ..(token_idx + 1) * attn_out_size]
-                        .copy_from_slice(&buffers.attn_out[..attn_out_size]);
-
-                    kv_cache.advance();
                 }
 
                 // Batch wo projection

@@ -455,11 +455,19 @@ pub fn flash_attention_single(
     }
 }
 
-/// Scratch space for prefill attention
+/// Scratch space for tiled flash attention
+/// Per-thread layout matches llama.cpp
 pub struct FlashAttnPrefillScratch {
-    pub scores: Vec<f32>, // [KV_TILE_SZ]
+    pub scores: Vec<f32>, // [KV_TILE_SZ] - for decode
     pub k_row: Vec<f32>,  // [head_dim]
     pub v_row: Vec<f32>,  // [head_dim]
+    // Additional fields for tiled prefill
+    pub k_tile: Vec<f32>, // [head_dim, KV_TILE_SZ] - transposed for GEMM
+    pub v_tile: Vec<f32>, // [KV_TILE_SZ, head_dim]
+    pub kq: Vec<f32>,     // [Q_TILE_SZ, KV_TILE_SZ]
+    pub vkq: Vec<f32>,    // [Q_TILE_SZ, head_dim]
+    pub m_state: Vec<f32>, // [Q_TILE_SZ] - online softmax max
+    pub s_state: Vec<f32>, // [Q_TILE_SZ] - online softmax sum
 }
 
 impl FlashAttnPrefillScratch {
@@ -468,6 +476,225 @@ impl FlashAttnPrefillScratch {
             scores: vec![0.0; KV_TILE_SZ],
             k_row: vec![0.0; head_dim],
             v_row: vec![0.0; head_dim],
+            k_tile: vec![0.0; head_dim * KV_TILE_SZ],
+            v_tile: vec![0.0; KV_TILE_SZ * head_dim],
+            kq: vec![0.0; Q_TILE_SZ * KV_TILE_SZ],
+            vkq: vec![0.0; Q_TILE_SZ * head_dim],
+            m_state: vec![f32::NEG_INFINITY; Q_TILE_SZ],
+            s_state: vec![0.0; Q_TILE_SZ],
+        }
+    }
+}
+
+/// Tiled Flash Attention for prefill following llama.cpp's approach
+/// Processes multiple Q rows together using tiled processing with transposed K
+#[cfg(target_arch = "aarch64")]
+pub fn flash_attention_prefill_tiled(
+    q_outputs: &[f32], // [n_tokens, n_heads, head_dim]
+    k_outputs: &[f32], // [n_tokens, n_kv_heads, head_dim]
+    v_outputs: &[f32], // [n_tokens, n_kv_heads, head_dim]
+    layer_idx: usize,
+    kv_cache: &mut crate::inference::KVCache,
+    n_tokens: usize,
+    n_heads: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
+    attn_outputs: &mut [f32], // [n_tokens, n_heads, head_dim]
+    scratch: &mut FlashAttnPrefillScratch,
+) {
+    let scale = 1.0f32 / (head_dim as f32).sqrt();
+    let q_size = n_heads * head_dim;
+    let kv_size = n_kv_heads * head_dim;
+
+    // Clear outputs
+    for elem in attn_outputs.iter_mut() {
+        *elem = 0.0;
+    }
+
+    // First, store all K, V to cache
+    for token_idx in 0..n_tokens {
+        let k_offset = token_idx * kv_size;
+        let v_offset = token_idx * kv_size;
+        kv_cache.set_k(
+            layer_idx,
+            &k_outputs[k_offset..k_offset + kv_size],
+            n_kv_heads,
+            head_dim,
+        );
+        kv_cache.set_v(
+            layer_idx,
+            &v_outputs[v_offset..v_offset + kv_size],
+            n_kv_heads,
+            head_dim,
+        );
+        kv_cache.advance();
+    }
+
+    // Process Q rows in tiles, respecting causal mask
+    let seq_len = n_tokens;
+
+    for q_tile_start in (0..seq_len).step_by(Q_TILE_SZ) {
+        let q_tile_end = (q_tile_start + Q_TILE_SZ).min(seq_len);
+        let q_tile_size = q_tile_end - q_tile_start;
+
+        // For each head
+        for h in 0..n_heads {
+            let kv_head = h * n_kv_heads / n_heads;
+
+            // Initialize softmax state for this tile
+            for i in 0..Q_TILE_SZ {
+                scratch.m_state[i] = f32::NEG_INFINITY;
+                scratch.s_state[i] = 0.0;
+            }
+            // Clear VKQ accumulator
+            for i in 0..Q_TILE_SZ * head_dim {
+                scratch.vkq[i] = 0.0;
+            }
+
+            // Process KV tiles - each Q row i attends to positions [0, i]
+            for kv_tile_start in (0..q_tile_end).step_by(KV_TILE_SZ) {
+                let kv_tile_end = (kv_tile_start + KV_TILE_SZ).min(q_tile_end);
+                let kv_tile_size = kv_tile_end - kv_tile_start;
+
+                // Load K tile transposed: K_tile[head_dim, kv_tile_size]
+                // This is the critical optimization from llama.cpp
+                for tk in 0..kv_tile_size {
+                    let kv_pos = kv_tile_start + tk;
+                    kv_cache.get_k_into(
+                        layer_idx,
+                        kv_head,
+                        kv_pos,
+                        &mut scratch.k_row,
+                    );
+                    // Transpose: K_tile[d, tk] = K[tk, d]
+                    for d in 0..head_dim {
+                        scratch.k_tile[d * KV_TILE_SZ + tk] = scratch.k_row[d];
+                    }
+                }
+
+                // Load V tile: V_tile[kv_tile_size, head_dim]
+                for tk in 0..kv_tile_size {
+                    let kv_pos = kv_tile_start + tk;
+                    kv_cache.get_v_into(
+                        layer_idx,
+                        kv_head,
+                        kv_pos,
+                        &mut scratch.v_row,
+                    );
+                    for d in 0..head_dim {
+                        scratch.v_tile[tk * head_dim + d] = scratch.v_row[d];
+                    }
+                }
+
+                // Compute KQ = Q @ K^T for each Q row in this tile
+                for tq in 0..q_tile_size {
+                    let q_row = q_tile_start + tq;
+                    let q_offset = q_row * q_size + h * head_dim;
+
+                    // Compute attention scores for this Q row against K tile
+                    for tk in 0..kv_tile_size {
+                        let kv_pos = kv_tile_start + tk;
+
+                        if kv_pos <= q_row {
+                            // Compute dot product with NEON
+                            unsafe {
+                                use std::arch::aarch64::*;
+                                let q_ptr = q_outputs[q_offset..].as_ptr();
+
+                                let mut sum_vec = vdupq_n_f32(0.0f32);
+                                for d in (0..head_dim).step_by(4) {
+                                    if d + 4 <= head_dim {
+                                        let qv = vld1q_f32(q_ptr.add(d));
+                                        // K[d: d+4, tk] is at k_tile[d*KV_TILE_SZ + tk]
+                                        let kv = vld1q_f32(
+                                            scratch
+                                                .k_tile
+                                                .as_ptr()
+                                                .add(d * KV_TILE_SZ + tk),
+                                        );
+                                        sum_vec = vfmaq_f32(sum_vec, qv, kv);
+                                    }
+                                }
+
+                                let sum: [f32; 4] =
+                                    std::mem::transmute(sum_vec);
+                                scratch.kq[tq * KV_TILE_SZ + tk] =
+                                    (sum[0] + sum[1] + sum[2] + sum[3]) * scale;
+                            }
+                        } else {
+                            scratch.kq[tq * KV_TILE_SZ + tk] =
+                                f32::NEG_INFINITY;
+                        }
+                    }
+                }
+
+                // Online softmax: update M and S, rescale VKQ if needed
+                for tq in 0..q_tile_size {
+                    let mut tile_max = f32::NEG_INFINITY;
+                    for tk in 0..kv_tile_size {
+                        let score = scratch.kq[tq * KV_TILE_SZ + tk];
+                        if score > tile_max && score != f32::NEG_INFINITY {
+                            tile_max = score;
+                        }
+                    }
+
+                    if tile_max == f32::NEG_INFINITY {
+                        continue;
+                    }
+
+                    let old_m = scratch.m_state[tq];
+                    let new_m = old_m.max(tile_max);
+
+                    if new_m > old_m && old_m != f32::NEG_INFINITY {
+                        let rescale = (old_m - new_m).exp();
+                        for d in 0..head_dim {
+                            scratch.vkq[tq * head_dim + d] *= rescale;
+                        }
+                        scratch.s_state[tq] *= rescale;
+                    }
+                    scratch.m_state[tq] = new_m;
+
+                    // Compute softmax and accumulate
+                    let mut sum_exp = 0.0f32;
+                    for tk in 0..kv_tile_size {
+                        let score = scratch.kq[tq * KV_TILE_SZ + tk];
+                        if score != f32::NEG_INFINITY {
+                            let exp_score = (score - new_m).exp();
+                            scratch.kq[tq * KV_TILE_SZ + tk] = exp_score;
+                            sum_exp += exp_score;
+                        } else {
+                            scratch.kq[tq * KV_TILE_SZ + tk] = 0.0;
+                        }
+                    }
+                    scratch.s_state[tq] += sum_exp;
+
+                    // Accumulate weighted V
+                    for tk in 0..kv_tile_size {
+                        let weight = scratch.kq[tq * KV_TILE_SZ + tk];
+                        if weight > 0.0 {
+                            for d in 0..head_dim {
+                                scratch.vkq[tq * head_dim + d] +=
+                                    weight * scratch.v_tile[tk * head_dim + d];
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Normalize and write output
+            for tq in 0..q_tile_size {
+                let q_row = q_tile_start + tq;
+                let out_offset = q_row * q_size + h * head_dim;
+
+                let s = scratch.s_state[tq];
+                if s > 0.0 {
+                    let s_inv = 1.0 / s;
+                    for d in 0..head_dim {
+                        attn_outputs[out_offset + d] =
+                            scratch.vkq[tq * head_dim + d] * s_inv;
+                    }
+                }
+            }
         }
     }
 }

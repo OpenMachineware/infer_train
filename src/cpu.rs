@@ -10,7 +10,7 @@ pub mod work_buffers;
 
 pub use flash_attention::{
     FlashAttnBatchScratch, FlashAttnPrefillScratch, FlashAttnScratch,
-    flash_attention_prefill_optimized, flash_attention_single,
+    flash_attention_prefill_tiled, flash_attention_single,
 };
 pub use graph_executor::{GraphWorkBuffers, execute_graph_parallel};
 pub use thread_pool::parallel_work_stealing as gemv_work_stealing;
