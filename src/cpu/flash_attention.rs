@@ -488,6 +488,10 @@ impl FlashAttnPrefillScratch {
 
 /// Tiled Flash Attention for prefill following llama.cpp's approach
 /// Processes multiple Q rows together using tiled processing with transposed K
+/// Multi-threaded: distributes heads across threads for parallel processing
+///
+/// Key optimization: Reads K/V directly from input tensors, bypassing KV cache
+/// This matches llama.cpp's approach for prefill performance
 #[cfg(target_arch = "aarch64")]
 pub fn flash_attention_prefill_tiled(
     q_outputs: &[f32], // [n_tokens, n_heads, head_dim]
@@ -500,7 +504,7 @@ pub fn flash_attention_prefill_tiled(
     n_kv_heads: usize,
     head_dim: usize,
     attn_outputs: &mut [f32], // [n_tokens, n_heads, head_dim]
-    scratch: &mut FlashAttnPrefillScratch,
+    _scratch: &mut FlashAttnPrefillScratch, // Unused in multithreaded version
 ) {
     let scale = 1.0f32 / (head_dim as f32).sqrt();
     let q_size = n_heads * head_dim;
@@ -511,7 +515,8 @@ pub fn flash_attention_prefill_tiled(
         *elem = 0.0;
     }
 
-    // First, store all K, V to cache
+    // Store K, V to cache for decode (but don't use for prefill computation)
+    // This follows llama.cpp: prefill reads from input tensors, not cache
     for token_idx in 0..n_tokens {
         let k_offset = token_idx * kv_size;
         let v_offset = token_idx * kv_size;
@@ -530,253 +535,338 @@ pub fn flash_attention_prefill_tiled(
         kv_cache.advance();
     }
 
+    // Use multithreading for prefill (n_heads >= 4)
+    let n_threads = if n_heads >= 4 {
+        crate::cpu::default_n_threads().min(n_heads)
+    } else {
+        1
+    };
+
     // Process Q rows in tiles, respecting causal mask
     let seq_len = n_tokens;
 
-    for q_tile_start in (0..seq_len).step_by(Q_TILE_SZ) {
-        let q_tile_end = (q_tile_start + Q_TILE_SZ).min(seq_len);
-        let q_tile_size = q_tile_end - q_tile_start;
+    if n_threads > 1 {
+        // Multi-threaded: distribute heads across threads
+        use crate::cpu::SyncPtr;
 
-        // For each head
-        for h in 0..n_heads {
-            let kv_head = h * n_kv_heads / n_heads;
+        let out_ptr = SyncPtr::new(attn_outputs.as_mut_ptr());
+        let q_ptr = SyncPtr::new(q_outputs.as_ptr() as *mut f32);
+        let k_ptr = SyncPtr::new(k_outputs.as_ptr() as *mut f32);
+        let v_ptr = SyncPtr::new(v_outputs.as_ptr() as *mut f32);
 
-            // Initialize softmax state for this tile
-            for i in 0..Q_TILE_SZ {
-                scratch.m_state[i] = f32::NEG_INFINITY;
-                scratch.s_state[i] = 0.0;
+        std::thread::scope(|s| {
+            let handles: Vec<_> = (0..n_threads)
+                .map(|tid| {
+                    s.spawn(move || {
+                        // Each thread gets its own scratch space
+                        let mut local_scratch =
+                            FlashAttnPrefillScratch::new(head_dim);
+
+                        let heads_per_thread =
+                            (n_heads + n_threads - 1) / n_threads;
+                        let h_start = tid * heads_per_thread;
+                        let h_end = (h_start + heads_per_thread).min(n_heads);
+
+                        for q_tile_start in (0..seq_len).step_by(Q_TILE_SZ) {
+                            let q_tile_end =
+                                (q_tile_start + Q_TILE_SZ).min(seq_len);
+                            let q_tile_size = q_tile_end - q_tile_start;
+
+                            for h in h_start..h_end {
+                                let kv_head = h * n_kv_heads / n_heads;
+                                process_head_tiled(
+                                    q_ptr.get(),
+                                    k_ptr.get(),
+                                    v_ptr.get(),
+                                    n_kv_heads,
+                                    head_dim,
+                                    kv_head,
+                                    h,
+                                    q_tile_start,
+                                    q_tile_size,
+                                    q_tile_end,
+                                    q_size,
+                                    kv_size,
+                                    scale,
+                                    out_ptr.get(),
+                                    &mut local_scratch,
+                                );
+                            }
+                        }
+                    })
+                })
+                .collect();
+
+            for handle in handles {
+                handle.join().unwrap();
             }
-            // Clear VKQ accumulator
-            for i in 0..Q_TILE_SZ * head_dim {
-                scratch.vkq[i] = 0.0;
+        });
+    } else {
+        // Single-threaded fallback
+        for q_tile_start in (0..seq_len).step_by(Q_TILE_SZ) {
+            let q_tile_end = (q_tile_start + Q_TILE_SZ).min(seq_len);
+            let q_tile_size = q_tile_end - q_tile_start;
+
+            for h in 0..n_heads {
+                let kv_head = h * n_kv_heads / n_heads;
+
+                process_head_tiled(
+                    q_outputs.as_ptr(),
+                    k_outputs.as_ptr(),
+                    v_outputs.as_ptr(),
+                    n_kv_heads,
+                    head_dim,
+                    kv_head,
+                    h,
+                    q_tile_start,
+                    q_tile_size,
+                    q_tile_end,
+                    q_size,
+                    kv_size,
+                    scale,
+                    attn_outputs.as_mut_ptr(),
+                    _scratch,
+                );
+            }
+        }
+    }
+}
+
+/// Process a single head in tiled fashion
+/// Reads K/V directly from input tensors (following llama.cpp's approach for prefill)
+#[cfg(target_arch = "aarch64")]
+fn process_head_tiled(
+    q_outputs: *const f32,
+    k_outputs: *const f32,
+    v_outputs: *const f32,
+    n_kv_heads: usize,
+    head_dim: usize,
+    kv_head: usize,
+    h: usize, // Current Q head index
+    q_tile_start: usize,
+    q_tile_size: usize,
+    q_tile_end: usize,
+    q_size: usize,
+    kv_size: usize,
+    scale: f32,
+    attn_outputs: *mut f32,
+    scratch: &mut FlashAttnPrefillScratch,
+) {
+    use std::arch::aarch64::*;
+
+    unsafe {
+        let q_outputs = std::slice::from_raw_parts(q_outputs, q_size * 1024); // Large enough
+        let k_outputs = std::slice::from_raw_parts(k_outputs, kv_size * 1024);
+        let v_outputs = std::slice::from_raw_parts(v_outputs, kv_size * 1024);
+        let attn_outputs =
+            std::slice::from_raw_parts_mut(attn_outputs, q_size * 1024);
+
+        // Initialize softmax state for this tile
+        for i in 0..Q_TILE_SZ {
+            scratch.m_state[i] = f32::NEG_INFINITY;
+            scratch.s_state[i] = 0.0;
+        }
+        // Clear VKQ accumulator
+        for i in 0..Q_TILE_SZ * head_dim {
+            scratch.vkq[i] = 0.0;
+        }
+
+        // Process KV tiles - each Q row i attends to positions [0, i]
+        for kv_tile_start in (0..q_tile_end).step_by(KV_TILE_SZ) {
+            let kv_tile_end = (kv_tile_start + KV_TILE_SZ).min(q_tile_end);
+            let kv_tile_size = kv_tile_end - kv_tile_start;
+
+            // Load K tile transposed: K_tile[head_dim, kv_tile_size]
+            // Direct access to k_outputs (llama.cpp approach)
+            for tk in 0..kv_tile_size {
+                let kv_pos = kv_tile_start + tk;
+                let k_offset = kv_pos * kv_size + kv_head * head_dim;
+
+                // Transpose: K_tile[d, tk] = K[tk, d]
+                for d in 0..head_dim {
+                    scratch.k_tile[d * KV_TILE_SZ + tk] =
+                        k_outputs[k_offset + d];
+                }
             }
 
-            // Process KV tiles - each Q row i attends to positions [0, i]
-            for kv_tile_start in (0..q_tile_end).step_by(KV_TILE_SZ) {
-                let kv_tile_end = (kv_tile_start + KV_TILE_SZ).min(q_tile_end);
-                let kv_tile_size = kv_tile_end - kv_tile_start;
+            // Load V tile: V_tile[kv_tile_size, head_dim]
+            // Direct access to v_outputs (llama.cpp approach)
+            for tk in 0..kv_tile_size {
+                let kv_pos = kv_tile_start + tk;
+                let v_offset = kv_pos * kv_size + kv_head * head_dim;
 
-                // Load K tile transposed: K_tile[head_dim, kv_tile_size]
-                // This is the critical optimization from llama.cpp
-                for tk in 0..kv_tile_size {
-                    let kv_pos = kv_tile_start + tk;
-                    kv_cache.get_k_into(
-                        layer_idx,
-                        kv_head,
-                        kv_pos,
-                        &mut scratch.k_row,
-                    );
-                    // Transpose: K_tile[d, tk] = K[tk, d]
-                    for d in 0..head_dim {
-                        scratch.k_tile[d * KV_TILE_SZ + tk] = scratch.k_row[d];
-                    }
+                for d in 0..head_dim {
+                    scratch.v_tile[tk * head_dim + d] = v_outputs[v_offset + d];
                 }
+            }
 
-                // Load V tile: V_tile[kv_tile_size, head_dim]
-                for tk in 0..kv_tile_size {
-                    let kv_pos = kv_tile_start + tk;
-                    kv_cache.get_v_into(
-                        layer_idx,
-                        kv_head,
-                        kv_pos,
-                        &mut scratch.v_row,
-                    );
-                    for d in 0..head_dim {
-                        scratch.v_tile[tk * head_dim + d] = scratch.v_row[d];
-                    }
-                }
+            // Compute KQ = Q @ K^T using true GEMM: KQ[q_tile_size, kv_tile_size] = Q[q_tile_size, head_dim] @ K[head_dim, kv_tile_size]
+            // K is stored transposed, so we can efficiently access K[:, tk]
 
-                // Compute KQ = Q @ K^T using true GEMM: KQ[q_tile_size, kv_tile_size] = Q[q_tile_size, head_dim] @ K[head_dim, kv_tile_size]
-                // K is stored transposed, so we can efficiently access K[:, tk]
-                unsafe {
-                    use std::arch::aarch64::*;
+            // Clear KQ for this tile
+            for i in 0..q_tile_size * kv_tile_size {
+                scratch.kq[i] = 0.0;
+            }
 
-                    // Clear KQ for this tile
-                    for i in 0..q_tile_size * kv_tile_size {
-                        scratch.kq[i] = 0.0;
-                    }
+            // GEMM: For each row i of Q and column j of K, compute dot product
+            // This is equivalent to simd_gemm(KQ, Q, K, q_tile_size, head_dim, kv_tile_size)
+            // where K is transposed: K[d, j] instead of K[j, d]
 
-                    // GEMM: For each row i of Q and column j of K, compute dot product
-                    // This is equivalent to simd_gemm(KQ, Q, K, q_tile_size, head_dim, kv_tile_size)
-                    // where K is transposed: K[d, j] instead of K[j, d]
+            // Process in 4×4 blocks following llama.cpp's GEMM_RM/GEMM_RN pattern
+            for i0 in (0..q_tile_size).step_by(4) {
+                let i1 = (i0 + 4).min(q_tile_size);
 
-                    // Process in 4×4 blocks following llama.cpp's GEMM_RM/GEMM_RN pattern
-                    for i0 in (0..q_tile_size).step_by(4) {
-                        let i1 = (i0 + 4).min(q_tile_size);
+                for j0 in (0..kv_tile_size).step_by(4) {
+                    let j1 = (j0 + 4).min(kv_tile_size);
 
-                        for j0 in (0..kv_tile_size).step_by(4) {
-                            let j1 = (j0 + 4).min(kv_tile_size);
+                    // 4×4 accumulator block
+                    let mut acc: [[float32x4_t; 4]; 4] = std::mem::zeroed();
 
-                            // 4×4 accumulator block
-                            let mut acc: [[float32x4_t; 4]; 4] =
+                    // Inner loop over K dimension (head_dim)
+                    for kk in (0..head_dim).step_by(4) {
+                        if kk + 4 <= head_dim {
+                            // Load K columns j0..j1 for dimensions kk..kk+4
+                            // K is transposed: K[d, tk] stored at k_tile[d * KV_TILE_SZ + tk]
+                            // So K[kk:kk+4, j] is at k_tile[kk*KV_TILE_SZ + j] to k_tile[(kk+3)*KV_TILE_SZ + j]
+
+                            // Load V32-style: 4 elements from each of 4 K columns
+                            let mut k_cols: [float32x4_t; 4] =
                                 std::mem::zeroed();
+                            for jj in 0..(j1 - j0) {
+                                // Load K[kk:kk+4, j0+jj]
+                                // K_f32 is [DK, KV_TILE_SZ] stored transposed for GEMM
+                                // When doing Q @ K^T, we compute KQ[i, j] = sum_k Q[i, k] * K[k, j]
+                                // With transposed K, K[k, j] is at K_f32[k * KV_TILE_SZ + j]
+                                // To vectorize, we load K[kk:kk+4, j] for multiple j at once
 
-                            // Inner loop over K dimension (head_dim)
-                            for kk in (0..head_dim).step_by(4) {
-                                if kk + 4 <= head_dim {
-                                    // Load K columns j0..j1 for dimensions kk..kk+4
-                                    // K is transposed: K[d, tk] stored at k_tile[d * KV_TILE_SZ + tk]
-                                    // So K[kk:kk+4, j] is at k_tile[kk*KV_TILE_SZ + j] to k_tile[(kk+3)*KV_TILE_SZ + j]
-
-                                    // Load V32-style: 4 elements from each of 4 K columns
-                                    let mut k_cols: [float32x4_t; 4] =
-                                        std::mem::zeroed();
-                                    for jj in 0..(j1 - j0) {
-                                        // Load K[kk:kk+4, j0+jj] - but this needs careful indexing
-                                        // Since K is [DK, KV_TILE_SZ] with DK contiguous first,
-                                        // K[d, tk] is at k_tile[d * KV_TILE_SZ + tk]
-                                        // So K[kk:kk+4, j0+jj] is at &k_tile[kk * KV_TILE_SZ + j0 + jj]
-                                        // But these are not contiguous! We need to gather.
-
-                                        // Actually, following llama.cpp's approach more closely:
-                                        // K_f32 is [DK, KV_TILE_SZ] stored transposed for GEMM
-                                        // When doing Q @ K^T, we compute KQ[i, j] = sum_k Q[i, k] * K[k, j]
-                                        // With transposed K, K[k, j] is at K_f32[k * KV_TILE_SZ + j]
-                                        // To vectorize, we load K[kk:kk+4, j] for multiple j at once
-
-                                        // Load 4 K rows at different positions - each from a different K column
-                                        k_cols[jj] = vld1q_f32(
-                                            scratch
-                                                .k_tile
-                                                .as_ptr()
-                                                .add(kk * KV_TILE_SZ + j0 + jj),
-                                        );
-                                    }
-
-                                    // For each Q row in the block
-                                    for ii in 0..(i1 - i0) {
-                                        let i = i0 + ii;
-                                        let q_row = q_tile_start + i;
-                                        let q_offset =
-                                            q_row * q_size + h * head_dim;
-
-                                        // Load Q[i, kk:kk+4]
-                                        let qv = vld1q_f32(
-                                            q_outputs[q_offset..]
-                                                .as_ptr()
-                                                .add(kk),
-                                        );
-
-                                        // FMLA: acc[ii, jj] += Q[i, kk:kk+4] * K[kk:kk+4, j0+jj]
-                                        for jj in 0..(j1 - j0) {
-                                            acc[ii][jj] = vfmaq_f32(
-                                                acc[ii][jj],
-                                                qv,
-                                                k_cols[jj],
-                                            );
-                                        }
-                                    }
-                                }
+                                // Load 4 K rows at different positions - each from a different K column
+                                k_cols[jj] = vld1q_f32(
+                                    scratch
+                                        .k_tile
+                                        .as_ptr()
+                                        .add(kk * KV_TILE_SZ + j0 + jj),
+                                );
                             }
 
-                            // Scale and store results, applying causal mask
+                            // For each Q row in the block
                             for ii in 0..(i1 - i0) {
-                                for jj in 0..(j1 - j0) {
-                                    let i = i0 + ii;
-                                    let j = j0 + jj;
+                                let i = i0 + ii;
+                                let q_row = q_tile_start + i;
+                                let q_offset = q_row * q_size + h * head_dim;
 
-                                    // Apply causal mask
-                                    if kv_tile_start + j <= q_tile_start + i {
-                                        let score_vals: [f32; 4] =
-                                            std::mem::transmute(acc[ii][jj]);
-                                        let score = (score_vals[0]
-                                            + score_vals[1]
-                                            + score_vals[2]
-                                            + score_vals[3])
-                                            * scale;
-                                        scratch.kq[i * KV_TILE_SZ + j] = score;
-                                    } else {
-                                        scratch.kq[i * KV_TILE_SZ + j] =
-                                            f32::NEG_INFINITY;
-                                    }
+                                // Load Q[i, kk:kk+4]
+                                let qv = vld1q_f32(
+                                    q_outputs[q_offset..].as_ptr().add(kk),
+                                );
+
+                                // FMLA: acc[ii, jj] += Q[i, kk:kk+4] * K[kk:kk+4, j0+jj]
+                                for jj in 0..(j1 - j0) {
+                                    acc[ii][jj] =
+                                        vfmaq_f32(acc[ii][jj], qv, k_cols[jj]);
                                 }
+                            }
+                        }
+                    }
+
+                    // Scale and store results, applying causal mask
+                    for ii in 0..(i1 - i0) {
+                        for jj in 0..(j1 - j0) {
+                            let i = i0 + ii;
+                            let j = j0 + jj;
+
+                            // Apply causal mask
+                            if kv_tile_start + j <= q_tile_start + i {
+                                let score_vals: [f32; 4] =
+                                    std::mem::transmute(acc[ii][jj]);
+                                let score = (score_vals[0]
+                                    + score_vals[1]
+                                    + score_vals[2]
+                                    + score_vals[3])
+                                    * scale;
+                                scratch.kq[i * KV_TILE_SZ + j] = score;
+                            } else {
+                                scratch.kq[i * KV_TILE_SZ + j] =
+                                    f32::NEG_INFINITY;
                             }
                         }
                     }
                 }
+            }
 
-                // Online softmax: update M and S, rescale VKQ if needed
-                for tq in 0..q_tile_size {
-                    let mut tile_max = f32::NEG_INFINITY;
-                    for tk in 0..kv_tile_size {
-                        let score = scratch.kq[tq * KV_TILE_SZ + tk];
-                        if score > tile_max && score != f32::NEG_INFINITY {
-                            tile_max = score;
-                        }
+            // Online softmax: update M and S, rescale VKQ if needed
+            for tq in 0..q_tile_size {
+                let mut tile_max = f32::NEG_INFINITY;
+                for tk in 0..kv_tile_size {
+                    let score = scratch.kq[tq * KV_TILE_SZ + tk];
+                    if score > tile_max && score != f32::NEG_INFINITY {
+                        tile_max = score;
                     }
+                }
 
-                    if tile_max == f32::NEG_INFINITY {
-                        continue;
+                if tile_max == f32::NEG_INFINITY {
+                    continue;
+                }
+
+                let old_m = scratch.m_state[tq];
+                let new_m = old_m.max(tile_max);
+
+                if new_m > old_m && old_m != f32::NEG_INFINITY {
+                    let rescale = (old_m - new_m).exp();
+                    for d in 0..head_dim {
+                        scratch.vkq[tq * head_dim + d] *= rescale;
                     }
+                    scratch.s_state[tq] *= rescale;
+                }
+                scratch.m_state[tq] = new_m;
 
-                    let old_m = scratch.m_state[tq];
-                    let new_m = old_m.max(tile_max);
-
-                    if new_m > old_m && old_m != f32::NEG_INFINITY {
-                        let rescale = (old_m - new_m).exp();
-                        for d in 0..head_dim {
-                            scratch.vkq[tq * head_dim + d] *= rescale;
-                        }
-                        scratch.s_state[tq] *= rescale;
+                // Compute softmax and accumulate
+                let mut sum_exp = 0.0f32;
+                for tk in 0..kv_tile_size {
+                    let score = scratch.kq[tq * KV_TILE_SZ + tk];
+                    if score != f32::NEG_INFINITY {
+                        let exp_score = (score - new_m).exp();
+                        scratch.kq[tq * KV_TILE_SZ + tk] = exp_score;
+                        sum_exp += exp_score;
+                    } else {
+                        scratch.kq[tq * KV_TILE_SZ + tk] = 0.0;
                     }
-                    scratch.m_state[tq] = new_m;
+                }
+                scratch.s_state[tq] += sum_exp;
 
-                    // Compute softmax and accumulate
-                    let mut sum_exp = 0.0f32;
-                    for tk in 0..kv_tile_size {
-                        let score = scratch.kq[tq * KV_TILE_SZ + tk];
-                        if score != f32::NEG_INFINITY {
-                            let exp_score = (score - new_m).exp();
-                            scratch.kq[tq * KV_TILE_SZ + tk] = exp_score;
-                            sum_exp += exp_score;
-                        } else {
-                            scratch.kq[tq * KV_TILE_SZ + tk] = 0.0;
-                        }
-                    }
-                    scratch.s_state[tq] += sum_exp;
+                // Accumulate weighted V using GEMM-style operations
+                // softmax(KQ) @ V where KQ is [q_tile_size, kv_tile_size] and V is [kv_tile_size, head_dim]
+                // Process 4 dimensions at a time
+                for d in (0..head_dim).step_by(4) {
+                    if d + 4 <= head_dim {
+                        // For each Q row, accumulate weighted V across all KV positions
+                        for tq in 0..q_tile_size {
+                            let mut vsum = vdupq_n_f32(0.0f32);
 
-                    // Accumulate weighted V using GEMM-style operations
-                    // softmax(KQ) @ V where KQ is [q_tile_size, kv_tile_size] and V is [kv_tile_size, head_dim]
-                    unsafe {
-                        use std::arch::aarch64::*;
-
-                        // Process 4 dimensions at a time
-                        for d in (0..head_dim).step_by(4) {
-                            if d + 4 <= head_dim {
-                                // For each Q row, accumulate weighted V across all KV positions
-                                for tq in 0..q_tile_size {
-                                    let mut vsum = vdupq_n_f32(0.0f32);
-
-                                    // Accumulate across KV positions
-                                    // This is the GEMM inner loop: sum over k of softmax(KQ)[q, k] * V[k, d]
-                                    for tk in 0..kv_tile_size {
-                                        let weight =
-                                            scratch.kq[tq * KV_TILE_SZ + tk];
-                                        if weight > 0.0 {
-                                            // Load V[tk, d: d+4]
-                                            let v_row = vld1q_f32(
-                                                scratch.v_tile[tk * head_dim..]
-                                                    .as_ptr()
-                                                    .add(d),
-                                            );
-                                            // FMLA: vsum += weight * v_row
-                                            vsum = vfmaq_f32(
-                                                vsum,
-                                                v_row,
-                                                vdupq_n_f32(weight),
-                                            );
-                                        }
-                                    }
-
-                                    // Store to accumulator
-                                    let sum_vals: [f32; 4] =
-                                        std::mem::transmute(vsum);
-                                    for lane in 0..4 {
-                                        scratch.vkq
-                                            [tq * head_dim + d + lane] +=
-                                            sum_vals[lane];
-                                    }
+                            // Accumulate across KV positions
+                            // This is the GEMM inner loop: sum over k of softmax(KQ)[q, k] * V[k, d]
+                            for tk in 0..kv_tile_size {
+                                let weight = scratch.kq[tq * KV_TILE_SZ + tk];
+                                if weight > 0.0 {
+                                    // Load V[tk, d: d+4]
+                                    let v_row = vld1q_f32(
+                                        scratch.v_tile[tk * head_dim..]
+                                            .as_ptr()
+                                            .add(d),
+                                    );
+                                    // FMLA: vsum += weight * v_row
+                                    vsum = vfmaq_f32(
+                                        vsum,
+                                        v_row,
+                                        vdupq_n_f32(weight),
+                                    );
                                 }
+                            }
+
+                            // Store to accumulator
+                            let sum_vals: [f32; 4] = std::mem::transmute(vsum);
+                            for lane in 0..4 {
+                                scratch.vkq[tq * head_dim + d + lane] +=
+                                    sum_vals[lane];
                             }
                         }
                     }
@@ -797,8 +887,8 @@ pub fn flash_attention_prefill_tiled(
                     }
                 }
             }
-        }
-    }
+        } // close unsafe block
+    } // close function
 }
 
 /// Legacy single-token flash attention (for decode)

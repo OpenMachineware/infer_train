@@ -1808,3 +1808,47 @@ path = "tools/test_transpose.rs"
 [[bin]]
 name = "trace-full-forward"
 path = "tools/trace_full_forward.rs"
+
+[[bin]]
+name = "measure-decode"
+path = "tools/measure_decode.rs"
+
+[[bin]]
+name = "compare-forward-paths"
+path = "tools/compare_forward_paths.rs"
+
+[[bin]]
+name = "trace-forward-pooled"
+path = "tools/trace_forward_pooled.rs"
+
+[[bin]]
+name = "compare-kv-state"
+path = "tools/compare_kv_state.rs"
+
+[[bin]]
+name = "test-position-timing"
+path = "tools/test_position_timing.rs"
+
+[[bin]]
+name = "copy-measure-decode"
+path = "tools/copy_measure_decode.rs"
+
+[[bin]]
+name = "simple-decode-bench"
+path = "tools/simple_decode_bench.rs"
+
+[[bin]]
+name = "compare-buffers"
+path = "tools/compare_buffers.rs"
+
+[[bin]]
+name = "exact-compare"
+path = "tools/exact_compare.rs"
+
+[[bin]]
+name = "no-intermediate-timing"
+path = "tools/no_intermediate_timing.rs"
+
+[[bin]]
+name = "profile-prefill-breakdown"
+path = "tools/profile_prefill_breakdown.rs"

@@ -131,10 +131,7 @@ impl CpuWorkBuffers {
             attn_batch_output: vec![0.0; 128 * attn_out_size],
             ffn_gate_batch: vec![0.0; 128 * intermediate_size],
             ffn_up_batch: vec![0.0; 128 * intermediate_size],
-            flash_attn_prefill: FlashAttnPrefillScratch::new(
-                head_dim,
-                _max_seq_len,
-            ),
+            flash_attn_prefill: FlashAttnPrefillScratch::new(head_dim),
             hidden_size,
             intermediate_size,
             vocab_size,

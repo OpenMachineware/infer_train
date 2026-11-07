@@ -1192,8 +1192,8 @@ pub unsafe fn vec_dot_iq4_xs_q8_k_neon(
         let q8 = y[ibl].qs.as_ptr();
         let mut h = x[ibl].scales_h;
 
-        let mut sumi1 = 0i32;
-        let mut sumi2 = 0i32;
+        let mut sumi1 = 0i64;
+        let mut sumi2 = 0i64;
 
         for ib in 0..(QK_K / 64) {
             let q4bits = vld1q_u8_x2(q4.add(ib * 32));
@@ -1223,8 +1223,9 @@ pub unsafe fn vec_dot_iq4_xs_q8_k_neon(
                 - 32;
             h >>= 8;
 
-            sumi1 += vaddvq_s32(prod_1) * ls1;
-            sumi2 += vaddvq_s32(prod_2) * ls2;
+            // Use i64 for multiplication to avoid overflow
+            sumi1 += (vaddvq_s32(prod_1) as i64) * (ls1 as i64);
+            sumi2 += (vaddvq_s32(prod_2) as i64) * (ls2 as i64);
         }
 
         sum += fp16_to_fp32(x[ibl].d) * y[ibl].d * (sumi1 + sumi2) as f32;

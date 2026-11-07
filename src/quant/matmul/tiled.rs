@@ -180,17 +180,15 @@ pub unsafe fn unpack_src0_q5k(
             }
 
             // Add 5th bit from qh
-            // qh[i] contains bit i for elements 2*i and 2*i+1
-            for i in 0..4 {
-                let qh_val = blk.qh[i];
-                let base_offset = q_off + i * 64;
+            // qh has 32 bytes = 256 bits, each bit is the 5th bit for one element
+            for (i, &qh_val) in blk.qh.iter().enumerate() {
+                // Each byte contains 8 bits for 8 consecutive elements
+                let base_offset = q_off + i * 8;
 
-                for j in 0..32 {
+                for j in 0..8 {
                     let high_bit =
                         if (qh_val >> j) & 1 != 0 { 16u8 } else { 0u8 };
-
                     ws.src0_q[base_offset + j] |= high_bit;
-                    ws.src0_q[base_offset + 32 + j] |= high_bit;
                 }
             }
         }
