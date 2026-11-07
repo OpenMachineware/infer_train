@@ -50,6 +50,10 @@ pub struct CpuWorkBuffers {
     // Flash attention scratch for prefill
     pub flash_attn_prefill: FlashAttnPrefillScratch,
 
+    // Per-thread scratch for multi-threaded flash attention prefill
+    // Pre-allocated to avoid per-thread Vec creation during inference
+    pub flash_attn_prefill_threads: Vec<FlashAttnPrefillScratch>,
+
     // Config
     pub hidden_size: usize,
     pub intermediate_size: usize,
@@ -132,6 +136,10 @@ impl CpuWorkBuffers {
             ffn_gate_batch: vec![0.0; 128 * intermediate_size],
             ffn_up_batch: vec![0.0; 128 * intermediate_size],
             flash_attn_prefill: FlashAttnPrefillScratch::new(head_dim),
+            // Pre-allocate per-thread scratch for multithreaded flash attention
+            flash_attn_prefill_threads: (0..crate::cpu::default_n_threads())
+                .map(|_| FlashAttnPrefillScratch::new(head_dim))
+                .collect(),
             hidden_size,
             intermediate_size,
             vocab_size,

@@ -2431,11 +2431,24 @@ impl LlamaModel {
         kv_cache: &mut crate::inference::KVCache,
         buffers: &mut crate::cpu::CpuWorkBuffers,
     ) -> Option<Vec<f32>> {
+        use std::time::Instant;
+
         let hidden_size = self.config.hidden_size;
         let vocab_size = self.config.vocab_size;
         let n_tokens = tokens.len();
 
+        // Profiling
+        let mut time_embedding = std::time::Duration::new(0, 0);
+        let mut time_norm = std::time::Duration::new(0, 0);
+        let mut time_qkv = std::time::Duration::new(0, 0);
+        let mut time_rope = std::time::Duration::new(0, 0);
+        let mut time_attention = std::time::Duration::new(0, 0);
+        let mut time_wo = std::time::Duration::new(0, 0);
+        let mut time_ffn = std::time::Duration::new(0, 0);
+        let mut time_output = std::time::Duration::new(0, 0);
+
         // Step 1: Batch embedding lookup
+        let start = Instant::now();
         let mut batch_hidden = vec![0.0f32; n_tokens * hidden_size];
         for (i, &token) in tokens.iter().enumerate() {
             self.embedding_lookup_into(
@@ -2443,6 +2456,7 @@ impl LlamaModel {
                 &mut batch_hidden[i * hidden_size..(i + 1) * hidden_size],
             )?;
         }
+        time_embedding = start.elapsed();
 
         // Step 2: Process each layer
         for (layer_idx, layer) in self.layers.iter().enumerate() {
@@ -2452,6 +2466,7 @@ impl LlamaModel {
                 .copy_from_slice(&batch_hidden[..residual_len]);
 
             // Apply RMS norm to all tokens (can be parallelized)
+            let start = Instant::now();
             let attn_norm_offset = layer_idx * 2 * hidden_size;
             for i in 0..n_tokens {
                 self.apply_rms_norm_predequant(
@@ -2463,6 +2478,7 @@ impl LlamaModel {
                 batch_hidden[i * hidden_size..(i + 1) * hidden_size]
                     .copy_from_slice(&buffers.hidden_alt);
             }
+            time_norm += start.elapsed();
 
             // QKV projection - use tiled GEMM for batch
             if let Some(ref qkv) = layer.attn_qkv {
@@ -2477,6 +2493,7 @@ impl LlamaModel {
                     .collect();
 
                 // Use tiled GEMM with pre-allocated buffer
+                let start = Instant::now();
                 self.gemm_batch_prefill(
                     &inputs,
                     qkv,
@@ -2484,6 +2501,7 @@ impl LlamaModel {
                     &mut buffers.q8k_input,
                     &mut buffers.x_padded,
                 );
+                time_qkv += start.elapsed();
 
                 // Collect all attention outputs for batch wo projection
                 // attn_out size = n_heads * v_head_dim
@@ -2499,6 +2517,7 @@ impl LlamaModel {
                 let v_size = self.config.n_kv_heads * self.config.value_length;
 
                 // Apply RoPE to all Q and K vectors
+                let start = Instant::now();
                 for (token_idx, pos) in (0..n_tokens).zip(kv_cache.seq_len()..)
                 {
                     let qkv_offset = token_idx * qkv_out_size;
@@ -2538,8 +2557,10 @@ impl LlamaModel {
                         [qkv_offset + q_size..qkv_offset + q_size + k_size]
                         .copy_from_slice(&buffers.rope_buffer[..k_size]);
                 }
+                time_rope += start.elapsed();
 
                 // Tiled flash attention - processes all tokens at once
+                let start = Instant::now();
                 #[cfg(target_arch = "aarch64")]
                 {
                     crate::cpu::flash_attention_prefill_tiled(
@@ -2555,7 +2576,7 @@ impl LlamaModel {
                         self.config.n_kv_heads,
                         self.config.head_dim,
                         &mut buffers.attn_batch_output[..all_attn_outs_len],
-                        &mut buffers.flash_attn_prefill,
+                        &mut buffers.flash_attn_prefill_threads,
                     );
                 }
                 #[cfg(not(target_arch = "aarch64"))]
@@ -2600,8 +2621,10 @@ impl LlamaModel {
                             );
                     }
                 }
+                time_attention += start.elapsed();
 
                 // Batch wo projection
+                let start = Instant::now();
                 if let Some(ref wo) = layer.wo {
                     let attn_inputs: Vec<&[f32]> = (0..n_tokens)
                         .map(|i| {
@@ -2623,6 +2646,7 @@ impl LlamaModel {
                         &buffers.attn_batch_output[..all_attn_outs_len],
                     );
                 }
+                time_wo += start.elapsed();
             } else {
                 // Separate wq/wk/wv projections - use batch GEMM for each
                 let q_size = self.config.n_heads * self.config.head_dim;
@@ -2648,7 +2672,8 @@ impl LlamaModel {
                 let k_output_len = n_tokens * k_size;
                 let v_output_len = n_tokens * v_size;
 
-                // Batch Q projection
+                // Batch Q/K/V projections
+                let start = Instant::now();
                 if let Some(ref wq) = layer.wq {
                     self.gemm_batch_prefill(
                         &inputs,
@@ -2680,6 +2705,7 @@ impl LlamaModel {
                         &mut buffers.x_padded,
                     );
                 }
+                time_qkv += start.elapsed();
 
                 // Collect all attention outputs for batch wo projection
                 // attn_out size = n_heads * v_head_dim
@@ -2716,6 +2742,7 @@ impl LlamaModel {
                     );
 
                     // RoPE
+                    let start = Instant::now();
                     self.apply_rope_into(
                         &buffers.q_buffer,
                         pos,
@@ -2736,8 +2763,10 @@ impl LlamaModel {
                     )?;
                     buffers.k_buffer[..k_size]
                         .copy_from_slice(&buffers.rope_buffer[..k_size]);
+                    time_rope += start.elapsed();
 
                     // Attention - use optimized tiled flash attention
+                    let start = Instant::now();
                     #[cfg(target_arch = "aarch64")]
                     {
                         crate::cpu::flash_attention_single(
@@ -2768,6 +2797,7 @@ impl LlamaModel {
                             &mut buffers.attn_scores,
                         )?;
                     }
+                    time_attention += start.elapsed();
 
                     // Store attention output for batch wo projection
                     buffers.attn_batch_output[token_idx * attn_out_size
@@ -2778,6 +2808,7 @@ impl LlamaModel {
                 }
 
                 // Batch wo projection
+                let start = Instant::now();
                 if let Some(ref wo) = layer.wo {
                     let attn_inputs: Vec<&[f32]> = (0..n_tokens)
                         .map(|i| {
@@ -2799,6 +2830,7 @@ impl LlamaModel {
                         &buffers.attn_batch_output[..all_attn_outs_len],
                     );
                 }
+                time_wo += start.elapsed();
             }
 
             // Residual add from attention (wo output already stored in batch_hidden)
@@ -2826,6 +2858,7 @@ impl LlamaModel {
             // FFN - batch GEMM for gate/up, then activation and down projection
             // For MoE models, we still need sequential processing (experts per token)
             // For dense FFN, we can batch all projections
+            let start = Instant::now();
             if layer.ffn_gate_inp.is_none() {
                 // Dense FFN - batch gate and up projections
                 let ffn_inputs: Vec<&[f32]> = (0..n_tokens)
@@ -2904,9 +2937,11 @@ impl LlamaModel {
                         .copy_from_slice(&buffers.hidden_alt[..hidden_size]);
                 }
             }
+            time_ffn += start.elapsed();
         }
 
         // Step 3: Final norm and output projection for last token
+        let start = Instant::now();
         self.apply_rms_norm_predequant(
             &batch_hidden[(n_tokens - 1) * hidden_size..],
             &buffers.norm_weight,
@@ -2921,6 +2956,17 @@ impl LlamaModel {
             &mut buffers.q8k_input,
             &mut buffers.x_padded,
         );
+        time_output = start.elapsed();
+
+        eprintln!("\n=== Prefill Timing Breakdown ===");
+        eprintln!("Embedding: {:?}", time_embedding);
+        eprintln!("Norm: {:?}", time_norm);
+        eprintln!("QKV: {:?}", time_qkv);
+        eprintln!("RoPE: {:?}", time_rope);
+        eprintln!("Attention: {:?}", time_attention);
+        eprintln!("Wo: {:?}", time_wo);
+        eprintln!("FFN: {:?}", time_ffn);
+        eprintln!("Output: {:?}", time_output);
 
         Some(buffers.logits[..vocab_size].to_vec())
     }

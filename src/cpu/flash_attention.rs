@@ -504,7 +504,7 @@ pub fn flash_attention_prefill_tiled(
     n_kv_heads: usize,
     head_dim: usize,
     attn_outputs: &mut [f32], // [n_tokens, n_heads, head_dim]
-    _scratch: &mut FlashAttnPrefillScratch, // Unused in multithreaded version
+    scratch: &mut [FlashAttnPrefillScratch], // Per-thread scratch space
 ) {
     let scale = 1.0f32 / (head_dim as f32).sqrt();
     let q_size = n_heads * head_dim;
@@ -554,14 +554,15 @@ pub fn flash_attention_prefill_tiled(
         let q_ptr = SyncPtr::new(q_outputs.as_ptr() as *mut f32);
         let k_ptr = SyncPtr::new(k_outputs.as_ptr() as *mut f32);
         let v_ptr = SyncPtr::new(v_outputs.as_ptr() as *mut f32);
+        let scratch_ptr = SyncPtr::new(scratch.as_mut_ptr());
 
         std::thread::scope(|s| {
             let handles: Vec<_> = (0..n_threads)
                 .map(|tid| {
                     s.spawn(move || {
-                        // Each thread gets its own scratch space
-                        let mut local_scratch =
-                            FlashAttnPrefillScratch::new(head_dim);
+                        // Each thread gets its own pre-allocated scratch space
+                        let local_scratch =
+                            unsafe { &mut *scratch_ptr.get().add(tid) };
 
                         // Calculate thread's Q row range
                         let rows_per_thread =
@@ -599,7 +600,7 @@ pub fn flash_attention_prefill_tiled(
                                 kv_size,
                                 scale,
                                 out_ptr.get(),
-                                &mut local_scratch,
+                                local_scratch,
                             );
 
                             ir += tile_rows;
@@ -633,7 +634,7 @@ pub fn flash_attention_prefill_tiled(
                     kv_size,
                     scale,
                     attn_outputs.as_mut_ptr(),
-                    _scratch,
+                    &mut scratch[0], // Use first element for single-threaded
                 );
             }
         }
