@@ -44,6 +44,8 @@ pub struct InferenceContext {
     pub config: ModelConfig,
     pub model: LlamaModel,
     pub device: Device,
+    /// Thread configuration for decode and prefill
+    pub thread_config: crate::cpu::ThreadConfig,
 
     // GPU-specific fields (only for Metal)
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -137,6 +139,7 @@ impl InferenceContext {
             config,
             model,
             device,
+            thread_config: crate::cpu::ThreadConfig::new(),
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
             gpu_ctx,
             #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -173,6 +176,7 @@ impl InferenceContext {
             config,
             model,
             device: Device::Gpu,
+            thread_config: crate::cpu::ThreadConfig::new(),
             gpu_ctx: Some(gpu_ctx),
             gpu_kv_cache: Some(kv),
             pending_cbs: Vec::new(),
@@ -229,7 +233,12 @@ impl InferenceContext {
         kv_cache: &mut KVCache,
     ) -> Option<Vec<f32>> {
         if let Some(ref mut buffers) = self.cpu_buffers {
-            self.model.forward_pooled(tokens, kv_cache, buffers)
+            self.model.forward_pooled_with_threads(
+                tokens,
+                kv_cache,
+                buffers,
+                &self.thread_config,
+            )
         } else {
             self.model.forward(tokens, kv_cache)
         }

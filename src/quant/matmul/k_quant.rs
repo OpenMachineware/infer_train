@@ -47,9 +47,28 @@ pub unsafe fn matmul_q4_k_q8_k(
     k: usize,
     m: usize,
 ) {
+    matmul_q4_k_q8_k_with_threads(
+        weights,
+        x,
+        dst,
+        k,
+        m,
+        crate::cpu::default_n_threads(),
+    );
+}
+
+/// Q4_K × Q8_K with custom thread count
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q4_k_q8_k_with_threads(
+    weights: &[BlockQ4K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    n_threads: usize,
+) {
     let nb = k / QK_K;
-    // Use standard parallel kernel - interleaved kernel is not parallelized
-    matmul_q4_k_q8_k_standard(weights, x, dst, k, m, nb);
+    matmul_q4_k_q8_k_standard(weights, x, dst, k, m, nb, n_threads);
 }
 
 /// Standard Q4_K × Q8_K matrix-vector multiplication
@@ -62,14 +81,15 @@ unsafe fn matmul_q4_k_q8_k_standard(
     k: usize,
     m: usize,
     nb: usize,
+    n_threads: usize,
 ) {
-    use crate::cpu::{SyncPtr, default_n_threads, parallel_chunks};
+    use crate::cpu::{SyncPtr, parallel_chunks};
 
     let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
     let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ4K);
     let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-    parallel_chunks(m, default_n_threads(), move |start, end| {
+    parallel_chunks(m, n_threads, move |start, end| {
         for row in start..end {
             *dst_ptr.get().add(row) = vec_dot_q4_k_q8_k_neon(
                 k,
@@ -110,16 +130,35 @@ pub unsafe fn matmul_q4_k_q8_k_hybrid(
     k: usize,
     m: usize,
 ) {
-    if m <= 1 {
+    matmul_q4_k_q8_k_hybrid_with_threads(
+        weights,
+        x,
+        dst,
+        k,
+        m,
+        crate::cpu::default_n_threads(),
+    );
+}
+
+/// Hybrid Q4_K × Q8_K with custom thread count
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q4_k_q8_k_hybrid_with_threads(
+    weights: &[BlockQ4K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    n_threads: usize,
+) {
+    if m <= 1 || n_threads == 1 {
         matmul_q4_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
         let nb = k / QK_K;
-        matmul_q4_k_q8_k_standard(weights, x, dst, k, m, nb);
+        matmul_q4_k_q8_k_standard(weights, x, dst, k, m, nb, n_threads);
     }
 }
 
 /// Q6_K × Q8_K matrix-vector multiplication
-/// Uses std::thread::scope for low-overhead parallel execution
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q6_k_q8_k(
     weights: &[BlockQ6K],
@@ -128,14 +167,48 @@ pub unsafe fn matmul_q6_k_q8_k(
     k: usize,
     m: usize,
 ) {
-    use crate::cpu::{SyncPtr, default_n_threads, parallel_chunks};
+    matmul_q6_k_q8_k_with_threads(
+        weights,
+        x,
+        dst,
+        k,
+        m,
+        crate::cpu::default_n_threads(),
+    );
+}
 
+/// Q6_K × Q8_K with custom thread count
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q6_k_q8_k_with_threads(
+    weights: &[BlockQ6K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    n_threads: usize,
+) {
     let nb = k / QK_K;
+    matmul_q6_k_q8_k_standard(weights, x, dst, k, m, nb, n_threads);
+}
+
+/// Standard Q6_K × Q8_K matrix-vector multiplication
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn matmul_q6_k_q8_k_standard(
+    weights: &[BlockQ6K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    nb: usize,
+    n_threads: usize,
+) {
+    use crate::cpu::{SyncPtr, parallel_chunks};
+
     let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
     let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ6K);
     let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-    parallel_chunks(m, default_n_threads(), move |start, end| {
+    parallel_chunks(m, n_threads, move |start, end| {
         for row in start..end {
             *dst_ptr.get().add(row) = vec_dot_q6_k_q8_k_neon(
                 k,
@@ -176,15 +249,35 @@ pub unsafe fn matmul_q6_k_q8_k_hybrid(
     k: usize,
     m: usize,
 ) {
-    if m <= 1 {
+    matmul_q6_k_q8_k_hybrid_with_threads(
+        weights,
+        x,
+        dst,
+        k,
+        m,
+        crate::cpu::default_n_threads(),
+    );
+}
+
+/// Hybrid Q6_K × Q8_K with custom thread count
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q6_k_q8_k_hybrid_with_threads(
+    weights: &[BlockQ6K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    n_threads: usize,
+) {
+    if m <= 1 || n_threads == 1 {
         matmul_q6_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
-        matmul_q6_k_q8_k(weights, x, dst, k, m);
+        let nb = k / QK_K;
+        matmul_q6_k_q8_k_standard(weights, x, dst, k, m, nb, n_threads);
     }
 }
 
 /// Q5_K × Q8_K matrix-vector multiplication
-/// Uses std::thread::scope for low-overhead parallel execution
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q5_k_q8_k(
     weights: &[BlockQ5K],
@@ -193,14 +286,48 @@ pub unsafe fn matmul_q5_k_q8_k(
     k: usize,
     m: usize,
 ) {
-    use crate::cpu::{SyncPtr, default_n_threads, parallel_chunks};
+    matmul_q5_k_q8_k_with_threads(
+        weights,
+        x,
+        dst,
+        k,
+        m,
+        crate::cpu::default_n_threads(),
+    );
+}
 
+/// Q5_K × Q8_K with custom thread count
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q5_k_q8_k_with_threads(
+    weights: &[BlockQ5K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    n_threads: usize,
+) {
     let nb = k / QK_K;
+    matmul_q5_k_q8_k_standard(weights, x, dst, k, m, nb, n_threads);
+}
+
+/// Standard Q5_K × Q8_K matrix-vector multiplication
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn matmul_q5_k_q8_k_standard(
+    weights: &[BlockQ5K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    nb: usize,
+    n_threads: usize,
+) {
+    use crate::cpu::{SyncPtr, parallel_chunks};
+
     let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
     let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5K);
     let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-    parallel_chunks(m, default_n_threads(), move |start, end| {
+    parallel_chunks(m, n_threads, move |start, end| {
         for row in start..end {
             *dst_ptr.get().add(row) = vec_dot_q5_k_q8_k_neon(
                 k,
@@ -322,10 +449,31 @@ pub unsafe fn matmul_q5_k_q8_k_hybrid(
     k: usize,
     m: usize,
 ) {
-    if m <= 1 {
+    matmul_q5_k_q8_k_hybrid_with_threads(
+        weights,
+        x,
+        dst,
+        k,
+        m,
+        crate::cpu::default_n_threads(),
+    );
+}
+
+/// Hybrid Q5_K × Q8_K with custom thread count
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_q5_k_q8_k_hybrid_with_threads(
+    weights: &[BlockQ5K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    n_threads: usize,
+) {
+    if m <= 1 || n_threads == 1 {
         matmul_q5_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
-        matmul_q5_k_q8_k(weights, x, dst, k, m);
+        let nb = k / QK_K;
+        matmul_q5_k_q8_k_standard(weights, x, dst, k, m, nb, n_threads);
     }
 }
 
@@ -618,7 +766,6 @@ pub unsafe fn matmul_q5_1_q8_1_single_thread(
 // ===== IQ series matmul =====
 
 /// IQ4_XS × Q8_K matrix-vector multiplication
-/// Uses single-threaded execution to avoid std::thread::scope overhead
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_iq4_xs_q8_k(
     weights: &[BlockIQ4XS],
@@ -627,8 +774,56 @@ pub unsafe fn matmul_iq4_xs_q8_k(
     k: usize,
     m: usize,
 ) {
-    // Single-threaded: simpler and avoids threading overhead
-    matmul_iq4_xs_q8_k_single_thread(weights, x, dst, k, m);
+    matmul_iq4_xs_q8_k_with_threads(
+        weights,
+        x,
+        dst,
+        k,
+        m,
+        crate::cpu::default_n_threads(),
+    );
+}
+
+/// IQ4_XS × Q8_K with custom thread count
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_iq4_xs_q8_k_with_threads(
+    weights: &[BlockIQ4XS],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    n_threads: usize,
+) {
+    let nb = k / QK_K;
+    matmul_iq4_xs_q8_k_standard(weights, x, dst, k, m, nb, n_threads);
+}
+
+/// Standard IQ4_XS × Q8_K matrix-vector multiplication
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn matmul_iq4_xs_q8_k_standard(
+    weights: &[BlockIQ4XS],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    nb: usize,
+    n_threads: usize,
+) {
+    use crate::cpu::{SyncPtr, parallel_chunks};
+
+    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+    let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockIQ4XS);
+    let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
+
+    parallel_chunks(m, n_threads, move |start, end| {
+        for row in start..end {
+            *dst_ptr.get().add(row) = vec_dot_iq4_xs_q8_k_neon(
+                k,
+                std::slice::from_raw_parts(weights_ptr.get().add(row * nb), nb),
+                std::slice::from_raw_parts(x_ptr.get(), nb),
+            );
+        }
+    });
 }
 
 /// Single-thread IQ4_XS × Q8_K matrix-vector multiplication
@@ -661,10 +856,31 @@ pub unsafe fn matmul_iq4_xs_q8_k_hybrid(
     k: usize,
     m: usize,
 ) {
-    if m <= 1 {
+    matmul_iq4_xs_q8_k_hybrid_with_threads(
+        weights,
+        x,
+        dst,
+        k,
+        m,
+        crate::cpu::default_n_threads(),
+    );
+}
+
+/// Hybrid IQ4_XS × Q8_K with custom thread count
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn matmul_iq4_xs_q8_k_hybrid_with_threads(
+    weights: &[BlockIQ4XS],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    n_threads: usize,
+) {
+    if m <= 1 || n_threads == 1 {
         matmul_iq4_xs_q8_k_single_thread(weights, x, dst, k, m);
     } else {
-        matmul_iq4_xs_q8_k(weights, x, dst, k, m);
+        let nb = k / QK_K;
+        matmul_iq4_xs_q8_k_standard(weights, x, dst, k, m, nb, n_threads);
     }
 }
 

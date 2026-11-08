@@ -129,6 +129,14 @@ name = "debug-weight-shapes"
 path = "tools/debug_weight_shapes.rs"
 
 [[bin]]
+name = "bench-cpu-timing"
+path = "tools/bench_cpu_timing.rs"
+
+[[bin]]
+name = "test-thread-perf"
+path = "tools/test_thread_perf.rs"
+
+[[bin]]
 name = "check-output-tensor"
 path = "tools/check_output_tensor.rs"
 
@@ -1832,3 +1840,7 @@ path = "tools/test_barrier_direct.rs"
 [[bin]]
 name = "profile-gemm"
 path = "tools/profile_gemm.rs"
+
+[[bin]]
+name = "bench-step-timing"
+path = "tools/bench_step_timing.rs"

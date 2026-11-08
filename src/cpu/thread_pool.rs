@@ -253,6 +253,43 @@ pub fn default_n_threads() -> usize {
     (n - 1).max(1).min(8)
 }
 
+/// Thread configuration for inference
+/// Matches llama.cpp's -t (decode) and -tb (prefill/batch) parameters
+#[derive(Debug, Clone, Copy)]
+pub struct ThreadConfig {
+    /// Number of threads for decode (single token generation)
+    pub n_threads_decode: usize,
+    /// Number of threads for prefill (batch processing)
+    pub n_threads_prefill: usize,
+}
+
+impl Default for ThreadConfig {
+    fn default() -> Self {
+        let default_threads = default_n_threads();
+        Self {
+            n_threads_decode: default_threads,
+            n_threads_prefill: default_threads,
+        }
+    }
+}
+
+impl ThreadConfig {
+    /// Create with default thread count
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create with custom thread counts
+    pub fn with_threads(decode: usize, prefill: usize) -> Self {
+        Self { n_threads_decode: decode, n_threads_prefill: prefill }
+    }
+
+    /// Get thread count for the given mode
+    pub fn n_threads(&self, is_decode: bool) -> usize {
+        if is_decode { self.n_threads_decode } else { self.n_threads_prefill }
+    }
+}
+
 pub struct SyncPtr<T> {
     ptr: *mut T,
 }

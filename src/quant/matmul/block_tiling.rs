@@ -23,15 +23,14 @@
 //! For GEMV (n=1), uses interleaved format to process 8 rows at once
 //! For GEMM (n>1), falls back to simple row-by-row processing
 
-use crate::cpu::SyncPtr;
+use crate::cpu::{SyncPtr, global_pool};
 use crate::quant::types::*;
 use crate::quant::vec_dot::arm::k_quant::*;
 use crate::quant::vec_dot::arm::k_quant_batch::{
-    BlockQ4Kx8, gemv_q4_k_interleaved, repack_q4_k_batch,
+    gemv_q4_k_interleaved, repack_q4_k_batch,
 };
-use std::arch::aarch64::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-const BLOCK_SIZE: usize = 16;
 const INTERLEAVE_ROWS: usize = 8;
 
 /// Q5_K × Q8_K GEMM using simple block-tiling
@@ -73,31 +72,54 @@ pub unsafe fn matmul_q5k_q8k_block_tiling(
         return;
     }
 
-    // GEMM case: 16x16 block tiling
-    // Process blocks of 16 output rows at a time
-    for i_block_start in (0..m).step_by(BLOCK_SIZE) {
-        let i_block_end = (i_block_start + BLOCK_SIZE).min(m);
-        let n_rows = i_block_end - i_block_start;
+    // GEMM case: parallelize over weight rows using persistent thread pool
+    // Each thread caches its subset of weights and processes all n inputs
+    let n_threads = crate::cpu::default_n_threads();
+    if m >= n_threads * 4 && n_threads > 1 {
+        // Use persistent thread pool for lower overhead
+        let pool = global_pool(n_threads);
+        // Initialize counter: first unprocessed chunk is n_threads (threads start with tid)
+        pool.state().current_chunk.store(n_threads, Ordering::Relaxed);
 
-        // Process blocks of 16 input columns at a time
-        for j_block_start in (0..n).step_by(BLOCK_SIZE) {
-            let j_block_end = (j_block_start + BLOCK_SIZE).min(n);
-            let n_cols = j_block_end - j_block_start;
+        let dst_ptr = dst.as_mut_ptr() as usize;
+        let weights_ptr = weights.as_ptr() as usize;
+        let x_ptr = x.as_ptr() as usize;
+        let current_chunk_ptr =
+            &pool.state().current_chunk as *const AtomicUsize as usize;
 
-            // For each row in this block
-            for i in 0..n_rows {
-                let row_global = i_block_start + i;
-                let w_row = &weights[row_global * nb..(row_global + 1) * nb];
-
-                // For each column in this block
-                for j in 0..n_cols {
-                    let col_global = j_block_start + j;
-                    let x_vec = &x[col_global * nb..(col_global + 1) * nb];
-
-                    // Call vec_dot directly - no unpack overhead
-                    dst[row_global * n + col_global] =
-                        vec_dot_q5_k_q8_k_neon(k, w_row, x_vec);
+        pool.parallel(move |tid| {
+            let mut row = tid;
+            let chunk_atomic =
+                unsafe { &*(current_chunk_ptr as *const AtomicUsize) };
+            while row < m {
+                let w_row = unsafe {
+                    std::slice::from_raw_parts(
+                        (weights_ptr as *const BlockQ5K).add(row * nb),
+                        nb,
+                    )
+                };
+                for j in 0..n {
+                    let x_vec = unsafe {
+                        std::slice::from_raw_parts(
+                            (x_ptr as *const BlockQ8K).add(j * nb),
+                            nb,
+                        )
+                    };
+                    let result = vec_dot_q5_k_q8_k_neon(k, w_row, x_vec);
+                    unsafe {
+                        *((dst_ptr as *mut f32).add(row * n + j)) = result;
+                    }
                 }
+                row = chunk_atomic.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    } else {
+        // Sequential for small m
+        for row in 0..m {
+            let w_row = &weights[row * nb..(row + 1) * nb];
+            for j in 0..n {
+                let x_vec = &x[j * nb..(j + 1) * nb];
+                dst[row * n + j] = vec_dot_q5_k_q8_k_neon(k, w_row, x_vec);
             }
         }
     }
@@ -147,26 +169,50 @@ pub unsafe fn matmul_q4k_q8k_block_tiling(
         return;
     }
 
-    // GEMM: 16x16 block tiling
-    for i_block_start in (0..m).step_by(BLOCK_SIZE) {
-        let i_block_end = (i_block_start + BLOCK_SIZE).min(m);
-        let n_rows = i_block_end - i_block_start;
+    // GEMM case: parallelize over weight rows using persistent thread pool
+    let n_threads = crate::cpu::default_n_threads();
+    if m >= n_threads * 4 && n_threads > 1 {
+        let pool = global_pool(n_threads);
+        pool.state().current_chunk.store(n_threads, Ordering::Relaxed);
 
-        for j_block_start in (0..n).step_by(BLOCK_SIZE) {
-            let j_block_end = (j_block_start + BLOCK_SIZE).min(n);
-            let n_cols = j_block_end - j_block_start;
+        let dst_ptr = dst.as_mut_ptr() as usize;
+        let weights_ptr = weights.as_ptr() as usize;
+        let x_ptr = x.as_ptr() as usize;
+        let current_chunk_ptr =
+            &pool.state().current_chunk as *const AtomicUsize as usize;
 
-            for i in 0..n_rows {
-                let row_global = i_block_start + i;
-                let w_row = &weights[row_global * nb..(row_global + 1) * nb];
-
-                for j in 0..n_cols {
-                    let col_global = j_block_start + j;
-                    let x_vec = &x[col_global * nb..(col_global + 1) * nb];
-
-                    dst[row_global * n + col_global] =
-                        vec_dot_q4_k_q8_k_neon(k, w_row, x_vec);
+        pool.parallel(move |tid| {
+            let mut row = tid;
+            let chunk_atomic =
+                unsafe { &*(current_chunk_ptr as *const AtomicUsize) };
+            while row < m {
+                let w_row = unsafe {
+                    std::slice::from_raw_parts(
+                        (weights_ptr as *const BlockQ4K).add(row * nb),
+                        nb,
+                    )
+                };
+                for j in 0..n {
+                    let x_vec = unsafe {
+                        std::slice::from_raw_parts(
+                            (x_ptr as *const BlockQ8K).add(j * nb),
+                            nb,
+                        )
+                    };
+                    let result = vec_dot_q4_k_q8_k_neon(k, w_row, x_vec);
+                    unsafe {
+                        *((dst_ptr as *mut f32).add(row * n + j)) = result;
+                    }
                 }
+                row = chunk_atomic.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    } else {
+        for row in 0..m {
+            let w_row = &weights[row * nb..(row + 1) * nb];
+            for j in 0..n {
+                let x_vec = &x[j * nb..(j + 1) * nb];
+                dst[row * n + j] = vec_dot_q4_k_q8_k_neon(k, w_row, x_vec);
             }
         }
     }
@@ -208,26 +254,50 @@ pub unsafe fn matmul_q6k_q8k_block_tiling(
         return;
     }
 
-    // GEMM: 16x16 block tiling
-    for i_block_start in (0..m).step_by(BLOCK_SIZE) {
-        let i_block_end = (i_block_start + BLOCK_SIZE).min(m);
-        let n_rows = i_block_end - i_block_start;
+    // GEMM case: parallelize over weight rows using persistent thread pool
+    let n_threads = crate::cpu::default_n_threads();
+    if m >= n_threads * 4 && n_threads > 1 {
+        let pool = global_pool(n_threads);
+        pool.state().current_chunk.store(n_threads, Ordering::Relaxed);
 
-        for j_block_start in (0..n).step_by(BLOCK_SIZE) {
-            let j_block_end = (j_block_start + BLOCK_SIZE).min(n);
-            let n_cols = j_block_end - j_block_start;
+        let dst_ptr = dst.as_mut_ptr() as usize;
+        let weights_ptr = weights.as_ptr() as usize;
+        let x_ptr = x.as_ptr() as usize;
+        let current_chunk_ptr =
+            &pool.state().current_chunk as *const AtomicUsize as usize;
 
-            for i in 0..n_rows {
-                let row_global = i_block_start + i;
-                let w_row = &weights[row_global * nb..(row_global + 1) * nb];
-
-                for j in 0..n_cols {
-                    let col_global = j_block_start + j;
-                    let x_vec = &x[col_global * nb..(col_global + 1) * nb];
-
-                    dst[row_global * n + col_global] =
-                        vec_dot_q6_k_q8_k_neon(k, w_row, x_vec);
+        pool.parallel(move |tid| {
+            let mut row = tid;
+            let chunk_atomic =
+                unsafe { &*(current_chunk_ptr as *const AtomicUsize) };
+            while row < m {
+                let w_row = unsafe {
+                    std::slice::from_raw_parts(
+                        (weights_ptr as *const BlockQ6K).add(row * nb),
+                        nb,
+                    )
+                };
+                for j in 0..n {
+                    let x_vec = unsafe {
+                        std::slice::from_raw_parts(
+                            (x_ptr as *const BlockQ8K).add(j * nb),
+                            nb,
+                        )
+                    };
+                    let result = vec_dot_q6_k_q8_k_neon(k, w_row, x_vec);
+                    unsafe {
+                        *((dst_ptr as *mut f32).add(row * n + j)) = result;
+                    }
                 }
+                row = chunk_atomic.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    } else {
+        for row in 0..m {
+            let w_row = &weights[row * nb..(row + 1) * nb];
+            for j in 0..n {
+                let x_vec = &x[j * nb..(j + 1) * nb];
+                dst[row * n + j] = vec_dot_q6_k_q8_k_neon(k, w_row, x_vec);
             }
         }
     }
