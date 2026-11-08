@@ -333,6 +333,10 @@ path = "tools/test_q4k_gemv.rs"
 required-features = ["metal"]
 
 [[bin]]
+name = "test-medium-path"
+path = "tools/test_medium_path.rs"
+
+[[bin]]
 name = "test-q5k-dequant-unit"
 path = "tools/test_q5k_dequant_unit.rs"
 

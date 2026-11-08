@@ -1050,10 +1050,10 @@ impl LlamaModel {
                 self.gemv_with_prequant(x_q8k_blocks, hidden_size, w3, up_buf);
             } else {
                 // Fallback for mixed dtypes (single-thread for decode)
-                self.gemv_into_with_buffers_single_thread(
+                self.gemv_into_with_buffers(
                     hidden, w1, gate_buf, q8k_input, x_padded,
                 );
-                self.gemv_into_with_buffers_single_thread(
+                self.gemv_into_with_buffers(
                     hidden, w3, up_buf, q8k_input, x_padded,
                 );
             }
@@ -2400,7 +2400,7 @@ impl LlamaModel {
             let output = self.output.as_ref()?;
             // Use single-thread GEMV for decode, parallel for prefill
             if is_decode {
-                self.gemv_into_with_buffers_single_thread(
+                self.gemv_into_with_buffers(
                     &buffers.hidden_alt,
                     output,
                     &mut buffers.logits[..vocab_size],
@@ -2416,6 +2416,111 @@ impl LlamaModel {
                     &mut buffers.x_padded,
                 );
             }
+
+            // Return logits (copy from buffer - still one allocation)
+            Some(buffers.logits[..vocab_size].to_vec())
+        }
+    }
+
+    /// Forward with thread configuration (decode vs prefill)
+    /// Matches llama.cpp's -t (decode) and -tb (prefill) parameters
+    #[cfg(target_arch = "aarch64")]
+    pub fn forward_pooled_with_threads(
+        &self,
+        tokens: &[u32],
+        kv_cache: &mut crate::inference::KVCache,
+        buffers: &mut crate::cpu::CpuWorkBuffers,
+        thread_config: &crate::cpu::ThreadConfig,
+    ) -> Option<Vec<f32>> {
+        if tokens.is_empty() || self.tok_embeddings.is_none() {
+            return None;
+        }
+
+        let hidden_size = self.config.hidden_size;
+        let vocab_size = self.config.vocab_size;
+
+        // Detect decode mode (single token at a time)
+        let is_decode = tokens.len() == 1;
+        let n_threads = thread_config.n_threads(is_decode);
+
+        // Check if model uses MLA architecture - currently not supported by zero-allocation path
+        let uses_mla = self.uses_mqa();
+
+        // Use tiled GEMM for batch prefill (>= 8 tokens) on non-MLA models
+        const TILED_THRESHOLD: usize = 8;
+        let use_tiled = tokens.len() >= TILED_THRESHOLD && !uses_mla;
+
+        // Get config values for MLA fallback
+        let n_heads = self.config.n_heads;
+        let head_dim = self.config.head_dim;
+        let n_kv_heads = self.config.n_kv_heads;
+
+        if use_tiled {
+            // Batch prefill path using tiled GEMM
+            // TODO: Pass n_threads to tiled GEMM
+            self.forward_pooled_batch_tiled(tokens, kv_cache, buffers)
+        } else {
+            // Standard token-by-token processing
+            // Process each token
+            for &token in tokens.iter() {
+                // 1. Embedding lookup into buffer
+                self.embedding_lookup_into(token, &mut buffers.hidden)?;
+
+                // 2. Process through layers
+                // Use single-thread path for decode (eliminates thread overhead)
+                // But fall back to regular path for MLA architecture (not yet supported)
+                if is_decode && !uses_mla && n_threads == 1 {
+                    // Single-thread decode path
+                    for (layer_idx, layer) in self.layers.iter().enumerate() {
+                        self.forward_layer_decode_single_thread(
+                            layer, layer_idx, kv_cache, buffers,
+                        )?;
+                    }
+                } else if !uses_mla {
+                    // Multi-thread path with custom thread count
+                    for (layer_idx, layer) in self.layers.iter().enumerate() {
+                        self.forward_layer_zero_alloc_with_threads(
+                            layer, layer_idx, kv_cache, buffers, n_threads,
+                        )?;
+                    }
+                } else {
+                    // MLA architecture - use regular forward (not zero-allocation)
+                    // This handles DeepSeek-Coder-V2 and other MLA models
+                    for (layer_idx, layer) in self.layers.iter().enumerate() {
+                        // Use the regular forward_layer which has MLA support
+                        buffers.hidden = self.forward_layer(
+                            layer,
+                            layer_idx,
+                            &buffers.hidden.clone(),
+                            kv_cache,
+                            n_heads,
+                            head_dim,
+                            n_kv_heads,
+                        )?;
+                    }
+                }
+
+                // Advance KV cache position
+                kv_cache.advance();
+            }
+
+            // 3. Final norm (use pre-dequantized weight stored in norm_weight)
+            self.apply_rms_norm_predequant(
+                &buffers.hidden,
+                &buffers.norm_weight,
+                &mut buffers.hidden_alt,
+            );
+
+            // 4. Output projection (hidden_alt -> logits)
+            let output = self.output.as_ref()?;
+            self.gemv_into_with_buffers_with_threads(
+                &buffers.hidden_alt,
+                output,
+                &mut buffers.logits[..vocab_size],
+                &mut buffers.q8k_input,
+                &mut buffers.x_padded,
+                n_threads,
+            );
 
             // Return logits (copy from buffer - still one allocation)
             Some(buffers.logits[..vocab_size].to_vec())
@@ -3265,13 +3370,40 @@ impl LlamaModel {
         kv_cache: &mut crate::inference::KVCache,
         buffers: &mut crate::cpu::CpuWorkBuffers,
     ) -> Option<()> {
+        self.forward_layer_zero_alloc_with_threads(
+            layer,
+            layer_idx,
+            kv_cache,
+            buffers,
+            crate::cpu::default_n_threads(),
+        )
+    }
+
+    pub fn forward_layer_zero_alloc_with_threads(
+        &self,
+        layer: &LlamaLayer,
+        layer_idx: usize,
+        kv_cache: &mut crate::inference::KVCache,
+        buffers: &mut crate::cpu::CpuWorkBuffers,
+        n_threads: usize,
+    ) -> Option<()> {
+        use std::time::{Duration, Instant};
+
         let hidden_size = self.config.hidden_size;
         let n_heads = self.config.n_heads;
         let head_dim = self.config.head_dim;
         let n_kv_heads = self.config.n_kv_heads;
         let pos = kv_cache.seq_len();
 
+        let mut time_norm = Duration::new(0, 0);
+        let mut time_qkv = Duration::new(0, 0);
+        let mut time_rope = Duration::new(0, 0);
+        let mut time_attn = Duration::new(0, 0);
+        let mut time_wo = Duration::new(0, 0);
+        let mut time_ffn = Duration::new(0, 0);
+
         // 1. Attention norm (hidden -> hidden_alt) - use pre-dequantized weights
+        let start = Instant::now();
         let attn_norm_offset = layer_idx * 2 * hidden_size;
         self.apply_rms_norm_predequant(
             &buffers.hidden,
@@ -3279,6 +3411,7 @@ impl LlamaModel {
                 [attn_norm_offset..attn_norm_offset + hidden_size],
             &mut buffers.hidden_alt,
         );
+        time_norm += start.elapsed();
 
         // 2. QKV projections (hidden_alt -> q/k/v buffers)
         // Support both fused QKV (Qwen3.8-style) and separate wq/wk/wv
@@ -3293,13 +3426,15 @@ impl LlamaModel {
             let v_size = n_kv_heads * self.config.value_length;
 
             // Fused QKV: single GEMV then split
-            // Use single-thread GEMV to avoid thread pool barrier issue
-            self.gemv_into_with_buffers_single_thread(
+            // Use hybrid GEMV (auto thread selection: parallel for m > 1, single-thread for m = 1)
+            let start = Instant::now();
+            self.gemv_into_with_buffers_with_threads(
                 &buffers.hidden_alt,
                 qkv,
                 &mut buffers.qkv_buffer[..qkv_out_size],
                 &mut buffers.q8k_input,
                 &mut buffers.x_padded,
+                n_threads,
             );
 
             // Split into Q, K, V (using actual sizes)
@@ -3310,6 +3445,7 @@ impl LlamaModel {
             buffers.v_buffer[..v_size].copy_from_slice(
                 &buffers.qkv_buffer[q_size + k_size..q_size + k_size + v_size],
             );
+            time_qkv += start.elapsed();
 
             // Apply Q/K norms (Qwen-style) before RoPE
             if let Some(ref q_norm) = layer.q_norm {
@@ -3346,8 +3482,8 @@ impl LlamaModel {
                 }
             }
 
-            // Return early for fused QKV path to avoid size mismatch below
-            // Continue with RoPE and attention using actual sizes
+            // RoPE and attention using actual sizes
+            let start = Instant::now();
             self.apply_rope_into(
                 &buffers.q_buffer[..q_size],
                 pos,
@@ -3369,8 +3505,10 @@ impl LlamaModel {
             )?;
             buffers.k_buffer[..k_size]
                 .copy_from_slice(&buffers.rope_buffer[..k_size]);
+            time_rope += start.elapsed();
 
             // Attention with actual sizes - use optimized tiled flash attention
+            let start = Instant::now();
             #[cfg(target_arch = "aarch64")]
             {
                 crate::cpu::flash_attention_single(
@@ -3401,6 +3539,7 @@ impl LlamaModel {
                     &mut buffers.attn_scores,
                 )?;
             }
+            time_attn += start.elapsed();
         } else {
             // Standard separate wq/wk/wv projections
             let q_size = n_heads * head_dim;
@@ -3422,6 +3561,7 @@ impl LlamaModel {
                 )
             );
 
+            let start = Instant::now();
             if all_k_quant {
                 // Pre-quantize once
                 let x_q8k_blocks = unsafe {
@@ -3440,23 +3580,22 @@ impl LlamaModel {
                     &mut buffers.x_padded,
                 );
 
-                // Use pre-quantized input for all projections
-                // Use single-thread GEMV to avoid thread pool barrier issue
-                self.gemv_with_prequant_single_thread(
+                // Use pre-quantized input for all projections (hybrid auto thread selection)
+                self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wq.as_ref()?,
                     &mut buffers.q_buffer[..q_size],
                 );
 
-                self.gemv_with_prequant_single_thread(
+                self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wk.as_ref()?,
                     &mut buffers.k_buffer[..k_size],
                 );
 
-                self.gemv_with_prequant_single_thread(
+                self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wv.as_ref()?,
@@ -3464,30 +3603,34 @@ impl LlamaModel {
                 );
             } else {
                 // Fallback to per-projection quantization for mixed dtypes (single-thread for decode)
-                self.gemv_into_with_buffers_single_thread(
+                self.gemv_into_with_buffers_with_threads(
                     &buffers.hidden_alt,
                     layer.wq.as_ref()?,
                     &mut buffers.q_buffer[..q_size],
                     &mut buffers.q8k_input,
                     &mut buffers.x_padded,
+                    n_threads,
                 );
 
-                self.gemv_into_with_buffers_single_thread(
+                self.gemv_into_with_buffers_with_threads(
                     &buffers.hidden_alt,
                     layer.wk.as_ref()?,
                     &mut buffers.k_buffer[..k_size],
                     &mut buffers.q8k_input,
                     &mut buffers.x_padded,
+                    n_threads,
                 );
 
-                self.gemv_into_with_buffers_single_thread(
+                self.gemv_into_with_buffers_with_threads(
                     &buffers.hidden_alt,
                     layer.wv.as_ref()?,
                     &mut buffers.v_buffer[..v_size],
                     &mut buffers.q8k_input,
                     &mut buffers.x_padded,
+                    n_threads,
                 );
             }
+            time_qkv += start.elapsed();
 
             // Apply Q/K norms (Qwen-style) before RoPE
             if let Some(ref q_norm) = layer.q_norm {
@@ -3524,6 +3667,7 @@ impl LlamaModel {
             }
 
             // 3. RoPE (standard path)
+            let start = Instant::now();
             self.apply_rope_into(
                 &buffers.q_buffer,
                 pos,
@@ -3543,8 +3687,10 @@ impl LlamaModel {
             )?;
             buffers.k_buffer[..k_size]
                 .copy_from_slice(&buffers.rope_buffer[..k_size]);
+            time_rope += start.elapsed();
 
             // 4. Attention (standard path) - use optimized tiled flash attention
+            let start = Instant::now();
             #[cfg(target_arch = "aarch64")]
             {
                 crate::cpu::flash_attention_single(
@@ -3575,16 +3721,20 @@ impl LlamaModel {
                     &mut buffers.attn_scores,
                 )?;
             }
+            time_attn += start.elapsed();
         }
 
         // 5. Output projection (attn_out -> hidden_alt) - single-thread for decode
-        self.gemv_into_with_buffers_single_thread(
+        let start = Instant::now();
+        self.gemv_into_with_buffers_with_threads(
             &buffers.attn_out,
             layer.wo.as_ref()?,
             &mut buffers.hidden_alt,
             &mut buffers.q8k_input,
             &mut buffers.x_padded,
+            n_threads,
         );
+        time_wo += start.elapsed();
 
         // 6. Residual (hidden + hidden_alt -> hidden)
         for i in 0..hidden_size {
@@ -3592,6 +3742,7 @@ impl LlamaModel {
         }
 
         // 7. FFN norm (hidden -> hidden_alt) - use pre-dequantized weights
+        let start = Instant::now();
         let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
         self.apply_rms_norm_predequant(
             &buffers.hidden,
@@ -3599,9 +3750,11 @@ impl LlamaModel {
                 [ffn_norm_offset..ffn_norm_offset + hidden_size],
             &mut buffers.hidden_alt,
         );
+        time_norm += start.elapsed();
 
         // 8. FFN (hidden_alt -> hidden through FFN) - zero-allocation
         // Use single-thread GEMV to avoid thread pool barrier issue
+        let start = Instant::now();
         self.compute_ffn_zero_alloc_single_thread(
             layer,
             &buffers.hidden_alt,
@@ -3611,6 +3764,18 @@ impl LlamaModel {
             &mut buffers.q8k_input,
             &mut buffers.x_padded,
         )?;
+        time_ffn += start.elapsed();
+
+        // Print timing for first layer only
+        if layer_idx == 0 {
+            println!("Layer {} timing:", layer_idx);
+            println!("  Norm:   {:6.3} ms", time_norm.as_secs_f64() * 1000.0);
+            println!("  QKV:    {:6.3} ms", time_qkv.as_secs_f64() * 1000.0);
+            println!("  RoPE:   {:6.3} ms", time_rope.as_secs_f64() * 1000.0);
+            println!("  Attn:   {:6.3} ms", time_attn.as_secs_f64() * 1000.0);
+            println!("  WO:     {:6.3} ms", time_wo.as_secs_f64() * 1000.0);
+            println!("  FFN:    {:6.3} ms", time_ffn.as_secs_f64() * 1000.0);
+        }
 
         Some(())
     }
@@ -3835,7 +4000,7 @@ impl LlamaModel {
             &mut buffers.hidden_alt,
         );
 
-        // 2. QKV projections (single-thread GEMV)
+        // 2. QKV projections - use tiled GEMV for better cache locality
         if let Some(ref qkv) = layer.attn_qkv {
             // Fused QKV
             let qkv_out_size = qkv.shape[1];
@@ -3843,12 +4008,48 @@ impl LlamaModel {
             let k_size = n_kv_heads * self.config.key_length;
             let v_size = n_kv_heads * self.config.value_length;
 
-            self.gemv_into_with_buffers_single_thread(
-                &buffers.hidden_alt,
+            // Quantize input to Q8_K first
+            use crate::quant::kv_cache::quantize_row_q8_k_neon;
+            use crate::quant::types::{BlockQ8K, QK_K};
+
+            let in_size_padded = ((hidden_size + QK_K - 1) / QK_K) * QK_K;
+            let nb = in_size_padded / QK_K;
+
+            // Zero pad if needed
+            if hidden_size != in_size_padded {
+                for i in hidden_size..in_size_padded {
+                    buffers.x_padded[i] = 0.0;
+                }
+                buffers.x_padded[..hidden_size]
+                    .copy_from_slice(&buffers.hidden_alt);
+                quantize_row_q8_k_neon(&buffers.x_padded, unsafe {
+                    std::slice::from_raw_parts_mut(
+                        buffers.q8k_input.as_mut_ptr() as *mut BlockQ8K,
+                        nb,
+                    )
+                });
+            } else {
+                quantize_row_q8_k_neon(&buffers.hidden_alt, unsafe {
+                    std::slice::from_raw_parts_mut(
+                        buffers.q8k_input.as_mut_ptr() as *mut BlockQ8K,
+                        nb,
+                    )
+                });
+            }
+
+            // Use tiled GEMV for decode
+            let x_q8k = unsafe {
+                std::slice::from_raw_parts(
+                    buffers.q8k_input.as_ptr() as *const BlockQ8K,
+                    nb,
+                )
+            };
+
+            self.gemv_with_prequant_tiled(
+                x_q8k,
+                in_size_padded,
                 qkv,
                 &mut buffers.qkv_buffer[..qkv_out_size],
-                &mut buffers.q8k_input,
-                &mut buffers.x_padded,
             );
 
             buffers.q_buffer[..q_size]
@@ -3950,21 +4151,21 @@ impl LlamaModel {
                 );
 
                 // Use single-thread GEMV for decode to avoid thread overhead
-                self.gemv_with_prequant_single_thread(
+                self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wq.as_ref()?,
                     &mut buffers.q_buffer[..q_size],
                 );
 
-                self.gemv_with_prequant_single_thread(
+                self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wk.as_ref()?,
                     &mut buffers.k_buffer[..k_size],
                 );
 
-                self.gemv_with_prequant_single_thread(
+                self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wv.as_ref()?,
@@ -3972,7 +4173,7 @@ impl LlamaModel {
                 );
             } else {
                 // Fallback to single-thread with per-projection quantization
-                self.gemv_into_with_buffers_single_thread(
+                self.gemv_into_with_buffers(
                     &buffers.hidden_alt,
                     layer.wq.as_ref()?,
                     &mut buffers.q_buffer[..q_size],
@@ -3980,7 +4181,7 @@ impl LlamaModel {
                     &mut buffers.x_padded,
                 );
 
-                self.gemv_into_with_buffers_single_thread(
+                self.gemv_into_with_buffers(
                     &buffers.hidden_alt,
                     layer.wk.as_ref()?,
                     &mut buffers.k_buffer[..k_size],
@@ -3988,7 +4189,7 @@ impl LlamaModel {
                     &mut buffers.x_padded,
                 );
 
-                self.gemv_into_with_buffers_single_thread(
+                self.gemv_into_with_buffers(
                     &buffers.hidden_alt,
                     layer.wv.as_ref()?,
                     &mut buffers.v_buffer[..v_size],
@@ -4089,7 +4290,7 @@ impl LlamaModel {
         }
 
         // 5. Output projection (single-thread GEMV)
-        self.gemv_into_with_buffers_single_thread(
+        self.gemv_into_with_buffers(
             &buffers.attn_out,
             layer.wo.as_ref()?,
             &mut buffers.hidden_alt,
@@ -4174,24 +4375,19 @@ impl LlamaModel {
                 Self::quantize_input_to_q8k(hidden, x_q8k_blocks, x_padded);
 
                 // Gate and up projections with pre-quantized input
-                self.gemv_with_prequant_single_thread(
+                self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     w1,
                     gate_out,
                 );
-                self.gemv_with_prequant_single_thread(
-                    x_q8k_blocks,
-                    hidden_size,
-                    w3,
-                    up_out,
-                );
+                self.gemv_with_prequant(x_q8k_blocks, hidden_size, w3, up_out);
             } else {
                 // Fallback for mixed dtypes
-                self.gemv_into_with_buffers_single_thread(
+                self.gemv_into_with_buffers(
                     hidden, w1, gate_out, q8k_input, x_padded,
                 );
-                self.gemv_into_with_buffers_single_thread(
+                self.gemv_into_with_buffers(
                     hidden, w3, up_out, q8k_input, x_padded,
                 );
             }
@@ -4203,7 +4399,7 @@ impl LlamaModel {
             }
 
             // Down projection (single-thread)
-            self.gemv_into_with_buffers_single_thread(
+            self.gemv_into_with_buffers(
                 up_out, w2, result, q8k_input, x_padded,
             );
 
@@ -4702,13 +4898,36 @@ impl LlamaModel {
         x_q8k: &mut [u8],
         x_padded: &mut [f32],
     ) -> bool {
+        self.gemv_into_with_buffers_with_threads(
+            x,
+            w,
+            out,
+            x_q8k,
+            x_padded,
+            crate::cpu::default_n_threads(),
+        )
+    }
+
+    /// Zero-allocation GEMV with custom thread count
+    #[cfg(target_arch = "aarch64")]
+    pub fn gemv_into_with_buffers_with_threads(
+        &self,
+        x: &[f32],
+        w: &Tensor,
+        out: &mut [f32],
+        x_q8k: &mut [u8],
+        x_padded: &mut [f32],
+        n_threads: usize,
+    ) -> bool {
         let in_size = x.len();
         let out_size = out.len();
 
         use crate::quant::kv_cache::quantize_row_q8_k_neon;
         use crate::quant::matmul::k_quant::{
-            matmul_iq4_xs_q8_k_hybrid, matmul_q4_k_q8_k_hybrid,
-            matmul_q5_k_q8_k_hybrid, matmul_q6_k_q8_k_hybrid,
+            matmul_iq4_xs_q8_k_hybrid_with_threads,
+            matmul_q4_k_q8_k_hybrid_with_threads,
+            matmul_q5_k_q8_k_hybrid_with_threads,
+            matmul_q6_k_q8_k_hybrid_with_threads,
         };
         use crate::quant::types::{
             BlockIQ4XS, BlockQ4K, BlockQ5K, BlockQ6K, QK_K,
@@ -4760,12 +4979,13 @@ impl LlamaModel {
                                     w.bytes().as_ptr() as *const BlockQ4K,
                                     out_size * nb,
                                 );
-                            matmul_q4_k_q8_k_hybrid(
+                            matmul_q4_k_q8_k_hybrid_with_threads(
                                 weights,
                                 x_q8k_blocks,
                                 out,
                                 in_size_padded,
                                 out_size,
+                                n_threads,
                             );
                         }
                         DataType::Q5_K => {
@@ -4774,12 +4994,13 @@ impl LlamaModel {
                                     w.bytes().as_ptr() as *const BlockQ5K,
                                     out_size * nb,
                                 );
-                            matmul_q5_k_q8_k_hybrid(
+                            matmul_q5_k_q8_k_hybrid_with_threads(
                                 weights,
                                 x_q8k_blocks,
                                 out,
                                 in_size_padded,
                                 out_size,
+                                n_threads,
                             );
                         }
                         DataType::Q6_K => {
@@ -4788,12 +5009,13 @@ impl LlamaModel {
                                     w.bytes().as_ptr() as *const BlockQ6K,
                                     out_size * nb,
                                 );
-                            matmul_q6_k_q8_k_hybrid(
+                            matmul_q6_k_q8_k_hybrid_with_threads(
                                 weights,
                                 x_q8k_blocks,
                                 out,
                                 in_size_padded,
                                 out_size,
+                                n_threads,
                             );
                         }
                         DataType::IQ4_XS => {
@@ -4802,12 +5024,13 @@ impl LlamaModel {
                                     w.bytes().as_ptr() as *const BlockIQ4XS,
                                     out_size * nb,
                                 );
-                            matmul_iq4_xs_q8_k_hybrid(
+                            matmul_iq4_xs_q8_k_hybrid_with_threads(
                                 weights,
                                 x_q8k_blocks,
                                 out,
                                 in_size_padded,
                                 out_size,
+                                n_threads,
                             );
                         }
                         _ => unreachable!(),
@@ -4985,6 +5208,8 @@ impl LlamaModel {
     /// Input must be quantized to Q8_K format with proper padding
     /// Uses hybrid ST/MT strategy: single-thread for small matrices, parallel for large
     #[cfg(target_arch = "aarch64")]
+    /// Hybrid GEMV with pre-quantized input
+    /// Auto-selects parallel (m > 1) or single-thread (m = 1)
     pub fn gemv_with_prequant(
         &self,
         x_q8k: &[crate::quant::types::BlockQ8K],
@@ -4992,6 +5217,14 @@ impl LlamaModel {
         w: &Tensor,
         out: &mut [f32],
     ) -> bool {
+        let out_size = out.len();
+
+        // Use tiled GEMV for better cache locality when output size >= 16
+        if out_size >= 16 {
+            return self.gemv_with_prequant_tiled(x_q8k, in_size, w, out);
+        }
+
+        // Fallback to hybrid for small outputs
         use crate::quant::matmul::k_quant::{
             matmul_iq4_xs_q8_k_hybrid, matmul_q4_k_q8_k_hybrid,
             matmul_q5_k_q8_k_hybrid, matmul_q6_k_q8_k_hybrid,
@@ -5000,7 +5233,6 @@ impl LlamaModel {
             BlockIQ4XS, BlockQ4K, BlockQ5K, BlockQ6K, QK_K,
         };
 
-        let out_size = out.len();
         let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
         let nb = in_size_padded / QK_K;
 
@@ -5592,21 +5824,85 @@ impl LlamaModel {
                     )
                 };
 
-                for (i, input) in inputs.iter().enumerate() {
-                    let row_blocks = &mut x_q8k_blocks[i * nb..(i + 1) * nb];
+                // Parallel quantization (matching llama.cpp's approach)
+                use std::sync::atomic::{AtomicUsize, Ordering};
 
-                    if input.len() != in_size_padded {
-                        // Zero padding
-                        for j in input.len()..in_size_padded {
-                            x_padded[j] = 0.0;
+                let scheduler = crate::cpu::get_scheduler();
+                let n_threads = scheduler.optimal_threads(
+                    in_size_padded,
+                    in_size_padded,
+                    n,
+                );
+                let counter = AtomicUsize::new(0);
+
+                if n_threads > 1 && n > 1 {
+                    // Get raw pointer once before spawning threads
+                    // Cast to usize to make it Send (safe because we use non-overlapping slices)
+                    let x_q8k_ptr = x_q8k_blocks.as_mut_ptr() as usize;
+
+                    std::thread::scope(|s| {
+                        for _ in 0..n_threads {
+                            s.spawn(|| {
+                                // Thread-local padding buffer (avoids false sharing)
+                                let mut x_padded_local =
+                                    vec![0.0f32; in_size_padded];
+
+                                loop {
+                                    let i =
+                                        counter.fetch_add(1, Ordering::Relaxed);
+                                    if i >= n {
+                                        break;
+                                    }
+
+                                    let input = inputs[i];
+                                    // Safe: each thread writes to non-overlapping rows
+                                    let row_blocks = unsafe {
+                                        std::slice::from_raw_parts_mut(
+                                            (x_q8k_ptr as *mut BlockQ8K)
+                                                .add(i * nb),
+                                            nb,
+                                        )
+                                    };
+
+                                    if input.len() != in_size_padded {
+                                        // Zero padding
+                                        for j in input.len()..in_size_padded {
+                                            x_padded_local[j] = 0.0;
+                                        }
+                                        x_padded_local[..input.len()]
+                                            .copy_from_slice(input);
+                                        quantize_row_q8_k_neon(
+                                            &x_padded_local[..in_size_padded],
+                                            row_blocks,
+                                        );
+                                    } else {
+                                        quantize_row_q8_k_neon(
+                                            input, row_blocks,
+                                        );
+                                    }
+                                }
+                            });
                         }
-                        x_padded[..input.len()].copy_from_slice(input);
-                        quantize_row_q8_k_neon(
-                            &x_padded[..in_size_padded],
-                            row_blocks,
-                        );
-                    } else {
-                        quantize_row_q8_k_neon(input, row_blocks);
+                    });
+                } else {
+                    // Single-threaded fallback
+                    for (i, input) in inputs.iter().enumerate() {
+                        let row_blocks =
+                            &mut x_q8k_blocks[i * nb..(i + 1) * nb];
+
+                        if input.len() != in_size_padded {
+                            // Zero padding
+                            for j in input.len()..in_size_padded {
+                                x_padded[j] = 0.0;
+                            }
+                            x_padded[..input.len()].copy_from_slice(input);
+                            quantize_row_q8_k_neon(
+                                &x_padded[..in_size_padded],
+                                row_blocks,
+                            );
+                        } else {
+                            quantize_row_q8_k_neon(input, row_blocks);
+                        }
                     }
                 }
 

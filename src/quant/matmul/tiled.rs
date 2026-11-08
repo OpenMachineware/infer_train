@@ -445,93 +445,100 @@ pub unsafe fn matmul_q5k_q8k_tiled(
 ) {
     let nb = k / QK_K;
 
-    // Use multithreading for larger matrices
-    let n_threads = crate::cpu::default_n_threads();
-    if n_threads > 1 && m >= 256 {
-        use crate::cpu::{SyncPtr, parallel_chunks};
-        let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
-        let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5K);
-        let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
-        let weights_len = weights.len();
-        let x_len = x.len();
+    // Use adaptive scheduler for thread count and path selection
+    let scheduler = crate::cpu::get_scheduler();
+    let n_threads = scheduler.optimal_threads(m, k, n);
+    let path = scheduler.select_path(n, m, k);
 
-        parallel_chunks(m, n_threads, move |row_start, row_end| {
+    match path {
+        crate::cpu::MatmulPath::SingleThread => {
+            // Single-threaded execution
             WORKSPACE.with(|ws_cell| {
                 let mut ws = ws_cell.borrow_mut();
-                let tile_m = row_end - row_start;
 
-                // Process this chunk of rows
                 if n <= MICRO {
-                    matmul_q5k_q8k_narrow_chunk(
-                        &mut ws,
-                        std::slice::from_raw_parts(
-                            weights_ptr.get(),
-                            weights_len,
-                        ),
-                        std::slice::from_raw_parts(x_ptr.get(), x_len),
-                        std::slice::from_raw_parts_mut(
-                            dst_ptr.get().add(row_start * n),
-                            tile_m * n,
-                        ),
-                        row_start,
-                        tile_m,
-                        n,
-                        nb,
-                    );
+                    matmul_q5k_q8k_narrow(&mut ws, weights, x, dst, m, n, nb);
                 } else if n <= 2 * MICRO {
-                    // Medium path: 16 < N <= 32
-                    matmul_q5k_q8k_medium_chunk(
-                        &mut ws,
-                        std::slice::from_raw_parts(
-                            weights_ptr.get(),
-                            weights_len,
-                        ),
-                        std::slice::from_raw_parts(x_ptr.get(), x_len),
-                        std::slice::from_raw_parts_mut(
-                            dst_ptr.get().add(row_start * n),
-                            tile_m * n,
-                        ),
-                        row_start,
-                        tile_m,
-                        n,
-                        nb,
-                    );
+                    matmul_q5k_q8k_medium(&mut ws, weights, x, dst, m, n, nb);
                 } else {
-                    matmul_q5k_q8k_standard_chunk(
-                        &mut ws,
-                        std::slice::from_raw_parts(
-                            weights_ptr.get(),
-                            weights_len,
-                        ),
-                        std::slice::from_raw_parts(x_ptr.get(), x_len),
-                        std::slice::from_raw_parts_mut(
-                            dst_ptr.get().add(row_start * n),
-                            tile_m * n,
-                        ),
-                        row_start,
-                        tile_m,
-                        n,
-                        nb,
-                    );
+                    matmul_q5k_q8k_standard(&mut ws, weights, x, dst, m, n, nb);
                 }
             });
-        });
-    } else {
-        WORKSPACE.with(|ws_cell| {
-            let mut ws = ws_cell.borrow_mut();
+        }
+        crate::cpu::MatmulPath::Parallel | crate::cpu::MatmulPath::Tiled => {
+            // Multi-threaded execution with adaptive chunking
+            use crate::cpu::{SyncPtr, parallel_chunks};
 
-            // Determine path: narrow (N <= 16), medium (16 < N <= 32), or standard
-            if n <= MICRO {
-                // Narrow path: optimize for decode
-                matmul_q5k_q8k_narrow(&mut ws, weights, x, dst, m, n, nb);
-            } else if n <= 2 * MICRO {
-                // Medium path: 16 < N <= 32
-                matmul_q5k_q8k_medium(&mut ws, weights, x, dst, m, n, nb);
-            } else {
-                // Standard path: tiled 256x256
-                matmul_q5k_q8k_standard(&mut ws, weights, x, dst, m, n, nb);
-            }
-        });
+            let chunk_size = scheduler.compute_chunk_size(m, n, n_threads);
+
+            let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+            let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5K);
+            let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
+            let weights_len = weights.len();
+            let x_len = x.len();
+
+            parallel_chunks(m, n_threads, move |row_start, row_end| {
+                WORKSPACE.with(|ws_cell| {
+                    let mut ws = ws_cell.borrow_mut();
+                    let tile_m = row_end - row_start;
+
+                    // Process this chunk of rows
+                    if n <= MICRO {
+                        matmul_q5k_q8k_narrow_chunk(
+                            &mut ws,
+                            std::slice::from_raw_parts(
+                                weights_ptr.get(),
+                                weights_len,
+                            ),
+                            std::slice::from_raw_parts(x_ptr.get(), x_len),
+                            std::slice::from_raw_parts_mut(
+                                dst_ptr.get().add(row_start * n),
+                                tile_m * n,
+                            ),
+                            row_start,
+                            tile_m,
+                            n,
+                            nb,
+                        );
+                    } else if n <= 2 * MICRO {
+                        // Medium path: 16 < N <= 32
+                        matmul_q5k_q8k_medium_chunk(
+                            &mut ws,
+                            std::slice::from_raw_parts(
+                                weights_ptr.get(),
+                                weights_len,
+                            ),
+                            std::slice::from_raw_parts(x_ptr.get(), x_len),
+                            std::slice::from_raw_parts_mut(
+                                dst_ptr.get().add(row_start * n),
+                                tile_m * n,
+                            ),
+                            row_start,
+                            tile_m,
+                            n,
+                            nb,
+                        );
+                    } else {
+                        matmul_q5k_q8k_standard_chunk(
+                            &mut ws,
+                            std::slice::from_raw_parts(
+                                weights_ptr.get(),
+                                weights_len,
+                            ),
+                            std::slice::from_raw_parts(x_ptr.get(), x_len),
+                            std::slice::from_raw_parts_mut(
+                                dst_ptr.get().add(row_start * n),
+                                tile_m * n,
+                            ),
+                            row_start,
+                            tile_m,
+                            n,
+                            nb,
+                        );
+                    }
+                });
+            });
+        }
     }
 }
 
@@ -1182,72 +1189,80 @@ pub unsafe fn matmul_q4k_q8k_tiled(
 ) {
     let nb = k / QK_K;
 
-    // Use multithreading for larger matrices
-    let n_threads = crate::cpu::default_n_threads();
-    if n_threads > 1 && m >= 256 {
-        use crate::cpu::{SyncPtr, parallel_chunks};
-        let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
-        let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ4K);
-        let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
-        let weights_len = weights.len();
-        let x_len = x.len();
+    // Use adaptive scheduler for thread count and path selection
+    let scheduler = crate::cpu::get_scheduler();
+    let n_threads = scheduler.optimal_threads(m, k, n);
+    let path = scheduler.select_path(n, m, k);
 
-        parallel_chunks(m, n_threads, move |row_start, row_end| {
+    match path {
+        crate::cpu::MatmulPath::SingleThread => {
+            // Single-threaded execution
             WORKSPACE.with(|ws_cell| {
                 let mut ws = ws_cell.borrow_mut();
-                let tile_m = row_end - row_start;
 
-                // Process this chunk of rows
                 if n <= MICRO {
-                    matmul_q4k_q8k_narrow_chunk(
-                        &mut ws,
-                        std::slice::from_raw_parts(
-                            weights_ptr.get(),
-                            weights_len,
-                        ),
-                        std::slice::from_raw_parts(x_ptr.get(), x_len),
-                        std::slice::from_raw_parts_mut(
-                            dst_ptr.get().add(row_start * n),
-                            tile_m * n,
-                        ),
-                        row_start,
-                        tile_m,
-                        n,
-                        nb,
-                    );
+                    matmul_q4k_q8k_narrow(&mut ws, weights, x, dst, m, n, nb);
                 } else {
-                    matmul_q4k_q8k_standard_chunk(
-                        &mut ws,
-                        std::slice::from_raw_parts(
-                            weights_ptr.get(),
-                            weights_len,
-                        ),
-                        std::slice::from_raw_parts(x_ptr.get(), x_len),
-                        std::slice::from_raw_parts_mut(
-                            dst_ptr.get().add(row_start * n),
-                            tile_m * n,
-                        ),
-                        row_start,
-                        tile_m,
-                        n,
-                        nb,
-                    );
+                    matmul_q4k_q8k_standard(&mut ws, weights, x, dst, m, n, nb);
                 }
             });
-        });
-    } else {
-        WORKSPACE.with(|ws_cell| {
-            let mut ws = ws_cell.borrow_mut();
+        }
+        crate::cpu::MatmulPath::Parallel | crate::cpu::MatmulPath::Tiled => {
+            // Multi-threaded execution with adaptive chunking
+            use crate::cpu::{SyncPtr, parallel_chunks};
 
-            // Determine path: narrow (N <= 16) or standard
-            if n <= MICRO {
-                // Narrow path: optimize for decode
-                matmul_q4k_q8k_narrow(&mut ws, weights, x, dst, m, n, nb);
-            } else {
-                // Standard path: tiled 256x256
-                matmul_q4k_q8k_standard(&mut ws, weights, x, dst, m, n, nb);
-            }
-        });
+            let chunk_size = scheduler.compute_chunk_size(m, n, n_threads);
+
+            let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+            let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ4K);
+            let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
+            let weights_len = weights.len();
+            let x_len = x.len();
+
+            parallel_chunks(m, n_threads, move |row_start, row_end| {
+                WORKSPACE.with(|ws_cell| {
+                    let mut ws = ws_cell.borrow_mut();
+                    let tile_m = row_end - row_start;
+
+                    // Process this chunk of rows
+                    if n <= MICRO {
+                        matmul_q4k_q8k_narrow_chunk(
+                            &mut ws,
+                            std::slice::from_raw_parts(
+                                weights_ptr.get(),
+                                weights_len,
+                            ),
+                            std::slice::from_raw_parts(x_ptr.get(), x_len),
+                            std::slice::from_raw_parts_mut(
+                                dst_ptr.get().add(row_start * n),
+                                tile_m * n,
+                            ),
+                            row_start,
+                            tile_m,
+                            n,
+                            nb,
+                        );
+                    } else {
+                        matmul_q4k_q8k_standard_chunk(
+                            &mut ws,
+                            std::slice::from_raw_parts(
+                                weights_ptr.get(),
+                                weights_len,
+                            ),
+                            std::slice::from_raw_parts(x_ptr.get(), x_len),
+                            std::slice::from_raw_parts_mut(
+                                dst_ptr.get().add(row_start * n),
+                                tile_m * n,
+                            ),
+                            row_start,
+                            tile_m,
+                            n,
+                            nb,
+                        );
+                    }
+                });
+            });
+        }
     }
 }
 
@@ -1979,68 +1994,79 @@ pub unsafe fn matmul_q6k_q8k_tiled(
 ) {
     let nb = k / QK_K;
 
-    // Use multithreading for larger matrices
-    let n_threads = crate::cpu::default_n_threads();
-    if n_threads > 1 && m >= 256 {
-        use crate::cpu::{SyncPtr, parallel_chunks};
-        let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
-        let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ6K);
-        let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
-        let weights_len = weights.len();
-        let x_len = x.len();
+    // Use adaptive scheduler for thread count and path selection
+    let scheduler = crate::cpu::get_scheduler();
+    let n_threads = scheduler.optimal_threads(m, k, n);
+    let path = scheduler.select_path(n, m, k);
 
-        parallel_chunks(m, n_threads, move |row_start, row_end| {
+    match path {
+        crate::cpu::MatmulPath::SingleThread => {
+            // Single-threaded execution
             WORKSPACE.with(|ws_cell| {
                 let mut ws = ws_cell.borrow_mut();
-                let tile_m = row_end - row_start;
 
-                // Process this chunk of rows
                 if n <= MICRO {
-                    matmul_q6k_q8k_narrow_chunk(
-                        &mut ws,
-                        std::slice::from_raw_parts(
-                            weights_ptr.get(),
-                            weights_len,
-                        ),
-                        std::slice::from_raw_parts(x_ptr.get(), x_len),
-                        std::slice::from_raw_parts_mut(
-                            dst_ptr.get().add(row_start * n),
-                            tile_m * n,
-                        ),
-                        row_start,
-                        tile_m,
-                        n,
-                        nb,
-                    );
+                    matmul_q6k_q8k_narrow(&mut ws, weights, x, dst, m, n, nb);
                 } else {
-                    matmul_q6k_q8k_standard_chunk(
-                        &mut ws,
-                        std::slice::from_raw_parts(
-                            weights_ptr.get(),
-                            weights_len,
-                        ),
-                        std::slice::from_raw_parts(x_ptr.get(), x_len),
-                        std::slice::from_raw_parts_mut(
-                            dst_ptr.get().add(row_start * n),
-                            tile_m * n,
-                        ),
-                        row_start,
-                        tile_m,
-                        n,
-                        nb,
-                    );
+                    matmul_q6k_q8k_standard(&mut ws, weights, x, dst, m, n, nb);
                 }
             });
-        });
-    } else {
-        WORKSPACE.with(|ws_cell| {
-            let mut ws = ws_cell.borrow_mut();
+        }
+        crate::cpu::MatmulPath::Parallel | crate::cpu::MatmulPath::Tiled => {
+            // Multi-threaded execution with adaptive chunking
+            use crate::cpu::{SyncPtr, parallel_chunks};
 
-            if n <= MICRO {
-                matmul_q6k_q8k_narrow(&mut ws, weights, x, dst, m, n, nb);
-            } else {
-                matmul_q6k_q8k_standard(&mut ws, weights, x, dst, m, n, nb);
-            }
-        });
+            let chunk_size = scheduler.compute_chunk_size(m, n, n_threads);
+
+            let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+            let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ6K);
+            let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
+            let weights_len = weights.len();
+            let x_len = x.len();
+
+            parallel_chunks(m, n_threads, move |row_start, row_end| {
+                WORKSPACE.with(|ws_cell| {
+                    let mut ws = ws_cell.borrow_mut();
+                    let tile_m = row_end - row_start;
+
+                    // Process this chunk of rows
+                    if n <= MICRO {
+                        matmul_q6k_q8k_narrow_chunk(
+                            &mut ws,
+                            std::slice::from_raw_parts(
+                                weights_ptr.get(),
+                                weights_len,
+                            ),
+                            std::slice::from_raw_parts(x_ptr.get(), x_len),
+                            std::slice::from_raw_parts_mut(
+                                dst_ptr.get().add(row_start * n),
+                                tile_m * n,
+                            ),
+                            row_start,
+                            tile_m,
+                            n,
+                            nb,
+                        );
+                    } else {
+                        matmul_q6k_q8k_standard_chunk(
+                            &mut ws,
+                            std::slice::from_raw_parts(
+                                weights_ptr.get(),
+                                weights_len,
+                            ),
+                            std::slice::from_raw_parts(x_ptr.get(), x_len),
+                            std::slice::from_raw_parts_mut(
+                                dst_ptr.get().add(row_start * n),
+                                tile_m * n,
+                            ),
+                            row_start,
+                            tile_m,
+                            n,
+                            nb,
+                        );
+                    }
+                });
+            });
+        }
     }
 }
