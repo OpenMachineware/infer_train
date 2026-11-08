@@ -49,35 +49,40 @@ impl AdaptiveScheduler {
 
     /// Compute optimal thread count for matmul
     ///
-    /// From llama.cpp's strategy:
-    /// - Small matrices: reduce threads to avoid overhead
-    /// - Memory-bound: reduce threads to avoid cache thrashing
-    /// - Compute-bound: use all threads
+    /// From llama.cpp's chunking strategy (ggml-cpu.c:1465-1485):
+    /// - Compute chunk_size (16 for GEMM, 64 for GEMV)
+    /// - Calculate nchunk0 and nchunk1
+    /// - If chunks < nth * 4, redistribute based on dimension size
+    /// - When redistributing: larger dimension gets nth chunks, smaller gets 1
     pub fn optimal_threads(&self, m: usize, k: usize, n: usize) -> usize {
-        // Total FLOPs estimate (matrix multiplication: m x k times k x n)
-        let flops = m as u64 * k as u64 * n as u64;
-
-        // Thresholds from empirical observation
-        // Small matrix: < 64K FLOPs, single thread is faster
-        if flops < 64 * 1024 {
+        // Very small workload: single thread
+        if m * n < 16 {
             return 1;
         }
 
-        // Medium matrix: 64K - 1M FLOPs, use half threads
-        if flops < 1_000_000 {
-            return (self.max_threads / 2).max(1);
+        // Calculate chunking based on llama.cpp's strategy
+        let chunk_size = if n == 1 { 64 } else { 16 };
+
+        let nr0 = m;
+        let nr1 = n;
+
+        let mut nchunk0 = (nr0 + chunk_size - 1) / chunk_size;
+        let mut nchunk1 = (nr1 + chunk_size - 1) / chunk_size;
+
+        // llama.cpp: if (nchunk0 * nchunk1 < nth * 4 || ggml_is_numa())
+        if nchunk0 * nchunk1 < self.max_threads * 4 {
+            // Redistribute: larger dimension gets all threads
+            if nr0 > nr1 {
+                nchunk0 = self.max_threads;
+                nchunk1 = 1;
+            } else {
+                nchunk0 = 1;
+                nchunk1 = self.max_threads;
+            }
         }
 
-        // Large matrix: use all threads, but consider cache
-        // For small models (m < 4096), too many threads cause cache thrashing
-        if m < 4096 {
-            // Use 4 threads max for small output dimensions
-            // This matches llama.cpp's observed behavior
-            return self.max_threads.min(4);
-        }
-
-        // For large models, use all available threads
-        self.max_threads
+        // Thread count is the number of chunks in the primary dimension
+        nchunk0.max(nchunk1).min(self.max_threads)
     }
 
     /// Select execution path based on batch size and dimensions
@@ -207,13 +212,15 @@ mod tests {
         let scheduler = AdaptiveScheduler::new(8);
 
         // Very small matrix: single thread
-        assert_eq!(scheduler.optimal_threads(128, 128, 1), 1);
+        assert_eq!(scheduler.optimal_threads(4, 128, 1), 1);
 
-        // Medium matrix: half threads
-        assert_eq!(scheduler.optimal_threads(512, 512, 1), 4);
+        // Medium matrix: all threads after redistribution
+        // nchunk0 = 8 < 32, so redistribute: nchunk0 = 8, nchunk1 = 1
+        assert_eq!(scheduler.optimal_threads(512, 512, 1), 8);
 
-        // Small output dimension: max 4 threads
-        assert_eq!(scheduler.optimal_threads(2048, 4096, 1), 4);
+        // GEMV with large m: all threads
+        // nchunk0 = 32 >= 32, so use all threads
+        assert_eq!(scheduler.optimal_threads(2048, 4096, 1), 8);
 
         // Large matrix: all threads
         assert_eq!(scheduler.optimal_threads(8192, 4096, 1), 8);
