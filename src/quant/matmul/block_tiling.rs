@@ -23,13 +23,12 @@
 //! For GEMV (n=1), uses interleaved format to process 8 rows at once
 //! For GEMM (n>1), falls back to simple row-by-row processing
 
-use crate::cpu::{SyncPtr, global_pool};
+use crate::cpu::SyncPtr;
 use crate::quant::types::*;
 use crate::quant::vec_dot::arm::k_quant::*;
 use crate::quant::vec_dot::arm::k_quant_batch::{
     gemv_q4_k_interleaved, repack_q4_k_batch,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 const INTERLEAVE_ROWS: usize = 8;
 
@@ -72,45 +71,29 @@ pub unsafe fn matmul_q5k_q8k_block_tiling(
         return;
     }
 
-    // GEMM case: parallelize over weight rows using persistent thread pool
+    // GEMM case: parallelize over weight rows
     // Each thread caches its subset of weights and processes all n inputs
+    // This keeps weights in L2 cache while processing all inputs
     let n_threads = crate::cpu::default_n_threads();
-    if m >= n_threads * 4 && n_threads > 1 {
-        // Use persistent thread pool for lower overhead
-        let pool = global_pool(n_threads);
-        // Initialize counter: first unprocessed chunk is n_threads (threads start with tid)
-        pool.state().current_chunk.store(n_threads, Ordering::Relaxed);
+    if m >= n_threads * 4 {
+        // Parallel over rows for large m
+        let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+        let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5K);
+        let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-        let dst_ptr = dst.as_mut_ptr() as usize;
-        let weights_ptr = weights.as_ptr() as usize;
-        let x_ptr = x.as_ptr() as usize;
-        let current_chunk_ptr =
-            &pool.state().current_chunk as *const AtomicUsize as usize;
-
-        pool.parallel(move |tid| {
-            let mut row = tid;
-            let chunk_atomic =
-                unsafe { &*(current_chunk_ptr as *const AtomicUsize) };
-            while row < m {
-                let w_row = unsafe {
-                    std::slice::from_raw_parts(
-                        (weights_ptr as *const BlockQ5K).add(row * nb),
-                        nb,
-                    )
-                };
+        crate::cpu::parallel_chunks(m, n_threads, move |start, end| {
+            for row in start..end {
+                let w_row = std::slice::from_raw_parts(
+                    weights_ptr.get().add(row * nb),
+                    nb,
+                );
+                // Process all n inputs for this row
                 for j in 0..n {
-                    let x_vec = unsafe {
-                        std::slice::from_raw_parts(
-                            (x_ptr as *const BlockQ8K).add(j * nb),
-                            nb,
-                        )
-                    };
-                    let result = vec_dot_q5_k_q8_k_neon(k, w_row, x_vec);
-                    unsafe {
-                        *((dst_ptr as *mut f32).add(row * n + j)) = result;
-                    }
+                    let x_vec =
+                        std::slice::from_raw_parts(x_ptr.get().add(j * nb), nb);
+                    *dst_ptr.get().add(row * n + j) =
+                        vec_dot_q5_k_q8_k_neon(k, w_row, x_vec);
                 }
-                row = chunk_atomic.fetch_add(1, Ordering::Relaxed);
             }
         });
     } else {
@@ -169,42 +152,25 @@ pub unsafe fn matmul_q4k_q8k_block_tiling(
         return;
     }
 
-    // GEMM case: parallelize over weight rows using persistent thread pool
+    // GEMM case: parallelize over weight rows
     let n_threads = crate::cpu::default_n_threads();
-    if m >= n_threads * 4 && n_threads > 1 {
-        let pool = global_pool(n_threads);
-        pool.state().current_chunk.store(n_threads, Ordering::Relaxed);
+    if m >= n_threads * 4 {
+        let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+        let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ4K);
+        let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-        let dst_ptr = dst.as_mut_ptr() as usize;
-        let weights_ptr = weights.as_ptr() as usize;
-        let x_ptr = x.as_ptr() as usize;
-        let current_chunk_ptr =
-            &pool.state().current_chunk as *const AtomicUsize as usize;
-
-        pool.parallel(move |tid| {
-            let mut row = tid;
-            let chunk_atomic =
-                unsafe { &*(current_chunk_ptr as *const AtomicUsize) };
-            while row < m {
-                let w_row = unsafe {
-                    std::slice::from_raw_parts(
-                        (weights_ptr as *const BlockQ4K).add(row * nb),
-                        nb,
-                    )
-                };
+        crate::cpu::parallel_chunks(m, n_threads, move |start, end| {
+            for row in start..end {
+                let w_row = std::slice::from_raw_parts(
+                    weights_ptr.get().add(row * nb),
+                    nb,
+                );
                 for j in 0..n {
-                    let x_vec = unsafe {
-                        std::slice::from_raw_parts(
-                            (x_ptr as *const BlockQ8K).add(j * nb),
-                            nb,
-                        )
-                    };
-                    let result = vec_dot_q4_k_q8_k_neon(k, w_row, x_vec);
-                    unsafe {
-                        *((dst_ptr as *mut f32).add(row * n + j)) = result;
-                    }
+                    let x_vec =
+                        std::slice::from_raw_parts(x_ptr.get().add(j * nb), nb);
+                    *dst_ptr.get().add(row * n + j) =
+                        vec_dot_q4_k_q8_k_neon(k, w_row, x_vec);
                 }
-                row = chunk_atomic.fetch_add(1, Ordering::Relaxed);
             }
         });
     } else {
@@ -254,42 +220,25 @@ pub unsafe fn matmul_q6k_q8k_block_tiling(
         return;
     }
 
-    // GEMM case: parallelize over weight rows using persistent thread pool
+    // GEMM case: parallelize over weight rows
     let n_threads = crate::cpu::default_n_threads();
-    if m >= n_threads * 4 && n_threads > 1 {
-        let pool = global_pool(n_threads);
-        pool.state().current_chunk.store(n_threads, Ordering::Relaxed);
+    if m >= n_threads * 4 {
+        let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
+        let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ6K);
+        let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-        let dst_ptr = dst.as_mut_ptr() as usize;
-        let weights_ptr = weights.as_ptr() as usize;
-        let x_ptr = x.as_ptr() as usize;
-        let current_chunk_ptr =
-            &pool.state().current_chunk as *const AtomicUsize as usize;
-
-        pool.parallel(move |tid| {
-            let mut row = tid;
-            let chunk_atomic =
-                unsafe { &*(current_chunk_ptr as *const AtomicUsize) };
-            while row < m {
-                let w_row = unsafe {
-                    std::slice::from_raw_parts(
-                        (weights_ptr as *const BlockQ6K).add(row * nb),
-                        nb,
-                    )
-                };
+        crate::cpu::parallel_chunks(m, n_threads, move |start, end| {
+            for row in start..end {
+                let w_row = std::slice::from_raw_parts(
+                    weights_ptr.get().add(row * nb),
+                    nb,
+                );
                 for j in 0..n {
-                    let x_vec = unsafe {
-                        std::slice::from_raw_parts(
-                            (x_ptr as *const BlockQ8K).add(j * nb),
-                            nb,
-                        )
-                    };
-                    let result = vec_dot_q6_k_q8_k_neon(k, w_row, x_vec);
-                    unsafe {
-                        *((dst_ptr as *mut f32).add(row * n + j)) = result;
-                    }
+                    let x_vec =
+                        std::slice::from_raw_parts(x_ptr.get().add(j * nb), nb);
+                    *dst_ptr.get().add(row * n + j) =
+                        vec_dot_q6_k_q8_k_neon(k, w_row, x_vec);
                 }
-                row = chunk_atomic.fetch_add(1, Ordering::Relaxed);
             }
         });
     } else {

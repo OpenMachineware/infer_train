@@ -2551,6 +2551,8 @@ impl LlamaModel {
         let mut time_wo = std::time::Duration::new(0, 0);
         let mut time_ffn = std::time::Duration::new(0, 0);
         let mut time_output = std::time::Duration::new(0, 0);
+        let mut time_quant = std::time::Duration::new(0, 0);
+        let mut time_gemm = std::time::Duration::new(0, 0);
 
         // Step 1: Batch embedding lookup
         let start = Instant::now();
@@ -2599,6 +2601,7 @@ impl LlamaModel {
 
                 // Use tiled GEMM with pre-allocated buffer
                 let start = Instant::now();
+                let mut qkv_timing = (time_quant, time_gemm);
                 self.gemm_batch_prefill(
                     &inputs,
                     qkv,
@@ -2606,7 +2609,10 @@ impl LlamaModel {
                     &mut buffers.q8k_input,
                     &mut buffers.x_padded,
                     &mut buffers.x_padded_threads,
+                    Some(&mut qkv_timing),
                 );
+                time_quant = qkv_timing.0;
+                time_gemm = qkv_timing.1;
                 time_qkv += start.elapsed();
 
                 // Collect all attention outputs for batch wo projection
@@ -2746,6 +2752,7 @@ impl LlamaModel {
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
                         &mut buffers.x_padded_threads,
+                        None,
                     );
                 } else {
                     // No wo layer - copy attention outputs directly
@@ -2789,6 +2796,7 @@ impl LlamaModel {
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
                         &mut buffers.x_padded_threads,
+                        None,
                     );
                 }
 
@@ -2801,6 +2809,7 @@ impl LlamaModel {
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
                         &mut buffers.x_padded_threads,
+                        None,
                     );
                 }
 
@@ -2813,6 +2822,7 @@ impl LlamaModel {
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
                         &mut buffers.x_padded_threads,
+                        None,
                     );
                 }
                 time_qkv += start.elapsed();
@@ -2932,6 +2942,7 @@ impl LlamaModel {
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
                         &mut buffers.x_padded_threads,
+                        None,
                     );
                 } else {
                     // No wo layer (rare) - just copy attention outputs
@@ -2982,6 +2993,7 @@ impl LlamaModel {
                     let intermediate_size = w1.shape[0];
                     let ffn_output_len = n_tokens * intermediate_size;
 
+                    let mut ffn_timing = (time_quant, time_gemm);
                     self.gemm_batch_prefill(
                         &ffn_inputs,
                         w1,
@@ -2989,6 +3001,7 @@ impl LlamaModel {
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
                         &mut buffers.x_padded_threads,
+                        Some(&mut ffn_timing),
                     );
 
                     // Up projection (w3)
@@ -3000,6 +3013,7 @@ impl LlamaModel {
                             &mut buffers.q8k_input,
                             &mut buffers.x_padded,
                             &mut buffers.x_padded_threads,
+                            Some(&mut ffn_timing),
                         );
                     }
 
@@ -3027,8 +3041,11 @@ impl LlamaModel {
                             &mut buffers.q8k_input,
                             &mut buffers.x_padded,
                             &mut buffers.x_padded_threads,
+                            Some(&mut ffn_timing),
                         );
                     }
+                    time_quant = ffn_timing.0;
+                    time_gemm = ffn_timing.1;
                 }
             } else {
                 // MoE - process tokens sequentially (different experts per token)
@@ -3079,6 +3096,13 @@ impl LlamaModel {
         eprintln!("Wo: {:?}", time_wo);
         eprintln!("FFN: {:?}", time_ffn);
         eprintln!("Output: {:?}", time_output);
+        eprintln!("--- Detailed GEMM Breakdown ---");
+        eprintln!("Quantization: {:?}", time_quant);
+        eprintln!("GEMM compute: {:?}", time_gemm);
+        eprintln!(
+            "Other (copies, activation): {:?}",
+            time_ffn - time_quant - time_gemm
+        );
 
         // Advance KV cache for all tokens at once (not per-layer)
         for _ in 0..n_tokens {
@@ -5791,12 +5815,16 @@ impl LlamaModel {
         x_q8k_batch: &mut [u8], // workspace for quantized inputs
         x_padded: &mut [f32], // workspace for padding (single-thread fallback)
         x_padded_threads: &mut [Vec<f32>], // per-thread padding buffers (parallel path)
+        timing: Option<&mut (std::time::Duration, std::time::Duration)>, // (quant_time, gemm_time)
     ) -> bool {
         use crate::quant::kv_cache::quantize_row_q8_k_neon;
         use crate::quant::matmul::block_tiling::matmul_q5k_q8k_block_tiling;
         use crate::quant::types::{
             BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K,
         };
+        use std::time::Instant;
+
+        let quant_start = Instant::now();
 
         let n = inputs.len(); // batch size
         if n == 0 {
@@ -5975,6 +6003,9 @@ impl LlamaModel {
                     }
                 }
 
+                let quant_time = quant_start.elapsed();
+                let gemm_start = Instant::now();
+
                 // Perform GEMM: weights (m x k) x inputs (k x n) -> outputs (m x n)
                 unsafe {
                     match w.dtype {
@@ -6049,6 +6080,11 @@ impl LlamaModel {
                         }
                         _ => unreachable!(),
                     }
+                }
+                let gemm_time = gemm_start.elapsed();
+                if let Some(timing) = timing {
+                    timing.0 += quant_time;
+                    timing.1 += gemm_time;
                 }
                 true
             }
