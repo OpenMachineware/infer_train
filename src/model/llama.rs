@@ -2343,11 +2343,6 @@ impl LlamaModel {
         let head_dim = self.config.head_dim;
         let n_kv_heads = self.config.n_kv_heads;
 
-        eprintln!(
-            "[DEBUG] forward_pooled: is_decode={}, uses_mla={}, use_tiled={}",
-            is_decode, uses_mla, use_tiled
-        );
-
         if use_tiled {
             // Batch prefill path using tiled GEMM
             self.forward_pooled_batch_tiled(tokens, kv_cache, buffers)
@@ -2355,7 +2350,6 @@ impl LlamaModel {
             // Standard token-by-token processing
             // Process each token
             for &token in tokens.iter() {
-                eprintln!("[DEBUG] Processing token {}", token);
                 // 1. Embedding lookup into buffer
                 self.embedding_lookup_into(token, &mut buffers.hidden)?;
 
@@ -2363,11 +2357,7 @@ impl LlamaModel {
                 // Use single-thread path for decode (eliminates thread overhead)
                 // But fall back to regular path for MLA architecture (not yet supported)
                 if is_decode && !uses_mla {
-                    eprintln!(
-                        "[DEBUG] Using forward_layer_decode_single_thread"
-                    );
                     for (layer_idx, layer) in self.layers.iter().enumerate() {
-                        eprintln!("[DEBUG] Processing layer {}", layer_idx);
                         self.forward_layer_decode_single_thread(
                             layer, layer_idx, kv_cache, buffers,
                         )?;
@@ -2813,8 +2803,6 @@ impl LlamaModel {
                     buffers.attn_batch_output[token_idx * attn_out_size
                         ..(token_idx + 1) * attn_out_size]
                         .copy_from_slice(&buffers.attn_out[..attn_out_size]);
-
-                    kv_cache.advance();
                 }
 
                 // Batch wo projection
@@ -2977,6 +2965,11 @@ impl LlamaModel {
         eprintln!("Wo: {:?}", time_wo);
         eprintln!("FFN: {:?}", time_ffn);
         eprintln!("Output: {:?}", time_output);
+
+        // Advance KV cache for all tokens at once (not per-layer)
+        for _ in 0..n_tokens {
+            kv_cache.advance();
+        }
 
         Some(buffers.logits[..vocab_size].to_vec())
     }
@@ -3272,7 +3265,6 @@ impl LlamaModel {
         kv_cache: &mut crate::inference::KVCache,
         buffers: &mut crate::cpu::CpuWorkBuffers,
     ) -> Option<()> {
-        eprintln!("[DEBUG] forward_layer_zero_alloc layer {}", layer_idx);
         let hidden_size = self.config.hidden_size;
         let n_heads = self.config.n_heads;
         let head_dim = self.config.head_dim;
@@ -3280,7 +3272,6 @@ impl LlamaModel {
         let pos = kv_cache.seq_len();
 
         // 1. Attention norm (hidden -> hidden_alt) - use pre-dequantized weights
-        eprintln!("[DEBUG] Step 1: Attention norm");
         let attn_norm_offset = layer_idx * 2 * hidden_size;
         self.apply_rms_norm_predequant(
             &buffers.hidden,
@@ -3836,7 +3827,6 @@ impl LlamaModel {
         let pos = kv_cache.seq_len();
 
         // 1. Attention norm (hidden -> hidden_alt)
-        eprintln!("[DEBUG] Step 1: Attention norm");
         let attn_norm_offset = layer_idx * 2 * hidden_size;
         self.apply_rms_norm_predequant(
             &buffers.hidden,
@@ -3846,9 +3836,7 @@ impl LlamaModel {
         );
 
         // 2. QKV projections (single-thread GEMV)
-        eprintln!("[DEBUG] Step 2: QKV projection");
         if let Some(ref qkv) = layer.attn_qkv {
-            eprintln!("[DEBUG] Using fused QKV, dtype={:?}", qkv.dtype);
             // Fused QKV
             let qkv_out_size = qkv.shape[1];
             let q_size = n_heads * head_dim;

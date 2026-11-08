@@ -499,7 +499,7 @@ pub fn flash_attention_prefill_tiled(
         *elem = 0.0;
     }
 
-    // Store K, V to cache for decode (but don't use for prefill computation)
+    // Store K, V to cache for decode (but don't advance - that's done at a higher level)
     // This follows llama.cpp: prefill reads from input tensors, not cache
     for token_idx in 0..n_tokens {
         let k_offset = token_idx * kv_size;
@@ -516,7 +516,6 @@ pub fn flash_attention_prefill_tiled(
             n_kv_heads,
             head_dim,
         );
-        kv_cache.advance();
     }
 
     // Use multithreading for prefill (n_heads >= 4 or n_tokens >= 8)
