@@ -1844,3 +1844,15 @@ path = "tools/profile_gemm.rs"
 [[bin]]
 name = "bench-step-timing"
 path = "tools/bench_step_timing.rs"
+
+[[bin]]
+name = "bench-vec-dot"
+path = "tools/bench_vec_dot.rs"
+
+[[bin]]
+name = "test-parallel-overhead"
+path = "tools/test_parallel_overhead.rs"
+
+[[bin]]
+name = "test-thread-overhead"
+path = "tools/test_thread_overhead.rs"
