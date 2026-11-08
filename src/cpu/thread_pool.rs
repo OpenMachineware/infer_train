@@ -145,6 +145,8 @@ impl ThreadPool {
     where
         F: Fn(usize) + Send + Sync + Clone + 'static,
     {
+        // Initialize current_chunk so first unprocessed chunk is 0
+        // Threads start with their ID, so we need nth as first unprocessed
         self.state.current_chunk.store(self.n_threads, Ordering::Relaxed);
         self.state.barrier.reset();
 
@@ -155,6 +157,7 @@ impl ThreadPool {
         self.state.work_ready.store(true, Ordering::Release);
         self.state.cond.notify_all();
 
+        // Main thread (ith=0) also executes work
         f(0);
 
         self.state.barrier.wait();
@@ -183,7 +186,7 @@ pub fn global_pool(n_threads: usize) -> &'static ThreadPool {
 
 pub fn parallel_work_stealing<F>(n_chunks: usize, n_threads: usize, f: F)
 where
-    F: Fn(usize) + Send + Sync + Clone + 'static,
+    F: Fn(usize) + Send + Sync + Clone,
 {
     if n_threads == 1 || n_chunks <= 1 {
         for chunk in 0..n_chunks {
@@ -192,39 +195,55 @@ where
         return;
     }
 
-    let pool = global_pool(n_threads);
-    let f_clone = f.clone();
+    // Use std::thread::scope for lightweight parallelism without barrier deadlock
+    // Each thread starts with its ID and uses atomic work stealing
+    let current_chunk = AtomicUsize::new(n_threads);
 
-    pool.parallel(move |ith| {
-        let mut chunk = ith;
-        while chunk < n_chunks {
-            f_clone(chunk);
-            chunk = pool.state().current_chunk.fetch_add(1, Ordering::Relaxed);
+    std::thread::scope(|s| {
+        for ith in 0..n_threads {
+            let f_clone = f.clone();
+            let current_chunk = &current_chunk;
+
+            s.spawn(move || {
+                let mut chunk = ith;
+                while chunk < n_chunks {
+                    f_clone(chunk);
+                    chunk = current_chunk.fetch_add(1, Ordering::Relaxed);
+                }
+            });
         }
     });
 }
 
 pub fn parallel_chunks<F>(n_chunks: usize, n_threads: usize, f: F)
 where
-    F: Fn(usize, usize) + Send + Sync + Clone + 'static,
+    F: Fn(usize, usize) + Send + Sync + Clone,
 {
     if n_threads == 1 || n_chunks <= n_threads {
         f(0, n_chunks);
         return;
     }
 
-    let pool = global_pool(n_threads);
-    let f_clone = f.clone();
+    // Use std::thread::scope for lightweight parallelism without barrier deadlock
+    // Each thread processes one chunk at a time via work stealing
+    let current_chunk = AtomicUsize::new(n_threads);
 
-    pool.parallel(move |ith| {
-        let mut chunk = ith;
-        while chunk < n_chunks {
-            let start = chunk * 1; // Each chunk is 1 unit
-            let end = (start + 1).min(n_chunks);
-            if start < n_chunks {
-                f_clone(start, end);
-            }
-            chunk = pool.state().current_chunk.fetch_add(1, Ordering::Relaxed);
+    std::thread::scope(|s| {
+        for ith in 0..n_threads {
+            let f_clone = f.clone();
+            let current_chunk = &current_chunk;
+
+            s.spawn(move || {
+                let mut chunk = ith;
+                while chunk < n_chunks {
+                    let start = chunk;
+                    let end = (start + 1).min(n_chunks);
+                    if start < n_chunks {
+                        f_clone(start, end);
+                    }
+                    chunk = current_chunk.fetch_add(1, Ordering::Relaxed);
+                }
+            });
         }
     });
 }

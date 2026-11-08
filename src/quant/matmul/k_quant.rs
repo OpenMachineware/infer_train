@@ -617,7 +617,8 @@ pub unsafe fn matmul_q5_1_q8_1_single_thread(
 
 // ===== IQ series matmul =====
 
-/// IQ4_XS × Q8_K matrix-vector multiplication (parallel)
+/// IQ4_XS × Q8_K matrix-vector multiplication
+/// Uses single-threaded execution to avoid std::thread::scope overhead
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_iq4_xs_q8_k(
     weights: &[BlockIQ4XS],
@@ -626,18 +627,8 @@ pub unsafe fn matmul_iq4_xs_q8_k(
     k: usize,
     m: usize,
 ) {
-    let nb = k / QK_K;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-    let n_threads = crate::cpu::default_n_threads();
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
-
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_iq4_xs_q8_k_neon(
-            k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
-            x,
-        );
-    });
+    // Single-threaded: simpler and avoids threading overhead
+    matmul_iq4_xs_q8_k_single_thread(weights, x, dst, k, m);
 }
 
 /// Single-thread IQ4_XS × Q8_K matrix-vector multiplication
@@ -677,7 +668,7 @@ pub unsafe fn matmul_iq4_xs_q8_k_hybrid(
     }
 }
 
-/// IQ4_NL × Q8_0 matrix-vector multiplication
+/// IQ4_NL × Q8_0 matrix-vector multiplication (single-threaded)
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_iq4_nl_q8_0(
     weights: &[BlockIQ4NL],
@@ -687,20 +678,17 @@ pub unsafe fn matmul_iq4_nl_q8_0(
     m: usize,
 ) {
     let nb = k / QK4_0;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-    let n_threads = crate::cpu::default_n_threads();
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_iq4_nl_q8_0_neon(
+    for i in 0..m {
+        dst[i] = vec_dot_iq4_nl_q8_0_neon(
             k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
+            std::slice::from_raw_parts(weights.as_ptr().add(i * nb), nb),
             x,
         );
-    });
+    }
 }
 
-/// IQ3_XXS × Q8_K matrix-vector multiplication
+/// IQ3_XXS × Q8_K matrix-vector multiplication (single-threaded)
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_iq3_xxs_q8_k(
     weights: &[BlockIQ3XXS],
@@ -710,20 +698,17 @@ pub unsafe fn matmul_iq3_xxs_q8_k(
     m: usize,
 ) {
     let nb = k / QK_K;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-    let n_threads = crate::cpu::default_n_threads();
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_iq3_xxs_q8_k_neon(
+    for i in 0..m {
+        dst[i] = vec_dot_iq3_xxs_q8_k_neon(
             k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
+            std::slice::from_raw_parts(weights.as_ptr().add(i * nb), nb),
             x,
         );
-    });
+    }
 }
 
-/// IQ3_S × Q8_K matrix-vector multiplication
+/// IQ3_S × Q8_K matrix-vector multiplication (single-threaded)
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_iq3_s_q8_k(
     weights: &[BlockIQ3S],
@@ -733,20 +718,17 @@ pub unsafe fn matmul_iq3_s_q8_k(
     m: usize,
 ) {
     let nb = k / QK_K;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-    let n_threads = crate::cpu::default_n_threads();
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_iq3_s_q8_k_neon(
+    for i in 0..m {
+        dst[i] = vec_dot_iq3_s_q8_k_neon(
             k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
+            std::slice::from_raw_parts(weights.as_ptr().add(i * nb), nb),
             x,
         );
-    });
+    }
 }
 
-/// IQ2_XXS × Q8_K matrix-vector multiplication
+/// IQ2_XXS × Q8_K matrix-vector multiplication (single-threaded)
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_iq2_xxs_q8_k(
     weights: &[BlockIQ2XXS],
@@ -756,20 +738,17 @@ pub unsafe fn matmul_iq2_xxs_q8_k(
     m: usize,
 ) {
     let nb = k / QK_K;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-    let n_threads = crate::cpu::default_n_threads();
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_iq2_xxs_q8_k_neon(
+    for i in 0..m {
+        dst[i] = vec_dot_iq2_xxs_q8_k_neon(
             k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
+            std::slice::from_raw_parts(weights.as_ptr().add(i * nb), nb),
             x,
         );
-    });
+    }
 }
 
-/// IQ2_XS × Q8_K matrix-vector multiplication
+/// IQ2_XS × Q8_K matrix-vector multiplication (single-threaded)
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_iq2_xs_q8_k(
     weights: &[BlockIQ2XS],
@@ -779,20 +758,17 @@ pub unsafe fn matmul_iq2_xs_q8_k(
     m: usize,
 ) {
     let nb = k / QK_K;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-    let n_threads = crate::cpu::default_n_threads();
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_iq2_xs_q8_k_neon(
+    for i in 0..m {
+        dst[i] = vec_dot_iq2_xs_q8_k_neon(
             k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
+            std::slice::from_raw_parts(weights.as_ptr().add(i * nb), nb),
             x,
         );
-    });
+    }
 }
 
-/// IQ2_S × Q8_K matrix-vector multiplication
+/// IQ2_S × Q8_K matrix-vector multiplication (single-threaded)
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_iq2_s_q8_k(
     weights: &[BlockIQ2S],
@@ -802,20 +778,17 @@ pub unsafe fn matmul_iq2_s_q8_k(
     m: usize,
 ) {
     let nb = k / QK_K;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-    let n_threads = crate::cpu::default_n_threads();
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_iq2_s_q8_k_neon(
+    for i in 0..m {
+        dst[i] = vec_dot_iq2_s_q8_k_neon(
             k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
+            std::slice::from_raw_parts(weights.as_ptr().add(i * nb), nb),
             x,
         );
-    });
+    }
 }
 
-/// IQ1_S × Q8_K matrix-vector multiplication
+/// IQ1_S × Q8_K matrix-vector multiplication (single-threaded)
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_iq1_s_q8_k(
     weights: &[BlockIQ1S],
@@ -825,20 +798,17 @@ pub unsafe fn matmul_iq1_s_q8_k(
     m: usize,
 ) {
     let nb = k / QK_K;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-    let n_threads = crate::cpu::default_n_threads();
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_iq1_s_q8_k_neon(
+    for i in 0..m {
+        dst[i] = vec_dot_iq1_s_q8_k_neon(
             k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
+            std::slice::from_raw_parts(weights.as_ptr().add(i * nb), nb),
             x,
         );
-    });
+    }
 }
 
-/// IQ1_M × Q8_K matrix-vector multiplication
+/// IQ1_M × Q8_K matrix-vector multiplication (single-threaded)
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_iq1_m_q8_k(
     weights: &[BlockIQ1M],
@@ -848,22 +818,19 @@ pub unsafe fn matmul_iq1_m_q8_k(
     m: usize,
 ) {
     let nb = k / QK_K;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-    let n_threads = crate::cpu::default_n_threads();
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_iq1_m_q8_k_neon(
+    for i in 0..m {
+        dst[i] = vec_dot_iq1_m_q8_k_neon(
             k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
+            std::slice::from_raw_parts(weights.as_ptr().add(i * nb), nb),
             x,
         );
-    });
+    }
 }
 
 // ===== TQ series matmul =====
 
-/// TQ2_0 × Q8_K matrix-vector multiplication
+/// TQ2_0 × Q8_K matrix-vector multiplication (single-threaded)
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_tq2_0_q8_k(
     weights: &[BlockTQ2_0],
@@ -873,20 +840,17 @@ pub unsafe fn matmul_tq2_0_q8_k(
     m: usize,
 ) {
     let nb = k / QK_K;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-    let n_threads = crate::cpu::default_n_threads();
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_tq2_0_q8_k_neon(
+    for i in 0..m {
+        dst[i] = vec_dot_tq2_0_q8_k_neon(
             k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
+            std::slice::from_raw_parts(weights.as_ptr().add(i * nb), nb),
             x,
         );
-    });
+    }
 }
 
-/// TQ1_0 × Q8_K matrix-vector multiplication
+/// TQ1_0 × Q8_K matrix-vector multiplication (single-threaded)
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_tq1_0_q8_k(
     weights: &[BlockTQ1_0],
@@ -896,17 +860,14 @@ pub unsafe fn matmul_tq1_0_q8_k(
     m: usize,
 ) {
     let nb = k / QK_K;
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-    let n_threads = crate::cpu::default_n_threads();
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
 
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_tq1_0_q8_k_neon(
+    for i in 0..m {
+        dst[i] = vec_dot_tq1_0_q8_k_neon(
             k,
-            weights.get_unchecked(i * nb..(i + 1) * nb),
+            std::slice::from_raw_parts(weights.as_ptr().add(i * nb), nb),
             x,
         );
-    });
+    }
 }
 
 // ===== F16 matmul =====
@@ -937,17 +898,13 @@ pub unsafe fn matmul_f16_f32(
         std::slice::from_raw_parts_mut(x_f16.as_mut_ptr() as *mut f16, k);
     dup_f32_to_f16_neon(x, x_f16_slice);
 
-    use crate::cpu::{SyncPtr, gemv_work_stealing};
-    let n_threads = crate::cpu::default_n_threads();
-    let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
-
-    gemv_work_stealing(m, n_threads, |i| {
-        *dst_ptr.get().add(i) = vec_dot_f16_neon(
+    for i in 0..m {
+        dst[i] = vec_dot_f16_neon(
             weights.get_unchecked(i * k..(i + 1) * k),
             &x_f16,
             k,
         );
-    });
+    }
 }
 
 /// Single-thread F16 matrix-vector multiplication

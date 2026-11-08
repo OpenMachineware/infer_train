@@ -532,7 +532,9 @@ pub fn flash_attention_prefill_tiled(
 
     if n_threads > 1 {
         // Multi-threaded: distribute Q rows across threads with work stealing
-        use crate::cpu::{SyncPtr, ThreadPool};
+        // Use std::thread::scope to avoid barrier deadlock
+        use crate::cpu::SyncPtr;
+        use std::sync::atomic::AtomicUsize;
 
         let out_ptr = SyncPtr::new(attn_outputs.as_mut_ptr());
         let q_ptr = SyncPtr::new(q_outputs.as_ptr() as *mut f32);
@@ -540,46 +542,54 @@ pub fn flash_attention_prefill_tiled(
         let v_ptr = SyncPtr::new(v_outputs.as_ptr() as *mut f32);
         let scratch_ptr = SyncPtr::new(scratch.as_mut_ptr());
 
-        let pool = crate::cpu::global_pool(n_threads);
+        let current_chunk = AtomicUsize::new(n_threads);
         use std::sync::atomic::Ordering;
 
-        pool.parallel(move |tid| {
-            // Each thread gets its own pre-allocated scratch space
-            let local_scratch = unsafe { &mut *scratch_ptr.get().add(tid) };
+        std::thread::scope(|s| {
+            for tid in 0..n_threads {
+                let current_chunk = &current_chunk;
 
-            // Work stealing: threads grab rows dynamically
-            let mut ir = tid; // Start with thread ID
+                s.spawn(move || {
+                    // Each thread gets its own pre-allocated scratch space
+                    let local_scratch =
+                        unsafe { &mut *scratch_ptr.get().add(tid) };
 
-            while ir < total_q_rows {
-                // Convert linear index to (token_idx, head_idx)
-                let token_idx = ir / n_heads;
-                let h = ir % n_heads;
-                let kv_head = h * n_kv_heads / n_heads;
+                    // Work stealing: threads grab rows dynamically
+                    let mut ir = tid; // Start with thread ID
 
-                // Number of rows in this tile
-                let tile_rows =
-                    Q_TILE_SZ.min(n_heads - h).min(n_tokens - token_idx);
+                    while ir < total_q_rows {
+                        // Convert linear index to (token_idx, head_idx)
+                        let token_idx = ir / n_heads;
+                        let h = ir % n_heads;
+                        let kv_head = h * n_kv_heads / n_heads;
 
-                process_q_tile(
-                    q_ptr.get(),
-                    k_ptr.get(),
-                    v_ptr.get(),
-                    n_kv_heads,
-                    head_dim,
-                    kv_head,
-                    h,
-                    token_idx,
-                    tile_rows,
-                    n_tokens,
-                    q_size,
-                    kv_size,
-                    scale,
-                    out_ptr.get(),
-                    local_scratch,
-                );
+                        // Number of rows in this tile
+                        let tile_rows = Q_TILE_SZ
+                            .min(n_heads - h)
+                            .min(n_tokens - token_idx);
 
-                // Work stealing: get next row
-                ir = pool.state().current_chunk.fetch_add(1, Ordering::Relaxed);
+                        process_q_tile(
+                            q_ptr.get(),
+                            k_ptr.get(),
+                            v_ptr.get(),
+                            n_kv_heads,
+                            head_dim,
+                            kv_head,
+                            h,
+                            token_idx,
+                            tile_rows,
+                            n_tokens,
+                            q_size,
+                            kv_size,
+                            scale,
+                            out_ptr.get(),
+                            local_scratch,
+                        );
+
+                        // Work stealing: get next row
+                        ir = current_chunk.fetch_add(1, Ordering::Relaxed);
+                    }
+                });
             }
         });
     } else {

@@ -1820,3 +1820,7 @@ path = "tools/debug-prefill-hang.rs"
 [[bin]]
 name = "test-parallel-ws"
 path = "tools/test_parallel_ws.rs"
+
+[[bin]]
+name = "test-barrier-direct"
+path = "tools/test_barrier_direct.rs"

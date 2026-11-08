@@ -25,7 +25,25 @@ fn main() {
     println!("Rayon threads: {}", num_threads);
 
     // Use simple token IDs for testing
-    let prompt_tokens: Vec<u32> = vec![ctx.config.bos_token_id, 1, 2, 3, 4, 5];
+    let prompt_tokens: Vec<u32> = vec![
+        ctx.config.bos_token_id,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+    ];
     println!("Prompt tokens: {}", prompt_tokens.len());
 
     // Create KV cache once

@@ -238,20 +238,6 @@ impl InferenceContext {
     /// Run forward pass using graph-level dispatch (CPU only)
     /// All threads traverse the DAG together, eliminating thread pool dispatch overhead
     #[cfg(target_arch = "aarch64")]
-    pub fn forward_graph(
-        &mut self,
-        token: u32,
-        kv_cache: &mut KVCache,
-    ) -> Option<Vec<f32>> {
-        // Fall back to standard forward for MLA architecture (not yet supported in DAG)
-        if self.model.uses_mqa() {
-            return self.model.forward(&[token], kv_cache);
-        }
-
-        let position = kv_cache.seq_len();
-        self.model.forward_graph(token, position, kv_cache)
-    }
-
     /// Run forward pass with GPU KV cache (zero-copy Flash Attention)
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn forward_gpu_zerocopy(&mut self, tokens: &[u32]) -> Option<Vec<f32>> {

@@ -360,6 +360,7 @@ pub unsafe fn matmul_q5k_q8k_tiled(
         let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5K);
         let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
         let weights_len = weights.len();
+        let x_len = x.len();
 
         parallel_chunks(m, n_threads, move |row_start, row_end| {
             WORKSPACE.with(|ws_cell| {
@@ -374,7 +375,7 @@ pub unsafe fn matmul_q5k_q8k_tiled(
                             weights_ptr.get(),
                             weights_len,
                         ),
-                        std::slice::from_raw_parts(x_ptr.get(), x.len()),
+                        std::slice::from_raw_parts(x_ptr.get(), x_len),
                         std::slice::from_raw_parts_mut(
                             dst_ptr.get().add(row_start * n),
                             tile_m * n,
@@ -391,7 +392,7 @@ pub unsafe fn matmul_q5k_q8k_tiled(
                             weights_ptr.get(),
                             weights_len,
                         ),
-                        std::slice::from_raw_parts(x_ptr.get(), x.len()),
+                        std::slice::from_raw_parts(x_ptr.get(), x_len),
                         std::slice::from_raw_parts_mut(
                             dst_ptr.get().add(row_start * n),
                             tile_m * n,
@@ -921,6 +922,7 @@ pub unsafe fn matmul_q4k_q8k_tiled(
         let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ4K);
         let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
         let weights_len = weights.len();
+        let x_len = x.len();
 
         parallel_chunks(m, n_threads, move |row_start, row_end| {
             WORKSPACE.with(|ws_cell| {
@@ -935,7 +937,7 @@ pub unsafe fn matmul_q4k_q8k_tiled(
                             weights_ptr.get(),
                             weights_len,
                         ),
-                        std::slice::from_raw_parts(x_ptr.get(), x.len()),
+                        std::slice::from_raw_parts(x_ptr.get(), x_len),
                         std::slice::from_raw_parts_mut(
                             dst_ptr.get().add(row_start * n),
                             tile_m * n,
@@ -952,7 +954,7 @@ pub unsafe fn matmul_q4k_q8k_tiled(
                             weights_ptr.get(),
                             weights_len,
                         ),
-                        std::slice::from_raw_parts(x_ptr.get(), x.len()),
+                        std::slice::from_raw_parts(x_ptr.get(), x_len),
                         std::slice::from_raw_parts_mut(
                             dst_ptr.get().add(row_start * n),
                             tile_m * n,
@@ -1717,6 +1719,7 @@ pub unsafe fn matmul_q6k_q8k_tiled(
         let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ6K);
         let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
         let weights_len = weights.len();
+        let x_len = x.len();
 
         parallel_chunks(m, n_threads, move |row_start, row_end| {
             WORKSPACE.with(|ws_cell| {
@@ -1731,7 +1734,7 @@ pub unsafe fn matmul_q6k_q8k_tiled(
                             weights_ptr.get(),
                             weights_len,
                         ),
-                        std::slice::from_raw_parts(x_ptr.get(), x.len()),
+                        std::slice::from_raw_parts(x_ptr.get(), x_len),
                         std::slice::from_raw_parts_mut(
                             dst_ptr.get().add(row_start * n),
                             tile_m * n,
@@ -1748,7 +1751,7 @@ pub unsafe fn matmul_q6k_q8k_tiled(
                             weights_ptr.get(),
                             weights_len,
                         ),
-                        std::slice::from_raw_parts(x_ptr.get(), x.len()),
+                        std::slice::from_raw_parts(x_ptr.get(), x_len),
                         std::slice::from_raw_parts_mut(
                             dst_ptr.get().add(row_start * n),
                             tile_m * n,

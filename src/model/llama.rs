@@ -2334,9 +2334,8 @@ impl LlamaModel {
         // Check if model uses MLA architecture - currently not supported by zero-allocation path
         let uses_mla = self.uses_mqa();
 
-        // Use tiled GEMM for batch prefill (>= 1000 tokens) on non-MLA models
-        // Temporarily disabled due to thread pool barrier deadlock
-        const TILED_THRESHOLD: usize = 1000;
+        // Use tiled GEMM for batch prefill (>= 8 tokens) on non-MLA models
+        const TILED_THRESHOLD: usize = 8;
         let use_tiled = tokens.len() >= TILED_THRESHOLD && !uses_mla;
 
         // Get config values for MLA fallback
