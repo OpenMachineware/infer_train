@@ -39,6 +39,31 @@ pub const MICRO: usize = 16; // microtile edge
 pub const NB_Q5K: usize = 8; // subblocks per 256-K for Q5_K (32-wide subblocks)
 pub const NB_Q6K: usize = 16; // subblocks per 256-K for Q6_K (16-wide subblocks)
 
+/// Calculate optimal k_extent for narrow path (n_rows <= 16)
+/// This optimizes L1 cache utilization by processing longer contiguous chunks
+/// From llama.cpp: fit weights in 31KB to leave room for scales
+#[inline]
+fn narrow_k_extent(n_rows: usize, k: usize) -> usize {
+    let l1 = 31 * 1024; // 31KB for weights, leaving room for scales
+
+    let rows = if n_rows < MICRO { MICRO } else { n_rows };
+    let mut ke = l1 / (MICRO + rows);
+    ke &= !(TILE_K - 1); // floor to multiple of 256
+
+    // Buffer ceiling: TILE_ROWS * TILE_K / MICRO = 4096
+    let ke_max = TILE_ROWS * TILE_K / MICRO;
+    if ke > ke_max {
+        ke = ke_max;
+    }
+
+    // Find a k_extent that divides k evenly
+    while ke >= TILE_K && k % ke != 0 {
+        ke -= TILE_K;
+    }
+
+    if ke >= TILE_K { ke } else { TILE_K }
+}
+
 /// Per-thread workspace for tiled matmul
 /// Size: ~512KB per thread
 #[repr(C, align(64))]
@@ -553,9 +578,12 @@ unsafe fn matmul_q5k_q8k_narrow(
     n: usize,
     nb: usize,
 ) {
-    // For narrow path, use longer contiguous K reads
-    let num_k = if n <= 4 { 4.min(nb) } else { 2.min(nb) };
-    if num_k == 0 {
+    // Use dynamic k_extent optimization from llama.cpp
+    let k = nb * TILE_K;
+    let k_extent = narrow_k_extent(n, k);
+    let num_k = k_extent / TILE_K;
+
+    if num_k == 0 || num_k > nb {
         return;
     }
 
@@ -567,7 +595,7 @@ unsafe fn matmul_q5k_q8k_narrow(
         // Clear accumulator for this tile
         ws.clear_acc(tile_m, n);
 
-        // Process K dimension in num_k chunks
+        // Process K dimension in k_extent chunks
         for k0 in (0..nb).step_by(num_k) {
             let k_end = (k0 + num_k).min(nb);
             let actual_num_k = k_end - k0;
@@ -700,15 +728,19 @@ unsafe fn matmul_q5k_q8k_narrow_chunk(
     n: usize,
     nb: usize,
 ) {
-    let num_k = if n <= 4 { 4.min(nb) } else { 2.min(nb) };
-    if num_k == 0 {
+    // Use dynamic k_extent optimization from llama.cpp
+    let k = nb * TILE_K;
+    let k_extent = narrow_k_extent(n, k);
+    let num_k = k_extent / TILE_K;
+
+    if num_k == 0 || num_k > nb {
         return;
     }
 
     // Clear accumulator for this tile
     ws.clear_acc(tile_m, n);
 
-    // Process K dimension in num_k chunks
+    // Process K dimension in k_extent chunks
     for k0 in (0..nb).step_by(num_k) {
         let k_end = (k0 + num_k).min(nb);
         let actual_num_k = k_end - k0;
@@ -1710,8 +1742,12 @@ unsafe fn matmul_q6k_q8k_narrow(
     n: usize,
     nb: usize,
 ) {
-    let num_k = if n <= 4 { 4.min(nb) } else { 2.min(nb) };
-    if num_k == 0 {
+    // Use dynamic k_extent optimization from llama.cpp
+    let k = nb * TILE_K;
+    let k_extent = narrow_k_extent(n, k);
+    let num_k = k_extent / TILE_K;
+
+    if num_k == 0 || num_k > nb {
         return;
     }
 
@@ -1723,7 +1759,7 @@ unsafe fn matmul_q6k_q8k_narrow(
         // Clear accumulator for this tile
         ws.clear_acc(tile_m, n);
 
-        // Process K dimension in num_k chunks
+        // Process K dimension in k_extent chunks
         for k0 in (0..nb).step_by(num_k) {
             let k_end = (k0 + num_k).min(nb);
             let actual_num_k = k_end - k0;
@@ -1788,15 +1824,20 @@ unsafe fn matmul_q6k_q8k_narrow_chunk(
     n: usize,
     nb: usize,
 ) {
-    let num_k = if n <= 4 { 4.min(nb) } else { 2.min(nb) };
-    if num_k == 0 {
+    // Use dynamic k_extent optimization from llama.cpp
+    // This optimizes L1 cache utilization by processing longer contiguous chunks
+    let k = nb * TILE_K; // Total K dimension
+    let k_extent = narrow_k_extent(n, k);
+    let num_k = k_extent / TILE_K;
+
+    if num_k == 0 || num_k > nb {
         return;
     }
 
     // Clear accumulator for this tile
     ws.clear_acc(tile_m, n);
 
-    // Process K dimension in num_k chunks
+    // Process K dimension in k_extent chunks
     for k0 in (0..nb).step_by(num_k) {
         let k_end = (k0 + num_k).min(nb);
         let actual_num_k = k_end - k0;
