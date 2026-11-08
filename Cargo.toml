@@ -1824,3 +1824,7 @@ path = "tools/test_parallel_ws.rs"
 [[bin]]
 name = "test-barrier-direct"
 path = "tools/test_barrier_direct.rs"
+
+[[bin]]
+name = "profile-gemm"
+path = "tools/profile_gemm.rs"

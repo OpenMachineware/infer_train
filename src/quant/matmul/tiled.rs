@@ -243,7 +243,100 @@ pub unsafe fn unpack_src1_q8k(
     }
 }
 
-/// Run 16x16 microkernel for Q5_K x Q8_K
+/// Run microkernel for Q5_K x Q8_K, writing directly to accumulator
+/// Supports arbitrary n_rows and n_cols (no fixed 16x16 limit)
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn run_microtile_q5k_q8k_direct(
+    ws: &mut TiledWorkspace,
+    tile_i0: usize, // offset in src0 rows
+    tile_j0: usize, // offset in src1 cols
+    num_k: usize,
+    slab: usize,
+    n_rows: usize,
+    n_cols: usize,
+    acc_stride: usize, // stride in ws.acc (n for medium path, TILE_ROWS for standard)
+) {
+    // Calculate strides
+    let qk_stride = num_k * TILE_K;
+    let qk_off = slab * TILE_K;
+    let nb_stride = num_k * NB_Q5K;
+    let nb_off = slab * NB_Q5K;
+    let bs_stride = if num_k == 1 { TILE_ROWS } else { MICRO };
+    let bs_off = slab * MICRO;
+
+    // Process each subblock (32-wide for Q5_K)
+    for s in 0..NB_Q5K {
+        for j in 0..n_cols {
+            let br = tile_j0 + j;
+
+            // Get bsum for this subblock
+            let mut bsum = 0i32;
+            for u in 0..2 {
+                bsum += ws.src1_bsums[(bs_off + s * 2 + u) * bs_stride + br];
+            }
+
+            for i in 0..n_rows {
+                let ar = tile_i0 + i;
+                let d_off = slab * MICRO + ar;
+
+                // Get pointers to quantized data
+                let q0 =
+                    ws.src0_q.as_ptr().add(ar * qk_stride + qk_off + s * 32);
+                let q1 =
+                    ws.src1_q.as_ptr().add(br * qk_stride + qk_off + s * 32);
+
+                // Compute dot product using SDOT
+                let mut dot_acc = vdupq_n_s32(0);
+
+                // Process 32 elements as 2x16
+                for chunk in 0..2 {
+                    let offset = chunk * 16;
+
+                    // Load uint8 weights and int8 inputs
+                    let w = vld1q_u8(q0.add(offset));
+                    let x = vld1q_s8(q1.add(offset));
+
+                    // Convert uint8 to int8 for SDOT
+                    let w_signed = vreinterpretq_s8_u8(w);
+
+                    // SDOT: accumulate int8 x int8
+                    dot_acc = vdotq_s32_manual(dot_acc, w_signed, x);
+                }
+
+                // Extract sum from vector
+                let raw = vaddvq_s32(dot_acc);
+
+                // Apply bias (weights are stored as value + 16, so subtract 16*bsum)
+                let corr = raw - 16 * bsum;
+
+                // Apply scale
+                let scale = ws.src0_scales[ar * nb_stride + nb_off + s];
+                let scaled = corr * scale;
+
+                // Apply super-block scale and min
+                let d = ws.src0_d[d_off];
+                let dmin = ws.src0_dmin[d_off];
+                let min = ws.src0_mins[ar * nb_stride + nb_off + s];
+                let min_correction = min * bsum;
+
+                // Write directly to accumulator
+                let acc_val =
+                    d * (scaled as f32) - dmin * (min_correction as f32);
+                ws.acc[(tile_i0 + i) * acc_stride + tile_j0 + j] += acc_val;
+            }
+        }
+    }
+
+    // Apply input scale
+    for j in 0..n_cols {
+        let d1 = ws.src1_d[slab * MICRO + tile_j0 + j];
+        for i in 0..n_rows {
+            ws.acc[(tile_i0 + i) * acc_stride + tile_j0 + j] *= d1;
+        }
+    }
+}
+
+/// Run 16x16 microkernel for Q5_K x Q8_K (legacy, returns fixed-size array)
 /// Computes: acc[i,j] += sum over subblocks of (scale_i * dot(q0_i, q1_j) - min_i * bsum_j) * d0_i * d1_j
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn run_microtile_q5k_q8k(
@@ -385,6 +478,24 @@ pub unsafe fn matmul_q5k_q8k_tiled(
                         n,
                         nb,
                     );
+                } else if n <= 2 * MICRO {
+                    // Medium path: 16 < N <= 32
+                    matmul_q5k_q8k_medium_chunk(
+                        &mut ws,
+                        std::slice::from_raw_parts(
+                            weights_ptr.get(),
+                            weights_len,
+                        ),
+                        std::slice::from_raw_parts(x_ptr.get(), x_len),
+                        std::slice::from_raw_parts_mut(
+                            dst_ptr.get().add(row_start * n),
+                            tile_m * n,
+                        ),
+                        row_start,
+                        tile_m,
+                        n,
+                        nb,
+                    );
                 } else {
                     matmul_q5k_q8k_standard_chunk(
                         &mut ws,
@@ -409,10 +520,13 @@ pub unsafe fn matmul_q5k_q8k_tiled(
         WORKSPACE.with(|ws_cell| {
             let mut ws = ws_cell.borrow_mut();
 
-            // Determine path: narrow (N <= 16) or standard
+            // Determine path: narrow (N <= 16), medium (16 < N <= 32), or standard
             if n <= MICRO {
                 // Narrow path: optimize for decode
                 matmul_q5k_q8k_narrow(&mut ws, weights, x, dst, m, n, nb);
+            } else if n <= 2 * MICRO {
+                // Medium path: 16 < N <= 32
+                matmul_q5k_q8k_medium(&mut ws, weights, x, dst, m, n, nb);
             } else {
                 // Standard path: tiled 256x256
                 matmul_q5k_q8k_standard(&mut ws, weights, x, dst, m, n, nb);
@@ -635,6 +749,160 @@ unsafe fn matmul_q5k_q8k_narrow_chunk(
     for i in 0..tile_m {
         for j in 0..n {
             dst[i * n + j] = ws.acc[i * n + j];
+        }
+    }
+}
+
+/// Medium path: 16 < N <= 32
+/// Uses num_k=2 for longer contiguous K reads (like narrow path)
+/// But processes columns in 16-column chunks
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn matmul_q5k_q8k_medium(
+    ws: &mut TiledWorkspace,
+    weights: &[BlockQ5K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    m: usize,
+    n: usize,
+    nb: usize,
+) {
+    // For medium path, use num_k=2 for longer contiguous K reads
+    let num_k = 2.min(nb);
+    if num_k == 0 {
+        return;
+    }
+
+    // Process M dimension in TILE_ROWS chunks
+    for i0 in (0..m).step_by(TILE_ROWS) {
+        let i0_end = (i0 + TILE_ROWS).min(m);
+        let tile_m = i0_end - i0;
+
+        // Process N dimension in MICRO chunks
+        for j0 in (0..n).step_by(MICRO) {
+            let j0_end = (j0 + MICRO).min(n);
+            let tile_n = j0_end - j0;
+
+            // Clear accumulator for this tile
+            ws.clear_acc(tile_m, tile_n);
+
+            // Process K dimension in num_k chunks
+            for k0 in (0..nb).step_by(num_k) {
+                let k_end = (k0 + num_k).min(nb);
+                let actual_num_k = k_end - k0;
+
+                // Unpack input vectors (offset by j0)
+                unpack_src1_q8k(x, j0, tile_n, k0, actual_num_k, ws);
+
+                // Process weight rows in 16-row chunks
+                for iir0 in (0..tile_m).step_by(MICRO) {
+                    let ir0_end = (iir0 + MICRO).min(tile_m);
+                    let n_src0 = ir0_end - iir0;
+
+                    // Unpack weights
+                    unpack_src0_q5k(
+                        weights,
+                        i0 + iir0,
+                        n_src0,
+                        k0,
+                        actual_num_k,
+                        ws,
+                    );
+
+                    // Run microkernel for each slab
+                    for slab in 0..actual_num_k {
+                        run_microtile_q5k_q8k_direct(
+                            ws,
+                            iir0,
+                            j0,
+                            actual_num_k,
+                            slab,
+                            n_src0,
+                            tile_n,
+                            n, // acc_stride = n (full output width)
+                        );
+                    }
+                }
+            }
+
+            // Store to dst
+            for i in 0..tile_m {
+                for j in 0..tile_n {
+                    dst[(i0 + i) * n + (j0 + j)] = ws.acc[i * n + j];
+                }
+            }
+        }
+    }
+}
+
+/// Medium path for Q5_K chunk: 16 < N <= 32, processes rows [row_start, row_start + tile_m)
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn matmul_q5k_q8k_medium_chunk(
+    ws: &mut TiledWorkspace,
+    weights: &[BlockQ5K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    row_start: usize,
+    tile_m: usize,
+    n: usize,
+    nb: usize,
+) {
+    let num_k = 2.min(nb);
+    if num_k == 0 {
+        return;
+    }
+
+    // Process N dimension in MICRO chunks
+    for j0 in (0..n).step_by(MICRO) {
+        let j0_end = (j0 + MICRO).min(n);
+        let tile_n = j0_end - j0;
+
+        // Clear accumulator for this tile
+        ws.clear_acc(tile_m, tile_n);
+
+        // Process K dimension in num_k chunks
+        for k0 in (0..nb).step_by(num_k) {
+            let k_end = (k0 + num_k).min(nb);
+            let actual_num_k = k_end - k0;
+
+            // Unpack input vectors (offset by j0)
+            unpack_src1_q8k(x, j0, tile_n, k0, actual_num_k, ws);
+
+            // Process weight rows in 16-row chunks
+            for iir0 in (0..tile_m).step_by(MICRO) {
+                let ir0_end = (iir0 + MICRO).min(tile_m);
+                let n_src0 = ir0_end - iir0;
+
+                // Unpack weights
+                unpack_src0_q5k(
+                    weights,
+                    row_start + iir0,
+                    n_src0,
+                    k0,
+                    actual_num_k,
+                    ws,
+                );
+
+                // Run microkernel for each slab
+                for slab in 0..actual_num_k {
+                    run_microtile_q5k_q8k_direct(
+                        ws,
+                        iir0,
+                        j0,
+                        actual_num_k,
+                        slab,
+                        n_src0,
+                        tile_n,
+                        n, // acc_stride = n
+                    );
+                }
+            }
+        }
+
+        // Store to dst
+        for i in 0..tile_m {
+            for j in 0..tile_n {
+                dst[i * n + (j0 + j)] = ws.acc[i * n + j];
+            }
         }
     }
 }
