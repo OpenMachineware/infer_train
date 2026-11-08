@@ -63,6 +63,9 @@ fn main() {
         n_layers,
     );
 
+    // Initialize norm weights (needed for forward_layer_zero_alloc)
+    buffers.init_norm_weights(&ctx.model);
+
     // Single forward pass with timing
     let overall_start = Instant::now();
 
