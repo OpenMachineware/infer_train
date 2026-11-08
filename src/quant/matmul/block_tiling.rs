@@ -19,13 +19,20 @@
 //! - Directly processes packed quantized formats
 //! - Uses NEON-optimized vec_dot per row
 //! - 16x16 blocks for cache efficiency
+//!
+//! For GEMV (n=1), uses interleaved format to process 8 rows at once
+//! For GEMM (n>1), falls back to simple row-by-row processing
 
 use crate::cpu::SyncPtr;
 use crate::quant::types::*;
-use crate::quant::vec_dot::arm::*;
+use crate::quant::vec_dot::arm::k_quant::*;
+use crate::quant::vec_dot::arm::k_quant_batch::{
+    BlockQ4Kx8, gemv_q4_k_interleaved, repack_q4_k_batch,
+};
 use std::arch::aarch64::*;
 
 const BLOCK_SIZE: usize = 16;
+const INTERLEAVE_ROWS: usize = 8;
 
 /// Q5_K × Q8_K GEMM using simple block-tiling
 /// weights: m × k (as BlockQ5K), inputs: k × n (as BlockQ8K), outputs: m × n
@@ -97,6 +104,7 @@ pub unsafe fn matmul_q5k_q8k_block_tiling(
 }
 
 /// Q4_K × Q8_K GEMM using simple block-tiling
+/// For GEMV (n=1), uses interleaved format to process 8 rows at once
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q4k_q8k_block_tiling(
     weights: &[BlockQ4K],
@@ -108,8 +116,15 @@ pub unsafe fn matmul_q4k_q8k_block_tiling(
 ) {
     let nb = k / QK_K;
 
+    if n == 1 && m % INTERLEAVE_ROWS == 0 {
+        // GEMV with interleaving: process 8 rows at once for better cache locality
+        let weights_interleaved = repack_q4_k_batch(weights, m, nb);
+        gemv_q4_k_interleaved(&weights_interleaved, x, dst, k, m);
+        return;
+    }
+
     if n == 1 {
-        // GEMV: parallel vec_dot
+        // GEMV without interleaving (m not divisible by 8): parallel vec_dot
         let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
         let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ4K);
         let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
