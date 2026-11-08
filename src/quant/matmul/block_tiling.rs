@@ -45,17 +45,22 @@ pub unsafe fn matmul_q5k_q8k_block_tiling(
 ) {
     let nb = k / QK_K;
 
+    // Use adaptive scheduler for optimal thread count (matching llama.cpp)
+    let scheduler = crate::cpu::get_scheduler();
+    let n_threads = scheduler.optimal_threads(m, k, n);
+
     if n == 1 {
-        // GEMV case: use simple parallel vec_dot
+        // GEMV case: chunk_size = 64 (matching llama.cpp)
         let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
         let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5K);
         let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
         let weights_len = weights.len();
         let x_len = x.len();
 
-        crate::cpu::parallel_chunks(
+        crate::cpu::parallel_chunks_sized(
             m,
-            crate::cpu::default_n_threads(),
+            64, // GEMV chunk size
+            n_threads,
             move |start, end| {
                 for row in start..end {
                     let w_row = std::slice::from_raw_parts(
@@ -71,31 +76,37 @@ pub unsafe fn matmul_q5k_q8k_block_tiling(
         return;
     }
 
-    // GEMM case: parallelize over weight rows
+    // GEMM case: chunk_size = 16 (matching llama.cpp)
     // Each thread caches its subset of weights and processes all n inputs
     // This keeps weights in L2 cache while processing all inputs
-    let n_threads = crate::cpu::default_n_threads();
-    if m >= n_threads * 4 {
+    if n_threads > 1 {
         // Parallel over rows for large m
         let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
         let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5K);
         let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-        crate::cpu::parallel_chunks(m, n_threads, move |start, end| {
-            for row in start..end {
-                let w_row = std::slice::from_raw_parts(
-                    weights_ptr.get().add(row * nb),
-                    nb,
-                );
-                // Process all n inputs for this row
-                for j in 0..n {
-                    let x_vec =
-                        std::slice::from_raw_parts(x_ptr.get().add(j * nb), nb);
-                    *dst_ptr.get().add(row * n + j) =
-                        vec_dot_q5_k_q8_k_neon(k, w_row, x_vec);
+        crate::cpu::parallel_chunks_sized(
+            m,
+            16, // GEMM chunk size
+            n_threads,
+            move |start, end| {
+                for row in start..end {
+                    let w_row = std::slice::from_raw_parts(
+                        weights_ptr.get().add(row * nb),
+                        nb,
+                    );
+                    // Process all n inputs for this row
+                    for j in 0..n {
+                        let x_vec = std::slice::from_raw_parts(
+                            x_ptr.get().add(j * nb),
+                            nb,
+                        );
+                        *dst_ptr.get().add(row * n + j) =
+                            vec_dot_q5_k_q8_k_neon(k, w_row, x_vec);
+                    }
                 }
-            }
-        });
+            },
+        );
     } else {
         // Sequential for small m
         for row in 0..m {
@@ -121,6 +132,10 @@ pub unsafe fn matmul_q4k_q8k_block_tiling(
 ) {
     let nb = k / QK_K;
 
+    // Use adaptive scheduler for optimal thread count (matching llama.cpp)
+    let scheduler = crate::cpu::get_scheduler();
+    let n_threads = scheduler.optimal_threads(m, k, n);
+
     if n == 1 && m % INTERLEAVE_ROWS == 0 {
         // GEMV with interleaving: process 8 rows at once for better cache locality
         let weights_interleaved = repack_q4_k_batch(weights, m, nb);
@@ -134,9 +149,10 @@ pub unsafe fn matmul_q4k_q8k_block_tiling(
         let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ4K);
         let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-        crate::cpu::parallel_chunks(
+        crate::cpu::parallel_chunks_sized(
             m,
-            crate::cpu::default_n_threads(),
+            64, // GEMV chunk size
+            n_threads,
             move |start, end| {
                 for row in start..end {
                     let w_row = std::slice::from_raw_parts(
@@ -153,26 +169,32 @@ pub unsafe fn matmul_q4k_q8k_block_tiling(
     }
 
     // GEMM case: parallelize over weight rows
-    let n_threads = crate::cpu::default_n_threads();
-    if m >= n_threads * 4 {
+    if n_threads > 1 {
         let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
         let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ4K);
         let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-        crate::cpu::parallel_chunks(m, n_threads, move |start, end| {
-            for row in start..end {
-                let w_row = std::slice::from_raw_parts(
-                    weights_ptr.get().add(row * nb),
-                    nb,
-                );
-                for j in 0..n {
-                    let x_vec =
-                        std::slice::from_raw_parts(x_ptr.get().add(j * nb), nb);
-                    *dst_ptr.get().add(row * n + j) =
-                        vec_dot_q4_k_q8_k_neon(k, w_row, x_vec);
+        crate::cpu::parallel_chunks_sized(
+            m,
+            16, // GEMM chunk size
+            n_threads,
+            move |start, end| {
+                for row in start..end {
+                    let w_row = std::slice::from_raw_parts(
+                        weights_ptr.get().add(row * nb),
+                        nb,
+                    );
+                    for j in 0..n {
+                        let x_vec = std::slice::from_raw_parts(
+                            x_ptr.get().add(j * nb),
+                            nb,
+                        );
+                        *dst_ptr.get().add(row * n + j) =
+                            vec_dot_q4_k_q8_k_neon(k, w_row, x_vec);
+                    }
                 }
-            }
-        });
+            },
+        );
     } else {
         for row in 0..m {
             let w_row = &weights[row * nb..(row + 1) * nb];
@@ -196,15 +218,20 @@ pub unsafe fn matmul_q6k_q8k_block_tiling(
 ) {
     let nb = k / QK_K;
 
+    // Use adaptive scheduler for optimal thread count (matching llama.cpp)
+    let scheduler = crate::cpu::get_scheduler();
+    let n_threads = scheduler.optimal_threads(m, k, n);
+
     if n == 1 {
         // GEMV: parallel vec_dot
         let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
         let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ6K);
         let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-        crate::cpu::parallel_chunks(
+        crate::cpu::parallel_chunks_sized(
             m,
-            crate::cpu::default_n_threads(),
+            64, // GEMV chunk size
+            n_threads,
             move |start, end| {
                 for row in start..end {
                     let w_row = std::slice::from_raw_parts(
@@ -221,26 +248,32 @@ pub unsafe fn matmul_q6k_q8k_block_tiling(
     }
 
     // GEMM case: parallelize over weight rows
-    let n_threads = crate::cpu::default_n_threads();
-    if m >= n_threads * 4 {
+    if n_threads > 1 {
         let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
         let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ6K);
         let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
 
-        crate::cpu::parallel_chunks(m, n_threads, move |start, end| {
-            for row in start..end {
-                let w_row = std::slice::from_raw_parts(
-                    weights_ptr.get().add(row * nb),
-                    nb,
-                );
-                for j in 0..n {
-                    let x_vec =
-                        std::slice::from_raw_parts(x_ptr.get().add(j * nb), nb);
-                    *dst_ptr.get().add(row * n + j) =
-                        vec_dot_q6_k_q8_k_neon(k, w_row, x_vec);
+        crate::cpu::parallel_chunks_sized(
+            m,
+            16, // GEMM chunk size
+            n_threads,
+            move |start, end| {
+                for row in start..end {
+                    let w_row = std::slice::from_raw_parts(
+                        weights_ptr.get().add(row * nb),
+                        nb,
+                    );
+                    for j in 0..n {
+                        let x_vec = std::slice::from_raw_parts(
+                            x_ptr.get().add(j * nb),
+                            nb,
+                        );
+                        *dst_ptr.get().add(row * n + j) =
+                            vec_dot_q6_k_q8_k_neon(k, w_row, x_vec);
+                    }
                 }
-            }
-        });
+            },
+        );
     } else {
         for row in 0..m {
             let w_row = &weights[row * nb..(row + 1) * nb];

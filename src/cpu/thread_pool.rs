@@ -215,17 +215,32 @@ where
     });
 }
 
-pub fn parallel_chunks<F>(n_chunks: usize, n_threads: usize, f: F)
+/// Parallel execution with dynamic chunking and work-stealing
+/// Matches llama.cpp's strategy:
+/// - chunk_size: 16 for GEMM, 64 for GEMV
+/// - work-stealing via atomic fetch_add
+/// - redistribute chunks if nchunk0 * nchunk1 < nth * 4
+pub fn parallel_chunks<F>(n_total: usize, n_threads: usize, f: F)
 where
     F: Fn(usize, usize) + Send + Sync + Clone,
 {
-    if n_threads == 1 || n_chunks <= n_threads {
-        f(0, n_chunks);
+    if n_threads == 1 || n_total <= n_threads {
+        f(0, n_total);
         return;
     }
 
-    // Use std::thread::scope for lightweight parallelism without barrier deadlock
-    // Each thread processes one chunk at a time via work stealing
+    // Calculate chunk size matching llama.cpp's strategy
+    // GEMV (single column): chunk_size = 64
+    // GEMM (multiple columns): chunk_size = 16
+    // Detect by checking n_total relative to n_threads:
+    // - If n_total is large (> n_threads * 16), use 16 (GEMM)
+    // - If n_total is medium, use larger chunks (GEMV)
+    let chunk_size = if n_total >= n_threads * 16 { 16 } else { 64 };
+    let n_chunks = (n_total + chunk_size - 1) / chunk_size;
+
+    // Work stealing: counter starts at n_threads so threads begin with their ID
+    // Thread 0 processes chunk 0, thread 1 processes chunk 1, etc.
+    // Then all threads compete for remaining chunks via fetch_add
     let current_chunk = AtomicUsize::new(n_threads);
 
     std::thread::scope(|s| {
@@ -234,14 +249,58 @@ where
             let current_chunk = &current_chunk;
 
             s.spawn(move || {
-                let mut chunk = ith;
-                while chunk < n_chunks {
-                    let start = chunk;
-                    let end = (start + 1).min(n_chunks);
-                    if start < n_chunks {
+                // Thread starts with its assigned chunk
+                let mut chunk_idx = ith;
+
+                while chunk_idx < n_chunks {
+                    // Calculate row range for this chunk
+                    let start = chunk_idx * chunk_size;
+                    let end = (start + chunk_size).min(n_total);
+
+                    if start < n_total {
                         f_clone(start, end);
                     }
-                    chunk = current_chunk.fetch_add(1, Ordering::Relaxed);
+
+                    // Get next chunk via work-stealing
+                    chunk_idx = current_chunk.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+    });
+}
+
+/// Parallel execution with explicit chunk size (for advanced use cases)
+/// Allows caller to specify exact chunk size instead of auto-detection
+pub fn parallel_chunks_sized<F>(
+    n_total: usize,
+    chunk_size: usize,
+    n_threads: usize,
+    f: F,
+) where
+    F: Fn(usize, usize) + Send + Sync + Clone,
+{
+    if n_threads == 1 || n_total <= n_threads {
+        f(0, n_total);
+        return;
+    }
+
+    let n_chunks = (n_total + chunk_size - 1) / chunk_size;
+    let current_chunk = AtomicUsize::new(n_threads);
+
+    std::thread::scope(|s| {
+        for ith in 0..n_threads {
+            let f_clone = f.clone();
+            let current_chunk = &current_chunk;
+
+            s.spawn(move || {
+                let mut chunk_idx = ith;
+                while chunk_idx < n_chunks {
+                    let start = chunk_idx * chunk_size;
+                    let end = (start + chunk_size).min(n_total);
+                    if start < n_total {
+                        f_clone(start, end);
+                    }
+                    chunk_idx = current_chunk.fetch_add(1, Ordering::Relaxed);
                 }
             });
         }

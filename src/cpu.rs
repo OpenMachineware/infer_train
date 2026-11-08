@@ -16,7 +16,8 @@ pub use flash_attention::{
 };
 pub use thread_pool::{
     SpinBarrier, SyncPtr, ThreadConfig, ThreadPool, ThreadPoolState,
-    default_n_threads, global_pool, parallel_chunks, parallel_work_stealing,
+    default_n_threads, global_pool, parallel_chunks, parallel_chunks_sized,
+    parallel_work_stealing,
 };
 pub use tiled_gemv::{
     gemv_q4k_q8k_tiled, gemv_q5k_q8k_tiled, gemv_q6k_q8k_tiled,
