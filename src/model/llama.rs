@@ -5793,7 +5793,7 @@ impl LlamaModel {
         x_padded_threads: &mut [Vec<f32>], // per-thread padding buffers (parallel path)
     ) -> bool {
         use crate::quant::kv_cache::quantize_row_q8_k_neon;
-        use crate::quant::matmul::tiled::matmul_q5k_q8k_tiled;
+        use crate::quant::matmul::block_tiling::matmul_q5k_q8k_block_tiling;
         use crate::quant::types::{
             BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K,
         };
@@ -5984,7 +5984,7 @@ impl LlamaModel {
                                     w.bytes().as_ptr() as *const BlockQ5K,
                                     out_size * nb,
                                 );
-                            matmul_q5k_q8k_tiled(
+                            matmul_q5k_q8k_block_tiling(
                                 weights,
                                 x_q8k_blocks,
                                 outputs,
@@ -5994,14 +5994,13 @@ impl LlamaModel {
                             );
                         }
                         DataType::Q4_K => {
-                            // Use tiled GEMM for Q4_K
-                            use crate::quant::matmul::tiled::matmul_q4k_q8k_tiled;
+                            use crate::quant::matmul::block_tiling::matmul_q4k_q8k_block_tiling;
                             let weights: &[BlockQ4K] =
                                 std::slice::from_raw_parts(
                                     w.bytes().as_ptr() as *const BlockQ4K,
                                     out_size * nb,
                                 );
-                            matmul_q4k_q8k_tiled(
+                            matmul_q4k_q8k_block_tiling(
                                 weights,
                                 x_q8k_blocks,
                                 outputs,
@@ -6011,13 +6010,13 @@ impl LlamaModel {
                             );
                         }
                         DataType::Q6_K => {
-                            use crate::quant::matmul::tiled::matmul_q6k_q8k_tiled;
+                            use crate::quant::matmul::block_tiling::matmul_q6k_q8k_block_tiling;
                             let weights: &[BlockQ6K] =
                                 std::slice::from_raw_parts(
                                     w.bytes().as_ptr() as *const BlockQ6K,
                                     out_size * nb,
                                 );
-                            matmul_q6k_q8k_tiled(
+                            matmul_q6k_q8k_block_tiling(
                                 weights,
                                 x_q8k_blocks,
                                 outputs,

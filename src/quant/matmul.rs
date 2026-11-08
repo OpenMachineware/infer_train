@@ -2,6 +2,8 @@
 // Copyright 2026 Jia Liu
 
 #[cfg(target_arch = "aarch64")]
+pub mod block_tiling;
+#[cfg(target_arch = "aarch64")]
 pub mod fp16;
 #[cfg(target_arch = "aarch64")]
 pub mod fp32;
@@ -12,6 +14,8 @@ pub mod k_tiled;
 #[cfg(target_arch = "aarch64")]
 pub mod tiled;
 
+#[cfg(target_arch = "aarch64")]
+pub use block_tiling::*;
 #[cfg(target_arch = "aarch64")]
 pub use fp16::*;
 #[cfg(target_arch = "aarch64")]
