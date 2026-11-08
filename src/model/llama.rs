@@ -2628,46 +2628,31 @@ impl LlamaModel {
                 let k_size = self.config.n_kv_heads * self.config.key_length;
                 let v_size = self.config.n_kv_heads * self.config.value_length;
 
-                // Apply RoPE to all Q and K vectors
+                // Apply RoPE to all Q and K vectors in-place
+                // No intermediate buffers needed
                 let start = Instant::now();
                 for (token_idx, pos) in (0..n_tokens).zip(kv_cache.seq_len()..)
                 {
                     let qkv_offset = token_idx * qkv_out_size;
 
-                    buffers.q_buffer[..q_size].copy_from_slice(
-                        &buffers.qkv_batch_output
+                    // Apply RoPE directly on Q in qkv_output
+                    self.apply_rope_in_place(
+                        &mut buffers.qkv_batch_output
                             [qkv_offset..qkv_offset + q_size],
-                    );
-                    buffers.k_buffer[..k_size].copy_from_slice(
-                        &buffers.qkv_batch_output
-                            [qkv_offset + q_size..qkv_offset + q_size + k_size],
-                    );
-                    buffers.v_buffer[..v_size].copy_from_slice(
-                        &buffers.qkv_batch_output[qkv_offset + q_size + k_size
-                            ..qkv_offset + q_size + k_size + v_size],
-                    );
-
-                    self.apply_rope_into(
-                        &buffers.q_buffer,
                         pos,
                         self.config.n_heads,
                         self.config.head_dim,
-                        &mut buffers.rope_buffer,
                     )?;
-                    buffers.qkv_batch_output[qkv_offset..qkv_offset + q_size]
-                        .copy_from_slice(&buffers.rope_buffer[..q_size]);
 
+                    // Apply RoPE directly on K in qkv_output
                     let k_head_dim = k_size / self.config.n_kv_heads;
-                    self.apply_rope_into(
-                        &buffers.k_buffer,
+                    self.apply_rope_in_place(
+                        &mut buffers.qkv_batch_output
+                            [qkv_offset + q_size..qkv_offset + q_size + k_size],
                         pos,
                         self.config.n_kv_heads,
                         k_head_dim,
-                        &mut buffers.rope_buffer,
                     )?;
-                    buffers.qkv_batch_output
-                        [qkv_offset + q_size..qkv_offset + q_size + k_size]
-                        .copy_from_slice(&buffers.rope_buffer[..k_size]);
                 }
                 time_rope += start.elapsed();
 
@@ -3018,11 +3003,20 @@ impl LlamaModel {
                     }
 
                     // SiLU activation and element-wise multiply
+                    // Process in chunks for cache efficiency
+                    let gate_ptr = buffers.ffn_gate_batch.as_mut_ptr();
+                    let up_ptr = buffers.ffn_up_batch.as_ptr();
+
+                    // Process all elements - exp is expensive so no SIMD benefit
+                    // But we reduce cache misses by sequential access
                     for i in 0..ffn_output_len {
-                        buffers.ffn_gate_batch[i] = (1.0
-                            / (1.0 + (-buffers.ffn_gate_batch[i]).exp()))
-                            * buffers.ffn_gate_batch[i]
-                            * buffers.ffn_up_batch[i];
+                        unsafe {
+                            let gate = *gate_ptr.add(i);
+                            let up = *up_ptr.add(i);
+                            // silu(x) = x / (1 + exp(-x))
+                            let silu = gate / (1.0 + (-gate).exp());
+                            *gate_ptr.add(i) = silu * up;
+                        }
                     }
 
                     // Down projection (w2)
@@ -4556,6 +4550,33 @@ impl LlamaModel {
                 if d + 1 < head_dim {
                     out[idx] = x[idx] * cos_theta - x[idx + 1] * sin_theta;
                     out[idx + 1] = x[idx] * sin_theta + x[idx + 1] * cos_theta;
+                }
+            }
+        }
+        Some(())
+    }
+
+    /// In-place RoPE - modifies x directly, no extra buffers
+    pub fn apply_rope_in_place(
+        &self,
+        x: &mut [f32],
+        pos: usize,
+        n_heads: usize,
+        head_dim: usize,
+    ) -> Option<()> {
+        for h in 0..n_heads {
+            for d in (0..head_dim).step_by(2) {
+                let idx = h * head_dim + d;
+                let freq = 1.0f32 / 10000.0f32.powf(d as f32 / head_dim as f32);
+                let theta = pos as f32 * freq;
+                let cos_theta = theta.cos();
+                let sin_theta = theta.sin();
+
+                if d + 1 < head_dim {
+                    let x0 = x[idx];
+                    let x1 = x[idx + 1];
+                    x[idx] = x0 * cos_theta - x1 * sin_theta;
+                    x[idx + 1] = x0 * sin_theta + x1 * cos_theta;
                 }
             }
         }
