@@ -54,6 +54,10 @@ pub struct CpuWorkBuffers {
     // Pre-allocated to avoid per-thread Vec creation during inference
     pub flash_attn_prefill_threads: Vec<FlashAttnPrefillScratch>,
 
+    // Per-thread padding buffers for parallel quantization
+    // Pre-allocated to avoid per-thread Vec creation during prefill
+    pub x_padded_threads: Vec<Vec<f32>>,
+
     // Config
     pub hidden_size: usize,
     pub intermediate_size: usize,
@@ -140,6 +144,15 @@ impl CpuWorkBuffers {
             flash_attn_prefill_threads: (0..crate::cpu::default_n_threads())
                 .map(|_| FlashAttnPrefillScratch::new(head_dim))
                 .collect(),
+            // Pre-allocate per-thread padding buffers for parallel quantization
+            // Each buffer sized to handle padded hidden_size (QK_K aligned)
+            x_padded_threads: {
+                let padded_size =
+                    ((hidden_size.max(intermediate_size) + 255) / 256) * 256;
+                (0..crate::cpu::default_n_threads())
+                    .map(|_| vec![0.0; padded_size])
+                    .collect()
+            },
             hidden_size,
             intermediate_size,
             vocab_size,

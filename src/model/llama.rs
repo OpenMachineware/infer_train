@@ -2605,6 +2605,7 @@ impl LlamaModel {
                     &mut buffers.qkv_batch_output[..qkv_output_len],
                     &mut buffers.q8k_input,
                     &mut buffers.x_padded,
+                    &mut buffers.x_padded_threads,
                 );
                 time_qkv += start.elapsed();
 
@@ -2744,6 +2745,7 @@ impl LlamaModel {
                         &mut batch_hidden,
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
+                        &mut buffers.x_padded_threads,
                     );
                 } else {
                     // No wo layer - copy attention outputs directly
@@ -2786,6 +2788,7 @@ impl LlamaModel {
                         &mut buffers.q_batch_output[..q_output_len],
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
+                        &mut buffers.x_padded_threads,
                     );
                 }
 
@@ -2797,6 +2800,7 @@ impl LlamaModel {
                         &mut buffers.k_batch_output[..k_output_len],
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
+                        &mut buffers.x_padded_threads,
                     );
                 }
 
@@ -2808,6 +2812,7 @@ impl LlamaModel {
                         &mut buffers.v_batch_output[..v_output_len],
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
+                        &mut buffers.x_padded_threads,
                     );
                 }
                 time_qkv += start.elapsed();
@@ -2926,6 +2931,7 @@ impl LlamaModel {
                         &mut batch_hidden,
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
+                        &mut buffers.x_padded_threads,
                     );
                 } else {
                     // No wo layer (rare) - just copy attention outputs
@@ -2982,6 +2988,7 @@ impl LlamaModel {
                         &mut buffers.ffn_gate_batch[..ffn_output_len],
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
+                        &mut buffers.x_padded_threads,
                     );
 
                     // Up projection (w3)
@@ -2992,6 +2999,7 @@ impl LlamaModel {
                             &mut buffers.ffn_up_batch[..ffn_output_len],
                             &mut buffers.q8k_input,
                             &mut buffers.x_padded,
+                            &mut buffers.x_padded_threads,
                         );
                     }
 
@@ -3018,6 +3026,7 @@ impl LlamaModel {
                             &mut batch_hidden,
                             &mut buffers.q8k_input,
                             &mut buffers.x_padded,
+                            &mut buffers.x_padded_threads,
                         );
                     }
                 }
@@ -5780,7 +5789,8 @@ impl LlamaModel {
         w: &Tensor,
         outputs: &mut [f32],    // m x n outputs (row-major)
         x_q8k_batch: &mut [u8], // workspace for quantized inputs
-        x_padded: &mut [f32],   // workspace for padding
+        x_padded: &mut [f32], // workspace for padding (single-thread fallback)
+        x_padded_threads: &mut [Vec<f32>], // per-thread padding buffers (parallel path)
     ) -> bool {
         use crate::quant::kv_cache::quantize_row_q8_k_neon;
         use crate::quant::matmul::tiled::matmul_q5k_q8k_tiled;
@@ -5834,56 +5844,115 @@ impl LlamaModel {
                     n,
                 );
                 let counter = AtomicUsize::new(0);
+                let counter_ref = &counter;
 
                 if n_threads > 1 && n > 1 {
                     // Get raw pointer once before spawning threads
                     // Cast to usize to make it Send (safe because we use non-overlapping slices)
                     let x_q8k_ptr = x_q8k_blocks.as_mut_ptr() as usize;
 
-                    std::thread::scope(|s| {
-                        for _ in 0..n_threads {
-                            s.spawn(|| {
-                                // Thread-local padding buffer (avoids false sharing)
-                                let mut x_padded_local =
-                                    vec![0.0f32; in_size_padded];
+                    // Check if we have enough per-thread buffers
+                    if x_padded_threads.len() >= n_threads
+                        && x_padded_threads[0].len() >= in_size_padded
+                    {
+                        // Use pre-allocated per-thread buffers
+                        let buffers_ptr = x_padded_threads.as_ptr() as usize;
 
-                                loop {
-                                    let i =
-                                        counter.fetch_add(1, Ordering::Relaxed);
-                                    if i >= n {
-                                        break;
-                                    }
-
-                                    let input = inputs[i];
-                                    // Safe: each thread writes to non-overlapping rows
-                                    let row_blocks = unsafe {
-                                        std::slice::from_raw_parts_mut(
-                                            (x_q8k_ptr as *mut BlockQ8K)
-                                                .add(i * nb),
-                                            nb,
-                                        )
+                        std::thread::scope(|s| {
+                            for thread_idx in 0..n_threads {
+                                let tid = thread_idx;
+                                s.spawn(move || {
+                                    // Use pre-allocated buffer for this thread
+                                    let x_padded_local = unsafe {
+                                        &mut *((buffers_ptr as *mut Vec<f32>)
+                                            .add(tid))
                                     };
 
-                                    if input.len() != in_size_padded {
-                                        // Zero padding
-                                        for j in input.len()..in_size_padded {
-                                            x_padded_local[j] = 0.0;
+                                    loop {
+                                        let i = counter_ref
+                                            .fetch_add(1, Ordering::Relaxed);
+                                        if i >= n {
+                                            break;
                                         }
-                                        x_padded_local[..input.len()]
-                                            .copy_from_slice(input);
-                                        quantize_row_q8_k_neon(
-                                            &x_padded_local[..in_size_padded],
-                                            row_blocks,
-                                        );
-                                    } else {
-                                        quantize_row_q8_k_neon(
-                                            input, row_blocks,
-                                        );
+
+                                        let input = inputs[i];
+                                        // Safe: each thread writes to non-overlapping rows
+                                        let row_blocks = unsafe {
+                                            std::slice::from_raw_parts_mut(
+                                                (x_q8k_ptr as *mut BlockQ8K)
+                                                    .add(i * nb),
+                                                nb,
+                                            )
+                                        };
+
+                                        if input.len() != in_size_padded {
+                                            // Zero padding
+                                            for j in input.len()..in_size_padded
+                                            {
+                                                x_padded_local[j] = 0.0;
+                                            }
+                                            x_padded_local[..input.len()]
+                                                .copy_from_slice(input);
+                                            quantize_row_q8_k_neon(
+                                                &x_padded_local
+                                                    [..in_size_padded],
+                                                row_blocks,
+                                            );
+                                        } else {
+                                            quantize_row_q8_k_neon(
+                                                input, row_blocks,
+                                            );
+                                        }
                                     }
-                                }
-                            });
-                        }
-                    });
+                                });
+                            }
+                        });
+                    } else {
+                        // Fallback: allocate on demand (slower but safe)
+                        std::thread::scope(|s| {
+                            for _ in 0..n_threads {
+                                s.spawn(|| {
+                                    let mut x_padded_local =
+                                        vec![0.0f32; in_size_padded];
+
+                                    loop {
+                                        let i = counter_ref
+                                            .fetch_add(1, Ordering::Relaxed);
+                                        if i >= n {
+                                            break;
+                                        }
+
+                                        let input = inputs[i];
+                                        let row_blocks = unsafe {
+                                            std::slice::from_raw_parts_mut(
+                                                (x_q8k_ptr as *mut BlockQ8K)
+                                                    .add(i * nb),
+                                                nb,
+                                            )
+                                        };
+
+                                        if input.len() != in_size_padded {
+                                            for j in input.len()..in_size_padded
+                                            {
+                                                x_padded_local[j] = 0.0;
+                                            }
+                                            x_padded_local[..input.len()]
+                                                .copy_from_slice(input);
+                                            quantize_row_q8_k_neon(
+                                                &x_padded_local
+                                                    [..in_size_padded],
+                                                row_blocks,
+                                            );
+                                        } else {
+                                            quantize_row_q8_k_neon(
+                                                input, row_blocks,
+                                            );
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                    }
                 } else {
                     // Single-threaded fallback
                     for (i, input) in inputs.iter().enumerate() {
