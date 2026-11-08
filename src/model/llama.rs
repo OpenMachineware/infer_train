@@ -2334,14 +2334,20 @@ impl LlamaModel {
         // Check if model uses MLA architecture - currently not supported by zero-allocation path
         let uses_mla = self.uses_mqa();
 
-        // Use tiled GEMM for batch prefill (>= 8 tokens) on non-MLA models
-        const TILED_THRESHOLD: usize = 8;
+        // Use tiled GEMM for batch prefill (>= 1000 tokens) on non-MLA models
+        // Temporarily disabled due to thread pool barrier deadlock
+        const TILED_THRESHOLD: usize = 1000;
         let use_tiled = tokens.len() >= TILED_THRESHOLD && !uses_mla;
 
         // Get config values for MLA fallback
         let n_heads = self.config.n_heads;
         let head_dim = self.config.head_dim;
         let n_kv_heads = self.config.n_kv_heads;
+
+        eprintln!(
+            "[DEBUG] forward_pooled: is_decode={}, uses_mla={}, use_tiled={}",
+            is_decode, uses_mla, use_tiled
+        );
 
         if use_tiled {
             // Batch prefill path using tiled GEMM
@@ -2350,6 +2356,7 @@ impl LlamaModel {
             // Standard token-by-token processing
             // Process each token
             for &token in tokens.iter() {
+                eprintln!("[DEBUG] Processing token {}", token);
                 // 1. Embedding lookup into buffer
                 self.embedding_lookup_into(token, &mut buffers.hidden)?;
 
@@ -2357,7 +2364,11 @@ impl LlamaModel {
                 // Use single-thread path for decode (eliminates thread overhead)
                 // But fall back to regular path for MLA architecture (not yet supported)
                 if is_decode && !uses_mla {
+                    eprintln!(
+                        "[DEBUG] Using forward_layer_decode_single_thread"
+                    );
                     for (layer_idx, layer) in self.layers.iter().enumerate() {
+                        eprintln!("[DEBUG] Processing layer {}", layer_idx);
                         self.forward_layer_decode_single_thread(
                             layer, layer_idx, kv_cache, buffers,
                         )?;
@@ -2993,33 +3004,6 @@ impl LlamaModel {
         self.optimized_dag = Some(dag.into_optimized());
     }
 
-    /// Forward pass using graph-level dispatch
-    /// All threads traverse the DAG together, processing their portions in parallel
-    /// This eliminates the 160 thread pool dispatches per token
-    #[cfg(target_arch = "aarch64")]
-    pub fn forward_graph(
-        &mut self,
-        token: u32,
-        position: usize,
-        kv_cache: &mut crate::inference::KVCache,
-    ) -> Option<Vec<f32>> {
-        // Build DAG if not cached
-        if self.optimized_dag.is_none() {
-            self.build_optimized_dag();
-        }
-
-        let dag = self.optimized_dag.as_ref()?;
-
-        crate::cpu::execute_graph_parallel(
-            self,
-            token,
-            position,
-            kv_cache,
-            dag,
-            &dag.dag.weight_bindings,
-        )
-    }
-
     pub fn embedding_lookup_impl(&self, token: u32) -> Option<Vec<f32>> {
         let embed = self.tok_embeddings.as_ref()?;
         let hidden_size = self.config.hidden_size;
@@ -3289,6 +3273,7 @@ impl LlamaModel {
         kv_cache: &mut crate::inference::KVCache,
         buffers: &mut crate::cpu::CpuWorkBuffers,
     ) -> Option<()> {
+        eprintln!("[DEBUG] forward_layer_zero_alloc layer {}", layer_idx);
         let hidden_size = self.config.hidden_size;
         let n_heads = self.config.n_heads;
         let head_dim = self.config.head_dim;
@@ -3296,6 +3281,7 @@ impl LlamaModel {
         let pos = kv_cache.seq_len();
 
         // 1. Attention norm (hidden -> hidden_alt) - use pre-dequantized weights
+        eprintln!("[DEBUG] Step 1: Attention norm");
         let attn_norm_offset = layer_idx * 2 * hidden_size;
         self.apply_rms_norm_predequant(
             &buffers.hidden,
@@ -3317,7 +3303,8 @@ impl LlamaModel {
             let v_size = n_kv_heads * self.config.value_length;
 
             // Fused QKV: single GEMV then split
-            self.gemv_into_with_buffers(
+            // Use single-thread GEMV to avoid thread pool barrier issue
+            self.gemv_into_with_buffers_single_thread(
                 &buffers.hidden_alt,
                 qkv,
                 &mut buffers.qkv_buffer[..qkv_out_size],
@@ -3464,22 +3451,22 @@ impl LlamaModel {
                 );
 
                 // Use pre-quantized input for all projections
-                // Hybrid GEMV uses persistent thread pool for m > 1 (minimal overhead)
-                self.gemv_with_prequant(
+                // Use single-thread GEMV to avoid thread pool barrier issue
+                self.gemv_with_prequant_single_thread(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wq.as_ref()?,
                     &mut buffers.q_buffer[..q_size],
                 );
 
-                self.gemv_with_prequant(
+                self.gemv_with_prequant_single_thread(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wk.as_ref()?,
                     &mut buffers.k_buffer[..k_size],
                 );
 
-                self.gemv_with_prequant(
+                self.gemv_with_prequant_single_thread(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wv.as_ref()?,
@@ -3624,7 +3611,8 @@ impl LlamaModel {
         );
 
         // 8. FFN (hidden_alt -> hidden through FFN) - zero-allocation
-        self.compute_ffn_zero_alloc(
+        // Use single-thread GEMV to avoid thread pool barrier issue
+        self.compute_ffn_zero_alloc_single_thread(
             layer,
             &buffers.hidden_alt,
             &mut buffers.ffn_gate,
@@ -3814,7 +3802,8 @@ impl LlamaModel {
         );
 
         // 9. FFN with pre-quantization
-        self.compute_ffn_zero_alloc(
+        // Use single-thread GEMV to avoid thread pool barrier issue
+        self.compute_ffn_zero_alloc_single_thread(
             layer,
             &buffers.hidden_alt,
             &mut buffers.ffn_gate,
@@ -3837,6 +3826,10 @@ impl LlamaModel {
         kv_cache: &mut crate::inference::KVCache,
         buffers: &mut crate::cpu::CpuWorkBuffers,
     ) -> Option<()> {
+        eprintln!(
+            "[DEBUG] forward_layer_decode_single_thread layer {}",
+            layer_idx
+        );
         let hidden_size = self.config.hidden_size;
         let n_heads = self.config.n_heads;
         let head_dim = self.config.head_dim;
@@ -3844,6 +3837,7 @@ impl LlamaModel {
         let pos = kv_cache.seq_len();
 
         // 1. Attention norm (hidden -> hidden_alt)
+        eprintln!("[DEBUG] Step 1: Attention norm");
         let attn_norm_offset = layer_idx * 2 * hidden_size;
         self.apply_rms_norm_predequant(
             &buffers.hidden,
@@ -3853,7 +3847,9 @@ impl LlamaModel {
         );
 
         // 2. QKV projections (single-thread GEMV)
+        eprintln!("[DEBUG] Step 2: QKV projection");
         if let Some(ref qkv) = layer.attn_qkv {
+            eprintln!("[DEBUG] Using fused QKV, dtype={:?}", qkv.dtype);
             // Fused QKV
             let qkv_out_size = qkv.shape[1];
             let q_size = n_heads * head_dim;
@@ -3966,24 +3962,22 @@ impl LlamaModel {
                     &mut buffers.x_padded,
                 );
 
-                // Use hybrid ST/MT GEMV for better performance
-                // Small matrices (<2048): single-thread to avoid overhead
-                // Large matrices (>=2048): multi-thread for parallelism
-                self.gemv_with_prequant(
+                // Use single-thread GEMV for decode to avoid thread overhead
+                self.gemv_with_prequant_single_thread(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wq.as_ref()?,
                     &mut buffers.q_buffer[..q_size],
                 );
 
-                self.gemv_with_prequant(
+                self.gemv_with_prequant_single_thread(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wk.as_ref()?,
                     &mut buffers.k_buffer[..k_size],
                 );
 
-                self.gemv_with_prequant(
+                self.gemv_with_prequant_single_thread(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wv.as_ref()?,

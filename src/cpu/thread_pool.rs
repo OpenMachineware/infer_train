@@ -69,7 +69,7 @@ impl SpinBarrier {
 }
 
 struct WorkItem {
-    func: Box<dyn Fn(usize) + Send + Sync>,
+    func: Arc<dyn Fn(usize) + Send + Sync>,
 }
 
 pub struct ThreadPoolState {
@@ -115,11 +115,13 @@ impl ThreadPool {
                         return;
                     }
 
-                    let work = work_lock.take();
+                    // Clone the Arc to the work item so all workers can execute it
+                    let work =
+                        work_lock.as_ref().map(|item| Arc::clone(&item.func));
                     drop(work_lock);
 
-                    if let Some(item) = work {
-                        (item.func)(ith);
+                    if let Some(func) = work {
+                        func(ith);
                     }
 
                     state.barrier.wait();
@@ -148,7 +150,7 @@ impl ThreadPool {
 
         {
             let mut work_lock = self.state.work.lock().unwrap();
-            *work_lock = Some(WorkItem { func: Box::new(f.clone()) });
+            *work_lock = Some(WorkItem { func: Arc::new(f.clone()) });
         }
         self.state.work_ready.store(true, Ordering::Release);
         self.state.cond.notify_all();
@@ -181,7 +183,7 @@ pub fn global_pool(n_threads: usize) -> &'static ThreadPool {
 
 pub fn parallel_work_stealing<F>(n_chunks: usize, n_threads: usize, f: F)
 where
-    F: Fn(usize) + Send + Sync + Clone,
+    F: Fn(usize) + Send + Sync + Clone + 'static,
 {
     if n_threads == 1 || n_chunks <= 1 {
         for chunk in 0..n_chunks {
@@ -190,44 +192,39 @@ where
         return;
     }
 
-    let chunk_size = (n_chunks + n_threads - 1) / n_threads;
+    let pool = global_pool(n_threads);
+    let f_clone = f.clone();
 
-    std::thread::scope(|s| {
-        for ith in 0..n_threads {
-            let f_clone = f.clone();
-            s.spawn(move || {
-                let mut chunk = ith * chunk_size;
-                let end = (chunk + chunk_size).min(n_chunks);
-                while chunk < end {
-                    f_clone(chunk);
-                    chunk += 1;
-                }
-            });
+    pool.parallel(move |ith| {
+        let mut chunk = ith;
+        while chunk < n_chunks {
+            f_clone(chunk);
+            chunk = pool.state().current_chunk.fetch_add(1, Ordering::Relaxed);
         }
     });
 }
 
 pub fn parallel_chunks<F>(n_chunks: usize, n_threads: usize, f: F)
 where
-    F: Fn(usize, usize) + Send + Sync + Clone,
+    F: Fn(usize, usize) + Send + Sync + Clone + 'static,
 {
     if n_threads == 1 || n_chunks <= n_threads {
         f(0, n_chunks);
         return;
     }
 
-    let chunk_size = (n_chunks + n_threads - 1) / n_threads;
+    let pool = global_pool(n_threads);
+    let f_clone = f.clone();
 
-    std::thread::scope(|s| {
-        for ith in 0..n_threads {
-            let f_clone = f.clone();
-            s.spawn(move || {
-                let start = ith * chunk_size;
-                let end = (start + chunk_size).min(n_chunks);
-                if start < n_chunks {
-                    f_clone(start, end);
-                }
-            });
+    pool.parallel(move |ith| {
+        let mut chunk = ith;
+        while chunk < n_chunks {
+            let start = chunk * 1; // Each chunk is 1 unit
+            let end = (start + 1).min(n_chunks);
+            if start < n_chunks {
+                f_clone(start, end);
+            }
+            chunk = pool.state().current_chunk.fetch_add(1, Ordering::Relaxed);
         }
     });
 }
@@ -235,29 +232,6 @@ where
 pub fn default_n_threads() -> usize {
     let n = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4);
     (n - 1).max(1).min(8)
-}
-
-pub trait GEMVOp: Send + Sync {
-    fn execute(&self, row_start: usize, row_end: usize);
-}
-
-pub fn gemv_batch_barrier(op: &dyn GEMVOp, m: usize, n_threads: usize) {
-    let chunk_size = (m + n_threads - 1) / n_threads;
-
-    parallel_work_stealing(n_threads, n_threads, |ith: usize| {
-        let row_start = ith * chunk_size;
-        let row_end = (row_start + chunk_size).min(m);
-        if row_start < m {
-            op.execute(row_start, row_end);
-        }
-    });
-}
-
-pub fn execute_layer_with_barrier<F>(n_ops: usize, n_threads: usize, f: F)
-where
-    F: Fn(usize) + Send + Sync + Clone + 'static,
-{
-    parallel_work_stealing(n_ops, n_threads, f);
 }
 
 pub struct SyncPtr<T> {

@@ -7,8 +7,9 @@
 use crate::inference::KVCacheBase;
 
 /// Tile sizes for flash attention
-const Q_TILE_SZ: usize = 8; // Process 8 Q rows at once
-const KV_TILE_SZ: usize = 8; // Process 8 KV positions at once
+/// Match llama.cpp's tile sizes for optimal cache utilization
+const Q_TILE_SZ: usize = 64; // Process 64 Q rows at once (was 8)
+const KV_TILE_SZ: usize = 64; // Process 64 KV positions at once (was 8)
 
 /// Optimized prefill attention - processes all tokens at once
 /// This replaces the token-by-token loop with a tiled batch approach
@@ -183,6 +184,7 @@ pub fn flash_attention_single(
     scratch: &mut FlashAttnPrefillScratch,
 ) {
     use std::arch::aarch64::*;
+    use std::time::Instant;
 
     let k_head_dim = k.len() / n_kv_heads;
     let v_head_dim = v.len() / n_kv_heads;
@@ -211,6 +213,8 @@ pub fn flash_attention_single(
     };
 
     if n_threads > 1 {
+        // PROBLEM: Creating new Vec per thread causes cache thrashing
+        // This should use pre-allocated scratch like the single-thread version
         use crate::cpu::SyncPtr;
         // Use SyncPtr to share kv_cache across threads (safe: get_k/get_v are read-only)
         let kv_cache_ptr = SyncPtr::new(
@@ -220,145 +224,123 @@ pub fn flash_attention_single(
         let out_ptr = SyncPtr::new(out.as_mut_ptr());
         let q_ptr = SyncPtr::new(q.as_ptr() as *mut f32);
 
-        std::thread::scope(|s| {
-            let handles: Vec<_> = (0..n_threads)
-                .map(|tid| {
-                    s.spawn(move || {
-                        // Each thread gets its own scratch space
-                        let mut local_scores = vec![0.0f32; KV_TILE_SZ];
-                        let mut local_k_row = vec![0.0f32; k_head_dim];
-                        let mut local_v_row = vec![0.0f32; v_head_dim];
+        let pool = crate::cpu::global_pool(n_threads);
+        use std::sync::atomic::Ordering;
 
-                        // Process heads assigned to this thread
-                        let heads_per_thread =
-                            (n_heads + n_threads - 1) / n_threads;
-                        let h_start = tid * heads_per_thread;
-                        let h_end = (h_start + heads_per_thread).min(n_heads);
+        pool.parallel(move |tid| {
+            // Each thread gets its own scratch space
+            let mut local_scores = vec![0.0f32; KV_TILE_SZ];
+            let mut local_k_row = vec![0.0f32; k_head_dim];
+            let mut local_v_row = vec![0.0f32; v_head_dim];
 
-                        for h in h_start..h_end {
-                            let kv_head = h * n_kv_heads / n_heads;
-                            let q_offset = h * q_head_dim;
-                            let out_offset = h * v_head_dim;
+            // Work stealing: threads grab heads dynamically
+            let mut h = tid; // Start with thread ID
 
-                            let mut max_score = f32::NEG_INFINITY;
-                            let mut sum_exp = 0.0f32;
+            while h < n_heads {
+                let kv_head = h * n_kv_heads / n_heads;
+                let q_offset = h * q_head_dim;
+                let out_offset = h * v_head_dim;
 
-                            for kv_tile_start in
-                                (0..seq_len).step_by(KV_TILE_SZ)
-                            {
-                                let kv_tile_end =
-                                    (kv_tile_start + KV_TILE_SZ).min(seq_len);
-                                let kv_tile_size = kv_tile_end - kv_tile_start;
+                let mut max_score = f32::NEG_INFINITY;
+                let mut sum_exp = 0.0f32;
 
-                                // Compute attention scores
-                                for tk in 0..kv_tile_size {
-                                    let pos = kv_tile_start + tk;
-                                    unsafe {
-                                        (*kv_cache_ptr.get()).get_k_into(
-                                            layer_idx,
-                                            kv_head,
-                                            pos,
-                                            &mut local_k_row,
-                                        );
-                                    }
+                for kv_tile_start in (0..seq_len).step_by(KV_TILE_SZ) {
+                    let kv_tile_end = (kv_tile_start + KV_TILE_SZ).min(seq_len);
+                    let kv_tile_size = kv_tile_end - kv_tile_start;
 
-                                    unsafe {
-                                        let q_ptr_local =
-                                            q_ptr.get().add(q_offset);
-                                        let k_ptr_local = local_k_row.as_ptr();
-                                        let mut sum_vec = vdupq_n_f32(0.0);
+                    // Compute attention scores
+                    for tk in 0..kv_tile_size {
+                        let pos = kv_tile_start + tk;
+                        unsafe {
+                            (*kv_cache_ptr.get()).get_k_into(
+                                layer_idx,
+                                kv_head,
+                                pos,
+                                &mut local_k_row,
+                            );
+                        }
 
-                                        for d in (0..dot_dim).step_by(4) {
-                                            if d + 4 <= dot_dim {
-                                                let q_vec = vld1q_f32(
-                                                    q_ptr_local.add(d),
-                                                );
-                                                let k_vec = vld1q_f32(
-                                                    k_ptr_local.add(d),
-                                                );
-                                                sum_vec = vfmaq_f32(
-                                                    sum_vec, q_vec, k_vec,
-                                                );
-                                            }
-                                        }
+                        unsafe {
+                            let q_ptr_local = q_ptr.get().add(q_offset);
+                            let k_ptr_local = local_k_row.as_ptr();
+                            let mut sum_vec = vdupq_n_f32(0.0);
 
-                                        let sum_arr: [f32; 4] =
-                                            std::mem::transmute(sum_vec);
-                                        local_scores[tk] = (sum_arr[0]
-                                            + sum_arr[1]
-                                            + sum_arr[2]
-                                            + sum_arr[3])
-                                            * scale;
-                                    }
-                                }
-
-                                // Online softmax
-                                let tile_max = local_scores[..kv_tile_size]
-                                    .iter()
-                                    .cloned()
-                                    .fold(f32::NEG_INFINITY, f32::max);
-
-                                if tile_max > max_score {
-                                    let rescale = (max_score - tile_max).exp();
-                                    unsafe {
-                                        let out_local =
-                                            out_ptr.get().add(out_offset);
-                                        for d in 0..v_head_dim {
-                                            *out_local.add(d) *= rescale;
-                                        }
-                                    }
-                                    sum_exp *= rescale;
-                                    max_score = tile_max;
-                                }
-
-                                // Compute exponentials
-                                for tk in 0..kv_tile_size {
-                                    local_scores[tk] =
-                                        (local_scores[tk] - max_score).exp();
-                                    sum_exp += local_scores[tk];
-                                }
-
-                                // Accumulate weighted V
-                                for tk in 0..kv_tile_size {
-                                    let pos = kv_tile_start + tk;
-                                    unsafe {
-                                        (*kv_cache_ptr.get()).get_v_into(
-                                            layer_idx,
-                                            kv_head,
-                                            pos,
-                                            &mut local_v_row,
-                                        );
-                                    }
-
-                                    let weight = local_scores[tk];
-                                    unsafe {
-                                        let out_local =
-                                            out_ptr.get().add(out_offset);
-                                        for d in 0..v_head_dim {
-                                            *out_local.add(d) +=
-                                                weight * local_v_row[d];
-                                        }
-                                    }
+                            for d in (0..dot_dim).step_by(4) {
+                                if d + 4 <= dot_dim {
+                                    let q_vec = vld1q_f32(q_ptr_local.add(d));
+                                    let k_vec = vld1q_f32(k_ptr_local.add(d));
+                                    sum_vec = vfmaq_f32(sum_vec, q_vec, k_vec);
                                 }
                             }
 
-                            // Normalize
-                            if sum_exp > 0.0 {
-                                unsafe {
-                                    let out_local =
-                                        out_ptr.get().add(out_offset);
-                                    for d in 0..v_head_dim {
-                                        *out_local.add(d) /= sum_exp;
-                                    }
-                                }
+                            let sum_arr: [f32; 4] =
+                                std::mem::transmute(sum_vec);
+                            local_scores[tk] = (sum_arr[0]
+                                + sum_arr[1]
+                                + sum_arr[2]
+                                + sum_arr[3])
+                                * scale;
+                        }
+                    }
+
+                    // Online softmax
+                    let tile_max = local_scores[..kv_tile_size]
+                        .iter()
+                        .cloned()
+                        .fold(f32::NEG_INFINITY, f32::max);
+
+                    if tile_max > max_score {
+                        let rescale = (max_score - tile_max).exp();
+                        unsafe {
+                            let out_local = out_ptr.get().add(out_offset);
+                            for d in 0..v_head_dim {
+                                *out_local.add(d) *= rescale;
                             }
                         }
-                    })
-                })
-                .collect();
+                        sum_exp *= rescale;
+                        max_score = tile_max;
+                    }
 
-            for handle in handles {
-                handle.join().unwrap();
+                    // Compute exponentials
+                    for tk in 0..kv_tile_size {
+                        local_scores[tk] = (local_scores[tk] - max_score).exp();
+                        sum_exp += local_scores[tk];
+                    }
+
+                    // Accumulate weighted V
+                    for tk in 0..kv_tile_size {
+                        let pos = kv_tile_start + tk;
+                        unsafe {
+                            (*kv_cache_ptr.get()).get_v_into(
+                                layer_idx,
+                                kv_head,
+                                pos,
+                                &mut local_v_row,
+                            );
+                        }
+
+                        let weight = local_scores[tk];
+                        unsafe {
+                            let out_local = out_ptr.get().add(out_offset);
+                            for d in 0..v_head_dim {
+                                *out_local.add(d) += weight * local_v_row[d];
+                            }
+                        }
+                    }
+                }
+
+                // Normalize
+                if sum_exp > 0.0 {
+                    unsafe {
+                        let out_local = out_ptr.get().add(out_offset);
+                        for d in 0..v_head_dim {
+                            *out_local.add(d) /= sum_exp;
+                        }
+                    }
+                }
+
+                // Work stealing: get next head
+                h = pool.state().current_chunk.fetch_add(1, Ordering::Relaxed);
             }
         });
     } else {
@@ -462,6 +444,7 @@ pub struct FlashAttnPrefillScratch {
     pub k_row: Vec<f32>,  // [head_dim]
     pub v_row: Vec<f32>,  // [head_dim]
     // Additional fields for tiled prefill
+    pub q_tile: Vec<f32>, // [Q_TILE_SZ, head_dim] - Q tile for GEMM
     pub k_tile: Vec<f32>, // [head_dim, KV_TILE_SZ] - transposed for GEMM
     pub v_tile: Vec<f32>, // [KV_TILE_SZ, head_dim]
     pub kq: Vec<f32>,     // [Q_TILE_SZ, KV_TILE_SZ]
@@ -476,6 +459,7 @@ impl FlashAttnPrefillScratch {
             scores: vec![0.0; KV_TILE_SZ],
             k_row: vec![0.0; head_dim],
             v_row: vec![0.0; head_dim],
+            q_tile: vec![0.0; Q_TILE_SZ * head_dim],
             k_tile: vec![0.0; head_dim * KV_TILE_SZ],
             v_tile: vec![0.0; KV_TILE_SZ * head_dim],
             kq: vec![0.0; Q_TILE_SZ * KV_TILE_SZ],
@@ -547,8 +531,8 @@ pub fn flash_attention_prefill_tiled(
     let total_q_rows = n_tokens * n_heads;
 
     if n_threads > 1 {
-        // Multi-threaded: distribute Q rows across threads
-        use crate::cpu::SyncPtr;
+        // Multi-threaded: distribute Q rows across threads with work stealing
+        use crate::cpu::{SyncPtr, ThreadPool};
 
         let out_ptr = SyncPtr::new(attn_outputs.as_mut_ptr());
         let q_ptr = SyncPtr::new(q_outputs.as_ptr() as *mut f32);
@@ -556,61 +540,46 @@ pub fn flash_attention_prefill_tiled(
         let v_ptr = SyncPtr::new(v_outputs.as_ptr() as *mut f32);
         let scratch_ptr = SyncPtr::new(scratch.as_mut_ptr());
 
-        std::thread::scope(|s| {
-            let handles: Vec<_> = (0..n_threads)
-                .map(|tid| {
-                    s.spawn(move || {
-                        // Each thread gets its own pre-allocated scratch space
-                        let local_scratch =
-                            unsafe { &mut *scratch_ptr.get().add(tid) };
+        let pool = crate::cpu::global_pool(n_threads);
+        use std::sync::atomic::Ordering;
 
-                        // Calculate thread's Q row range
-                        let rows_per_thread =
-                            (total_q_rows + n_threads - 1) / n_threads;
-                        let ir0 = tid * rows_per_thread;
-                        let ir1 = (ir0 + rows_per_thread).min(total_q_rows);
+        pool.parallel(move |tid| {
+            // Each thread gets its own pre-allocated scratch space
+            let local_scratch = unsafe { &mut *scratch_ptr.get().add(tid) };
 
-                        // Process Q rows in tiles
-                        let mut ir = ir0;
-                        while ir < ir1 {
-                            // Convert linear index to (token_idx, head_idx)
-                            let token_idx = ir / n_heads;
-                            let h = ir % n_heads;
-                            let kv_head = h * n_kv_heads / n_heads;
+            // Work stealing: threads grab rows dynamically
+            let mut ir = tid; // Start with thread ID
 
-                            // Number of rows in this tile
-                            // Limited by: tile size, thread boundary, head boundary
-                            let tile_rows = Q_TILE_SZ
-                                .min(ir1 - ir)
-                                .min(n_heads - h)
-                                .min(n_tokens - token_idx);
+            while ir < total_q_rows {
+                // Convert linear index to (token_idx, head_idx)
+                let token_idx = ir / n_heads;
+                let h = ir % n_heads;
+                let kv_head = h * n_kv_heads / n_heads;
 
-                            process_q_tile(
-                                q_ptr.get(),
-                                k_ptr.get(),
-                                v_ptr.get(),
-                                n_kv_heads,
-                                head_dim,
-                                kv_head,
-                                h,
-                                token_idx,
-                                tile_rows,
-                                n_tokens,
-                                q_size,
-                                kv_size,
-                                scale,
-                                out_ptr.get(),
-                                local_scratch,
-                            );
+                // Number of rows in this tile
+                let tile_rows =
+                    Q_TILE_SZ.min(n_heads - h).min(n_tokens - token_idx);
 
-                            ir += tile_rows;
-                        }
-                    })
-                })
-                .collect();
+                process_q_tile(
+                    q_ptr.get(),
+                    k_ptr.get(),
+                    v_ptr.get(),
+                    n_kv_heads,
+                    head_dim,
+                    kv_head,
+                    h,
+                    token_idx,
+                    tile_rows,
+                    n_tokens,
+                    q_size,
+                    kv_size,
+                    scale,
+                    out_ptr.get(),
+                    local_scratch,
+                );
 
-            for handle in handles {
-                handle.join().unwrap();
+                // Work stealing: get next row
+                ir = pool.state().current_chunk.fetch_add(1, Ordering::Relaxed);
             }
         });
     } else {
@@ -712,83 +681,39 @@ fn process_q_tile(
                 }
             }
 
-            // Compute KQ = Q @ K^T using true GEMM
-            // K is stored transposed, so we can efficiently access K[:, tk]
+            // Compute KQ = Q @ K^T using optimized SIMD GEMM
+            // K is stored transposed: K_tile[head_dim, kv_tile_size]
 
             // Clear KQ for this tile
-            for i in 0..tile_rows * kv_tile_size {
-                scratch.kq[i] = 0.0;
+            scratch.kq[..tile_rows * kv_tile_size].fill(0.0);
+
+            // Load Q tile for this head range using memcpy-equivalent
+            for tq in 0..tile_rows {
+                let q_row = token_idx + tq;
+                let q_offset = q_row * q_size + h * head_dim;
+                scratch.q_tile[tq * head_dim..(tq + 1) * head_dim]
+                    .copy_from_slice(&q_outputs[q_offset..q_offset + head_dim]);
             }
 
-            // GEMM: Process in 4×4 blocks
-            for i0 in (0..tile_rows).step_by(4) {
-                let i1 = (i0 + 4).min(tile_rows);
+            // GEMM: KQ[tile_rows, kv_tile_size] = Q[tile_rows, head_dim] @ K_tile[head_dim, kv_tile_size]
+            crate::cpu::simd_gemm::simd_gemm(
+                scratch.kq.as_mut_ptr(),
+                scratch.q_tile.as_ptr(),
+                scratch.k_tile.as_ptr(),
+                tile_rows,
+                head_dim,
+                kv_tile_size,
+            );
 
-                for j0 in (0..kv_tile_size).step_by(4) {
-                    let j1 = (j0 + 4).min(kv_tile_size);
-
-                    // 4×4 accumulator block
-                    let mut acc: [[float32x4_t; 4]; 4] = std::mem::zeroed();
-
-                    // Inner loop over K dimension (head_dim)
-                    for kk in (0..head_dim).step_by(4) {
-                        if kk + 4 <= head_dim {
-                            // Load K columns j0..j1 for dimensions kk..kk+4
-                            let mut k_cols: [float32x4_t; 4] =
-                                std::mem::zeroed();
-                            for jj in 0..(j1 - j0) {
-                                k_cols[jj] = vld1q_f32(
-                                    scratch
-                                        .k_tile
-                                        .as_ptr()
-                                        .add(kk * KV_TILE_SZ + j0 + jj),
-                                );
-                            }
-
-                            // For each Q row in the block
-                            for ii in 0..(i1 - i0) {
-                                let i = i0 + ii;
-                                let q_row = token_idx + i;
-                                let q_offset = q_row * q_size + h * head_dim;
-
-                                // Load Q[i, kk:kk+4]
-                                let qv = vld1q_f32(
-                                    q_outputs[q_offset..].as_ptr().add(kk),
-                                );
-
-                                // FMLA: acc[ii, jj] += Q[i, kk:kk+4] * K[kk:kk+4, j0+jj]
-                                for jj in 0..(j1 - j0) {
-                                    acc[ii][jj] =
-                                        vfmaq_f32(acc[ii][jj], qv, k_cols[jj]);
-                                }
-                            }
-                        }
-                    }
-
-                    // Scale and store results, applying causal mask
-                    // Q row at (token_idx + i) can only attend to KV positions <= (token_idx + i)
-                    for ii in 0..(i1 - i0) {
-                        for jj in 0..(j1 - j0) {
-                            let i = i0 + ii;
-                            let j = j0 + jj;
-                            let q_pos = token_idx + i;
-                            let kv_pos = kv_tile_start + j;
-
-                            // Apply causal mask
-                            if kv_pos <= q_pos {
-                                let score_vals: [f32; 4] =
-                                    std::mem::transmute(acc[ii][jj]);
-                                let score = (score_vals[0]
-                                    + score_vals[1]
-                                    + score_vals[2]
-                                    + score_vals[3])
-                                    * scale;
-                                scratch.kq[i * KV_TILE_SZ + j] = score;
-                            } else {
-                                scratch.kq[i * KV_TILE_SZ + j] =
-                                    f32::NEG_INFINITY;
-                            }
-                        }
+            // Apply scale and causal mask
+            for i in 0..tile_rows {
+                let q_pos = token_idx + i;
+                for j in 0..kv_tile_size {
+                    let kv_pos = kv_tile_start + j;
+                    if kv_pos <= q_pos {
+                        scratch.kq[i * KV_TILE_SZ + j] *= scale;
+                    } else {
+                        scratch.kq[i * KV_TILE_SZ + j] = f32::NEG_INFINITY;
                     }
                 }
             }

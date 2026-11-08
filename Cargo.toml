@@ -106,10 +106,6 @@ path = "tools/generate.rs"
 # No required-features - works with or without metal
 
 [[bin]]
-name = "bench-lockfree-pool"
-path = "tools/bench_lockfree_pool.rs"
-
-[[bin]]
 name = "debug-nan-gpu"
 path = "tools/debug_nan_gpu.rs"
 required-features = ["metal"]
@@ -143,18 +139,6 @@ path = "tools/debug_layer_by_layer.rs"
 [[bin]]
 name = "debug-layer-ops"
 path = "tools/debug_layer_ops.rs"
-
-[[bin]]
-name = "debug-graph-correctness"
-path = "tools/debug_graph_correctness.rs"
-
-[[bin]]
-name = "check-final-token"
-path = "tools/check_final_token.rs"
-
-[[bin]]
-name = "compare-layer-outputs"
-path = "tools/compare_layer_outputs.rs"
 
 [[bin]]
 name = "trace-ffn-step"
@@ -259,10 +243,6 @@ path = "tools/profile_gpu_forward.rs"
 [[bin]]
 name = "bench-narrow-path"
 path = "tools/bench_narrow_path.rs"
-
-[[bin]]
-name = "bench-graph-execution"
-path = "tools/bench_graph_execution.rs"
 
 [[bin]]
 name = "profile-layer-detailed"
@@ -1653,10 +1633,6 @@ name = "bench-cpu-zero-alloc"
 path = "tools/bench_cpu_zero_alloc.rs"
 
 [[bin]]
-name = "bench-thread-overhead"
-path = "tools/bench_thread_overhead.rs"
-
-[[bin]]
 name = "bench-rayon-vs-scope"
 path = "tools/bench_rayon_vs_scope.rs"
 
@@ -1722,10 +1698,6 @@ required-features = ["metal"]
 path = "tools/debug_profile_timing.rs"
 
 [[bin]]
-name = "bench-graph-dispatch"
-path = "tools/bench_graph_dispatch.rs"
-
-[[bin]]
 name = "test-gemv-compare"
 path = "tools/test_gemv_compare.rs"
 
@@ -1738,32 +1710,12 @@ name = "debug-k-projection"
 path = "tools/debug_k_projection.rs"
 
 [[bin]]
-name = "bench-thread-pool-perf"
-path = "tools/bench_thread_pool_perf.rs"
-
-[[bin]]
 name = "bench-graph-executor"
 path = "tools/bench_graph_executor.rs"
 
 [[bin]]
-name = "bench-persistent-gemv"
-path = "tools/bench_persistent_gemv.rs"
-
-[[bin]]
 name = "bench-tiled-gemv"
 path = "tools/bench_tiled_gemv.rs"
-
-[[bin]]
-name = "test-pool-overhead"
-path = "tools/test_pool_overhead.rs"
-
-[[bin]]
-name = "debug-pool"
-path = "tools/debug_pool.rs"
-
-[[bin]]
-name = "test-barrier"
-path = "tools/test_barrier.rs"
 
 [[bin]]
 name = "debug-barrier"
@@ -1772,10 +1724,6 @@ path = "tools/debug_barrier.rs"
 [[bin]]
 name = "isolated-barrier"
 path = "tools/isolated_barrier.rs"
-
-[[bin]]
-name = "final-bench"
-path = "tools/final_bench.rs"
 
 [[bin]]
 name = "debug-model-arch"
@@ -1852,3 +1800,23 @@ path = "tools/no_intermediate_timing.rs"
 [[bin]]
 name = "profile-prefill-breakdown"
 path = "tools/profile_prefill_breakdown.rs"
+
+[[bin]]
+name = "cpu-perf-test"
+path = "tools/cpu_perf_test.rs"
+
+[[bin]]
+name = "test-pool-simple"
+path = "tools/test_pool_simple.rs"
+
+[[bin]]
+name = "test-minimal-forward"
+path = "tools/test_minimal_forward.rs"
+
+[[bin]]
+name = "debug-prefill-hang"
+path = "tools/debug-prefill-hang.rs"
+
+[[bin]]
+name = "test-parallel-ws"
+path = "tools/test_parallel_ws.rs"
