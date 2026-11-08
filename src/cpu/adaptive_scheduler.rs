@@ -53,17 +53,17 @@ impl AdaptiveScheduler {
     /// - Small matrices: reduce threads to avoid overhead
     /// - Memory-bound: reduce threads to avoid cache thrashing
     /// - Compute-bound: use all threads
-    pub fn optimal_threads(&self, m: usize, _k: usize, n: usize) -> usize {
-        // Total FLOPs estimate
-        let flops = m as u64 * n as u64;
+    pub fn optimal_threads(&self, m: usize, k: usize, n: usize) -> usize {
+        // Total FLOPs estimate (matrix multiplication: m x k times k x n)
+        let flops = m as u64 * k as u64 * n as u64;
 
         // Thresholds from empirical observation
-        // Small matrix: < 64K elements, single thread is faster
+        // Small matrix: < 64K FLOPs, single thread is faster
         if flops < 64 * 1024 {
             return 1;
         }
 
-        // Medium matrix: 64K - 1M elements, use half threads
+        // Medium matrix: 64K - 1M FLOPs, use half threads
         if flops < 1_000_000 {
             return (self.max_threads / 2).max(1);
         }
