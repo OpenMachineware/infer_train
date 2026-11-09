@@ -43,6 +43,7 @@ pub use sampling::argmax_f32 as argmax_f32_neon;
 pub use sampling::init_indices_neon;
 pub use silu::silu_backward_f32 as silu_backward_f32_neon;
 pub use silu::silu_f32 as silu_f32_neon;
+pub use silu::swiglu_f32 as swiglu_f32_neon;
 pub use silu::vexpq_f32;
 pub use softmax::exp as neon_exp;
 pub use softmax::softmax_f32 as softmax_f32_neon;

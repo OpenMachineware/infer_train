@@ -107,3 +107,39 @@ pub unsafe fn silu_backward_f32(x: &[f32], dy: &[f32], dst: &mut [f32]) {
         dst[i] = dy[i] * deriv;
     }
 }
+
+/// Fused SwiGLU: output = silu(gate) * up
+/// Processes gate and up vectors, stores result in dst (which can be gate for in-place)
+#[target_feature(enable = "neon")]
+pub unsafe fn swiglu_f32(gate: &[f32], up: &[f32], dst: &mut [f32]) {
+    debug_assert_eq!(gate.len(), up.len());
+    debug_assert_eq!(gate.len(), dst.len());
+
+    let n = gate.len();
+    let chunks = n / 4;
+    let one = vdupq_n_f32(1.0);
+    let zero = vdupq_n_f32(0.0);
+
+    for i in 0..chunks {
+        // Load gate and up vectors
+        let vgate = vld1q_f32(gate.as_ptr().add(i * 4));
+        let vup = vld1q_f32(up.as_ptr().add(i * 4));
+
+        // Compute silu(gate) = gate / (1 + exp(-gate))
+        let neg_gate = vsubq_f32(zero, vgate);
+        let exp_neg_gate = vexpq_f32(neg_gate);
+        let one_plus_exp = vaddq_f32(one, exp_neg_gate);
+        let silu = vdivq_f32(vgate, one_plus_exp);
+
+        // Fused multiply: silu(gate) * up
+        let result = vmulq_f32(silu, vup);
+
+        vst1q_f32(dst.as_mut_ptr().add(i * 4), result);
+    }
+
+    // Process remaining elements
+    for i in (chunks * 4)..n {
+        let silu = gate[i] / (1.0 + (-gate[i]).exp());
+        dst[i] = silu * up[i];
+    }
+}
