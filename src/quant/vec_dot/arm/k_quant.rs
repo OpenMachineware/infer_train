@@ -494,16 +494,20 @@ pub unsafe fn vec_dot_q6_k_q8_k_neon(
             let qh_bits = vld1q_u8_x2(qh.add(j * 32));
             let ql_bits = vld1q_u8_x4(ql.add(j * 64));
 
-            // Process 8 blocks of 16 elements
-            let q6h_0 = vandq_u8(mone, vshlq_n_u8(qh_bits.0, 4));
-            let q6h_1 = vandq_u8(mone, vshlq_n_u8(qh_bits.1, 4));
-            let q6h_2 = vandq_u8(mone, vshlq_n_u8(qh_bits.0, 2));
-            let q6h_3 = vandq_u8(mone, vshlq_n_u8(qh_bits.1, 2));
+            // Extract high 2 bits for each of 8 blocks (16 elements each)
+            // Bits 0-1: shift left by 4, mask, then shift left by 4 -> bits 4-5
+            let q6h_0 = vshlq_n_u8(vandq_u8(mone, qh_bits.0), 4);
+            let q6h_1 = vshlq_n_u8(vandq_u8(mone, qh_bits.1), 4);
+            // Bits 2-3: shift right by 2, mask, then shift left by 4 -> bits 4-5
+            let q6h_2 = vshlq_n_u8(vandq_u8(mone, vshrq_n_u8(qh_bits.0, 2)), 4);
+            let q6h_3 = vshlq_n_u8(vandq_u8(mone, vshrq_n_u8(qh_bits.1, 2)), 4);
 
-            let q6h_4 = vandq_u8(mone, qh_bits.0);
-            let q6h_5 = vandq_u8(mone, qh_bits.1);
-            let q6h_6 = vandq_u8(mone, vshrq_n_u8(qh_bits.0, 2));
-            let q6h_7 = vandq_u8(mone, vshrq_n_u8(qh_bits.1, 2));
+            // Bits 4-5: shift right by 4, mask, then shift left by 4 -> bits 4-5
+            let q6h_4 = vshlq_n_u8(vandq_u8(mone, vshrq_n_u8(qh_bits.0, 4)), 4);
+            let q6h_5 = vshlq_n_u8(vandq_u8(mone, vshrq_n_u8(qh_bits.1, 4)), 4);
+            // Bits 6-7: shift right by 6, mask, then shift left by 4 -> bits 4-5
+            let q6h_6 = vshlq_n_u8(vandq_u8(mone, vshrq_n_u8(qh_bits.0, 6)), 4);
+            let q6h_7 = vshlq_n_u8(vandq_u8(mone, vshrq_n_u8(qh_bits.1, 6)), 4);
 
             // Combine low 4 bits and high 2 bits
             let q6bytes_0 =
