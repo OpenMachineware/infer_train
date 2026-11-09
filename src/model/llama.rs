@@ -4971,6 +4971,7 @@ impl LlamaModel {
     }
 
     /// Zero-allocation GEMV with custom thread count
+    /// Uses unified 3-layer fallback (SIMD → vec_dot → BLAS)
     #[cfg(target_arch = "aarch64")]
     pub fn gemv_into_with_buffers_with_threads(
         &self,
@@ -4981,143 +4982,9 @@ impl LlamaModel {
         x_padded: &mut [f32],
         n_threads: usize,
     ) -> bool {
-        let in_size = x.len();
-        let out_size = out.len();
+        use crate::quant::gemm::gemv_dispatch;
 
-        use crate::quant::kv_cache::quantize_row_q8_k_neon;
-        use crate::quant::matmul::k_quant::{
-            matmul_iq4_xs_q8_k_hybrid_with_threads,
-            matmul_q4_k_q8_k_hybrid_with_threads,
-            matmul_q5_k_q8_k_hybrid_with_threads,
-            matmul_q6_k_q8_k_hybrid_with_threads,
-        };
-        use crate::quant::types::{
-            BlockIQ4XS, BlockQ4K, BlockQ5K, BlockQ6K, QK_K,
-        };
-
-        // K-quant GEMV with zero-padding for non-standard dimensions
-        let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
-        let nb = in_size_padded / QK_K;
-
-        match w.dtype {
-            DataType::Q4_K
-            | DataType::Q5_K
-            | DataType::Q6_K
-            | DataType::IQ4_XS => {
-                // Reuse pre-allocated buffers
-                let x_q8k_blocks = unsafe {
-                    let available_blocks = x_q8k.len()
-                        / std::mem::size_of::<crate::quant::types::BlockQ8K>();
-                    if available_blocks < nb {
-                        eprintln!(
-                            "[ERROR] q8k buffer too small: {} < {} blocks needed for input size {}",
-                            available_blocks, nb, in_size
-                        );
-                        return false;
-                    }
-                    std::slice::from_raw_parts_mut(
-                        x_q8k.as_mut_ptr()
-                            as *mut crate::quant::types::BlockQ8K,
-                        nb,
-                    )
-                };
-
-                if in_size != in_size_padded {
-                    // Zero padding area
-                    for i in in_size..in_size_padded {
-                        x_padded[i] = 0.0;
-                    }
-                    x_padded[..in_size].copy_from_slice(x);
-                    quantize_row_q8_k_neon(x_padded, x_q8k_blocks);
-                } else {
-                    quantize_row_q8_k_neon(x, x_q8k_blocks);
-                }
-
-                unsafe {
-                    match w.dtype {
-                        DataType::Q4_K => {
-                            let weights: &[BlockQ4K] =
-                                std::slice::from_raw_parts(
-                                    w.bytes().as_ptr() as *const BlockQ4K,
-                                    out_size * nb,
-                                );
-                            matmul_q4_k_q8_k_hybrid_with_threads(
-                                weights,
-                                x_q8k_blocks,
-                                out,
-                                in_size_padded,
-                                out_size,
-                                n_threads,
-                            );
-                        }
-                        DataType::Q5_K => {
-                            let weights: &[BlockQ5K] =
-                                std::slice::from_raw_parts(
-                                    w.bytes().as_ptr() as *const BlockQ5K,
-                                    out_size * nb,
-                                );
-                            matmul_q5_k_q8_k_hybrid_with_threads(
-                                weights,
-                                x_q8k_blocks,
-                                out,
-                                in_size_padded,
-                                out_size,
-                                n_threads,
-                            );
-                        }
-                        DataType::Q6_K => {
-                            let weights: &[BlockQ6K] =
-                                std::slice::from_raw_parts(
-                                    w.bytes().as_ptr() as *const BlockQ6K,
-                                    out_size * nb,
-                                );
-                            matmul_q6_k_q8_k_hybrid_with_threads(
-                                weights,
-                                x_q8k_blocks,
-                                out,
-                                in_size_padded,
-                                out_size,
-                                n_threads,
-                            );
-                        }
-                        DataType::IQ4_XS => {
-                            let weights: &[BlockIQ4XS] =
-                                std::slice::from_raw_parts(
-                                    w.bytes().as_ptr() as *const BlockIQ4XS,
-                                    out_size * nb,
-                                );
-                            matmul_iq4_xs_q8_k_hybrid_with_threads(
-                                weights,
-                                x_q8k_blocks,
-                                out,
-                                in_size_padded,
-                                out_size,
-                                n_threads,
-                            );
-                        }
-                        _ => unreachable!(),
-                    }
-                }
-                true
-            }
-            DataType::F16 => {
-                use crate::quant::matmul::k_quant::matmul_f16_f32;
-                let weights_f16: &[u16] = unsafe {
-                    std::slice::from_raw_parts(
-                        w.bytes().as_ptr() as *const u16,
-                        out_size * in_size,
-                    )
-                };
-                unsafe {
-                    matmul_f16_f32(weights_f16, x, out, in_size, out_size);
-                }
-                true
-            }
-            _ => {
-                // Fallback to regular gemv_into for unsupported formats
-                self.gemv_into(x, w, out)
-            }
-        }
+        gemv_dispatch(out, w, x, n_threads, Some(x_q8k), Some(x_padded))
     }
 
     /// Single-thread GEMV for decode (batch=1) where thread overhead dominates
@@ -5879,164 +5746,48 @@ impl LlamaModel {
         }
 
         match w.dtype {
-            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
-                // Use pipelined GEMM: quantization happens on-demand during computation
-                // This is the key optimization from llama.cpp
-
-                // Prepare shared Q8_K buffer for quantized inputs
-                let x_q8k_blocks_needed = n * nb;
-                let x_q8k_blocks_available =
-                    x_q8k_batch.len() / std::mem::size_of::<BlockQ8K>();
-                if x_q8k_blocks_available < x_q8k_blocks_needed {
-                    eprintln!(
-                        "[ERROR] q8k batch buffer too small: {} < {} blocks",
-                        x_q8k_blocks_available, x_q8k_blocks_needed
-                    );
-                    return false;
-                }
-
-                let x_q8k_blocks: &mut [BlockQ8K] = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        x_q8k_batch.as_mut_ptr() as *mut BlockQ8K,
-                        x_q8k_blocks_needed,
-                    )
-                };
+            DataType::Q4_K
+            | DataType::Q5_K
+            | DataType::Q6_K
+            | DataType::IQ4_XS => {
+                // Use gemm_dispatch with BLAS/vec_dot path selection
+                use crate::quant::gemm::scheduler::gemm_dispatch;
 
                 let gemm_start = Instant::now();
 
-                unsafe {
-                    match w.dtype {
-                        DataType::Q5_K => {
-                            use crate::quant::matmul::block_tiling::matmul_q5k_f32_pipelined;
-                            let weights: &[BlockQ5K] =
-                                std::slice::from_raw_parts(
-                                    w.bytes().as_ptr() as *const BlockQ5K,
-                                    out_size * nb,
-                                );
-                            matmul_q5k_f32_pipelined(
-                                weights,
-                                inputs,
-                                outputs,
-                                in_size_padded,
-                                out_size,
-                                n,
-                                x_q8k_blocks,
-                            );
-                        }
-                        DataType::Q4_K => {
-                            use crate::quant::matmul::block_tiling::matmul_q4k_f32_pipelined;
-                            let weights: &[BlockQ4K] =
-                                std::slice::from_raw_parts(
-                                    w.bytes().as_ptr() as *const BlockQ4K,
-                                    out_size * nb,
-                                );
-                            matmul_q4k_f32_pipelined(
-                                weights,
-                                inputs,
-                                outputs,
-                                in_size_padded,
-                                out_size,
-                                n,
-                                x_q8k_blocks,
-                            );
-                        }
-                        DataType::Q6_K => {
-                            use crate::quant::matmul::block_tiling::matmul_q6k_f32_pipelined;
-                            let weights: &[BlockQ6K] =
-                                std::slice::from_raw_parts(
-                                    w.bytes().as_ptr() as *const BlockQ6K,
-                                    out_size * nb,
-                                );
-                            matmul_q6k_f32_pipelined(
-                                weights,
-                                inputs,
-                                outputs,
-                                in_size_padded,
-                                out_size,
-                                n,
-                                x_q8k_blocks,
-                            );
-                        }
-                        _ => unreachable!(),
-                    }
+                // Flatten inputs into contiguous buffer (row-major: n rows, k columns)
+                let mut b_flat = vec![0.0f32; n * in_size_padded];
+                for (row, input) in inputs.iter().enumerate() {
+                    b_flat
+                        [row * in_size_padded..row * in_size_padded + in_size]
+                        .copy_from_slice(input);
                 }
 
-                let gemm_time = gemm_start.elapsed();
-                if let Some(timing) = timing {
-                    timing.1 += gemm_time;
-                }
-                true
-            }
-            DataType::IQ4_XS => {
-                // IQ4_XS needs pre-quantization (no pipelined version yet)
-                let quant_start = Instant::now();
+                // Create temporary output buffer for BLAS (row-major [m, n])
+                let mut c_temp = vec![0.0f32; out_size * n];
 
-                let x_q8k_blocks_needed = n * nb;
-                let x_q8k_blocks_available =
-                    x_q8k_batch.len() / std::mem::size_of::<BlockQ8K>();
-                if x_q8k_blocks_available < x_q8k_blocks_needed {
-                    eprintln!(
-                        "[ERROR] q8k batch buffer too small: {} < {} blocks",
-                        x_q8k_blocks_available, x_q8k_blocks_needed
-                    );
-                    return false;
-                }
+                let result = gemm_dispatch(
+                    &mut c_temp,
+                    w,
+                    &b_flat,
+                    out_size,
+                    n,
+                    in_size_padded,
+                    crate::cpu::default_n_threads(),
+                    Some(x_q8k_batch),
+                );
 
-                let x_q8k_blocks: &mut [BlockQ8K] = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        x_q8k_batch.as_mut_ptr() as *mut BlockQ8K,
-                        x_q8k_blocks_needed,
-                    )
-                };
-
-                // Sequential quantization for IQ4_XS
-                for (i, input) in inputs.iter().enumerate() {
-                    let row_blocks = &mut x_q8k_blocks[i * nb..(i + 1) * nb];
-                    if input.len() != in_size_padded {
-                        for j in input.len()..in_size_padded {
-                            x_padded[j] = 0.0;
-                        }
-                        x_padded[..input.len()].copy_from_slice(input);
-                        quantize_row_q8_k_neon(
-                            &x_padded[..in_size_padded],
-                            row_blocks,
-                        );
-                    } else {
-                        quantize_row_q8_k_neon(input, row_blocks);
-                    }
-                }
-
-                let quant_time = quant_start.elapsed();
-                let gemm_start = Instant::now();
-
-                use crate::quant::matmul::k_quant::matmul_iq4_xs_q8_k;
-                let weights: &[BlockIQ4XS] = unsafe {
-                    std::slice::from_raw_parts(
-                        w.bytes().as_ptr() as *const BlockIQ4XS,
-                        out_size * nb,
-                    )
-                };
+                // Transpose output from [m, n] to [n, m] to match expected layout
                 for col in 0..n {
-                    let x_vec = &x_q8k_blocks[col * nb..(col + 1) * nb];
-                    let out_col =
-                        &mut outputs[col * out_size..(col + 1) * out_size];
-                    unsafe {
-                        matmul_iq4_xs_q8_k(
-                            weights,
-                            x_vec,
-                            out_col,
-                            in_size_padded,
-                            out_size,
-                        );
+                    for row in 0..out_size {
+                        outputs[col * out_size + row] = c_temp[row * n + col];
                     }
                 }
 
-                let gemm_time = gemm_start.elapsed();
                 if let Some(timing) = timing {
-                    timing.0 += quant_time;
-                    timing.1 += gemm_time;
+                    timing.1 += gemm_start.elapsed();
                 }
-                true
+                result
             }
             DataType::F16 => {
                 // For F16, use row-by-row GEMV (no batch optimization yet)
