@@ -423,7 +423,7 @@ pub unsafe fn vec_dot_q5_k_q8_k_neon(
         let qh = x[i].qh.as_ptr();
         let q8 = y[i].qs.as_ptr();
 
-        let qhbits = vld1q_u8_x2(qh);
+        let mut qhbits = vld1q_u8_x2(qh);
 
         let mut sumi = 0i32;
 
@@ -436,6 +436,10 @@ pub unsafe fn vec_dot_q5_k_q8_k_neon(
             let q5h_1 = vshlq_n_u8(vandq_u8(mone, qhbits.1), 4);
             let q5h_2 = vshlq_n_u8(vandq_u8(mtwo, qhbits.0), 3);
             let q5h_3 = vshlq_n_u8(vandq_u8(mtwo, qhbits.1), 3);
+
+            // Update qhbits for next iteration (shift right by 2 bits)
+            qhbits.0 = vshrq_n_u8(qhbits.0, 2);
+            qhbits.1 = vshrq_n_u8(qhbits.1, 2);
 
             let q5bytes_0 =
                 vreinterpretq_s8_u8(vorrq_u8(vandq_u8(q5bits.0, m4b), q5h_0));

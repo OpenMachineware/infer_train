@@ -148,9 +148,6 @@ pub enum Operation {
         weight: usize,   // GEMV weight tensor
         residual: usize, // Residual tensor to add
         output: usize,   // Output tensor
-        out_size: usize, // M (output dimension)
-        in_size: usize,  // K (input dimension)
-        layer_idx: usize,
     },
 
     /// Placeholder for removed/fused operations

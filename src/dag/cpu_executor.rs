@@ -11,24 +11,41 @@ use crate::inference::KVCache;
 use crate::model::LlamaModel;
 use std::collections::HashMap;
 
-/// CPU tensor: pre-allocated buffer with size tracking
+/// CPU tensor: pre-allocated buffer with shape tracking
 #[derive(Clone)]
 pub struct CpuTensor {
     pub data: Vec<f32>,
-    pub len: usize, // Actual length (may be less than capacity)
+    pub shape: Vec<usize>, // Tensor shape, e.g., [hidden_size, n_tokens]
 }
 
 impl CpuTensor {
     pub fn new(size: usize) -> Self {
-        CpuTensor { data: vec![0.0f32; size], len: size }
+        CpuTensor { data: vec![0.0f32; size], shape: vec![size] }
+    }
+
+    pub fn with_shape(shape: Vec<usize>) -> Self {
+        let size: usize = shape.iter().product();
+        CpuTensor { data: vec![0.0f32; size], shape }
     }
 
     pub fn as_slice(&self) -> &[f32] {
-        &self.data[..self.len]
+        &self.data
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [f32] {
-        &mut self.data[..self.len]
+        &mut self.data
+    }
+
+    pub fn nelements(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn is_batched(&self) -> bool {
+        self.shape.len() > 1 && self.shape.last().copied().unwrap_or(1) > 1
+    }
+
+    pub fn batch_size(&self) -> usize {
+        self.shape.last().copied().unwrap_or(1)
     }
 }
 
@@ -72,7 +89,7 @@ impl CpuTensorRegistry {
         }
     }
 
-    /// Create or resize a tensor
+    /// Create or resize a tensor (1D convenience method)
     pub fn ensure_tensor(&mut self, id: usize, size: usize) {
         if id >= self.tensors.len() {
             let new_len = (id + 1).next_power_of_two();
@@ -83,11 +100,32 @@ impl CpuTensorRegistry {
             Some(tensor) => {
                 if tensor.data.len() < size {
                     tensor.data.resize(size, 0.0);
-                    tensor.len = size;
+                    tensor.shape = vec![size];
                 }
             }
             None => {
                 self.tensors[id] = Some(CpuTensor::new(size));
+            }
+        }
+    }
+
+    /// Create or resize a tensor with given shape
+    pub fn ensure_tensor_with_shape(&mut self, id: usize, shape: Vec<usize>) {
+        let size: usize = shape.iter().product();
+        if id >= self.tensors.len() {
+            let new_len = (id + 1).next_power_of_two();
+            self.tensors.resize(new_len, None);
+        }
+
+        match &mut self.tensors[id] {
+            Some(tensor) => {
+                if tensor.data.len() < size {
+                    tensor.data.resize(size, 0.0);
+                    tensor.shape = shape;
+                }
+            }
+            None => {
+                self.tensors[id] = Some(CpuTensor::with_shape(shape));
             }
         }
     }
@@ -105,6 +143,8 @@ pub struct CpuExecutionContext<'a> {
     pub k_tensor_ids: HashMap<usize, usize>,
     /// Track V tensor IDs per layer (from KVCacheUpdate operations)
     pub v_tensor_ids: HashMap<usize, usize>,
+    /// Work buffers for batch operations (optional, used for prefill)
+    pub buffers: Option<&'a mut crate::cpu::CpuWorkBuffers>,
 }
 
 impl<'a> CpuExecutionContext<'a> {
@@ -122,6 +162,27 @@ impl<'a> CpuExecutionContext<'a> {
             position: 0,
             k_tensor_ids: HashMap::new(),
             v_tensor_ids: HashMap::new(),
+            buffers: None,
+        }
+    }
+
+    /// Create with buffers for batch operations
+    pub fn with_buffers(
+        model: &'a LlamaModel,
+        kv_cache: &'a mut KVCache,
+        weight_bindings: &'a HashMap<usize, crate::model::Tensor>,
+        buffers: &'a mut crate::cpu::CpuWorkBuffers,
+    ) -> Self {
+        Self {
+            model,
+            kv_cache,
+            tensor_registry: CpuTensorRegistry::new(),
+            weight_bindings,
+            layer_idx: 0,
+            position: 0,
+            k_tensor_ids: HashMap::new(),
+            v_tensor_ids: HashMap::new(),
+            buffers: Some(buffers),
         }
     }
 }
@@ -183,50 +244,122 @@ pub fn execute_operation(
         }
 
         Operation::Gemv { input, weight, output, out_size, is_transposed } => {
-            // Read input data (copy needed to avoid borrow conflict with output)
-            let input_data = ctx.tensor_registry.get_slice(*input)?.to_vec();
+            // Check if input is batched (prefill) or single (decode)
+            let input_tensor = ctx.tensor_registry.get(*input)?;
+            let input_data = input_tensor.as_slice().to_vec();
+            let batch_size = input_tensor.batch_size();
+
             let weight_tensor = ctx.weight_bindings.get(weight)?;
 
-            if *is_transposed {
-                // Transposed GEMV: weight is stored as [in_size, out_size]
-                let result = ctx.model.gemv_transposed(
-                    &input_data,
-                    weight_tensor,
-                    *out_size,
-                )?;
-                ctx.tensor_registry.ensure_tensor(*output, result.len());
-                let out_tensor = ctx.tensor_registry.get_mut(*output)?;
-                out_tensor.as_mut_slice().copy_from_slice(&result);
-            } else {
-                // Standard GEMV: weight is stored as [out_size, in_size]
-                ctx.tensor_registry.ensure_tensor(*output, *out_size);
-                let out_tensor = ctx.tensor_registry.get_mut(*output)?;
-                ctx.model.gemv_into(
-                    &input_data,
-                    weight_tensor,
-                    out_tensor.as_mut_slice(),
-                );
-            }
+            if batch_size > 1 {
+                // Batched GEMM for prefill
+                // Input shape: [hidden_size, batch_size] in row-major
+                // Weight shape: [out_size, hidden_size] (standard) or [hidden_size, out_size] (transposed)
 
-            Some(())
+                let hidden_size = input_data.len() / batch_size;
+
+                // Allocate output [out_size, batch_size]
+                ctx.tensor_registry.ensure_tensor_with_shape(
+                    *output,
+                    vec![*out_size, batch_size],
+                );
+                let out_tensor = ctx.tensor_registry.get_mut(*output)?;
+                let out_slice = out_tensor.as_mut_slice();
+
+                // Split input into per-token vectors
+                let input_vecs: Vec<&[f32]> = (0..batch_size)
+                    .map(|i| {
+                        &input_data[i * hidden_size..(i + 1) * hidden_size]
+                    })
+                    .collect();
+
+                // Use batch GEMM (need buffers)
+                if let Some(buffers) = &mut ctx.buffers {
+                    let success = ctx.model.gemm_batch_prefill(
+                        &input_vecs,
+                        weight_tensor,
+                        out_slice,
+                        &mut buffers.q8k_input,
+                        &mut buffers.x_padded,
+                        &mut buffers.x_padded_threads,
+                        None,
+                    );
+                    if success { Some(()) } else { None }
+                } else {
+                    // No buffers available - can't do batch prefill
+                    eprintln!(
+                        "Error: Batch prefill requires buffers but none available"
+                    );
+                    None
+                }
+            } else {
+                // Single GEMV for decode
+                if *is_transposed {
+                    // Transposed GEMV: weight is stored as [in_size, out_size]
+                    let result = ctx.model.gemv_transposed(
+                        &input_data,
+                        weight_tensor,
+                        *out_size,
+                    )?;
+                    ctx.tensor_registry.ensure_tensor(*output, result.len());
+                    let out_tensor = ctx.tensor_registry.get_mut(*output)?;
+                    out_tensor.as_mut_slice().copy_from_slice(&result);
+                } else {
+                    // Standard GEMV: weight is stored as [out_size, in_size]
+                    ctx.tensor_registry.ensure_tensor(*output, *out_size);
+                    let out_tensor = ctx.tensor_registry.get_mut(*output)?;
+                    ctx.model.gemv_into(
+                        &input_data,
+                        weight_tensor,
+                        out_tensor.as_mut_slice(),
+                    );
+                }
+                Some(())
+            }
         }
 
         Operation::RoPE { input, output, pos, n_heads, head_dim } => {
-            // Read input data (copy needed to avoid borrow conflict with output)
-            let input_data = ctx.tensor_registry.get_slice(*input)?.to_vec();
+            // Check if input is batched
+            let input_tensor = ctx.tensor_registry.get(*input)?;
+            let input_data = input_tensor.as_slice().to_vec();
+            let batch_size = input_tensor.batch_size();
 
-            // Allocate output
-            ctx.tensor_registry.ensure_tensor(*output, input_data.len());
+            // Allocate output with same shape
+            ctx.tensor_registry
+                .ensure_tensor_with_shape(*output, input_tensor.shape.clone());
             let out_tensor = ctx.tensor_registry.get_mut(*output)?;
 
-            // Execute RoPE
-            ctx.model.apply_rope_into(
-                &input_data,
-                *pos,
-                *n_heads,
-                *head_dim,
-                out_tensor.as_mut_slice(),
-            )?;
+            if batch_size > 1 {
+                // Batched RoPE for prefill
+                // Input shape: [n_heads * head_dim, batch_size]
+                // Apply RoPE with positions: pos, pos+1, ..., pos+batch_size-1
+                let per_token_size = *n_heads * *head_dim;
+
+                for i in 0..batch_size {
+                    let start = i * per_token_size;
+                    let end = start + per_token_size;
+                    let input_slice = &input_data[start..end];
+                    let output_slice =
+                        &mut out_tensor.as_mut_slice()[start..end];
+
+                    ctx.model.apply_rope_into(
+                        input_slice,
+                        *pos + i,
+                        *n_heads,
+                        *head_dim,
+                        output_slice,
+                    )?;
+                }
+            } else {
+                // Single RoPE for decode
+                ctx.model.apply_rope_into(
+                    &input_data,
+                    *pos,
+                    *n_heads,
+                    *head_dim,
+                    out_tensor.as_mut_slice(),
+                )?;
+            }
 
             Some(())
         }
@@ -459,6 +592,7 @@ pub fn execute_operation(
             Some(())
         }
 
+        // Batch operations for prefill
         Operation::NoOp => {
             // Skip this node
             Some(())
@@ -525,6 +659,7 @@ impl CpuDagExecutor {
             position: tokens.len().saturating_sub(1),
             k_tensor_ids: HashMap::new(),
             v_tensor_ids: HashMap::new(),
+            buffers: None,
         };
 
         // Execute DAG nodes in execution order

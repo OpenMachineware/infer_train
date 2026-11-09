@@ -1216,12 +1216,12 @@ pub unsafe fn vec_dot_iq4_xs_q8_k_neon(
             );
 
             let ls1 = ((x[ibl].scales_l[ib] & 0x0F) as i32
-                | ((h as i32 & 0x0F) << 4))
+                | (((h as i32) << 4) & 0x30))
                 - 32;
             let ls2 = ((x[ibl].scales_l[ib] >> 4) as i32
-                | ((h as i32 >> 4) << 4))
+                | (((h as i32) << 2) & 0x30))
                 - 32;
-            h >>= 8;
+            h >>= 4;
 
             // Use i64 for multiplication to avoid overflow
             sumi1 += (vaddvq_s32(prod_1) as i64) * (ls1 as i64);

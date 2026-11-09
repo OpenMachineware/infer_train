@@ -1701,6 +1701,10 @@ name = "profile-ffn-detailed"
 path = "tools/profile_ffn_detailed.rs"
 
 [[bin]]
+name = "profile-qkv-detailed"
+path = "tools/profile_qkv_detailed.rs"
+
+[[bin]]
 name = "profile-ffn-only"
 path = "tools/profile_ffn_only.rs"
 
@@ -1856,3 +1860,7 @@ path = "tools/test_parallel_overhead.rs"
 [[bin]]
 name = "test-thread-overhead"
 path = "tools/test_thread_overhead.rs"
+
+[[bin]]
+name = "bench-prefill-simple"
+path = "tools/bench_prefill_simple.rs"

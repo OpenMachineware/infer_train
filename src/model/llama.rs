@@ -2536,7 +2536,7 @@ impl LlamaModel {
         kv_cache: &mut crate::inference::KVCache,
         buffers: &mut crate::cpu::CpuWorkBuffers,
     ) -> Option<Vec<f32>> {
-        use std::time::Instant;
+        use std::time::{Duration, Instant};
 
         let hidden_size = self.config.hidden_size;
         let vocab_size = self.config.vocab_size;
@@ -2978,7 +2978,9 @@ impl LlamaModel {
                     let intermediate_size = w1.shape[0];
                     let ffn_output_len = n_tokens * intermediate_size;
 
-                    let mut ffn_timing = (time_quant, time_gemm);
+                    // Separate timing for each GEMM
+                    let mut gate_timing =
+                        (Duration::new(0, 0), Duration::new(0, 0));
                     self.gemm_batch_prefill(
                         &ffn_inputs,
                         w1,
@@ -2986,10 +2988,12 @@ impl LlamaModel {
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
                         &mut buffers.x_padded_threads,
-                        Some(&mut ffn_timing),
+                        Some(&mut gate_timing),
                     );
 
                     // Up projection (w3)
+                    let mut up_timing =
+                        (Duration::new(0, 0), Duration::new(0, 0));
                     if let Some(ref w3) = layer.w3 {
                         self.gemm_batch_prefill(
                             &ffn_inputs,
@@ -2998,7 +3002,7 @@ impl LlamaModel {
                             &mut buffers.q8k_input,
                             &mut buffers.x_padded,
                             &mut buffers.x_padded_threads,
-                            Some(&mut ffn_timing),
+                            Some(&mut up_timing),
                         );
                     }
 
@@ -3020,6 +3024,8 @@ impl LlamaModel {
                     }
 
                     // Down projection (w2)
+                    let mut down_timing =
+                        (Duration::new(0, 0), Duration::new(0, 0));
                     if let Some(ref w2) = layer.w2 {
                         let down_inputs: Vec<&[f32]> = (0..n_tokens)
                             .map(|i| {
@@ -3035,11 +3041,13 @@ impl LlamaModel {
                             &mut buffers.q8k_input,
                             &mut buffers.x_padded,
                             &mut buffers.x_padded_threads,
-                            Some(&mut ffn_timing),
+                            Some(&mut down_timing),
                         );
                     }
-                    time_quant = ffn_timing.0;
-                    time_gemm = ffn_timing.1;
+
+                    // Accumulate all GEMM times
+                    time_quant += gate_timing.0 + up_timing.0 + down_timing.0;
+                    time_gemm += gate_timing.1 + up_timing.1 + down_timing.1;
                 }
             } else {
                 // MoE - process tokens sequentially (different experts per token)
@@ -5843,7 +5851,7 @@ impl LlamaModel {
         use crate::quant::types::{
             BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K,
         };
-        use std::time::Instant;
+        use std::time::{Duration, Instant};
 
         let quant_start = Instant::now();
 
@@ -5871,11 +5879,22 @@ impl LlamaModel {
         }
 
         match w.dtype {
-            DataType::Q4_K
-            | DataType::Q5_K
-            | DataType::Q6_K
-            | DataType::IQ4_XS => {
-                // Quantize all inputs to Q8_K (row by row)
+            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+                // Use pipelined GEMM: quantization happens on-demand during computation
+                // This is the key optimization from llama.cpp
+
+                // Prepare shared Q8_K buffer for quantized inputs
+                let x_q8k_blocks_needed = n * nb;
+                let x_q8k_blocks_available =
+                    x_q8k_batch.len() / std::mem::size_of::<BlockQ8K>();
+                if x_q8k_blocks_available < x_q8k_blocks_needed {
+                    eprintln!(
+                        "[ERROR] q8k batch buffer too small: {} < {} blocks",
+                        x_q8k_blocks_available, x_q8k_blocks_needed
+                    );
+                    return false;
+                }
+
                 let x_q8k_blocks: &mut [BlockQ8K] = unsafe {
                     std::slice::from_raw_parts_mut(
                         x_q8k_batch.as_mut_ptr() as *mut BlockQ8K,
@@ -5883,225 +5902,135 @@ impl LlamaModel {
                     )
                 };
 
-                // Parallel quantization (matching llama.cpp's approach)
-                use std::sync::atomic::{AtomicUsize, Ordering};
+                let gemm_start = Instant::now();
 
-                let scheduler = crate::cpu::get_scheduler();
-                let n_threads = scheduler.optimal_threads(
-                    in_size_padded,
-                    in_size_padded,
-                    n,
-                );
-                let counter = AtomicUsize::new(0);
-                let counter_ref = &counter;
-
-                if n_threads > 1 && n > 1 {
-                    // Get raw pointer once before spawning threads
-                    // Cast to usize to make it Send (safe because we use non-overlapping slices)
-                    let x_q8k_ptr = x_q8k_blocks.as_mut_ptr() as usize;
-
-                    // Check if we have enough per-thread buffers
-                    if x_padded_threads.len() >= n_threads
-                        && x_padded_threads[0].len() >= in_size_padded
-                    {
-                        // Use pre-allocated per-thread buffers
-                        let buffers_ptr = x_padded_threads.as_ptr() as usize;
-
-                        std::thread::scope(|s| {
-                            for thread_idx in 0..n_threads {
-                                let tid = thread_idx;
-                                s.spawn(move || {
-                                    // Use pre-allocated buffer for this thread
-                                    let x_padded_local = unsafe {
-                                        &mut *((buffers_ptr as *mut Vec<f32>)
-                                            .add(tid))
-                                    };
-
-                                    loop {
-                                        let i = counter_ref
-                                            .fetch_add(1, Ordering::Relaxed);
-                                        if i >= n {
-                                            break;
-                                        }
-
-                                        let input = inputs[i];
-                                        // Safe: each thread writes to non-overlapping rows
-                                        let row_blocks = unsafe {
-                                            std::slice::from_raw_parts_mut(
-                                                (x_q8k_ptr as *mut BlockQ8K)
-                                                    .add(i * nb),
-                                                nb,
-                                            )
-                                        };
-
-                                        if input.len() != in_size_padded {
-                                            // Zero padding
-                                            for j in input.len()..in_size_padded
-                                            {
-                                                x_padded_local[j] = 0.0;
-                                            }
-                                            x_padded_local[..input.len()]
-                                                .copy_from_slice(input);
-                                            quantize_row_q8_k_neon(
-                                                &x_padded_local
-                                                    [..in_size_padded],
-                                                row_blocks,
-                                            );
-                                        } else {
-                                            quantize_row_q8_k_neon(
-                                                input, row_blocks,
-                                            );
-                                        }
-                                    }
-                                });
-                            }
-                        });
-                    } else {
-                        // Fallback: allocate on demand (slower but safe)
-                        std::thread::scope(|s| {
-                            for _ in 0..n_threads {
-                                s.spawn(|| {
-                                    let mut x_padded_local =
-                                        vec![0.0f32; in_size_padded];
-
-                                    loop {
-                                        let i = counter_ref
-                                            .fetch_add(1, Ordering::Relaxed);
-                                        if i >= n {
-                                            break;
-                                        }
-
-                                        let input = inputs[i];
-                                        let row_blocks = unsafe {
-                                            std::slice::from_raw_parts_mut(
-                                                (x_q8k_ptr as *mut BlockQ8K)
-                                                    .add(i * nb),
-                                                nb,
-                                            )
-                                        };
-
-                                        if input.len() != in_size_padded {
-                                            for j in input.len()..in_size_padded
-                                            {
-                                                x_padded_local[j] = 0.0;
-                                            }
-                                            x_padded_local[..input.len()]
-                                                .copy_from_slice(input);
-                                            quantize_row_q8_k_neon(
-                                                &x_padded_local
-                                                    [..in_size_padded],
-                                                row_blocks,
-                                            );
-                                        } else {
-                                            quantize_row_q8_k_neon(
-                                                input, row_blocks,
-                                            );
-                                        }
-                                    }
-                                });
-                            }
-                        });
-                    }
-                } else {
-                    // Single-threaded fallback
-                    for (i, input) in inputs.iter().enumerate() {
-                        let row_blocks =
-                            &mut x_q8k_blocks[i * nb..(i + 1) * nb];
-
-                        if input.len() != in_size_padded {
-                            // Zero padding
-                            for j in input.len()..in_size_padded {
-                                x_padded[j] = 0.0;
-                            }
-                            x_padded[..input.len()].copy_from_slice(input);
-                            quantize_row_q8_k_neon(
-                                &x_padded[..in_size_padded],
-                                row_blocks,
+                unsafe {
+                    match w.dtype {
+                        DataType::Q5_K => {
+                            use crate::quant::matmul::block_tiling::matmul_q5k_f32_pipelined;
+                            let weights: &[BlockQ5K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ5K,
+                                    out_size * nb,
+                                );
+                            matmul_q5k_f32_pipelined(
+                                weights,
+                                inputs,
+                                outputs,
+                                in_size_padded,
+                                out_size,
+                                n,
+                                x_q8k_blocks,
                             );
-                        } else {
-                            quantize_row_q8_k_neon(input, row_blocks);
                         }
+                        DataType::Q4_K => {
+                            use crate::quant::matmul::block_tiling::matmul_q4k_f32_pipelined;
+                            let weights: &[BlockQ4K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ4K,
+                                    out_size * nb,
+                                );
+                            matmul_q4k_f32_pipelined(
+                                weights,
+                                inputs,
+                                outputs,
+                                in_size_padded,
+                                out_size,
+                                n,
+                                x_q8k_blocks,
+                            );
+                        }
+                        DataType::Q6_K => {
+                            use crate::quant::matmul::block_tiling::matmul_q6k_f32_pipelined;
+                            let weights: &[BlockQ6K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ6K,
+                                    out_size * nb,
+                                );
+                            matmul_q6k_f32_pipelined(
+                                weights,
+                                inputs,
+                                outputs,
+                                in_size_padded,
+                                out_size,
+                                n,
+                                x_q8k_blocks,
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+
+                let gemm_time = gemm_start.elapsed();
+                if let Some(timing) = timing {
+                    timing.1 += gemm_time;
+                }
+                true
+            }
+            DataType::IQ4_XS => {
+                // IQ4_XS needs pre-quantization (no pipelined version yet)
+                let quant_start = Instant::now();
+
+                let x_q8k_blocks_needed = n * nb;
+                let x_q8k_blocks_available =
+                    x_q8k_batch.len() / std::mem::size_of::<BlockQ8K>();
+                if x_q8k_blocks_available < x_q8k_blocks_needed {
+                    eprintln!(
+                        "[ERROR] q8k batch buffer too small: {} < {} blocks",
+                        x_q8k_blocks_available, x_q8k_blocks_needed
+                    );
+                    return false;
+                }
+
+                let x_q8k_blocks: &mut [BlockQ8K] = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        x_q8k_batch.as_mut_ptr() as *mut BlockQ8K,
+                        x_q8k_blocks_needed,
+                    )
+                };
+
+                // Sequential quantization for IQ4_XS
+                for (i, input) in inputs.iter().enumerate() {
+                    let row_blocks = &mut x_q8k_blocks[i * nb..(i + 1) * nb];
+                    if input.len() != in_size_padded {
+                        for j in input.len()..in_size_padded {
+                            x_padded[j] = 0.0;
+                        }
+                        x_padded[..input.len()].copy_from_slice(input);
+                        quantize_row_q8_k_neon(
+                            &x_padded[..in_size_padded],
+                            row_blocks,
+                        );
+                    } else {
+                        quantize_row_q8_k_neon(input, row_blocks);
                     }
                 }
 
                 let quant_time = quant_start.elapsed();
                 let gemm_start = Instant::now();
 
-                // Perform GEMM: weights (m x k) x inputs (k x n) -> outputs (m x n)
-                unsafe {
-                    match w.dtype {
-                        DataType::Q5_K => {
-                            let weights: &[BlockQ5K] =
-                                std::slice::from_raw_parts(
-                                    w.bytes().as_ptr() as *const BlockQ5K,
-                                    out_size * nb,
-                                );
-                            matmul_q5k_q8k_block_tiling(
-                                weights,
-                                x_q8k_blocks,
-                                outputs,
-                                in_size_padded,
-                                out_size,
-                                n,
-                            );
-                        }
-                        DataType::Q4_K => {
-                            use crate::quant::matmul::block_tiling::matmul_q4k_q8k_block_tiling;
-                            let weights: &[BlockQ4K] =
-                                std::slice::from_raw_parts(
-                                    w.bytes().as_ptr() as *const BlockQ4K,
-                                    out_size * nb,
-                                );
-                            matmul_q4k_q8k_block_tiling(
-                                weights,
-                                x_q8k_blocks,
-                                outputs,
-                                in_size_padded,
-                                out_size,
-                                n,
-                            );
-                        }
-                        DataType::Q6_K => {
-                            use crate::quant::matmul::block_tiling::matmul_q6k_q8k_block_tiling;
-                            let weights: &[BlockQ6K] =
-                                std::slice::from_raw_parts(
-                                    w.bytes().as_ptr() as *const BlockQ6K,
-                                    out_size * nb,
-                                );
-                            matmul_q6k_q8k_block_tiling(
-                                weights,
-                                x_q8k_blocks,
-                                outputs,
-                                in_size_padded,
-                                out_size,
-                                n,
-                            );
-                        }
-                        DataType::IQ4_XS => {
-                            use crate::quant::matmul::k_quant::matmul_iq4_xs_q8_k;
-                            let weights: &[BlockIQ4XS] =
-                                std::slice::from_raw_parts(
-                                    w.bytes().as_ptr() as *const BlockIQ4XS,
-                                    out_size * nb,
-                                );
-                            // Process each input vector with parallel GEMV
-                            let x_blocks: &[BlockQ8K] = x_q8k_blocks;
-                            for col in 0..n {
-                                let x_vec = &x_blocks[col * nb..(col + 1) * nb];
-                                let out_col = &mut outputs
-                                    [col * out_size..(col + 1) * out_size];
-                                matmul_iq4_xs_q8_k(
-                                    weights,
-                                    x_vec,
-                                    out_col,
-                                    in_size_padded,
-                                    out_size,
-                                );
-                            }
-                        }
-                        _ => unreachable!(),
+                use crate::quant::matmul::k_quant::matmul_iq4_xs_q8_k;
+                let weights: &[BlockIQ4XS] = unsafe {
+                    std::slice::from_raw_parts(
+                        w.bytes().as_ptr() as *const BlockIQ4XS,
+                        out_size * nb,
+                    )
+                };
+                for col in 0..n {
+                    let x_vec = &x_q8k_blocks[col * nb..(col + 1) * nb];
+                    let out_col =
+                        &mut outputs[col * out_size..(col + 1) * out_size];
+                    unsafe {
+                        matmul_iq4_xs_q8_k(
+                            weights,
+                            x_vec,
+                            out_col,
+                            in_size_padded,
+                            out_size,
+                        );
                     }
                 }
+
                 let gemm_time = gemm_start.elapsed();
                 if let Some(timing) = timing {
                     timing.0 += quant_time;
