@@ -5182,6 +5182,8 @@ impl LlamaModel {
                             );
                         }
                         DataType::IQ4_XS => {
+                            // TODO: Interleaved IQ4_XS has scale extraction bugs
+                            // Use non-interleaved path for correctness
                             use crate::quant::matmul::k_quant::matmul_iq4_xs_q8_k_single_thread;
                             use crate::quant::types::BlockIQ4XS;
                             let expected_blocks = out_size * nb;
