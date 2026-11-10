@@ -4988,7 +4988,10 @@ impl LlamaModel {
         }
 
         match w.dtype {
-            DataType::Q4_K | DataType::Q5_K | DataType::Q6_K => {
+            DataType::Q4_K
+            | DataType::Q5_K
+            | DataType::Q6_K
+            | DataType::IQ4_XS => {
                 unsafe {
                     // Check if we can use interleaved GEMV (requires rows % 8 == 0)
                     let can_interleave = out_size % 8 == 0;
@@ -5171,6 +5174,23 @@ impl LlamaModel {
                                     expected_blocks,
                                 );
                             gemv_q6k_q8k_tiled(
+                                weights,
+                                x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        DataType::IQ4_XS => {
+                            use crate::quant::matmul::k_quant::matmul_iq4_xs_q8_k_single_thread;
+                            use crate::quant::types::BlockIQ4XS;
+                            let expected_blocks = out_size * nb;
+                            let weights: &[BlockIQ4XS] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockIQ4XS,
+                                    expected_blocks,
+                                );
+                            matmul_iq4_xs_q8_k_single_thread(
                                 weights,
                                 x_q8k,
                                 out,
