@@ -135,6 +135,35 @@ unsafe fn vdotq_s32_manual(
     result
 }
 
+/// Manual vdotq_laneq_s32 using SDOT with lane selection
+#[allow(asm_sub_register)]
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn vdotq_laneq_s32_manual(
+    acc: int32x4_t,
+    a: int8x16_t,
+    b: int8x16_t,
+    lane: i32,
+) -> int32x4_t {
+    use std::arch::asm;
+    let mut result = acc;
+    match lane {
+        0 => asm!("sdot {0}.4s, {1}.16b, {2}.4b[0]",
+                  inout(vreg) result, in(vreg) a, in(vreg) b,
+                  options(pure, nomem, preserves_flags)),
+        1 => asm!("sdot {0}.4s, {1}.16b, {2}.4b[1]",
+                  inout(vreg) result, in(vreg) a, in(vreg) b,
+                  options(pure, nomem, preserves_flags)),
+        2 => asm!("sdot {0}.4s, {1}.16b, {2}.4b[2]",
+                  inout(vreg) result, in(vreg) a, in(vreg) b,
+                  options(pure, nomem, preserves_flags)),
+        3 => asm!("sdot {0}.4s, {1}.16b, {2}.4b[3]",
+                  inout(vreg) result, in(vreg) a, in(vreg) b,
+                  options(pure, nomem, preserves_flags)),
+        _ => unreachable!(),
+    }
+    result
+}
+
 /// Interleaved GEMV for Q4_K: process 8 rows at once
 /// Direct port of llama.cpp's ggml_gemv_q4_K_8x8_q8_K from arch/arm/repack.cpp
 #[target_feature(enable = "neon,dotprod")]
@@ -272,66 +301,138 @@ pub unsafe fn gemv_q4_k_interleaved(
                 let q4_base = w_block.qs.as_ptr().add(sb * QK_K);
                 let q8_base = x_block.qs.as_ptr().add(sb * 64);
 
-                // Load Q8 values (duplicated for interleaved columns)
-                let mut q8_qs: [int8x16_t; 8] = [vdupq_n_s8(0); 8];
-                for i in 0..8 {
-                    // Load 8 int8 values and duplicate across 16 lanes
-                    let val = std::ptr::read(q8_base.add(i * 8) as *const u64);
-                    q8_qs[i] = vreinterpretq_s8_u8(vreinterpretq_u8_u64(
-                        vdupq_n_u64(val),
-                    ));
-                }
+                // Load Q8 values (4 vectors, each 16 bytes = 16 elements)
+                // q8_qs[0] = elements 0-15 of sub-block (for low nibbles)
+                // q8_qs[1] = elements 16-31 of sub-block (for low nibbles)
+                // q8_qs[2] = elements 32-47 of sub-block (for high nibbles)
+                // q8_qs[3] = elements 48-63 of sub-block (for high nibbles)
+                let q8_qs: [int8x16_t; 4] = [
+                    vld1q_s8(q8_base.add(0)),  // elements 0-15
+                    vld1q_s8(q8_base.add(16)), // elements 16-31
+                    vld1q_s8(q8_base.add(32)), // elements 32-47
+                    vld1q_s8(q8_base.add(48)), // elements 48-63
+                ];
 
-                // Process column pairs (0-1, 2-3, 4-5, 6-7)
-                for cp in 0..COL_PAIRS {
-                    let q4_qs_0 = vld1q_u8(q4_base.add(16 * cp));
-                    let q4_qs_1 = vld1q_u8(q4_base.add(16 * cp + 64));
-                    let q4_qs_2 = vld1q_u8(q4_base.add(16 * cp + 128));
-                    let q4_qs_3 = vld1q_u8(q4_base.add(16 * cp + 192));
+                // Process column groups (0-3 and 4-7)
+                // c=0: low nibbles, c=1: high nibbles
+                for c in 0..2 {
+                    // Load 8 Q4 columns for this nibble group
+                    let q4_cols: [uint8x16_t; 8] = [
+                        vld1q_u8(q4_base.add(0 * 32 + 16 * c)),
+                        vld1q_u8(q4_base.add(1 * 32 + 16 * c)),
+                        vld1q_u8(q4_base.add(2 * 32 + 16 * c)),
+                        vld1q_u8(q4_base.add(3 * 32 + 16 * c)),
+                        vld1q_u8(q4_base.add(4 * 32 + 16 * c)),
+                        vld1q_u8(q4_base.add(5 * 32 + 16 * c)),
+                        vld1q_u8(q4_base.add(6 * 32 + 16 * c)),
+                        vld1q_u8(q4_base.add(7 * 32 + 16 * c)),
+                    ];
 
-                    // Low nibbles
-                    acc_lo[cp] = vdotq_s32_manual(
-                        acc_lo[cp],
-                        vreinterpretq_s8_u8(vandq_u8(q4_qs_0, m4b)),
-                        q8_qs[0],
-                    );
-                    acc_lo[cp] = vdotq_s32_manual(
-                        acc_lo[cp],
-                        vreinterpretq_s8_u8(vandq_u8(q4_qs_1, m4b)),
-                        q8_qs[1],
-                    );
-                    acc_lo[cp] = vdotq_s32_manual(
-                        acc_lo[cp],
-                        vreinterpretq_s8_u8(vandq_u8(q4_qs_2, m4b)),
-                        q8_qs[2],
-                    );
-                    acc_lo[cp] = vdotq_s32_manual(
-                        acc_lo[cp],
-                        vreinterpretq_s8_u8(vandq_u8(q4_qs_3, m4b)),
-                        q8_qs[3],
-                    );
-
-                    // High nibbles
-                    acc_hi[cp] = vdotq_s32_manual(
-                        acc_hi[cp],
-                        vreinterpretq_s8_u8(vshrq_n_u8(q4_qs_0, 4)),
-                        q8_qs[4],
-                    );
-                    acc_hi[cp] = vdotq_s32_manual(
-                        acc_hi[cp],
-                        vreinterpretq_s8_u8(vshrq_n_u8(q4_qs_1, 4)),
-                        q8_qs[5],
-                    );
-                    acc_hi[cp] = vdotq_s32_manual(
-                        acc_hi[cp],
-                        vreinterpretq_s8_u8(vshrq_n_u8(q4_qs_2, 4)),
-                        q8_qs[6],
-                    );
-                    acc_hi[cp] = vdotq_s32_manual(
-                        acc_hi[cp],
-                        vreinterpretq_s8_u8(vshrq_n_u8(q4_qs_3, 4)),
-                        q8_qs[7],
-                    );
+                    if c == 0 {
+                        // Low nibbles with q8_qs[0] and q8_qs[1]
+                        // Columns 0-3 use lane 0-3 of q8_qs[0]
+                        acc_lo[0] = vdotq_laneq_s32_manual(
+                            acc_lo[0],
+                            vreinterpretq_s8_u8(vandq_u8(q4_cols[0], m4b)),
+                            q8_qs[0],
+                            0,
+                        );
+                        acc_lo[0] = vdotq_laneq_s32_manual(
+                            acc_lo[0],
+                            vreinterpretq_s8_u8(vandq_u8(q4_cols[1], m4b)),
+                            q8_qs[0],
+                            1,
+                        );
+                        acc_lo[0] = vdotq_laneq_s32_manual(
+                            acc_lo[0],
+                            vreinterpretq_s8_u8(vandq_u8(q4_cols[2], m4b)),
+                            q8_qs[0],
+                            2,
+                        );
+                        acc_lo[0] = vdotq_laneq_s32_manual(
+                            acc_lo[0],
+                            vreinterpretq_s8_u8(vandq_u8(q4_cols[3], m4b)),
+                            q8_qs[0],
+                            3,
+                        );
+                        // Columns 4-7 use lane 0-3 of q8_qs[1]
+                        acc_lo[1] = vdotq_laneq_s32_manual(
+                            acc_lo[1],
+                            vreinterpretq_s8_u8(vandq_u8(q4_cols[4], m4b)),
+                            q8_qs[1],
+                            0,
+                        );
+                        acc_lo[1] = vdotq_laneq_s32_manual(
+                            acc_lo[1],
+                            vreinterpretq_s8_u8(vandq_u8(q4_cols[5], m4b)),
+                            q8_qs[1],
+                            1,
+                        );
+                        acc_lo[1] = vdotq_laneq_s32_manual(
+                            acc_lo[1],
+                            vreinterpretq_s8_u8(vandq_u8(q4_cols[6], m4b)),
+                            q8_qs[1],
+                            2,
+                        );
+                        acc_lo[1] = vdotq_laneq_s32_manual(
+                            acc_lo[1],
+                            vreinterpretq_s8_u8(vandq_u8(q4_cols[7], m4b)),
+                            q8_qs[1],
+                            3,
+                        );
+                    } else {
+                        // High nibbles with q8_qs[2] and q8_qs[3]
+                        // Columns 0-3 use lane 0-3 of q8_qs[2]
+                        acc_hi[0] = vdotq_laneq_s32_manual(
+                            acc_hi[0],
+                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[0], 4)),
+                            q8_qs[2],
+                            0,
+                        );
+                        acc_hi[0] = vdotq_laneq_s32_manual(
+                            acc_hi[0],
+                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[1], 4)),
+                            q8_qs[2],
+                            1,
+                        );
+                        acc_hi[0] = vdotq_laneq_s32_manual(
+                            acc_hi[0],
+                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[2], 4)),
+                            q8_qs[2],
+                            2,
+                        );
+                        acc_hi[0] = vdotq_laneq_s32_manual(
+                            acc_hi[0],
+                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[3], 4)),
+                            q8_qs[2],
+                            3,
+                        );
+                        // Columns 4-7 use lane 0-3 of q8_qs[3]
+                        acc_hi[1] = vdotq_laneq_s32_manual(
+                            acc_hi[1],
+                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[4], 4)),
+                            q8_qs[3],
+                            0,
+                        );
+                        acc_hi[1] = vdotq_laneq_s32_manual(
+                            acc_hi[1],
+                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[5], 4)),
+                            q8_qs[3],
+                            1,
+                        );
+                        acc_hi[1] = vdotq_laneq_s32_manual(
+                            acc_hi[1],
+                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[6], 4)),
+                            q8_qs[3],
+                            2,
+                        );
+                        acc_hi[1] = vdotq_laneq_s32_manual(
+                            acc_hi[1],
+                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[7], 4)),
+                            q8_qs[3],
+                            3,
+                        );
+                    }
                 }
 
                 // Apply scales and accumulate
@@ -351,13 +452,13 @@ pub unsafe fn gemv_q4_k_interleaved(
 
                     let sumf_0 = vcvtq_f32_s32(vmulq_s32(
                         vmovl_s16(group_scales_lo),
-                        vpaddq_s32(acc_lo[p * 2], acc_lo[p * 2 + 1]),
+                        acc_lo[p],
                     ));
                     acc_f32[p] = vfmaq_f32(acc_f32[p], sb_scale, sumf_0);
 
                     let sumf_1 = vcvtq_f32_s32(vmulq_s32(
                         vmovl_s16(group_scales_hi),
-                        vpaddq_s32(acc_hi[p * 2], acc_hi[p * 2 + 1]),
+                        acc_hi[p],
                     ));
                     acc_f32[p] = vfmaq_f32(acc_f32[p], sb_scale, sumf_1);
                 }
