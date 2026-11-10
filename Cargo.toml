@@ -1631,6 +1631,10 @@ path = "tools/bench_interleaved_layers.rs"
 name = "test-q5k-interleaved"
 path = "tools/test_q5k_interleaved.rs"
 
+[[bin]]
+name = "test-q6k-interleaved"
+path = "tools/test_q6k_interleaved.rs"
+
 [dependencies.rayon]
 version = "1.10"
 
@@ -1676,6 +1680,10 @@ path = "tools/bench_rayon_vs_scope.rs"
 [[bin]]
 name = "bench-cpu-simple"
 path = "tools/bench_cpu_simple.rs"
+
+[[bin]]
+name = "analyze-decode-timing"
+path = "tools/analyze_decode_timing.rs"
 
 [[bin]]
 name = "bench-cpu-profile"

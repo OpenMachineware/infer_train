@@ -4969,13 +4969,13 @@ impl LlamaModel {
         w: &Tensor,
         out: &mut [f32],
     ) -> bool {
-        use crate::cpu::{
-            gemv_q4k_q8k_tiled, gemv_q5k_q8k_tiled, gemv_q6k_q8k_tiled,
-        };
         use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, QK_K};
+        // Imports for disabled interleaved code (still needed for compilation)
+        #[allow(unused_imports)]
         use crate::quant::vec_dot::arm::k_quant_batch::{
             BlockQ4Kx8, BlockQ5Kx8, gemv_q4_k_interleaved,
-            gemv_q5_k_interleaved,
+            gemv_q5_k_interleaved, repack_q4_k_to_interleaved,
+            repack_q5_k_to_interleaved,
         };
         use std::arch::aarch64::*;
 
@@ -4997,7 +4997,9 @@ impl LlamaModel {
                     let can_interleave = out_size % 8 == 0;
 
                     match w.dtype {
-                        DataType::Q4_K if can_interleave => {
+                        DataType::Q4_K if false && can_interleave => {
+                            // DISABLED: interleaved GEMV is slower than simple row-by-row
+                            // llama.cpp uses row-by-row vec_dot for decode, not interleaved
                             let expected_blocks = out_size * nb;
                             let weights: &[BlockQ4K] =
                                 std::slice::from_raw_parts(
@@ -5069,14 +5071,15 @@ impl LlamaModel {
                             );
                         }
                         DataType::Q4_K => {
-                            // Fallback to tiled GEMV (rows not multiple of 8)
+                            // Simple row-by-row vec_dot (like llama.cpp)
+                            // For decode, this is more cache-friendly than tiled or interleaved
                             let expected_blocks = out_size * nb;
                             let weights: &[BlockQ4K] =
                                 std::slice::from_raw_parts(
                                     w.bytes().as_ptr() as *const BlockQ4K,
                                     expected_blocks,
                                 );
-                            gemv_q4k_q8k_tiled(
+                            crate::quant::matmul::k_quant::matmul_q4_k_q8_k_single_thread(
                                 weights,
                                 x_q8k,
                                 out,
@@ -5084,7 +5087,8 @@ impl LlamaModel {
                                 out_size,
                             );
                         }
-                        DataType::Q5_K if can_interleave => {
+                        DataType::Q5_K if false && can_interleave => {
+                            // TEMPORARY DISABLED
                             let expected_blocks = out_size * nb;
                             let weights: &[BlockQ5K] =
                                 std::slice::from_raw_parts(
@@ -5152,13 +5156,87 @@ impl LlamaModel {
                             );
                         }
                         DataType::Q5_K => {
+                            // Simple row-by-row vec_dot (like llama.cpp)
                             let weights: &[BlockQ5K] =
                                 std::slice::from_raw_parts(
                                     w.bytes().as_ptr() as *const BlockQ5K,
                                     out_size * nb,
                                 );
-                            gemv_q5k_q8k_tiled(
+                            crate::quant::matmul::k_quant::matmul_q5_k_q8_k_single_thread(
                                 weights,
+                                x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
+                        DataType::Q6_K if false && can_interleave => {
+                            // DISABLED: interleaved GEMV is slower than simple row-by-row
+                            let expected_blocks = out_size * nb;
+                            let weights: &[BlockQ6K] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockQ6K,
+                                    expected_blocks,
+                                );
+
+                            // Cache interleaved weights
+                            let w_ptr = weights.as_ptr() as usize;
+                            let cache_key = format!("q6k_{:x}", w_ptr);
+
+                            let interleaved = {
+                                let cache =
+                                    self.interleaved_weights.lock().unwrap();
+                                cache.get(&cache_key).cloned()
+                            };
+
+                            let interleaved_blocks = if let Some(data) =
+                                interleaved
+                            {
+                                let len = data.len()
+                                    / std::mem::size_of::<
+                                        crate::quant::vec_dot::arm::k_quant_batch::BlockQ6Kx8,
+                                    >();
+                                let ptr = data.as_ptr()
+                                    as *const crate::quant::vec_dot::arm::k_quant_batch::BlockQ6Kx8;
+                                std::slice::from_raw_parts(ptr, len).to_vec()
+                            } else {
+                                let n_interleaved = out_size / 8;
+                                let mut blocks =
+                                    Vec::with_capacity(n_interleaved * nb);
+
+                                for row_group in (0..out_size).step_by(8) {
+                                    for block_idx in 0..nb {
+                                        let mut input_blocks: [BlockQ6K; 8] =
+                                            std::mem::zeroed();
+                                        for r in 0..8 {
+                                            input_blocks[r] =
+                                                weights[(row_group + r) * nb
+                                                    + block_idx];
+                                        }
+                                        blocks.push(
+                                            crate::quant::vec_dot::arm::k_quant_batch::repack_q6_k_to_interleaved(&input_blocks)
+                                        );
+                                    }
+                                }
+
+                                let bytes = std::slice::from_raw_parts(
+                                    blocks.as_ptr() as *const u8,
+                                    blocks.len()
+                                        * std::mem::size_of::<
+                                            crate::quant::vec_dot::arm::k_quant_batch::BlockQ6Kx8,
+                                        >(),
+                                )
+                                .to_vec();
+
+                                let mut cache =
+                                    self.interleaved_weights.lock().unwrap();
+                                cache.insert(cache_key, bytes);
+
+                                blocks
+                            };
+
+                            crate::quant::vec_dot::arm::k_quant_batch::gemv_q6_k_interleaved(
+                                &interleaved_blocks,
                                 x_q8k,
                                 out,
                                 in_size_padded,
@@ -5166,14 +5244,14 @@ impl LlamaModel {
                             );
                         }
                         DataType::Q6_K => {
-                            // Q6_K interleaved not implemented, use tiled
+                            // Simple row-by-row vec_dot (like llama.cpp)
                             let expected_blocks = out_size * nb;
                             let weights: &[BlockQ6K] =
                                 std::slice::from_raw_parts(
                                     w.bytes().as_ptr() as *const BlockQ6K,
                                     expected_blocks,
                                 );
-                            gemv_q6k_q8k_tiled(
+                            crate::quant::matmul::k_quant::matmul_q6_k_q8_k_single_thread(
                                 weights,
                                 x_q8k,
                                 out,
@@ -5181,9 +5259,84 @@ impl LlamaModel {
                                 out_size,
                             );
                         }
+                        DataType::IQ4_XS if false && can_interleave => {
+                            // TEMPORARY DISABLED
+                            use crate::quant::types::BlockIQ4XS;
+                            use crate::quant::vec_dot::arm::k_quant_batch::{
+                                BlockIQ4XSx8, gemv_iq4_xs_interleaved,
+                                repack_iq4_xs_to_interleaved,
+                            };
+
+                            let expected_blocks = out_size * nb;
+                            let weights: &[BlockIQ4XS] =
+                                std::slice::from_raw_parts(
+                                    w.bytes().as_ptr() as *const BlockIQ4XS,
+                                    expected_blocks,
+                                );
+
+                            // Cache interleaved weights
+                            let w_ptr = weights.as_ptr() as usize;
+                            let cache_key = format!("iq4xs_{:x}", w_ptr);
+
+                            let interleaved = {
+                                let cache =
+                                    self.interleaved_weights.lock().unwrap();
+                                cache.get(&cache_key).cloned()
+                            };
+
+                            let interleaved_blocks = if let Some(data) =
+                                interleaved
+                            {
+                                let len = data.len()
+                                    / std::mem::size_of::<BlockIQ4XSx8>();
+                                let ptr = data.as_ptr() as *const BlockIQ4XSx8;
+                                std::slice::from_raw_parts(ptr, len).to_vec()
+                            } else {
+                                let n_interleaved = out_size / 8;
+                                let mut blocks =
+                                    Vec::with_capacity(n_interleaved * nb);
+
+                                for row_group in (0..out_size).step_by(8) {
+                                    for block_idx in 0..nb {
+                                        let mut input_blocks: [BlockIQ4XS; 8] =
+                                            std::mem::zeroed();
+                                        for r in 0..8 {
+                                            input_blocks[r] =
+                                                weights[(row_group + r) * nb
+                                                    + block_idx];
+                                        }
+                                        blocks.push(
+                                            repack_iq4_xs_to_interleaved(
+                                                &input_blocks,
+                                            ),
+                                        );
+                                    }
+                                }
+
+                                let bytes = std::slice::from_raw_parts(
+                                    blocks.as_ptr() as *const u8,
+                                    blocks.len()
+                                        * std::mem::size_of::<BlockIQ4XSx8>(),
+                                )
+                                .to_vec();
+
+                                let mut cache =
+                                    self.interleaved_weights.lock().unwrap();
+                                cache.insert(cache_key, bytes);
+
+                                blocks
+                            };
+
+                            gemv_iq4_xs_interleaved(
+                                &interleaved_blocks,
+                                x_q8k,
+                                out,
+                                in_size_padded,
+                                out_size,
+                            );
+                        }
                         DataType::IQ4_XS => {
-                            // TODO: Interleaved IQ4_XS has scale extraction bugs
-                            // Use non-interleaved path for correctness
+                            // Fallback to non-interleaved for rows not multiple of 8
                             use crate::quant::matmul::k_quant::matmul_iq4_xs_q8_k_single_thread;
                             use crate::quant::types::BlockIQ4XS;
                             let expected_blocks = out_size * nb;

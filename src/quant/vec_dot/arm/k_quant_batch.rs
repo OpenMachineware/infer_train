@@ -6,6 +6,19 @@
 //! Key insight: llama.cpp processes 8 rows at once by interleaving weights
 //! so that loading one cache line (64 bytes) gives data for all 8 rows.
 //!
+//! # Hardware Support
+//!
+//! | CPU | Feature | Kernel Style | Notes |
+//! |-----|---------|--------------|-------|
+//! | Apple M1 | dotprod | 8x8 (vld1q_dup_s64 + vdotq_s32) | Works on M1 |
+//! | Apple M2/M3/M4 | i8mm | 8x8 (same as M1) | i8mm not needed for K-quant |
+//! | x86 AVX2 | AVX2 | Not implemented yet | TODO: AVX2 intrinsics |
+//!
+//! Note: For K-quant formats, the "8x8" kernel style uses `vld1q_dup_s64` to load
+//! 8 bytes and duplicate to 16 bytes, then `vdotq_s32` for dot product. This works
+//! on both M1 (dotprod) and M2+ (i8mm). The i8mm SMMLA instruction is only beneficial
+//! for Q8_0 format, not K-quant.
+//!
 //! Structure: block_q4_Kx8 from llama.cpp
 //! - d[8]: super-block scales for 8 rows
 //! - dmin[8]: super-block mins for 8 rows
@@ -15,12 +28,14 @@
 //! Total: 1152 bytes = 8 × 144 bytes (standard Q4_K block size)
 
 use super::fp::fp16_to_fp32;
-use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K};
+use crate::quant::types::{
+    BlockQ4_0, BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K, QK4_0,
+};
 use std::arch::aarch64::*;
 
 /// Q4_K interleaved block: 8 rows stored together
 /// Layout matches llama.cpp's block_q4_Kx8 exactly
-#[repr(C)]
+#[repr(C, align(64))]
 #[derive(Clone, Copy, Debug)]
 pub struct BlockQ4Kx8 {
     pub d: [u16; 8],      // Super-block scales for 8 rows (16 bytes)
@@ -135,37 +150,44 @@ unsafe fn vdotq_s32_manual(
     result
 }
 
-/// Manual vdotq_laneq_s32 using SDOT with lane selection
-#[allow(asm_sub_register)]
-#[target_feature(enable = "neon,dotprod")]
-unsafe fn vdotq_laneq_s32_manual(
-    acc: int32x4_t,
-    a: int8x16_t,
-    b: int8x16_t,
-    lane: i32,
-) -> int32x4_t {
-    use std::arch::asm;
-    let mut result = acc;
-    match lane {
-        0 => asm!("sdot {0}.4s, {1}.16b, {2}.4b[0]",
-                  inout(vreg) result, in(vreg) a, in(vreg) b,
-                  options(pure, nomem, preserves_flags)),
-        1 => asm!("sdot {0}.4s, {1}.16b, {2}.4b[1]",
-                  inout(vreg) result, in(vreg) a, in(vreg) b,
-                  options(pure, nomem, preserves_flags)),
-        2 => asm!("sdot {0}.4s, {1}.16b, {2}.4b[2]",
-                  inout(vreg) result, in(vreg) a, in(vreg) b,
-                  options(pure, nomem, preserves_flags)),
-        3 => asm!("sdot {0}.4s, {1}.16b, {2}.4b[3]",
-                  inout(vreg) result, in(vreg) a, in(vreg) b,
-                  options(pure, nomem, preserves_flags)),
-        _ => unreachable!(),
-    }
-    result
+/// Load 8 bytes and duplicate to fill 16-byte vector
+/// Equivalent to vld1q_dup_s64 in C
+/// Used for 8x8 kernel style - loads 8 Q8 values and duplicates
+/// to process all 8 interleaved Q4 columns with the same Q8 data.
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn vld1q_dup_s64(ptr: *const i8) -> int8x16_t {
+    let val = vld1_s64(ptr as *const i64);
+    vreinterpretq_s8_s64(vcombine_s64(val, val))
+}
+
+/// Prefetch data to L1 cache (keep in cache)
+/// Uses ARM64 PRFM PLDL1KEEP instruction
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn prefetch_l1_keep(ptr: *const u8) {
+    std::arch::asm!(
+        "prfm pldl1keep, [{0}]",
+        in(reg) ptr,
+        options(nomem, preserves_flags, nostack)
+    );
+}
+
+/// Prefetch data to L2 cache (streaming access)
+/// Uses ARM64 PRFM PLDL2STRM instruction
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn prefetch_l2_stream(ptr: *const u8) {
+    std::arch::asm!(
+        "prfm pldl2strm, [{0}]",
+        in(reg) ptr,
+        options(nomem, preserves_flags, nostack)
+    );
 }
 
 /// Interleaved GEMV for Q4_K: process 8 rows at once
 /// Direct port of llama.cpp's ggml_gemv_q4_K_8x8_q8_K from arch/arm/repack.cpp
+/// Uses the 8x8 kernel style with duplicated Q8 values (compatible with M1 and M2+)
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn gemv_q4_k_interleaved(
     weights: &[BlockQ4Kx8],
@@ -191,6 +213,17 @@ pub unsafe fn gemv_q4_k_interleaved(
         for b in 0..nb {
             let w_block = &weights[x_group * nb + b];
             let x_block = &x[b];
+
+            // Prefetch next block's weight and activation data
+            // Prefetch distance of 1 block (256 elements = 1 KB of weights)
+            if b + 1 < nb {
+                let w_next = &weights[x_group * nb + b + 1];
+                let x_next = &x[b + 1];
+                // Prefetch weight qs data (main data, large)
+                prefetch_l2_stream(w_next.qs.as_ptr());
+                // Prefetch Q8 activation data
+                prefetch_l1_keep(x_next.qs.as_ptr() as *const u8);
+            }
 
             // Load super-block scales (convert u16 f16 bits to f32)
             // Use scalar conversion and then build vectors
@@ -301,166 +334,107 @@ pub unsafe fn gemv_q4_k_interleaved(
                 let q4_base = w_block.qs.as_ptr().add(sb * QK_K);
                 let q8_base = x_block.qs.as_ptr().add(sb * 64);
 
-                // Load Q8 values (4 vectors, each 16 bytes = 16 elements)
-                // q8_qs[0] = elements 0-15 of sub-block (for low nibbles)
-                // q8_qs[1] = elements 16-31 of sub-block (for low nibbles)
-                // q8_qs[2] = elements 32-47 of sub-block (for high nibbles)
-                // q8_qs[3] = elements 48-63 of sub-block (for high nibbles)
-                let q8_qs: [int8x16_t; 4] = [
-                    vld1q_s8(q8_base.add(0)),  // elements 0-15
-                    vld1q_s8(q8_base.add(16)), // elements 16-31
-                    vld1q_s8(q8_base.add(32)), // elements 32-47
-                    vld1q_s8(q8_base.add(48)), // elements 48-63
-                ];
+                // Load Q8 values - DUPLICATE 8 bytes into 16-byte vector (8x8 style)
+                // Each q8_qs[i] holds 8 Q8 values duplicated to 16 bytes
+                // This allows using vdotq_s32 instead of vdotq_laneq_s32
+                let mut q8_qs: [int8x16_t; 8] = [vdupq_n_s8(0); 8];
+                for i in 0..8 {
+                    q8_qs[i] = vld1q_dup_s64(q8_base.add(i * 8));
+                }
 
-                // Process column groups (0-3 and 4-7)
-                // c=0: low nibbles, c=1: high nibbles
-                for c in 0..2 {
-                    // Load 8 Q4 columns for this nibble group
-                    let q4_cols: [uint8x16_t; 8] = [
-                        vld1q_u8(q4_base.add(0 * 32 + 16 * c)),
-                        vld1q_u8(q4_base.add(1 * 32 + 16 * c)),
-                        vld1q_u8(q4_base.add(2 * 32 + 16 * c)),
-                        vld1q_u8(q4_base.add(3 * 32 + 16 * c)),
-                        vld1q_u8(q4_base.add(4 * 32 + 16 * c)),
-                        vld1q_u8(q4_base.add(5 * 32 + 16 * c)),
-                        vld1q_u8(q4_base.add(6 * 32 + 16 * c)),
-                        vld1q_u8(q4_base.add(7 * 32 + 16 * c)),
-                    ];
+                // Process all 4 column pairs
+                // cp=0: columns 0-1, cp=1: columns 2-3, cp=2: columns 4-5, cp=3: columns 6-7
+                for cp in 0..COL_PAIRS {
+                    // Determine qs offsets based on column pair
+                    let qs_offset = 16 * cp;
 
-                    if c == 0 {
-                        // Low nibbles with q8_qs[0] and q8_qs[1]
-                        // Columns 0-3 use lane 0-3 of q8_qs[0]
-                        acc_lo[0] = vdotq_laneq_s32_manual(
-                            acc_lo[0],
-                            vreinterpretq_s8_u8(vandq_u8(q4_cols[0], m4b)),
-                            q8_qs[0],
-                            0,
-                        );
-                        acc_lo[0] = vdotq_laneq_s32_manual(
-                            acc_lo[0],
-                            vreinterpretq_s8_u8(vandq_u8(q4_cols[1], m4b)),
-                            q8_qs[0],
-                            1,
-                        );
-                        acc_lo[0] = vdotq_laneq_s32_manual(
-                            acc_lo[0],
-                            vreinterpretq_s8_u8(vandq_u8(q4_cols[2], m4b)),
-                            q8_qs[0],
-                            2,
-                        );
-                        acc_lo[0] = vdotq_laneq_s32_manual(
-                            acc_lo[0],
-                            vreinterpretq_s8_u8(vandq_u8(q4_cols[3], m4b)),
-                            q8_qs[0],
-                            3,
-                        );
-                        // Columns 4-7 use lane 0-3 of q8_qs[1]
-                        acc_lo[1] = vdotq_laneq_s32_manual(
-                            acc_lo[1],
-                            vreinterpretq_s8_u8(vandq_u8(q4_cols[4], m4b)),
-                            q8_qs[1],
-                            0,
-                        );
-                        acc_lo[1] = vdotq_laneq_s32_manual(
-                            acc_lo[1],
-                            vreinterpretq_s8_u8(vandq_u8(q4_cols[5], m4b)),
-                            q8_qs[1],
-                            1,
-                        );
-                        acc_lo[1] = vdotq_laneq_s32_manual(
-                            acc_lo[1],
-                            vreinterpretq_s8_u8(vandq_u8(q4_cols[6], m4b)),
-                            q8_qs[1],
-                            2,
-                        );
-                        acc_lo[1] = vdotq_laneq_s32_manual(
-                            acc_lo[1],
-                            vreinterpretq_s8_u8(vandq_u8(q4_cols[7], m4b)),
-                            q8_qs[1],
-                            3,
-                        );
-                    } else {
-                        // High nibbles with q8_qs[2] and q8_qs[3]
-                        // Columns 0-3 use lane 0-3 of q8_qs[2]
-                        acc_hi[0] = vdotq_laneq_s32_manual(
-                            acc_hi[0],
-                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[0], 4)),
-                            q8_qs[2],
-                            0,
-                        );
-                        acc_hi[0] = vdotq_laneq_s32_manual(
-                            acc_hi[0],
-                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[1], 4)),
-                            q8_qs[2],
-                            1,
-                        );
-                        acc_hi[0] = vdotq_laneq_s32_manual(
-                            acc_hi[0],
-                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[2], 4)),
-                            q8_qs[2],
-                            2,
-                        );
-                        acc_hi[0] = vdotq_laneq_s32_manual(
-                            acc_hi[0],
-                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[3], 4)),
-                            q8_qs[2],
-                            3,
-                        );
-                        // Columns 4-7 use lane 0-3 of q8_qs[3]
-                        acc_hi[1] = vdotq_laneq_s32_manual(
-                            acc_hi[1],
-                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[4], 4)),
-                            q8_qs[3],
-                            0,
-                        );
-                        acc_hi[1] = vdotq_laneq_s32_manual(
-                            acc_hi[1],
-                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[5], 4)),
-                            q8_qs[3],
-                            1,
-                        );
-                        acc_hi[1] = vdotq_laneq_s32_manual(
-                            acc_hi[1],
-                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[6], 4)),
-                            q8_qs[3],
-                            2,
-                        );
-                        acc_hi[1] = vdotq_laneq_s32_manual(
-                            acc_hi[1],
-                            vreinterpretq_s8_u8(vshrq_n_u8(q4_cols[7], 4)),
-                            q8_qs[3],
-                            3,
-                        );
-                    }
+                    // Load qs from 4 offsets (0, 64, 128, 192) + qs_offset
+                    // Each covers 16 bytes = 32 nibbles = 32 elements for low/high
+                    let q4_0 = vld1q_u8(q4_base.add(qs_offset));
+                    let q4_1 = vld1q_u8(q4_base.add(qs_offset + 64));
+                    let q4_2 = vld1q_u8(q4_base.add(qs_offset + 128));
+                    let q4_3 = vld1q_u8(q4_base.add(qs_offset + 192));
+
+                    // Low nibbles: (qs & 0x0f)
+                    // Process with q8_qs[0..3] for elements 0-31 of subblock
+                    acc_lo[cp] = vdotq_s32_manual(
+                        acc_lo[cp],
+                        vreinterpretq_s8_u8(vandq_u8(q4_0, m4b)),
+                        q8_qs[0],
+                    );
+                    acc_lo[cp] = vdotq_s32_manual(
+                        acc_lo[cp],
+                        vreinterpretq_s8_u8(vandq_u8(q4_1, m4b)),
+                        q8_qs[1],
+                    );
+                    acc_lo[cp] = vdotq_s32_manual(
+                        acc_lo[cp],
+                        vreinterpretq_s8_u8(vandq_u8(q4_2, m4b)),
+                        q8_qs[2],
+                    );
+                    acc_lo[cp] = vdotq_s32_manual(
+                        acc_lo[cp],
+                        vreinterpretq_s8_u8(vandq_u8(q4_3, m4b)),
+                        q8_qs[3],
+                    );
+
+                    // High nibbles: (qs >> 4)
+                    // Process with q8_qs[4..7] for elements 32-63 of subblock
+                    acc_hi[cp] = vdotq_s32_manual(
+                        acc_hi[cp],
+                        vreinterpretq_s8_u8(vshrq_n_u8(q4_0, 4)),
+                        q8_qs[4],
+                    );
+                    acc_hi[cp] = vdotq_s32_manual(
+                        acc_hi[cp],
+                        vreinterpretq_s8_u8(vshrq_n_u8(q4_1, 4)),
+                        q8_qs[5],
+                    );
+                    acc_hi[cp] = vdotq_s32_manual(
+                        acc_hi[cp],
+                        vreinterpretq_s8_u8(vshrq_n_u8(q4_2, 4)),
+                        q8_qs[6],
+                    );
+                    acc_hi[cp] = vdotq_s32_manual(
+                        acc_hi[cp],
+                        vreinterpretq_s8_u8(vshrq_n_u8(q4_3, 4)),
+                        q8_qs[7],
+                    );
                 }
 
                 // Apply scales and accumulate
-                // p = 0 -> rows 0123, p = 1 -> rows 4567
-                for p in 0..2 {
-                    let group_scales_lo = if p == 0 {
+                // Combine results from pairs of column pairs (matching llama.cpp's vpaddq_s32 pattern)
+                // i=0: combine cp=0 and cp=1 (columns 0-3)
+                // i=1: combine cp=2 and cp=3 (columns 4-7)
+                for i in 0..2 {
+                    let p = i * 2; // p=0 or p=2
+                    let group_scales_lo = if i == 0 {
                         vget_low_s16(q4sb_scales_0)
                     } else {
                         vget_high_s16(q4sb_scales_0)
                     };
-                    let group_scales_hi = if p == 0 {
+                    let group_scales_hi = if i == 0 {
                         vget_low_s16(q4sb_scales_1)
                     } else {
                         vget_high_s16(q4sb_scales_1)
                     };
-                    let sb_scale = if p == 0 { sb_scale_0 } else { sb_scale_1 };
+                    let sb_scale = if i == 0 { sb_scale_0 } else { sb_scale_1 };
+
+                    // Pair add: combine results from two column pairs
+                    let sum_lo = vpaddq_s32(acc_lo[p], acc_lo[p + 1]);
+                    let sum_hi = vpaddq_s32(acc_hi[p], acc_hi[p + 1]);
 
                     let sumf_0 = vcvtq_f32_s32(vmulq_s32(
                         vmovl_s16(group_scales_lo),
-                        acc_lo[p],
+                        sum_lo,
                     ));
-                    acc_f32[p] = vfmaq_f32(acc_f32[p], sb_scale, sumf_0);
+                    acc_f32[i] = vfmaq_f32(acc_f32[i], sb_scale, sumf_0);
 
                     let sumf_1 = vcvtq_f32_s32(vmulq_s32(
                         vmovl_s16(group_scales_hi),
-                        acc_hi[p],
+                        sum_hi,
                     ));
-                    acc_f32[p] = vfmaq_f32(acc_f32[p], sb_scale, sumf_1);
+                    acc_f32[i] = vfmaq_f32(acc_f32[i], sb_scale, sumf_1);
                 }
 
                 // Bias correction
@@ -545,7 +519,7 @@ pub unsafe fn vec_dot_q4_k_q8_k_interleaved(
 
 /// Q5_K interleaved block: 8 rows stored together
 /// Layout matches llama.cpp's block_q5_Kx8
-#[repr(C)]
+#[repr(C, align(64))]
 #[derive(Clone, Copy, Debug)]
 pub struct BlockQ5Kx8 {
     pub d: [u16; 8],      // Super-block scales for 8 rows (16 bytes)
@@ -653,19 +627,8 @@ pub fn repack_q5_k_to_interleaved(input: &[BlockQ5K; 8]) -> BlockQ5Kx8 {
 }
 
 /// Interleaved GEMV for Q5_K: process 8 rows at once
-/// Direct port of llama.cpp's ggml_gemv_q5_K_8x4_q8_K from arch/arm/repack.cpp
-#[target_feature(enable = "neon,dotprod")]
-/// Load 8 bytes and duplicate to fill 16-byte vector
-/// Equivalent to vld1q_dup_s64 in C
-#[target_feature(enable = "neon")]
-unsafe fn vld1q_dup_s64(ptr: *const i8) -> int8x16_t {
-    let val = vld1_s64(ptr as *const i64);
-    vreinterpretq_s8_s64(vcombine_s64(val, val))
-}
-
-/// Interleaved GEMV for Q5_K: process 8 rows at once
 /// Direct port of llama.cpp's ggml_gemv_q5_K_8x8_q8_K from arch/arm/repack.cpp
-/// Uses the unrolled version with duplicated Q8 values
+/// Uses the 8x8 kernel style with duplicated Q8 values
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn gemv_q5_k_interleaved(
     weights: &[BlockQ5Kx8],
@@ -693,6 +656,14 @@ pub unsafe fn gemv_q5_k_interleaved(
         for b in 0..nb {
             let w_block = &weights[x_group * nb + b];
             let x_block = &x[b];
+
+            // Prefetch next block's weight and activation data
+            if b + 1 < nb {
+                let w_next = &weights[x_group * nb + b + 1];
+                let x_next = &x[b + 1];
+                prefetch_l2_stream(w_next.qs.as_ptr());
+                prefetch_l1_keep(x_next.qs.as_ptr() as *const u8);
+            }
 
             // Load super-block scales (convert u16 f16 bits to f32)
             // fp16_to_fp32 uses NEON fcvt internally
@@ -1002,7 +973,7 @@ pub unsafe fn vec_dot_q5_k_q8_k_interleaved(
 }
 
 /// Q6_K interleaved block: 8 rows stored together
-#[repr(C)]
+#[repr(C, align(64))]
 #[derive(Clone, Copy, Debug)]
 pub struct BlockQ6Kx8 {
     pub d: [u16; 8],       // Super-block scales for 8 rows (16 bytes)
@@ -1012,13 +983,50 @@ pub struct BlockQ6Kx8 {
 }
 
 const _: () = assert!(
-    std::mem::size_of::<BlockQ6Kx8>() == 1680,
+    std::mem::size_of::<BlockQ6Kx8>() == 1728,
     "BlockQ6Kx8 size mismatch"
 );
 
-/// Repack 8 Q6_K blocks into interleaved format (structure ready, kernel TODO)
-pub fn repack_q6_k_to_interleaved(_input: &[BlockQ6K; 8]) -> BlockQ6Kx8 {
-    todo!("Q6_K interleaved repack implementation needed")
+/// Repack 8 Q6_K blocks into interleaved format
+pub fn repack_q6_k_to_interleaved(input: &[BlockQ6K; 8]) -> BlockQ6Kx8 {
+    let mut out: BlockQ6Kx8 = unsafe { std::mem::zeroed() };
+
+    // Copy d values (scales)
+    for i in 0..8 {
+        out.d[i] = input[i].d;
+    }
+
+    // Copy scales - 16 bytes per row, 8 rows = 128 bytes
+    for i in 0..8 {
+        out.scales[i * 16..(i + 1) * 16].copy_from_slice(&input[i].scales);
+    }
+
+    // Interleave ql bytes - 128 bytes per row, 8 rows
+    // Same pattern as other interleaved formats: 8 bytes from each row cyclically
+    const QL_BLCK_SIZE: usize = 8;
+    const QL_END: usize = 128 / QL_BLCK_SIZE * 8; // 16 iterations × 8 rows
+    for i in 0..QL_END {
+        let src_id = i % 8;
+        let src_offset = (i / 8) * QL_BLCK_SIZE;
+        let dst_offset = i * QL_BLCK_SIZE;
+        out.ql[dst_offset..dst_offset + QL_BLCK_SIZE].copy_from_slice(
+            &input[src_id].ql[src_offset..src_offset + QL_BLCK_SIZE],
+        );
+    }
+
+    // Interleave qh bytes - 64 bytes per row, 8 rows
+    const QH_BLCK_SIZE: usize = 8;
+    const QH_END: usize = 64 / QH_BLCK_SIZE * 8; // 8 iterations × 8 rows
+    for i in 0..QH_END {
+        let src_id = i % 8;
+        let src_offset = (i / 8) * QH_BLCK_SIZE;
+        let dst_offset = i * QH_BLCK_SIZE;
+        out.qh[dst_offset..dst_offset + QH_BLCK_SIZE].copy_from_slice(
+            &input[src_id].qh[src_offset..src_offset + QH_BLCK_SIZE],
+        );
+    }
+
+    out
 }
 
 // ===== IQ4_XS Interleaved Format =====
@@ -1037,7 +1045,7 @@ use crate::quant::types::BlockIQ4XS;
 /// - scales_h: [u16; 8] (16 bytes)
 /// - scales_l: [u8; 32] (32 bytes)
 /// - qs: [u8; 1024] (1024 bytes) - interleaved for cache locality
-#[repr(C)]
+#[repr(C, align(64))]
 #[derive(Clone, Copy, Debug)]
 pub struct BlockIQ4XSx8 {
     pub d: [u16; 8], // Super-block scales for 8 rows (16 bytes)
@@ -1098,89 +1106,556 @@ pub unsafe fn gemv_iq4_xs_interleaved(
     x: &[BlockQ8K],
     dst: &mut [f32],
     k: usize,
-    m: usize,
+    num_rows: usize,
 ) {
     let nb = k / QK_K;
-    let n_row_groups = m / 8;
+    const NCOLS_INTERLEAVED: usize = 8;
 
     // Load kvalues lookup table
     let values = vld1q_s8(crate::quant::kv_cache::KVALUES_IQ4NL_I8.as_ptr());
-    let m4b = vdupq_n_u8(0x0F);
 
-    for row_group in 0..n_row_groups {
-        let w_block = &weights[row_group * nb];
+    // Process 8 rows at a time
+    for row_group_start in (0..num_rows).step_by(NCOLS_INTERLEAVED) {
+        let x_group = row_group_start / NCOLS_INTERLEAVED;
 
-        // Load scales for 8 rows
-        let d_f32: [f32; 8] =
-            std::array::from_fn(|i| fp16_to_fp32(w_block.d[i]));
-        let scales_h: [u16; 8] = w_block.scales_h;
+        // Accumulators for 8 rows (as i64 to avoid overflow)
+        let mut sumi = [0i64; 8];
 
-        // Process each column (K dimension block)
-        for col in 0..nb {
-            let x_block = &x[col];
-            let w_col = &weights[row_group * nb + col];
+        // Process each block of K elements
+        for b in 0..nb {
+            let w_block = &weights[x_group * nb + b];
+            let x_block = &x[b];
+
+            // Prefetch next block's weight and activation data
+            if b + 1 < nb {
+                let w_next = &weights[x_group * nb + b + 1];
+                let x_next = &x[b + 1];
+                prefetch_l2_stream(w_next.qs.as_ptr());
+                prefetch_l1_keep(x_next.qs.as_ptr() as *const u8);
+            }
+
+            // Load super-block scales
+            let d_f32: [f32; 8] =
+                std::array::from_fn(|i| fp16_to_fp32(w_block.d[i]));
             let x_d = x_block.d;
 
-            // Accumulate results for 8 rows
-            let mut sumi = [0i64; 8];
+            // Extract scales for 8 rows for all 4 subblocks
+            // Each subblock has 2 scales (ls1, ls2), each covering 32 elements
+            let mut row_scales = [[0i32; 8]; 8]; // [scale_idx][row]
 
-            // Process 4 sub-blocks of 64 elements each
-            for ib in 0..(QK_K / 64) {
-                // Load interleaved qs data
-                // Each 64-byte load gives 8 bytes from each of 8 rows
-                let qs_offset = ib * 64;
-                let q4bits = vld1q_u8_x4(w_col.qs.as_ptr().add(qs_offset));
+            for r in 0..8 {
+                let scales_l = &w_block.scales_l[r * 4..r * 4 + 4];
+                let mut h = w_block.scales_h[r];
 
-                // Load Q8 values
-                let q8bytes = vld1q_s8_x4(x_block.qs.as_ptr().add(ib * 64));
+                for sb in 0..4 {
+                    let ls1 = ((scales_l[sb] & 0x0F) as i32
+                        | (((h as i32) << 4) & 0x30))
+                        - 32;
+                    let ls2 = (((scales_l[sb] >> 4) as i32)
+                        | (((h as i32) << 2) & 0x30))
+                        - 32;
+                    h >>= 4;
 
-                // Dequantize 4-bit values using lookup table
-                let q4b_0 = vqtbl1q_s8(values, vandq_u8(q4bits.0, m4b));
-                let q4b_1 = vqtbl1q_s8(values, vshrq_n_u8(q4bits.0, 4));
-                let q4b_2 = vqtbl1q_s8(values, vandq_u8(q4bits.1, m4b));
-                let q4b_3 = vqtbl1q_s8(values, vshrq_n_u8(q4bits.1, 4));
+                    row_scales[sb * 2][r] = ls1;
+                    row_scales[sb * 2 + 1][r] = ls2;
+                }
+            }
 
-                // Dot products
-                let sum_0 = vdotq_s32_manual(vdupq_n_s32(0), q4b_0, q8bytes.0);
-                let sum_1 = vdotq_s32_manual(vdupq_n_s32(0), q4b_1, q8bytes.1);
-                let sum_2 = vdotq_s32_manual(vdupq_n_s32(0), q4b_2, q8bytes.2);
-                let sum_3 = vdotq_s32_manual(vdupq_n_s32(0), q4b_3, q8bytes.3);
+            // Process 4 subblocks (each 64 elements = 32 packed bytes)
+            for sb in 0..4 {
+                // Load Q8 values for this subblock (64 elements)
+                let q8_base = x_block.qs.as_ptr().add(sb * 64);
+                let q8_0 = vld1q_s8(q8_base);
+                let q8_1 = vld1q_s8(q8_base.add(16));
+                let q8_2 = vld1q_s8(q8_base.add(32));
+                let q8_3 = vld1q_s8(q8_base.add(48));
 
-                // Combine results
-                let total =
-                    vaddq_s32(vaddq_s32(sum_0, sum_1), vaddq_s32(sum_2, sum_3));
+                // Interleaved layout: qs is organized as:
+                // For iteration i (0..127):
+                //   dst[i*8..i*8+8] = input[src_id][src_offset..src_offset+8]
+                // where src_id = i % 8, src_offset = (i / 8) * 8
+                //
+                // For subblock sb, the qs bytes for row r are at:
+                // - In original row: offset sb*32 + j*8 for j in 0..3 (32 bytes total)
+                // - In interleaved: offset where i = sb*32 + j with i % 8 == r
+                //   So j = (r - sb*32 % 8 + k*8) % 32 for k in 0..3
+                //   dst_offset = i*8 = (sb*32 + j)*8
 
-                // Accumulate for each row
-                // Note: This simplified version accumulates across rows
-                // Full implementation would separate per-row accumulations
-                for r in 0..8 {
-                    let row_qs_offset = ib * 64 + r * 8;
-                    // Extract this row's contribution (simplified)
-                    sumi[r] += vaddvq_s32(total) as i64;
+                // For each row, process 2 chunks of 16 bytes (32 elements) each
+                // This matches the reference: 32 bytes = 64 elements per subblock
+                // Each chunk: 16 bytes = 32 elements (16 from low + 16 from high nibbles)
+                // Chunk 0: elements 0-31 (ls1), Chunk 1: elements 32-63 (ls2)
+                for chunk in 0..2 {
+                    // For iteration i: src_row = i % 8, src_offset = (i / 8) * 8
+                    // To load 16 bytes for row r at offset o:
+                    // We need two 8-byte loads: at offsets o and o+8
+                    // i = (o/8)*8 + r and i = ((o+8)/8)*8 + r = (o/8+1)*8 + r
+
+                    // For subblock sb, offset sb*32 + chunk*16:
+                    // First 8 bytes: i = (sb*4 + chunk*2)*8 + r, dst = (sb*4 + chunk*2)*64 + r*8
+                    // Next 8 bytes: i = (sb*4 + chunk*2 + 1)*8 + r, dst = (sb*4 + chunk*2 + 1)*64 + r*8
+
+                    for r in 0..8 {
+                        // Load 16 bytes of Q4 (2 × 8 bytes)
+                        let q4_ptr_0 = w_block
+                            .qs
+                            .as_ptr()
+                            .add((sb * 4 + chunk * 2) * 64 + r * 8);
+                        let q4_ptr_1 = w_block
+                            .qs
+                            .as_ptr()
+                            .add((sb * 4 + chunk * 2 + 1) * 64 + r * 8);
+
+                        let q4_8bytes_0 = vld1_u8(q4_ptr_0);
+                        let q4_8bytes_1 = vld1_u8(q4_ptr_1);
+
+                        // Combine into 16-byte vector
+                        let q4bits = vcombine_u8(q4_8bytes_0, q4_8bytes_1);
+
+                        // Dequantize: lookup low and high nibbles
+                        // Low nibbles: 16 elements, High nibbles: 16 elements
+                        let q4b_0 = vqtbl1q_s8(
+                            values,
+                            vandq_u8(q4bits, vdupq_n_u8(0x0F)),
+                        );
+                        let q4b_1 = vqtbl1q_s8(values, vshrq_n_u8(q4bits, 4));
+
+                        // Load Q8 values
+                        // chunk 0: need q8_0 and q8_1 (elements 0-31)
+                        // chunk 1: need q8_2 and q8_3 (elements 32-63)
+                        let (q8_a, q8_b) = match chunk {
+                            0 => (q8_0, q8_1),
+                            _ => (q8_2, q8_3),
+                        };
+
+                        // Dot products
+                        let dot_0 = vaddvq_s32(vdotq_s32_manual(
+                            vdupq_n_s32(0),
+                            q4b_0,
+                            q8_a,
+                        ));
+                        let dot_1 = vaddvq_s32(vdotq_s32_manual(
+                            vdupq_n_s32(0),
+                            q4b_1,
+                            q8_b,
+                        ));
+
+                        // Scale: chunk 0 uses ls1, chunk 1 uses ls2
+                        let scale_idx = sb * 2 + chunk;
+                        sumi[r] += (dot_0 + dot_1) as i64
+                            * row_scales[scale_idx][r] as i64;
+                    }
                 }
             }
 
             // Apply scales and store results
             for r in 0..8 {
-                let row_idx = row_group * 8 + r;
-                if row_idx < m {
-                    // Compute scale for this subblock
-                    let scales_l = w_col.scales_l[r * 4..r * 4 + 4]
-                        .try_into()
-                        .unwrap_or([0u8; 4]);
-                    let mut h = scales_h[r];
-
-                    // Extract scales for each of 4 subblocks
-                    for ib in 0..4 {
-                        let ls = (scales_l[ib & 3] >> ((ib >> 1) * 4)) as u16;
-                        let scale = (ls | ((h & 0xF) << 4)) as i32 - 32;
-                        h >>= 4;
-
-                        let d = d_f32[r] * x_d * scale as f32;
-                        dst[row_idx] += d * sumi[r] as f32;
-                    }
+                let row_idx = row_group_start + r;
+                if row_idx < num_rows {
+                    let scale = d_f32[r] * x_d;
+                    dst[row_idx] += scale * sumi[r] as f32;
                 }
             }
         }
     }
+}
+
+/// Interleaved GEMV for Q6_K × Q8_K
+/// Processes 8 rows at a time for better cache locality
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn gemv_q6_k_interleaved(
+    weights: &[BlockQ6Kx8],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    num_rows: usize,
+) {
+    let nb = k / QK_K;
+    const NCOLS_INTERLEAVED: usize = 8;
+
+    let m4b = vdupq_n_u8(0x0F);
+    let mone = vdupq_n_u8(0x30);
+
+    // Process 8 rows at a time
+    for row_group_start in (0..num_rows).step_by(NCOLS_INTERLEAVED) {
+        let x_group = row_group_start / NCOLS_INTERLEAVED;
+
+        // Accumulators for 8 rows
+        let mut sumi = [0i64; 8];
+
+        // Process each block of K elements
+        for b in 0..nb {
+            let w_block = &weights[x_group * nb + b];
+            let x_block = &x[b];
+
+            // Prefetch next block's weight and activation data
+            if b + 1 < nb {
+                let w_next = &weights[x_group * nb + b + 1];
+                let x_next = &x[b + 1];
+                prefetch_l2_stream(w_next.ql.as_ptr());
+                prefetch_l1_keep(x_next.qs.as_ptr() as *const u8);
+            }
+
+            // Load super-block scales
+            let d_f32: [f32; 8] =
+                std::array::from_fn(|i| fp16_to_fp32(w_block.d[i]));
+            let x_d = x_block.d;
+
+            // Process 2 iterations of 128 elements each (matching reference)
+            for j in 0..2 {
+                // Q8 values for this iteration (128 elements)
+                // Reference uses: q8[j*64..j*64+63] and q8[j*64+32..j*64+95]
+                // We need to use the SAME Q8 data for all rows (shared x_block)
+                let q8_base = x_block.qs.as_ptr().add(j * 64);
+
+                // For each row, process all 8 scales for this iteration
+                for r in 0..8 {
+                    // Interleaved layout:
+                    // ql[i*8..i*8+8] = row i%8's ql[(i/8)*8..(i/8)*8+8]
+                    // For iteration j: need rows' ql[j*64..j*64+64]
+                    // Chunk c: row r's ql[c*8..c*8+8] is at offset (j*8 + c)*64 + r*8
+                    // Simplified: offset = j*512 + c*64 + r*8
+
+                    let mut ql_bytes = [0u8; 64];
+                    for c in 0..8 {
+                        let offset = j * 512 + c * 64 + r * 8;
+                        std::ptr::copy_nonoverlapping(
+                            w_block.ql.as_ptr().add(offset),
+                            ql_bytes.as_mut_ptr().add(c * 8),
+                            8,
+                        );
+                    }
+
+                    // qh layout:
+                    // qh[i*8..i*8+8] = row i%8's qh[(i/8)*8..(i/8)*8+8]
+                    // For iteration j: need rows' qh[j*32..j*32+32]
+                    // Chunk c: row r's qh[c*8..c*8+8] is at offset (j*4 + c)*64 + r*8
+                    // Simplified: offset = j*256 + c*64 + r*8
+
+                    let mut qh_bytes = [0u8; 32];
+                    for c in 0..4 {
+                        let offset = j * 256 + c * 64 + r * 8;
+                        std::ptr::copy_nonoverlapping(
+                            w_block.qh.as_ptr().add(offset),
+                            qh_bytes.as_mut_ptr().add(c * 8),
+                            8,
+                        );
+                    }
+
+                    // Load ql and qh into NEON vectors
+                    let ql_bits = [
+                        vld1q_u8(ql_bytes.as_ptr()),
+                        vld1q_u8(ql_bytes.as_ptr().add(16)),
+                        vld1q_u8(ql_bytes.as_ptr().add(32)),
+                        vld1q_u8(ql_bytes.as_ptr().add(48)),
+                    ];
+
+                    let qh_bits = [
+                        vld1q_u8(qh_bytes.as_ptr()),
+                        vld1q_u8(qh_bytes.as_ptr().add(16)),
+                    ];
+
+                    // Extract high 2 bits for each of 8 blocks (matching reference)
+                    let q6h_0 = vshlq_n_u8(vandq_u8(mone, qh_bits[0]), 4);
+                    let q6h_1 = vshlq_n_u8(vandq_u8(mone, qh_bits[1]), 4);
+                    let q6h_2 = vshlq_n_u8(
+                        vandq_u8(mone, vshrq_n_u8(qh_bits[0], 2)),
+                        4,
+                    );
+                    let q6h_3 = vshlq_n_u8(
+                        vandq_u8(mone, vshrq_n_u8(qh_bits[1], 2)),
+                        4,
+                    );
+                    let q6h_4 = vshlq_n_u8(
+                        vandq_u8(mone, vshrq_n_u8(qh_bits[0], 4)),
+                        4,
+                    );
+                    let q6h_5 = vshlq_n_u8(
+                        vandq_u8(mone, vshrq_n_u8(qh_bits[1], 4)),
+                        4,
+                    );
+                    let q6h_6 = vshlq_n_u8(
+                        vandq_u8(mone, vshrq_n_u8(qh_bits[0], 6)),
+                        4,
+                    );
+                    let q6h_7 = vshlq_n_u8(
+                        vandq_u8(mone, vshrq_n_u8(qh_bits[1], 6)),
+                        4,
+                    );
+
+                    // Combine low 4 bits and high 2 bits (matching reference)
+                    let q6b_0 = vreinterpretq_s8_u8(vorrq_u8(
+                        vandq_u8(ql_bits[0], m4b),
+                        q6h_0,
+                    ));
+                    let q6b_1 = vreinterpretq_s8_u8(vorrq_u8(
+                        vandq_u8(ql_bits[1], m4b),
+                        q6h_1,
+                    ));
+                    let q6b_2 = vreinterpretq_s8_u8(vorrq_u8(
+                        vandq_u8(ql_bits[2], m4b),
+                        q6h_2,
+                    ));
+                    let q6b_3 = vreinterpretq_s8_u8(vorrq_u8(
+                        vandq_u8(ql_bits[3], m4b),
+                        q6h_3,
+                    ));
+                    let q6b_4 = vreinterpretq_s8_u8(vorrq_u8(
+                        vshrq_n_u8(ql_bits[0], 4),
+                        q6h_4,
+                    ));
+                    let q6b_5 = vreinterpretq_s8_u8(vorrq_u8(
+                        vshrq_n_u8(ql_bits[1], 4),
+                        q6h_5,
+                    ));
+                    let q6b_6 = vreinterpretq_s8_u8(vorrq_u8(
+                        vshrq_n_u8(ql_bits[2], 4),
+                        q6h_6,
+                    ));
+                    let q6b_7 = vreinterpretq_s8_u8(vorrq_u8(
+                        vshrq_n_u8(ql_bits[3], 4),
+                        q6h_7,
+                    ));
+
+                    // Load Q8 for this iteration
+                    let q8bytes = vld1q_s8_x4(q8_base);
+                    let q8bytes2 = vld1q_s8_x4(q8_base.add(32));
+
+                    // Dot products with scales
+                    let scale_base = j * 8;
+                    let scales_r = &w_block.scales[r * 16..(r + 1) * 16];
+
+                    sumi[r] += vaddvq_s32(vdotq_s32_manual(
+                        vdupq_n_s32(0),
+                        q6b_0,
+                        q8bytes.0,
+                    )) as i64
+                        * scales_r[scale_base] as i64;
+                    sumi[r] += vaddvq_s32(vdotq_s32_manual(
+                        vdupq_n_s32(0),
+                        q6b_1,
+                        q8bytes.1,
+                    )) as i64
+                        * scales_r[scale_base + 1] as i64;
+                    sumi[r] += vaddvq_s32(vdotq_s32_manual(
+                        vdupq_n_s32(0),
+                        q6b_2,
+                        q8bytes.2,
+                    )) as i64
+                        * scales_r[scale_base + 2] as i64;
+                    sumi[r] += vaddvq_s32(vdotq_s32_manual(
+                        vdupq_n_s32(0),
+                        q6b_3,
+                        q8bytes.3,
+                    )) as i64
+                        * scales_r[scale_base + 3] as i64;
+                    sumi[r] += vaddvq_s32(vdotq_s32_manual(
+                        vdupq_n_s32(0),
+                        q6b_4,
+                        q8bytes2.0,
+                    )) as i64
+                        * scales_r[scale_base + 4] as i64;
+                    sumi[r] += vaddvq_s32(vdotq_s32_manual(
+                        vdupq_n_s32(0),
+                        q6b_5,
+                        q8bytes2.1,
+                    )) as i64
+                        * scales_r[scale_base + 5] as i64;
+                    sumi[r] += vaddvq_s32(vdotq_s32_manual(
+                        vdupq_n_s32(0),
+                        q6b_6,
+                        q8bytes2.2,
+                    )) as i64
+                        * scales_r[scale_base + 6] as i64;
+                    sumi[r] += vaddvq_s32(vdotq_s32_manual(
+                        vdupq_n_s32(0),
+                        q6b_7,
+                        q8bytes2.3,
+                    )) as i64
+                        * scales_r[scale_base + 7] as i64;
+                }
+            }
+
+            // Apply scales and accumulate results
+            for r in 0..8 {
+                let row_idx = row_group_start + r;
+                if row_idx < num_rows {
+                    let scale = d_f32[r] * x_d;
+                    dst[row_idx] += scale * sumi[r] as f32;
+                }
+            }
+        }
+    }
+}
+
+// ===== Q4_0 Interleaved Format =====
+
+/// Q4_0 interleaved block: 8 rows stored together
+/// Each Q4_0 block is 18 bytes:
+/// - d: u16 (2 bytes)
+/// - qs: [u8; 16] (16 bytes, 32 elements packed)
+///
+/// Interleaved layout (144 bytes = 8 × 18):
+/// - d: [u16; 8] (16 bytes)
+/// - qs: [u8; 128] (128 bytes) - interleaved for cache locality
+#[repr(C, align(64))]
+#[derive(Clone, Copy, Debug)]
+pub struct BlockQ4_0x8 {
+    pub d: [u16; 8],   // Scales for 8 rows (16 bytes)
+    pub qs: [u8; 128], // Interleaved 4-bit quants (128 bytes)
+}
+
+const _: () = assert!(
+    std::mem::size_of::<BlockQ4_0x8>() == 192,
+    "BlockQ4_0x8 size mismatch"
+);
+
+/// Repack 8 Q4_0 blocks into interleaved format
+pub fn repack_q4_0_to_interleaved(input: &[BlockQ4_0; 8]) -> BlockQ4_0x8 {
+    let mut out: BlockQ4_0x8 = unsafe { std::mem::zeroed() };
+
+    // Copy d values (scales)
+    for i in 0..8 {
+        out.d[i] = input[i].d;
+    }
+
+    // Interleave qs bytes - take 8 bytes from each row cyclically
+    // This ensures loading 64 bytes gives data for all 8 rows
+    // Each row has 16 bytes of qs, so 2 iterations per row
+    const BLCK_SIZE_INTERLEAVE: usize = 8;
+
+    for i in 0..16 {
+        let src_id = i % 8;
+        let src_offset = (i / 8) * BLCK_SIZE_INTERLEAVE;
+        let dst_offset = i * BLCK_SIZE_INTERLEAVE;
+
+        out.qs[dst_offset..dst_offset + BLCK_SIZE_INTERLEAVE].copy_from_slice(
+            &input[src_id].qs[src_offset..src_offset + BLCK_SIZE_INTERLEAVE],
+        );
+    }
+
+    out
+}
+
+/// Interleaved GEMV for Q4_0 × Q8_K
+/// Processes 8 rows at a time for better cache locality
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn gemv_q4_0_interleaved(
+    weights: &[BlockQ4_0x8],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    num_rows: usize,
+) {
+    let nb = k / QK_K;
+    const NCOLS_INTERLEAVED: usize = 8;
+
+    let m4b = vdupq_n_u8(0x0F);
+    let s8b = vdupq_n_s8(0x8);
+
+    // Process 8 rows at a time
+    for row_group_start in (0..num_rows).step_by(NCOLS_INTERLEAVED) {
+        let x_group = row_group_start / NCOLS_INTERLEAVED;
+
+        // Accumulators for 8 rows
+        let mut sumi = [0i64; 8];
+
+        // Process each block of K elements
+        for b in 0..nb {
+            let w_block = &weights[x_group * nb + b];
+            let x_block = &x[b];
+
+            // Prefetch next block's weight and activation data
+            if b + 1 < nb {
+                let w_next = &weights[x_group * nb + b + 1];
+                let x_next = &x[b + 1];
+                prefetch_l2_stream(w_next.qs.as_ptr());
+                prefetch_l1_keep(x_next.qs.as_ptr() as *const u8);
+            }
+
+            // Load scales
+            let d_f32: [f32; 8] =
+                std::array::from_fn(|i| fp16_to_fp32(w_block.d[i]));
+            let x_d = x_block.d;
+
+            // Process 8 subblocks (32 elements each, 16 bytes of Q4)
+            // Q4_0 has QK4_0 = 32 elements per block, QK_K = 256 elements
+            // So QK_K / QK4_0 = 8 blocks per QK_K block
+            for sb in 0..8 {
+                // Q8 values for this subblock (32 elements)
+                let q8_base = x_block.qs.as_ptr().add(sb * 32);
+                let q8_0 = vld1q_s8(q8_base);
+                let q8_1 = vld1q_s8(q8_base.add(16));
+
+                // For each row, load interleaved Q4 data
+                for r in 0..8 {
+                    // Interleaved layout:
+                    // qs[i*8..i*8+8] = row i%8's qs[(i/8)*8..(i/8)*8+8]
+                    // For subblock sb: need row r's qs[sb*16..sb*16+16]
+                    // Each subblock has 16 bytes = 2 × 8-byte chunks
+                    // First chunk: i = sb*2, src_row = i%8, offset = (i/8)*8
+                    // Second chunk: i = sb*2+1
+
+                    let q4_ptr_0 =
+                        w_block.qs.as_ptr().add((sb * 2) * 64 + r * 8);
+                    let q4_ptr_1 =
+                        w_block.qs.as_ptr().add((sb * 2 + 1) * 64 + r * 8);
+
+                    let q4_0 = vld1_u8(q4_ptr_0);
+                    let q4_1 = vld1_u8(q4_ptr_1);
+                    let q4bits = vcombine_u8(q4_0, q4_1);
+
+                    // Unpack 4-bit to 8-bit and subtract bias
+                    let q4l = vreinterpretq_s8_u8(vandq_u8(q4bits, m4b));
+                    let q4h = vreinterpretq_s8_u8(vshrq_n_u8(q4bits, 4));
+                    let q4ls = vsubq_s8(q4l, s8b);
+                    let q4hs = vsubq_s8(q4h, s8b);
+
+                    // Dot product
+                    let dot = vaddvq_s32(vdotq_s32_manual(
+                        vdotq_s32_manual(vdupq_n_s32(0), q4ls, q8_0),
+                        q4hs,
+                        q8_1,
+                    ));
+                    sumi[r] += dot as i64;
+                }
+            }
+
+            // Apply scales
+            for r in 0..8 {
+                let row_idx = row_group_start + r;
+                if row_idx < num_rows {
+                    let scale = d_f32[r] * x_d;
+                    dst[row_idx] += scale * sumi[r] as f32;
+                }
+            }
+        }
+    }
+}
+
+/// Repack Q4_0 weights to interleaved format (batch version)
+pub fn repack_q4_0_batch(
+    src: &[BlockQ4_0],
+    n_rows: usize,
+    n_blocks_per_row: usize,
+) -> Vec<BlockQ4_0x8> {
+    assert!(n_rows % 8 == 0, "Rows must be multiple of 8 for interleaving");
+
+    let n_interleaved = (n_rows / 8) * n_blocks_per_row;
+    let mut dst = Vec::with_capacity(n_interleaved);
+
+    for row_group in (0..n_rows).step_by(8) {
+        for block_idx in 0..n_blocks_per_row {
+            // Gather 8 blocks from 8 rows
+            let mut blocks: [BlockQ4_0; 8] = unsafe { std::mem::zeroed() };
+            for row_in_group in 0..8 {
+                let src_idx =
+                    (row_group + row_in_group) * n_blocks_per_row + block_idx;
+                blocks[row_in_group] = src[src_idx];
+            }
+            dst.push(repack_q4_0_to_interleaved(&blocks));
+        }
+    }
+
+    dst
 }

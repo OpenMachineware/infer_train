@@ -9,6 +9,7 @@
 // 4. Accumulator buffer to avoid direct dst writes
 
 use crate::quant::types::{BlockQ5K, BlockQ8K, QK_K};
+use crate::quant::vec_dot::arm::fp::fp16_to_fp32;
 use std::arch::aarch64::*;
 use std::arch::asm;
 
@@ -1626,7 +1627,7 @@ pub unsafe fn unpack_src0_q6k(
             let s_off = r * num_k * NB_Q6K + slab * NB_Q6K;
 
             // Super-block scale (u16 to f32)
-            ws.src0_d[d_off] = blk.d as f32 / 64.0; // Q6_K scale is stored * 64
+            ws.src0_d[d_off] = fp16_to_fp32(blk.d);
             ws.src0_dmin[d_off] = 0.0; // No dmin for Q6_K
 
             // Scales per 16-element block (Q6_K has 16 scales)

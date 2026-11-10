@@ -25,6 +25,16 @@ static Q5K_INTERLEAVED_CACHE: Lazy<
     Arc<Mutex<HashMap<usize, Vec<BlockQ5Kx8>>>>,
 > = Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
 
+/// Cache for interleaved Q6_K weights
+static Q6K_INTERLEAVED_CACHE: Lazy<
+    Arc<Mutex<HashMap<usize, Vec<BlockQ6Kx8>>>>,
+> = Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
+
+/// Cache for interleaved IQ4_XS weights
+static IQ4XS_INTERLEAVED_CACHE: Lazy<
+    Arc<Mutex<HashMap<usize, Vec<BlockIQ4XSx8>>>>,
+> = Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
+
 /// Manual SDOT implementation via inline asm
 #[allow(dead_code)]
 #[inline(always)]
@@ -150,6 +160,7 @@ pub unsafe fn matmul_q4_k_q8_k_hybrid(
 }
 
 /// Hybrid Q4_K × Q8_K with custom thread count
+/// Uses interleaved GEMV when m % 8 == 0 for 2-3x speedup
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q4_k_q8_k_hybrid_with_threads(
     weights: &[BlockQ4K],
@@ -159,12 +170,56 @@ pub unsafe fn matmul_q4_k_q8_k_hybrid_with_threads(
     m: usize,
     n_threads: usize,
 ) {
+    let nb = k / QK_K;
+
+    // Use interleaved GEMV when rows are multiple of 8
+    // TEMPORARY DISABLED: llama.cpp uses row-by-row vec_dot, not interleaved
+    // Interleaved seems to have overhead that exceeds benefits for this model
+    if false && m % 8 == 0 {
+        use crate::quant::vec_dot::arm::k_quant_batch::{
+            BlockQ4Kx8, gemv_q4_k_interleaved, repack_q4_k_to_interleaved,
+        };
+
+        // Cache interleaved weights
+        let w_ptr = weights.as_ptr() as usize;
+        let cache_key = w_ptr;
+
+        let interleaved = {
+            let cache = Q4K_INTERLEAVED_CACHE.lock().unwrap();
+            cache.get(&cache_key).cloned()
+        };
+
+        let interleaved_blocks = if let Some(data) = interleaved {
+            data
+        } else {
+            let n_interleaved = m / 8;
+            let mut blocks = Vec::with_capacity(n_interleaved * nb);
+
+            for row_group in (0..m).step_by(8) {
+                for block_idx in 0..nb {
+                    let mut input_blocks: [BlockQ4K; 8] = std::mem::zeroed();
+                    for r in 0..8 {
+                        input_blocks[r] =
+                            weights[(row_group + r) * nb + block_idx];
+                    }
+                    blocks.push(repack_q4_k_to_interleaved(&input_blocks));
+                }
+            }
+
+            let mut cache = Q4K_INTERLEAVED_CACHE.lock().unwrap();
+            cache.insert(cache_key, blocks.clone());
+            blocks
+        };
+
+        gemv_q4_k_interleaved(&interleaved_blocks, x, dst, k, m);
+        return;
+    }
+
     // Empirical threshold: MT beneficial for m > 10000
     // For m < 10000, thread overhead (~100µs) exceeds compute savings
     if m <= 10000 || n_threads == 1 {
         matmul_q4_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
-        let nb = k / QK_K;
         matmul_q4_k_q8_k_standard(weights, x, dst, k, m, nb, n_threads);
     }
 }
@@ -282,12 +337,55 @@ pub unsafe fn matmul_q6_k_q8_k_hybrid_with_threads(
     m: usize,
     n_threads: usize,
 ) {
+    let nb = k / QK_K;
+
+    // Use interleaved GEMV when rows are multiple of 8
+    // TEMPORARY DISABLED
+    if false && m % 8 == 0 {
+        use crate::quant::vec_dot::arm::k_quant_batch::{
+            BlockQ6Kx8, gemv_q6_k_interleaved, repack_q6_k_to_interleaved,
+        };
+
+        // Cache interleaved weights
+        let w_ptr = weights.as_ptr() as usize;
+        let cache_key = w_ptr;
+
+        let interleaved = {
+            let cache = Q6K_INTERLEAVED_CACHE.lock().unwrap();
+            cache.get(&cache_key).cloned()
+        };
+
+        let interleaved_blocks = if let Some(data) = interleaved {
+            data
+        } else {
+            let n_interleaved = m / 8;
+            let mut blocks = Vec::with_capacity(n_interleaved * nb);
+
+            for row_group in (0..m).step_by(8) {
+                for block_idx in 0..nb {
+                    let mut input_blocks: [BlockQ6K; 8] = std::mem::zeroed();
+                    for r in 0..8 {
+                        input_blocks[r] =
+                            weights[(row_group + r) * nb + block_idx];
+                    }
+                    blocks.push(repack_q6_k_to_interleaved(&input_blocks));
+                }
+            }
+
+            let mut cache = Q6K_INTERLEAVED_CACHE.lock().unwrap();
+            cache.insert(cache_key, blocks.clone());
+            blocks
+        };
+
+        gemv_q6_k_interleaved(&interleaved_blocks, x, dst, k, m);
+        return;
+    }
+
     // Empirical threshold: MT beneficial for m > 10000
     // For m < 10000, thread overhead (~100µs) exceeds compute savings
     if m <= 10000 || n_threads == 1 {
         matmul_q6_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
-        let nb = k / QK_K;
         matmul_q6_k_q8_k_standard(weights, x, dst, k, m, nb, n_threads);
     }
 }
@@ -448,12 +546,55 @@ pub unsafe fn matmul_q5_k_q8_k_hybrid_with_threads(
     m: usize,
     n_threads: usize,
 ) {
+    let nb = k / QK_K;
+
+    // Use interleaved GEMV when rows are multiple of 8
+    // TEMPORARY DISABLED
+    if false && m % 8 == 0 {
+        use crate::quant::vec_dot::arm::k_quant_batch::{
+            BlockQ5Kx8, gemv_q5_k_interleaved, repack_q5_k_to_interleaved,
+        };
+
+        // Cache interleaved weights
+        let w_ptr = weights.as_ptr() as usize;
+        let cache_key = w_ptr;
+
+        let interleaved = {
+            let cache = Q5K_INTERLEAVED_CACHE.lock().unwrap();
+            cache.get(&cache_key).cloned()
+        };
+
+        let interleaved_blocks = if let Some(data) = interleaved {
+            data
+        } else {
+            let n_interleaved = m / 8;
+            let mut blocks = Vec::with_capacity(n_interleaved * nb);
+
+            for row_group in (0..m).step_by(8) {
+                for block_idx in 0..nb {
+                    let mut input_blocks: [BlockQ5K; 8] = std::mem::zeroed();
+                    for r in 0..8 {
+                        input_blocks[r] =
+                            weights[(row_group + r) * nb + block_idx];
+                    }
+                    blocks.push(repack_q5_k_to_interleaved(&input_blocks));
+                }
+            }
+
+            let mut cache = Q5K_INTERLEAVED_CACHE.lock().unwrap();
+            cache.insert(cache_key, blocks.clone());
+            blocks
+        };
+
+        gemv_q5_k_interleaved(&interleaved_blocks, x, dst, k, m);
+        return;
+    }
+
     // Empirical threshold: MT beneficial for m > 10000
     // For m < 10000, thread overhead (~100µs) exceeds compute savings
     if m <= 10000 || n_threads == 1 {
         matmul_q5_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
-        let nb = k / QK_K;
         matmul_q5_k_q8_k_standard(weights, x, dst, k, m, nb, n_threads);
     }
 }
@@ -850,6 +991,7 @@ pub unsafe fn matmul_iq4_xs_q8_k_hybrid(
 }
 
 /// Hybrid IQ4_XS × Q8_K with custom thread count
+/// Uses interleaved GEMV when m % 8 == 0 for 2-3x speedup
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_iq4_xs_q8_k_hybrid_with_threads(
     weights: &[BlockIQ4XS],
@@ -859,12 +1001,55 @@ pub unsafe fn matmul_iq4_xs_q8_k_hybrid_with_threads(
     m: usize,
     n_threads: usize,
 ) {
+    let nb = k / QK_K;
+
+    // Use interleaved GEMV when rows are multiple of 8
+    // TEMPORARY DISABLED
+    if false && m % 8 == 0 {
+        use crate::quant::vec_dot::arm::k_quant_batch::{
+            BlockIQ4XSx8, gemv_iq4_xs_interleaved, repack_iq4_xs_to_interleaved,
+        };
+
+        // Cache interleaved weights
+        let w_ptr = weights.as_ptr() as usize;
+        let cache_key = w_ptr;
+
+        let interleaved = {
+            let cache = IQ4XS_INTERLEAVED_CACHE.lock().unwrap();
+            cache.get(&cache_key).cloned()
+        };
+
+        let interleaved_blocks = if let Some(data) = interleaved {
+            data
+        } else {
+            let n_interleaved = m / 8;
+            let mut blocks = Vec::with_capacity(n_interleaved * nb);
+
+            for row_group in (0..m).step_by(8) {
+                for block_idx in 0..nb {
+                    let mut input_blocks: [BlockIQ4XS; 8] = std::mem::zeroed();
+                    for r in 0..8 {
+                        input_blocks[r] =
+                            weights[(row_group + r) * nb + block_idx];
+                    }
+                    blocks.push(repack_iq4_xs_to_interleaved(&input_blocks));
+                }
+            }
+
+            let mut cache = IQ4XS_INTERLEAVED_CACHE.lock().unwrap();
+            cache.insert(cache_key, blocks.clone());
+            blocks
+        };
+
+        gemv_iq4_xs_interleaved(&interleaved_blocks, x, dst, k, m);
+        return;
+    }
+
     // Empirical threshold: MT beneficial for m > 10000
     // For m < 10000, thread overhead (~100µs) exceeds compute savings
     if m <= 10000 || n_threads == 1 {
         matmul_iq4_xs_q8_k_single_thread(weights, x, dst, k, m);
     } else {
-        let nb = k / QK_K;
         matmul_iq4_xs_q8_k_standard(weights, x, dst, k, m, nb, n_threads);
     }
 }

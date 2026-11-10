@@ -29,11 +29,12 @@ pub use k_quant::{
 };
 
 pub use k_quant_batch::{
-    BlockIQ4XSx8, BlockQ4KInterleaved, BlockQ4Kx8, BlockQ5Kx8,
+    BlockIQ4XSx8, BlockQ4KInterleaved, BlockQ4Kx8, BlockQ5Kx8, BlockQ6Kx8,
     gemv_iq4_xs_interleaved, gemv_q4_k_interleaved, gemv_q5_k_interleaved,
-    repack_iq4_xs_to_interleaved, repack_q4_k_batch,
+    gemv_q6_k_interleaved, repack_iq4_xs_to_interleaved, repack_q4_k_batch,
     repack_q4_k_to_interleaved, repack_q5_k_batch, repack_q5_k_to_interleaved,
-    vec_dot_q4_k_q8_k_interleaved, vec_dot_q5_k_q8_k_interleaved,
+    repack_q6_k_to_interleaved, vec_dot_q4_k_q8_k_interleaved,
+    vec_dot_q5_k_q8_k_interleaved,
 };
 
 pub use q_0_1::{
