@@ -32,10 +32,27 @@ pub const BLAS_THRESHOLD_N: usize = 32;
 /// Minimum FLOPs to trigger BLAS path (avoid BLAS overhead for small matrices)
 pub const BLAS_THRESHOLD_FLOPS: usize = 1024 * 1024; // 1M FLOPs
 
+/// Global BLAS enable flag (can be set at runtime)
+static BLAS_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// Enable or disable BLAS path at runtime
+pub fn set_blas_enabled(enabled: bool) {
+    BLAS_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Check if BLAS is enabled
+#[inline]
+pub fn is_blas_enabled() -> bool {
+    BLAS_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Check if BLAS path should be used
 #[inline]
 pub fn should_use_blas(m: usize, n: usize, k: usize) -> bool {
-    n >= BLAS_THRESHOLD_N && m * n * k >= BLAS_THRESHOLD_FLOPS
+    is_blas_enabled()
+        && n >= BLAS_THRESHOLD_N
+        && m * n * k >= BLAS_THRESHOLD_FLOPS
 }
 
 /// Check if format supports llamafile_sgemm (Layer 1)

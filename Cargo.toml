@@ -133,6 +133,26 @@ name = "bench-cpu-timing"
 path = "tools/bench_cpu_timing.rs"
 
 [[bin]]
+name = "compare-cpu-perf"
+path = "tools/compare_cpu_perf.rs"
+
+[[bin]]
+name = "compare-blas"
+path = "tools/compare_blas.rs"
+
+[[bin]]
+name = "decode-timing"
+path = "tools/decode_timing.rs"
+
+[[bin]]
+name = "vec-dot-benchmark"
+path = "tools/vec_dot_benchmark.rs"
+
+[[bin]]
+name = "gemv-interleaved-test"
+path = "tools/gemv_interleaved_test.rs"
+
+[[bin]]
 name = "test-thread-perf"
 path = "tools/test_thread_perf.rs"
 
@@ -695,6 +715,7 @@ uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+accelerate-src = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 num_cpus = "1.16"
@@ -1606,6 +1627,10 @@ path = "tools/bench_interleaved_real.rs"
 name = "bench-interleaved-layers"
 path = "tools/bench_interleaved_layers.rs"
 
+[[bin]]
+name = "test-q5k-interleaved"
+path = "tools/test_q5k_interleaved.rs"
+
 [dependencies.rayon]
 version = "1.10"
 
@@ -1864,3 +1889,15 @@ path = "tools/test_thread_overhead.rs"
 [[bin]]
 name = "bench-prefill-simple"
 path = "tools/bench_prefill_simple.rs"
+
+[[bin]]
+name = "test-gemv-threading"
+path = "tools/test_gemv_threading.rs"
+
+[[bin]]
+name = "iq4xs-pipelined-bench"
+path = "benches/iq4xs_pipelined_bench.rs"
+
+[[bin]]
+name = "blas-sgemm-bench"
+path = "benches/blas_sgemm_bench.rs"

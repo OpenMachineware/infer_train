@@ -705,7 +705,7 @@ fn process_q_tile(
             }
 
             // GEMM: KQ[tile_rows, kv_tile_size] = Q[tile_rows, head_dim] @ K_tile[head_dim, kv_tile_size]
-            crate::cpu::simd_gemm::simd_gemm(
+            crate::quant::gemm::kernel::sgemm(
                 scratch.kq.as_mut_ptr(),
                 scratch.q_tile.as_ptr(),
                 scratch.k_tile.as_ptr(),

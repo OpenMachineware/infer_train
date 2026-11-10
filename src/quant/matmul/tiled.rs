@@ -1309,9 +1309,12 @@ unsafe fn matmul_q4k_q8k_narrow(
     n: usize,
     nb: usize,
 ) {
-    // For narrow path, use longer contiguous K reads
-    let num_k = if n <= 4 { 4.min(nb) } else { 2.min(nb) };
-    if num_k == 0 {
+    // Use dynamic k_extent optimization from llama.cpp
+    let k = nb * TILE_K;
+    let k_extent = narrow_k_extent(n, k);
+    let num_k = k_extent / TILE_K;
+
+    if num_k == 0 || num_k > nb {
         return;
     }
 
@@ -1456,8 +1459,12 @@ unsafe fn matmul_q4k_q8k_narrow_chunk(
     n: usize,
     nb: usize,
 ) {
-    let num_k = if n <= 4 { 4.min(nb) } else { 2.min(nb) };
-    if num_k == 0 {
+    // Use dynamic k_extent optimization from llama.cpp
+    let k = nb * TILE_K;
+    let k_extent = narrow_k_extent(n, k);
+    let num_k = k_extent / TILE_K;
+
+    if num_k == 0 || num_k > nb {
         return;
     }
 
@@ -2110,4 +2117,16 @@ pub unsafe fn matmul_q6k_q8k_tiled(
             });
         }
     }
+}
+
+/// GEMV wrapper for Q6_K (single vector)
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn gemv_q6k_q8k_tiled(
+    weights: &[BlockQ6K],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+) {
+    matmul_q6k_q8k_tiled(weights, x, dst, k, m, 1);
 }

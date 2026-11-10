@@ -4,9 +4,7 @@
 
 pub mod adaptive_scheduler;
 pub mod flash_attention;
-pub mod simd_gemm;
 pub mod thread_pool;
-pub mod tiled_gemv;
 pub mod work_buffers;
 
 pub use adaptive_scheduler::{AdaptiveScheduler, MatmulPath, get_scheduler};
@@ -19,7 +17,8 @@ pub use thread_pool::{
     default_n_threads, global_pool, parallel_chunks, parallel_chunks_sized,
     parallel_work_stealing,
 };
-pub use tiled_gemv::{
+// Re-export tiled GEMV from quant::matmul::tiled
+pub use crate::quant::matmul::tiled::{
     gemv_q4k_q8k_tiled, gemv_q5k_q8k_tiled, gemv_q6k_q8k_tiled,
 };
 pub use work_buffers::{CpuWorkBuffers, CpuWorkBuffersPool};

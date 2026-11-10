@@ -83,6 +83,68 @@ pub fn quantize_row_q8_k_padded<'a>(
     &y[..nb]
 }
 
+/// Multi-threaded parallel quantization (matching llama.cpp strategy)
+/// Each thread quantizes different blocks using work-stealing
+/// Returns after all threads complete (barrier synchronization)
+/// Uses raw pointer to avoid multiple mutable borrows
+pub fn quantize_row_q8_k_parallel_raw(
+    inputs: &[&[f32]],
+    outputs_ptr: crate::cpu::SyncPtr<BlockQ8K>,
+    n: usize,
+    nb: usize,
+    n_threads: usize,
+) {
+    use std::sync::Barrier;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    if n == 0 {
+        return;
+    }
+
+    // Work-stealing counter for quantization
+    let quant_counter = AtomicUsize::new(0);
+    let barrier = std::sync::Arc::new(Barrier::new(n_threads));
+
+    std::thread::scope(|s| {
+        for _ in 0..n_threads {
+            let quant_counter = &quant_counter;
+            let barrier = barrier.clone();
+
+            s.spawn(move || {
+                // Phase 1: Parallel quantization (work-stealing over inputs)
+                loop {
+                    let input_idx =
+                        quant_counter.fetch_add(1, Ordering::Relaxed);
+                    if input_idx >= n {
+                        break;
+                    }
+
+                    let input = inputs[input_idx];
+                    let output = unsafe {
+                        std::slice::from_raw_parts_mut(
+                            outputs_ptr.get().add(input_idx * nb),
+                            nb,
+                        )
+                    };
+
+                    // Pad input if needed
+                    let k_padded = nb * QK_K;
+                    if input.len() != k_padded {
+                        let mut padded = vec![0.0f32; k_padded];
+                        padded[..input.len()].copy_from_slice(input);
+                        quantize_row_q8_k_neon(&padded, output);
+                    } else {
+                        quantize_row_q8_k_neon(input, output);
+                    }
+                }
+
+                // Wait for all threads to finish quantization
+                barrier.wait();
+            });
+        }
+    });
+}
+
 /// Quantize FP32 to Q8_K (NEON optimized version)
 #[cfg(target_arch = "aarch64")]
 pub fn quantize_row_q8_k_neon(x: &[f32], y: &mut [BlockQ8K]) {

@@ -1,3 +1,4 @@
+use infer_train::cpu::ThreadConfig;
 use infer_train::inference::{
     Device, InferenceContext, KVCache, KVCacheBase, KVCacheFormat,
 };
@@ -18,6 +19,10 @@ fn main() {
     let start = std::time::Instant::now();
     let mut ctx = InferenceContext::from_gguf(model_path, Device::Cpu)
         .expect("Failed to load model");
+
+    // Use single-thread for decode (matching llama.cpp)
+    ctx.thread_config = ThreadConfig::with_threads(1, 1);
+    println!("Thread config: 1 prefill, 1 decode");
     println!("Load time: {:?}", start.elapsed());
 
     // Check Rayon thread count

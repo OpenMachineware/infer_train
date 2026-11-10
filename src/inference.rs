@@ -268,7 +268,6 @@ impl InferenceContext {
     pub fn forward_gpu_native(&mut self, tokens: &[u32]) -> Option<Vec<f32>> {
         // Fall back to CPU for MQA/MLA architecture (not yet supported on GPU)
         if self.model.uses_mqa() {
-            eprintln!("[DEBUG] Model uses MQA/MLA, falling back to CPU");
             return self.model.forward(
                 tokens,
                 &mut KVCache::new(&self.config, 2048, KVCacheFormat::F32),

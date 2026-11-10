@@ -183,11 +183,23 @@ pub fn conv_2d_f32(
     // patches: [patch_n, knl_n]
     // weights: [c_out, knl_n] (stored as [OC, IC, KH, KW])
     // output: [patch_n, c_out]
+    //
+    // Using gemm::kernel::sgemm which computes:
+    // C[m,n] = A[m,k]^T * B[n,k] (outer product of column vectors)
+    // To get output = patches * weights^T:
+    //   We need C^T = weights * patches^T
+    //   So: A=weights [c_out, knl_n], B=patches [patch_n, knl_n]
+    //   Result: C [c_out, patch_n], stored row-major
+    //   Output layout matches C (each row is one output channel)
     unsafe {
-        crate::quant::matmul::fp32::sgemm(
-            &patches, weights, output, c_out,   // m = c_out
-            patch_n, // n = patch_n
-            knl_n,   // k = knl_n
+        use std::arch::aarch64::*;
+        crate::quant::gemm::kernel::sgemm(
+            output.as_mut_ptr(), // C: [c_out, patch_n]
+            weights.as_ptr(),    // A: [c_out, knl_n]
+            patches.as_ptr(),    // B: [patch_n, knl_n]
+            c_out,               // m
+            knl_n,               // k
+            patch_n,             // n
         );
     }
 

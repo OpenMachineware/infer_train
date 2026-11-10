@@ -18,6 +18,13 @@ static Q4K_INTERLEAVED_CACHE: Lazy<
     Arc<Mutex<HashMap<usize, Vec<BlockQ4Kx8>>>>,
 > = Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
 
+/// Cache for interleaved Q5_K weights
+/// Key: pointer to original weights
+/// Value: interleaved weights (m/8 blocks of BlockQ5Kx8)
+static Q5K_INTERLEAVED_CACHE: Lazy<
+    Arc<Mutex<HashMap<usize, Vec<BlockQ5Kx8>>>>,
+> = Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
+
 /// Manual SDOT implementation via inline asm
 #[allow(dead_code)]
 #[inline(always)]
@@ -101,7 +108,7 @@ unsafe fn matmul_q4_k_q8_k_standard(
 }
 
 /// Single-thread Q4_K × Q8_K matrix-vector multiplication
-/// For decode (batch=1) where thread overhead dominates
+/// For decode (batch=1) where memory bandwidth is the bottleneck
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q4_k_q8_k_single_thread(
     weights: &[BlockQ4K],
@@ -110,37 +117,16 @@ pub unsafe fn matmul_q4_k_q8_k_single_thread(
     k: usize,
     m: usize,
 ) {
-    // Check if interleaved GEMV is applicable and profitable
-    // Condition: m must be multiple of 8 (interleave factor)
-    const INTERLEAVE_ROWS: usize = 8;
+    let nb = k / QK_K;
 
-    if m % INTERLEAVE_ROWS == 0 {
-        // Use interleaved GEMV for better cache locality
-        use crate::quant::vec_dot::arm::k_quant_batch::{
-            gemv_q4_k_interleaved, repack_q4_k_batch,
-        };
-
-        // Get or create interleaved weights from cache
-        let key = weights.as_ptr() as usize;
-        let cache = Q4K_INTERLEAVED_CACHE.clone();
-        let mut cache_guard = cache.lock().unwrap();
-        let weights_interleaved = cache_guard.entry(key).or_insert_with(|| {
-            let nb = k / QK_K;
-            repack_q4_k_batch(weights, m, nb)
-        });
-
-        gemv_q4_k_interleaved(weights_interleaved, x, dst, k, m);
-    } else {
-        // Fall back to standard single-row processing
-        let nb = k / QK_K;
-
-        for row in 0..m {
-            dst[row] = vec_dot_q4_k_q8_k_neon(
-                k,
-                std::slice::from_raw_parts(weights.as_ptr().add(row * nb), nb),
-                x,
-            );
-        }
+    // Standard path: process each row independently
+    // For decode, this is simpler and more cache-friendly for large m
+    for row in 0..m {
+        dst[row] = vec_dot_q4_k_q8_k_neon(
+            k,
+            std::slice::from_raw_parts(weights.as_ptr().add(row * nb), nb),
+            x,
+        );
     }
 }
 
@@ -173,7 +159,9 @@ pub unsafe fn matmul_q4_k_q8_k_hybrid_with_threads(
     m: usize,
     n_threads: usize,
 ) {
-    if m <= 1 || n_threads == 1 {
+    // Empirical threshold: MT beneficial for m > 10000
+    // For m < 10000, thread overhead (~100µs) exceeds compute savings
+    if m <= 10000 || n_threads == 1 {
         matmul_q4_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
         let nb = k / QK_K;
@@ -252,6 +240,8 @@ pub unsafe fn matmul_q6_k_q8_k_single_thread(
     k: usize,
     m: usize,
 ) {
+    // TODO: Interleaved GEMV for Q6_K needs correct implementation
+    // Fall back to standard processing for now
     let nb = k / QK_K;
 
     for row in 0..m {
@@ -292,7 +282,9 @@ pub unsafe fn matmul_q6_k_q8_k_hybrid_with_threads(
     m: usize,
     n_threads: usize,
 ) {
-    if m <= 1 || n_threads == 1 {
+    // Empirical threshold: MT beneficial for m > 10000
+    // For m < 10000, thread overhead (~100µs) exceeds compute savings
+    if m <= 10000 || n_threads == 1 {
         matmul_q6_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
         let nb = k / QK_K;
@@ -362,7 +354,7 @@ unsafe fn matmul_q5_k_q8_k_standard(
 }
 
 /// Single-thread Q5_K × Q8_K matrix-vector multiplication
-/// For decode (batch=1) where thread overhead dominates
+/// For decode (batch=1) where memory bandwidth is the bottleneck
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_q5_k_q8_k_single_thread(
     weights: &[BlockQ5K],
@@ -373,50 +365,14 @@ pub unsafe fn matmul_q5_k_q8_k_single_thread(
 ) {
     let nb = k / QK_K;
 
-    // Narrow path optimization for decode (m=1, typical hidden_size)
-    // Process multiple K blocks together to fit in L1 cache
-    // L1 = 31KB, so we can fit ~120 blocks of Q5_K (256 bytes each)
-    // Use k_extent = 31KB / (16 + m) floored to 256 multiples
-    let l1_size = 31 * 1024;
-    let rows_for_cache = if m < 16 { 16 } else { m };
-    let mut k_extent_bytes = l1_size / (16 + rows_for_cache);
-    k_extent_bytes = k_extent_bytes / QK_K * QK_K; // Floor to QK_K multiple
-
-    let narrow_k_blocks =
-        if k_extent_bytes > 0 { (k_extent_bytes / QK_K).min(nb) } else { nb };
-
-    // If narrow path is beneficial, use it
-    if narrow_k_blocks >= 4 && m == 1 {
-        // Narrow path: process multiple K blocks at once for better L1 utilization
-        // Each weight row is read in larger chunks
-        for row in 0..m {
-            let mut sum = 0.0f32;
-            let w_row = &weights[row * nb..(row + 1) * nb];
-
-            // Process K in chunks of narrow_k_blocks
-            for chunk_start in (0..nb).step_by(narrow_k_blocks) {
-                let chunk_end = (chunk_start + narrow_k_blocks).min(nb);
-
-                // Process this K chunk
-                for b in chunk_start..chunk_end {
-                    sum += vec_dot_q5_k_q8_k_neon(
-                        QK_K,
-                        std::slice::from_raw_parts(w_row.as_ptr().add(b), 1),
-                        &x[b..b + 1],
-                    );
-                }
-            }
-            dst[row] = sum;
-        }
-    } else {
-        // Standard path: one vec_dot per row
-        for row in 0..m {
-            dst[row] = vec_dot_q5_k_q8_k_neon(
-                k,
-                std::slice::from_raw_parts(weights.as_ptr().add(row * nb), nb),
-                x,
-            );
-        }
+    // Standard path: process each row independently
+    // For decode, this is simpler and more cache-friendly for large m
+    for row in 0..m {
+        dst[row] = vec_dot_q5_k_q8_k_neon(
+            k,
+            std::slice::from_raw_parts(weights.as_ptr().add(row * nb), nb),
+            x,
+        );
     }
 }
 
@@ -492,7 +448,9 @@ pub unsafe fn matmul_q5_k_q8_k_hybrid_with_threads(
     m: usize,
     n_threads: usize,
 ) {
-    if m <= 1 || n_threads == 1 {
+    // Empirical threshold: MT beneficial for m > 10000
+    // For m < 10000, thread overhead (~100µs) exceeds compute savings
+    if m <= 10000 || n_threads == 1 {
         matmul_q5_k_q8_k_single_thread(weights, x, dst, k, m);
     } else {
         let nb = k / QK_K;
@@ -850,7 +808,7 @@ unsafe fn matmul_iq4_xs_q8_k_standard(
 }
 
 /// Single-thread IQ4_XS × Q8_K matrix-vector multiplication
-/// For decode (batch=1) where thread overhead dominates
+/// For decode (batch=1) where memory bandwidth is the bottleneck
 #[target_feature(enable = "neon,dotprod")]
 pub unsafe fn matmul_iq4_xs_q8_k_single_thread(
     weights: &[BlockIQ4XS],
@@ -861,6 +819,8 @@ pub unsafe fn matmul_iq4_xs_q8_k_single_thread(
 ) {
     let nb = k / QK_K;
 
+    // Standard path: process each row independently
+    // For decode, this is simpler and more cache-friendly for large m
     for row in 0..m {
         dst[row] = vec_dot_iq4_xs_q8_k_neon(
             k,
@@ -899,7 +859,9 @@ pub unsafe fn matmul_iq4_xs_q8_k_hybrid_with_threads(
     m: usize,
     n_threads: usize,
 ) {
-    if m <= 1 || n_threads == 1 {
+    // Empirical threshold: MT beneficial for m > 10000
+    // For m < 10000, thread overhead (~100µs) exceeds compute savings
+    if m <= 10000 || n_threads == 1 {
         matmul_iq4_xs_q8_k_single_thread(weights, x, dst, k, m);
     } else {
         let nb = k / QK_K;

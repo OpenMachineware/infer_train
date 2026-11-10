@@ -13,10 +13,10 @@ use super::types::{BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K};
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct BlockQ4Kx8 {
-    pub d: [u16; 8],       // Super-block scales for 8 rows
-    pub dmin: [u16; 8],    // Super-block min scales for 8 rows
-    pub scales: [u8; 96],  // Scales and mins for 8 rows × 12 bytes each
-    pub qs: [u8; 1024],    // 4-bit quants: 8 rows × 128 bytes (full QK_K elements)
+    pub d: [u16; 8],      // Super-block scales for 8 rows
+    pub dmin: [u16; 8],   // Super-block min scales for 8 rows
+    pub scales: [u8; 96], // Scales and mins for 8 rows × 12 bytes each
+    pub qs: [u8; 1024], // 4-bit quants: 8 rows × 128 bytes (full QK_K elements)
 }
 
 /// Q5_K interleaved 8x4/8x8
@@ -27,8 +27,8 @@ pub struct BlockQ5Kx8 {
     pub d: [u16; 8],
     pub dmin: [u16; 8],
     pub scales: [u8; 96],
-    pub qh: [u8; 256],     // High bits: QK_K * 8 / 8 = 256
-    pub qs: [u8; 1024],    // Low 4 bits: QK_K * 8 / 2 = 1024
+    pub qh: [u8; 256],  // High bits: QK_K * 8 / 8 = 256
+    pub qs: [u8; 1024], // Low 4 bits: QK_K * 8 / 2 = 1024
 }
 
 /// Q6_K interleaved 8x4/8x8
@@ -46,8 +46,8 @@ pub struct BlockQ6Kx8 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepackType {
     None,
-    Interleave8x4,  // M1: NEON + dotprod, no i8mm
-    Interleave8x8,  // M2/M3/M4: NEON + i8mm
+    Interleave8x4, // M1: NEON + dotprod, no i8mm
+    Interleave8x8, // M2/M3/M4: NEON + i8mm
 }
 
 /// Detect optimal repack type based on CPU features and tensor dimensions
@@ -86,7 +86,10 @@ pub fn get_optimal_repack_type(dtype: &str, ne1: usize) -> RepackType {
         RepackType::None
     }
 
-    #[cfg(all(target_arch = "aarch64", not(any(target_feature = "matmul_int8", target_feature = "dotprod"))))]
+    #[cfg(all(
+        target_arch = "aarch64",
+        not(any(target_feature = "matmul_int8", target_feature = "dotprod"))
+    ))]
     {
         RepackType::None
     }
@@ -117,7 +120,7 @@ pub unsafe fn repack_q4k_to_interleaved(
     assert!(m % 8 == 0, "Rows must be multiple of 8");
     assert!(blck_size_interleave == 4 || blck_size_interleave == 8);
 
-    let n_interleaved = m / 8;  // Number of interleaved groups
+    let n_interleaved = m / 8; // Number of interleaved groups
 
     for i_group in 0..n_interleaved {
         let row_start = i_group * 8;
@@ -127,9 +130,8 @@ pub unsafe fn repack_q4k_to_interleaved(
             let dst = &mut dst_group[j];
 
             // Collect 8 source blocks
-            let src_blocks: [BlockQ4K; 8] = std::array::from_fn(|r| {
-                src[(row_start + r) * n + j]
-            });
+            let src_blocks: [BlockQ4K; 8] =
+                std::array::from_fn(|r| src[(row_start + r) * n + j]);
 
             // Copy d and dmin
             for r in 0..8 {
@@ -139,7 +141,7 @@ pub unsafe fn repack_q4k_to_interleaved(
 
             // Interleave qs field
             // Take blck_size_interleave bytes at a time from each of 8 rows
-            let end = (QK_K * 4) / blck_size_interleave;  // 128 for interleave=4, 64 for interleave=8
+            let end = (QK_K * 4) / blck_size_interleave; // 128 for interleave=4, 64 for interleave=8
             for i in 0..end {
                 let src_id = i % 8;
                 let src_offset = (i / 8) * blck_size_interleave;
@@ -186,8 +188,10 @@ pub unsafe fn repack_q4k_to_interleaved(
                 let mut m: [u8; 8] = [0; 8];
 
                 for j in 0..8 {
-                    s[j] = ((src_blocks[j].scales[i] & 192) >> 2) | (src_blocks[j].scales[i + 8] & 15);
-                    m[j] = ((src_blocks[j].scales[i + 4] & 192) >> 2) | ((src_blocks[j].scales[i + 8] & 240) >> 4);
+                    s[j] = ((src_blocks[j].scales[i] & 192) >> 2)
+                        | (src_blocks[j].scales[i + 8] & 15);
+                    m[j] = ((src_blocks[j].scales[i + 4] & 192) >> 2)
+                        | ((src_blocks[j].scales[i + 8] & 240) >> 4);
                 }
 
                 let base = i * 12 + 48;
@@ -219,16 +223,26 @@ mod tests {
     #[test]
     fn test_repack_type_detection() {
         // M1 should use 8x4
-        #[cfg(all(target_arch = "aarch64", target_feature = "dotprod", not(target_feature = "matmul_int8")))]
+        #[cfg(all(
+            target_arch = "aarch64",
+            target_feature = "dotprod",
+            not(target_feature = "matmul_int8")
+        ))]
         {
-            assert_eq!(get_optimal_repack_type("Q4_K", 1024), RepackType::Interleave8x4);
+            assert_eq!(
+                get_optimal_repack_type("Q4_K", 1024),
+                RepackType::Interleave8x4
+            );
             assert_eq!(get_optimal_repack_type("Q4_K", 7), RepackType::None); // Not multiple of 8
         }
 
         // M2+ should use 8x8
         #[cfg(all(target_arch = "aarch64", target_feature = "matmul_int8"))]
         {
-            assert_eq!(get_optimal_repack_type("Q4_K", 1024), RepackType::Interleave8x8);
+            assert_eq!(
+                get_optimal_repack_type("Q4_K", 1024),
+                RepackType::Interleave8x8
+            );
         }
 
         // Non-K-quant formats should not repack

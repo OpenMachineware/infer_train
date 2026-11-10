@@ -108,6 +108,8 @@ pub unsafe fn matmul_q5k_f32_pipelined(
                 barrier.wait();
 
                 // Phase 2: Parallel GEMM (work-stealing over rows)
+                // Each thread processes a chunk of rows, iterating through all columns
+                // This keeps weights in L2 cache while processing all n inputs
                 let mut row_idx = ith;
                 while row_idx < m {
                     let row_start = row_idx * row_chunk_size;
@@ -292,7 +294,7 @@ pub unsafe fn matmul_q4k_f32_pipelined(
                 // Wait for all threads to finish quantization
                 barrier.wait();
 
-                // Phase 2: Parallel GEMM
+                // Phase 2: Parallel GEMM (work-stealing over rows)
                 let mut row_idx = ith;
                 while row_idx < m {
                     let row_start = row_idx * row_chunk_size;
@@ -477,7 +479,7 @@ pub unsafe fn matmul_q6k_f32_pipelined(
                 // Wait for all threads to finish quantization
                 barrier.wait();
 
-                // Phase 2: Parallel GEMM
+                // Phase 2: Parallel GEMM (work-stealing over rows)
                 let mut row_idx = ith;
                 while row_idx < m {
                     let row_start = row_idx * row_chunk_size;

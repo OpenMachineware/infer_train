@@ -75,9 +75,11 @@ impl CpuWorkBuffers {
         value_length: usize,
         vocab_size: usize,
         qkv_out_size: usize,
-        _max_seq_len: usize,
+        max_seq_len: usize,
         n_layers: usize,
     ) -> Self {
+        // Use max_seq_len as max batch size for prefill
+        let max_batch_size = max_seq_len;
         let q_size = n_heads * head_dim;
         // Use key_length and value_length for K/V buffer sizes (Qwen3.8-style)
         // Fall back to head_dim if key_length/value_length are 0
@@ -127,18 +129,19 @@ impl CpuWorkBuffers {
             kv_dequant: vec![0.0; head_dim.max(key_length).max(value_length)], // Reusable K/V dequant buffer
             norm_weights: Vec::with_capacity(n_layers * 2 * hidden_size),
             norm_weight: vec![0.0; hidden_size],
-            // Batch prefill buffers - allocate for max 128 tokens
-            batch_residual: vec![0.0; 128 * hidden_size],
+            // Batch prefill buffers - allocate for max_batch_size tokens
+            batch_residual: vec![0.0; max_batch_size * hidden_size],
             qkv_batch_output: vec![
                 0.0;
-                128 * qkv_out_size.max(q_size + 2 * kv_size)
+                max_batch_size
+                    * qkv_out_size.max(q_size + 2 * kv_size)
             ],
-            q_batch_output: vec![0.0; 128 * q_size],
-            k_batch_output: vec![0.0; 128 * kv_size],
-            v_batch_output: vec![0.0; 128 * kv_size],
-            attn_batch_output: vec![0.0; 128 * attn_out_size],
-            ffn_gate_batch: vec![0.0; 128 * intermediate_size],
-            ffn_up_batch: vec![0.0; 128 * intermediate_size],
+            q_batch_output: vec![0.0; max_batch_size * q_size],
+            k_batch_output: vec![0.0; max_batch_size * kv_size],
+            v_batch_output: vec![0.0; max_batch_size * kv_size],
+            attn_batch_output: vec![0.0; max_batch_size * attn_out_size],
+            ffn_gate_batch: vec![0.0; max_batch_size * intermediate_size],
+            ffn_up_batch: vec![0.0; max_batch_size * intermediate_size],
             flash_attn_prefill: FlashAttnPrefillScratch::new(head_dim),
             // Pre-allocate per-thread scratch for multithreaded flash attention
             flash_attn_prefill_threads: (0..crate::cpu::default_n_threads())

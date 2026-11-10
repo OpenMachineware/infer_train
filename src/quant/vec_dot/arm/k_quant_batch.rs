@@ -15,7 +15,7 @@
 //! Total: 1152 bytes = 8 × 144 bytes (standard Q4_K block size)
 
 use super::fp::fp16_to_fp32;
-use crate::quant::types::{BlockQ4K, BlockQ8K, QK_K};
+use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K};
 use std::arch::aarch64::*;
 
 /// Q4_K interleaved block: 8 rows stored together
@@ -541,4 +541,482 @@ pub unsafe fn vec_dot_q4_k_q8_k_interleaved(
     num_rows: usize,
 ) {
     gemv_q4_k_interleaved(weights_interleaved, x, dst, k, num_rows);
+}
+
+/// Q5_K interleaved block: 8 rows stored together
+/// Layout matches llama.cpp's block_q5_Kx8
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BlockQ5Kx8 {
+    pub d: [u16; 8],      // Super-block scales for 8 rows (16 bytes)
+    pub dmin: [u16; 8],   // Super-block mins for 8 rows (16 bytes)
+    pub scales: [u8; 96], // Scales and mins, 6-bit packed (96 bytes)
+    pub qh: [u8; 256],    // High bits, interleaved (256 bytes)
+    pub qs: [u8; 1024],   // Low 4-bit quants, interleaved (1024 bytes)
+}
+
+const _: () = assert!(
+    std::mem::size_of::<BlockQ5Kx8>() == 1408,
+    "BlockQ5Kx8 size mismatch"
+);
+
+/// Repack 8 Q5_K blocks into interleaved format
+/// Direct port of llama.cpp's make_block_q5_Kx8 from repack.cpp
+pub fn repack_q5_k_to_interleaved(input: &[BlockQ5K; 8]) -> BlockQ5Kx8 {
+    let mut out: BlockQ5Kx8 = unsafe { std::mem::zeroed() };
+
+    // Copy d and dmin values
+    for i in 0..8 {
+        out.d[i] = input[i].d;
+        out.dmin[i] = input[i].dmin;
+    }
+
+    // Interleave qs bytes - same as Q4_K
+    const BLCK_SIZE_INTERLEAVE: usize = 8;
+    const END: usize = QK_K * 4 / BLCK_SIZE_INTERLEAVE; // 128 iterations
+
+    for i in 0..END {
+        let src_id = i % 8;
+        let src_offset = (i / 8) * BLCK_SIZE_INTERLEAVE;
+        let dst_offset = i * BLCK_SIZE_INTERLEAVE;
+
+        out.qs[dst_offset..dst_offset + BLCK_SIZE_INTERLEAVE].copy_from_slice(
+            &input[src_id].qs[src_offset..src_offset + BLCK_SIZE_INTERLEAVE],
+        );
+    }
+
+    // Interleave qh bytes - same pattern as qs, but with fewer iterations
+    // qh is 32 bytes per row (1/4 of qs), so we need end/4 iterations
+    const QH_END: usize = END / 4; // 32 iterations for qh
+
+    for i in 0..QH_END {
+        let src_id = i % 8;
+        let src_offset = (i / 8) * BLCK_SIZE_INTERLEAVE;
+        let dst_offset = i * BLCK_SIZE_INTERLEAVE;
+
+        out.qh[dst_offset..dst_offset + BLCK_SIZE_INTERLEAVE].copy_from_slice(
+            &input[src_id].qh[src_offset..src_offset + BLCK_SIZE_INTERLEAVE],
+        );
+    }
+
+    // Repack scales and mins - same 6-bit packed format as Q4_K
+    for i in 0..4 {
+        let mut s = [0u8; 8];
+        let mut m = [0u8; 8];
+
+        for j in 0..8 {
+            s[j] = input[j].scales[i] & 63;
+            m[j] = input[j].scales[i + 4] & 63;
+        }
+
+        out.scales[i * 12] = (s[0] & 63) + ((s[4] & 48) << 2);
+        out.scales[i * 12 + 1] = (s[1] & 63) + ((s[5] & 48) << 2);
+        out.scales[i * 12 + 2] = (s[2] & 63) + ((s[6] & 48) << 2);
+        out.scales[i * 12 + 3] = (s[3] & 63) + ((s[7] & 48) << 2);
+        out.scales[i * 12 + 4] = (m[0] & 63) + ((m[4] & 48) << 2);
+        out.scales[i * 12 + 5] = (m[1] & 63) + ((m[5] & 48) << 2);
+        out.scales[i * 12 + 6] = (m[2] & 63) + ((m[6] & 48) << 2);
+        out.scales[i * 12 + 7] = (m[3] & 63) + ((m[7] & 48) << 2);
+        out.scales[i * 12 + 8] = (s[4] & 15) + ((m[4] & 15) << 4);
+        out.scales[i * 12 + 9] = (s[5] & 15) + ((m[5] & 15) << 4);
+        out.scales[i * 12 + 10] = (s[6] & 15) + ((m[6] & 15) << 4);
+        out.scales[i * 12 + 11] = (s[7] & 15) + ((m[7] & 15) << 4);
+    }
+
+    for i in 0..4 {
+        let mut s = [0u8; 8];
+        let mut m = [0u8; 8];
+
+        for j in 0..8 {
+            s[j] = ((input[j].scales[i] & 192) >> 2)
+                | (input[j].scales[i + 8] & 15);
+            m[j] = ((input[j].scales[i + 4] & 192) >> 2)
+                | ((input[j].scales[i + 8] & 240) >> 4);
+        }
+
+        let base = i * 12 + 48;
+        out.scales[base] = (s[0] & 63) + ((s[4] & 48) << 2);
+        out.scales[base + 1] = (s[1] & 63) + ((s[5] & 48) << 2);
+        out.scales[base + 2] = (s[2] & 63) + ((s[6] & 48) << 2);
+        out.scales[base + 3] = (s[3] & 63) + ((s[7] & 48) << 2);
+        out.scales[base + 4] = (m[0] & 63) + ((m[4] & 48) << 2);
+        out.scales[base + 5] = (m[1] & 63) + ((m[5] & 48) << 2);
+        out.scales[base + 6] = (m[2] & 63) + ((m[6] & 48) << 2);
+        out.scales[base + 7] = (m[3] & 63) + ((m[7] & 48) << 2);
+        out.scales[base + 8] = (s[4] & 15) + ((m[4] & 15) << 4);
+        out.scales[base + 9] = (s[5] & 15) + ((m[5] & 15) << 4);
+        out.scales[base + 10] = (s[6] & 15) + ((m[6] & 15) << 4);
+        out.scales[base + 11] = (s[7] & 15) + ((m[7] & 15) << 4);
+    }
+
+    out
+}
+
+/// Interleaved GEMV for Q5_K: process 8 rows at once
+/// Direct port of llama.cpp's ggml_gemv_q5_K_8x4_q8_K from arch/arm/repack.cpp
+#[target_feature(enable = "neon,dotprod")]
+/// Load 8 bytes and duplicate to fill 16-byte vector
+/// Equivalent to vld1q_dup_s64 in C
+#[target_feature(enable = "neon")]
+unsafe fn vld1q_dup_s64(ptr: *const i8) -> int8x16_t {
+    let val = vld1_s64(ptr as *const i64);
+    vreinterpretq_s8_s64(vcombine_s64(val, val))
+}
+
+/// Interleaved GEMV for Q5_K: process 8 rows at once
+/// Direct port of llama.cpp's ggml_gemv_q5_K_8x8_q8_K from arch/arm/repack.cpp
+/// Uses the unrolled version with duplicated Q8 values
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn gemv_q5_k_interleaved(
+    weights: &[BlockQ5Kx8],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    num_rows: usize,
+) {
+    let nb = k / QK_K;
+    const NCOLS_INTERLEAVED: usize = 8;
+    const COL_PAIRS: usize = 4; // 4 column pairs, each processes 2 rows
+
+    let m4b = vdupq_n_u8(0x0f);
+    let mone = vdupq_n_u8(1);
+    let mtwo = vdupq_n_u8(2);
+
+    // Process 8 rows at a time
+    for row_group_start in (0..num_rows).step_by(NCOLS_INTERLEAVED) {
+        let x_group = row_group_start / NCOLS_INTERLEAVED;
+
+        // Accumulators for 2 groups of 4 rows each
+        let mut acc_f32 = [vdupq_n_f32(0.0f32); 2];
+
+        // Process each block of K elements
+        for b in 0..nb {
+            let w_block = &weights[x_group * nb + b];
+            let x_block = &x[b];
+
+            // Load super-block scales (convert u16 f16 bits to f32)
+            // fp16_to_fp32 uses NEON fcvt internally
+            let d_f32: [f32; 8] =
+                std::array::from_fn(|i| fp16_to_fp32(w_block.d[i]));
+            let dmin_f32: [f32; 8] =
+                std::array::from_fn(|i| fp16_to_fp32(w_block.dmin[i]));
+
+            let q8_d = x_block.d;
+
+            // Build scale vectors for rows 0-3 and 4-7
+            let sb_scale_0 = vmulq_n_f32(vld1q_f32(d_f32.as_ptr()), q8_d);
+            let sb_scale_1 =
+                vmulq_n_f32(vld1q_f32(d_f32.as_ptr().add(4)), q8_d);
+
+            let sb_min_0 = vmulq_n_f32(vld1q_f32(dmin_f32.as_ptr()), q8_d);
+            let sb_min_1 =
+                vmulq_n_f32(vld1q_f32(dmin_f32.as_ptr().add(4)), q8_d);
+
+            // Compute bsums
+            let bsums = vpaddq_s16(
+                vld1q_s16(x_block.bsums.as_ptr()),
+                vld1q_s16(x_block.bsums.as_ptr().add(8)),
+            );
+            let bsums_arr: [i16; 8] = std::mem::transmute(bsums);
+
+            // Pre-load qh for all 4 column pairs
+            let mut qh: [[uint8x16_t; 4]; COL_PAIRS] =
+                [[vdupq_n_u8(0); 4]; COL_PAIRS];
+            for cp in 0..COL_PAIRS {
+                for i in 0..4 {
+                    qh[cp][i] =
+                        vld1q_u8(w_block.qh.as_ptr().add(i * 32 + 16 * cp));
+                }
+            }
+
+            // Process 4 subblocks (each 64 elements)
+            for sb in 0..4 {
+                let mut acc_lo = [vdupq_n_s32(0); COL_PAIRS];
+                let mut acc_hi = [vdupq_n_s32(0); COL_PAIRS];
+
+                // Decode scales and mins for this subblock
+                let offset = sb * 24;
+                let mut aux_scales = [0u8; 16];
+                let mut aux_mins = [0u8; 16];
+
+                for col_set in 0..2 {
+                    let scale_ptr =
+                        w_block.scales.as_ptr().add(offset + col_set * 12);
+
+                    let mut aux = [0u32; 3];
+                    std::ptr::copy_nonoverlapping(
+                        scale_ptr,
+                        aux.as_mut_ptr() as *mut u8,
+                        12,
+                    );
+
+                    const KMASK1: u32 = 0x3f3f3f3f;
+                    const KMASK2: u32 = 0x0f0f0f0f;
+                    const KMASK3: u32 = 0x03030303;
+
+                    let scales_0_3 = aux[0] & KMASK1;
+                    let scales_4_7 =
+                        (aux[2] & KMASK2) | (((aux[0] >> 6) & KMASK3) << 4);
+
+                    std::ptr::copy_nonoverlapping(
+                        &scales_0_3 as *const u32 as *const u8,
+                        aux_scales.as_mut_ptr().add(col_set * 8),
+                        4,
+                    );
+                    std::ptr::copy_nonoverlapping(
+                        &scales_4_7 as *const u32 as *const u8,
+                        aux_scales.as_mut_ptr().add(col_set * 8 + 4),
+                        4,
+                    );
+
+                    let mins_0_3 = aux[1] & KMASK1;
+                    let mins_4_7 = ((aux[2] >> 4) & KMASK2)
+                        | (((aux[1] >> 6) & KMASK3) << 4);
+
+                    std::ptr::copy_nonoverlapping(
+                        &mins_0_3 as *const u32 as *const u8,
+                        aux_mins.as_mut_ptr().add(col_set * 8),
+                        4,
+                    );
+                    std::ptr::copy_nonoverlapping(
+                        &mins_4_7 as *const u32 as *const u8,
+                        aux_mins.as_mut_ptr().add(col_set * 8 + 4),
+                        4,
+                    );
+                }
+
+                let q5sb_scales_0 =
+                    vmovl_s8(vld1_s8(aux_scales.as_ptr() as *const i8));
+                let q5sb_scales_1 =
+                    vmovl_s8(vld1_s8(aux_scales.as_ptr().add(8) as *const i8));
+                let q5sb_mins_0 =
+                    vreinterpretq_s16_u16(vmovl_u8(vld1_u8(aux_mins.as_ptr())));
+                let q5sb_mins_1 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(
+                    aux_mins.as_ptr().add(8),
+                )));
+
+                // Load Q5 quants base for this subblock
+                let qs_base = w_block.qs.as_ptr().add(sb * QK_K);
+
+                // Load Q8 values - DUPLICATE 8 bytes into 16-byte vector
+                let q8_base = x_block.qs.as_ptr().add(sb * 64);
+                let mut q8_qs: [int8x16_t; 8] = [vdupq_n_s8(0); 8];
+                for i in 0..8 {
+                    q8_qs[i] = vld1q_dup_s64(q8_base.add(i * 8));
+                }
+
+                // Process all 4 column pairs
+                for cp in 0..COL_PAIRS {
+                    // Determine qs offsets based on column pair
+                    let qs_offset = 16 * cp;
+
+                    // Load qs from 4 offsets (0, 64, 128, 192) + qs_offset
+                    let qs_0 = vld1q_u8(qs_base.add(qs_offset));
+                    let qs_1 = vld1q_u8(qs_base.add(qs_offset + 64));
+                    let qs_2 = vld1q_u8(qs_base.add(qs_offset + 128));
+                    let qs_3 = vld1q_u8(qs_base.add(qs_offset + 192));
+
+                    // Extract high bits from qh[cp]
+                    let hbit_lo_0 = vandq_u8(qh[cp][0], mone);
+                    let hbit_lo_1 = vandq_u8(qh[cp][1], mone);
+                    let hbit_lo_2 = vandq_u8(qh[cp][2], mone);
+                    let hbit_lo_3 = vandq_u8(qh[cp][3], mone);
+                    let hbit_hi_0 = vshlq_n_u8(vandq_u8(qh[cp][0], mtwo), 3);
+                    let hbit_hi_1 = vshlq_n_u8(vandq_u8(qh[cp][1], mtwo), 3);
+                    let hbit_hi_2 = vshlq_n_u8(vandq_u8(qh[cp][2], mtwo), 3);
+                    let hbit_hi_3 = vshlq_n_u8(vandq_u8(qh[cp][3], mtwo), 3);
+
+                    // Shift qh for next subblock
+                    qh[cp][0] = vshrq_n_u8(qh[cp][0], 2);
+                    qh[cp][1] = vshrq_n_u8(qh[cp][1], 2);
+                    qh[cp][2] = vshrq_n_u8(qh[cp][2], 2);
+                    qh[cp][3] = vshrq_n_u8(qh[cp][3], 2);
+
+                    // Low nibbles: (qs & 0x0f) | (hbit_lo << 4)
+                    acc_lo[cp] = vdotq_s32_manual(
+                        acc_lo[cp],
+                        vreinterpretq_s8_u8(vsliq_n_u8(
+                            vandq_u8(qs_0, m4b),
+                            hbit_lo_0,
+                            4,
+                        )),
+                        q8_qs[0],
+                    );
+                    acc_lo[cp] = vdotq_s32_manual(
+                        acc_lo[cp],
+                        vreinterpretq_s8_u8(vsliq_n_u8(
+                            vandq_u8(qs_1, m4b),
+                            hbit_lo_1,
+                            4,
+                        )),
+                        q8_qs[1],
+                    );
+                    acc_lo[cp] = vdotq_s32_manual(
+                        acc_lo[cp],
+                        vreinterpretq_s8_u8(vsliq_n_u8(
+                            vandq_u8(qs_2, m4b),
+                            hbit_lo_2,
+                            4,
+                        )),
+                        q8_qs[2],
+                    );
+                    acc_lo[cp] = vdotq_s32_manual(
+                        acc_lo[cp],
+                        vreinterpretq_s8_u8(vsliq_n_u8(
+                            vandq_u8(qs_3, m4b),
+                            hbit_lo_3,
+                            4,
+                        )),
+                        q8_qs[3],
+                    );
+
+                    // High nibbles: (qs >> 4) | hbit_hi
+                    acc_hi[cp] = vdotq_s32_manual(
+                        acc_hi[cp],
+                        vreinterpretq_s8_u8(vorrq_u8(
+                            vshrq_n_u8(qs_0, 4),
+                            hbit_hi_0,
+                        )),
+                        q8_qs[4],
+                    );
+                    acc_hi[cp] = vdotq_s32_manual(
+                        acc_hi[cp],
+                        vreinterpretq_s8_u8(vorrq_u8(
+                            vshrq_n_u8(qs_1, 4),
+                            hbit_hi_1,
+                        )),
+                        q8_qs[5],
+                    );
+                    acc_hi[cp] = vdotq_s32_manual(
+                        acc_hi[cp],
+                        vreinterpretq_s8_u8(vorrq_u8(
+                            vshrq_n_u8(qs_2, 4),
+                            hbit_hi_2,
+                        )),
+                        q8_qs[6],
+                    );
+                    acc_hi[cp] = vdotq_s32_manual(
+                        acc_hi[cp],
+                        vreinterpretq_s8_u8(vorrq_u8(
+                            vshrq_n_u8(qs_3, 4),
+                            hbit_hi_3,
+                        )),
+                        q8_qs[7],
+                    );
+                }
+
+                // Apply scales using pairwise add
+                // p=0 -> rows 0123, p=2 -> rows 4567
+                let bsums_vec_lo = vdup_n_s16(bsums_arr[2 * sb]);
+                let bsums_vec_hi = vdup_n_s16(bsums_arr[2 * sb + 1]);
+
+                for (i, p) in [0, 2].iter().enumerate() {
+                    let p = *p;
+                    let group_scales_lo = if p == 0 {
+                        vget_low_s16(q5sb_scales_0)
+                    } else {
+                        vget_high_s16(q5sb_scales_0)
+                    };
+                    let group_scales_hi = if p == 0 {
+                        vget_low_s16(q5sb_scales_1)
+                    } else {
+                        vget_high_s16(q5sb_scales_1)
+                    };
+                    let group_mins_lo = if p == 0 {
+                        vget_low_s16(q5sb_mins_0)
+                    } else {
+                        vget_high_s16(q5sb_mins_0)
+                    };
+                    let group_mins_hi = if p == 0 {
+                        vget_low_s16(q5sb_mins_1)
+                    } else {
+                        vget_high_s16(q5sb_mins_1)
+                    };
+                    let sb_scale = if p == 0 { sb_scale_0 } else { sb_scale_1 };
+                    let sb_min = if p == 0 { sb_min_0 } else { sb_min_1 };
+
+                    // Pairwise add column pairs
+                    let sumf_0 = vcvtq_f32_s32(vmulq_s32(
+                        vmovl_s16(group_scales_lo),
+                        vpaddq_s32(acc_lo[p], acc_lo[p + 1]),
+                    ));
+                    acc_f32[i] = vfmaq_f32(acc_f32[i], sb_scale, sumf_0);
+
+                    let sumf_1 = vcvtq_f32_s32(vmulq_s32(
+                        vmovl_s16(group_scales_hi),
+                        vpaddq_s32(acc_hi[p], acc_hi[p + 1]),
+                    ));
+                    acc_f32[i] = vfmaq_f32(acc_f32[i], sb_scale, sumf_1);
+
+                    // Fused bias
+                    let bias = vmull_s16(bsums_vec_lo, group_mins_lo);
+                    let bias = vmlal_s16(bias, bsums_vec_hi, group_mins_hi);
+                    acc_f32[i] =
+                        vmlsq_f32(acc_f32[i], sb_min, vcvtq_f32_s32(bias));
+                }
+            }
+        }
+
+        // Store results
+        vst1q_f32(dst.as_mut_ptr().add(row_group_start), acc_f32[0]);
+        vst1q_f32(dst.as_mut_ptr().add(row_group_start + 4), acc_f32[1]);
+    }
+}
+
+/// Repack Q5_K weights to interleaved format (batch version)
+pub fn repack_q5_k_batch(
+    src: &[BlockQ5K],
+    n_rows: usize,
+    n_blocks_per_row: usize,
+) -> Vec<BlockQ5Kx8> {
+    assert!(n_rows % 8 == 0, "Rows must be multiple of 8 for interleaving");
+
+    let n_interleaved = (n_rows / 8) * n_blocks_per_row;
+    let mut dst = Vec::with_capacity(n_interleaved);
+
+    for row_group in (0..n_rows).step_by(8) {
+        for block_idx in 0..n_blocks_per_row {
+            // Gather 8 blocks from 8 rows
+            let mut blocks: [BlockQ5K; 8] = unsafe { std::mem::zeroed() };
+            for row_in_group in 0..8 {
+                let src_idx =
+                    (row_group + row_in_group) * n_blocks_per_row + block_idx;
+                blocks[row_in_group] = src[src_idx];
+            }
+            dst.push(repack_q5_k_to_interleaved(&blocks));
+        }
+    }
+
+    dst
+}
+
+/// Interleaved GEMV using the new format
+pub unsafe fn vec_dot_q5_k_q8_k_interleaved(
+    weights_interleaved: &[BlockQ5Kx8],
+    x: &[BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    num_rows: usize,
+) {
+    gemv_q5_k_interleaved(weights_interleaved, x, dst, k, num_rows);
+}
+
+/// Q6_K interleaved block: 8 rows stored together
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BlockQ6Kx8 {
+    pub d: [u16; 8],       // Super-block scales for 8 rows (16 bytes)
+    pub scales: [i8; 128], // Scales: QK_K / 16 * 8 = 128 bytes
+    pub ql: [u8; 1024],    // Lower 4 bits: QK_K / 2 * 8 = 1024 bytes
+    pub qh: [u8; 512],     // Upper 2 bits: QK_K / 4 * 8 = 512 bytes
+}
+
+const _: () = assert!(
+    std::mem::size_of::<BlockQ6Kx8>() == 1680,
+    "BlockQ6Kx8 size mismatch"
+);
+
+/// Repack 8 Q6_K blocks into interleaved format (structure ready, kernel TODO)
+pub fn repack_q6_k_to_interleaved(_input: &[BlockQ6K; 8]) -> BlockQ6Kx8 {
+    todo!("Q6_K interleaved repack implementation needed")
 }

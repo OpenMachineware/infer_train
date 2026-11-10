@@ -1,5 +1,6 @@
 // Measure GEMM/GEMV kernel performance in isolation
 use infer_train::quant::types::{BlockQ5K, BlockQ8K, QK_K};
+use infer_train::model::tensor::{DataType, Tensor};
 use std::time::Instant;
 
 fn main() {
@@ -15,21 +16,12 @@ fn main() {
     for &m in &m_values {
         println!("--- m = {} (k = {}) ---", m, k);
         for &n in &n_values {
-            // Create test data
+            // Create test data for old tiled implementation
             let weights: Vec<BlockQ5K> = vec![unsafe { std::mem::zeroed() }; m * nb];
             let inputs: Vec<BlockQ8K> = vec![unsafe { std::mem::zeroed() }; n * nb];
             let mut outputs: Vec<f32> = vec![0.0; n * m];
 
-            // Warmup
-            for _ in 0..3 {
-                unsafe {
-                    infer_train::quant::matmul::tiled::matmul_q5k_q8k_tiled(
-                        &weights, &inputs, &mut outputs, k, m, n
-                    );
-                }
-            }
-
-            // Benchmark
+            // Test old tiled implementation
             let iters = if n == 1 { 100 } else { 20 };
             let start = Instant::now();
             for _ in 0..iters {
@@ -39,14 +31,39 @@ fn main() {
                     );
                 }
             }
-            let elapsed = start.elapsed();
-
-            // Calculate metrics
+            let tiled_elapsed = start.elapsed();
             let flops = 2.0 * m as f64 * k as f64 * n as f64 * iters as f64;
-            let gflops = flops / elapsed.as_secs_f64() / 1e9;
-            let ms_per_call = elapsed.as_secs_f64() * 1000.0 / iters as f64;
+            let tiled_gflops = flops / tiled_elapsed.as_secs_f64() / 1e9;
+            let tiled_ms = tiled_elapsed.as_secs_f64() * 1000.0 / iters as f64;
 
-            println!("  n={}: {:.2} ms/call, {:.1} GFLOPS", n, ms_per_call, gflops);
+            // Test new unified dispatcher (gemm_dispatch)
+            // Create Tensor wrapper for weights
+            let weights_tensor = Tensor {
+                bytes: bytemuck::cast_slice(&weights).to_vec(),
+                shape: vec![k, m], // [K, M] in GGUF
+                dtype: DataType::Q5_K,
+            };
+
+            // Create F32 inputs for gemm_dispatch (it handles quantization internally)
+            let inputs_f32: Vec<f32> = vec![0.0; n * k];
+            let mut outputs_new: Vec<f32> = vec![0.0; n * m];
+
+            let start = Instant::now();
+            for _ in 0..iters {
+                infer_train::quant::gemm::gemv_dispatch(
+                    &mut outputs_new,
+                    &weights_tensor,
+                    &inputs_f32,
+                    4, // threads
+                    None, None
+                );
+            }
+            let dispatch_elapsed = start.elapsed();
+            let dispatch_gflops = flops / dispatch_elapsed.as_secs_f64() / 1e9;
+            let dispatch_ms = dispatch_elapsed.as_secs_f64() * 1000.0 / iters as f64;
+
+            println!("  n={}: tiled={:.2}ms ({:.1}GF), dispatch={:.2}ms ({:.1}GF)",
+                     n, tiled_ms, tiled_gflops, dispatch_ms, dispatch_gflops);
         }
     }
 

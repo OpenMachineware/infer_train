@@ -296,7 +296,7 @@ impl CpuExecutor {
             return None;
         }
 
-        if !model.gemv_into_with_buffers_single_thread(
+        if !model.gemv_into_with_buffers(
             &self.normed,
             model.output.as_ref()?,
             &mut self.logits,
@@ -403,7 +403,7 @@ impl CpuExecutor {
         self.forward_attention(layer_idx, kv_cache)?;
 
         // 5. Output projection
-        model.gemv_into_with_buffers_single_thread(
+        model.gemv_into_with_buffers(
             &self.attn_out,
             layer.wo.as_ref()?,
             &mut self.hidden_alt,
@@ -442,11 +442,11 @@ impl CpuExecutor {
     ) -> Option<()> {
         if self.uses_mla {
             // MLA (Multi-head Latent Attention) - DeepSeek-Coder-V2 style
-            // Use zero-allocation GEMV with pre-allocated buffers
+            // Use multi-threaded GEMV for better performance on large matrices
 
             // 1. Q projection
             let wq = layer.wq.as_ref()?;
-            if !model.gemv_into_with_buffers_single_thread(
+            if !model.gemv_into_with_buffers(
                 &self.normed,
                 wq,
                 &mut self.q,
@@ -459,7 +459,7 @@ impl CpuExecutor {
 
             // 2. KV_A projection (compressed)
             let kv_a = layer.attn_kv_a_mqa.as_ref()?;
-            if !model.gemv_into_with_buffers_single_thread(
+            if !model.gemv_into_with_buffers(
                 &self.normed,
                 kv_a,
                 &mut self.kv_a_proj,
@@ -490,7 +490,7 @@ impl CpuExecutor {
 
             // 4. KV_B projection (decompress to full KV)
             let kv_b = layer.attn_kv_b.as_ref()?;
-            if !model.gemv_into_with_buffers_single_thread(
+            if !model.gemv_into_with_buffers(
                 &self.kv_a_normed,
                 kv_b,
                 &mut self.kv,
