@@ -356,7 +356,7 @@ impl DequantizeToFP32 for crate::quant::types::BlockQ5K {
 }
 
 #[cfg(target_os = "macos")]
-pub fn gemm_blas<T: DequantizeToFP32>(
+pub fn gemm_blas<T: DequantizeToFP32 + 'static>(
     c: &mut [f32],
     a: &[T],
     b: &[f32],
@@ -379,15 +379,15 @@ pub fn gemm_blas<T: DequantizeToFP32>(
         (work.as_mut_ptr(), work.len())
     });
 
-    // Dequantize in parallel
+    // Dequantize in parallel using persistent ThreadPool
     if threads > 1 {
-        use crate::cpu::{SyncPtr, parallel_chunks};
+        use crate::cpu::{SyncPtr, parallel_chunks_pool};
         let k_per_block = T::values_per_block();
         let nb = k / k_per_block;
         let a_ptr = SyncPtr::new(a.as_ptr() as *mut T);
         let a_f32_ptr = SyncPtr::new(a_f32_ptr);
         unsafe {
-            parallel_chunks(m, threads, move |start, end| {
+            parallel_chunks_pool(m, 64, threads, move |start, end| {
                 for i in start..end {
                     let row_a = a_ptr.get().add(i * nb);
                     let row_dst = a_f32_ptr.get().add(i * k);

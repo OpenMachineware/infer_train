@@ -14,8 +14,8 @@ pub use flash_attention::{
 };
 pub use thread_pool::{
     SpinBarrier, SyncPtr, ThreadConfig, ThreadPool, ThreadPoolState,
-    default_n_threads, global_pool, parallel_chunks, parallel_chunks_sized,
-    parallel_work_stealing,
+    default_n_threads, global_pool, parallel_chunks, parallel_chunks_pool,
+    parallel_chunks_sized, parallel_work_stealing,
 };
 // Re-export tiled GEMV from quant::matmul::tiled
 pub use crate::quant::matmul::tiled::{
