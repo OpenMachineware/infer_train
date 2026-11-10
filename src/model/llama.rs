@@ -4590,19 +4590,30 @@ impl LlamaModel {
         head_dim: usize,
         out: &mut [f32],
     ) -> Option<()> {
+        // Precompute theta_scale once (llama.cpp optimization)
+        // theta_scale = freq_base^(-2/dim), where freq_base = 10000
+        const FREQ_BASE: f32 = 10000.0;
+        let theta_scale = FREQ_BASE.powf(-2.0 / head_dim as f32);
+
+        // Apply RoPE - use multiplication instead of powf per element
         for h in 0..n_heads {
+            let base_idx = h * head_dim;
+            let mut theta = pos as f32 * theta_scale;
+
             for d in (0..head_dim).step_by(2) {
-                let idx = h * head_dim + d;
-                // freq = 1 / (theta_base^(d/dim))
-                let freq = 1.0f32 / 10000.0f32.powf(d as f32 / head_dim as f32);
-                let theta = pos as f32 * freq;
+                let idx = base_idx + d;
                 let cos_theta = theta.cos();
                 let sin_theta = theta.sin();
 
                 if d + 1 < head_dim {
-                    out[idx] = x[idx] * cos_theta - x[idx + 1] * sin_theta;
-                    out[idx + 1] = x[idx] * sin_theta + x[idx + 1] * cos_theta;
+                    let x0 = x[idx];
+                    let x1 = x[idx + 1];
+                    out[idx] = x0 * cos_theta - x1 * sin_theta;
+                    out[idx + 1] = x0 * sin_theta + x1 * cos_theta;
                 }
+
+                // Multiply for next dimension (much faster than powf)
+                theta *= theta_scale;
             }
         }
         Some(())
@@ -4616,11 +4627,16 @@ impl LlamaModel {
         n_heads: usize,
         head_dim: usize,
     ) -> Option<()> {
+        // Precompute theta_scale once (llama.cpp optimization)
+        const FREQ_BASE: f32 = 10000.0;
+        let theta_scale = FREQ_BASE.powf(-2.0 / head_dim as f32);
+
         for h in 0..n_heads {
+            let base_idx = h * head_dim;
+            let mut theta = pos as f32 * theta_scale;
+
             for d in (0..head_dim).step_by(2) {
-                let idx = h * head_dim + d;
-                let freq = 1.0f32 / 10000.0f32.powf(d as f32 / head_dim as f32);
-                let theta = pos as f32 * freq;
+                let idx = base_idx + d;
                 let cos_theta = theta.cos();
                 let sin_theta = theta.sin();
 
@@ -4630,6 +4646,8 @@ impl LlamaModel {
                     x[idx] = x0 * cos_theta - x1 * sin_theta;
                     x[idx + 1] = x0 * sin_theta + x1 * cos_theta;
                 }
+
+                theta *= theta_scale;
             }
         }
         Some(())
