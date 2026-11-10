@@ -110,14 +110,37 @@ pub unsafe fn matmul_q4_k_q8_k_single_thread(
     k: usize,
     m: usize,
 ) {
-    let nb = k / QK_K;
+    // Check if interleaved GEMV is applicable and profitable
+    // Condition: m must be multiple of 8 (interleave factor)
+    const INTERLEAVE_ROWS: usize = 8;
 
-    for row in 0..m {
-        dst[row] = vec_dot_q4_k_q8_k_neon(
-            k,
-            std::slice::from_raw_parts(weights.as_ptr().add(row * nb), nb),
-            x,
-        );
+    if m % INTERLEAVE_ROWS == 0 {
+        // Use interleaved GEMV for better cache locality
+        use crate::quant::vec_dot::arm::k_quant_batch::{
+            gemv_q4_k_interleaved, repack_q4_k_batch,
+        };
+
+        // Get or create interleaved weights from cache
+        let key = weights.as_ptr() as usize;
+        let cache = Q4K_INTERLEAVED_CACHE.clone();
+        let mut cache_guard = cache.lock().unwrap();
+        let weights_interleaved = cache_guard.entry(key).or_insert_with(|| {
+            let nb = k / QK_K;
+            repack_q4_k_batch(weights, m, nb)
+        });
+
+        gemv_q4_k_interleaved(weights_interleaved, x, dst, k, m);
+    } else {
+        // Fall back to standard single-row processing
+        let nb = k / QK_K;
+
+        for row in 0..m {
+            dst[row] = vec_dot_q4_k_q8_k_neon(
+                k,
+                std::slice::from_raw_parts(weights.as_ptr().add(row * nb), nb),
+                x,
+            );
+        }
     }
 }
 
