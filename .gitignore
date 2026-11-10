@@ -22,10 +22,9 @@ devstral-fix.jinja
 *.bak
 
 llama.cpp-0.9.0/
-llvm-project-llvmorg-23.1.0/
-vllm-0.32.0/
+vllm-0.33.0rc3/
 muser/
-Strata-0.2.9/
+Strata-0.2.13/
 
 # Added by cargo
 target/
