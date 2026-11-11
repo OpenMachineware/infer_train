@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
-use crate::backend::operator::{Cost, Operator, OperatorResult};
-use crate::backend::{Backend, Device, DeviceId, MemoryRegionId};
+use crate::backend::operator::{CoreOperator, Cost, OperatorResult};
+use crate::backend::{Backend, Device, DeviceId, MemoryRegionId, TensorRef};
 
 /// Single device execution strategy.
 ///
@@ -41,15 +41,15 @@ impl SingleDeviceStrategy {
     /// Execute an operator.
     pub fn execute(
         &self,
-        op: &dyn Operator,
-        inputs: &[crate::backend::TensorRef],
-        outputs: &mut [crate::backend::TensorRef],
+        op: &CoreOperator,
+        inputs: &[TensorRef],
+        outputs: &mut [TensorRef],
     ) -> OperatorResult<()> {
         self.backend.execute(op, inputs, outputs)
     }
 
     /// Estimate execution cost.
-    pub fn estimate_cost(&self, op: &dyn Operator) -> Cost {
+    pub fn estimate_cost(&self, op: &CoreOperator) -> Cost {
         self.backend.estimate_cost(op)
     }
 }

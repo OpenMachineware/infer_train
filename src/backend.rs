@@ -21,7 +21,15 @@ pub use memory::{
     Bandwidth, MemoryLink, MemoryRegion, MemoryRegionId, MemoryTopology,
     TransferType,
 };
-pub use operator::{Cost, Operator, OperatorId, OperatorResult};
+pub use operator::{
+    CoreOperator, Cost, Operator, OperatorId, OperatorResult, QuantType,
+};
+
+#[cfg(target_arch = "aarch64")]
+pub use arm::ArmCpuBackend;
+
+#[cfg(all(target_arch = "aarch64", feature = "metal"))]
+pub use metal::MetalBackend;
 pub use trait_impl::{Backend, BackendRegistry, DataType, TensorRef};
 
 #[cfg(target_arch = "aarch64")]

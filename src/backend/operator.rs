@@ -88,3 +88,186 @@ pub trait Operator: Send + Sync + fmt::Debug {
     /// Get the output shapes.
     fn output_shapes(&self) -> Vec<Vec<usize>>;
 }
+
+/// Quantization type for weights.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuantType {
+    F32,
+    F16,
+    BF16,
+    Q4_0,
+    Q4_1,
+    Q5_0,
+    Q5_1,
+    Q8_0,
+    Q8_1,
+    Q2_K,
+    Q3_K,
+    Q4_K,
+    Q5_K,
+    Q6_K,
+    IQ4_NL,
+    IQ4_XS,
+    IQ3_XXS,
+    IQ3_S,
+}
+
+/// Core operators for transformer inference.
+#[derive(Clone, Debug)]
+pub enum CoreOperator {
+    /// RMS normalization.
+    RmsNorm { id: OperatorId, hidden_size: usize, eps: f32 },
+
+    /// Linear layer (matrix multiplication).
+    Linear {
+        id: OperatorId,
+        in_features: usize,
+        out_features: usize,
+        quant_type: QuantType,
+    },
+
+    /// RoPE position encoding.
+    Rope { id: OperatorId, head_dim: usize, max_seq_len: usize, freq_base: f32 },
+
+    /// Flash Attention.
+    FlashAttention {
+        id: OperatorId,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        max_seq_len: usize,
+    },
+
+    /// SwiGLU activation (gate * silu(up)).
+    SwiGLU { id: OperatorId, intermediate_size: usize },
+
+    /// MoE router (compute expert weights).
+    MoERouter { id: OperatorId, n_experts: usize, top_k: usize },
+
+    /// MoE expert computation.
+    MoEExpert {
+        id: OperatorId,
+        expert_id: usize,
+        in_features: usize,
+        intermediate_size: usize,
+        quant_type: QuantType,
+    },
+
+    /// Softmax.
+    Softmax { id: OperatorId, size: usize },
+
+    /// Add operation (broadcast).
+    Add { id: OperatorId, shape: Vec<usize> },
+
+    /// Mul operation (broadcast).
+    Mul { id: OperatorId, shape: Vec<usize> },
+}
+
+impl CoreOperator {
+    /// Get the operator ID.
+    pub fn op_id(&self) -> OperatorId {
+        match self {
+            CoreOperator::RmsNorm { id, .. } => *id,
+            CoreOperator::Linear { id, .. } => *id,
+            CoreOperator::Rope { id, .. } => *id,
+            CoreOperator::FlashAttention { id, .. } => *id,
+            CoreOperator::SwiGLU { id, .. } => *id,
+            CoreOperator::MoERouter { id, .. } => *id,
+            CoreOperator::MoEExpert { id, .. } => *id,
+            CoreOperator::Softmax { id, .. } => *id,
+            CoreOperator::Add { id, .. } => *id,
+            CoreOperator::Mul { id, .. } => *id,
+        }
+    }
+}
+
+impl Operator for CoreOperator {
+    fn id(&self) -> OperatorId {
+        self.op_id()
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            CoreOperator::RmsNorm { .. } => "RmsNorm",
+            CoreOperator::Linear { .. } => "Linear",
+            CoreOperator::Rope { .. } => "Rope",
+            CoreOperator::FlashAttention { .. } => "FlashAttention",
+            CoreOperator::SwiGLU { .. } => "SwiGLU",
+            CoreOperator::MoERouter { .. } => "MoERouter",
+            CoreOperator::MoEExpert { .. } => "MoEExpert",
+            CoreOperator::Softmax { .. } => "Softmax",
+            CoreOperator::Add { .. } => "Add",
+            CoreOperator::Mul { .. } => "Mul",
+        }
+    }
+
+    fn input_shapes(&self) -> Vec<Vec<usize>> {
+        match self {
+            CoreOperator::RmsNorm { hidden_size, .. } => {
+                vec![vec![*hidden_size], vec![*hidden_size]]
+            }
+            CoreOperator::Linear { in_features, out_features, .. } => {
+                vec![vec![*in_features], vec![*in_features, *out_features]]
+            }
+            CoreOperator::Rope { head_dim, .. } => {
+                vec![vec![*head_dim]]
+            }
+            CoreOperator::FlashAttention { head_dim, n_heads, .. } => {
+                vec![
+                    vec![*n_heads, *head_dim], // Q
+                    vec![*n_heads, *head_dim], // K
+                    vec![*n_heads, *head_dim], // V
+                ]
+            }
+            CoreOperator::SwiGLU { intermediate_size, .. } => {
+                vec![vec![*intermediate_size], vec![*intermediate_size]]
+            }
+            CoreOperator::MoERouter { n_experts, .. } => {
+                vec![vec![*n_experts]]
+            }
+            CoreOperator::MoEExpert { in_features, .. } => {
+                vec![vec![*in_features]]
+            }
+            CoreOperator::Softmax { size, .. } => {
+                vec![vec![*size]]
+            }
+            CoreOperator::Add { shape, .. }
+            | CoreOperator::Mul { shape, .. } => {
+                vec![shape.clone(), shape.clone()]
+            }
+        }
+    }
+
+    fn output_shapes(&self) -> Vec<Vec<usize>> {
+        match self {
+            CoreOperator::RmsNorm { hidden_size, .. } => {
+                vec![vec![*hidden_size]]
+            }
+            CoreOperator::Linear { out_features, .. } => {
+                vec![vec![*out_features]]
+            }
+            CoreOperator::Rope { head_dim, .. } => {
+                vec![vec![*head_dim]]
+            }
+            CoreOperator::FlashAttention { head_dim, n_heads, .. } => {
+                vec![vec![*n_heads, *head_dim]]
+            }
+            CoreOperator::SwiGLU { intermediate_size, .. } => {
+                vec![vec![*intermediate_size]]
+            }
+            CoreOperator::MoERouter { n_experts, top_k, .. } => {
+                vec![vec![*top_k], vec![*top_k]] // expert indices and weights
+            }
+            CoreOperator::MoEExpert { in_features, .. } => {
+                vec![vec![*in_features]]
+            }
+            CoreOperator::Softmax { size, .. } => {
+                vec![vec![*size]]
+            }
+            CoreOperator::Add { shape, .. }
+            | CoreOperator::Mul { shape, .. } => {
+                vec![shape.clone()]
+            }
+        }
+    }
+}

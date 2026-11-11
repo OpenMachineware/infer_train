@@ -7,7 +7,9 @@
 
 use super::device::{Device, DeviceId};
 use super::memory::MemoryRegionId;
-use super::operator::{Cost, Operator, OperatorResult};
+use super::operator::{
+    CoreOperator, Cost, OperatorError, OperatorResult, QuantType,
+};
 use super::trait_impl::{Backend, TensorRef};
 
 /// Metal GPU backend.
@@ -42,20 +44,89 @@ impl Backend for MetalBackend {
         self.device.memory_size()
     }
 
-    fn supports_operator(&self, _op: &dyn Operator) -> bool {
-        true
+    fn supports_operator(&self, op: &CoreOperator) -> bool {
+        match op {
+            CoreOperator::RmsNorm { .. }
+            | CoreOperator::Linear { .. }
+            | CoreOperator::Rope { .. }
+            | CoreOperator::FlashAttention { .. }
+            | CoreOperator::SwiGLU { .. }
+            | CoreOperator::Softmax { .. } => true,
+            CoreOperator::Add { .. } | CoreOperator::Mul { .. } => true,
+            CoreOperator::MoERouter { .. } | CoreOperator::MoEExpert { .. } => {
+                false
+            } // Not yet implemented
+        }
     }
 
     fn execute(
         &self,
-        _op: &dyn Operator,
-        _inputs: &[TensorRef],
-        _outputs: &mut [TensorRef],
+        op: &CoreOperator,
+        inputs: &[TensorRef],
+        outputs: &mut [TensorRef],
     ) -> OperatorResult<()> {
-        Ok(())
+        // For now, delegate to CPU implementation
+        // Real implementation would use Metal kernels
+        match op {
+            CoreOperator::RmsNorm { hidden_size, eps, .. } => {
+                let input = inputs[0].as_f32().ok_or_else(|| {
+                    OperatorError::InternalError("Input is not F32".into())
+                })?;
+                let weight = inputs[1].as_f32().ok_or_else(|| {
+                    OperatorError::InternalError("Weight is not F32".into())
+                })?;
+                let output = outputs[0].as_f32_mut().ok_or_else(|| {
+                    OperatorError::InternalError("Output is not F32".into())
+                })?;
+
+                // CPU fallback
+                crate::ops::rms_norm::rms_norm_f32(
+                    input,
+                    weight,
+                    output,
+                    *hidden_size,
+                    *eps,
+                );
+                Ok(())
+            }
+
+            CoreOperator::FlashAttention { n_heads, head_dim, .. } => {
+                // Flash Attention requires GPU context
+                // Placeholder for now
+                Err(OperatorError::UnsupportedOperation(
+                    "FlashAttention requires Metal context".into(),
+                ))
+            }
+
+            _ => Err(OperatorError::UnsupportedOperation(format!(
+                "Operator not yet supported in MetalBackend: {:?}",
+                op
+            ))),
+        }
     }
 
-    fn estimate_cost(&self, _op: &dyn Operator) -> Cost {
-        Cost::zero()
+    fn estimate_cost(&self, op: &CoreOperator) -> Cost {
+        match op {
+            CoreOperator::RmsNorm { hidden_size, .. } => {
+                // GPU is faster for large hidden sizes
+                Cost {
+                    compute_us: *hidden_size as f64 * 0.0001, // 10x faster than CPU
+                    memory_bytes: *hidden_size as u64 * 4 * 3,
+                    read_bytes: *hidden_size as u64 * 4 * 2,
+                    write_bytes: *hidden_size as u64 * 4,
+                }
+            }
+            CoreOperator::FlashAttention { n_heads, head_dim, .. } => {
+                // Flash Attention is very efficient on GPU
+                let flops = 4 * n_heads * head_dim;
+                Cost {
+                    compute_us: flops as f64 * 0.00001,
+                    memory_bytes: (*n_heads * *head_dim) as u64 * 4,
+                    read_bytes: (*n_heads * *head_dim * 3) as u64 * 4,
+                    write_bytes: (*n_heads * *head_dim) as u64 * 4,
+                }
+            }
+            _ => Cost::zero(),
+        }
     }
 }

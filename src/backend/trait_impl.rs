@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use super::device::{Device, DeviceId};
 use super::memory::MemoryRegionId;
-use super::operator::{Cost, Operator, OperatorResult};
+use super::operator::{CoreOperator, Cost, OperatorResult};
 
 /// Backend trait for compute operations.
 ///
@@ -28,18 +28,18 @@ pub trait Backend: Send + Sync + fmt::Debug {
     fn available_memory(&self) -> u64;
 
     /// Check if this backend supports a specific operator.
-    fn supports_operator(&self, op: &dyn Operator) -> bool;
+    fn supports_operator(&self, op: &CoreOperator) -> bool;
 
     /// Execute an operator.
     fn execute(
         &self,
-        op: &dyn Operator,
+        op: &CoreOperator,
         inputs: &[TensorRef],
         outputs: &mut [TensorRef],
     ) -> OperatorResult<()>;
 
     /// Estimate execution cost for an operator.
-    fn estimate_cost(&self, op: &dyn Operator) -> Cost;
+    fn estimate_cost(&self, op: &CoreOperator) -> Cost;
 }
 
 /// Reference to a tensor.
@@ -53,6 +53,10 @@ pub struct TensorRef {
     pub dtype: DataType,
     /// Memory region.
     pub region: MemoryRegionId,
+    /// Data pointer (F32 slice).
+    pub data_f32: Option<*mut f32>,
+    /// Data length (in elements).
+    pub len: usize,
 }
 
 impl TensorRef {
@@ -63,17 +67,43 @@ impl TensorRef {
         dtype: DataType,
         region: MemoryRegionId,
     ) -> Self {
-        Self { id, shape, dtype, region }
+        let len = shape.iter().product();
+        Self { id, shape, dtype, region, data_f32: None, len }
+    }
+
+    /// Create a tensor reference from F32 data.
+    pub fn from_f32(id: usize, data: &mut [f32], shape: Vec<usize>) -> Self {
+        let len = data.len();
+        Self {
+            id,
+            shape,
+            dtype: DataType::F32,
+            region: MemoryRegionId(0),
+            data_f32: Some(data.as_mut_ptr()),
+            len,
+        }
     }
 
     /// Get the number of elements.
     pub fn num_elements(&self) -> usize {
-        self.shape.iter().product()
+        self.len
     }
 
     /// Get the size in bytes.
     pub fn byte_size(&self) -> usize {
-        self.num_elements() * self.dtype.size()
+        self.len * self.dtype.size()
+    }
+
+    /// Get F32 data slice (mutable).
+    pub fn as_f32_mut(&mut self) -> Option<&mut [f32]> {
+        self.data_f32
+            .map(|ptr| unsafe { std::slice::from_raw_parts_mut(ptr, self.len) })
+    }
+
+    /// Get F32 data slice (immutable).
+    pub fn as_f32(&self) -> Option<&[f32]> {
+        self.data_f32
+            .map(|ptr| unsafe { std::slice::from_raw_parts(ptr, self.len) })
     }
 }
 
@@ -151,7 +181,7 @@ impl BackendRegistry {
     /// Get the best backend for an operator.
     pub fn best_for_operator(
         &self,
-        op: &dyn Operator,
+        op: &CoreOperator,
     ) -> Option<&Arc<dyn Backend>> {
         self.backends.iter().find(|b| b.supports_operator(op))
     }

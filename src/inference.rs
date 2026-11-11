@@ -8,6 +8,7 @@ pub mod buffer_cache;
 pub mod cpu_executor;
 pub mod cpu_memory_pool;
 pub mod dequant;
+pub mod engine;
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 pub mod gpu_tensor;
 pub mod kv_cache;
@@ -17,6 +18,7 @@ pub mod request;
 pub mod request_executor;
 
 pub use batcher::ContinuousBatcher;
+pub use engine::{DynamicInferenceEngine, InferenceEngine};
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 pub use gpu_tensor::GpuTensor;
 pub use kv_cache::{KVCache, KVCacheBase, KVCacheFormat};
