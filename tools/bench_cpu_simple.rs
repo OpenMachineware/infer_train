@@ -5,17 +5,24 @@ use infer_train::inference::{
     Device, InferenceContext, KVCache, KVCacheBase, KVCacheFormat,
 };
 use infer_train::model::LlamaModel;
+use infer_train::quant::gemm::scheduler::set_blas_enabled;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: {} <model.gguf>", args[0]);
+        eprintln!("Usage: {} <model.gguf> [--no-blas]", args[0]);
         std::process::exit(1);
     }
 
     let model_path = &args[1];
+    let blas_enabled = !args.contains(&"--no-blas".to_string());
+
+    // Set BLAS mode before any operations
+    set_blas_enabled(blas_enabled);
+
     println!("=== CPU Inference Benchmark (Zero-Allocation) ===\n");
     println!("Model: {}", model_path);
+    println!("BLAS: {}", if blas_enabled { "enabled" } else { "disabled" });
 
     // Load model
     let ctx = InferenceContext::from_gguf(model_path, Device::Cpu)
