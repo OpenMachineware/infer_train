@@ -1686,6 +1686,10 @@ name = "test-all-models"
 path = "tools/test_all_models.rs"
 
 [[bin]]
+name = "test-single-model"
+path = "test_single_model.rs"
+
+[[bin]]
 name = "cpu-comprehensive-bench"
 path = "tools/cpu_comprehensive_bench.rs"
 

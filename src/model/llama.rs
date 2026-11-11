@@ -3683,33 +3683,12 @@ impl LlamaModel {
         // Check if this is a Mamba/SSM layer
         if layer.is_ssm() {
             // Mamba/SSM layers: run SSM forward instead of attention
+            // forward_ssm handles the full SSM processing and writes to buffers.hidden
             let start = Instant::now();
             self.forward_ssm(layer, buffers)?;
             time_qkv += start.elapsed();
 
-            // FFN norm and FFN
-            let start = Instant::now();
-            let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
-            self.apply_rms_norm_predequant(
-                &buffers.hidden,
-                &buffers.norm_weights
-                    [ffn_norm_offset..ffn_norm_offset + hidden_size],
-                &mut buffers.hidden_alt,
-            );
-            time_norm += start.elapsed();
-
-            let start = Instant::now();
-            self.compute_ffn_zero_alloc_single_thread(
-                layer,
-                &buffers.hidden_alt[..hidden_size],
-                &mut buffers.ffn_gate,
-                &mut buffers.ffn_up,
-                &mut buffers.hidden,
-                &mut buffers.q8k_input,
-                &mut buffers.x_padded,
-            )?;
-            time_ffn += start.elapsed();
-
+            // SSM layers don't have FFN - forward_ssm already produces the final output
             return Some(());
         }
 
@@ -3972,7 +3951,7 @@ impl LlamaModel {
             } else {
                 // Fallback to per-projection quantization for mixed dtypes (single-thread for decode)
                 self.gemv_into_with_buffers_with_threads(
-                    &buffers.hidden_alt,
+                    &buffers.hidden_alt[..hidden_size],
                     layer.wq.as_ref()?,
                     &mut buffers.q_buffer[..q_size],
                     &mut buffers.q8k_input,
@@ -3981,7 +3960,7 @@ impl LlamaModel {
                 );
 
                 self.gemv_into_with_buffers_with_threads(
-                    &buffers.hidden_alt,
+                    &buffers.hidden_alt[..hidden_size],
                     layer.wk.as_ref()?,
                     &mut buffers.k_buffer[..k_size],
                     &mut buffers.q8k_input,
@@ -3990,7 +3969,7 @@ impl LlamaModel {
                 );
 
                 self.gemv_into_with_buffers_with_threads(
-                    &buffers.hidden_alt,
+                    &buffers.hidden_alt[..hidden_size],
                     layer.wv.as_ref()?,
                     &mut buffers.v_buffer[..v_size],
                     &mut buffers.q8k_input,
@@ -4097,7 +4076,7 @@ impl LlamaModel {
         self.gemv_into_with_buffers_with_threads(
             &buffers.attn_out,
             layer.wo.as_ref()?,
-            &mut buffers.hidden_alt,
+            &mut buffers.hidden_alt[..hidden_size],
             &mut buffers.q8k_input,
             &mut buffers.x_padded,
             n_threads,
@@ -4339,7 +4318,7 @@ impl LlamaModel {
         self.gemv_into_with_buffers(
             &buffers.attn_out,
             layer.wo.as_ref()?,
-            &mut buffers.hidden_alt,
+            &mut buffers.hidden_alt[..hidden_size],
             &mut buffers.q8k_input,
             &mut buffers.x_padded,
         );
@@ -4401,28 +4380,10 @@ impl LlamaModel {
         // Check if this is a Mamba/SSM layer
         if layer.is_ssm() {
             // Mamba/SSM layers: run SSM forward instead of attention
+            // forward_ssm handles the full SSM processing and writes to buffers.hidden
             self.forward_ssm(layer, buffers)?;
 
-            // 7. FFN norm
-            let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
-            self.apply_rms_norm_predequant(
-                &buffers.hidden,
-                &buffers.norm_weights
-                    [ffn_norm_offset..ffn_norm_offset + hidden_size],
-                &mut buffers.hidden_alt,
-            );
-
-            // 8. FFN with single-thread GEMV for decode
-            self.compute_ffn_zero_alloc_single_thread(
-                layer,
-                &buffers.hidden_alt[..hidden_size],
-                &mut buffers.ffn_gate,
-                &mut buffers.ffn_up,
-                &mut buffers.hidden,
-                &mut buffers.q8k_input,
-                &mut buffers.x_padded,
-            )?;
-
+            // SSM layers don't have FFN - forward_ssm already produces the final output
             return Some(());
         }
 
@@ -4792,7 +4753,7 @@ impl LlamaModel {
         self.gemv_into_with_buffers(
             &buffers.attn_out,
             layer.wo.as_ref()?,
-            &mut buffers.hidden_alt,
+            &mut buffers.hidden_alt[..hidden_size],
             &mut buffers.q8k_input,
             &mut buffers.x_padded,
         );
@@ -5083,6 +5044,10 @@ impl LlamaModel {
         }
 
         // 6. Output projection: ssm_dim → hidden_size
+        eprintln!(
+            "[DEBUG ssm_out GEMV] ssm_out shape: {:?}, input size: {}, output slice size: {}",
+            ssm_out.shape, ssm_dim, hidden_size
+        );
         self.gemv_into_with_buffers(
             &buffers.ssm_y[..ssm_dim],
             ssm_out,
@@ -5102,6 +5067,11 @@ impl LlamaModel {
             };
 
             if gate_out_size > 0 {
+                // Debug: show actual tensor shape
+                eprintln!(
+                    "[DEBUG forward_ssm] attn_gate shape: {:?}, gate_out_size: {}, hidden_size: {}",
+                    attn_gate.shape, gate_out_size, hidden_size
+                );
                 self.gemv_into_with_buffers(
                     &buffers.hidden[..hidden_size],
                     attn_gate,

@@ -105,24 +105,142 @@ impl InferenceContext {
 
         // Initialize CPU work buffers for zero-allocation inference
         let cpu_buffers = if device == Device::Cpu {
-            // Get qkv_out_size from first layer if using fused QKV
-            let qkv_out_size = model
+            // For hybrid models (like Qwen3.8-27B), some layers have fused QKV
+            // and others have separate Q/K/V. We need to size buffers for the
+            // maximum across all layer types.
+            let q_size = config.n_heads * config.head_dim;
+            let k_size = if config.key_length > 0 {
+                config.n_kv_heads * config.key_length
+            } else {
+                config.n_kv_heads * config.head_dim
+            };
+            let v_size = if config.value_length > 0 {
+                config.n_kv_heads * config.value_length
+            } else {
+                config.n_kv_heads * config.head_dim
+            };
+            let separate_qkv_size = q_size + k_size + v_size;
+
+            // Find max qkv_out_size across all layers (fused QKV)
+            // attn_qkv is NOT transposed, stored as [qkv_size, hidden_size]
+            let max_qkv_out_size = model
                 .layers
-                .first()
-                .and_then(|l| l.attn_qkv.as_ref())
-                .map(|t| t.shape[1])
+                .iter()
+                .filter_map(|l| l.attn_qkv.as_ref())
+                .map(|t| {
+                    // Output dimension is shape[0] (qkv_size), input dimension is shape[1] (hidden_size)
+                    if t.shape.len() >= 2 { t.shape[0] } else { t.shape[0] }
+                })
+                .max()
                 .unwrap_or(0);
+
+            // Find max Q/K/V output sizes across all layers (separate Q/K/V)
+            // These can differ from config values due to different architectures
+            let max_q_out_size = model
+                .layers
+                .iter()
+                .filter_map(|l| l.wq.as_ref())
+                .map(|t| {
+                    // Get output dimension from weight shape
+                    // Weight is [in_features, out_features] or [out_features, in_features]
+                    if t.shape.len() >= 2 {
+                        if t.shape[0] == config.hidden_size {
+                            t.shape[1] // transposed: [in, out]
+                        } else {
+                            t.shape[0] // not transposed: [out, in]
+                        }
+                    } else {
+                        t.shape[0]
+                    }
+                })
+                .max()
+                .unwrap_or(q_size);
+
+            let max_k_out_size = model
+                .layers
+                .iter()
+                .filter_map(|l| l.wk.as_ref())
+                .map(|t| {
+                    if t.shape.len() >= 2 {
+                        if t.shape[0] == config.hidden_size {
+                            t.shape[1]
+                        } else {
+                            t.shape[0]
+                        }
+                    } else {
+                        t.shape[0]
+                    }
+                })
+                .max()
+                .unwrap_or(k_size);
+
+            let max_v_out_size = model
+                .layers
+                .iter()
+                .filter_map(|l| l.wv.as_ref())
+                .map(|t| {
+                    if t.shape.len() >= 2 {
+                        if t.shape[0] == config.hidden_size {
+                            t.shape[1]
+                        } else {
+                            t.shape[0]
+                        }
+                    } else {
+                        t.shape[0]
+                    }
+                })
+                .max()
+                .unwrap_or(v_size);
+
+            let max_separate_qkv_size =
+                max_q_out_size + max_k_out_size + max_v_out_size;
+
+            // Use the maximum of fused QKV size and separate Q/K/V sizes
+            let qkv_out_size = max_qkv_out_size.max(max_separate_qkv_size);
+
+            // Calculate actual max head dimensions from tensor shapes
+            // These may differ from config values for hybrid models
+            let actual_k_head_dim = if max_k_out_size > 0 {
+                max_k_out_size / config.n_kv_heads
+            } else {
+                config.head_dim
+            };
+            let actual_v_head_dim = if max_v_out_size > 0 {
+                max_v_out_size / config.n_kv_heads
+            } else {
+                config.head_dim
+            };
 
             let n_layers = model.layers.len();
 
+            // Find max intermediate_size across all layers (FFN gate/up weights)
+            // Config may be wrong for some models like Qwen3.8-27B
+            let actual_intermediate_size = model
+                .layers
+                .iter()
+                .filter_map(|l| l.w1.as_ref())
+                .map(|t| {
+                    if t.shape.len() >= 2 {
+                        if t.shape[0] == config.hidden_size {
+                            t.shape[1]
+                        } else {
+                            t.shape[0]
+                        }
+                    } else {
+                        t.shape[0]
+                    }
+                })
+                .max()
+                .unwrap_or(config.intermediate_size);
+
             let mut buffers = crate::cpu::CpuWorkBuffers::new(
                 config.hidden_size,
-                config.intermediate_size,
+                actual_intermediate_size,
                 config.n_heads,
                 config.n_kv_heads,
                 config.head_dim,
-                config.key_length,
-                config.value_length,
+                actual_k_head_dim,
+                actual_v_head_dim,
                 config.vocab_size,
                 qkv_out_size,
                 2048, // max_seq_len

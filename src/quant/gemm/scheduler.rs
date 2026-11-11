@@ -472,8 +472,8 @@ pub fn gemv_dispatch(
 
     if w_m != m || w_k != k {
         eprintln!(
-            "[ERROR] Shape mismatch: weight [{}, {}], output [{}], input [{}]",
-            w_m, w_k, m, k
+            "[ERROR] Shape mismatch in GEMV: tensor name='{}', weight [{}, {}], output [{}], input [{}]",
+            weights.name, w_m, w_k, m, k
         );
         return false;
     }
