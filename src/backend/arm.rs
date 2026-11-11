@@ -211,11 +211,12 @@ impl Backend for ArmCpuBackend {
                     OperatorError::InternalError("Output is not F32".into())
                 })?;
 
-                // SwiGLU: output = gate * silu(up)
-                for i in 0..*intermediate_size {
-                    let silu = up[i] / (1.0 + (-up[i]).exp());
-                    output[i] = gate[i] * silu;
+                // Use NEON-optimized SwiGLU
+                // swiglu_f32_neon(gate: &[f32], up: &[f32], dst: &mut [f32])
+                unsafe {
+                    crate::ops::arm::neon::swiglu_f32_neon(gate, up, output);
                 }
+                let _ = intermediate_size; // used for debug assert
                 Ok(())
             }
 
@@ -235,30 +236,16 @@ impl Backend for ArmCpuBackend {
                     OperatorError::InternalError("Output is not F32".into())
                 })?;
 
-                // Softmax
+                // Use NEON-optimized softmax
+                // softmax_f32_neon(x: &[f32], y: &mut [f32])
                 let n_rows = input.len() / size;
                 for row in 0..n_rows {
                     let offset = row * size;
-                    let row_input = &input[offset..offset + size];
-                    let row_output = &mut output[offset..offset + size];
-
-                    // Find max for numerical stability
-                    let max = row_input
-                        .iter()
-                        .cloned()
-                        .fold(f32::NEG_INFINITY, f32::max);
-
-                    // Compute exp and sum
-                    let mut sum = 0.0f32;
-                    for (i, &x) in row_input.iter().enumerate() {
-                        row_output[i] = (x - max).exp();
-                        sum += row_output[i];
-                    }
-
-                    // Normalize
-                    let inv_sum = 1.0 / sum;
-                    for x in row_output.iter_mut() {
-                        *x *= inv_sum;
+                    unsafe {
+                        crate::ops::arm::neon::softmax_f32_neon(
+                            &input[offset..offset + size],
+                            &mut output[offset..offset + size],
+                        );
                     }
                 }
                 Ok(())
@@ -275,8 +262,10 @@ impl Backend for ArmCpuBackend {
                     OperatorError::InternalError("Output is not F32".into())
                 })?;
 
-                for i in 0..a.len() {
-                    output[i] = a[i] + b[i];
+                // Use NEON-optimized add
+                // add_f32(src0: &[f32], src1: &[f32], dst: &mut [f32])
+                unsafe {
+                    crate::ops::arm::neon::add_f32(a, b, output);
                 }
                 Ok(())
             }
@@ -292,8 +281,10 @@ impl Backend for ArmCpuBackend {
                     OperatorError::InternalError("Output is not F32".into())
                 })?;
 
-                for i in 0..a.len() {
-                    output[i] = a[i] * b[i];
+                // Use NEON-optimized mul
+                // mul_f32(src0: &[f32], src1: &[f32], dst: &mut [f32])
+                unsafe {
+                    crate::ops::arm::neon::mul_f32(a, b, output);
                 }
                 Ok(())
             }
