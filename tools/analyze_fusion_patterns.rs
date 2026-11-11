@@ -3,11 +3,10 @@
 
 //! Analyze fusion patterns in the DAG
 
-use infer_train::dag::Operation;
-
 fn main() {
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     {
+        use infer_train::dag::Operation;
         use infer_train::inference::{Device, InferenceContext};
 
         let args: Vec<String> = std::env::args().collect();

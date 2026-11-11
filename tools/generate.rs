@@ -3,7 +3,7 @@
 
 // Text generation tool
 
-use infer_train::inference::{Device, InferenceContext};
+use infer_train::inference::InferenceContext;
 use infer_train::model::GgufFile;
 use infer_train::ops::sampling::sample_greedy;
 use infer_train::tokenize::BpeTokenizer;
@@ -62,6 +62,7 @@ fn main() {
     let start_prefill = Instant::now();
 
     // Check if model uses MQA (DeepSeek) - use CPU fallback for now
+    #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     let is_mqa = ctx.config.architecture == "deepseek2";
 
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
