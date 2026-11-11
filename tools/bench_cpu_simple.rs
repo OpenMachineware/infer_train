@@ -80,6 +80,27 @@ fn main() {
     kv_cache.clear();
     println!("Warmup complete: {} ms", warmup_start.elapsed().as_millis());
 
+    // Benchmark prefill (128 tokens)
+    println!("\n=== Prefill Benchmark (128 tokens) ===");
+    let prefill_tokens: Vec<u32> = (0..128).collect();
+    let prefill_start = std::time::Instant::now();
+    match forward_zero_alloc(
+        &ctx.model,
+        &prefill_tokens,
+        &mut kv_cache,
+        &mut buffers,
+    ) {
+        Some(_logits) => {
+            let elapsed = prefill_start.elapsed();
+            println!("Prefill tokens: 128");
+            println!("Prefill time: {:?}", elapsed);
+            println!("Prefill speed: {:.2} t/s", 128.0 / elapsed.as_secs_f64());
+        }
+        None => {
+            eprintln!("Prefill failed");
+        }
+    }
+
     // Benchmark decode
     println!("\n=== Decode Benchmark (10 tokens) ===");
     let mut decode_tokens = vec![1u32];
@@ -120,35 +141,8 @@ fn forward_zero_alloc(
     kv_cache: &mut infer_train::inference::KVCache,
     buffers: &mut CpuWorkBuffers,
 ) -> Option<Vec<f32>> {
-    let hidden_size = model.config.hidden_size;
-
-    for &token in tokens {
-        // 1. Embedding lookup into buffers.hidden
-        model.embedding_lookup_into(token, &mut buffers.hidden)?;
-
-        // 2. Process through layers
-        for (layer_idx, layer) in model.layers.iter().enumerate() {
-            model.forward_layer_zero_alloc(
-                layer, layer_idx, kv_cache, buffers,
-            )?;
-        }
-
-        kv_cache.advance();
-    }
-
-    // 3. Final norm
-    model.apply_rms_norm_into(
-        &buffers.hidden,
-        model.norm.as_ref()?,
-        &mut buffers.hidden_alt,
-    )?;
-
-    // 4. Output projection (still allocates for logits)
-    let vocab_size = model.config.vocab_size;
-    let mut logits = vec![0.0f32; vocab_size];
-    model.gemv_into(&buffers.hidden_alt, model.output.as_ref()?, &mut logits);
-
-    Some(logits)
+    // Use forward_pooled for optimized batch prefill and decode
+    model.forward_pooled(tokens, kv_cache, buffers)
 }
 
 #[cfg(not(target_arch = "aarch64"))]
