@@ -58,6 +58,15 @@ pub struct CpuWorkBuffers {
     // Pre-allocated to avoid per-thread Vec creation during prefill
     pub x_padded_threads: Vec<Vec<f32>>,
 
+    // SSM/Mamba buffers
+    pub ssm_input: Vec<f32>, // SSM input projection output
+    pub ssm_conv_out: Vec<f32>, // Conv1D output
+    pub ssm_state: Vec<f32>, // SSM state (persistent across tokens)
+    pub ssm_y: Vec<f32>,     // SSM output before final projection
+    pub ssm_delta: Vec<f32>, // Delta parameter
+    pub ssm_b: Vec<f32>,     // B parameter
+    pub ssm_c: Vec<f32>,     // C parameter
+
     // Config
     pub hidden_size: usize,
     pub intermediate_size: usize,
@@ -101,7 +110,7 @@ impl CpuWorkBuffers {
 
         Self {
             hidden: vec![0.0; hidden_size],
-            hidden_alt: vec![0.0; hidden_size],
+            hidden_alt: vec![0.0; hidden_size.max(intermediate_size)],
             normed: vec![0.0; hidden_size],
             q: vec![0.0; q_size],
             k: vec![0.0; kv_size],
@@ -121,10 +130,12 @@ impl CpuWorkBuffers {
             // For safety, allocate 20MB to handle various model sizes
             q8k_input: vec![0; 20 * 1024 * 1024],
             qkv_buffer: vec![0.0; qkv_out_size.max(q_size + 2 * kv_size)],
-            q_buffer: vec![0.0; q_size],
-            k_buffer: vec![0.0; kv_size],
-            v_buffer: vec![0.0; kv_size],
-            rope_buffer: vec![0.0; q_size.max(kv_size)],
+            // For hybrid models, use qkv_out_size for individual buffers
+            // to handle layers with different Q/K/V sizes
+            q_buffer: vec![0.0; qkv_out_size.max(q_size)],
+            k_buffer: vec![0.0; qkv_out_size.max(kv_size)],
+            v_buffer: vec![0.0; qkv_out_size.max(kv_size)],
+            rope_buffer: vec![0.0; qkv_out_size.max(q_size).max(kv_size)],
             attn_scores: vec![0.0; n_heads * 2048], // n_heads * max_seq_len for parallel execution
             kv_dequant: vec![0.0; head_dim.max(key_length).max(value_length)], // Reusable K/V dequant buffer
             norm_weights: Vec::with_capacity(n_layers * 2 * hidden_size),
@@ -136,16 +147,33 @@ impl CpuWorkBuffers {
                 max_batch_size
                     * qkv_out_size.max(q_size + 2 * kv_size)
             ],
-            q_batch_output: vec![0.0; max_batch_size * q_size],
-            k_batch_output: vec![0.0; max_batch_size * kv_size],
-            v_batch_output: vec![0.0; max_batch_size * kv_size],
+            // For hybrid models, use qkv_out_size for individual batch buffers
+            q_batch_output: vec![
+                0.0;
+                max_batch_size * qkv_out_size.max(q_size)
+            ],
+            k_batch_output: vec![
+                0.0;
+                max_batch_size * qkv_out_size.max(kv_size)
+            ],
+            v_batch_output: vec![
+                0.0;
+                max_batch_size * qkv_out_size.max(kv_size)
+            ],
             attn_batch_output: vec![0.0; max_batch_size * attn_out_size],
             ffn_gate_batch: vec![0.0; max_batch_size * intermediate_size],
             ffn_up_batch: vec![0.0; max_batch_size * intermediate_size],
-            flash_attn_prefill: FlashAttnPrefillScratch::new(head_dim),
+            // Use max head dimension for scratch buffers to handle variable K/V sizes
+            flash_attn_prefill: FlashAttnPrefillScratch::new(
+                head_dim.max(key_length).max(value_length),
+            ),
             // Pre-allocate per-thread scratch for multithreaded flash attention
             flash_attn_prefill_threads: (0..crate::cpu::default_n_threads())
-                .map(|_| FlashAttnPrefillScratch::new(head_dim))
+                .map(|_| {
+                    FlashAttnPrefillScratch::new(
+                        head_dim.max(key_length).max(value_length),
+                    )
+                })
                 .collect(),
             // Pre-allocate per-thread padding buffers for parallel quantization
             // Each buffer sized to handle padded hidden_size (QK_K aligned)
@@ -156,6 +184,15 @@ impl CpuWorkBuffers {
                     .map(|_| vec![0.0; padded_size])
                     .collect()
             },
+            // SSM/Mamba buffers - allocate for max needed size
+            // ssm_inner_size can be up to 4x hidden_size (e.g., Qwen3.6: 8192 for hidden=2048)
+            ssm_input: vec![0.0; hidden_size * 4],
+            ssm_conv_out: vec![0.0; hidden_size * 4],
+            ssm_state: vec![0.0; 32 * 128 * 4], // n_groups * state_size * inner_size_per_group
+            ssm_y: vec![0.0; hidden_size * 4],
+            ssm_delta: vec![0.0; 128], // time_step_rank
+            ssm_b: vec![0.0; 128],
+            ssm_c: vec![0.0; 128],
             hidden_size,
             intermediate_size,
             vocab_size,

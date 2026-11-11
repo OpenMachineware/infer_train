@@ -99,6 +99,24 @@ pub struct LlamaLayer {
     pub ffn_gate_shexp: Option<Tensor>, // Shared expert gate
     pub ffn_up_shexp: Option<Tensor>, // Shared expert up
     pub ffn_down_shexp: Option<Tensor>, // Shared expert down
+
+    // SSM/Mamba (for models like Qwen3.6-35B, Qwen3.8-27B)
+    pub ssm_out: Option<Tensor>, // SSM output projection
+    pub ssm_conv1d: Option<Tensor>, // SSM 1D convolution
+    pub ssm_a: Option<Tensor>,   // A parameter (log of negative exp)
+    pub ssm_dt_bias: Option<Tensor>, // Delta bias
+    pub ssm_norm: Option<Tensor>, // SSM norm weight
+    pub ssm_alpha: Option<Tensor>, // Alpha parameter (Qwen naming)
+    pub ssm_beta: Option<Tensor>, // Beta parameter (Qwen naming)
+    pub attn_gate: Option<Tensor>, // Attention gate (hybrid models)
+}
+
+impl LlamaLayer {
+    /// Check if this layer is a Mamba/SSM layer
+    /// Mamba layers have ssm_out but no wo (attention output)
+    pub fn is_ssm(&self) -> bool {
+        self.ssm_out.is_some() || self.ssm_conv1d.is_some()
+    }
 }
 
 impl LlamaModel {
@@ -393,6 +411,46 @@ impl LlamaModel {
             if let Some(ref mut w3) = layer.w3 {
                 if w3.shape.len() == 2 && w3.shape[0] == hidden_size {
                     Self::transpose_quantized_tensor(w3);
+                    transposed_count += 1;
+                }
+            }
+
+            // Transpose SSM/Mamba weights
+            // These are stored as [in_features, out_features] but we need [out_features, in_features]
+            if let Some(ref mut attn_qkv) = layer.attn_qkv {
+                if attn_qkv.shape.len() == 2 && attn_qkv.shape[0] == hidden_size
+                {
+                    Self::transpose_quantized_tensor(attn_qkv);
+                    transposed_count += 1;
+                }
+            }
+            if let Some(ref mut ssm_alpha) = layer.ssm_alpha {
+                if ssm_alpha.shape.len() == 2
+                    && ssm_alpha.shape[0] == hidden_size
+                {
+                    Self::transpose_quantized_tensor(ssm_alpha);
+                    transposed_count += 1;
+                }
+            }
+            if let Some(ref mut ssm_beta) = layer.ssm_beta {
+                if ssm_beta.shape.len() == 2 && ssm_beta.shape[0] == hidden_size
+                {
+                    Self::transpose_quantized_tensor(ssm_beta);
+                    transposed_count += 1;
+                }
+            }
+            if let Some(ref mut ssm_out) = layer.ssm_out {
+                // ssm_out has shape [ssm_inner_dim, hidden_size], transpose to [hidden_size, ssm_inner_dim]
+                if ssm_out.shape.len() == 2 {
+                    Self::transpose_quantized_tensor(ssm_out);
+                    transposed_count += 1;
+                }
+            }
+            if let Some(ref mut attn_gate) = layer.attn_gate {
+                if attn_gate.shape.len() == 2
+                    && attn_gate.shape[0] == hidden_size
+                {
+                    Self::transpose_quantized_tensor(attn_gate);
                     transposed_count += 1;
                 }
             }
@@ -732,9 +790,20 @@ impl LlamaModel {
         value_length: usize,
     ) -> Option<(Vec<f32>, Vec<f32>, Vec<f32>, usize, usize, usize)> {
         // Try fused QKV first (Qwen3.8-style)
-        if let Some(ref qkv) = layer.attn_qkv {
-            // Fused QKV: shape = [hidden_size, q_size + k_size + v_size]
-            let qkv_out_size = qkv.shape[1];
+        // Only use fused QKV if wo also exists (proper attention layer, not Mamba)
+        if let (Some(qkv), Some(_)) = (&layer.attn_qkv, &layer.wo) {
+            // Fused QKV: attn_qkv is NOT transposed, stored as [qkv_size, hidden_size]
+            // Output dimension is shape[0], input dimension is shape[1]
+            let hidden_size = hidden.len();
+            let qkv_out_size = if qkv.shape.len() >= 2 {
+                if qkv.shape[1] == hidden_size {
+                    qkv.shape[0]
+                } else {
+                    qkv.shape[1]
+                }
+            } else {
+                qkv.shape[0]
+            };
             let q_out_size = n_heads * head_dim;
             // Use key_length and value_length for K/V (Qwen3.8-style)
             let k_out_size = n_kv_heads * key_length;
@@ -2403,7 +2472,7 @@ impl LlamaModel {
             // Use single-thread GEMV for decode, parallel for prefill
             if is_decode {
                 self.gemv_into_with_buffers(
-                    &buffers.hidden_alt,
+                    &buffers.hidden_alt[..self.config.hidden_size],
                     output,
                     &mut buffers.logits[..vocab_size],
                     &mut buffers.q8k_input,
@@ -2516,7 +2585,7 @@ impl LlamaModel {
             // 4. Output projection (hidden_alt -> logits)
             let output = self.output.as_ref()?;
             self.gemv_into_with_buffers_with_threads(
-                &buffers.hidden_alt,
+                &buffers.hidden_alt[..self.config.hidden_size],
                 output,
                 &mut buffers.logits[..vocab_size],
                 &mut buffers.q8k_input,
@@ -2589,9 +2658,129 @@ impl LlamaModel {
             }
             time_norm += start.elapsed();
 
+            // Check if this is a Mamba/SSM layer - skip attention for these
+            if layer.is_ssm() {
+                // Mamba/SSM layers: skip attention, go directly to FFN
+                // Restore residual (no attention output)
+                batch_hidden[..residual_len]
+                    .copy_from_slice(&buffers.batch_residual[..residual_len]);
+
+                // FFN norm
+                let start = Instant::now();
+                let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
+                for i in 0..n_tokens {
+                    self.apply_rms_norm_predequant(
+                        &batch_hidden[i * hidden_size..(i + 1) * hidden_size],
+                        &buffers.norm_weights
+                            [ffn_norm_offset..ffn_norm_offset + hidden_size],
+                        &mut buffers.hidden_alt,
+                    );
+                    batch_hidden[i * hidden_size..(i + 1) * hidden_size]
+                        .copy_from_slice(&buffers.hidden_alt);
+                }
+                time_norm += start.elapsed();
+
+                // FFN projection using tiled GEMM
+                let start = Instant::now();
+                if let (Some(w1), Some(w2), Some(w3)) =
+                    (&layer.w1, &layer.w2, &layer.w3)
+                {
+                    // After transpose: shape = [out_features, in_features] = [intermediate_size, hidden_size]
+                    // So intermediate_size = shape[0]
+                    let intermediate_size = if w1.shape.len() >= 2 {
+                        if w1.shape[1] == hidden_size {
+                            w1.shape[0]
+                        } else {
+                            w1.shape[1]
+                        }
+                    } else {
+                        w1.shape[0]
+                    };
+                    let ffn_output_len = n_tokens * intermediate_size;
+
+                    // Gate projection
+                    let inputs: Vec<&[f32]> = (0..n_tokens)
+                        .map(|i| {
+                            &batch_hidden
+                                [i * hidden_size..(i + 1) * hidden_size]
+                        })
+                        .collect();
+
+                    self.gemm_batch_prefill(
+                        &inputs,
+                        w1,
+                        &mut buffers.ffn_gate_batch[..ffn_output_len],
+                        &mut buffers.q8k_input,
+                        &mut buffers.x_padded,
+                        &mut buffers.x_padded_threads,
+                        None,
+                    );
+
+                    // Up projection
+                    self.gemm_batch_prefill(
+                        &inputs,
+                        w3,
+                        &mut buffers.ffn_up_batch[..ffn_output_len],
+                        &mut buffers.q8k_input,
+                        &mut buffers.x_padded,
+                        &mut buffers.x_padded_threads,
+                        None,
+                    );
+
+                    // SwiGLU: gate * silu(up) for each token
+                    for t in 0..n_tokens {
+                        for i in 0..intermediate_size {
+                            let idx = t * intermediate_size + i;
+                            let silu = buffers.ffn_gate_batch[idx]
+                                / (1.0 + (-buffers.ffn_gate_batch[idx]).exp());
+                            buffers.ffn_gate_batch[idx] =
+                                silu * buffers.ffn_up_batch[idx];
+                        }
+                    }
+
+                    // Down projection
+                    let gate_inputs: Vec<&[f32]> = (0..n_tokens)
+                        .map(|t| {
+                            &buffers.ffn_gate_batch[t * intermediate_size
+                                ..(t + 1) * intermediate_size]
+                        })
+                        .collect();
+
+                    self.gemm_batch_prefill(
+                        &gate_inputs,
+                        w2,
+                        &mut batch_hidden,
+                        &mut buffers.q8k_input,
+                        &mut buffers.x_padded,
+                        &mut buffers.x_padded_threads,
+                        None,
+                    );
+
+                    // Add residual
+                    for i in 0..residual_len {
+                        batch_hidden[i] += buffers.batch_residual[i];
+                    }
+                }
+                time_ffn += start.elapsed();
+
+                continue; // Skip to next layer
+            }
+
             // QKV projection - use tiled GEMM for batch
-            if let Some(ref qkv) = layer.attn_qkv {
-                let qkv_out_size = qkv.shape[1];
+            // Only process fused QKV if both attn_qkv and wo exist (proper attention layer)
+            // Mamba layers have attn_qkv but no wo
+            if let (Some(qkv), Some(_)) = (&layer.attn_qkv, &layer.wo) {
+                // attn_qkv is NOT transposed, stored as [qkv_size, hidden_size]
+                // Output dimension is shape[0], input dimension is shape[1]
+                let qkv_out_size = if qkv.shape.len() >= 2 {
+                    if qkv.shape[1] == hidden_size {
+                        qkv.shape[0]
+                    } else {
+                        qkv.shape[1]
+                    }
+                } else {
+                    qkv.shape[0]
+                };
                 let qkv_output_len = n_tokens * qkv_out_size;
 
                 // Prepare input slices for batch GEMM (no allocation)
@@ -2761,18 +2950,48 @@ impl LlamaModel {
                 time_wo += start.elapsed();
             } else {
                 // Separate wq/wk/wv projections - use batch GEMM for each
-                let q_size = self.config.n_heads * self.config.head_dim;
-                // For standard attention, key_length/value_length are 0, use head_dim
-                let k_size = if self.config.key_length > 0 {
-                    self.config.n_kv_heads * self.config.key_length
-                } else {
-                    self.config.n_kv_heads * self.config.head_dim
+                // Get actual output sizes from weight tensors (may differ from config)
+                let get_out_size = |w: &Tensor, in_size: usize| -> usize {
+                    if w.shape.len() >= 2 {
+                        if w.shape[0] == in_size {
+                            w.shape[1] // transposed: [in, out]
+                        } else {
+                            w.shape[0] // not transposed: [out, in]
+                        }
+                    } else {
+                        w.shape[0]
+                    }
                 };
-                let v_size = if self.config.value_length > 0 {
-                    self.config.n_kv_heads * self.config.value_length
-                } else {
-                    self.config.n_kv_heads * self.config.head_dim
-                };
+
+                let q_size_actual = layer
+                    .wq
+                    .as_ref()
+                    .map(|w| get_out_size(w, hidden_size))
+                    .unwrap_or_else(|| {
+                        self.config.n_heads * self.config.head_dim
+                    });
+                let k_size_actual = layer
+                    .wk
+                    .as_ref()
+                    .map(|w| get_out_size(w, hidden_size))
+                    .unwrap_or_else(|| {
+                        if self.config.key_length > 0 {
+                            self.config.n_kv_heads * self.config.key_length
+                        } else {
+                            self.config.n_kv_heads * self.config.head_dim
+                        }
+                    });
+                let v_size_actual = layer
+                    .wv
+                    .as_ref()
+                    .map(|w| get_out_size(w, hidden_size))
+                    .unwrap_or_else(|| {
+                        if self.config.value_length > 0 {
+                            self.config.n_kv_heads * self.config.value_length
+                        } else {
+                            self.config.n_kv_heads * self.config.head_dim
+                        }
+                    });
 
                 let inputs: Vec<&[f32]> = (0..n_tokens)
                     .map(|i| {
@@ -2780,9 +2999,9 @@ impl LlamaModel {
                     })
                     .collect();
 
-                let q_output_len = n_tokens * q_size;
-                let k_output_len = n_tokens * k_size;
-                let v_output_len = n_tokens * v_size;
+                let q_output_len = n_tokens * q_size_actual;
+                let k_output_len = n_tokens * k_size_actual;
+                let v_output_len = n_tokens * v_size_actual;
 
                 // Batch Q/K/V projections
                 let start = Instant::now();
@@ -2846,41 +3065,41 @@ impl LlamaModel {
                 for (token_idx, pos) in (0..n_tokens).zip(kv_cache.seq_len()..)
                 {
                     // Copy Q, K, V from batch outputs
-                    buffers.q_buffer[..q_size].copy_from_slice(
-                        &buffers.q_batch_output
-                            [token_idx * q_size..(token_idx + 1) * q_size],
+                    buffers.q_buffer[..q_size_actual].copy_from_slice(
+                        &buffers.q_batch_output[token_idx * q_size_actual
+                            ..(token_idx + 1) * q_size_actual],
                     );
-                    buffers.k_buffer[..k_size].copy_from_slice(
-                        &buffers.k_batch_output
-                            [token_idx * k_size..(token_idx + 1) * k_size],
+                    buffers.k_buffer[..k_size_actual].copy_from_slice(
+                        &buffers.k_batch_output[token_idx * k_size_actual
+                            ..(token_idx + 1) * k_size_actual],
                     );
-                    buffers.v_buffer[..v_size].copy_from_slice(
-                        &buffers.v_batch_output
-                            [token_idx * v_size..(token_idx + 1) * v_size],
+                    buffers.v_buffer[..v_size_actual].copy_from_slice(
+                        &buffers.v_batch_output[token_idx * v_size_actual
+                            ..(token_idx + 1) * v_size_actual],
                     );
 
                     // RoPE
                     let start = Instant::now();
                     self.apply_rope_into(
-                        &buffers.q_buffer,
+                        &buffers.q_buffer[..q_size_actual],
                         pos,
                         self.config.n_heads,
                         self.config.head_dim,
                         &mut buffers.rope_buffer,
                     )?;
-                    buffers.q_buffer[..q_size]
-                        .copy_from_slice(&buffers.rope_buffer[..q_size]);
+                    buffers.q_buffer[..q_size_actual]
+                        .copy_from_slice(&buffers.rope_buffer[..q_size_actual]);
 
-                    let k_head_dim = k_size / self.config.n_kv_heads;
+                    let k_head_dim = k_size_actual / self.config.n_kv_heads;
                     self.apply_rope_into(
-                        &buffers.k_buffer,
+                        &buffers.k_buffer[..k_size_actual],
                         pos,
                         self.config.n_kv_heads,
                         k_head_dim,
                         &mut buffers.rope_buffer,
                     )?;
-                    buffers.k_buffer[..k_size]
-                        .copy_from_slice(&buffers.rope_buffer[..k_size]);
+                    buffers.k_buffer[..k_size_actual]
+                        .copy_from_slice(&buffers.rope_buffer[..k_size_actual]);
                     time_rope += start.elapsed();
 
                     // Attention - use optimized tiled flash attention
@@ -2888,9 +3107,9 @@ impl LlamaModel {
                     #[cfg(target_arch = "aarch64")]
                     {
                         crate::cpu::flash_attention_single(
-                            &buffers.q_buffer,
-                            &buffers.k_buffer,
-                            &buffers.v_buffer,
+                            &buffers.q_buffer[..q_size_actual],
+                            &buffers.k_buffer[..k_size_actual],
+                            &buffers.v_buffer[..v_size_actual],
                             layer_idx,
                             kv_cache,
                             self.config.n_heads,
@@ -2903,9 +3122,9 @@ impl LlamaModel {
                     #[cfg(not(target_arch = "aarch64"))]
                     {
                         self.attention_zero_alloc(
-                            &buffers.q_buffer,
-                            &buffers.k_buffer,
-                            &buffers.v_buffer,
+                            &buffers.q_buffer[..q_size_actual],
+                            &buffers.k_buffer[..k_size_actual],
+                            &buffers.v_buffer[..v_size_actual],
                             layer_idx,
                             kv_cache,
                             self.config.n_heads,
@@ -3094,7 +3313,7 @@ impl LlamaModel {
 
         let output = self.output.as_ref()?;
         self.gemv_into_with_buffers(
-            &buffers.hidden_alt,
+            &buffers.hidden_alt[..self.config.hidden_size],
             output,
             &mut buffers.logits[..vocab_size],
             &mut buffers.q8k_input,
@@ -3461,17 +3680,72 @@ impl LlamaModel {
         );
         time_norm += start.elapsed();
 
+        // Check if this is a Mamba/SSM layer
+        if layer.is_ssm() {
+            // Mamba/SSM layers: run SSM forward instead of attention
+            let start = Instant::now();
+            self.forward_ssm(layer, buffers)?;
+            time_qkv += start.elapsed();
+
+            // FFN norm and FFN
+            let start = Instant::now();
+            let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
+            self.apply_rms_norm_predequant(
+                &buffers.hidden,
+                &buffers.norm_weights
+                    [ffn_norm_offset..ffn_norm_offset + hidden_size],
+                &mut buffers.hidden_alt,
+            );
+            time_norm += start.elapsed();
+
+            let start = Instant::now();
+            self.compute_ffn_zero_alloc_single_thread(
+                layer,
+                &buffers.hidden_alt[..hidden_size],
+                &mut buffers.ffn_gate,
+                &mut buffers.ffn_up,
+                &mut buffers.hidden,
+                &mut buffers.q8k_input,
+                &mut buffers.x_padded,
+            )?;
+            time_ffn += start.elapsed();
+
+            return Some(());
+        }
+
         // 2. QKV projections (hidden_alt -> q/k/v buffers)
         // Support both fused QKV (Qwen3.8-style) and separate wq/wk/wv
-        if let Some(ref qkv) = layer.attn_qkv {
-            // Fused QKV: compute actual sizes from tensor shape and config
-            let qkv_out_size = qkv.shape[1];
+        // Only use fused QKV if wo also exists (proper attention layer, not Mamba)
+        if let (Some(qkv), Some(_)) = (&layer.attn_qkv, &layer.wo) {
+            // Fused QKV: attn_qkv is NOT transposed, stored as [qkv_size, hidden_size]
+            // Output dimension is shape[0], input dimension is shape[1]
+            let qkv_out_size = if qkv.shape.len() >= 2 {
+                if qkv.shape[1] == hidden_size {
+                    qkv.shape[0]
+                } else {
+                    qkv.shape[1]
+                }
+            } else {
+                qkv.shape[0]
+            };
+
+            // Derive q_size, k_size, v_size from actual weight dimensions
+            // For fused QKV: qkv_out_size = q_size + k_size + v_size
             let q_size = n_heads * head_dim;
 
-            // Use config's key_length and value_length for K/V (Qwen3.8-style)
-            // These may differ from head_dim
-            let k_size = n_kv_heads * self.config.key_length;
-            let v_size = n_kv_heads * self.config.value_length;
+            // Use config's key_length/value_length if available, else derive from qkv_out_size
+            let (k_size, v_size) =
+                if self.config.key_length > 0 && self.config.value_length > 0 {
+                    let k = n_kv_heads * self.config.key_length;
+                    let v = n_kv_heads * self.config.value_length;
+                    (k, v)
+                } else {
+                    // Derive from qkv_out_size: assume k_size == v_size (typical for most models)
+                    let k_plus_v_size = qkv_out_size.saturating_sub(q_size);
+                    let k = k_plus_v_size / 2;
+                    let v = k_plus_v_size - k;
+                    (k, v)
+                };
 
             // Fused QKV: single GEMV then split
             // Use hybrid GEMV (auto thread selection: parallel for m > 1, single-thread for m = 1)
@@ -3590,9 +3864,46 @@ impl LlamaModel {
             time_attn += start.elapsed();
         } else {
             // Standard separate wq/wk/wv projections
-            let q_size = n_heads * head_dim;
-            let k_size = n_kv_heads * head_dim;
-            let v_size = n_kv_heads * head_dim;
+            // Get output dimensions directly from weight tensors for hybrid model support
+            let q_size = if let Some(ref wq) = layer.wq {
+                if wq.shape.len() >= 2 {
+                    if wq.shape[1] == hidden_size {
+                        wq.shape[0]
+                    } else {
+                        wq.shape[1]
+                    }
+                } else {
+                    wq.shape[0]
+                }
+            } else {
+                n_heads * head_dim
+            };
+            let k_size = if let Some(ref wk) = layer.wk {
+                if wk.shape.len() >= 2 {
+                    if wk.shape[1] == hidden_size {
+                        wk.shape[0]
+                    } else {
+                        wk.shape[1]
+                    }
+                } else {
+                    wk.shape[0]
+                }
+            } else {
+                n_kv_heads * head_dim
+            };
+            let v_size = if let Some(ref wv) = layer.wv {
+                if wv.shape.len() >= 2 {
+                    if wv.shape[1] == hidden_size {
+                        wv.shape[0]
+                    } else {
+                        wv.shape[1]
+                    }
+                } else {
+                    wv.shape[0]
+                }
+            } else {
+                n_kv_heads * head_dim
+            };
 
             // Pre-quantize hidden_alt to Q8_K once for all projections
             // Only do this if all weights are K-quant format
@@ -3632,7 +3943,7 @@ impl LlamaModel {
                     )
                 };
                 Self::quantize_input_to_q8k(
-                    &buffers.hidden_alt,
+                    &buffers.hidden_alt[..hidden_size],
                     x_q8k_blocks,
                     &mut buffers.x_padded,
                 );
@@ -3751,9 +4062,9 @@ impl LlamaModel {
             #[cfg(target_arch = "aarch64")]
             {
                 crate::cpu::flash_attention_single(
-                    &buffers.q_buffer,
-                    &buffers.k_buffer,
-                    &buffers.v_buffer,
+                    &buffers.q_buffer[..q_size],
+                    &buffers.k_buffer[..k_size],
+                    &buffers.v_buffer[..v_size],
                     layer_idx,
                     kv_cache,
                     n_heads,
@@ -3814,7 +4125,7 @@ impl LlamaModel {
         let start = Instant::now();
         self.compute_ffn_zero_alloc_single_thread(
             layer,
-            &buffers.hidden_alt,
+            &buffers.hidden_alt[..hidden_size],
             &mut buffers.ffn_gate,
             &mut buffers.ffn_up,
             &mut buffers.hidden,
@@ -3874,7 +4185,7 @@ impl LlamaModel {
             )
         };
         Self::quantize_input_to_q8k(
-            &buffers.hidden_alt,
+            &buffers.hidden_alt[..hidden_size],
             x_q8k_blocks,
             &mut buffers.x_padded,
         );
@@ -3886,9 +4197,34 @@ impl LlamaModel {
             let wk = layer.wk.as_ref()?;
             let wv = layer.wv.as_ref()?;
 
-            let q_size = n_heads * head_dim;
-            let k_size = n_kv_heads * head_dim;
-            let v_size = n_kv_heads * head_dim;
+            // Get output dimensions directly from weight tensors for hybrid model support
+            let q_size = if wq.shape.len() >= 2 {
+                if wq.shape[1] == hidden_size {
+                    wq.shape[0]
+                } else {
+                    wq.shape[1]
+                }
+            } else {
+                wq.shape[0]
+            };
+            let k_size = if wk.shape.len() >= 2 {
+                if wk.shape[1] == hidden_size {
+                    wk.shape[0]
+                } else {
+                    wk.shape[1]
+                }
+            } else {
+                wk.shape[0]
+            };
+            let v_size = if wv.shape.len() >= 2 {
+                if wv.shape[1] == hidden_size {
+                    wv.shape[0]
+                } else {
+                    wv.shape[1]
+                }
+            } else {
+                wv.shape[0]
+            };
 
             let all_k_quant = matches!(
                 (wq.dtype, wk.dtype, wv.dtype),
@@ -3970,9 +4306,9 @@ impl LlamaModel {
             #[cfg(target_arch = "aarch64")]
             {
                 crate::cpu::flash_attention_single(
-                    &buffers.q_buffer,
-                    &buffers.k_buffer,
-                    &buffers.v_buffer,
+                    &buffers.q_buffer[..q_size],
+                    &buffers.k_buffer[..k_size],
+                    &buffers.v_buffer[..v_size],
                     layer_idx,
                     kv_cache,
                     n_heads,
@@ -4026,7 +4362,7 @@ impl LlamaModel {
         // Use single-thread GEMV to avoid thread pool barrier issue
         self.compute_ffn_zero_alloc_single_thread(
             layer,
-            &buffers.hidden_alt,
+            &buffers.hidden_alt[..hidden_size],
             &mut buffers.ffn_gate,
             &mut buffers.ffn_up,
             &mut buffers.hidden,
@@ -4062,22 +4398,67 @@ impl LlamaModel {
             &mut buffers.hidden_alt,
         );
 
+        // Check if this is a Mamba/SSM layer
+        if layer.is_ssm() {
+            // Mamba/SSM layers: run SSM forward instead of attention
+            self.forward_ssm(layer, buffers)?;
+
+            // 7. FFN norm
+            let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
+            self.apply_rms_norm_predequant(
+                &buffers.hidden,
+                &buffers.norm_weights
+                    [ffn_norm_offset..ffn_norm_offset + hidden_size],
+                &mut buffers.hidden_alt,
+            );
+
+            // 8. FFN with single-thread GEMV for decode
+            self.compute_ffn_zero_alloc_single_thread(
+                layer,
+                &buffers.hidden_alt[..hidden_size],
+                &mut buffers.ffn_gate,
+                &mut buffers.ffn_up,
+                &mut buffers.hidden,
+                &mut buffers.q8k_input,
+                &mut buffers.x_padded,
+            )?;
+
+            return Some(());
+        }
+
         // 2. QKV projections - use tiled GEMV for better cache locality
-        if let Some(ref qkv) = layer.attn_qkv {
+        // Only use fused QKV if wo also exists (proper attention layer, not Mamba)
+        if let (Some(qkv), Some(_)) = (&layer.attn_qkv, &layer.wo) {
             // Fused QKV
-            let qkv_out_size = qkv.shape[1];
+            // attn_qkv is NOT transposed, stored as [qkv_size, hidden_size]
+            // Output dimension is shape[0], input dimension is shape[1]
+            let qkv_out_size = if qkv.shape.len() >= 2 {
+                if qkv.shape[1] == hidden_size {
+                    qkv.shape[0]
+                } else {
+                    qkv.shape[1]
+                }
+            } else {
+                qkv.shape[0]
+            };
+
+            // Derive q_size, k_size, v_size from actual weight dimensions
+            // For fused QKV: qkv_out_size = q_size + k_size + v_size
             let q_size = n_heads * head_dim;
-            // For standard attention, key_length/value_length are 0, use head_dim
-            let k_size = if self.config.key_length > 0 {
-                n_kv_heads * self.config.key_length
-            } else {
-                n_kv_heads * head_dim
-            };
-            let v_size = if self.config.value_length > 0 {
-                n_kv_heads * self.config.value_length
-            } else {
-                n_kv_heads * head_dim
-            };
+
+            // Use config's key_length/value_length if available, else derive from qkv_out_size
+            let (k_size, v_size) =
+                if self.config.key_length > 0 && self.config.value_length > 0 {
+                    let k = n_kv_heads * self.config.key_length;
+                    let v = n_kv_heads * self.config.value_length;
+                    (k, v)
+                } else {
+                    // Derive from qkv_out_size: assume k_size == v_size (typical for most models)
+                    let k_plus_v_size = qkv_out_size.saturating_sub(q_size);
+                    let k = k_plus_v_size / 2;
+                    let v = k_plus_v_size - k;
+                    (k, v)
+                };
 
             // Quantize input to Q8_K first
             use crate::quant::kv_cache::quantize_row_q8_k_neon;
@@ -4186,9 +4567,46 @@ impl LlamaModel {
             }
         } else {
             // Standard separate wq/wk/wv projections
-            let q_size = n_heads * head_dim;
-            let k_size = n_kv_heads * head_dim;
-            let v_size = n_kv_heads * head_dim;
+            // Get output dimensions directly from weight tensors for hybrid model support
+            let q_size = if let Some(ref wq) = layer.wq {
+                if wq.shape.len() >= 2 {
+                    if wq.shape[1] == hidden_size {
+                        wq.shape[0]
+                    } else {
+                        wq.shape[1]
+                    }
+                } else {
+                    wq.shape[0]
+                }
+            } else {
+                n_heads * head_dim
+            };
+            let k_size = if let Some(ref wk) = layer.wk {
+                if wk.shape.len() >= 2 {
+                    if wk.shape[1] == hidden_size {
+                        wk.shape[0]
+                    } else {
+                        wk.shape[1]
+                    }
+                } else {
+                    wk.shape[0]
+                }
+            } else {
+                n_kv_heads * head_dim
+            };
+            let v_size = if let Some(ref wv) = layer.wv {
+                if wv.shape.len() >= 2 {
+                    if wv.shape[1] == hidden_size {
+                        wv.shape[0]
+                    } else {
+                        wv.shape[1]
+                    }
+                } else {
+                    wv.shape[0]
+                }
+            } else {
+                n_kv_heads * head_dim
+            };
 
             let wq_dtype = layer.wq.as_ref()?.dtype;
             let wk_dtype = layer.wk.as_ref()?.dtype;
@@ -4225,7 +4643,7 @@ impl LlamaModel {
                     )
                 };
                 Self::quantize_input_to_q8k(
-                    &buffers.hidden_alt,
+                    &buffers.hidden_alt[..hidden_size],
                     x_q8k_blocks,
                     &mut buffers.x_padded,
                 );
@@ -4341,9 +4759,9 @@ impl LlamaModel {
             #[cfg(target_arch = "aarch64")]
             {
                 crate::cpu::flash_attention_single(
-                    &buffers.q_buffer,
-                    &buffers.k_buffer,
-                    &buffers.v_buffer,
+                    &buffers.q_buffer[..q_size],
+                    &buffers.k_buffer[..k_size],
+                    &buffers.v_buffer[..v_size],
                     layer_idx,
                     kv_cache,
                     n_heads,
@@ -4397,7 +4815,7 @@ impl LlamaModel {
         // Thread creation overhead (127µs per scope) exceeds compute time for small matrices
         self.compute_ffn_zero_alloc_single_thread(
             layer,
-            &buffers.hidden_alt,
+            &buffers.hidden_alt[..hidden_size],
             &mut buffers.ffn_gate,
             &mut buffers.ffn_up,
             &mut buffers.hidden,
@@ -4494,6 +4912,225 @@ impl LlamaModel {
         }
 
         None
+    }
+
+    /// SSM (State Space Model) forward for Mamba layers
+    /// Used by Qwen3.6-35B and other hybrid Mamba-Transformer models
+    /// Reads input from buffers.hidden, writes output to buffers.hidden
+    pub fn forward_ssm(
+        &self,
+        layer: &LlamaLayer,
+        buffers: &mut crate::cpu::CpuWorkBuffers,
+    ) -> Option<()> {
+        let hidden_size = self.config.hidden_size;
+        let n_groups = self.config.ssm_group_count;
+        let state_size = self.config.ssm_state_size;
+        let time_step_rank = self.config.ssm_time_step_rank;
+        let conv_kernel = self.config.ssm_conv_kernel;
+
+        // 1. Input projection via attn_qkv
+        // attn_qkv: [hidden_size, total_dim] where total_dim = ssm_dim + other_dim
+        let attn_qkv = layer.attn_qkv.as_ref()?;
+        let total_dim = if attn_qkv.shape.len() >= 2 {
+            if attn_qkv.shape[1] == hidden_size {
+                attn_qkv.shape[0]
+            } else {
+                attn_qkv.shape[1]
+            }
+        } else {
+            attn_qkv.shape[0]
+        };
+
+        self.gemv_into_with_buffers(
+            &buffers.hidden[..hidden_size],
+            attn_qkv,
+            &mut buffers.ssm_input[..total_dim],
+            &mut buffers.q8k_input,
+            &mut buffers.x_padded,
+        );
+
+        // Determine SSM dimension from ssm_out tensor
+        // ssm_out: [ssm_dim, hidden_size] projects ssm_dim → hidden_size
+        let ssm_out = layer.ssm_out.as_ref()?;
+        let ssm_dim = if ssm_out.shape.len() >= 2 {
+            // ssm_out is stored transposed: shape[0] is input dim, shape[1] is output dim
+            if ssm_out.shape[1] == hidden_size {
+                ssm_out.shape[0]
+            } else {
+                ssm_out.shape[1]
+            }
+        } else {
+            ssm_out.shape[0]
+        };
+
+        // 2. Causal Conv1D on the full total_dim
+        // ssm_conv1d: [conv_kernel, total_dim]
+        let ssm_conv1d = layer.ssm_conv1d.as_ref()?;
+        let conv_data: &[f32] = bytemuck::cast_slice(ssm_conv1d.bytes());
+
+        // Conv1D: out = conv1d_weights * input (simplified for single token)
+        let inner_per_group = total_dim / n_groups;
+        for g in 0..n_groups {
+            let offset = g * inner_per_group;
+            for i in 0..inner_per_group.min(conv_kernel) {
+                let mut sum = 0.0f32;
+                for k in 0..conv_kernel {
+                    let input_idx = offset + i;
+                    let weight_idx = k * total_dim + offset + i;
+                    if input_idx < total_dim && weight_idx < conv_data.len() {
+                        sum += buffers.ssm_input[input_idx]
+                            * conv_data[weight_idx];
+                    }
+                }
+                buffers.ssm_conv_out[offset + i] = sum;
+            }
+            // Copy remaining elements
+            for i in conv_kernel.min(inner_per_group)..inner_per_group {
+                buffers.ssm_conv_out[offset + i] =
+                    buffers.ssm_input[offset + i];
+            }
+        }
+
+        // 3. Compute delta, B, C from projections
+        let ssm_alpha = layer.ssm_alpha.as_ref()?;
+        let ssm_beta = layer.ssm_beta.as_ref()?;
+        let ssm_a = layer.ssm_a.as_ref()?;
+        let ssm_dt_bias = layer.ssm_dt_bias.as_ref()?;
+
+        // Project to time_step_rank for delta and B
+        self.gemv_into_with_buffers(
+            &buffers.hidden[..hidden_size],
+            ssm_alpha,
+            &mut buffers.ssm_delta[..time_step_rank],
+            &mut buffers.q8k_input,
+            &mut buffers.x_padded,
+        );
+        self.gemv_into_with_buffers(
+            &buffers.hidden[..hidden_size],
+            ssm_beta,
+            &mut buffers.ssm_b[..time_step_rank],
+            &mut buffers.q8k_input,
+            &mut buffers.x_padded,
+        );
+
+        // Add dt_bias and apply softplus to delta
+        let dt_bias_data: &[f32] = bytemuck::cast_slice(ssm_dt_bias.bytes());
+        for i in 0..time_step_rank.min(dt_bias_data.len()) {
+            let x = buffers.ssm_delta[i] + dt_bias_data[i];
+            buffers.ssm_delta[i] = (1.0 + x.exp()).ln();
+        }
+
+        // Apply sigmoid to B
+        for i in 0..time_step_rank {
+            buffers.ssm_b[i] = 1.0 / (1.0 + (-buffers.ssm_b[i]).exp());
+        }
+
+        // C is derived from the last time_step_rank of ssm_conv_out (within ssm_dim)
+        let c_offset = ssm_dim.saturating_sub(time_step_rank);
+        for i in 0..time_step_rank.min(buffers.ssm_c.len()) {
+            buffers.ssm_c[i] = buffers.ssm_conv_out[c_offset + i];
+        }
+
+        // 4. Selective Scan (S6 algorithm) on first ssm_dim elements
+        let a_data: &[f32] = bytemuck::cast_slice(ssm_a.bytes());
+
+        // Clear output (only ssm_dim elements)
+        for i in 0..ssm_dim {
+            buffers.ssm_y[i] = 0.0;
+        }
+
+        let ssm_inner_per_group = ssm_dim / n_groups;
+        for g in 0..n_groups {
+            let a_val = if g < a_data.len() { a_data[g] } else { 0.0f32 };
+            let a_exp = a_val.exp();
+
+            let state_offset = g * state_size;
+            let input_offset = g * ssm_inner_per_group;
+
+            for s in 0..state_size.min(ssm_inner_per_group) {
+                let state_idx = state_offset + s;
+                let input_idx = input_offset + s;
+
+                if state_idx < buffers.ssm_state.len() && input_idx < ssm_dim {
+                    let b_val =
+                        if s < time_step_rank { buffers.ssm_b[s] } else { 1.0 };
+                    let x_val = buffers.ssm_conv_out[input_idx];
+
+                    buffers.ssm_state[state_idx] =
+                        a_exp * buffers.ssm_state[state_idx] + b_val * x_val;
+
+                    let c_val =
+                        if s < time_step_rank { buffers.ssm_c[s] } else { 1.0 };
+                    buffers.ssm_y[input_idx] =
+                        c_val * buffers.ssm_state[state_idx];
+                }
+            }
+        }
+
+        // 5. Apply SSM norm if present
+        if let Some(ref ssm_norm) = layer.ssm_norm {
+            let norm_data: &[f32] = bytemuck::cast_slice(ssm_norm.bytes());
+            let norm_size = norm_data.len();
+
+            let mut ss = 0.0f32;
+            for i in 0..ssm_dim.min(norm_size) {
+                ss += buffers.ssm_y[i] * buffers.ssm_y[i];
+            }
+            let rms = (ss / ssm_dim as f32 + 1e-5).sqrt();
+            for i in 0..ssm_dim.min(norm_size) {
+                buffers.ssm_y[i] = buffers.ssm_y[i] / rms * norm_data[i];
+            }
+        }
+
+        // 6. Output projection: ssm_dim → hidden_size
+        self.gemv_into_with_buffers(
+            &buffers.ssm_y[..ssm_dim],
+            ssm_out,
+            &mut buffers.hidden_alt[..hidden_size],
+            &mut buffers.q8k_input,
+            &mut buffers.x_padded,
+        );
+
+        // 7. Apply attention gate if present
+        // attn_gate: After transpose, shape is [gate_dim, hidden_size]
+        // Projects hidden → gate_dim, where gate_dim = 2 * gate_hidden
+        if let Some(ref attn_gate) = layer.attn_gate {
+            let gate_out_size = if attn_gate.shape.len() >= 2 {
+                attn_gate.shape[0] // Output dimension after transpose
+            } else {
+                0
+            };
+
+            if gate_out_size > 0 {
+                self.gemv_into_with_buffers(
+                    &buffers.hidden[..hidden_size],
+                    attn_gate,
+                    &mut buffers.hidden_alt[..gate_out_size],
+                    &mut buffers.q8k_input,
+                    &mut buffers.x_padded,
+                );
+
+                // Apply gating: output = sigmoid(gate) * pass_through
+                let gate_hidden = gate_out_size / 2;
+                for i in 0..hidden_size.min(gate_hidden) {
+                    let gate = 1.0 / (1.0 + (-buffers.hidden_alt[i]).exp());
+                    buffers.hidden[i] =
+                        gate * buffers.hidden_alt[gate_hidden + i];
+                }
+            } else {
+                // Copy output to hidden
+                for i in 0..hidden_size {
+                    buffers.hidden[i] = buffers.hidden_alt[i];
+                }
+            }
+        } else {
+            // Copy output to hidden
+            for i in 0..hidden_size {
+                buffers.hidden[i] = buffers.hidden_alt[i];
+            }
+        }
+
+        Some(())
     }
 
     pub fn apply_rms_norm_impl(
@@ -5743,6 +6380,18 @@ impl LlamaModel {
 
                 // Create temporary output buffer for BLAS (row-major [m, n])
                 let mut c_temp = vec![0.0f32; out_size * n];
+
+                // Debug output
+                if outputs.len() < n * out_size {
+                    eprintln!(
+                        "GEMM ERROR: outputs len={} but need n*out_size={}*{}={}",
+                        outputs.len(),
+                        n,
+                        out_size,
+                        n * out_size
+                    );
+                    return false;
+                }
 
                 let result = gemm_dispatch(
                     &mut c_temp,
@@ -8424,10 +9073,6 @@ impl LlamaLayer {
                 .or_else(|| {
                     store.get(&format!("{}.attn_output.weight", qwen_prefix))
                 })
-                .or_else(|| {
-                    // For hybrid SSM-Transformer models
-                    store.get(&format!("{}.attn_gate.weight", qwen_prefix))
-                })
                 .cloned(),
             bq: store
                 .get(&format!("{}.attention.wq.bias", llama_prefix))
@@ -8457,6 +9102,11 @@ impl LlamaLayer {
             // Fused QKV (for Qwen3.8-style models)
             attn_qkv: store
                 .get(&format!("{}.attn_qkv.weight", qwen_prefix))
+                .or_else(|| {
+                    let result =
+                        store.get(&format!("{}.attn_qkv.weight", llama_prefix));
+                    result
+                })
                 .cloned(),
 
             // MQA attention (for DeepSeek-Coder-V2-style models)
@@ -8524,6 +9174,33 @@ impl LlamaLayer {
                 .cloned(),
             ffn_down_shexp: store
                 .get(&format!("{}.ffn_down_shexp.weight", qwen_prefix))
+                .cloned(),
+
+            // SSM/Mamba (for Qwen3.6-35B, Qwen3.8-27B hybrid models)
+            ssm_out: store
+                .get(&format!("{}.ssm_out.weight", qwen_prefix))
+                .cloned(),
+            ssm_conv1d: store
+                .get(&format!("{}.ssm_conv1d.weight", qwen_prefix))
+                .cloned(),
+            ssm_a: store
+                .get(&format!("{}.ssm_a", qwen_prefix))
+                .or_else(|| store.get(&format!("{}.ssm_a.weight", qwen_prefix)))
+                .cloned(),
+            ssm_dt_bias: store
+                .get(&format!("{}.ssm_dt.bias", qwen_prefix))
+                .cloned(),
+            ssm_norm: store
+                .get(&format!("{}.ssm_norm.weight", qwen_prefix))
+                .cloned(),
+            ssm_alpha: store
+                .get(&format!("{}.ssm_alpha.weight", qwen_prefix))
+                .cloned(),
+            ssm_beta: store
+                .get(&format!("{}.ssm_beta.weight", qwen_prefix))
+                .cloned(),
+            attn_gate: store
+                .get(&format!("{}.attn_gate.weight", qwen_prefix))
                 .cloned(),
         }
     }

@@ -30,6 +30,13 @@ pub struct ModelConfig {
     pub key_length: usize, // Key length after decompression (total qk_head_dim)
     pub value_length: usize, // Value length after decompression
 
+    // SSM/Mamba (State Space Model)
+    pub ssm_conv_kernel: usize, // Conv1D kernel size (usually 4)
+    pub ssm_state_size: usize,  // SSM state dimension (usually 128)
+    pub ssm_group_count: usize, // Number of SSM groups (usually 32)
+    pub ssm_time_step_rank: usize, // Time step rank (usually 32)
+    pub ssm_inner_size: usize,  // SSM inner dimension
+
     // RoPE
     pub rope_dim: usize,
     pub rope_freq_base: f32,
@@ -156,6 +163,19 @@ impl ModelConfig {
             0
         };
 
+        // SSM/Mamba parameters (Qwen3.5-MoE, Qwen3.8, etc.)
+        let ssm_conv_kernel =
+            get_u64(&arch_meta, "ssm.conv_kernel").unwrap_or(4) as usize;
+        let ssm_state_size =
+            get_u64(&arch_meta, "ssm.state_size").unwrap_or(128) as usize;
+        let ssm_group_count =
+            get_u64(&arch_meta, "ssm.group_count").unwrap_or(32) as usize;
+        let ssm_time_step_rank =
+            get_u64(&arch_meta, "ssm.time_step_rank").unwrap_or(32) as usize;
+        let ssm_inner_size = get_u64(&arch_meta, "ssm.inner_size")
+            .unwrap_or(hidden_size as u64)
+            as usize;
+
         ModelConfig {
             architecture,
             hidden_size,
@@ -173,6 +193,11 @@ impl ModelConfig {
             qk_rope_head_dim,
             key_length,
             value_length,
+            ssm_conv_kernel,
+            ssm_state_size,
+            ssm_group_count,
+            ssm_time_step_rank,
+            ssm_inner_size,
             rope_dim,
             rope_freq_base,
             rms_norm_eps,
