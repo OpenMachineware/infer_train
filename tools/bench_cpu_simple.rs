@@ -1,6 +1,6 @@
 // Simple CPU inference benchmark (zero-allocation)
 
-use infer_train::cpu::CpuWorkBuffers;
+use infer_train::cpu::{CpuWorkBuffers, ThreadConfig};
 use infer_train::inference::{
     Device, InferenceContext, KVCache, KVCacheBase, KVCacheFormat,
 };
@@ -59,6 +59,13 @@ fn main() {
     // Initialize pre-dequantized norm weights
     buffers.init_norm_weights(&ctx.model);
 
+    // Initialize thread configuration for multi-thread decode
+    let thread_config = ThreadConfig::default();
+    println!(
+        "Threads: decode={}, prefill={}",
+        thread_config.n_threads_decode, thread_config.n_threads_prefill
+    );
+
     // Warmup
     println!("\n=== Warmup (3 tokens) ===");
     let tokens: Vec<u32> = vec![1, 2, 3];
@@ -70,6 +77,7 @@ fn main() {
             &[token],
             &mut kv_cache,
             &mut buffers,
+            &thread_config,
         );
         println!(
             "Warmup token {}: {} ms",
@@ -89,6 +97,7 @@ fn main() {
         &prefill_tokens,
         &mut kv_cache,
         &mut buffers,
+        &thread_config,
     ) {
         Some(_logits) => {
             let elapsed = prefill_start.elapsed();
@@ -113,6 +122,7 @@ fn main() {
             &decode_tokens,
             &mut kv_cache,
             &mut buffers,
+            &thread_config,
         ) {
             Some(_logits) => {
                 let token_time = token_start.elapsed().as_millis();
@@ -140,9 +150,10 @@ fn forward_zero_alloc(
     tokens: &[u32],
     kv_cache: &mut infer_train::inference::KVCache,
     buffers: &mut CpuWorkBuffers,
+    thread_config: &ThreadConfig,
 ) -> Option<Vec<f32>> {
-    // Use forward_pooled for optimized batch prefill and decode
-    model.forward_pooled(tokens, kv_cache, buffers)
+    // Use forward_pooled_with_threads for multi-thread decode
+    model.forward_pooled_with_threads(tokens, kv_cache, buffers, thread_config)
 }
 
 #[cfg(not(target_arch = "aarch64"))]
@@ -151,6 +162,7 @@ fn forward_zero_alloc(
     tokens: &[u32],
     kv_cache: &mut infer_train::inference::KVCache,
     _buffers: &mut CpuWorkBuffers,
+    _thread_config: &ThreadConfig,
 ) -> Option<Vec<f32>> {
     model.forward(tokens, kv_cache)
 }
