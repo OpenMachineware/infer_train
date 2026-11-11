@@ -123,6 +123,30 @@ pub fn select_gemm_path(
     }
 }
 
+/// Lightweight view of a weight tensor for dispatch.
+/// Provides minimal interface needed by gemm_dispatch.
+pub struct WeightView<'a> {
+    pub dtype: DataType,
+    pub shape: &'a [usize],
+    pub bytes: &'a [u8],
+}
+
+impl<'a> WeightView<'a> {
+    /// Create from raw components.
+    pub fn new(dtype: DataType, shape: &'a [usize], bytes: &'a [u8]) -> Self {
+        Self { dtype, shape, bytes }
+    }
+
+    /// Create from Tensor.
+    pub fn from_tensor(tensor: &'a Tensor) -> Self {
+        Self {
+            dtype: tensor.dtype,
+            shape: &tensor.shape,
+            bytes: tensor.bytes(),
+        }
+    }
+}
+
 /// Execute GEMM with automatic path selection
 ///
 /// # Arguments
@@ -148,6 +172,22 @@ pub fn gemm_dispatch(
     threads: usize,
     q8k_buf: Option<&mut [u8]>,
 ) -> bool {
+    let view = WeightView::from_tensor(weights);
+    gemm_dispatch_view(c, &view, b, m, n, k, threads, q8k_buf)
+}
+
+/// Execute GEMM with WeightView (for Backend integration).
+#[cfg(target_arch = "aarch64")]
+pub fn gemm_dispatch_view(
+    c: &mut [f32],
+    weights: &WeightView,
+    b: &[f32],
+    m: usize,
+    n: usize,
+    k: usize,
+    threads: usize,
+    q8k_buf: Option<&mut [u8]>,
+) -> bool {
     let dtype = weights.dtype;
     let path = select_gemm_path(dtype, m, n, k);
 
@@ -160,7 +200,7 @@ pub fn gemm_dispatch(
                 DataType::F32 => {
                     let a: &[f32] = unsafe {
                         std::slice::from_raw_parts(
-                            weights.bytes().as_ptr() as *const f32,
+                            weights.bytes.as_ptr() as *const f32,
                             m * k,
                         )
                     };
@@ -171,7 +211,7 @@ pub fn gemm_dispatch(
                     use crate::quant::types::BlockQ4_0;
                     let a: &[BlockQ4_0] = unsafe {
                         std::slice::from_raw_parts(
-                            weights.bytes().as_ptr() as *const BlockQ4_0,
+                            weights.bytes.as_ptr() as *const BlockQ4_0,
                             m * (k / 32),
                         )
                     };
@@ -182,7 +222,7 @@ pub fn gemm_dispatch(
                     use crate::quant::types::BlockQ5_0;
                     let a: &[BlockQ5_0] = unsafe {
                         std::slice::from_raw_parts(
-                            weights.bytes().as_ptr() as *const BlockQ5_0,
+                            weights.bytes.as_ptr() as *const BlockQ5_0,
                             m * (k / 32),
                         )
                     };
@@ -193,7 +233,7 @@ pub fn gemm_dispatch(
                     use crate::quant::types::BlockQ8_0;
                     let a: &[BlockQ8_0] = unsafe {
                         std::slice::from_raw_parts(
-                            weights.bytes().as_ptr() as *const BlockQ8_0,
+                            weights.bytes.as_ptr() as *const BlockQ8_0,
                             m * (k / 32),
                         )
                     };
@@ -204,7 +244,7 @@ pub fn gemm_dispatch(
                     use crate::quant::types::BlockIQ4NL;
                     let a: &[BlockIQ4NL] = unsafe {
                         std::slice::from_raw_parts(
-                            weights.bytes().as_ptr() as *const BlockIQ4NL,
+                            weights.bytes.as_ptr() as *const BlockIQ4NL,
                             m * (k / 32),
                         )
                     };
@@ -219,7 +259,7 @@ pub fn gemm_dispatch(
                     let nb = k / QK_K;
                     let a: &[BlockIQ4XS] = unsafe {
                         std::slice::from_raw_parts(
-                            weights.bytes().as_ptr() as *const BlockIQ4XS,
+                            weights.bytes.as_ptr() as *const BlockIQ4XS,
                             m * nb,
                         )
                     };
@@ -233,7 +273,7 @@ pub fn gemm_dispatch(
                     let nb = k / QK_K;
                     let a: &[BlockQ4K] = unsafe {
                         std::slice::from_raw_parts(
-                            weights.bytes().as_ptr() as *const BlockQ4K,
+                            weights.bytes.as_ptr() as *const BlockQ4K,
                             m * nb,
                         )
                     };
@@ -247,7 +287,7 @@ pub fn gemm_dispatch(
                     let nb = k / QK_K;
                     let a: &[BlockQ5K] = unsafe {
                         std::slice::from_raw_parts(
-                            weights.bytes().as_ptr() as *const BlockQ5K,
+                            weights.bytes.as_ptr() as *const BlockQ5K,
                             m * nb,
                         )
                     };
@@ -329,7 +369,7 @@ pub fn gemm_dispatch(
                 match dtype {
                     DataType::Q4_K => {
                         let a: &[BlockQ4K] = std::slice::from_raw_parts(
-                            weights.bytes().as_ptr() as *const BlockQ4K,
+                            weights.bytes.as_ptr() as *const BlockQ4K,
                             m * nb,
                         );
                         matmul_q4_k_q8_k_hybrid_with_threads(
@@ -343,7 +383,7 @@ pub fn gemm_dispatch(
                     }
                     DataType::Q5_K => {
                         let a: &[BlockQ5K] = std::slice::from_raw_parts(
-                            weights.bytes().as_ptr() as *const BlockQ5K,
+                            weights.bytes.as_ptr() as *const BlockQ5K,
                             m * nb,
                         );
                         matmul_q5_k_q8_k_hybrid_with_threads(
@@ -357,7 +397,7 @@ pub fn gemm_dispatch(
                     }
                     DataType::Q6_K => {
                         let a: &[BlockQ6K] = std::slice::from_raw_parts(
-                            weights.bytes().as_ptr() as *const BlockQ6K,
+                            weights.bytes.as_ptr() as *const BlockQ6K,
                             m * nb,
                         );
                         matmul_q6_k_q8_k_hybrid_with_threads(
@@ -371,7 +411,7 @@ pub fn gemm_dispatch(
                     }
                     DataType::IQ4_XS => {
                         let a: &[BlockIQ4XS] = std::slice::from_raw_parts(
-                            weights.bytes().as_ptr() as *const BlockIQ4XS,
+                            weights.bytes.as_ptr() as *const BlockIQ4XS,
                             m * nb,
                         );
                         matmul_iq4_xs_q8_k_hybrid_with_threads(

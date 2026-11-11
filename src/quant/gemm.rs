@@ -46,9 +46,9 @@ pub mod scheduler;
 pub use blas::{BLAS_THRESHOLD, DequantizeToFP32};
 #[cfg(target_arch = "aarch64")]
 pub use scheduler::{
-    BLAS_THRESHOLD_FLOPS, BLAS_THRESHOLD_N, GemmPath, gemm_dispatch,
-    gemv_dispatch, requires_vec_dot, select_gemm_path, should_use_blas,
-    supports_sgemm,
+    BLAS_THRESHOLD_FLOPS, BLAS_THRESHOLD_N, GemmPath, WeightView,
+    gemm_dispatch, gemm_dispatch_view, gemv_dispatch, requires_vec_dot,
+    select_gemm_path, should_use_blas, supports_sgemm,
 };
 
 /// GEMM kernel trait for quantized formats.

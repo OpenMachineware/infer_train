@@ -493,6 +493,11 @@ pub fn dequant_to_f32_into(data: &[u8], dtype: DataType, out: &mut [f32]) {
         DataType::Q8_0 => {
             dequant_q8_0(data, out, count);
         }
+        DataType::Q8_1 => {
+            // Q8_1 has scale and min per block, similar to Q4_1/Q5_1
+            // Placeholder: use Q8_0 for now (not commonly used in models)
+            dequant_q8_0(data, out, count);
+        }
         DataType::Q2_K => {
             dequant::dequant_q2_k(data, out, count);
         }

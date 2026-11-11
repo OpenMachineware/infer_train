@@ -118,40 +118,46 @@ impl Backend for ArmCpuBackend {
                     OperatorError::InternalError("Output is not F32".into())
                 })?;
 
+                // Get weight data
+                let weights = &inputs[1];
+                let weight_bytes = weights.as_bytes().ok_or_else(|| {
+                    OperatorError::InternalError(
+                        "Weights is not raw bytes".into(),
+                    )
+                })?;
+
                 let batch = input.len() / in_features;
-                let m = batch;
-                let n = *out_features;
+                let m = *out_features;
+                let n = batch;
                 let k = *in_features;
 
-                // For now, use scalar matmul for F32
-                // Real implementation would use gemm_dispatch with weights tensor
-                match quant_type {
-                    QuantType::F32 => {
-                        let weights = inputs[1].as_f32().ok_or_else(|| {
-                            OperatorError::InternalError(
-                                "Weights is not F32".into(),
-                            )
-                        })?;
-                        // Simple matmul: C = A @ B^T
-                        for i in 0..m {
-                            for j in 0..n {
-                                let mut sum = 0.0f32;
-                                for l in 0..k {
-                                    sum +=
-                                        input[i * k + l] * weights[j * k + l];
-                                }
-                                output[i * n + j] = sum;
-                            }
-                        }
-                    }
-                    _ => {
-                        return Err(OperatorError::UnsupportedOperation(
-                            format!(
-                                "Quantized Linear not yet supported in ArmCpuBackend: {:?}",
-                                quant_type
-                            ),
-                        ));
-                    }
+                // Convert QuantType to DataType
+                let dtype = quant_type_to_dtype(*quant_type);
+
+                // Create WeightView
+                let weight_view = crate::quant::gemm::WeightView::new(
+                    dtype,
+                    &weights.shape,
+                    weight_bytes,
+                );
+
+                // Use gemm_dispatch_view
+                let success = crate::quant::gemm::gemm_dispatch_view(
+                    output,
+                    &weight_view,
+                    input,
+                    m,
+                    n,
+                    k,
+                    self.threads,
+                    None, // q8k_buf - TODO: add to context
+                );
+
+                if !success {
+                    return Err(OperatorError::UnsupportedOperation(format!(
+                        "GEMM dispatch failed for dtype {:?}",
+                        dtype
+                    )));
                 }
                 Ok(())
             }
@@ -332,5 +338,30 @@ impl Backend for ArmCpuBackend {
             }
             _ => Cost::zero(),
         }
+    }
+}
+
+/// Convert QuantType to DataType for GEMM dispatch.
+fn quant_type_to_dtype(quant: QuantType) -> crate::model::tensor::DataType {
+    use crate::model::tensor::DataType;
+    match quant {
+        QuantType::F32 => DataType::F32,
+        QuantType::F16 => DataType::F16,
+        QuantType::BF16 => DataType::BF16,
+        QuantType::Q4_0 => DataType::Q4_0,
+        QuantType::Q4_1 => DataType::Q4_1,
+        QuantType::Q5_0 => DataType::Q5_0,
+        QuantType::Q5_1 => DataType::Q5_1,
+        QuantType::Q8_0 => DataType::Q8_0,
+        QuantType::Q8_1 => DataType::Q8_1,
+        QuantType::Q2_K => DataType::Q2_K,
+        QuantType::Q3_K => DataType::Q3_K,
+        QuantType::Q4_K => DataType::Q4_K,
+        QuantType::Q5_K => DataType::Q5_K,
+        QuantType::Q6_K => DataType::Q6_K,
+        QuantType::IQ4_NL => DataType::IQ4_NL,
+        QuantType::IQ4_XS => DataType::IQ4_XS,
+        QuantType::IQ3_XXS => DataType::IQ3_XXS,
+        QuantType::IQ3_S => DataType::IQ3_S,
     }
 }

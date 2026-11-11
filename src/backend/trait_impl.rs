@@ -10,6 +10,10 @@ use super::device::{Device, DeviceId};
 use super::memory::MemoryRegionId;
 use super::operator::{CoreOperator, Cost, OperatorResult};
 
+/// Data type for tensors.
+/// Re-exported from model::tensor for unified type system.
+pub use crate::model::tensor::DataType;
+
 /// Backend trait for compute operations.
 ///
 /// This trait provides a hardware-agnostic interface for tensor operations,
@@ -53,10 +57,14 @@ pub struct TensorRef {
     pub dtype: DataType,
     /// Memory region.
     pub region: MemoryRegionId,
-    /// Data pointer (F32 slice).
+    /// Data pointer (F32 slice) - for activation tensors.
     pub data_f32: Option<*mut f32>,
-    /// Data length (in elements).
+    /// Data length (in elements) - for F32 data.
     pub len: usize,
+    /// Raw byte data pointer - for quantized weight tensors.
+    pub data_bytes: Option<*const u8>,
+    /// Byte length - for raw data.
+    pub byte_len: usize,
 }
 
 impl TensorRef {
@@ -68,7 +76,16 @@ impl TensorRef {
         region: MemoryRegionId,
     ) -> Self {
         let len = shape.iter().product();
-        Self { id, shape, dtype, region, data_f32: None, len }
+        Self {
+            id,
+            shape,
+            dtype,
+            region,
+            data_f32: None,
+            len,
+            data_bytes: None,
+            byte_len: 0,
+        }
     }
 
     /// Create a tensor reference from F32 data.
@@ -81,6 +98,42 @@ impl TensorRef {
             region: MemoryRegionId(0),
             data_f32: Some(data.as_mut_ptr()),
             len,
+            data_bytes: None,
+            byte_len: 0,
+        }
+    }
+
+    /// Create a tensor reference from quantized weight data.
+    pub fn from_quantized(
+        id: usize,
+        data: &[u8],
+        shape: Vec<usize>,
+        dtype: DataType,
+    ) -> Self {
+        let len = shape.iter().product();
+        Self {
+            id,
+            shape,
+            dtype,
+            region: MemoryRegionId(0),
+            data_f32: None,
+            len,
+            data_bytes: Some(data.as_ptr()),
+            byte_len: data.len(),
+        }
+    }
+
+    /// Create from Tensor (for backward compatibility).
+    pub fn from_tensor(id: usize, tensor: &crate::model::Tensor) -> Self {
+        Self {
+            id,
+            shape: tensor.shape.clone(),
+            dtype: tensor.dtype,
+            region: MemoryRegionId(0),
+            data_f32: None,
+            len: tensor.shape.iter().product(),
+            data_bytes: Some(tensor.bytes().as_ptr()),
+            byte_len: tensor.bytes().len(),
         }
     }
 
@@ -91,7 +144,11 @@ impl TensorRef {
 
     /// Get the size in bytes.
     pub fn byte_size(&self) -> usize {
-        self.len * self.dtype.size()
+        if self.byte_len > 0 {
+            self.byte_len
+        } else {
+            self.len * self.dtype.block_size()
+        }
     }
 
     /// Get F32 data slice (mutable).
@@ -105,46 +162,12 @@ impl TensorRef {
         self.data_f32
             .map(|ptr| unsafe { std::slice::from_raw_parts(ptr, self.len) })
     }
-}
 
-/// Data type for tensors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DataType {
-    F32,
-    F16,
-    BF16,
-    I32,
-    I16,
-    I8,
-    U8,
-}
-
-impl DataType {
-    /// Get the size in bytes.
-    pub fn size(&self) -> usize {
-        match self {
-            DataType::F32 => 4,
-            DataType::F16 => 2,
-            DataType::BF16 => 2,
-            DataType::I32 => 4,
-            DataType::I16 => 2,
-            DataType::I8 => 1,
-            DataType::U8 => 1,
-        }
-    }
-}
-
-impl fmt::Display for DataType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DataType::F32 => write!(f, "f32"),
-            DataType::F16 => write!(f, "f16"),
-            DataType::BF16 => write!(f, "bf16"),
-            DataType::I32 => write!(f, "i32"),
-            DataType::I16 => write!(f, "i16"),
-            DataType::I8 => write!(f, "i8"),
-            DataType::U8 => write!(f, "u8"),
-        }
+    /// Get raw byte data.
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        self.data_bytes.map(|ptr| unsafe {
+            std::slice::from_raw_parts(ptr, self.byte_len)
+        })
     }
 }
 
