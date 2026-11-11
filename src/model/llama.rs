@@ -2627,8 +2627,19 @@ impl LlamaModel {
                 let attn_out_size = self.config.n_heads * v_head_dim;
                 let all_attn_outs_len = n_tokens * attn_out_size;
                 let q_size = self.config.n_heads * self.config.head_dim;
-                let k_size = self.config.n_kv_heads * self.config.key_length;
-                let v_size = self.config.n_kv_heads * self.config.value_length;
+                // Use head_dim as fallback if key_length/value_length are 0
+                let k_size = self.config.n_kv_heads
+                    * if self.config.key_length > 0 {
+                        self.config.key_length
+                    } else {
+                        self.config.head_dim
+                    };
+                let v_size = self.config.n_kv_heads
+                    * if self.config.value_length > 0 {
+                        self.config.value_length
+                    } else {
+                        self.config.head_dim
+                    };
 
                 // Apply RoPE to all Q and K vectors in-place
                 // No intermediate buffers needed
@@ -5683,8 +5694,20 @@ impl LlamaModel {
         }
 
         let in_size = inputs[0].len(); // k
-        // After transpose, shape = [out_features, in_features]
-        let out_size = w.shape[0]; // m (weight rows = output dimension)
+        // Transposed weight: shape = [in_features, out_features]
+        // shape[0] = in_features (input dimension, e.g. hidden_size)
+        // shape[1] = out_features (output dimension, e.g. qkv_size)
+        // For GEMM output, we need the output dimension (shape[1])
+        let out_size = if w.shape.len() >= 2 && w.shape[0] == in_size {
+            // Weight is transposed: [in, out] -> use shape[1] as output
+            w.shape[1]
+        } else if w.shape.len() >= 2 && w.shape[1] == in_size {
+            // Weight is NOT transposed: [out, in] -> use shape[0] as output
+            w.shape[0]
+        } else {
+            // Fallback: assume shape[0] is output (old behavior)
+            w.shape[0]
+        };
         let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
         let nb = in_size_padded / QK_K;
 

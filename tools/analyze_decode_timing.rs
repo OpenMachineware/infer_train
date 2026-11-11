@@ -69,6 +69,7 @@ fn forward_detailed(
     let n_heads = model.config.n_heads;
     let head_dim = model.config.head_dim;
     let n_kv_heads = model.config.n_kv_heads;
+    let mut residual = vec![0.0f32; hidden_size];
 
     for &token in tokens {
         // Embedding
@@ -151,8 +152,8 @@ fn forward_detailed(
 
             // KV cache store
             let t = Instant::now();
-            kv_cache.set_k(layer_idx, &buffers.k);
-            kv_cache.set_v(layer_idx, &buffers.v);
+            kv_cache.set_k(layer_idx, &buffers.k, n_kv_heads, head_dim);
+            kv_cache.set_v(layer_idx, &buffers.v, n_kv_heads, head_dim);
             println!(
                 "  KV store: {:.3} ms",
                 t.elapsed().as_secs_f64() * 1000.0
@@ -160,10 +161,12 @@ fn forward_detailed(
 
             // Attention
             let t = Instant::now();
-            model.flash_attention_decode_into(
+            model.attention_into(
                 &buffers.q,
-                kv_cache,
+                &buffers.k,
+                &buffers.v,
                 layer_idx,
+                kv_cache,
                 n_heads,
                 head_dim,
                 n_kv_heads,
@@ -186,7 +189,7 @@ fn forward_detailed(
             // Residual
             let t = Instant::now();
             for i in 0..hidden_size {
-                buffers.hidden[i] += buffers.hidden_saved[i];
+                buffers.hidden[i] += residual[i];
             }
             println!(
                 "  Residual: {:.3} ms",
@@ -194,7 +197,7 @@ fn forward_detailed(
             );
 
             // Save for residual
-            buffers.hidden_saved.copy_from_slice(&buffers.hidden);
+            residual.copy_from_slice(&buffers.hidden);
 
             // FFN norm
             let t = Instant::now();
@@ -224,7 +227,7 @@ fn forward_detailed(
             // Final residual
             let t = Instant::now();
             for i in 0..hidden_size {
-                buffers.hidden[i] += buffers.hidden_saved[i];
+                buffers.hidden[i] += residual[i];
             }
             println!(
                 "  Residual: {:.3} ms",

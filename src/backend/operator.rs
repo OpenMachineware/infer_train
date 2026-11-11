@@ -130,27 +130,50 @@ pub enum CoreOperator {
     /// RoPE position encoding.
     Rope { id: OperatorId, head_dim: usize, max_seq_len: usize, freq_base: f32 },
 
-    /// Flash Attention.
-    FlashAttention {
+    /// Flash Attention for decode (single token).
+    /// Q: [n_heads, head_dim], K/V from cache
+    FlashAttentionDecode {
         id: OperatorId,
+        layer_idx: usize,
         n_heads: usize,
         n_kv_heads: usize,
         head_dim: usize,
-        max_seq_len: usize,
+        seq_len: usize, // current sequence position
+    },
+
+    /// Flash Attention for prefill (batch tokens).
+    FlashAttentionPrefill {
+        id: OperatorId,
+        layer_idx: usize,
+        n_tokens: usize,
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
     },
 
     /// SwiGLU activation (gate * silu(up)).
     SwiGLU { id: OperatorId, intermediate_size: usize },
 
-    /// MoE router (compute expert weights).
-    MoERouter { id: OperatorId, n_experts: usize, top_k: usize },
-
-    /// MoE expert computation.
-    MoEExpert {
+    /// MoE router: computes top-k expert indices and routing weights.
+    /// Input: hidden [hidden_size]
+    /// Output: expert_indices [top_k], expert_weights [top_k]
+    MoERouter {
         id: OperatorId,
-        expert_id: usize,
-        in_features: usize,
+        hidden_size: usize,
+        n_experts: usize,
+        top_k: usize,
+    },
+
+    /// MoE expert batch: applies multiple experts to hidden states.
+    /// Input: hidden [n_tokens, hidden_size], expert_indices [n_tokens], expert_weights [n_tokens]
+    /// Weights: gate_up_exps [n_experts, intermediate_size, hidden_size], down_exps [n_experts, hidden_size, intermediate_size]
+    /// Output: result [n_tokens, hidden_size]
+    MoEExpertBatch {
+        id: OperatorId,
+        hidden_size: usize,
         intermediate_size: usize,
+        n_experts: usize,
+        n_tokens: usize,
         quant_type: QuantType,
     },
 
@@ -171,10 +194,11 @@ impl CoreOperator {
             CoreOperator::RmsNorm { id, .. } => *id,
             CoreOperator::Linear { id, .. } => *id,
             CoreOperator::Rope { id, .. } => *id,
-            CoreOperator::FlashAttention { id, .. } => *id,
+            CoreOperator::FlashAttentionDecode { id, .. } => *id,
+            CoreOperator::FlashAttentionPrefill { id, .. } => *id,
             CoreOperator::SwiGLU { id, .. } => *id,
             CoreOperator::MoERouter { id, .. } => *id,
-            CoreOperator::MoEExpert { id, .. } => *id,
+            CoreOperator::MoEExpertBatch { id, .. } => *id,
             CoreOperator::Softmax { id, .. } => *id,
             CoreOperator::Add { id, .. } => *id,
             CoreOperator::Mul { id, .. } => *id,
@@ -192,10 +216,13 @@ impl Operator for CoreOperator {
             CoreOperator::RmsNorm { .. } => "RmsNorm",
             CoreOperator::Linear { .. } => "Linear",
             CoreOperator::Rope { .. } => "Rope",
-            CoreOperator::FlashAttention { .. } => "FlashAttention",
+            CoreOperator::FlashAttentionDecode { .. } => "FlashAttentionDecode",
+            CoreOperator::FlashAttentionPrefill { .. } => {
+                "FlashAttentionPrefill"
+            }
             CoreOperator::SwiGLU { .. } => "SwiGLU",
             CoreOperator::MoERouter { .. } => "MoERouter",
-            CoreOperator::MoEExpert { .. } => "MoEExpert",
+            CoreOperator::MoEExpertBatch { .. } => "MoEExpertBatch",
             CoreOperator::Softmax { .. } => "Softmax",
             CoreOperator::Add { .. } => "Add",
             CoreOperator::Mul { .. } => "Mul",
@@ -213,21 +240,35 @@ impl Operator for CoreOperator {
             CoreOperator::Rope { head_dim, .. } => {
                 vec![vec![*head_dim]]
             }
-            CoreOperator::FlashAttention { head_dim, n_heads, .. } => {
+            CoreOperator::FlashAttentionDecode {
+                head_dim, n_heads, ..
+            } => {
+                vec![vec![*n_heads, *head_dim]] // Q only, K/V from cache
+            }
+            CoreOperator::FlashAttentionPrefill {
+                head_dim,
+                n_heads,
+                n_tokens,
+                ..
+            } => {
                 vec![
-                    vec![*n_heads, *head_dim], // Q
-                    vec![*n_heads, *head_dim], // K
-                    vec![*n_heads, *head_dim], // V
+                    vec![*n_tokens, *n_heads, *head_dim], // Q
+                    vec![*n_tokens, *n_heads, *head_dim], // K
+                    vec![*n_tokens, *n_heads, *head_dim], // V
                 ]
             }
             CoreOperator::SwiGLU { intermediate_size, .. } => {
                 vec![vec![*intermediate_size], vec![*intermediate_size]]
             }
-            CoreOperator::MoERouter { n_experts, .. } => {
-                vec![vec![*n_experts]]
+            CoreOperator::MoERouter { hidden_size, .. } => {
+                vec![vec![*hidden_size]]
             }
-            CoreOperator::MoEExpert { in_features, .. } => {
-                vec![vec![*in_features]]
+            CoreOperator::MoEExpertBatch { hidden_size, n_tokens, .. } => {
+                vec![
+                    vec![*n_tokens, *hidden_size], // hidden
+                    vec![*n_tokens],               // expert_indices
+                    vec![*n_tokens],               // expert_weights
+                ]
             }
             CoreOperator::Softmax { size, .. } => {
                 vec![vec![*size]]
@@ -250,17 +291,27 @@ impl Operator for CoreOperator {
             CoreOperator::Rope { head_dim, .. } => {
                 vec![vec![*head_dim]]
             }
-            CoreOperator::FlashAttention { head_dim, n_heads, .. } => {
+            CoreOperator::FlashAttentionDecode {
+                head_dim, n_heads, ..
+            } => {
                 vec![vec![*n_heads, *head_dim]]
+            }
+            CoreOperator::FlashAttentionPrefill {
+                head_dim,
+                n_heads,
+                n_tokens,
+                ..
+            } => {
+                vec![vec![*n_tokens, *n_heads, *head_dim]]
             }
             CoreOperator::SwiGLU { intermediate_size, .. } => {
                 vec![vec![*intermediate_size]]
             }
-            CoreOperator::MoERouter { n_experts: _, top_k, .. } => {
+            CoreOperator::MoERouter { top_k, .. } => {
                 vec![vec![*top_k], vec![*top_k]] // expert indices and weights
             }
-            CoreOperator::MoEExpert { in_features, .. } => {
-                vec![vec![*in_features]]
+            CoreOperator::MoEExpertBatch { hidden_size, n_tokens, .. } => {
+                vec![vec![*n_tokens, *hidden_size]]
             }
             CoreOperator::Softmax { size, .. } => {
                 vec![vec![*size]]

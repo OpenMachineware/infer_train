@@ -49,13 +49,13 @@ impl Backend for MetalBackend {
             CoreOperator::RmsNorm { .. }
             | CoreOperator::Linear { .. }
             | CoreOperator::Rope { .. }
-            | CoreOperator::FlashAttention { .. }
+            | CoreOperator::FlashAttentionDecode { .. }
+            | CoreOperator::FlashAttentionPrefill { .. }
             | CoreOperator::SwiGLU { .. }
             | CoreOperator::Softmax { .. } => true,
             CoreOperator::Add { .. } | CoreOperator::Mul { .. } => true,
-            CoreOperator::MoERouter { .. } | CoreOperator::MoEExpert { .. } => {
-                false
-            } // Not yet implemented
+            CoreOperator::MoERouter { .. }
+            | CoreOperator::MoEExpertBatch { .. } => false, // Not yet implemented for GPU
         }
     }
 
@@ -90,11 +90,23 @@ impl Backend for MetalBackend {
                 Ok(())
             }
 
-            CoreOperator::FlashAttention { n_heads, head_dim, .. } => {
-                // Flash Attention requires GPU context
+            CoreOperator::FlashAttentionDecode {
+                n_heads, head_dim, ..
+            } => {
+                // Flash Attention decode requires GPU context
                 // Placeholder for now
                 Err(OperatorError::UnsupportedOperation(
-                    "FlashAttention requires Metal context".into(),
+                    "FlashAttentionDecode requires Metal context".into(),
+                ))
+            }
+
+            CoreOperator::FlashAttentionPrefill {
+                n_heads, head_dim, ..
+            } => {
+                // Flash Attention prefill requires GPU context
+                // Placeholder for now
+                Err(OperatorError::UnsupportedOperation(
+                    "FlashAttentionPrefill requires Metal context".into(),
                 ))
             }
 
@@ -116,8 +128,22 @@ impl Backend for MetalBackend {
                     write_bytes: *hidden_size as u64 * 4,
                 }
             }
-            CoreOperator::FlashAttention { n_heads, head_dim, .. } => {
-                // Flash Attention is very efficient on GPU
+            CoreOperator::FlashAttentionDecode {
+                n_heads, head_dim, ..
+            } => {
+                // Flash Attention decode is very efficient on GPU
+                let flops = 4 * n_heads * head_dim;
+                Cost {
+                    compute_us: flops as f64 * 0.00001,
+                    memory_bytes: (*n_heads * *head_dim) as u64 * 4,
+                    read_bytes: (*n_heads * *head_dim * 3) as u64 * 4,
+                    write_bytes: (*n_heads * *head_dim) as u64 * 4,
+                }
+            }
+            CoreOperator::FlashAttentionPrefill {
+                n_heads, head_dim, ..
+            } => {
+                // Flash Attention prefill is very efficient on GPU
                 let flops = 4 * n_heads * head_dim;
                 Cost {
                     compute_us: flops as f64 * 0.00001,

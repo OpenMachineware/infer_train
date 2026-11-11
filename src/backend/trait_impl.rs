@@ -65,6 +65,20 @@ pub struct TensorRef {
     pub data_bytes: Option<*const u8>,
     /// Byte length - for raw data.
     pub byte_len: usize,
+    /// Context pointer - for passing KV cache or other stateful objects.
+    /// The caller is responsible for ensuring the pointer remains valid.
+    pub context_ptr: Option<usize>,
+}
+
+/// Context types for TensorRef::context_ptr
+#[repr(usize)]
+pub enum TensorContext {
+    /// No context.
+    None = 0,
+    /// KVCache pointer.
+    KVCache = 1,
+    /// InferenceContext pointer.
+    InferenceContext = 2,
 }
 
 impl TensorRef {
@@ -85,6 +99,7 @@ impl TensorRef {
             len,
             data_bytes: None,
             byte_len: 0,
+            context_ptr: None,
         }
     }
 
@@ -100,6 +115,7 @@ impl TensorRef {
             len,
             data_bytes: None,
             byte_len: 0,
+            context_ptr: None,
         }
     }
 
@@ -120,6 +136,7 @@ impl TensorRef {
             len,
             data_bytes: Some(data.as_ptr()),
             byte_len: data.len(),
+            context_ptr: None,
         }
     }
 
@@ -134,7 +151,14 @@ impl TensorRef {
             len: tensor.shape.iter().product(),
             data_bytes: Some(tensor.bytes().as_ptr()),
             byte_len: tensor.bytes().len(),
+            context_ptr: None,
         }
+    }
+
+    /// Create a tensor reference with context pointer.
+    pub fn with_context(mut self, context: usize) -> Self {
+        self.context_ptr = Some(context);
+        self
     }
 
     /// Get the number of elements.
@@ -168,6 +192,18 @@ impl TensorRef {
         self.data_bytes.map(|ptr| unsafe {
             std::slice::from_raw_parts(ptr, self.byte_len)
         })
+    }
+
+    /// Get context pointer as a specific type.
+    #[inline]
+    pub fn context_as<T>(&self) -> Option<&T> {
+        self.context_ptr.map(|ptr| unsafe { &*(ptr as *const T) })
+    }
+
+    /// Get context pointer as a mutable reference.
+    #[inline]
+    pub fn context_as_mut<T>(&self) -> Option<&mut T> {
+        self.context_ptr.map(|ptr| unsafe { &mut *(ptr as *mut T) })
     }
 }
 

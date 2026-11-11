@@ -1682,6 +1682,14 @@ name = "bench-cpu-simple"
 path = "tools/bench_cpu_simple.rs"
 
 [[bin]]
+name = "test-all-models"
+path = "tools/test_all_models.rs"
+
+[[bin]]
+name = "cpu-comprehensive-bench"
+path = "tools/cpu_comprehensive_bench.rs"
+
+[[bin]]
 name = "analyze-decode-timing"
 path = "tools/analyze_decode_timing.rs"
 
