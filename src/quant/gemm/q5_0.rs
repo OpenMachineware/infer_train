@@ -7,7 +7,6 @@ use super::{GemmKernel, Q5_0};
 use crate::cpu::{SyncPtr, parallel_chunks};
 use crate::quant::types::BlockQ5_0;
 use half::f16;
-use std::arch::aarch64::*;
 
 const QK5_0: usize = 32; // Block size for Q5_0
 

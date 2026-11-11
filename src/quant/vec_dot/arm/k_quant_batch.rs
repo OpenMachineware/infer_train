@@ -29,7 +29,7 @@
 
 use super::fp::fp16_to_fp32;
 use crate::quant::types::{
-    BlockQ4_0, BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K, QK4_0,
+    BlockQ4_0, BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K,
 };
 use std::arch::aarch64::*;
 

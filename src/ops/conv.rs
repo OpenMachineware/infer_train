@@ -192,7 +192,6 @@ pub fn conv_2d_f32(
     //   Result: C [c_out, patch_n], stored row-major
     //   Output layout matches C (each row is one output channel)
     unsafe {
-        use std::arch::aarch64::*;
         crate::quant::gemm::kernel::sgemm(
             output.as_mut_ptr(), // C: [c_out, patch_n]
             weights.as_ptr(),    // A: [c_out, knl_n]

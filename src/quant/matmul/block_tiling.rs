@@ -160,7 +160,7 @@ pub unsafe fn matmul_q5k_q8k_block_tiling(
         let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
         let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5K);
         let x_ptr = SyncPtr::new(x.as_ptr() as *mut BlockQ8K);
-        let weights_len = weights.len();
+        let _weights_len = weights.len();
         let x_len = x.len();
 
         crate::cpu::parallel_chunks_sized(

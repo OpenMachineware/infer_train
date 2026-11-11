@@ -7,7 +7,6 @@ use super::{GemmKernel, IQ4_NL};
 use crate::cpu::{SyncPtr, parallel_chunks};
 use crate::quant::types::BlockIQ4NL;
 use half::f16;
-use std::arch::aarch64::*;
 
 const QK4_NL: usize = 32; // Block size for IQ4_NL
 
@@ -80,6 +79,7 @@ unsafe fn gemm_iq4_nl_single(
     nb: usize,
 ) {
     // IQ4_NL grid (from llama.cpp)
+    #[allow(dead_code)]
     const KSCALE_IQ4_NL: usize = 8;
     const KVALUES_IQ4_NL: [i8; 16] =
         [0, 1, 2, 3, 4, 5, 6, 7, -8, -7, -6, -5, -4, -3, -2, -1];

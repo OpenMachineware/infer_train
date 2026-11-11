@@ -27,8 +27,6 @@ pub fn flash_attention_prefill_optimized(
     attn_outputs: &mut [f32], // [n_tokens, n_heads, head_dim]
     scratch: &mut FlashAttnPrefillScratch,
 ) {
-    use std::arch::aarch64::*;
-
     let scale = 1.0f32 / (head_dim as f32).sqrt();
     let q_size = n_heads * head_dim;
     let kv_size = n_kv_heads * head_dim;
@@ -184,7 +182,6 @@ pub fn flash_attention_single(
     scratch: &mut FlashAttnPrefillScratch,
 ) {
     use std::arch::aarch64::*;
-    use std::time::Instant;
 
     let k_head_dim = k.len() / n_kv_heads;
     let v_head_dim = v.len() / n_kv_heads;
@@ -626,7 +623,7 @@ fn process_q_tile(
     q_outputs: *const f32,
     k_outputs: *const f32,
     v_outputs: *const f32,
-    n_kv_heads: usize,
+    _n_kv_heads: usize,
     head_dim: usize,
     kv_head: usize,
     h: usize,         // Starting head index
@@ -827,8 +824,6 @@ pub fn flash_attention_decode(
     out: &mut [f32],
     scratch: &mut FlashAttnScratch,
 ) {
-    use std::arch::aarch64::*;
-
     let scale = 1.0f32 / (head_dim as f32).sqrt();
 
     for elem in out.iter_mut() {
@@ -851,7 +846,7 @@ pub fn flash_attention_decode(
                 let pos = kv_tile_start + tk;
                 k_cache.get_k_into(layer_idx, kv_head, pos, &mut scratch.k_row);
 
-                let mut score = 0.0f32;
+                let score;
                 unsafe {
                     let q_ptr = q[q_offset..].as_ptr();
                     let k_ptr = scratch.k_row.as_ptr();

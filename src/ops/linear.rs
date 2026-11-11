@@ -3,7 +3,7 @@
 //
 // Linear operator with quantization support
 
-use crate::backend::operator::{Cost, Operator, OperatorId, OperatorResult};
+use crate::backend::operator::{Operator, OperatorId, OperatorResult};
 use crate::memory::RequestScratch;
 use crate::model::tensor::DataType;
 use std::fmt;

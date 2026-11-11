@@ -10,7 +10,6 @@ use super::{GemmKernel, Q4_0};
 use crate::cpu::{SyncPtr, parallel_chunks};
 use crate::quant::types::BlockQ4_0;
 use half::f16;
-use std::arch::aarch64::*;
 
 const QK4_0: usize = 32; // Block size for Q4_0
 

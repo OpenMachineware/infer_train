@@ -177,7 +177,7 @@ pub unsafe fn matmul_q4_k_q8_k_hybrid_with_threads(
     // Interleaved seems to have overhead that exceeds benefits for this model
     if false && m % 8 == 0 {
         use crate::quant::vec_dot::arm::k_quant_batch::{
-            BlockQ4Kx8, gemv_q4_k_interleaved, repack_q4_k_to_interleaved,
+            gemv_q4_k_interleaved, repack_q4_k_to_interleaved,
         };
 
         // Cache interleaved weights
@@ -343,7 +343,7 @@ pub unsafe fn matmul_q6_k_q8_k_hybrid_with_threads(
     // TEMPORARY DISABLED
     if false && m % 8 == 0 {
         use crate::quant::vec_dot::arm::k_quant_batch::{
-            BlockQ6Kx8, gemv_q6_k_interleaved, repack_q6_k_to_interleaved,
+            gemv_q6_k_interleaved, repack_q6_k_to_interleaved,
         };
 
         // Cache interleaved weights
@@ -552,7 +552,7 @@ pub unsafe fn matmul_q5_k_q8_k_hybrid_with_threads(
     // TEMPORARY DISABLED
     if false && m % 8 == 0 {
         use crate::quant::vec_dot::arm::k_quant_batch::{
-            BlockQ5Kx8, gemv_q5_k_interleaved, repack_q5_k_to_interleaved,
+            gemv_q5_k_interleaved, repack_q5_k_to_interleaved,
         };
 
         // Cache interleaved weights
@@ -1007,7 +1007,7 @@ pub unsafe fn matmul_iq4_xs_q8_k_hybrid_with_threads(
     // TEMPORARY DISABLED
     if false && m % 8 == 0 {
         use crate::quant::vec_dot::arm::k_quant_batch::{
-            BlockIQ4XSx8, gemv_iq4_xs_interleaved, repack_iq4_xs_to_interleaved,
+            gemv_iq4_xs_interleaved, repack_iq4_xs_to_interleaved,
         };
 
         // Cache interleaved weights

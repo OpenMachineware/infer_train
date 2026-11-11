@@ -564,7 +564,7 @@ impl DagOptimizer {
                 input: gemv_input,
                 weight: gemv_weight,
                 output: gemv_output,
-                out_size,
+                out_size: _,
                 is_transposed: _,
             } = &gemv_node.op
             {
@@ -591,7 +591,7 @@ impl DagOptimizer {
                             nodes_to_remove.push(add_node.id);
 
                             // Get in_size from weight tensor
-                            let in_size = dag
+                            let _in_size = dag
                                 .weight_bindings
                                 .get(gemv_weight)
                                 .map(|t| t.shape[0])
@@ -612,7 +612,7 @@ impl DagOptimizer {
                                 }
                             }
 
-                            let layer_idx = gemv_node.layer_idx.unwrap_or(0);
+                            let _layer_idx = gemv_node.layer_idx.unwrap_or(0);
 
                             let fused_node = DagNode {
                                 id: dag.nodes.len() + nodes_to_add.len(),

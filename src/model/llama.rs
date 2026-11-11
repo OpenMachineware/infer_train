@@ -10,7 +10,7 @@ use crate::inference::{KVCacheBase, dequant_to_f32};
 use crate::model::config::ModelConfig;
 use crate::model::tensor::{DataType, Tensor, TensorData};
 use crate::model::weights::WeightStore;
-use crate::quant::types::{BlockIQ4XS, BlockQ4K, BlockQ5K, BlockQ6K};
+use crate::quant::types::{BlockQ4K, BlockQ5K, BlockQ6K};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -24,9 +24,6 @@ use crate::compute::graph::ComputeGraph;
 use crate::compute::{OpNode, OpType};
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use metal::Buffer;
-
-#[cfg(target_arch = "aarch64")]
-use crate::cpu::flash_attention_single;
 
 /// Llama model layers
 pub struct LlamaModel {
@@ -372,7 +369,7 @@ impl LlamaModel {
             }
             if let Some(ref mut wo) = layer.wo {
                 // wo has shape [q_size, hidden_size], check against q_size
-                let wo_in_size = wo.shape[0];
+                let _wo_in_size = wo.shape[0];
                 if wo.shape.len() == 2 {
                     Self::transpose_quantized_tensor(wo);
                     transposed_count += 1;
@@ -2330,7 +2327,7 @@ impl LlamaModel {
             return None;
         }
 
-        let hidden_size = self.config.hidden_size;
+        let _hidden_size = self.config.hidden_size;
         let vocab_size = self.config.vocab_size;
 
         // Detect decode mode (single token at a time)
@@ -2441,7 +2438,7 @@ impl LlamaModel {
             return None;
         }
 
-        let hidden_size = self.config.hidden_size;
+        let _hidden_size = self.config.hidden_size;
         let vocab_size = self.config.vocab_size;
 
         // Detect decode mode (single token at a time)
@@ -2548,14 +2545,14 @@ impl LlamaModel {
         let n_tokens = tokens.len();
 
         // Profiling
-        let mut time_embedding = std::time::Duration::new(0, 0);
+        let time_embedding;
         let mut time_norm = std::time::Duration::new(0, 0);
         let mut time_qkv = std::time::Duration::new(0, 0);
         let mut time_rope = std::time::Duration::new(0, 0);
         let mut time_attention = std::time::Duration::new(0, 0);
         let mut time_wo = std::time::Duration::new(0, 0);
         let mut time_ffn = std::time::Duration::new(0, 0);
-        let mut time_output = std::time::Duration::new(0, 0);
+        let time_output;
         let mut time_quant = std::time::Duration::new(0, 0);
         let mut time_gemm = std::time::Duration::new(0, 0);
 
@@ -4995,7 +4992,6 @@ impl LlamaModel {
             gemv_q5_k_interleaved, repack_q4_k_to_interleaved,
             repack_q5_k_to_interleaved,
         };
-        use std::arch::aarch64::*;
 
         let out_size = out.len();
         let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
@@ -5672,18 +5668,14 @@ impl LlamaModel {
         w: &Tensor,
         outputs: &mut [f32],    // m x n outputs (row-major)
         x_q8k_batch: &mut [u8], // workspace for quantized inputs
-        x_padded: &mut [f32], // workspace for padding (single-thread fallback)
-        x_padded_threads: &mut [Vec<f32>], // per-thread padding buffers (parallel path)
+        _x_padded: &mut [f32], // workspace for padding (single-thread fallback)
+        _x_padded_threads: &mut [Vec<f32>], // per-thread padding buffers (parallel path)
         timing: Option<&mut (std::time::Duration, std::time::Duration)>, // (quant_time, gemm_time)
     ) -> bool {
-        use crate::quant::kv_cache::quantize_row_q8_k_neon;
-        use crate::quant::matmul::block_tiling::matmul_q5k_q8k_block_tiling;
-        use crate::quant::types::{
-            BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K,
-        };
-        use std::time::{Duration, Instant};
+        use crate::quant::types::{BlockQ8K, QK_K};
+        use std::time::Instant;
 
-        let quant_start = Instant::now();
+        let _quant_start = Instant::now();
 
         let n = inputs.len(); // batch size
         if n == 0 {

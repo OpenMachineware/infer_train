@@ -54,7 +54,7 @@ impl AdaptiveScheduler {
     /// - Calculate nchunk0 and nchunk1
     /// - If chunks < nth * 4, redistribute based on dimension size
     /// - When redistributing: larger dimension gets nth chunks, smaller gets 1
-    pub fn optimal_threads(&self, m: usize, k: usize, n: usize) -> usize {
+    pub fn optimal_threads(&self, m: usize, _k: usize, n: usize) -> usize {
         // Very small workload: single thread
         if m * n < 16 {
             return 1;
@@ -187,8 +187,8 @@ impl AdaptiveScheduler {
     }
 }
 
-/// Thread-local scheduler instance
-/// Each thread has its own view of the shared work-stealing state
+// Thread-local scheduler instance
+// Each thread has its own view of the shared work-stealing state
 thread_local! {
     static SCHEDULER: AdaptiveScheduler = AdaptiveScheduler::default_scheduler();
 }

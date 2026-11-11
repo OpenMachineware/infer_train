@@ -5,9 +5,9 @@
 
 use std::sync::Arc;
 
-use crate::backend::operator::{CoreOperator, Cost, OperatorResult};
+use crate::backend::operator::{CoreOperator, OperatorResult};
 use crate::backend::{
-    Backend, DeviceId, MemoryRegion, MemoryRegionId, MemoryTopology, TensorRef,
+    Backend, DeviceId, MemoryRegion, MemoryTopology, TensorRef,
 };
 
 /// Transfer strategy for KV cache between devices.
@@ -159,7 +159,7 @@ impl ExecutionStrategy {
             }
             ExecutionStrategy::HeterogeneousPipeline {
                 prefill_backend,
-                decode_backend,
+                decode_backend: _,
                 ..
             } => {
                 // For now, just use prefill backend

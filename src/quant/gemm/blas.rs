@@ -35,9 +35,9 @@ unsafe extern "C" {
 /// BLAS constants
 #[cfg(target_os = "macos")]
 mod blas_const {
-    pub const CblasRowMajor: i32 = 101;
-    pub const CblasTrans: i32 = 112;
-    pub const CblasNoTrans: i32 = 111;
+    pub const CBLAS_ROW_MAJOR: i32 = 101;
+    pub const CBLAS_TRANS: i32 = 112;
+    pub const CBLAS_NO_TRANS: i32 = 111;
 }
 
 /// Minimum batch size to trigger BLAS path
@@ -46,6 +46,7 @@ pub const BLAS_THRESHOLD: usize = 32;
 /// Persistent BLAS context with reusable work buffer
 ///
 /// Matches llama.cpp's ggml_backend_blas_context design
+#[allow(dead_code)]
 pub struct BlasContext {
     /// Work buffer for dequantized weights (persistent)
     work_data: Vec<f32>,
@@ -54,11 +55,13 @@ pub struct BlasContext {
 }
 
 impl BlasContext {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self { work_data: Vec::new(), work_size: 0 }
     }
 
     /// Ensure work buffer is large enough, reallocating only if needed
+    #[allow(dead_code)]
     pub fn ensure_size(&mut self, needed: usize) {
         if self.work_size < needed {
             // Reallocate with some headroom to reduce future reallocations
@@ -69,6 +72,7 @@ impl BlasContext {
     }
 
     /// Get mutable slice of the work buffer
+    #[allow(dead_code)]
     pub fn as_mut_slice(&mut self, len: usize) -> &mut [f32] {
         self.ensure_size(len);
         &mut self.work_data[..len]
@@ -119,20 +123,20 @@ pub unsafe fn gemm_blas_f32(
     // Using CblasNoTrans for A and CblasTrans for B:
     // C = A @ B^T
     cblas_sgemm(
-        CblasRowMajor, // Row-major order
-        CblasNoTrans,  // No transpose A (A is [m,k])
-        CblasTrans,    // Transpose B (B is [n,k], B^T is [k,n])
-        m as c_int,    // Rows of A = m
-        n as c_int,    // Columns of B^T = n
-        k as c_int,    // Columns of A = Rows of B^T = k
-        1.0,           // alpha
-        a,             // A matrix
-        k as c_int,    // LDA (leading dimension of A)
-        b,             // B matrix
-        k as c_int,    // LDB (leading dimension of B)
-        0.0,           // beta
-        c,             // C matrix
-        n as c_int,    // LDC (leading dimension of C)
+        CBLAS_ROW_MAJOR, // Row-major order
+        CBLAS_NO_TRANS,  // No transpose A (A is [m,k])
+        CBLAS_TRANS,     // Transpose B (B is [n,k], B^T is [k,n])
+        m as c_int,      // Rows of A = m
+        n as c_int,      // Columns of B^T = n
+        k as c_int,      // Columns of A = Rows of B^T = k
+        1.0,             // alpha
+        a,               // A matrix
+        k as c_int,      // LDA (leading dimension of A)
+        b,               // B matrix
+        k as c_int,      // LDB (leading dimension of B)
+        0.0,             // beta
+        c,               // C matrix
+        n as c_int,      // LDC (leading dimension of C)
     );
 }
 
@@ -238,7 +242,7 @@ impl DequantizeToFP32 for crate::quant::types::BlockQ4K {
                     (d, m)
                 };
 
-                let (sc1, m1) = if is + 1 < 4 {
+                let (sc1, _m1) = if is + 1 < 4 {
                     (scales[is + 1] & 63, scales[is + 1 + 4] & 63)
                 } else {
                     let d = (scales[is + 1 + 4] & 0x0F)
@@ -316,7 +320,7 @@ impl DequantizeToFP32 for crate::quant::types::BlockQ5K {
                     (d, m)
                 };
 
-                let (sc1, m1) = if is + 1 < 4 {
+                let (sc1, _m1) = if is + 1 < 4 {
                     (scales[is + 1] & 63, scales[is + 1 + 4] & 63)
                 } else {
                     let d = (scales[is + 1 + 4] & 0x0F)

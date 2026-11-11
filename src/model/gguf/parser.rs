@@ -61,7 +61,6 @@ impl GgufFile {
         // This tells the OS to start loading pages asynchronously
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            use std::os::unix::io::AsRawFd;
             // Use madvise to hint OS to prefetch all pages
             // On macOS, MADV_WILLNEED triggers asynchronous readahead
             unsafe {

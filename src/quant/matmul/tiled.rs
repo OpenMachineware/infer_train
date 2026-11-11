@@ -119,7 +119,7 @@ impl Default for TiledWorkspace {
     }
 }
 
-/// Global thread-local workspace pool
+// Global thread-local workspace pool
 thread_local! {
     static WORKSPACE: std::cell::RefCell<TiledWorkspace> =
         std::cell::RefCell::new(TiledWorkspace::new());
@@ -495,7 +495,7 @@ pub unsafe fn matmul_q5k_q8k_tiled(
             // Multi-threaded execution with adaptive chunking
             use crate::cpu::{SyncPtr, parallel_chunks};
 
-            let chunk_size = scheduler.compute_chunk_size(m, n, n_threads);
+            let _chunk_size = scheduler.compute_chunk_size(m, n, n_threads);
 
             let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
             let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ5K);
@@ -1244,7 +1244,7 @@ pub unsafe fn matmul_q4k_q8k_tiled(
             // Multi-threaded execution with adaptive chunking
             use crate::cpu::{SyncPtr, parallel_chunks};
 
-            let chunk_size = scheduler.compute_chunk_size(m, n, n_threads);
+            let _chunk_size = scheduler.compute_chunk_size(m, n, n_threads);
 
             let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
             let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ4K);
@@ -1696,7 +1696,7 @@ pub unsafe fn run_microtile_q6k_q8k(
             let br = tile_j0 + j;
 
             // Get bsum for this subblock
-            let bsum = ws.src1_bsums[(bs_off + s) * bs_stride + br];
+            let _bsum = ws.src1_bsums[(bs_off + s) * bs_stride + br];
 
             for i in 0..n_rows {
                 let ar = tile_i0 + i;
@@ -2065,7 +2065,7 @@ pub unsafe fn matmul_q6k_q8k_tiled(
             // Multi-threaded execution with adaptive chunking
             use crate::cpu::{SyncPtr, parallel_chunks};
 
-            let chunk_size = scheduler.compute_chunk_size(m, n, n_threads);
+            let _chunk_size = scheduler.compute_chunk_size(m, n, n_threads);
 
             let dst_ptr = SyncPtr::new(dst.as_mut_ptr());
             let weights_ptr = SyncPtr::new(weights.as_ptr() as *mut BlockQ6K);

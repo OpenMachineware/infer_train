@@ -91,6 +91,7 @@ pub trait Operator: Send + Sync + fmt::Debug {
 
 /// Quantization type for weights.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
 pub enum QuantType {
     F32,
     F16,
@@ -255,7 +256,7 @@ impl Operator for CoreOperator {
             CoreOperator::SwiGLU { intermediate_size, .. } => {
                 vec![vec![*intermediate_size]]
             }
-            CoreOperator::MoERouter { n_experts, top_k, .. } => {
+            CoreOperator::MoERouter { n_experts: _, top_k, .. } => {
                 vec![vec![*top_k], vec![*top_k]] // expert indices and weights
             }
             CoreOperator::MoEExpert { in_features, .. } => {

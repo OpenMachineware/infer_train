@@ -45,23 +45,11 @@ pub mod scheduler;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 pub use blas::{BLAS_THRESHOLD, DequantizeToFP32};
 #[cfg(target_arch = "aarch64")]
-pub use fp32::*;
-#[cfg(target_arch = "aarch64")]
-pub use iq4_nl::*;
-#[cfg(target_arch = "aarch64")]
-pub use q4_0::*;
-#[cfg(target_arch = "aarch64")]
-pub use q5_0::*;
-#[cfg(target_arch = "aarch64")]
-pub use q8_0::*;
-#[cfg(target_arch = "aarch64")]
 pub use scheduler::{
     BLAS_THRESHOLD_FLOPS, BLAS_THRESHOLD_N, GemmPath, gemm_dispatch,
     gemv_dispatch, requires_vec_dot, select_gemm_path, should_use_blas,
     supports_sgemm,
 };
-
-use crate::quant::types::*;
 
 /// GEMM kernel trait for quantized formats.
 ///
@@ -126,15 +114,19 @@ pub fn gemm<T: GemmKernel>(
 pub struct F32;
 
 /// Q4_0 type marker for GEMM kernel selection.
+#[allow(non_camel_case_types)]
 pub struct Q4_0;
 
 /// Q5_0 type marker for GEMM kernel selection.
+#[allow(non_camel_case_types)]
 pub struct Q5_0;
 
 /// Q8_0 type marker for GEMM kernel selection.
+#[allow(non_camel_case_types)]
 pub struct Q8_0;
 
 /// IQ4_NL type marker for GEMM kernel selection.
+#[allow(non_camel_case_types)]
 pub struct IQ4_NL;
 
 // Non-aarch64 fallback

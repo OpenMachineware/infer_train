@@ -213,9 +213,7 @@ pub fn gemm_dispatch(
                 }
                 // K-quant with BLAS path: dequantize to F32 then call cblas_sgemm
                 DataType::IQ4_XS => {
-                    use crate::quant::gemm::blas::{
-                        DequantizeToFP32, gemm_blas,
-                    };
+                    use crate::quant::gemm::blas::gemm_blas;
                     use crate::quant::types::{BlockIQ4XS, QK_K};
 
                     let nb = k / QK_K;
@@ -229,9 +227,7 @@ pub fn gemm_dispatch(
                     true
                 }
                 DataType::Q4_K => {
-                    use crate::quant::gemm::blas::{
-                        DequantizeToFP32, gemm_blas,
-                    };
+                    use crate::quant::gemm::blas::gemm_blas;
                     use crate::quant::types::{BlockQ4K, QK_K};
 
                     let nb = k / QK_K;
@@ -245,9 +241,7 @@ pub fn gemm_dispatch(
                     true
                 }
                 DataType::Q5_K => {
-                    use crate::quant::gemm::blas::{
-                        DequantizeToFP32, gemm_blas,
-                    };
+                    use crate::quant::gemm::blas::gemm_blas;
                     use crate::quant::types::{BlockQ5K, QK_K};
 
                     let nb = k / QK_K;

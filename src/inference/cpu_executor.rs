@@ -255,7 +255,7 @@ impl CpuExecutor {
 
         // MLA: use custom implementation
         // Process each token
-        'token_loop: for &token in tokens.iter() {
+        for &token in tokens.iter() {
             // 1. Embedding lookup
             if model.embedding_lookup_into(token, &mut self.hidden).is_none() {
                 eprintln!(
@@ -361,7 +361,7 @@ impl CpuExecutor {
                 let rope_len = self.qk_rope_head_dim;
 
                 // Use local array for this small slice to avoid borrow conflict
-                let mut k_rope: Vec<f32> =
+                let k_rope: Vec<f32> =
                     self.k[k_head_start..k_head_start + rope_len].to_vec();
 
                 // Apply RoPE
@@ -507,7 +507,7 @@ impl CpuExecutor {
 
             // The RoPE part of the key is shared across all heads
             let k_rope_start = self.kv_lora_rank;
-            let k_rope_end = k_rope_start + self.qk_rope_head_dim;
+            let _k_rope_end = k_rope_start + self.qk_rope_head_dim;
 
             // The non-RoPE part of the key and value come from kv
             // kv layout: [k_nope_head_0, ..., k_nope_head_n, v_head_0, ..., v_head_n]

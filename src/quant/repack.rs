@@ -2,7 +2,7 @@
 // Copyright 2026 Jia Liu
 // Weight repacking for cache optimization
 
-use super::types::{BlockQ4K, BlockQ5K, BlockQ6K, BlockQ8K, QK_K};
+use super::types::{BlockQ4K, QK_K};
 
 /// Interleaved block formats for better cache utilization during GEMV
 /// Based on llama.cpp's repack implementation
@@ -53,6 +53,7 @@ pub enum RepackType {
 /// Detect optimal repack type based on CPU features and tensor dimensions
 ///
 /// Returns the interleave strategy that should be used for the given parameters
+#[allow(unexpected_cfgs)]
 pub fn get_optimal_repack_type(dtype: &str, ne1: usize) -> RepackType {
     // Dimension check: must be multiple of interleave factor
     if ne1 % 8 != 0 {
@@ -68,6 +69,7 @@ pub fn get_optimal_repack_type(dtype: &str, ne1: usize) -> RepackType {
     #[cfg(target_arch = "aarch64")]
     {
         // M2/M3/M4 with i8mm (ARMv8.6-A)
+        // Note: matmul_int8 is not yet recognized by stable Rust
         #[cfg(target_feature = "matmul_int8")]
         {
             return RepackType::Interleave8x8;
@@ -86,10 +88,7 @@ pub fn get_optimal_repack_type(dtype: &str, ne1: usize) -> RepackType {
         RepackType::None
     }
 
-    #[cfg(all(
-        target_arch = "aarch64",
-        not(any(target_feature = "matmul_int8", target_feature = "dotprod"))
-    ))]
+    #[cfg(all(target_arch = "aarch64", not(any(target_feature = "dotprod"))))]
     {
         RepackType::None
     }
@@ -217,6 +216,7 @@ pub unsafe fn repack_q4k_to_interleaved(
 // For now, focus on Q4_K which is the most common
 
 #[cfg(test)]
+#[allow(unexpected_cfgs)]
 mod tests {
     use super::*;
 

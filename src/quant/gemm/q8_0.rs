@@ -7,7 +7,6 @@ use super::{GemmKernel, Q8_0};
 use crate::cpu::{SyncPtr, parallel_chunks};
 use crate::quant::types::BlockQ8_0;
 use half::f16;
-use std::arch::aarch64::*;
 
 const QK8_0: usize = 32; // Block size for Q8_0
 
