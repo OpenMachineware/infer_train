@@ -26,10 +26,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-use metal::Buffer as MetalBuffer;
+use metal::Buffer;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use metal::CommandBuffer;
@@ -38,7 +38,7 @@ use metal::CommandBuffer;
 /// Uses Vec for O(1) direct indexing instead of HashMap
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 pub struct TensorRegistry {
-    buffers: Vec<Option<Rc<MetalBuffer>>>,
+    buffers: Vec<Option<Arc<Buffer>>>,
     max_tensor_id: usize,
     /// Cached dtypes for weight tensors (avoid HashMap lookups)
     dtypes: Vec<Option<crate::model::DataType>>,
@@ -59,7 +59,7 @@ impl TensorRegistry {
         Self { buffers, max_tensor_id: 0, dtypes }
     }
 
-    pub fn get(&self, id: usize) -> Option<Rc<MetalBuffer>> {
+    pub fn get(&self, id: usize) -> Option<Arc<Buffer>> {
         self.buffers.get(id).and_then(|b| b.clone())
     }
 
@@ -68,7 +68,7 @@ impl TensorRegistry {
         self.dtypes.get(id).and_then(|d| *d)
     }
 
-    pub fn insert(&mut self, id: usize, buffer: Rc<MetalBuffer>) {
+    pub fn insert(&mut self, id: usize, buffer: Arc<Buffer>) {
         // Extend vector if needed
         if id >= self.buffers.len() {
             // Double the size for amortized O(1) growth
@@ -86,7 +86,7 @@ impl TensorRegistry {
     pub fn insert_with_dtype(
         &mut self,
         id: usize,
-        buffer: Rc<MetalBuffer>,
+        buffer: Arc<Buffer>,
         dtype: crate::model::DataType,
     ) {
         self.insert(id, buffer);
@@ -119,7 +119,7 @@ pub struct ExecutionContext<'a> {
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 pub struct AsyncCommandBuffer {
     /// Output buffer containing logits
-    output_buffer: Rc<MetalBuffer>,
+    output_buffer: Arc<Buffer>,
     vocab_size: usize,
     /// Raw pointer to command buffer (for async wait)
     /// We use raw pointer because CommandBufferRef is a reference type
@@ -134,7 +134,7 @@ pub struct AsyncCommandBuffer {
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 impl AsyncCommandBuffer {
     pub fn new(
-        output_buffer: Rc<MetalBuffer>,
+        output_buffer: Arc<Buffer>,
         vocab_size: usize,
         command_buffer: &metal::CommandBufferRef,
         forward_pool: ForwardBufferPool,
@@ -252,8 +252,8 @@ impl Drop for AsyncCommandBuffer {
 fn check_memory_and_barrier(
     mem_ranges: &mut MemoryRanges,
     encoder: &metal::ComputeCommandEncoderRef,
-    inputs: &[(Rc<MetalBuffer>, usize)],
-    outputs: &[(Rc<MetalBuffer>, usize)],
+    inputs: &[(Arc<Buffer>, usize)],
+    outputs: &[(Arc<Buffer>, usize)],
 ) -> bool {
     // Only insert barriers when dependency dispatch is enabled
     let use_dependency_dispatch = std::env::var("INFER_DEPENDENCY_DISPATCH")
@@ -302,8 +302,8 @@ fn check_memory_and_barrier(
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 fn track_memory_ranges(
     mem_ranges: &mut MemoryRanges,
-    inputs: &[(Rc<MetalBuffer>, usize)],
-    outputs: &[(Rc<MetalBuffer>, usize)],
+    inputs: &[(Arc<Buffer>, usize)],
+    outputs: &[(Arc<Buffer>, usize)],
 ) {
     for (buf, size) in inputs {
         mem_ranges.add_tensor(buf, *size, true);
@@ -394,8 +394,8 @@ impl DagExecutor {
         let queue = gpu_ctx.queue();
 
         // Create buffer pool
-        let reuse_pool: Rc<RefCell<Vec<Rc<MetalBuffer>>>> =
-            Rc::new(RefCell::new(Vec::new()));
+        let reuse_pool: Arc<RefCell<Vec<Arc<Buffer>>>> =
+            Arc::new(RefCell::new(Vec::new()));
         let mut forward_pool =
             ForwardBufferPool::new(device.clone(), reuse_pool.clone());
 
@@ -2269,21 +2269,18 @@ impl DagExecutor {
                 Some(())
             }
 
-            Operation::FusedGemvAdd {
-                input,
-                weight,
-                residual,
-                output,
-                out_size,
-                in_size,
-                layer_idx: _,
-            } => {
+            Operation::FusedGemvAdd { input, weight, residual, output } => {
                 let input_buf = ctx.tensor_registry.get(*input)?;
                 let weight_buf = ctx.tensor_registry.get(*weight)?;
                 let residual_buf = ctx.tensor_registry.get(*residual)?;
 
+                // Get weight tensor for shape info
+                let weight_tensor = ctx.weight_bindings.get(weight)?;
+                let out_size = weight_tensor.shape[0];
+                let in_size = weight_tensor.shape[1];
+
                 // Output buffer - GEMV result + residual add
-                let output_size = *out_size * 4;
+                let output_size = out_size * 4;
                 let output_buf = ctx.forward_pool.get(output_size);
 
                 // Get weight dtype from cached registry
@@ -2310,21 +2307,19 @@ impl DagExecutor {
                     &input_buf,
                     &residual_buf,
                     &output_buf,
-                    *out_size,
-                    *in_size,
+                    out_size,
+                    in_size,
                     dtype,
                 );
 
                 if !fused_success {
                     // Fallback to separate operations for unsupported formats
-                    // Get weight tensor from bindings for fallback path
-                    let weight_tensor = ctx.weight_bindings.get(weight)?;
                     ctx.model.gemv_encode(
                         encoder,
                         &input_buf,
-                        *in_size,
+                        in_size,
                         weight_tensor,
-                        *out_size,
+                        out_size,
                         ctx.gpu_ctx,
                         &output_buf,
                     )?;
@@ -2334,7 +2329,7 @@ impl DagExecutor {
                         &residual_buf,
                         &output_buf,
                         &output_buf,
-                        *out_size,
+                        out_size,
                     );
                 }
 

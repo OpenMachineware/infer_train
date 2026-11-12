@@ -7,13 +7,13 @@
 //! Tracks memory access patterns to determine if operations can execute concurrently.
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-use metal::Buffer as MetalBuffer;
+use metal::Buffer;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use metal::ComputeCommandEncoderRef;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +67,7 @@ impl MemoryRanges {
     /// Add a memory range from a tensor buffer
     pub fn add(
         &mut self,
-        buffer: &Rc<MetalBuffer>,
+        buffer: &Arc<Buffer>,
         offset: usize,
         size: usize,
         access_type: MemoryAccessType,
@@ -97,7 +97,7 @@ impl MemoryRanges {
     /// - New dst overlaps with any existing range (write-write or write-read conflict)
     pub fn check(
         &self,
-        buffer: &Rc<MetalBuffer>,
+        buffer: &Arc<Buffer>,
         offset: usize,
         size: usize,
         access_type: MemoryAccessType,
@@ -143,7 +143,7 @@ impl MemoryRanges {
     /// Inputs are src, outputs are dst
     pub fn add_tensor(
         &mut self,
-        buffer: &Rc<MetalBuffer>,
+        buffer: &Arc<Buffer>,
         size: usize,
         is_input: bool,
     ) {
@@ -159,7 +159,7 @@ impl MemoryRanges {
     /// Returns true if the operation can execute concurrently with previous operations
     pub fn check_tensor(
         &self,
-        buffer: &Rc<MetalBuffer>,
+        buffer: &Arc<Buffer>,
         size: usize,
         is_input: bool,
     ) -> bool {

@@ -706,8 +706,11 @@ impl CpuExecutor {
         model: &LlamaModel,
         layer: &LlamaLayer,
     ) -> Option<()> {
-        // Check for MoE layer
-        if layer.ffn_gate_inp.is_some() || layer.ffn_gate_exps.is_some() {
+        // Check for MoE layer (DeepSeek or Qwen3.6 style)
+        if layer.ffn_gate_inp.is_some()
+            || layer.ffn_gate_exps.is_some()
+            || layer.ffn_gate_up_exps.is_some()
+        {
             // MoE FFN
             let result =
                 model.compute_moe_ffn(layer, &self.normed, self.hidden_size)?;

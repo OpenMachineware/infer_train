@@ -8,7 +8,7 @@
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use metal::{Buffer, MTLResourceOptions};
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 use crate::model::config::ModelConfig;
@@ -18,9 +18,9 @@ use crate::model::config::ModelConfig;
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
 pub struct KVCacheGPU {
     /// K cache buffers per layer: [n_layers][n_kv_heads * max_seq * head_dim * 2 bytes]
-    k_buffers: Vec<Rc<Buffer>>,
+    k_buffers: Vec<Arc<Buffer>>,
     /// V cache buffers per layer
-    v_buffers: Vec<Rc<Buffer>>,
+    v_buffers: Vec<Arc<Buffer>>,
     /// Current sequence length
     seq_len: usize,
     /// Number of layers
@@ -54,9 +54,9 @@ impl KVCacheGPU {
             n_layers, n_kv_heads, head_dim, max_seq, bytes_per_layer
         );
 
-        let k_buffers: Vec<Rc<Buffer>> = (0..n_layers)
+        let k_buffers: Vec<Arc<Buffer>> = (0..n_layers)
             .map(|_| {
-                let buf = Rc::new(device.new_buffer(
+                let buf = Arc::new(device.new_buffer(
                     bytes_per_layer as u64,
                     MTLResourceOptions::StorageModeShared,
                 ));
@@ -72,9 +72,9 @@ impl KVCacheGPU {
             })
             .collect();
 
-        let v_buffers: Vec<Rc<Buffer>> = (0..n_layers)
+        let v_buffers: Vec<Arc<Buffer>> = (0..n_layers)
             .map(|_| {
-                let buf = Rc::new(device.new_buffer(
+                let buf = Arc::new(device.new_buffer(
                     bytes_per_layer as u64,
                     MTLResourceOptions::StorageModeShared,
                 ));
@@ -141,12 +141,12 @@ impl KVCacheGPU {
     }
 
     /// Get K buffer for a layer
-    pub fn k_buffer(&self, layer: usize) -> &Rc<Buffer> {
+    pub fn k_buffer(&self, layer: usize) -> &Arc<Buffer> {
         &self.k_buffers[layer]
     }
 
     /// Get V buffer for a layer
-    pub fn v_buffer(&self, layer: usize) -> &Rc<Buffer> {
+    pub fn v_buffer(&self, layer: usize) -> &Arc<Buffer> {
         &self.v_buffers[layer]
     }
 
@@ -286,7 +286,7 @@ impl KVCacheGPU {
 
     /// Set K from an F16 GPU buffer (direct copy, no conversion)
     /// For use with RoPE F16 output
-    pub fn set_k_buffer_f16(&mut self, layer: usize, src_buffer: &Rc<Buffer>) {
+    pub fn set_k_buffer_f16(&mut self, layer: usize, src_buffer: &Arc<Buffer>) {
         let pos = self.seq_len;
         if pos >= self.max_seq {
             return;
@@ -324,7 +324,7 @@ impl KVCacheGPU {
     pub fn set_k_buffer_gpu(
         &mut self,
         layer: usize,
-        _src_buffer: &Rc<Buffer>,
+        _src_buffer: &Arc<Buffer>,
         _gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) {
         let pos = self.seq_len;
@@ -342,7 +342,7 @@ impl KVCacheGPU {
     pub fn set_v_buffer_gpu(
         &mut self,
         layer: usize,
-        _src_buffer: &Rc<Buffer>,
+        _src_buffer: &Arc<Buffer>,
         _gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
     ) {
         let pos = self.seq_len;
@@ -356,7 +356,7 @@ impl KVCacheGPU {
 
     /// Set K from a GPU buffer (convert F32 to F16) - CPU fallback for compatibility
     /// This converts the buffer contents from F32 to F16 and stores in K cache
-    pub fn set_k_buffer(&mut self, layer: usize, src_buffer: &Rc<Buffer>) {
+    pub fn set_k_buffer(&mut self, layer: usize, src_buffer: &Arc<Buffer>) {
         let pos = self.seq_len;
         if pos >= self.max_seq {
             return;
@@ -398,7 +398,7 @@ impl KVCacheGPU {
     }
 
     /// Set V from a GPU buffer (convert F32 to F16) - CPU fallback for compatibility
-    pub fn set_v_buffer(&mut self, layer: usize, src_buffer: &Rc<Buffer>) {
+    pub fn set_v_buffer(&mut self, layer: usize, src_buffer: &Arc<Buffer>) {
         let pos = self.seq_len;
         if pos >= self.max_seq {
             return;

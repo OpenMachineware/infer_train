@@ -115,8 +115,9 @@ impl Architecture {
     fn detect_ffn_type(model: &LlamaModel) -> FfnType {
         // Check first layer for FFN pattern
         if let Some(layer) = model.layers.first() {
-            // MoE: has ffn_gate_exps (expert weights)
-            if layer.ffn_gate_exps.is_some() {
+            // MoE: has expert weights (DeepSeek or Qwen3.6 style)
+            if layer.ffn_gate_exps.is_some() || layer.ffn_gate_up_exps.is_some()
+            {
                 let num_experts = model.config.n_experts;
                 let num_experts_per_tok = model.config.n_experts_used;
                 return FfnType::MoE { num_experts, num_experts_per_tok };

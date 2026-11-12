@@ -5,7 +5,7 @@
 
 use infer_train::inference::{Device, InferenceContext};
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::Arc;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -30,13 +30,13 @@ fn main() {
 
             let hidden =
                 model.embedding_lookup_impl(9707).expect("No embedding");
-            let hidden_buffer = Rc::new(device.new_buffer_with_data(
+            let hidden_buffer = Arc::new(device.new_buffer_with_data(
                 hidden.as_ptr() as *const std::ffi::c_void,
                 (hidden_size * 4) as u64,
                 metal::MTLResourceOptions::StorageModeShared,
             ));
 
-            let reuse_pool = Rc::new(RefCell::new(Vec::new()));
+            let reuse_pool = Arc::new(RefCell::new(Vec::new()));
             use infer_train::buffer::ForwardBufferPool;
 
             println!("Test 1: Run forward_layer_gpu_encode with FRESH pool");

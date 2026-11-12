@@ -8,7 +8,7 @@ use metal::{Buffer, Device, MTLResourceOptions};
 use std::cell::RefCell;
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Buffer pool for a single forward pass
 ///
@@ -21,7 +21,7 @@ use std::rc::Rc;
 /// while the GPU still references it, causing crashes or zero outputs.
 ///
 /// # Solution
-/// This struct accumulates all Rc<Buffer> references during encoding.
+/// This struct accumulates all Arc<Buffer> references during encoding.
 /// The caller keeps this struct alive until the command buffer completes,
 /// then drops it to release the buffers back to the reuse pool.
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -30,12 +30,12 @@ pub struct ForwardBufferPool {
     device: Device,
 
     /// All buffers created during this forward pass
-    /// We hold Rc references to prevent premature deallocation
-    buffers: Vec<Rc<Buffer>>,
+    /// We hold Arc references to prevent premature deallocation
+    buffers: Vec<Arc<Buffer>>,
 
     /// Reuse pool for buffers (shared across forward passes)
     /// Each entry is (size_class, buffer)
-    reuse_pool: Rc<RefCell<Vec<Rc<Buffer>>>>,
+    reuse_pool: Arc<RefCell<Vec<Arc<Buffer>>>>,
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "metal"))]
@@ -47,7 +47,7 @@ impl ForwardBufferPool {
     /// * `reuse_pool` - Shared reuse pool for buffers (can be empty)
     pub fn new(
         device: Device,
-        reuse_pool: Rc<RefCell<Vec<Rc<Buffer>>>>,
+        reuse_pool: Arc<RefCell<Vec<Arc<Buffer>>>>,
     ) -> Self {
         Self { device, buffers: Vec::new(), reuse_pool }
     }
@@ -59,7 +59,7 @@ impl ForwardBufferPool {
     ///
     /// NOTE: Callers must ensure buffers are properly initialized by the GPU kernel.
     /// This avoids the massive overhead of zeroing large buffers on every forward pass.
-    pub fn get(&mut self, size: usize) -> Rc<Buffer> {
+    pub fn get(&mut self, size: usize) -> Arc<Buffer> {
         // Round up to power of 2 for better reuse
         let size_class = size.next_power_of_two();
 
@@ -77,7 +77,7 @@ impl ForwardBufferPool {
         }
 
         // Create new buffer (Metal doesn't zero new buffers)
-        let buf = Rc::new(self.device.new_buffer(
+        let buf = Arc::new(self.device.new_buffer(
             size_class as u64,
             MTLResourceOptions::StorageModeShared,
         ));
@@ -89,7 +89,7 @@ impl ForwardBufferPool {
     /// Get a zeroed buffer of the specified size
     ///
     /// Same as `get()` but zeros the buffer contents.
-    pub fn get_zeroed(&mut self, size: usize) -> Rc<Buffer> {
+    pub fn get_zeroed(&mut self, size: usize) -> Arc<Buffer> {
         let buf = self.get(size);
         unsafe {
             std::ptr::write_bytes(
@@ -105,7 +105,7 @@ impl ForwardBufferPool {
     ///
     /// Use this when you have a buffer that needs to stay alive
     /// for the duration of the forward pass.
-    pub fn register(&mut self, buf: Rc<Buffer>) -> Rc<Buffer> {
+    pub fn register(&mut self, buf: Arc<Buffer>) -> Arc<Buffer> {
         self.buffers.push(buf.clone());
         buf
     }
@@ -125,7 +125,7 @@ impl ForwardBufferPool {
         for buf in buffers {
             // Now the only reference is 'buf' (if strong_count == 1)
             // If strong_count > 1, the buffer is still in use elsewhere
-            if Rc::strong_count(&buf) == 1 {
+            if Arc::strong_count(&buf) == 1 {
                 self.reuse_pool.borrow_mut().push(buf);
             }
             // Otherwise, let the buffer deallocate when 'buf' goes out of scope

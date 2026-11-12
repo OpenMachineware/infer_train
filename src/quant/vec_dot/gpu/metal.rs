@@ -254,7 +254,7 @@ pub struct MetalContext {
     // Weight buffer cache: key = data pointer, value = GPU buffer
     // This allows each weight tensor to have its own cached buffer
     weight_buffer_cache:
-        RefCell<std::collections::HashMap<usize, std::rc::Rc<Buffer>>>,
+        RefCell<std::collections::HashMap<usize, std::sync::Arc<Buffer>>>,
     // Cached buffers for GEMM operations
     gemm_weights_buffer: RefCell<Option<Buffer>>,
     gemm_input_buffer: RefCell<Option<Buffer>>,
@@ -3164,10 +3164,10 @@ impl MetalContext {
 
             if let Some(buffer) = cache.get(&data_ptr) {
                 // Buffer already exists for this tensor
-                std::rc::Rc::clone(buffer)
+                std::sync::Arc::clone(buffer)
             } else {
                 // Create new buffer and cache it (zero-copy mapping)
-                let buffer = std::rc::Rc::new(
+                let buffer = std::sync::Arc::new(
                     self.device.new_buffer_with_bytes_no_copy(
                         weights.as_ptr() as *const std::ffi::c_void,
                         weights_size as u64,
@@ -3175,7 +3175,7 @@ impl MetalContext {
                         None, // No deallocator - weights are static model data
                     ),
                 );
-                cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
+                cache.insert(data_ptr, std::sync::Arc::clone(&buffer));
                 buffer
             }
         };
@@ -3280,7 +3280,7 @@ impl MetalContext {
         k: usize,
         weights: &[BlockQ4_0],
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 32;
         let nb01 = (nb * std::mem::size_of::<BlockQ4_0>()) as u64;
 
@@ -3338,21 +3338,21 @@ impl MetalContext {
             let mut cache = self.weight_buffer_cache.borrow_mut();
 
             if let Some(buffer) = cache.get(&data_ptr) {
-                std::rc::Rc::clone(buffer)
+                std::sync::Arc::clone(buffer)
             } else {
                 let buffer =
-                    std::rc::Rc::new(self.device.new_buffer_with_data(
+                    std::sync::Arc::new(self.device.new_buffer_with_data(
                         weights.as_ptr() as *const std::ffi::c_void,
                         weights_size as u64,
                         metal::MTLResourceOptions::StorageModeShared,
                     ));
-                cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
+                cache.insert(data_ptr, std::sync::Arc::clone(&buffer));
                 buffer
             }
         };
 
         // Output buffer
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             output_size as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -3397,7 +3397,7 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 32;
         let nb01 = (nb * std::mem::size_of::<BlockQ4_0>()) as u64;
 
@@ -3447,7 +3447,7 @@ impl MetalContext {
         };
 
         let output_size = m * std::mem::size_of::<f32>();
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             output_size as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -4383,7 +4383,7 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 32;
         let nb01 = (nb * std::mem::size_of::<BlockQ4_1>()) as u64;
 
@@ -4431,7 +4431,7 @@ impl MetalContext {
             r3: 1,
         };
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -4663,7 +4663,7 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 32;
         let nb01 = (nb * std::mem::size_of::<BlockQ5_0>()) as u64;
 
@@ -4711,7 +4711,7 @@ impl MetalContext {
             r3: 1,
         };
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -4845,7 +4845,7 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 32;
         let nb01 = (nb * std::mem::size_of::<BlockQ5_1>()) as u64;
 
@@ -4893,7 +4893,7 @@ impl MetalContext {
             r3: 1,
         };
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -5025,7 +5025,7 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 32;
         let nb01 = (nb * std::mem::size_of::<BlockQ8_0>()) as u64;
 
@@ -5073,7 +5073,7 @@ impl MetalContext {
             r3: 1,
         };
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -5169,10 +5169,10 @@ impl MetalContext {
 
             if let Some(buffer) = cache.get(&data_ptr) {
                 // Buffer already exists for this tensor
-                std::rc::Rc::clone(buffer)
+                std::sync::Arc::clone(buffer)
             } else {
                 // Create new buffer and cache it (zero-copy mapping)
-                let buffer = std::rc::Rc::new(
+                let buffer = std::sync::Arc::new(
                     self.device.new_buffer_with_bytes_no_copy(
                         weights.as_ptr() as *const std::ffi::c_void,
                         weights_size as u64,
@@ -5180,7 +5180,7 @@ impl MetalContext {
                         None, // No deallocator - weights are static model data
                     ),
                 );
-                cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
+                cache.insert(data_ptr, std::sync::Arc::clone(&buffer));
                 buffer
             }
         };
@@ -5310,10 +5310,10 @@ impl MetalContext {
 
             if let Some(buffer) = cache.get(&data_ptr) {
                 // Buffer already exists for this tensor
-                std::rc::Rc::clone(buffer)
+                std::sync::Arc::clone(buffer)
             } else {
                 // Create new buffer and cache it (zero-copy mapping)
-                let buffer = std::rc::Rc::new(
+                let buffer = std::sync::Arc::new(
                     self.device.new_buffer_with_bytes_no_copy(
                         weights.as_ptr() as *const std::ffi::c_void,
                         weights_size as u64,
@@ -5321,7 +5321,7 @@ impl MetalContext {
                         None, // No deallocator - weights are static model data
                     ),
                 );
-                cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
+                cache.insert(data_ptr, std::sync::Arc::clone(&buffer));
                 buffer
             }
         };
@@ -5476,10 +5476,10 @@ impl MetalContext {
 
             if let Some(buffer) = cache.get(&data_ptr) {
                 // Buffer already exists for this tensor
-                std::rc::Rc::clone(buffer)
+                std::sync::Arc::clone(buffer)
             } else {
                 // Create new buffer and cache it (zero-copy mapping)
-                let buffer = std::rc::Rc::new(
+                let buffer = std::sync::Arc::new(
                     self.device.new_buffer_with_bytes_no_copy(
                         weights.as_ptr() as *const std::ffi::c_void,
                         weights_size as u64,
@@ -5487,7 +5487,7 @@ impl MetalContext {
                         None, // No deallocator - weights are static model data
                     ),
                 );
-                cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
+                cache.insert(data_ptr, std::sync::Arc::clone(&buffer));
                 buffer
             }
         };
@@ -5609,10 +5609,10 @@ impl MetalContext {
 
             if let Some(buffer) = cache.get(&data_ptr) {
                 // Buffer already exists for this tensor
-                std::rc::Rc::clone(buffer)
+                std::sync::Arc::clone(buffer)
             } else {
                 // Create new buffer and cache it (zero-copy mapping)
-                let buffer = std::rc::Rc::new(
+                let buffer = std::sync::Arc::new(
                     self.device.new_buffer_with_bytes_no_copy(
                         weights.as_ptr() as *const std::ffi::c_void,
                         weights_size as u64,
@@ -5620,7 +5620,7 @@ impl MetalContext {
                         None, // No deallocator - weights are static model data
                     ),
                 );
-                cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
+                cache.insert(data_ptr, std::sync::Arc::clone(&buffer));
                 buffer
             }
         };
@@ -5741,10 +5741,10 @@ impl MetalContext {
 
             if let Some(buffer) = cache.get(&data_ptr) {
                 // Buffer already exists for this tensor
-                std::rc::Rc::clone(buffer)
+                std::sync::Arc::clone(buffer)
             } else {
                 // Create new buffer and cache it (zero-copy mapping)
-                let buffer = std::rc::Rc::new(
+                let buffer = std::sync::Arc::new(
                     self.device.new_buffer_with_bytes_no_copy(
                         weights.as_ptr() as *const std::ffi::c_void,
                         weights_size as u64,
@@ -5752,7 +5752,7 @@ impl MetalContext {
                         None, // No deallocator - weights are static model data
                     ),
                 );
-                cache.insert(data_ptr, std::rc::Rc::clone(&buffer));
+                cache.insert(data_ptr, std::sync::Arc::clone(&buffer));
                 buffer
             }
         };
@@ -5848,12 +5848,12 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 256; // QK_K = 256
         let nb01 = (nb * std::mem::size_of::<BlockQ4K>()) as u64;
         let args = KquantMvArgs::new(m, k, nb01);
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -5895,12 +5895,12 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ5K>()) as u64;
         let args = KquantMvArgs::new(m, k, nb01);
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -5942,12 +5942,12 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ2K>()) as u64;
         let args = KquantMvArgs::new(m, k, nb01);
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -5989,12 +5989,12 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ6K>()) as u64;
         let args = KquantMvArgs::new(m, k, nb01);
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -6036,12 +6036,12 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockQ3K>()) as u64;
         let args = KquantMvArgs::new(m, k, nb01);
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -6142,9 +6142,9 @@ impl MetalContext {
         k: usize, // Input size (hidden_size)
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let output_size = m * std::mem::size_of::<f32>();
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             output_size as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -6184,9 +6184,9 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let output_size = m * std::mem::size_of::<f32>();
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             output_size as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -6480,7 +6480,7 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 32;
         let nb01 = (nb * std::mem::size_of::<BlockIQ4NL>()) as u64;
         const NR0: u64 = 2;
@@ -6494,7 +6494,7 @@ impl MetalContext {
 
         let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -6541,7 +6541,7 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 256; // QK_K = 256
         let nb01 = (nb * std::mem::size_of::<BlockIQ4XS>()) as u64;
         const NR0: u64 = 2;
@@ -6555,7 +6555,7 @@ impl MetalContext {
 
         let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -6602,7 +6602,7 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockIQ1S>()) as u64;
         const NR0: u64 = 2;
@@ -6616,7 +6616,7 @@ impl MetalContext {
 
         let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -6663,7 +6663,7 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockIQ2XXS>()) as u64;
         const NR0: u64 = 2;
@@ -6677,7 +6677,7 @@ impl MetalContext {
 
         let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -6724,7 +6724,7 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockIQ2XS>()) as u64;
         const NR0: u64 = 2;
@@ -6738,7 +6738,7 @@ impl MetalContext {
 
         let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -6785,7 +6785,7 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockIQ2S>()) as u64;
         const NR0: u64 = 2;
@@ -6799,7 +6799,7 @@ impl MetalContext {
 
         let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -6846,7 +6846,7 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockIQ3XXS>()) as u64;
         const NR0: u64 = 2;
@@ -6860,7 +6860,7 @@ impl MetalContext {
 
         let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -6907,7 +6907,7 @@ impl MetalContext {
         k: usize,
         weights_buffer: &Buffer,
         input_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let nb = k / 256;
         let nb01 = (nb * std::mem::size_of::<BlockIQ3S>()) as u64;
         const NR0: u64 = 2;
@@ -6921,7 +6921,7 @@ impl MetalContext {
 
         let args = MvArgs { ne00: k as u32, ne01: m as u32, nb01 };
 
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (m * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -8846,8 +8846,8 @@ impl MetalContext {
         n_rows: usize,
         n_cols: usize,
         eps: f32,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+    ) -> Result<std::sync::Arc<Buffer>, String> {
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (n_rows * n_cols * std::mem::size_of::<f32>()) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -10136,8 +10136,8 @@ impl MetalContext {
         src_buffer: &Buffer,
         n_rows: usize,
         n_cols: usize,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+    ) -> Result<std::sync::Arc<Buffer>, String> {
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (n_rows * n_cols * std::mem::size_of::<f32>()) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -10248,13 +10248,13 @@ impl MetalContext {
         n_dims: usize,
         freq_base: f32,
         freq_scale: f32,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let pos_buffer = self.device.new_buffer_with_data(
             pos.as_ptr() as *const std::ffi::c_void,
             (pos.len() * std::mem::size_of::<i32>()) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         );
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (n_seqs * n_heads * n_dims * std::mem::size_of::<f32>()) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -10347,8 +10347,8 @@ impl MetalContext {
         src0_buffer: &Buffer,
         src1_buffer: &Buffer,
         n: usize,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+    ) -> Result<std::sync::Arc<Buffer>, String> {
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (n * std::mem::size_of::<f32>()) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -10379,8 +10379,8 @@ impl MetalContext {
         src0_buffer: &Buffer,
         src1_buffer: &Buffer,
         n: usize,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+    ) -> Result<std::sync::Arc<Buffer>, String> {
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (n * std::mem::size_of::<f32>()) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -10416,7 +10416,7 @@ impl MetalContext {
         n_dims: usize,
         freq_base: f32,
         freq_scale: f32,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         let pos_buffer = self.device.new_buffer_with_data(
             pos.as_ptr() as *const std::ffi::c_void,
             (pos.len() * std::mem::size_of::<i32>()) as u64,
@@ -10425,7 +10425,7 @@ impl MetalContext {
         // Output is F16 (half the size of F32)
         let output_size =
             n_seqs * n_heads * n_dims * std::mem::size_of::<u16>();
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             output_size as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -10475,8 +10475,8 @@ impl MetalContext {
         &self,
         src_buffer: &Buffer,
         n: usize,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+    ) -> Result<std::sync::Arc<Buffer>, String> {
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             (n * std::mem::size_of::<f32>()) as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -10711,7 +10711,7 @@ impl MetalContext {
         q_buffer: &Buffer,
         k_buffer: &Buffer,
         v_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         // Use NWG parallelization for head_dim=128 with longer sequences
         // NWG is beneficial when seq_len >= 64 (2+ iterations per workgroup)
         // For short sequences, single-workgroup sequential is faster
@@ -10746,7 +10746,7 @@ impl MetalContext {
         // Output buffer: [n_seqs, n_heads, head_dim]
         let output_size =
             n_seqs * n_heads * head_dim * std::mem::size_of::<f32>();
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             output_size as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -10847,7 +10847,7 @@ impl MetalContext {
         q_buffer: &Buffer,
         k_buffer: &Buffer,
         v_buffer: &Buffer,
-    ) -> Result<std::rc::Rc<Buffer>, String> {
+    ) -> Result<std::sync::Arc<Buffer>, String> {
         if head_dim != 128 {
             return Err(format!(
                 "NWG Flash Attention only supports head_dim=128, got {}",
@@ -10865,19 +10865,19 @@ impl MetalContext {
         // partial_O: [n_wg, n_heads, head_dim]
         let partial_o_size =
             n_wg * n_heads * head_dim * std::mem::size_of::<f32>();
-        let partial_o_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let partial_o_buffer = std::sync::Arc::new(self.device.new_buffer(
             partial_o_size as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
         // partial_S: [n_wg, n_heads]
         let partial_s_size = n_wg * n_heads * std::mem::size_of::<f32>();
-        let partial_s_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let partial_s_buffer = std::sync::Arc::new(self.device.new_buffer(
             partial_s_size as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
         // partial_M: [n_wg, n_heads]
         let partial_m_size = n_wg * n_heads * std::mem::size_of::<f32>();
-        let partial_m_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let partial_m_buffer = std::sync::Arc::new(self.device.new_buffer(
             partial_m_size as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
@@ -10885,7 +10885,7 @@ impl MetalContext {
         // Final output buffer
         let output_size =
             n_seqs * n_heads * head_dim * std::mem::size_of::<f32>();
-        let output_buffer = std::rc::Rc::new(self.device.new_buffer(
+        let output_buffer = std::sync::Arc::new(self.device.new_buffer(
             output_size as u64,
             metal::MTLResourceOptions::StorageModeShared,
         ));
