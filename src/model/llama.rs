@@ -1173,12 +1173,12 @@ impl LlamaModel {
     ) -> Option<Vec<f32>> {
         // 1. Compute routing scores
         let routing_scores = if let Some(gate_inp) = &layer.ffn_gate_inp {
-            // gate_inp: [n_experts, hidden_size] after transpose
-            // Or [hidden_size, n_experts] depending on GGUF format
-            let n_experts = if gate_inp.shape[0] > gate_inp.shape[1] {
-                gate_inp.shape[0] // [n_experts, hidden_size]
-            } else {
+            // gate_inp shape: [hidden_size, n_experts] or [n_experts, hidden_size]
+            // Use hidden_size from config to determine correct dimension
+            let n_experts = if gate_inp.shape[0] == hidden_size {
                 gate_inp.shape[1] // [hidden_size, n_experts]
+            } else {
+                gate_inp.shape[0] // [n_experts, hidden_size]
             };
 
             // Use gemv_impl which handles quantized tensors
@@ -1223,12 +1223,12 @@ impl LlamaModel {
             (&layer.ffn_gate_up_exps, &layer.ffn_down_exps)
         {
             // Qwen3.6-35B style: fused gate+up tensor
-            // Shape: [2 * intermediate_size, hidden_size, n_experts]
+            // Shape: [hidden_size, 2 * intermediate_size, n_experts] (transposed format)
             let intermediate_size = gate_up_exps.shape[1] / 2;
             let n_experts = gate_up_exps.shape[2];
 
             for (expert_idx, routing_weight) in &top_k {
-                // Fused gate+up projection
+                // Fused gate+up projection (transposed: in=hidden_size, out=2*intermediate_size)
                 let gate_up_out = self.gemv_expert_interleaved(
                     hidden,
                     gate_up_exps,
@@ -1346,14 +1346,17 @@ impl LlamaModel {
         {
             let cache = self.expert_weight_cache.lock().unwrap();
             if let Some(all_weights) = cache.get(cache_key) {
-                // Simple scalar GEMV with interleaved access
+                // Tensor format: [in_size, out_size, n_experts]
+                // Index = j * out_size * n_experts + i * n_experts + e
                 let mut out = vec![0.0f32; out_size];
 
                 for i in 0..out_size {
-                    let w_base = i * in_size * n_experts + expert_idx;
                     let mut sum = 0.0f32;
                     for j in 0..in_size {
-                        sum += all_weights[w_base + j * n_experts] * x[j];
+                        let idx = j * out_size * n_experts
+                            + i * n_experts
+                            + expert_idx;
+                        sum += all_weights[idx] * x[j];
                     }
                     out[i] = sum;
                 }
@@ -1374,8 +1377,6 @@ impl LlamaModel {
         }
 
         // No cache - dequantize and compute
-        // TODO: Implement memory-efficient row-by-row dequantization for interleaved format
-        // For now, dequantize the whole tensor (can be memory-intensive for large models)
         let elem_count = out_size * in_size * n_experts;
         let all_dequant = dequant_to_f32(
             expert_tensor.bytes(),
@@ -1394,14 +1395,14 @@ impl LlamaModel {
             return Some(vec![0.0f32; out_size]);
         }
 
+        // Tensor format: [in_size, out_size, n_experts]
+        // Index = j * out_size * n_experts + i * n_experts + e
         let mut out = vec![0.0f32; out_size];
-
-        // Extract weights for this expert and compute
         for i in 0..out_size {
-            let w_base = i * in_size * n_experts + expert_idx;
             let mut sum = 0.0f32;
             for j in 0..in_size {
-                sum += all_dequant[w_base + j * n_experts] * x[j];
+                let idx = j * out_size * n_experts + i * n_experts + expert_idx;
+                sum += all_dequant[idx] * x[j];
             }
             out[i] = sum;
         }
