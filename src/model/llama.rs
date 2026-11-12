@@ -96,6 +96,7 @@ pub struct LlamaLayer {
     pub ffn_gate_exps: Option<Tensor>, // Expert gate weights
     pub ffn_up_exps: Option<Tensor>,  // Expert up weights
     pub ffn_down_exps: Option<Tensor>, // Expert down weights
+    pub ffn_gate_up_exps: Option<Tensor>, // Fused gate+up (Qwen3.6-35B style)
     pub ffn_gate_shexp: Option<Tensor>, // Shared expert gate
     pub ffn_up_shexp: Option<Tensor>, // Shared expert up
     pub ffn_down_shexp: Option<Tensor>, // Shared expert down
@@ -116,6 +117,13 @@ impl LlamaLayer {
     /// Mamba layers have ssm_out but no wo (attention output)
     pub fn is_ssm(&self) -> bool {
         self.ssm_out.is_some() || self.ssm_conv1d.is_some()
+    }
+
+    /// Check if this layer has MoE FFN (either DeepSeek or Qwen3.6 style)
+    pub fn has_moe_ffn(&self) -> bool {
+        self.ffn_gate_exps.is_some()
+            || self.ffn_gate_up_exps.is_some()
+            || self.ffn_gate_shexp.is_some()
     }
 }
 
@@ -471,7 +479,7 @@ impl LlamaModel {
         let hidden_size = self.config.hidden_size;
 
         for layer in &self.layers {
-            // Check if this layer has MoE
+            // Check if this layer has DeepSeek-style MoE
             if layer.ffn_gate_exps.is_some() {
                 // Cache gate_exps
                 if let Some(gate_exps) = &layer.ffn_gate_exps {
@@ -517,6 +525,13 @@ impl LlamaModel {
                         cache.insert(key, weights);
                     }
                 }
+            }
+
+            // Check if this layer has Qwen3.6-style fused gate+up MoE
+            // NOTE: Don't pre-cache for large models - too much memory
+            // gemv_expert_interleaved will dequantize on demand
+            if layer.ffn_gate_up_exps.is_some() {
+                // Skip pre-caching to avoid memory explosion
             }
         }
 
@@ -967,8 +982,11 @@ impl LlamaModel {
         hidden: &[f32],
         hidden_size: usize,
     ) -> Option<Vec<f32>> {
-        // Try MoE FFN first (DeepSeek-Coder-V2-style)
-        if layer.ffn_gate_exps.is_some() || layer.ffn_gate_shexp.is_some() {
+        // Try MoE FFN first (DeepSeek-Coder-V2-style or Qwen3.6-style)
+        if layer.ffn_gate_exps.is_some()
+            || layer.ffn_gate_up_exps.is_some()
+            || layer.ffn_gate_shexp.is_some()
+        {
             return self.compute_moe_ffn(layer, hidden, hidden_size);
         }
 
@@ -1155,26 +1173,23 @@ impl LlamaModel {
     ) -> Option<Vec<f32>> {
         // 1. Compute routing scores
         let routing_scores = if let Some(gate_inp) = &layer.ffn_gate_inp {
-            // gate_inp: [hidden_size, n_experts]
-            let n_experts = gate_inp.shape[1];
-            let mut scores = vec![0.0f32; n_experts];
+            // gate_inp: [n_experts, hidden_size] after transpose
+            // Or [hidden_size, n_experts] depending on GGUF format
+            let n_experts = if gate_inp.shape[0] > gate_inp.shape[1] {
+                gate_inp.shape[0] // [n_experts, hidden_size]
+            } else {
+                gate_inp.shape[1] // [hidden_size, n_experts]
+            };
 
-            // Compute routing scores: hidden @ gate_inp
-            // gate_inp is [hidden_size, n_experts], so hidden @ gate_inp gives [n_experts]
-            let weight: &[f32] = bytemuck::cast_slice(gate_inp.bytes());
-            for e in 0..n_experts {
-                for i in 0..hidden_size {
-                    scores[e] += hidden[i] * weight[i * n_experts + e];
-                }
-            }
+            // Use gemv_impl which handles quantized tensors
+            let scores = self.gemv_impl(hidden, gate_inp, n_experts)?;
 
             // Softmax
             let max_score =
                 scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let sum: f32 = scores.iter().map(|s| (s - max_score).exp()).sum();
-            for s in &mut scores {
-                *s = ((*s - max_score).exp()) / sum;
-            }
+            let scores: Vec<f32> =
+                scores.iter().map(|s| ((s - max_score).exp()) / sum).collect();
 
             scores
         } else {
@@ -1186,7 +1201,9 @@ impl LlamaModel {
         let n_experts_used = self.config.n_experts_used;
         let mut expert_indices: Vec<(usize, f32)> =
             routing_scores.iter().enumerate().map(|(i, &s)| (i, s)).collect();
-        expert_indices.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        expert_indices.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+        });
         let top_k: Vec<(usize, f32)> =
             expert_indices.into_iter().take(n_experts_used).collect();
 
@@ -1201,9 +1218,56 @@ impl LlamaModel {
         // 3. Compute routed expert outputs
         let mut routed_output = vec![0.0f32; hidden_size];
 
-        if let (Some(gate_exps), Some(up_exps), Some(down_exps)) =
+        // Check MoE style: Qwen3.6 fused gate+up vs DeepSeek separate
+        if let (Some(gate_up_exps), Some(down_exps)) =
+            (&layer.ffn_gate_up_exps, &layer.ffn_down_exps)
+        {
+            // Qwen3.6-35B style: fused gate+up tensor
+            // Shape: [2 * intermediate_size, hidden_size, n_experts]
+            let intermediate_size = gate_up_exps.shape[1] / 2;
+            let n_experts = gate_up_exps.shape[2];
+
+            for (expert_idx, routing_weight) in &top_k {
+                // Fused gate+up projection
+                let gate_up_out = self.gemv_expert_interleaved(
+                    hidden,
+                    gate_up_exps,
+                    &format!("layer_{}_gate_up_exps", layer.layer_idx),
+                    *expert_idx,
+                    2 * intermediate_size,
+                    hidden_size,
+                    n_experts,
+                )?;
+
+                // Split into gate and up, apply SwiGLU
+                let mut hidden_ffn = vec![0.0f32; intermediate_size];
+                for i in 0..intermediate_size {
+                    let gate = gate_up_out[i];
+                    let up = gate_up_out[intermediate_size + i];
+                    let silu = up / (1.0 + (-up).exp());
+                    hidden_ffn[i] = gate * silu;
+                }
+
+                // Down projection
+                let expert_down = self.gemv_expert_interleaved(
+                    &hidden_ffn,
+                    down_exps,
+                    &format!("layer_{}_down_exps", layer.layer_idx),
+                    *expert_idx,
+                    hidden_size,
+                    intermediate_size,
+                    n_experts,
+                )?;
+
+                // Add weighted output
+                for i in 0..hidden_size {
+                    routed_output[i] += routing_weight * expert_down[i];
+                }
+            }
+        } else if let (Some(gate_exps), Some(up_exps), Some(down_exps)) =
             (&layer.ffn_gate_exps, &layer.ffn_up_exps, &layer.ffn_down_exps)
         {
+            // DeepSeek style: separate gate, up, down tensors
             let intermediate_size = gate_exps.shape[1];
             let n_experts = gate_exps.shape[2];
 
@@ -1266,31 +1330,78 @@ impl LlamaModel {
         Some(final_output)
     }
 
-    /// GEMV with interleaved expert weights, using cached dequantized weights
+    /// GEMV with interleaved expert weights
+    /// Uses row-by-row dequantization to limit memory usage
     fn gemv_expert_interleaved(
         &self,
-        _x: &[f32],
-        _expert_tensor: &Tensor,
+        x: &[f32],
+        expert_tensor: &Tensor,
         cache_key: &str,
         expert_idx: usize,
         out_size: usize,
         in_size: usize,
         n_experts: usize,
     ) -> Option<Vec<f32>> {
-        // Check cache for dequantized weights
-        let cache = self.expert_weight_cache.lock().unwrap();
-        let all_weights = cache.get(cache_key)?;
+        // Try cache first
+        {
+            let cache = self.expert_weight_cache.lock().unwrap();
+            if let Some(all_weights) = cache.get(cache_key) {
+                // Simple scalar GEMV with interleaved access
+                let mut out = vec![0.0f32; out_size];
 
-        // Simple scalar GEMV with interleaved access
-        // W[i, j, e] = all_weights[i * in_size * n_experts + j * n_experts + e]
-        let x = _x;
+                for i in 0..out_size {
+                    let w_base = i * in_size * n_experts + expert_idx;
+                    let mut sum = 0.0f32;
+                    for j in 0..in_size {
+                        sum += all_weights[w_base + j * n_experts] * x[j];
+                    }
+                    out[i] = sum;
+                }
+
+                return Some(out);
+            }
+        }
+
+        // Check input for NaN
+        let has_nan = x.iter().any(|&v| v.is_nan());
+        if has_nan {
+            eprintln!(
+                "[WARN gemv_expert_interleaved] Input contains NaN, cache_key={}, expert_idx={}",
+                cache_key, expert_idx
+            );
+            // Return zeros to prevent propagation
+            return Some(vec![0.0f32; out_size]);
+        }
+
+        // No cache - dequantize and compute
+        // TODO: Implement memory-efficient row-by-row dequantization for interleaved format
+        // For now, dequantize the whole tensor (can be memory-intensive for large models)
+        let elem_count = out_size * in_size * n_experts;
+        let all_dequant = dequant_to_f32(
+            expert_tensor.bytes(),
+            expert_tensor.dtype,
+            elem_count,
+        );
+
+        // Check for NaN in dequantized weights
+        let weight_nan_count =
+            all_dequant.iter().filter(|&&v| v.is_nan()).count();
+        if weight_nan_count > 0 {
+            eprintln!(
+                "[WARN gemv_expert_interleaved] Dequantized weights contain {} NaN values, dtype={:?}, elem_count={}",
+                weight_nan_count, expert_tensor.dtype, elem_count
+            );
+            return Some(vec![0.0f32; out_size]);
+        }
+
         let mut out = vec![0.0f32; out_size];
 
+        // Extract weights for this expert and compute
         for i in 0..out_size {
             let w_base = i * in_size * n_experts + expert_idx;
             let mut sum = 0.0f32;
             for j in 0..in_size {
-                sum += all_weights[w_base + j * n_experts] * x[j];
+                sum += all_dequant[w_base + j * n_experts] * x[j];
             }
             out[i] = sum;
         }
@@ -1334,6 +1445,10 @@ impl LlamaModel {
             (&layer.ffn_gate_shexp, &layer.ffn_up_shexp, &layer.ffn_down_shexp)
         {
             let intermediate_size = gate.shape[1];
+
+            // Use only the first hidden_size elements
+            // (SSM layers may produce larger hidden states)
+            let hidden = &hidden[..hidden_size.min(hidden.len())];
 
             // Shared expert FFN (SwiGLU)
             let gate_out = self.gemv_impl(hidden, gate, intermediate_size)?;
@@ -1638,7 +1753,8 @@ impl LlamaModel {
         let _vocab_size = self.config.vocab_size;
 
         // Process each token, keeping track of the last hidden state
-        let mut last_hidden_buffer: Option<std::rc::Rc<metal::Buffer>> = None;
+        let mut last_hidden_buffer: Option<std::sync::Arc<metal::Buffer>> =
+            None;
 
         for &token in tokens.iter() {
             // 1. Embedding lookup (CPU - unavoidable for token lookup)
@@ -1646,7 +1762,7 @@ impl LlamaModel {
 
             // Upload hidden state to GPU
             let hidden_buffer =
-                std::rc::Rc::new(gpu_ctx.device().new_buffer_with_data(
+                std::sync::Arc::new(gpu_ctx.device().new_buffer_with_data(
                     hidden.as_ptr() as *const std::ffi::c_void,
                     (hidden_size * std::mem::size_of::<f32>()) as u64,
                     metal::MTLResourceOptions::StorageModeShared,
@@ -2760,6 +2876,25 @@ impl LlamaModel {
                     for i in 0..residual_len {
                         batch_hidden[i] += buffers.batch_residual[i];
                     }
+                } else if layer.has_moe_ffn() {
+                    // MoE FFN - process tokens one by one
+                    for t in 0..n_tokens {
+                        let token_hidden = &batch_hidden
+                            [t * hidden_size..(t + 1) * hidden_size];
+                        let result = self.compute_moe_ffn(
+                            layer,
+                            token_hidden,
+                            hidden_size,
+                        )?;
+                        batch_hidden[t * hidden_size..(t + 1) * hidden_size]
+                            .copy_from_slice(&result);
+
+                        // Add residual
+                        for i in 0..hidden_size {
+                            batch_hidden[t * hidden_size + i] +=
+                                buffers.batch_residual[t * hidden_size + i];
+                        }
+                    }
                 }
                 time_ffn += start.elapsed();
 
@@ -3688,7 +3823,35 @@ impl LlamaModel {
             self.forward_ssm(layer, buffers)?;
             time_qkv += start.elapsed();
 
-            // SSM layers don't have FFN - forward_ssm already produces the final output
+            // Some SSM layers also have MoE FFN (Qwen3.6-35B style)
+            if layer.has_moe_ffn() {
+                // FFN norm (hidden -> hidden_alt)
+                let start = Instant::now();
+                let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
+                self.apply_rms_norm_predequant(
+                    &buffers.hidden,
+                    &buffers.norm_weights
+                        [ffn_norm_offset..ffn_norm_offset + hidden_size],
+                    &mut buffers.hidden_alt,
+                );
+                time_norm += start.elapsed();
+
+                // MoE FFN
+                let start = Instant::now();
+                let result = self.compute_moe_ffn(
+                    layer,
+                    &buffers.hidden_alt,
+                    hidden_size,
+                )?;
+                buffers.hidden_alt[..hidden_size].copy_from_slice(&result);
+                time_ffn += start.elapsed();
+
+                // Add residual (hidden += hidden_alt)
+                for i in 0..hidden_size {
+                    buffers.hidden[i] += buffers.hidden_alt[i];
+                }
+            }
+
             return Some(());
         }
 
@@ -4383,7 +4546,31 @@ impl LlamaModel {
             // forward_ssm handles the full SSM processing and writes to buffers.hidden
             self.forward_ssm(layer, buffers)?;
 
-            // SSM layers don't have FFN - forward_ssm already produces the final output
+            // Some SSM layers also have MoE FFN (Qwen3.6-35B style)
+            if layer.has_moe_ffn() {
+                // FFN norm (hidden -> hidden_alt)
+                let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
+                self.apply_rms_norm_predequant(
+                    &buffers.hidden,
+                    &buffers.norm_weights
+                        [ffn_norm_offset..ffn_norm_offset + hidden_size],
+                    &mut buffers.hidden_alt,
+                );
+
+                // MoE FFN
+                let result = self.compute_moe_ffn(
+                    layer,
+                    &buffers.hidden_alt,
+                    hidden_size,
+                )?;
+                buffers.hidden_alt[..hidden_size].copy_from_slice(&result);
+
+                // Add residual (hidden += hidden_alt)
+                for i in 0..hidden_size {
+                    buffers.hidden[i] += buffers.hidden_alt[i];
+                }
+            }
+
             return Some(());
         }
 
@@ -5044,10 +5231,6 @@ impl LlamaModel {
         }
 
         // 6. Output projection: ssm_dim → hidden_size
-        eprintln!(
-            "[DEBUG ssm_out GEMV] ssm_out shape: {:?}, input size: {}, output slice size: {}",
-            ssm_out.shape, ssm_dim, hidden_size
-        );
         self.gemv_into_with_buffers(
             &buffers.ssm_y[..ssm_dim],
             ssm_out,
@@ -5067,11 +5250,6 @@ impl LlamaModel {
             };
 
             if gate_out_size > 0 {
-                // Debug: show actual tensor shape
-                eprintln!(
-                    "[DEBUG forward_ssm] attn_gate shape: {:?}, gate_out_size: {}, hidden_size: {}",
-                    attn_gate.shape, gate_out_size, hidden_size
-                );
                 self.gemv_into_with_buffers(
                     &buffers.hidden[..hidden_size],
                     attn_gate,
@@ -5287,6 +5465,10 @@ impl LlamaModel {
                 | DataType::Q5_K
                 | DataType::Q6_K
                 | DataType::IQ4_XS => {
+                    eprintln!(
+                        "[DEBUG gemv_impl] Using K-quant optimized path for dtype={:?}",
+                        w.dtype
+                    );
                     let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
                     let nb = in_size_padded / QK_K;
 
@@ -7027,13 +7209,13 @@ impl LlamaModel {
         &self,
         layer: &LlamaLayer,
         layer_idx: usize,
-        hidden_buffer: &std::rc::Rc<Buffer>,
+        hidden_buffer: &std::sync::Arc<Buffer>,
         kv_cache: &mut crate::inference::KVCacheGPU,
         _n_heads: usize,
         head_dim: usize,
         _n_kv_heads: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
-    ) -> Option<std::rc::Rc<Buffer>> {
+    ) -> Option<std::sync::Arc<Buffer>> {
         let hidden_size = self.config.hidden_size;
         let pos = kv_cache.seq_len();
 
@@ -7267,9 +7449,9 @@ impl LlamaModel {
 
         // 2. Create forward pool and command buffer
         use std::cell::RefCell;
-        use std::rc::Rc;
-        let reuse_pool: Rc<RefCell<Vec<Rc<Buffer>>>> =
-            Rc::new(RefCell::new(Vec::new()));
+        use std::sync::Arc;
+        let reuse_pool: Arc<RefCell<Vec<Arc<Buffer>>>> =
+            Arc::new(RefCell::new(Vec::new()));
         let mut forward_pool = crate::buffer::ForwardBufferPool::new(
             device.clone(),
             reuse_pool.clone(),
@@ -7465,7 +7647,7 @@ impl LlamaModel {
         &self,
         tokens: &[u32],
         device: &metal::DeviceRef,
-    ) -> Option<(std::rc::Rc<Buffer>, usize)> {
+    ) -> Option<(std::sync::Arc<Buffer>, usize)> {
         if tokens.is_empty() || self.tok_embeddings.is_none() {
             return None;
         }
@@ -7485,7 +7667,7 @@ impl LlamaModel {
         }
 
         // Create GPU buffer
-        let buffer = std::rc::Rc::new(device.new_buffer_with_data(
+        let buffer = std::sync::Arc::new(device.new_buffer_with_data(
             all_embeddings.as_ptr() as *const std::ffi::c_void,
             (batch * hidden_size * 4) as u64,
             metal::MTLResourceOptions::StorageModeShared,
@@ -7501,12 +7683,12 @@ impl LlamaModel {
         &self,
         layer: &LlamaLayer,
         layer_idx: usize,
-        hidden_buffer: &std::rc::Rc<Buffer>,
+        hidden_buffer: &std::sync::Arc<Buffer>,
         kv_cache: &mut crate::inference::KVCacheGPU,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
         forward_pool: &mut crate::buffer::ForwardBufferPool,
         encoder: &metal::ComputeCommandEncoderRef,
-    ) -> Option<std::rc::Rc<Buffer>> {
+    ) -> Option<std::sync::Arc<Buffer>> {
         let hidden_size = self.config.hidden_size;
         let pos = kv_cache.seq_len();
         let head_dim = self.config.head_dim;
@@ -7804,10 +7986,10 @@ impl LlamaModel {
     fn gemm_dtype_aware_encode(
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
         encoder: &metal::ComputeCommandEncoderRef,
-        weights_buffer: &std::rc::Rc<metal::Buffer>,
+        weights_buffer: &std::sync::Arc<metal::Buffer>,
         dtype: crate::model::tensor::DataType,
-        input_buffer: &std::rc::Rc<metal::Buffer>,
-        output_buffer: &std::rc::Rc<metal::Buffer>,
+        input_buffer: &std::sync::Arc<metal::Buffer>,
+        output_buffer: &std::sync::Arc<metal::Buffer>,
         m: usize,
         n: usize,
         k: usize,
@@ -7875,13 +8057,13 @@ impl LlamaModel {
         &self,
         layer: &LlamaLayer,
         layer_idx: usize,
-        input_buffer: &std::rc::Rc<Buffer>,
+        input_buffer: &std::sync::Arc<Buffer>,
         batch: usize,
         kv_cache: &mut crate::inference::KVCacheGPU,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
         forward_pool: &mut crate::buffer::ForwardBufferPool,
         encoder: &metal::ComputeCommandEncoderRef,
-    ) -> Option<std::rc::Rc<Buffer>> {
+    ) -> Option<std::sync::Arc<Buffer>> {
         let hidden_size = self.config.hidden_size;
         let head_dim = self.config.head_dim;
         let start_pos = kv_cache.seq_len();
@@ -8292,12 +8474,12 @@ impl LlamaModel {
     pub fn gemv_encode(
         &self,
         encoder: &metal::ComputeCommandEncoderRef,
-        input_buffer: &std::rc::Rc<Buffer>,
+        input_buffer: &std::sync::Arc<Buffer>,
         in_size: usize,
         weight: &crate::model::tensor::Tensor,
         out_size: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
-        output_buffer: &std::rc::Rc<Buffer>,
+        output_buffer: &std::sync::Arc<Buffer>,
     ) -> Option<()> {
         // Use GPU kernel for encoding into shared command buffer
         let weight_buffer = gpu_ctx.get_or_create_buffer(weight);
@@ -8326,12 +8508,12 @@ impl LlamaModel {
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn gemv_gpu_buffer(
         &self,
-        input_buffer: &std::rc::Rc<Buffer>,
-        weights_buffer: &std::rc::Rc<Buffer>,
+        input_buffer: &std::sync::Arc<Buffer>,
+        weights_buffer: &std::sync::Arc<Buffer>,
         out_size: usize,
         dtype: crate::model::tensor::DataType,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
-    ) -> Option<std::rc::Rc<Buffer>> {
+    ) -> Option<std::sync::Arc<Buffer>> {
         // Get input size from buffer length
         let in_size =
             input_buffer.length() as usize / std::mem::size_of::<f32>();
@@ -8508,11 +8690,11 @@ impl LlamaModel {
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     pub fn gemv_gpu_buffer_with_fallback(
         &self,
-        input_buffer: &std::rc::Rc<Buffer>,
+        input_buffer: &std::sync::Arc<Buffer>,
         weight: &Tensor,
         out_size: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
-    ) -> Option<std::rc::Rc<Buffer>> {
+    ) -> Option<std::sync::Arc<Buffer>> {
         let in_size =
             input_buffer.length() as usize / std::mem::size_of::<f32>();
         let weights_buffer = gpu_ctx.get_or_create_buffer(weight);
@@ -8543,7 +8725,7 @@ impl LlamaModel {
 
         // Upload to GPU
         let output_buffer =
-            std::rc::Rc::new(gpu_ctx.device().new_buffer_with_data(
+            std::sync::Arc::new(gpu_ctx.device().new_buffer_with_data(
                 output.as_ptr() as *const std::ffi::c_void,
                 (out_size * std::mem::size_of::<f32>()) as u64,
                 metal::MTLResourceOptions::StorageModeShared,
@@ -8556,7 +8738,7 @@ impl LlamaModel {
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     fn flash_attention_gpu_buffer(
         &self,
-        q_buffer: &std::rc::Rc<Buffer>,
+        q_buffer: &std::sync::Arc<Buffer>,
         kv_cache: &crate::inference::KVCacheGPU,
         layer_idx: usize,
         n_heads: usize,
@@ -8564,7 +8746,7 @@ impl LlamaModel {
         n_kv_heads: usize,
         seq_len: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
-    ) -> Option<std::rc::Rc<Buffer>> {
+    ) -> Option<std::sync::Arc<Buffer>> {
         // Get K and V buffers from GPU KV cache
         let k_buffer = kv_cache.k_buffer(layer_idx);
         let v_buffer = kv_cache.v_buffer(layer_idx);
@@ -8584,11 +8766,11 @@ impl LlamaModel {
     #[cfg(all(target_arch = "aarch64", feature = "metal"))]
     fn ffn_swiglu_gpu_buffer(
         &self,
-        input_buffer: &std::rc::Rc<Buffer>,
+        input_buffer: &std::sync::Arc<Buffer>,
         layer: &LlamaLayer,
         hidden_size: usize,
         gpu_ctx: &crate::quant::vec_dot::gpu::metal::MetalContext,
-    ) -> Option<std::rc::Rc<Buffer>> {
+    ) -> Option<std::sync::Arc<Buffer>> {
         let w1 = layer.w1.as_ref()?;
         let w2 = layer.w2.as_ref()?;
         let w3 = layer.w3.as_ref()?;
@@ -8646,11 +8828,12 @@ impl LlamaModel {
         let kv_stride = kv_cache.max_seq();
 
         // Create GPU buffer for Q
-        let q_buffer = std::rc::Rc::new(gpu_ctx.device().new_buffer_with_data(
-            q.as_ptr() as *const std::ffi::c_void,
-            (q.len() * std::mem::size_of::<f32>()) as u64,
-            metal::MTLResourceOptions::StorageModeShared,
-        ));
+        let q_buffer =
+            std::sync::Arc::new(gpu_ctx.device().new_buffer_with_data(
+                q.as_ptr() as *const std::ffi::c_void,
+                (q.len() * std::mem::size_of::<f32>()) as u64,
+                metal::MTLResourceOptions::StorageModeShared,
+            ));
 
         // Run Flash Attention on GPU
         let output_buffer = gpu_ctx
@@ -9135,6 +9318,10 @@ impl LlamaLayer {
                 .cloned(),
             ffn_down_exps: store
                 .get(&format!("{}.ffn_down_exps.weight", qwen_prefix))
+                .cloned(),
+            // Fused gate+up for Qwen3.6-35B style MoE
+            ffn_gate_up_exps: store
+                .get(&format!("{}.ffn_gate_up_exps.weight", qwen_prefix))
                 .cloned(),
             ffn_gate_shexp: store
                 .get(&format!("{}.ffn_gate_shexp.weight", qwen_prefix))
