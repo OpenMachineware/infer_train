@@ -270,12 +270,7 @@ impl Model {
         // 2. QKV projection (fused or separate)
         let n_heads = self.config.n_heads;
         let n_kv_heads = self.config.n_kv_heads;
-        // For Qwen3.5 full attention: head_dim from key_length, for SSM: use config.head_dim
-        let head_dim = if self.config.key_length > 0 {
-            self.config.key_length
-        } else {
-            self.config.head_dim
-        };
+        let head_dim = self.config.head_dim;
 
         let (q, k, v) = if let Some(attn_qkv) = &layer.attn_qkv {
             // Fused QKV projection
@@ -284,7 +279,13 @@ impl Model {
 
             let q_size = n_heads * head_dim;
             let k_size = n_kv_heads * head_dim;
-            let v_size = n_kv_heads * self.config.value_length;
+            // Fall back to head_dim for standard attention (value_length is 0)
+            let v_size = n_kv_heads
+                * if self.config.value_length > 0 {
+                    self.config.value_length
+                } else {
+                    head_dim
+                };
 
             (
                 qkv[0..q_size].to_vec(),
@@ -491,15 +492,17 @@ impl Model {
             // Split Q, K, V
             let n_heads = self.config.n_heads;
             let n_kv_heads = self.config.n_kv_heads;
-            let head_dim = if self.config.key_length > 0 {
-                self.config.key_length
-            } else {
-                self.config.head_dim
-            };
+            let head_dim = self.config.head_dim;
 
             let q_size = n_heads * head_dim;
             let k_size = n_kv_heads * head_dim;
-            let v_size = n_kv_heads * self.config.value_length;
+            // Fall back to head_dim for standard attention (value_length is 0)
+            let v_size = n_kv_heads
+                * if self.config.value_length > 0 {
+                    self.config.value_length
+                } else {
+                    head_dim
+                };
 
             let q = &qkv[0..q_size];
             let k = &qkv[q_size..q_size + k_size];

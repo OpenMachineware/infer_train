@@ -238,6 +238,11 @@ impl KVCacheF32 {
             config.head_dim
         };
 
+        eprintln!(
+            "[KVCacheF32::new] n_layers={}, n_kv_heads={}, max_seq={}, k_head_dim={}, v_head_dim={}",
+            config.n_layers, config.n_kv_heads, max_seq, k_head_dim, v_head_dim
+        );
+
         KVCacheF32 {
             k_cache: vec![
                 vec![

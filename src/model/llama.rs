@@ -158,8 +158,9 @@ impl LlamaModel {
 
         // Fix config n_heads/n_kv_heads from actual weight shapes
         // GGUF metadata may be incorrect for some models
-        if let Some(first_layer) = model.layers.first() {
-            if let (Some(wq), Some(wk)) = (&first_layer.wq, &first_layer.wk) {
+        // For hybrid models (SSM + Attention), find the first attention layer
+        for layer in &model.layers {
+            if let (Some(wq), Some(wk)) = (&layer.wq, &layer.wk) {
                 // After transpose, shape is [out_features, in_features]
                 let q_out_size = wq.shape[0];
                 let k_out_size = wk.shape[0];
@@ -211,6 +212,7 @@ impl LlamaModel {
                     model.config.head_dim = best_head_dim;
                     model.config.rope_dim = best_head_dim; // Also fix rope_dim
                 }
+                break; // Only need to check the first attention layer
             }
         }
 
@@ -473,74 +475,11 @@ impl LlamaModel {
     }
 
     /// Pre-populate expert weight cache for MoE models
-    /// This avoids dequantizing expert weights on every forward pass
+    /// NOTE: For large MoE models with many experts, we use lazy per-expert caching
+    /// to avoid memory explosion. This function is now a no-op.
     fn prepopulate_expert_cache(&mut self) {
-        let mut cache = self.expert_weight_cache.lock().unwrap();
-        let hidden_size = self.config.hidden_size;
-
-        for layer in &self.layers {
-            // Check if this layer has DeepSeek-style MoE
-            if layer.ffn_gate_exps.is_some() {
-                // Cache gate_exps
-                if let Some(gate_exps) = &layer.ffn_gate_exps {
-                    let intermediate_size = gate_exps.shape[1];
-                    let n_experts = gate_exps.shape[2];
-                    let key = format!("layer_{}_gate_exps", layer.layer_idx);
-                    if !cache.contains_key(&key) {
-                        let weights = dequant_to_f32(
-                            gate_exps.bytes(),
-                            gate_exps.dtype,
-                            intermediate_size * hidden_size * n_experts,
-                        );
-                        cache.insert(key, weights);
-                    }
-                }
-
-                // Cache up_exps
-                if let Some(up_exps) = &layer.ffn_up_exps {
-                    let intermediate_size = up_exps.shape[1];
-                    let n_experts = up_exps.shape[2];
-                    let key = format!("layer_{}_up_exps", layer.layer_idx);
-                    if !cache.contains_key(&key) {
-                        let weights = dequant_to_f32(
-                            up_exps.bytes(),
-                            up_exps.dtype,
-                            intermediate_size * hidden_size * n_experts,
-                        );
-                        cache.insert(key, weights);
-                    }
-                }
-
-                // Cache down_exps
-                if let Some(down_exps) = &layer.ffn_down_exps {
-                    let intermediate_size = down_exps.shape[1];
-                    let n_experts = down_exps.shape[2];
-                    let key = format!("layer_{}_down_exps", layer.layer_idx);
-                    if !cache.contains_key(&key) {
-                        let weights = dequant_to_f32(
-                            down_exps.bytes(),
-                            down_exps.dtype,
-                            hidden_size * intermediate_size * n_experts,
-                        );
-                        cache.insert(key, weights);
-                    }
-                }
-            }
-
-            // Check if this layer has Qwen3.6-style fused gate+up MoE
-            // NOTE: Don't pre-cache for large models - too much memory
-            // gemv_expert_interleaved will dequantize on demand
-            if layer.ffn_gate_up_exps.is_some() {
-                // Skip pre-caching to avoid memory explosion
-            }
-        }
-
-        if !cache.is_empty() {
-            println!(
-                "Pre-populated expert weight cache: {} tensors",
-                cache.len()
-            );
-        }
+        // Per-expert caching is done on-demand in gemv_expert_interleaved
+        // Pre-caching all experts would require too much memory for models with 256 experts
     }
 
     /// Transpose a quantized tensor from column-major to row-major
@@ -820,9 +759,12 @@ impl LlamaModel {
                 qkv.shape[0]
             };
             let q_out_size = n_heads * head_dim;
-            // Use key_length and value_length for K/V (Qwen3.8-style)
-            let k_out_size = n_kv_heads * key_length;
-            let v_out_size = n_kv_heads * value_length;
+            // Use key_length and value_length for K/V (Qwen3.8-style MLA)
+            // Fall back to head_dim for standard attention (key_length/value_length are 0)
+            let k_out_size =
+                n_kv_heads * if key_length > 0 { key_length } else { head_dim };
+            let v_out_size = n_kv_heads
+                * if value_length > 0 { value_length } else { head_dim };
 
             // Compute fused projection
             let qkv_proj = self.gemv_impl(hidden, qkv, qkv_out_size)?;
@@ -1043,6 +985,15 @@ impl LlamaModel {
             return output;
         }
 
+        let has_moe = layer.ffn_gate_exps.is_some()
+            || layer.ffn_gate_up_exps.is_some()
+            || layer.ffn_gate_shexp.is_some();
+        let has_std =
+            layer.w1.is_some() && layer.w2.is_some() && layer.w3.is_some();
+        eprintln!(
+            "[compute_ffn] No FFN found at layer {} (has_moe={}, has_std={})",
+            layer.layer_idx, has_moe, has_std
+        );
         None
     }
 
@@ -1218,6 +1169,10 @@ impl LlamaModel {
         // 3. Compute routed expert outputs
         let mut routed_output = vec![0.0f32; hidden_size];
 
+        // Collect expert indices for batch extraction
+        let expert_indices: Vec<usize> =
+            top_k.iter().map(|(idx, _)| *idx).collect();
+
         // Check MoE style: Qwen3.6 fused gate+up vs DeepSeek separate
         if let (Some(gate_up_exps), Some(down_exps)) =
             (&layer.ffn_gate_up_exps, &layer.ffn_down_exps)
@@ -1226,6 +1181,24 @@ impl LlamaModel {
             // Shape: [hidden_size, 2 * intermediate_size, n_experts] (transposed format)
             let intermediate_size = gate_up_exps.shape[1] / 2;
             let n_experts = gate_up_exps.shape[2];
+
+            // Batch extract all needed experts at once (much more efficient)
+            self.extract_and_cache_experts_batch(
+                gate_up_exps,
+                &format!("layer_{}_gate_up_exps", layer.layer_idx),
+                &expert_indices,
+                2 * intermediate_size,
+                hidden_size,
+                n_experts,
+            );
+            self.extract_and_cache_experts_batch(
+                down_exps,
+                &format!("layer_{}_down_exps", layer.layer_idx),
+                &expert_indices,
+                hidden_size,
+                intermediate_size,
+                n_experts,
+            );
 
             for (expert_idx, routing_weight) in &top_k {
                 // Fused gate+up projection (transposed: in=hidden_size, out=2*intermediate_size)
@@ -1271,8 +1244,34 @@ impl LlamaModel {
             let intermediate_size = gate_exps.shape[1];
             let n_experts = gate_exps.shape[2];
 
+            // Batch extract all needed experts at once
+            self.extract_and_cache_experts_batch(
+                gate_exps,
+                &format!("layer_{}_gate_exps", layer.layer_idx),
+                &expert_indices,
+                intermediate_size,
+                hidden_size,
+                n_experts,
+            );
+            self.extract_and_cache_experts_batch(
+                up_exps,
+                &format!("layer_{}_up_exps", layer.layer_idx),
+                &expert_indices,
+                intermediate_size,
+                hidden_size,
+                n_experts,
+            );
+            self.extract_and_cache_experts_batch(
+                down_exps,
+                &format!("layer_{}_down_exps", layer.layer_idx),
+                &expert_indices,
+                hidden_size,
+                intermediate_size,
+                n_experts,
+            );
+
             for (expert_idx, routing_weight) in &top_k {
-                // Dequantize only this expert's weights (not all experts)
+                // Get expert weights from cache (already extracted)
                 let expert_gate = self.gemv_expert_interleaved(
                     hidden,
                     gate_exps,
@@ -1331,7 +1330,7 @@ impl LlamaModel {
     }
 
     /// GEMV with interleaved expert weights
-    /// Uses row-by-row dequantization to limit memory usage
+    /// Uses per-expert caching to limit memory usage
     fn gemv_expert_interleaved(
         &self,
         x: &[f32],
@@ -1342,21 +1341,22 @@ impl LlamaModel {
         in_size: usize,
         n_experts: usize,
     ) -> Option<Vec<f32>> {
+        // Use per-expert cache key
+        let expert_cache_key = format!("{}_exp{}", cache_key, expert_idx);
+
         // Try cache first
         {
             let cache = self.expert_weight_cache.lock().unwrap();
-            if let Some(all_weights) = cache.get(cache_key) {
-                // Tensor format: [in_size, out_size, n_experts]
-                // Index = j * out_size * n_experts + i * n_experts + e
+            if let Some(expert_weights) = cache.get(&expert_cache_key) {
+                // Cached weights are for a single expert: [out_size, in_size]
+                // Index = i * in_size + j
                 let mut out = vec![0.0f32; out_size];
 
                 for i in 0..out_size {
                     let mut sum = 0.0f32;
                     for j in 0..in_size {
-                        let idx = j * out_size * n_experts
-                            + i * n_experts
-                            + expert_idx;
-                        sum += all_weights[idx] * x[j];
+                        let idx = i * in_size + j;
+                        sum += expert_weights[idx] * x[j];
                     }
                     out[i] = sum;
                 }
@@ -1365,46 +1365,482 @@ impl LlamaModel {
             }
         }
 
-        // Check input for NaN
-        let has_nan = x.iter().any(|&v| v.is_nan());
-        if has_nan {
-            eprintln!(
-                "[WARN gemv_expert_interleaved] Input contains NaN, cache_key={}, expert_idx={}",
-                cache_key, expert_idx
-            );
-            // Return zeros to prevent propagation
-            return Some(vec![0.0f32; out_size]);
-        }
-
-        // No cache - dequantize and compute
-        let elem_count = out_size * in_size * n_experts;
-        let all_dequant = dequant_to_f32(
-            expert_tensor.bytes(),
-            expert_tensor.dtype,
-            elem_count,
+        // Single expert not cached - try batch extraction
+        // This will extract and cache all experts we need for this layer
+        self.extract_and_cache_experts_batch(
+            expert_tensor,
+            cache_key,
+            &[expert_idx],
+            out_size,
+            in_size,
+            n_experts,
         );
 
-        // Check for NaN in dequantized weights
-        let weight_nan_count =
-            all_dequant.iter().filter(|&&v| v.is_nan()).count();
-        if weight_nan_count > 0 {
-            eprintln!(
-                "[WARN gemv_expert_interleaved] Dequantized weights contain {} NaN values, dtype={:?}, elem_count={}",
-                weight_nan_count, expert_tensor.dtype, elem_count
-            );
-            return Some(vec![0.0f32; out_size]);
+        // Now try cache again
+        {
+            let cache = self.expert_weight_cache.lock().unwrap();
+            if let Some(expert_weights) = cache.get(&expert_cache_key) {
+                let mut out = vec![0.0f32; out_size];
+
+                for i in 0..out_size {
+                    let mut sum = 0.0f32;
+                    for j in 0..in_size {
+                        let idx = i * in_size + j;
+                        sum += expert_weights[idx] * x[j];
+                    }
+                    out[i] = sum;
+                }
+
+                return Some(out);
+            }
         }
 
-        // Tensor format: [in_size, out_size, n_experts]
-        // Index = j * out_size * n_experts + i * n_experts + e
+        None
+    }
+
+    /// Extract and cache multiple experts at once from an interleaved tensor
+    /// This is much more efficient than extracting one at a time
+    fn extract_and_cache_experts_batch(
+        &self,
+        expert_tensor: &Tensor,
+        cache_key_prefix: &str,
+        expert_indices: &[usize],
+        out_size: usize,
+        in_size: usize,
+        n_experts: usize,
+    ) {
+        // Check if all experts are already cached
+        {
+            let cache = self.expert_weight_cache.lock().unwrap();
+            let all_cached = expert_indices.iter().all(|&idx| {
+                let cache_key = format!("{}_exp{}", cache_key_prefix, idx);
+                cache.contains_key(&cache_key)
+            });
+            if all_cached {
+                return; // All experts already cached, skip extraction
+            }
+        }
+
+        use crate::quant::types::QK_K;
+
+        let dtype = expert_tensor.dtype;
+        let bytes = expert_tensor.bytes();
+
+        let elems_per_block = match dtype {
+            DataType::Q4_0
+            | DataType::Q4_1
+            | DataType::Q5_0
+            | DataType::Q5_1
+            | DataType::Q8_0
+            | DataType::IQ4_NL => 32,
+            DataType::Q2_K
+            | DataType::Q3_K
+            | DataType::Q4_K
+            | DataType::Q5_K
+            | DataType::Q6_K
+            | DataType::IQ4_XS => QK_K,
+            _ => 1,
+        };
+
+        let row_size = out_size * n_experts;
+        let row_bytes = bytes.len() / in_size;
+
+        // Allocate weight storage for each expert
+        let mut expert_weights_map: std::collections::HashMap<usize, Vec<f32>> =
+            expert_indices
+                .iter()
+                .map(|&idx| (idx, vec![0.0f32; out_size * in_size]))
+                .collect();
+
+        let chunk_size = 64;
+        let mut chunk_buffer = vec![0.0f32; row_size * chunk_size];
+
+        for chunk_start in (0..in_size).step_by(chunk_size) {
+            let chunk_end = (chunk_start + chunk_size).min(in_size);
+            let actual_chunk = chunk_end - chunk_start;
+
+            let start_offset = chunk_start * row_bytes;
+            let end_offset = chunk_end
+                * row_bytes.min(bytes.len() - chunk_start * row_bytes);
+            let chunk_bytes = &bytes[start_offset..end_offset];
+            crate::inference::dequant_to_f32_into(
+                chunk_bytes,
+                dtype,
+                &mut chunk_buffer[..row_size * actual_chunk],
+            );
+
+            // Extract all needed experts from this chunk
+            for &expert_idx in expert_indices {
+                if let Some(weights) = expert_weights_map.get_mut(&expert_idx) {
+                    for i in 0..out_size {
+                        for (c, j) in (chunk_start..chunk_end).enumerate() {
+                            let src_idx =
+                                c * row_size + i * n_experts + expert_idx;
+                            let dst_idx = i * in_size + j;
+                            if src_idx < chunk_buffer.len()
+                                && dst_idx < weights.len()
+                            {
+                                weights[dst_idx] = chunk_buffer[src_idx];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Cache all extracted expert weights
+        {
+            let mut cache = self.expert_weight_cache.lock().unwrap();
+            for (expert_idx, weights) in expert_weights_map {
+                let cache_key =
+                    format!("{}_exp{}", cache_key_prefix, expert_idx);
+                cache.insert(cache_key, weights);
+            }
+        }
+
+        // Debug logging removed for performance
+    }
+
+    /// GEMV for a single expert from a large interleaved tensor
+    /// Extracts only the requested expert's weights to avoid memory explosion
+    fn gemv_expert_single(
+        &self,
+        x: &[f32],
+        expert_tensor: &Tensor,
+        expert_idx: usize,
+        out_size: usize,
+        in_size: usize,
+        n_experts: usize,
+    ) -> Option<Vec<f32>> {
+        use crate::quant::types::QK_K;
+
+        let dtype = expert_tensor.dtype;
+        let bytes = expert_tensor.bytes();
+
+        // For K-quant formats, we need to dequantize blocks
+        // Each block contains QK_K (256) elements
+        // The interleaved format stores: [in_size, out_size, n_experts]
+        // For a single output element i, the weights are:
+        //   W[i, j, e] for all j in 0..in_size
+        // These are stored at offset: j * out_size * n_experts + i * n_experts + e
+
+        // Calculate bytes per element for this dtype
+        let bytes_per_elem = match dtype {
+            DataType::F32 => 4,
+            DataType::F16 | DataType::BF16 => 2,
+            DataType::Q4_0 | DataType::Q4_1 => 18, // 32 elements per block
+            DataType::Q5_0 => 22,
+            DataType::Q5_1 => 26,
+            DataType::Q8_0 => 34,
+            DataType::Q2_K => 86,
+            DataType::Q3_K => 110,
+            DataType::Q4_K => 144,
+            DataType::Q5_K => 176,
+            DataType::Q6_K => 210,
+            DataType::IQ4_NL => 18,
+            DataType::IQ4_XS => 138,
+            _ => {
+                eprintln!(
+                    "[WARN gemv_expert_single] Unsupported dtype {:?}",
+                    dtype
+                );
+                return Some(vec![0.0f32; out_size]);
+            }
+        };
+
+        // For block-based quantization, calculate blocks
+        let elems_per_block = match dtype {
+            DataType::Q4_0
+            | DataType::Q4_1
+            | DataType::Q5_0
+            | DataType::Q5_1
+            | DataType::Q8_0
+            | DataType::IQ4_NL => 32,
+            DataType::Q2_K
+            | DataType::Q3_K
+            | DataType::Q4_K
+            | DataType::Q5_K
+            | DataType::Q6_K
+            | DataType::IQ4_XS => QK_K,
+            _ => 1,
+        };
+
+        // Total elements in the tensor
+        let total_elems = in_size * out_size * n_experts;
+
+        // For F32/F16/BF16, we can directly index
+        if matches!(dtype, DataType::F32 | DataType::F16 | DataType::BF16) {
+            let mut out = vec![0.0f32; out_size];
+            for i in 0..out_size {
+                let mut sum = 0.0f32;
+                for j in 0..in_size {
+                    let idx =
+                        j * out_size * n_experts + i * n_experts + expert_idx;
+                    let byte_offset = idx * bytes_per_elem;
+                    if byte_offset + bytes_per_elem <= bytes.len() {
+                        let val = match dtype {
+                            DataType::F32 => f32::from_le_bytes(
+                                bytes[byte_offset..byte_offset + 4]
+                                    .try_into()
+                                    .unwrap(),
+                            ),
+                            DataType::F16 => half::f16::from_le_bytes(
+                                bytes[byte_offset..byte_offset + 2]
+                                    .try_into()
+                                    .unwrap(),
+                            )
+                            .to_f32(),
+                            DataType::BF16 => {
+                                let bits = u16::from_le_bytes(
+                                    bytes[byte_offset..byte_offset + 2]
+                                        .try_into()
+                                        .unwrap(),
+                                )
+                                    as u32;
+                                f32::from_bits(bits << 16)
+                            }
+                            _ => 0.0,
+                        };
+                        sum += val * x[j];
+                    }
+                }
+                out[i] = sum;
+            }
+            return Some(out);
+        }
+
+        // For quantized formats, we need to dequantize the entire tensor
+        // but only access the expert's portion
+        // This is memory-intensive but necessary for interleaved storage
+
+        // Alternative: dequantize row by row
+        // Each output row has: in_size * n_experts elements
+        // We need: in_size elements for expert_idx
+
+        let mut out = vec![0.0f32; out_size];
+        let mut row_buffer = vec![0.0f32; in_size * n_experts];
+        let bytes_per_row = bytes.len() / out_size;
+
+        for i in 0..out_size {
+            // Dequantize just this row
+            let row_bytes = &bytes[i * bytes_per_row
+                ..(i + 1) * bytes_per_row.min(bytes.len() - i * bytes_per_row)];
+
+            // Use the dequant function for this row
+            crate::inference::dequant_to_f32_into(
+                row_bytes,
+                dtype,
+                &mut row_buffer,
+            );
+
+            // Extract expert's portion and compute dot product
+            let mut sum = 0.0f32;
+            for j in 0..in_size {
+                let idx = j * n_experts + expert_idx;
+                if idx < row_buffer.len() {
+                    sum += row_buffer[idx] * x[j];
+                }
+            }
+            out[i] = sum;
+        }
+
+        Some(out)
+    }
+
+    /// Block-level GEMV for very large MoE expert tensors (over 500M elements)
+    /// Extracts and caches per-expert weights to avoid repeated dequantization
+    fn gemv_expert_blocks_with_cache(
+        &self,
+        x: &[f32],
+        expert_tensor: &Tensor,
+        cache_key: &str,
+        expert_idx: usize,
+        out_size: usize,
+        in_size: usize,
+        n_experts: usize,
+    ) -> Option<Vec<f32>> {
+        use crate::quant::types::QK_K;
+        use std::time::Instant;
+
+        let start_time = Instant::now();
+        let dtype = expert_tensor.dtype;
+        let bytes = expert_tensor.bytes();
+
+        let elems_per_block = match dtype {
+            DataType::Q4_0
+            | DataType::Q4_1
+            | DataType::Q5_0
+            | DataType::Q5_1
+            | DataType::Q8_0
+            | DataType::IQ4_NL => 32,
+            DataType::Q2_K
+            | DataType::Q3_K
+            | DataType::Q4_K
+            | DataType::Q5_K
+            | DataType::Q6_K
+            | DataType::IQ4_XS => QK_K,
+            _ => 1,
+        };
+
+        let row_size = out_size * n_experts;
+        let row_bytes = bytes.len() / in_size;
+
+        // Extract this expert's weights: shape [out_size, in_size]
+        let mut expert_weights = vec![0.0f32; out_size * in_size];
+        let chunk_size = 64; // Larger chunks for better throughput
+        let mut chunk_buffer = vec![0.0f32; row_size * chunk_size];
+
+        eprintln!(
+            "[gemv_expert_blocks] Extracting expert {} from {}x{}x{} tensor ({} bytes)",
+            expert_idx,
+            in_size,
+            out_size,
+            n_experts,
+            bytes.len()
+        );
+
+        for chunk_start in (0..in_size).step_by(chunk_size) {
+            let chunk_end = (chunk_start + chunk_size).min(in_size);
+            let actual_chunk = chunk_end - chunk_start;
+
+            // Dequantize this chunk of rows
+            let start_offset = chunk_start * row_bytes;
+            let end_offset = chunk_end
+                * row_bytes.min(bytes.len() - chunk_start * row_bytes);
+            let chunk_bytes = &bytes[start_offset..end_offset];
+            crate::inference::dequant_to_f32_into(
+                chunk_bytes,
+                dtype,
+                &mut chunk_buffer[..row_size * actual_chunk],
+            );
+
+            // Extract this expert's weights from the chunk
+            // For each output i and input j in chunk:
+            // - Source index in chunk_buffer: (j - chunk_start) * row_size + i * n_experts + expert_idx
+            // - Dest index in expert_weights: i * in_size + j
+            for i in 0..out_size {
+                for (c, j) in (chunk_start..chunk_end).enumerate() {
+                    let src_idx = c * row_size + i * n_experts + expert_idx;
+                    let dst_idx = i * in_size + j;
+                    if src_idx < chunk_buffer.len()
+                        && dst_idx < expert_weights.len()
+                    {
+                        expert_weights[dst_idx] = chunk_buffer[src_idx];
+                    }
+                }
+            }
+        }
+
+        let extract_time = start_time.elapsed();
+        eprintln!(
+            "[gemv_expert_blocks] Extraction took {:?}, now caching",
+            extract_time
+        );
+
+        // Cache the extracted expert weights for future use
+        {
+            let mut cache = self.expert_weight_cache.lock().unwrap();
+            cache.insert(cache_key.to_string(), expert_weights.clone());
+        }
+
+        // Compute GEMV with extracted weights
         let mut out = vec![0.0f32; out_size];
         for i in 0..out_size {
             let mut sum = 0.0f32;
             for j in 0..in_size {
-                let idx = j * out_size * n_experts + i * n_experts + expert_idx;
-                sum += all_dequant[idx] * x[j];
+                let idx = i * in_size + j;
+                sum += expert_weights[idx] * x[j];
             }
             out[i] = sum;
+        }
+
+        let total_time = start_time.elapsed();
+        eprintln!(
+            "[gemv_expert_blocks] Total time {:?}, cache_key={}",
+            total_time, cache_key
+        );
+
+        Some(out)
+    }
+
+    /// Block-level GEMV for very large MoE expert tensors (over 500M elements)
+    /// Uses efficient block-level dequantization instead of row-by-row
+    fn gemv_expert_blocks(
+        &self,
+        x: &[f32],
+        expert_tensor: &Tensor,
+        expert_idx: usize,
+        out_size: usize,
+        in_size: usize,
+        n_experts: usize,
+    ) -> Option<Vec<f32>> {
+        use crate::quant::types::QK_K;
+
+        let dtype = expert_tensor.dtype;
+        let bytes = expert_tensor.bytes();
+
+        // For K-quant formats (256 elements per block), dequantize in chunks
+        // that are cache-friendly and process multiple rows at once
+
+        let elems_per_block = match dtype {
+            DataType::Q4_0
+            | DataType::Q4_1
+            | DataType::Q5_0
+            | DataType::Q5_1
+            | DataType::Q8_0
+            | DataType::IQ4_NL => 32,
+            DataType::Q2_K
+            | DataType::Q3_K
+            | DataType::Q4_K
+            | DataType::Q5_K
+            | DataType::Q6_K
+            | DataType::IQ4_XS => QK_K,
+            _ => 1,
+        };
+
+        // For each output element, we need weights at indices:
+        // j * out_size * n_experts + i * n_experts + expert_idx for j in 0..in_size
+        // These are scattered across the tensor
+
+        // Strategy: Dequantize in large contiguous chunks and extract needed values
+        // For interleaved format [in_size, out_size, n_experts]:
+        // - Row j contains weights for all outputs and all experts
+        // - Row j size = out_size * n_experts elements
+
+        let row_size = out_size * n_experts;
+        let row_bytes = bytes.len() / in_size;
+
+        // Process multiple rows at once for better cache utilization
+        let chunk_size = 16; // Process 16 rows at a time
+        let mut out = vec![0.0f32; out_size];
+        let mut chunk_buffer = vec![0.0f32; row_size * chunk_size];
+
+        for chunk_start in (0..in_size).step_by(chunk_size) {
+            let chunk_end = (chunk_start + chunk_size).min(in_size);
+            let actual_chunk = chunk_end - chunk_start;
+
+            // Dequantize this chunk of rows
+            let chunk_bytes = &bytes[chunk_start * row_bytes
+                ..chunk_end
+                    * row_bytes.min(bytes.len() - chunk_start * row_bytes)];
+            crate::inference::dequant_to_f32_into(
+                chunk_bytes,
+                dtype,
+                &mut chunk_buffer[..row_size * actual_chunk],
+            );
+
+            // For each output element, accumulate from this chunk
+            for i in 0..out_size {
+                let mut sum = 0.0f32;
+                for (c, j) in (chunk_start..chunk_end).enumerate() {
+                    // Index in chunk_buffer: c * row_size + i * n_experts + expert_idx
+                    let idx = c * row_size + i * n_experts + expert_idx;
+                    if idx < chunk_buffer.len() && j < x.len() {
+                        sum += chunk_buffer[idx] * x[j];
+                    }
+                }
+                out[i] += sum;
+            }
         }
 
         Some(out)
@@ -2655,17 +3091,17 @@ impl LlamaModel {
                 self.embedding_lookup_into(token, &mut buffers.hidden)?;
 
                 // 2. Process through layers
-                // Use single-thread path for decode (eliminates thread overhead)
-                // But fall back to regular path for MLA architecture (not yet supported)
-                if is_decode && !uses_mla && n_threads == 1 {
-                    // Single-thread decode path
+                // Always use single-thread for decode (better memory bandwidth utilization)
+                // Multi-thread decode causes cache thrashing and is actually slower
+                if is_decode && !uses_mla {
+                    // Single-thread decode path (optimal for decode)
                     for (layer_idx, layer) in self.layers.iter().enumerate() {
                         self.forward_layer_decode_single_thread(
                             layer, layer_idx, kv_cache, buffers,
                         )?;
                     }
                 } else if !uses_mla {
-                    // Multi-thread path with custom thread count
+                    // Multi-thread path with custom thread count (for prefill)
                     for (layer_idx, layer) in self.layers.iter().enumerate() {
                         self.forward_layer_zero_alloc_with_threads(
                             layer, layer_idx, kv_cache, buffers, n_threads,
@@ -2744,11 +3180,14 @@ impl LlamaModel {
 
         // Step 1: Batch embedding lookup
         let start = Instant::now();
-        let mut batch_hidden = vec![0.0f32; n_tokens * hidden_size];
+        // Use pre-allocated batch_hidden buffer instead of allocating
+        let batch_hidden_len = n_tokens * hidden_size;
+        buffers.batch_hidden[..batch_hidden_len].fill(0.0);
         for (i, &token) in tokens.iter().enumerate() {
             self.embedding_lookup_into(
                 token,
-                &mut batch_hidden[i * hidden_size..(i + 1) * hidden_size],
+                &mut buffers.batch_hidden
+                    [i * hidden_size..(i + 1) * hidden_size],
             )?;
         }
         time_embedding = start.elapsed();
@@ -2758,20 +3197,21 @@ impl LlamaModel {
             // Save pre-norm values for residual connection (use pre-allocated buffer)
             let residual_len = n_tokens * hidden_size;
             buffers.batch_residual[..residual_len]
-                .copy_from_slice(&batch_hidden[..residual_len]);
+                .copy_from_slice(&buffers.batch_hidden[..residual_len]);
 
             // Apply RMS norm to all tokens (can be parallelized)
             let start = Instant::now();
             let attn_norm_offset = layer_idx * 2 * hidden_size;
             for i in 0..n_tokens {
                 self.apply_rms_norm_predequant(
-                    &batch_hidden[i * hidden_size..(i + 1) * hidden_size],
+                    &buffers.batch_hidden
+                        [i * hidden_size..(i + 1) * hidden_size],
                     &buffers.norm_weights
                         [attn_norm_offset..attn_norm_offset + hidden_size],
                     &mut buffers.hidden_alt,
                 );
-                batch_hidden[i * hidden_size..(i + 1) * hidden_size]
-                    .copy_from_slice(&buffers.hidden_alt);
+                buffers.batch_hidden[i * hidden_size..(i + 1) * hidden_size]
+                    .copy_from_slice(&buffers.hidden_alt[..hidden_size]);
             }
             time_norm += start.elapsed();
 
@@ -2779,7 +3219,7 @@ impl LlamaModel {
             if layer.is_ssm() {
                 // Mamba/SSM layers: skip attention, go directly to FFN
                 // Restore residual (no attention output)
-                batch_hidden[..residual_len]
+                buffers.batch_hidden[..residual_len]
                     .copy_from_slice(&buffers.batch_residual[..residual_len]);
 
                 // FFN norm
@@ -2787,13 +3227,15 @@ impl LlamaModel {
                 let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
                 for i in 0..n_tokens {
                     self.apply_rms_norm_predequant(
-                        &batch_hidden[i * hidden_size..(i + 1) * hidden_size],
+                        &buffers.batch_hidden
+                            [i * hidden_size..(i + 1) * hidden_size],
                         &buffers.norm_weights
                             [ffn_norm_offset..ffn_norm_offset + hidden_size],
                         &mut buffers.hidden_alt,
                     );
-                    batch_hidden[i * hidden_size..(i + 1) * hidden_size]
-                        .copy_from_slice(&buffers.hidden_alt);
+                    buffers.batch_hidden
+                        [i * hidden_size..(i + 1) * hidden_size]
+                        .copy_from_slice(&buffers.hidden_alt[..hidden_size]);
                 }
                 time_norm += start.elapsed();
 
@@ -2818,7 +3260,7 @@ impl LlamaModel {
                     // Gate projection
                     let inputs: Vec<&[f32]> = (0..n_tokens)
                         .map(|i| {
-                            &batch_hidden
+                            &buffers.batch_hidden
                                 [i * hidden_size..(i + 1) * hidden_size]
                         })
                         .collect();
@@ -2866,7 +3308,7 @@ impl LlamaModel {
                     self.gemm_batch_prefill(
                         &gate_inputs,
                         w2,
-                        &mut batch_hidden,
+                        &mut buffers.batch_hidden,
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
                         &mut buffers.x_padded_threads,
@@ -2875,24 +3317,25 @@ impl LlamaModel {
 
                     // Add residual
                     for i in 0..residual_len {
-                        batch_hidden[i] += buffers.batch_residual[i];
+                        buffers.batch_hidden[i] += buffers.batch_residual[i];
                     }
                 } else if layer.has_moe_ffn() {
                     // MoE FFN - process tokens one by one
                     for t in 0..n_tokens {
-                        let token_hidden = &batch_hidden
+                        let token_hidden = &buffers.batch_hidden
                             [t * hidden_size..(t + 1) * hidden_size];
                         let result = self.compute_moe_ffn(
                             layer,
                             token_hidden,
                             hidden_size,
                         )?;
-                        batch_hidden[t * hidden_size..(t + 1) * hidden_size]
+                        buffers.batch_hidden
+                            [t * hidden_size..(t + 1) * hidden_size]
                             .copy_from_slice(&result);
 
                         // Add residual
                         for i in 0..hidden_size {
-                            batch_hidden[t * hidden_size + i] +=
+                            buffers.batch_hidden[t * hidden_size + i] +=
                                 buffers.batch_residual[t * hidden_size + i];
                         }
                     }
@@ -2922,7 +3365,8 @@ impl LlamaModel {
                 // Prepare input slices for batch GEMM (no allocation)
                 let inputs: Vec<&[f32]> = (0..n_tokens)
                     .map(|i| {
-                        &batch_hidden[i * hidden_size..(i + 1) * hidden_size]
+                        &buffers.batch_hidden
+                            [i * hidden_size..(i + 1) * hidden_size]
                     })
                     .collect();
 
@@ -3071,7 +3515,7 @@ impl LlamaModel {
                     self.gemm_batch_prefill(
                         &attn_inputs,
                         wo,
-                        &mut batch_hidden,
+                        &mut buffers.batch_hidden,
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
                         &mut buffers.x_padded_threads,
@@ -3079,7 +3523,7 @@ impl LlamaModel {
                     );
                 } else {
                     // No wo layer - copy attention outputs directly
-                    batch_hidden[..all_attn_outs_len].copy_from_slice(
+                    buffers.batch_hidden[..all_attn_outs_len].copy_from_slice(
                         &buffers.attn_batch_output[..all_attn_outs_len],
                     );
                 }
@@ -3131,7 +3575,8 @@ impl LlamaModel {
 
                 let inputs: Vec<&[f32]> = (0..n_tokens)
                     .map(|i| {
-                        &batch_hidden[i * hidden_size..(i + 1) * hidden_size]
+                        &buffers.batch_hidden
+                            [i * hidden_size..(i + 1) * hidden_size]
                     })
                     .collect();
 
@@ -3291,7 +3736,7 @@ impl LlamaModel {
                     self.gemm_batch_prefill(
                         &attn_inputs,
                         wo,
-                        &mut batch_hidden,
+                        &mut buffers.batch_hidden,
                         &mut buffers.q8k_input,
                         &mut buffers.x_padded,
                         &mut buffers.x_padded_threads,
@@ -3299,18 +3744,18 @@ impl LlamaModel {
                     );
                 } else {
                     // No wo layer (rare) - just copy attention outputs
-                    batch_hidden[..all_attn_outs_len].copy_from_slice(
+                    buffers.batch_hidden[..all_attn_outs_len].copy_from_slice(
                         &buffers.attn_batch_output[..all_attn_outs_len],
                     );
                 }
                 time_wo += start.elapsed();
             }
 
-            // Residual add from attention (wo output already stored in batch_hidden)
+            // Residual add from attention (wo output already stored in buffers.batch_hidden)
             // Add the original input (residual connection)
             for i in 0..n_tokens {
                 for j in 0..hidden_size {
-                    batch_hidden[i * hidden_size + j] +=
+                    buffers.batch_hidden[i * hidden_size + j] +=
                         buffers.batch_residual[i * hidden_size + j];
                 }
             }
@@ -3319,13 +3764,14 @@ impl LlamaModel {
             let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
             for i in 0..n_tokens {
                 self.apply_rms_norm_predequant(
-                    &batch_hidden[i * hidden_size..(i + 1) * hidden_size],
+                    &buffers.batch_hidden
+                        [i * hidden_size..(i + 1) * hidden_size],
                     &buffers.norm_weights
                         [ffn_norm_offset..ffn_norm_offset + hidden_size],
                     &mut buffers.hidden_alt,
                 );
-                batch_hidden[i * hidden_size..(i + 1) * hidden_size]
-                    .copy_from_slice(&buffers.hidden_alt);
+                buffers.batch_hidden[i * hidden_size..(i + 1) * hidden_size]
+                    .copy_from_slice(&buffers.hidden_alt[..hidden_size]);
             }
 
             // FFN - batch GEMM for gate/up, then activation and down projection
@@ -3336,7 +3782,8 @@ impl LlamaModel {
                 // Dense FFN - batch gate and up projections
                 let ffn_inputs: Vec<&[f32]> = (0..n_tokens)
                     .map(|i| {
-                        &batch_hidden[i * hidden_size..(i + 1) * hidden_size]
+                        &buffers.batch_hidden
+                            [i * hidden_size..(i + 1) * hidden_size]
                     })
                     .collect();
 
@@ -3405,7 +3852,7 @@ impl LlamaModel {
                         self.gemm_batch_prefill(
                             &down_inputs,
                             w2,
-                            &mut batch_hidden,
+                            &mut buffers.batch_hidden,
                             &mut buffers.q8k_input,
                             &mut buffers.x_padded,
                             &mut buffers.x_padded_threads,
@@ -3422,7 +3869,7 @@ impl LlamaModel {
                 for token_idx in 0..n_tokens {
                     self.compute_ffn_zero_alloc(
                         layer,
-                        &batch_hidden[token_idx * hidden_size
+                        &buffers.batch_hidden[token_idx * hidden_size
                             ..(token_idx + 1) * hidden_size],
                         &mut buffers.ffn_gate,
                         &mut buffers.ffn_up,
@@ -3431,7 +3878,7 @@ impl LlamaModel {
                         &mut buffers.x_padded,
                     )?;
                     // Copy result back
-                    batch_hidden[token_idx * hidden_size
+                    buffers.batch_hidden[token_idx * hidden_size
                         ..(token_idx + 1) * hidden_size]
                         .copy_from_slice(&buffers.hidden_alt[..hidden_size]);
                 }
@@ -3442,7 +3889,8 @@ impl LlamaModel {
         // Step 3: Final norm and output projection for last token
         let start = Instant::now();
         self.apply_rms_norm_predequant(
-            &batch_hidden[(n_tokens - 1) * hidden_size..],
+            &buffers.batch_hidden
+                [(n_tokens - 1) * hidden_size..n_tokens * hidden_size],
             &buffers.norm_weight,
             &mut buffers.hidden_alt,
         );
@@ -3457,22 +3905,23 @@ impl LlamaModel {
         );
         time_output = start.elapsed();
 
-        eprintln!("\n=== Prefill Timing Breakdown ===");
-        eprintln!("Embedding: {:?}", time_embedding);
-        eprintln!("Norm: {:?}", time_norm);
-        eprintln!("QKV: {:?}", time_qkv);
-        eprintln!("RoPE: {:?}", time_rope);
-        eprintln!("Attention: {:?}", time_attention);
-        eprintln!("Wo: {:?}", time_wo);
-        eprintln!("FFN: {:?}", time_ffn);
-        eprintln!("Output: {:?}", time_output);
-        eprintln!("--- Detailed GEMM Breakdown ---");
-        eprintln!("Quantization: {:?}", time_quant);
-        eprintln!("GEMM compute: {:?}", time_gemm);
-        eprintln!(
-            "Other (copies, activation): {:?}",
-            time_ffn - time_quant - time_gemm
-        );
+        // Debug timing disabled for benchmarking
+        // eprintln!("\n=== Prefill Timing Breakdown ===");
+        // eprintln!("Embedding: {:?}", time_embedding);
+        // eprintln!("Norm: {:?}", time_norm);
+        // eprintln!("QKV: {:?}", time_qkv);
+        // eprintln!("RoPE: {:?}", time_rope);
+        // eprintln!("Attention: {:?}", time_attention);
+        // eprintln!("Wo: {:?}", time_wo);
+        // eprintln!("FFN: {:?}", time_ffn);
+        // eprintln!("Output: {:?}", time_output);
+        // eprintln!("--- Detailed GEMM Breakdown ---");
+        // eprintln!("Quantization: {:?}", time_quant);
+        // eprintln!("GEMM compute: {:?}", time_gemm);
+        // eprintln!(
+        //     "Other (copies, activation): {:?}",
+        //     time_ffn - time_quant - time_gemm
+        // );
 
         // Advance KV cache for all tokens at once (not per-layer)
         for _ in 0..n_tokens {
@@ -3595,6 +4044,11 @@ impl LlamaModel {
         let hidden_size = self.config.hidden_size;
         let pos = kv_cache.seq_len();
 
+        // Check if this is an SSM layer - handle separately
+        if layer.is_ssm() {
+            return self.forward_layer_ssm(layer, layer_idx, hidden, kv_cache);
+        }
+
         // 1. Attention norm
         let attn_norm = match layer.attention_norm.as_ref() {
             Some(n) => n,
@@ -3604,12 +4058,7 @@ impl LlamaModel {
         };
 
         let normed =
-            match self.apply_rms_norm_impl(hidden, attn_norm, hidden_size) {
-                Some(n) => n,
-                None => {
-                    return None;
-                }
-            };
+            self.apply_rms_norm_impl(hidden, attn_norm, hidden_size)?;
 
         // 2. QKV projections (support standard and MQA architectures)
         let (q, k, v, q_out_size, k_out_size, _v_out_size) = match self
@@ -3756,12 +4205,171 @@ impl LlamaModel {
         let ffn_out = match self.compute_ffn(layer, &ffn_normed, hidden_size) {
             Some(o) => o,
             None => {
+                eprintln!(
+                    "[forward_layer] compute_ffn failed at layer {}",
+                    layer_idx
+                );
                 return None;
             }
         };
 
         // 9. Residual
         Some(residual.iter().zip(ffn_out.iter()).map(|(r, f)| r + f).collect())
+    }
+
+    /// Forward pass for SSM/Mamba layers (non-zero-alloc version)
+    pub fn forward_layer_ssm(
+        &self,
+        layer: &LlamaLayer,
+        layer_idx: usize,
+        hidden: &[f32],
+        _kv_cache: &mut crate::inference::KVCache,
+    ) -> Option<Vec<f32>> {
+        let hidden_size = self.config.hidden_size;
+
+        // 1. Attention norm
+        let attn_norm = match layer.attention_norm.as_ref() {
+            Some(n) => n,
+            None => {
+                eprintln!(
+                    "[forward_layer_ssm] No attention_norm at layer {}",
+                    layer_idx
+                );
+                return None;
+            }
+        };
+
+        let normed =
+            self.apply_rms_norm_impl(hidden, attn_norm, hidden_size)?;
+
+        // 2. SSM forward (Mamba layer)
+        // For non-zero-alloc, we need to create temporary buffers
+        // This is slow but functional
+
+        // SSM output projection: ssm_out
+        let ssm_out = layer.ssm_out.as_ref()?;
+        let ssm_dim = if ssm_out.shape.len() >= 2 {
+            if ssm_out.shape[1] == hidden_size {
+                ssm_out.shape[0]
+            } else {
+                ssm_out.shape[1]
+            }
+        } else {
+            ssm_out.shape[0]
+        };
+
+        // Get SSM input projection
+        let attn_qkv = layer.attn_qkv.as_ref()?;
+        let total_dim = if attn_qkv.shape.len() >= 2 {
+            if attn_qkv.shape[1] == hidden_size {
+                attn_qkv.shape[0]
+            } else {
+                attn_qkv.shape[1]
+            }
+        } else {
+            attn_qkv.shape[0]
+        };
+
+        // Input projection
+        let ssm_input = self.gemv_impl(&normed, attn_qkv, total_dim)?;
+
+        // SSM conv1d (simplified for single token)
+        let ssm_conv1d = layer.ssm_conv1d.as_ref()?;
+        let conv_data: &[f32] = bytemuck::cast_slice(ssm_conv1d.bytes());
+        let conv_kernel = ssm_conv1d.shape[0];
+        let mut ssm_conv_out = vec![0.0f32; ssm_dim];
+
+        // Simplified conv1d for single token
+        for i in 0..ssm_dim.min(conv_data.len() / total_dim) {
+            let mut sum = 0.0f32;
+            for k in 0..conv_kernel {
+                let input_idx = i;
+                let weight_idx = k * total_dim + i;
+                if input_idx < ssm_input.len() && weight_idx < conv_data.len() {
+                    sum += ssm_input[input_idx] * conv_data[weight_idx];
+                }
+            }
+            ssm_conv_out[i] = sum;
+        }
+
+        // SSM alpha, beta projections
+        let ssm_alpha = layer.ssm_alpha.as_ref()?;
+        let ssm_beta = layer.ssm_beta.as_ref()?;
+        let time_step_rank = self.config.ssm_time_step_rank;
+
+        let mut delta = self.gemv_impl(&normed, ssm_alpha, time_step_rank)?;
+        let b = self.gemv_impl(&normed, ssm_beta, time_step_rank)?;
+
+        // Apply dt_bias and softplus
+        let ssm_dt_bias = layer.ssm_dt_bias.as_ref()?;
+        let dt_bias_data: &[f32] = bytemuck::cast_slice(ssm_dt_bias.bytes());
+        for i in 0..time_step_rank.min(dt_bias_data.len()) {
+            let x = delta[i] + dt_bias_data[i];
+            delta[i] = (1.0 + x.exp()).ln();
+        }
+
+        // Apply sigmoid to b
+        let b: Vec<f32> = b.iter().map(|&x| 1.0 / (1.0 + (-x).exp())).collect();
+
+        // SSM A parameter
+        let ssm_a = layer.ssm_a.as_ref()?;
+        let a_data: &[f32] = bytemuck::cast_slice(ssm_a.bytes());
+
+        // Selective scan (simplified)
+        let state_size = self.config.ssm_state_size;
+        let n_groups = self.config.ssm_group_count;
+        let ssm_inner_per_group = ssm_dim / n_groups;
+
+        let mut ssm_y = vec![0.0f32; ssm_dim];
+
+        for g in 0..n_groups {
+            let a_val = if g < a_data.len() { a_data[g] } else { 0.0f32 };
+            let a_exp = a_val.exp();
+
+            for s in 0..state_size.min(ssm_inner_per_group) {
+                let input_idx = g * ssm_inner_per_group + s;
+                if input_idx < ssm_dim {
+                    let b_val = if s < time_step_rank { b[s] } else { 1.0 };
+                    let x_val = ssm_conv_out[input_idx];
+
+                    // Simplified state update (no persistent state for non-zero-alloc)
+                    let c_val = if s < time_step_rank {
+                        ssm_conv_out[ssm_dim - time_step_rank + s]
+                    } else {
+                        1.0
+                    };
+                    ssm_y[input_idx] = c_val * b_val * x_val;
+                }
+            }
+        }
+
+        // Apply SSM norm
+        if let Some(ref ssm_norm) = layer.ssm_norm {
+            let norm_data: &[f32] = bytemuck::cast_slice(ssm_norm.bytes());
+            let mut ss = 0.0f32;
+            for i in 0..ssm_dim.min(norm_data.len()) {
+                ss += ssm_y[i] * ssm_y[i];
+            }
+            let rms = (ss / ssm_dim as f32 + 1e-5).sqrt();
+            for i in 0..ssm_dim.min(norm_data.len()) {
+                ssm_y[i] = ssm_y[i] / rms * norm_data[i];
+            }
+        }
+
+        // Output projection
+        let output = self.gemv_impl(&ssm_y, ssm_out, hidden_size)?;
+
+        // FFN (MoE or standard) after SSM
+        let ffn_out = if layer.has_moe_ffn() {
+            self.compute_moe_ffn(layer, &output, hidden_size)?
+        } else if layer.w1.is_some() {
+            self.compute_ffn(layer, &output, hidden_size)?
+        } else {
+            output.clone()
+        };
+
+        // Residual
+        Some(hidden.iter().zip(ffn_out.iter()).map(|(h, f)| h + f).collect())
     }
 
     /// Zero-allocation forward layer using pre-allocated buffers
@@ -3841,7 +4449,7 @@ impl LlamaModel {
                 let start = Instant::now();
                 let result = self.compute_moe_ffn(
                     layer,
-                    &buffers.hidden_alt,
+                    &buffers.hidden_alt[..hidden_size],
                     hidden_size,
                 )?;
                 buffers.hidden_alt[..hidden_size].copy_from_slice(&result);
@@ -4277,16 +4885,16 @@ impl LlamaModel {
         )?;
         time_ffn += start.elapsed();
 
-        // Print timing for first layer only
-        if layer_idx == 0 {
-            println!("Layer {} timing:", layer_idx);
-            println!("  Norm:   {:6.3} ms", time_norm.as_secs_f64() * 1000.0);
-            println!("  QKV:    {:6.3} ms", time_qkv.as_secs_f64() * 1000.0);
-            println!("  RoPE:   {:6.3} ms", time_rope.as_secs_f64() * 1000.0);
-            println!("  Attn:   {:6.3} ms", time_attn.as_secs_f64() * 1000.0);
-            println!("  WO:     {:6.3} ms", time_wo.as_secs_f64() * 1000.0);
-            println!("  FFN:    {:6.3} ms", time_ffn.as_secs_f64() * 1000.0);
-        }
+        // Debug timing disabled for benchmarking
+        // if layer_idx == 0 {
+        //     println!("Layer {} timing:", layer_idx);
+        //     println!("  Norm:   {:6.3} ms", time_norm.as_secs_f64() * 1000.0);
+        //     println!("  QKV:    {:6.3} ms", time_qkv.as_secs_f64() * 1000.0);
+        //     println!("  RoPE:   {:6.3} ms", time_rope.as_secs_f64() * 1000.0);
+        //     println!("  Attn:   {:6.3} ms", time_attn.as_secs_f64() * 1000.0);
+        //     println!("  WO:     {:6.3} ms", time_wo.as_secs_f64() * 1000.0);
+        //     println!("  FFN:    {:6.3} ms", time_ffn.as_secs_f64() * 1000.0);
+        // }
 
         Some(())
     }
@@ -4561,7 +5169,7 @@ impl LlamaModel {
                 // MoE FFN
                 let result = self.compute_moe_ffn(
                     layer,
-                    &buffers.hidden_alt,
+                    &buffers.hidden_alt[..hidden_size],
                     hidden_size,
                 )?;
                 buffers.hidden_alt[..hidden_size].copy_from_slice(&result);
@@ -4622,7 +5230,7 @@ impl LlamaModel {
                     buffers.x_padded[i] = 0.0;
                 }
                 buffers.x_padded[..hidden_size]
-                    .copy_from_slice(&buffers.hidden_alt);
+                    .copy_from_slice(&buffers.hidden_alt[..hidden_size]);
                 quantize_row_q8_k_neon(&buffers.x_padded, unsafe {
                     std::slice::from_raw_parts_mut(
                         buffers.q8k_input.as_mut_ptr() as *mut BlockQ8K,
@@ -5475,10 +6083,11 @@ impl LlamaModel {
                 | DataType::Q5_K
                 | DataType::Q6_K
                 | DataType::IQ4_XS => {
-                    eprintln!(
-                        "[DEBUG gemv_impl] Using K-quant optimized path for dtype={:?}",
-                        w.dtype
-                    );
+                    // Debug disabled for benchmarking
+                    // eprintln!(
+                    //     "[DEBUG gemv_impl] Using K-quant optimized path for dtype={:?}",
+                    //     w.dtype
+                    // );
                     let in_size_padded = ((in_size + QK_K - 1) / QK_K) * QK_K;
                     let nb = in_size_padded / QK_K;
 
