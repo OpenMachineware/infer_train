@@ -4987,6 +4987,15 @@ impl LlamaModel {
         x_padded: &mut [f32],
     ) -> Option<()> {
         let hidden_size = self.config.hidden_size;
+
+        // Check for MoE FFN first
+        if layer.has_moe_ffn() {
+            let moe_result =
+                self.compute_moe_ffn(layer, hidden, hidden_size)?;
+            result[..hidden_size].copy_from_slice(&moe_result);
+            return Some(());
+        }
+
         let intermediate_size = self.config.intermediate_size;
 
         if let (Some(w1), Some(w2), Some(w3)) =
