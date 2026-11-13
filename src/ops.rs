@@ -5,6 +5,7 @@
 
 pub mod gemv;
 pub mod quant;
+pub mod rms_norm;
 pub mod vec_dot;
 
 // Quantization type (ggml_type values)
