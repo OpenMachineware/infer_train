@@ -6,7 +6,7 @@
 use crate::backend::BackendId;
 use crate::strategy::ExecutionStrategy;
 
-/// Heterogeneous pipeline manager
+// Heterogeneous pipeline manager
 pub struct HeterogeneousPipeline {
     prefill_device: BackendId,
     decode_device: BackendId,

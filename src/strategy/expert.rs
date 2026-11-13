@@ -6,7 +6,7 @@
 use crate::backend::BackendId;
 use std::collections::HashSet;
 
-/// Expert placement strategy
+// Expert placement strategy
 pub struct ExpertPlacement {
     /// Hot experts (resident on GPU)
     hot_experts: HashSet<usize>,

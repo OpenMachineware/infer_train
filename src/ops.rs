@@ -3,7 +3,7 @@
 
 // Operator definitions and type dispatch table
 
-/// Quantization type (ggml_type values)
+// Quantization type (ggml_type values)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 pub enum QuantType {
@@ -49,7 +49,7 @@ impl TryFrom<i32> for QuantType {
     }
 }
 
-/// Core operators
+// Core operators
 #[derive(Debug, Clone)]
 pub enum CoreOperator {
     /// RMS normalization
@@ -84,7 +84,7 @@ pub enum CoreOperator {
     },
 }
 
-/// Operator execution error
+// Operator execution error
 #[derive(Debug)]
 pub enum OpError {
     NotImplemented(String),

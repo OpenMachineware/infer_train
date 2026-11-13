@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-//! DAG builder from GGUF model
+// DAG builder from GGUF model
 
 use crate::dag::ComputeGraph;
 use crate::model::GgufFile;
 use crate::ops::{CoreOperator, QuantType};
 
-/// Build compute graph from GGUF model
+// Build compute graph from GGUF model
 pub struct DagBuilder {
     graph: ComputeGraph,
 }

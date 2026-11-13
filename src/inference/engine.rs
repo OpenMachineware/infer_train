@@ -7,7 +7,7 @@ use crate::backend::BackendRegistry;
 use crate::memory::topology::MemoryTopology;
 use crate::strategy::ExecutionStrategy;
 
-/// Inference engine
+// Inference engine
 pub struct InferenceEngine {
     backends: BackendRegistry,
     strategy: ExecutionStrategy,

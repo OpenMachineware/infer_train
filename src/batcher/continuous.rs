@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-/// Request state
+// Request state
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestState {
     Running,
@@ -14,7 +14,7 @@ pub enum RequestState {
     Finished,
 }
 
-/// Request context
+// Request context
 #[derive(Debug)]
 pub struct RequestContext {
     pub request_id: u64,
@@ -24,7 +24,7 @@ pub struct RequestContext {
     pub max_tokens: usize,
 }
 
-/// Continuous batcher
+// Continuous batcher
 pub struct ContinuousBatcher {
     requests: HashMap<u64, RequestContext>,
     running: Vec<u64>,

@@ -3,7 +3,7 @@
 
 // Memory topology detection
 
-/// Memory region
+// Memory region
 #[derive(Debug, Clone)]
 pub enum MemoryRegion {
     /// Unified memory (Apple Silicon, AMD AI Max)
@@ -28,7 +28,7 @@ pub enum MemoryRegion {
     },
 }
 
-/// System memory topology
+// System memory topology
 #[derive(Debug, Clone)]
 pub struct MemoryTopology {
     pub regions: Vec<MemoryRegion>,

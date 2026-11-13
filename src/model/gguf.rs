@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-//! GGUF file format parser
-//!
-//! GGUF binary format structure:
-//! 1. Magic "GGUF" (4 bytes)
-//! 2. Version (uint32)
-//! 3. Number of tensors (int64)
-//! 4. Number of KV pairs (int64)
-//! 5. KV pairs
-//! 6. Tensor info
-//! 7. Tensor data (aligned)
+// GGUF file format parser
+//
+// GGUF binary format structure:
+// 1. Magic "GGUF" (4 bytes)
+// 2. Version (uint32)
+// 3. Number of tensors (int64)
+// 4. Number of KV pairs (int64)
+// 5. KV pairs
+// 6. Tensor info
+// 7. Tensor data (aligned)
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -19,13 +19,13 @@ use std::path::Path;
 
 use crate::ops::QuantType;
 
-/// GGUF magic number
+// GGUF magic number
 const GGUF_MAGIC: u32 = 0x46554747; // "GGUF" in little-endian
 
-/// Default alignment for tensor data
+// Default alignment for tensor data
 const GGUF_DEFAULT_ALIGNMENT: u64 = 32;
 
-/// GGUF value types
+// GGUF value types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum GgufType {
@@ -44,7 +44,7 @@ pub enum GgufType {
     Float64 = 12,
 }
 
-/// GGUF value
+// GGUF value
 #[derive(Debug, Clone)]
 pub enum GgufValue {
     Uint8(u8),
@@ -62,11 +62,11 @@ pub enum GgufValue {
     Float64(f64),
 }
 
-/// Array element type (for GgufValue::Array)
+// Array element type (for GgufValue::Array)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GgufArrayType(pub GgufType);
 
-/// Tensor metadata
+// Tensor metadata
 #[derive(Debug, Clone)]
 pub struct GgufTensorInfo {
     pub name: String,
@@ -75,7 +75,7 @@ pub struct GgufTensorInfo {
     pub offset: u64,
 }
 
-/// Parsed GGUF file
+// Parsed GGUF file
 #[derive(Debug)]
 pub struct GgufFile {
     pub version: u32,
@@ -473,7 +473,7 @@ impl TryFrom<i32> for GgufType {
     }
 }
 
-/// Trait for extracting typed values from GgufValue
+// Trait for extracting typed values from GgufValue
 pub trait FromGgufValue: Sized {
     fn from_gguf(value: &GgufValue) -> Option<Self>;
 }

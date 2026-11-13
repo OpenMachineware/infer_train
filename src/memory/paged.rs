@@ -5,10 +5,10 @@
 
 use crate::ops::QuantType;
 
-/// Block size
+// Block size
 pub const BLOCK_SIZE: usize = 16;
 
-/// Quantized KV cache block
+// Quantized KV cache block
 #[allow(dead_code)]
 pub struct QuantizedKVBlock {
     key: Vec<u8>,
@@ -17,7 +17,7 @@ pub struct QuantizedKVBlock {
     layer_idx: u8,
 }
 
-/// Block pool
+// Block pool
 pub struct BlockPool {
     free_list: Vec<usize>,
     ref_counts: Vec<u32>,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-//! Compute graph (DAG) for inference
+// Compute graph (DAG) for inference
 
 pub mod builder;
 
@@ -9,10 +9,10 @@ use std::collections::HashMap;
 
 use crate::ops::{CoreOperator, QuantType};
 
-/// Tensor identifier
+// Tensor identifier
 pub type TensorId = usize;
 
-/// Tensor in the compute graph
+// Tensor in the compute graph
 #[derive(Debug, Clone)]
 pub struct Tensor {
     pub id: TensorId,
@@ -24,7 +24,7 @@ pub struct Tensor {
     pub src: Vec<TensorId>,
 }
 
-/// Operation type that produces a tensor
+// Operation type that produces a tensor
 #[derive(Debug, Clone)]
 pub enum OpType {
     Input,
@@ -32,7 +32,7 @@ pub enum OpType {
     Operator(CoreOperator),
 }
 
-/// Compute graph (DAG)
+// Compute graph (DAG)
 #[derive(Debug, Default)]
 pub struct ComputeGraph {
     pub tensors: Vec<Tensor>,

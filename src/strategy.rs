@@ -9,7 +9,7 @@ pub mod tensor;
 
 use crate::backend::BackendId;
 
-/// Execution strategy
+// Execution strategy
 #[derive(Debug, Clone)]
 pub enum ExecutionStrategy {
     /// Single device execution

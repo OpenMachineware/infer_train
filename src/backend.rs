@@ -9,10 +9,10 @@ pub mod metal;
 
 use crate::ops::{CoreOperator, OpError, QuantType};
 
-/// Backend ID type
+// Backend ID type
 pub type BackendId = usize;
 
-/// Backend trait
+// Backend trait
 pub trait Backend: Send + Sync {
     /// Backend identifier
     fn id(&self) -> usize;
@@ -34,7 +34,7 @@ pub trait Backend: Send + Sync {
     ) -> Result<(), OpError>;
 }
 
-/// Backend registry
+// Backend registry
 pub struct BackendRegistry {
     backends: Vec<Box<dyn Backend>>,
 }

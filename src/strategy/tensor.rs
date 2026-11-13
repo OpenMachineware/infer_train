@@ -5,7 +5,7 @@
 
 use crate::backend::BackendId;
 
-/// Tensor parallel config
+// Tensor parallel config
 pub struct TensorParallel {
     devices: Vec<BackendId>,
 }
