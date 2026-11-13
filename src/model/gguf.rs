@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! GGUF file format parser
 //!
 //! GGUF binary format structure:

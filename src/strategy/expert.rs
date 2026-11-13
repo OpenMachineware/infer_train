@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // MoE expert parallel strategy
 
 use crate::backend::BackendId;

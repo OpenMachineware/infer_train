@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Quantized KV cache (PagedAttention)
 
 use crate::ops::QuantType;

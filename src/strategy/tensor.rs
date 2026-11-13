@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Tensor parallel strategy
 
 use crate::backend::BackendId;

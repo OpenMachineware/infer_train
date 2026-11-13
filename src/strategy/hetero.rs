@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Heterogeneous pipeline strategy
 
 use crate::backend::BackendId;

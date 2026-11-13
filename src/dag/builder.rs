@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 //! DAG builder from GGUF model
 
 use crate::dag::ComputeGraph;

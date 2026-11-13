@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Memory topology detection
 
 /// Memory region

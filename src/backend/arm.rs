@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // ARM NEON backend
 
 use crate::backend::Backend;

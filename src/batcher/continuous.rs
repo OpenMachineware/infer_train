@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Continuous batcher
 
 use std::collections::{HashMap, VecDeque};

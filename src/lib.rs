@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 pub mod backend;
 pub mod batcher;
 pub mod dag;
