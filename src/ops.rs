@@ -3,6 +3,7 @@
 
 // Operator definitions and type dispatch table
 
+pub mod gemv;
 pub mod quant;
 pub mod vec_dot;
 
