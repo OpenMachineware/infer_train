@@ -1,4 +1,4 @@
-// Backend trait 定义
+// Backend trait definition
 
 pub mod arm;
 pub mod cuda;
@@ -6,23 +6,23 @@ pub mod metal;
 
 use crate::ops::{CoreOperator, OpError, QuantType};
 
-/// Backend ID 类型
+/// Backend ID type
 pub type BackendId = usize;
 
 /// Backend trait
 pub trait Backend: Send + Sync {
-    /// 后端标识
+    /// Backend identifier
     fn id(&self) -> usize;
     fn name(&self) -> &str;
 
-    /// 内存信息
+    /// Memory info
     fn available_memory(&self) -> usize;
 
-    /// 能力查询
+    /// Capability query
     fn supports_op(&self, op: &CoreOperator) -> bool;
     fn supports_quant(&self, quant: QuantType) -> bool;
 
-    /// 执行算子
+    /// Execute operator
     fn execute(
         &self,
         op: &CoreOperator,
@@ -31,7 +31,7 @@ pub trait Backend: Send + Sync {
     ) -> Result<(), OpError>;
 }
 
-/// Backend 注册表
+/// Backend registry
 pub struct BackendRegistry {
     backends: Vec<Box<dyn Backend>>,
 }

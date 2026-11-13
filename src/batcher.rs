@@ -1,4 +1,4 @@
-// 连续批处理
+// Continuous batching
 
 pub mod continuous;
 

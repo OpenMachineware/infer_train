@@ -1,8 +1,8 @@
-// 张量并行策略
+// Tensor parallel strategy
 
 use crate::backend::BackendId;
 
-/// 张量并行配置
+/// Tensor parallel config
 pub struct TensorParallel {
     devices: Vec<BackendId>,
 }

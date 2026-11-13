@@ -1,4 +1,4 @@
-// 执行策略
+// Execution strategy
 
 pub mod expert;
 pub mod hetero;
@@ -6,22 +6,22 @@ pub mod tensor;
 
 use crate::backend::BackendId;
 
-/// 执行策略
+/// Execution strategy
 #[derive(Debug, Clone)]
 pub enum ExecutionStrategy {
-    /// 单设备执行
+    /// Single device execution
     SingleDevice { device: BackendId },
 
-    /// 异构流水线（CPU prefill + GPU decode）
+    /// Heterogeneous pipeline (CPU prefill + GPU decode)
     HeterogeneousPipeline {
         prefill_device: BackendId,
         decode_device: BackendId,
     },
 
-    /// 张量并行（多 GPU 同构）
+    /// Tensor parallel (multi-GPU homogeneous)
     TensorParallel { devices: Vec<BackendId> },
 
-    /// 专家并行（MoE 异构）
+    /// Expert parallel (MoE heterogeneous)
     ExpertParallel {
         hot_expert_device: BackendId,
         cold_expert_device: BackendId,

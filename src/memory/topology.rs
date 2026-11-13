@@ -1,9 +1,9 @@
-// 内存拓扑探测
+// Memory topology detection
 
-/// 内存区域
+/// Memory region
 #[derive(Debug, Clone)]
 pub enum MemoryRegion {
-    /// 统一内存（Apple Silicon, AMD AI Max）
+    /// Unified memory (Apple Silicon, AMD AI Max)
     Unified {
         id: usize,
         cpu_access: bool,
@@ -11,13 +11,13 @@ pub enum MemoryRegion {
         bandwidth: usize, // GB/s
         capacity: usize,  // bytes
     },
-    /// GPU 专用显存（NVIDIA dGPU）
+    /// GPU device-local memory (NVIDIA dGPU)
     DeviceLocal {
         id: usize,
         bandwidth: usize, // GB/s
         capacity: usize,  // bytes
     },
-    /// CPU 内存
+    /// CPU memory
     HostVisible {
         id: usize,
         bandwidth: usize, // GB/s
@@ -25,14 +25,14 @@ pub enum MemoryRegion {
     },
 }
 
-/// 系统内存拓扑
+/// System memory topology
 #[derive(Debug, Clone)]
 pub struct MemoryTopology {
     pub regions: Vec<MemoryRegion>,
 }
 
 impl MemoryTopology {
-    /// 自动探测系统拓扑
+    /// Auto-detect system topology
     pub fn detect() -> Self {
         #[cfg(target_os = "macos")]
         {
@@ -52,7 +52,7 @@ impl MemoryTopology {
 
     #[cfg(target_os = "macos")]
     fn apple_silicon() -> Self {
-        // TODO: 实际检测统一内存大小
+        // TODO: Detect actual unified memory size
         Self {
             regions: vec![MemoryRegion::Unified {
                 id: 0,
@@ -66,7 +66,7 @@ impl MemoryTopology {
 
     #[cfg(target_os = "linux")]
     fn linux_detect() -> Self {
-        // TODO: 检测 NVIDIA GPU + CPU
+        // TODO: Detect NVIDIA GPU + CPU
         Self::default()
     }
 }

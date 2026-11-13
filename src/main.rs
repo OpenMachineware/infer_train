@@ -1,3 +1,3 @@
 fn main() {
-    println!("infer_train - 统一推理引擎");
+    println!("infer_train - unified inference engine");
 }

@@ -1,4 +1,4 @@
-// NVIDIA CUDA 后端
+// NVIDIA CUDA backend
 
 use crate::backend::Backend;
 use crate::ops::{CoreOperator, OpError, QuantType};
@@ -22,7 +22,7 @@ impl Backend for CudaBackend {
     }
 
     fn available_memory(&self) -> usize {
-        // TODO: 实际检测显存
+        // TODO: detect actual VRAM
         24 * 1024 * 1024 * 1024 // 24GB
     }
 

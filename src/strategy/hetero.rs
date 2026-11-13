@@ -1,9 +1,9 @@
-// 异构流水线策略
+// Heterogeneous pipeline strategy
 
 use crate::backend::BackendId;
 use crate::strategy::ExecutionStrategy;
 
-/// 异构流水线管理器
+/// Heterogeneous pipeline manager
 pub struct HeterogeneousPipeline {
     prefill_device: BackendId,
     decode_device: BackendId,

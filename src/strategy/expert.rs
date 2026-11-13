@@ -1,15 +1,15 @@
-// MoE 专家并行策略
+// MoE expert parallel strategy
 
 use crate::backend::BackendId;
 use std::collections::HashSet;
 
-/// 专家放置策略
+/// Expert placement strategy
 pub struct ExpertPlacement {
-    /// 热门专家（常驻 GPU）
+    /// Hot experts (resident on GPU)
     hot_experts: HashSet<usize>,
-    /// 热门专家设备
+    /// Hot expert device
     hot_device: BackendId,
-    /// 冷门专家设备
+    /// Cold expert device
     cold_device: BackendId,
 }
 

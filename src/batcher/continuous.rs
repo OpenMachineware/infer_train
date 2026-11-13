@@ -1,8 +1,8 @@
-// 连续批处理器
+// Continuous batcher
 
 use std::collections::{HashMap, VecDeque};
 
-/// 请求状态
+/// Request state
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestState {
     Running,
@@ -11,7 +11,7 @@ pub enum RequestState {
     Finished,
 }
 
-/// 请求上下文
+/// Request context
 #[derive(Debug)]
 pub struct RequestContext {
     pub request_id: u64,
@@ -21,7 +21,7 @@ pub struct RequestContext {
     pub max_tokens: usize,
 }
 
-/// 连续批处理器
+/// Continuous batcher
 pub struct ContinuousBatcher {
     requests: HashMap<u64, RequestContext>,
     running: Vec<u64>,

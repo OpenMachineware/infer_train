@@ -1,4 +1,4 @@
-// Apple Metal 后端
+// Apple Metal backend
 
 use crate::backend::Backend;
 use crate::ops::{CoreOperator, OpError, QuantType};
@@ -22,8 +22,8 @@ impl Backend for MetalBackend {
     }
 
     fn available_memory(&self) -> usize {
-        // TODO: 实际检测统一内存大小
-        128 * 1024 * 1024 * 1024 // 128GB (统一内存)
+        // TODO: detect actual unified memory size
+        128 * 1024 * 1024 * 1024 // 128GB (unified memory)
     }
 
     fn supports_op(&self, op: &CoreOperator) -> bool {

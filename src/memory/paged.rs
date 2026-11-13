@@ -1,11 +1,11 @@
-// 量化 KV cache (PagedAttention)
+// Quantized KV cache (PagedAttention)
 
 use crate::ops::QuantType;
 
-/// Block 大小
+/// Block size
 pub const BLOCK_SIZE: usize = 16;
 
-/// 量化 KV cache block
+/// Quantized KV cache block
 #[allow(dead_code)]
 pub struct QuantizedKVBlock {
     key: Vec<u8>,
@@ -14,7 +14,7 @@ pub struct QuantizedKVBlock {
     layer_idx: u8,
 }
 
-/// Block 池
+/// Block pool
 pub struct BlockPool {
     free_list: Vec<usize>,
     ref_counts: Vec<u32>,

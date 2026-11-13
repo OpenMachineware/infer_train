@@ -1,4 +1,4 @@
-// ARM NEON 后端
+// ARM NEON backend
 
 use crate::backend::Backend;
 use crate::ops::{CoreOperator, OpError, QuantType};
@@ -22,7 +22,7 @@ impl Backend for ArmCpuBackend {
     }
 
     fn available_memory(&self) -> usize {
-        // TODO: 实际检测
+        // TODO: actual detection
         16 * 1024 * 1024 * 1024 // 16GB
     }
 

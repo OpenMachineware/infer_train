@@ -1,10 +1,10 @@
-// 推理引擎
+// Inference engine
 
 use crate::backend::BackendRegistry;
 use crate::memory::topology::MemoryTopology;
 use crate::strategy::ExecutionStrategy;
 
-/// 推理引擎
+/// Inference engine
 pub struct InferenceEngine {
     backends: BackendRegistry,
     strategy: ExecutionStrategy,
@@ -31,13 +31,11 @@ impl InferenceEngine {
         self.strategy = strategy;
     }
 
+    pub fn backends(&self) -> &BackendRegistry {
+        &self.backends
+    }
+
     pub fn strategy(&self) -> &ExecutionStrategy {
         &self.strategy
-    }
-}
-
-impl Default for InferenceEngine {
-    fn default() -> Self {
-        Self::new()
     }
 }
