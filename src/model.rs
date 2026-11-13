@@ -2,4 +2,4 @@
 
 pub mod gguf;
 
-pub use gguf::GgufModel;
+pub use gguf::GgufFile;
