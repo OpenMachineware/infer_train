@@ -3,6 +3,9 @@
 
 // Operator definitions and type dispatch table
 
+pub mod quant;
+pub mod vec_dot;
+
 // Quantization type (ggml_type values)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]

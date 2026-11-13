@@ -24,6 +24,7 @@ lto = "thin"
 codegen-units = 1
 
 [dependencies]
+half = { version = "2.4", features = ["num-traits"] }
 
 [dev-dependencies]
 approx = "0.5"
