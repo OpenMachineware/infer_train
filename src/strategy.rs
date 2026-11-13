@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: MIT
-
 // Execution strategy
 
 pub mod expert;

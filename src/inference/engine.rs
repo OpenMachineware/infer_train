@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: MIT
-
 // Inference engine
 
 use crate::backend::BackendRegistry;

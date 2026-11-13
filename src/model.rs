@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: MIT
-
 // Model loading
 
 pub mod gguf;

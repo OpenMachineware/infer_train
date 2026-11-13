@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: MIT
-
 //! Compute graph (DAG) for inference
 
 pub mod builder;

@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: MIT
-
 // NVIDIA CUDA backend
 
 use crate::backend::Backend;

@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: MIT
-
 // Continuous batching
 
 pub mod continuous;

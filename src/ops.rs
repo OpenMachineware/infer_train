@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: MIT
-
 // Operator definitions and type dispatch table
 
 /// Quantization type (ggml_type values)

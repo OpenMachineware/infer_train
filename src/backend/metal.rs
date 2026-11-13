@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: MIT
-
 // Apple Metal backend
 
 use crate::backend::Backend;

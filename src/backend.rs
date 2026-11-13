@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: MIT
-
 // Backend trait definition
 
 pub mod arm;
