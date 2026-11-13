@@ -1,6 +1,9 @@
 .idea/
 .vscode/
 
+CLAUDE.md
+AGENTS.md
+
 .agentic/
 .codebuddy/
 .codebuddy-cn/
@@ -21,31 +24,13 @@ devstral-fix.jinja
 *.air
 *.bak
 
-llama.cpp-0.9.0/
+llama.cpp-1.0.0/
 vllm-0.33.0rc3/
-muser/
 Strata-0.2.13/
 
 # Added by cargo
 target/
 tools/target
-native/
 
 # Temporary planning documents
 TMP_*.md
-tmp_code_to_remove/
-
-# Debug tools
-/tools/bench_*.rs
-/tools/debug_*.rs
-/tools/profile_*.rs
-/tools/test_*.rs
-/tools/check_*.rs
-/tools/compare_*.rs
-/tools/trace_*.rs
-/tools/simple_*.rs
-/tools/condvar_*.rs
-/tools/isolated_*.rs
-/tools/final_*.rs
-/tools/build_*.rs
-/tools/verify_*.rs
