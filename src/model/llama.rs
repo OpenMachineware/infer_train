@@ -169,15 +169,27 @@ impl LlamaModel {
                 let config_gqa_ratio =
                     model.config.n_heads / model.config.n_kv_heads.max(1);
 
+                // Check for Q+Gate architecture (Qwen3.5-MoE attention layers)
+                // Indicated by q_norm presence and q_out_size being a multiple of 2 * head_dim
+                let has_q_gate = layer.q_norm.is_some();
+
                 // Find all valid head_dim candidates and pick the one closest to config
                 let mut best_head_dim = 0;
                 let mut best_n_heads_diff = usize::MAX;
 
                 for &candidate in &[32, 64, 80, 128, 160, 256] {
-                    if q_out_size % candidate == 0
+                    // For Q+Gate architecture, Q output is 2x the actual Q size
+                    let effective_q_out_size =
+                        if has_q_gate && q_out_size % (2 * candidate) == 0 {
+                            q_out_size / 2
+                        } else {
+                            q_out_size
+                        };
+
+                    if effective_q_out_size % candidate == 0
                         && k_out_size % candidate == 0
                     {
-                        let n_heads = q_out_size / candidate;
+                        let n_heads = effective_q_out_size / candidate;
                         let n_kv_heads = k_out_size / candidate;
                         // Validate: n_heads should be a multiple of n_kv_heads (GQA ratio)
                         let gqa_ratio = n_heads / n_kv_heads;
@@ -200,7 +212,13 @@ impl LlamaModel {
                     best_head_dim = model.config.head_dim;
                 }
 
-                let actual_n_heads = q_out_size / best_head_dim;
+                // For Q+Gate architecture, actual n_heads is q_out_size / (2 * head_dim)
+                let actual_n_heads =
+                    if has_q_gate && q_out_size % (2 * best_head_dim) == 0 {
+                        q_out_size / (2 * best_head_dim)
+                    } else {
+                        q_out_size / best_head_dim
+                    };
                 let actual_n_kv_heads = k_out_size / best_head_dim;
 
                 if actual_n_heads != model.config.n_heads
@@ -832,9 +850,32 @@ impl LlamaModel {
             &layer.attn_kv_b,
             &layer.attn_kv_a_norm,
         ) {
-            let q_out_size = wq.shape[1];
-            let kv_a_out_size = kv_a.shape[1]; // kv_lora_rank + qk_rope_head_dim
-            let kv_b_out_size = kv_b.shape[1]; // n_kv_heads * (qk_nope_head_dim + value_length)
+            // Determine output dimensions based on tensor shape
+            // After transpose: shape is [out_features, in_features]
+            // Before transpose (column-major): shape is [in_features, out_features]
+            // Use the dimension that doesn't match hidden_size as output size
+            let hidden_size = self.config.hidden_size;
+            let q_out_size = if wq.shape[0] == hidden_size {
+                // Column-major: shape is [in_features, out_features]
+                wq.shape[1]
+            } else {
+                // Row-major (transposed): shape is [out_features, in_features]
+                wq.shape[0]
+            };
+
+            // For kv_a and kv_b, they are stored in column-major format
+            // kv_a shape: [hidden_size, kv_lora_rank + qk_rope_head_dim]
+            // kv_b shape: [kv_lora_rank, n_kv_heads * (qk_nope_head_dim + value_length)]
+            let kv_a_out_size = if kv_a.shape[0] == hidden_size {
+                kv_a.shape[1]
+            } else {
+                kv_a.shape[0]
+            };
+            let kv_b_out_size = if kv_b.shape[0] == self.config.kv_lora_rank {
+                kv_b.shape[1]
+            } else {
+                kv_b.shape[0]
+            };
 
             // 1. Q projection
             let q = self.gemv_impl(hidden, wq, q_out_size)?;
@@ -871,10 +912,11 @@ impl LlamaModel {
                 .collect();
 
             // 4. KV_B projection (decompress to full KV)
-            // kv_b shape: [kv_lora_rank, n_kv_heads * (qk_nope_head_dim + value_length)]
+            // kv_b shape: [kv_lora_rank, n_heads * (qk_nope_head_dim + value_length)]
+            // Output: kv = [n_heads * (qk_nope_head_dim + value_length)]
             let kv = self.gemv_impl(&kv_a_normed, kv_b, kv_b_out_size)?;
 
-            // 5. Construct K and V
+            // 5. Construct K and V for non-MLA path
             // qk_nope_head_dim = key_length - qk_rope_head_dim
             let key_length = self.config.key_length;
             let value_length = self.config.value_length;
@@ -886,18 +928,22 @@ impl LlamaModel {
 
             // The non-RoPE part of the key and value come from kv
             // kv layout: [k_nope_head_0, ..., k_nope_head_n, v_head_0, ..., v_head_n]
+            // Each k_nope_head has qk_nope_head_dim elements
+            // Each v_head has value_length elements
             let k_nope_size = n_kv_heads * qk_nope_head_dim;
             let v_size = n_kv_heads * value_length;
 
-            // Construct K: for each head, concat(k_rope, k_nope[head])
+            // Construct K: for each head, concat(k_nope[head], k_rope)
+            // Note: In llama.cpp, K = concat(k_nope, k_pe) where k_pe is the RoPE part
+            // The layout is [k_nope, k_pe] not [k_pe, k_nope]
             let mut k = Vec::with_capacity(n_kv_heads * key_length);
             for head in 0..n_kv_heads {
-                // Add RoPE part (shared)
-                k.extend_from_slice(k_rope);
-                // Add non-RoPE part (per-head)
+                // Add non-RoPE part first (from kv)
                 let nope_start = head * qk_nope_head_dim;
                 let nope_end = (head + 1) * qk_nope_head_dim;
                 k.extend_from_slice(&kv[nope_start..nope_end]);
+                // Add RoPE part (shared from kv_a_proj)
+                k.extend_from_slice(k_rope);
             }
 
             // V is the remaining part
@@ -1044,6 +1090,16 @@ impl LlamaModel {
         q8k_input: &mut [u8],
         x_padded: &mut [f32],
     ) -> Option<()> {
+        // Check for MoE FFN first - use buffers from CpuWorkBuffers if available
+        // For now, still use the allocating version but we'll need to pass MoE buffers
+        if layer.has_moe_ffn() {
+            let hidden_size = self.config.hidden_size;
+            let moe_result =
+                self.compute_moe_ffn(layer, hidden, hidden_size)?;
+            out[..hidden_size].copy_from_slice(&moe_result);
+            return Some(());
+        }
+
         if let (Some(w1), Some(w2), Some(w3)) =
             (&layer.w1, &layer.w2, &layer.w3)
         {
@@ -1133,7 +1189,15 @@ impl LlamaModel {
             };
 
             // Use gemv_impl which handles quantized tensors
-            let scores = self.gemv_impl(hidden, gate_inp, n_experts)?;
+            let scores = match self.gemv_impl(hidden, gate_inp, n_experts) {
+                Some(s) => s,
+                None => {
+                    eprintln!(
+                        "[compute_moe_ffn] gemv_impl returned None for routing"
+                    );
+                    return None;
+                }
+            };
 
             // Softmax
             let max_score =
@@ -1182,30 +1246,11 @@ impl LlamaModel {
             let intermediate_size = gate_up_exps.shape[1] / 2;
             let n_experts = gate_up_exps.shape[2];
 
-            // Batch extract all needed experts at once (much more efficient)
-            self.extract_and_cache_experts_batch(
-                gate_up_exps,
-                &format!("layer_{}_gate_up_exps", layer.layer_idx),
-                &expert_indices,
-                2 * intermediate_size,
-                hidden_size,
-                n_experts,
-            );
-            self.extract_and_cache_experts_batch(
-                down_exps,
-                &format!("layer_{}_down_exps", layer.layer_idx),
-                &expert_indices,
-                hidden_size,
-                intermediate_size,
-                n_experts,
-            );
-
             for (expert_idx, routing_weight) in &top_k {
-                // Fused gate+up projection (transposed: in=hidden_size, out=2*intermediate_size)
-                let gate_up_out = self.gemv_expert_interleaved(
+                // Fused gate+up projection - use gemv_expert_single to avoid caching
+                let gate_up_out = self.gemv_expert_single(
                     hidden,
                     gate_up_exps,
-                    &format!("layer_{}_gate_up_exps", layer.layer_idx),
                     *expert_idx,
                     2 * intermediate_size,
                     hidden_size,
@@ -1222,10 +1267,9 @@ impl LlamaModel {
                 }
 
                 // Down projection
-                let expert_down = self.gemv_expert_interleaved(
+                let expert_down = self.gemv_expert_single(
                     &hidden_ffn,
                     down_exps,
-                    &format!("layer_{}_down_exps", layer.layer_idx),
                     *expert_idx,
                     hidden_size,
                     intermediate_size,
@@ -1244,47 +1288,19 @@ impl LlamaModel {
             let intermediate_size = gate_exps.shape[1];
             let n_experts = gate_exps.shape[2];
 
-            // Batch extract all needed experts at once
-            self.extract_and_cache_experts_batch(
-                gate_exps,
-                &format!("layer_{}_gate_exps", layer.layer_idx),
-                &expert_indices,
-                intermediate_size,
-                hidden_size,
-                n_experts,
-            );
-            self.extract_and_cache_experts_batch(
-                up_exps,
-                &format!("layer_{}_up_exps", layer.layer_idx),
-                &expert_indices,
-                intermediate_size,
-                hidden_size,
-                n_experts,
-            );
-            self.extract_and_cache_experts_batch(
-                down_exps,
-                &format!("layer_{}_down_exps", layer.layer_idx),
-                &expert_indices,
-                hidden_size,
-                intermediate_size,
-                n_experts,
-            );
-
             for (expert_idx, routing_weight) in &top_k {
-                // Get expert weights from cache (already extracted)
-                let expert_gate = self.gemv_expert_interleaved(
+                // Get expert weights - use gemv_expert_single to avoid caching
+                let expert_gate = self.gemv_expert_single(
                     hidden,
                     gate_exps,
-                    &format!("layer_{}_gate_exps", layer.layer_idx),
                     *expert_idx,
                     intermediate_size,
                     hidden_size,
                     n_experts,
                 )?;
-                let expert_up = self.gemv_expert_interleaved(
+                let expert_up = self.gemv_expert_single(
                     hidden,
                     up_exps,
-                    &format!("layer_{}_up_exps", layer.layer_idx),
                     *expert_idx,
                     intermediate_size,
                     hidden_size,
@@ -1299,10 +1315,9 @@ impl LlamaModel {
                 }
 
                 // Down projection
-                let expert_down = self.gemv_expert_interleaved(
+                let expert_down = self.gemv_expert_single(
                     &hidden_ffn,
                     down_exps,
-                    &format!("layer_{}_down_exps", layer.layer_idx),
                     *expert_idx,
                     hidden_size,
                     intermediate_size,
@@ -1329,7 +1344,360 @@ impl LlamaModel {
         Some(final_output)
     }
 
-    /// GEMV with interleaved expert weights
+    /// Compute MoE FFN with zero-allocation using pre-allocated buffers
+    pub fn compute_moe_ffn_zero_alloc(
+        &self,
+        layer: &LlamaLayer,
+        hidden: &[f32],
+        hidden_size: usize,
+        routing_scores: &mut [f32],
+        expert_indices: &mut [(usize, f32)],
+        routed_output: &mut [f32],
+        final_output: &mut [f32],
+        expert_output: &mut [f32],
+        hidden_ffn: &mut [f32],
+    ) -> Option<()> {
+        // Clear output buffers
+        routed_output.fill(0.0);
+        final_output.fill(0.0);
+
+        // 1. Compute routing scores
+        let n_experts = if let Some(gate_inp) = &layer.ffn_gate_inp {
+            let n = if gate_inp.shape[0] == hidden_size {
+                gate_inp.shape[1]
+            } else {
+                gate_inp.shape[0]
+            };
+            n
+        } else {
+            // No routing, just use shared expert
+            self.compute_shared_expert_into(
+                layer,
+                hidden,
+                hidden_size,
+                final_output,
+            )?;
+            return Some(());
+        };
+
+        // Compute routing GEMV directly into routing_scores buffer
+        self.gemv_into(
+            hidden,
+            layer.ffn_gate_inp.as_ref()?,
+            &mut routing_scores[..n_experts],
+        );
+
+        // Softmax in-place
+        let scores = &mut routing_scores[..n_experts];
+        let max_score =
+            scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let sum: f32 = scores.iter().map(|s| (*s - max_score).exp()).sum();
+        for s in scores.iter_mut() {
+            *s = ((*s - max_score).exp()) / sum;
+        }
+
+        // 2. Select top-k experts into expert_indices buffer
+        let n_experts_used =
+            self.config.n_experts_used.min(expert_indices.len());
+
+        // Fill expert_indices with (index, score) pairs
+        for (i, &s) in scores.iter().enumerate() {
+            if i < expert_indices.len() {
+                expert_indices[i] = (i, s);
+            }
+        }
+
+        // Partial sort to find top-k
+        expert_indices[..n_experts]
+            .select_nth_unstable_by(n_experts_used, |a, b| {
+                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+        // Get top-k slice
+        let top_k = &expert_indices[..n_experts_used];
+
+        // Renormalize top-k routing scores
+        let sum_weights: f32 = top_k.iter().map(|(_, w)| w).sum();
+        let renorm_factor =
+            if sum_weights > 0.0 { 1.0 / sum_weights } else { 1.0 };
+
+        // 3. Compute routed expert outputs
+        // Check MoE style: Qwen3.6 fused gate+up vs DeepSeek separate
+        if let (Some(gate_up_exps), Some(down_exps)) =
+            (&layer.ffn_gate_up_exps, &layer.ffn_down_exps)
+        {
+            // Qwen3.6-35B style: fused gate+up tensor
+            let intermediate_size = gate_up_exps.shape[1] / 2;
+            let n_exps = gate_up_exps.shape[2];
+
+            for (expert_idx, routing_weight) in top_k.iter() {
+                let rw = routing_weight * renorm_factor;
+
+                // Fused gate+up projection directly into expert_output
+                self.gemv_expert_interleaved_into(
+                    hidden,
+                    gate_up_exps,
+                    *expert_idx,
+                    2 * intermediate_size,
+                    hidden_size,
+                    n_exps,
+                    expert_output,
+                )?;
+
+                // Split into gate and up, apply SwiGLU into hidden_ffn
+                for i in 0..intermediate_size {
+                    let gate = expert_output[i];
+                    let up = expert_output[intermediate_size + i];
+                    let silu = up / (1.0 + (-up).exp());
+                    hidden_ffn[i] = gate * silu;
+                }
+
+                // Down projection back into expert_output
+                self.gemv_expert_interleaved_into(
+                    &hidden_ffn[..intermediate_size],
+                    down_exps,
+                    *expert_idx,
+                    hidden_size,
+                    intermediate_size,
+                    n_exps,
+                    expert_output,
+                )?;
+
+                // Add weighted output to routed_output
+                for i in 0..hidden_size {
+                    routed_output[i] += rw * expert_output[i];
+                }
+            }
+        } else if let (Some(gate_exps), Some(up_exps), Some(down_exps)) =
+            (&layer.ffn_gate_exps, &layer.ffn_up_exps, &layer.ffn_down_exps)
+        {
+            // DeepSeek style: separate gate, up, down tensors
+            let intermediate_size = gate_exps.shape[1];
+            let n_exps = gate_exps.shape[2];
+
+            for (expert_idx, routing_weight) in top_k.iter() {
+                let rw = routing_weight * renorm_factor;
+
+                // Gate projection
+                self.gemv_expert_interleaved_into(
+                    hidden,
+                    gate_exps,
+                    *expert_idx,
+                    intermediate_size,
+                    hidden_size,
+                    n_exps,
+                    expert_output,
+                )?;
+
+                // Copy gate result to hidden_ffn
+                hidden_ffn[..intermediate_size]
+                    .copy_from_slice(&expert_output[..intermediate_size]);
+
+                // Up projection
+                self.gemv_expert_interleaved_into(
+                    hidden,
+                    up_exps,
+                    *expert_idx,
+                    intermediate_size,
+                    hidden_size,
+                    n_exps,
+                    expert_output,
+                )?;
+
+                // SwiGLU into hidden_ffn
+                for i in 0..intermediate_size {
+                    let silu =
+                        expert_output[i] / (1.0 + (-expert_output[i]).exp());
+                    hidden_ffn[i] *= silu;
+                }
+
+                // Down projection into expert_output
+                self.gemv_expert_interleaved_into(
+                    &hidden_ffn[..intermediate_size],
+                    down_exps,
+                    *expert_idx,
+                    hidden_size,
+                    intermediate_size,
+                    n_exps,
+                    expert_output,
+                )?;
+
+                // Add weighted output
+                for i in 0..hidden_size {
+                    routed_output[i] += rw * expert_output[i];
+                }
+            }
+        }
+
+        // 4. Compute shared expert output into final_output
+        self.compute_shared_expert_into(
+            layer,
+            hidden,
+            hidden_size,
+            final_output,
+        )?;
+
+        // 5. Combine routed + shared outputs
+        for i in 0..hidden_size {
+            final_output[i] = routed_output[i] + final_output[i];
+        }
+
+        Some(())
+    }
+
+    /// GEMV with interleaved expert weights, writing to pre-allocated output
+    /// Computes directly from quantized weights without caching to avoid memory bloat
+    fn gemv_expert_interleaved_into(
+        &self,
+        x: &[f32],
+        expert_tensor: &Tensor,
+        expert_idx: usize,
+        out_size: usize,
+        in_size: usize,
+        n_experts: usize,
+        out: &mut [f32],
+    ) -> Option<()> {
+        use crate::quant::types::QK_K;
+
+        let dtype = expert_tensor.dtype;
+        let bytes = expert_tensor.bytes();
+
+        // For quantized formats, dequantize row by row to avoid memory bloat
+        let bytes_per_elem = match dtype {
+            DataType::F32 => 4,
+            DataType::F16 | DataType::BF16 => 2,
+            DataType::Q4_0 | DataType::Q4_1 => 18,
+            DataType::Q5_0 => 22,
+            DataType::Q5_1 => 26,
+            DataType::Q8_0 => 34,
+            DataType::Q2_K => 86,
+            DataType::Q3_K => 110,
+            DataType::Q4_K => 144,
+            DataType::Q5_K => 176,
+            DataType::Q6_K => 210,
+            DataType::IQ4_NL => 18,
+            DataType::IQ4_XS => 138,
+            _ => {
+                out.fill(0.0);
+                return Some(());
+            }
+        };
+
+        // For F32/F16/BF16, directly index
+        if matches!(dtype, DataType::F32 | DataType::F16 | DataType::BF16) {
+            for i in 0..out_size {
+                let mut sum = 0.0f32;
+                for j in 0..in_size {
+                    let idx =
+                        j * out_size * n_experts + i * n_experts + expert_idx;
+                    let byte_offset = idx * bytes_per_elem;
+                    if byte_offset + bytes_per_elem <= bytes.len() {
+                        let val = match dtype {
+                            DataType::F32 => f32::from_le_bytes(
+                                bytes[byte_offset..byte_offset + 4]
+                                    .try_into()
+                                    .unwrap(),
+                            ),
+                            DataType::F16 => half::f16::from_le_bytes(
+                                bytes[byte_offset..byte_offset + 2]
+                                    .try_into()
+                                    .unwrap(),
+                            )
+                            .to_f32(),
+                            DataType::BF16 => {
+                                let bits = u16::from_le_bytes(
+                                    bytes[byte_offset..byte_offset + 2]
+                                        .try_into()
+                                        .unwrap(),
+                                )
+                                    as u32;
+                                f32::from_bits(bits << 16)
+                            }
+                            _ => 0.0,
+                        };
+                        sum += val * x[j];
+                    }
+                }
+                out[i] = sum;
+            }
+            return Some(());
+        }
+
+        // For quantized formats, dequantize row by row
+        let mut row_buffer = vec![0.0f32; in_size * n_experts];
+        let bytes_per_row = bytes.len() / out_size;
+
+        for i in 0..out_size {
+            let row_bytes = &bytes[i * bytes_per_row
+                ..(i + 1) * bytes_per_row.min(bytes.len() - i * bytes_per_row)];
+
+            crate::inference::dequant_to_f32_into(
+                row_bytes,
+                dtype,
+                &mut row_buffer,
+            );
+
+            // Extract expert's portion and compute dot product
+            let mut sum = 0.0f32;
+            for j in 0..in_size {
+                let idx = j * n_experts + expert_idx;
+                if idx < row_buffer.len() {
+                    sum += row_buffer[idx] * x[j];
+                }
+            }
+            out[i] = sum;
+        }
+
+        Some(())
+    }
+
+    /// Compute shared expert FFN, writing to pre-allocated output
+    fn compute_shared_expert_into(
+        &self,
+        layer: &LlamaLayer,
+        hidden: &[f32],
+        hidden_size: usize,
+        out: &mut [f32],
+    ) -> Option<()> {
+        if let (Some(gate), Some(up), Some(down)) =
+            (&layer.ffn_gate_shexp, &layer.ffn_up_shexp, &layer.ffn_down_shexp)
+        {
+            let intermediate_size = gate.shape[1];
+            let hidden = &hidden[..hidden_size.min(hidden.len())];
+
+            // Shared expert FFN - use intermediate buffer in CpuWorkBuffers
+            // For now, fall back to allocating versions
+            let gate_out = self.gemv_impl(hidden, gate, intermediate_size)?;
+            let up_out = self.gemv_impl(hidden, up, intermediate_size)?;
+
+            let mut hidden_ffn = vec![0.0f32; intermediate_size];
+            for i in 0..intermediate_size {
+                let silu = up_out[i] / (1.0 + (-up_out[i]).exp());
+                hidden_ffn[i] = gate_out[i] * silu;
+            }
+
+            let result = self.gemv_impl(&hidden_ffn, down, hidden_size)?;
+            out[..hidden_size].copy_from_slice(&result);
+        } else {
+            out[..hidden_size].fill(0.0);
+        }
+        Some(())
+    }
+
+    /// Extract expert weights from interleaved tensor
+    fn extract_expert_weights(
+        &self,
+        expert_tensor: &Tensor,
+        expert_idx: usize,
+        out_size: usize,
+        in_size: usize,
+        n_experts: usize,
+    ) -> Option<Vec<f32>> {
+        // For now, use the existing caching mechanism
+        let key = format!("layer_{}_exp{}", expert_tensor.shape[0], expert_idx);
+        let cache = self.expert_weight_cache.lock().unwrap();
+        cache.get(&key).cloned()
+    }
     /// Uses per-expert caching to limit memory usage
     fn gemv_expert_interleaved(
         &self,
@@ -1426,7 +1794,7 @@ impl LlamaModel {
         let dtype = expert_tensor.dtype;
         let bytes = expert_tensor.bytes();
 
-        let elems_per_block = match dtype {
+        let _elems_per_block = match dtype {
             DataType::Q4_0
             | DataType::Q4_1
             | DataType::Q5_0
@@ -1549,7 +1917,7 @@ impl LlamaModel {
         };
 
         // For block-based quantization, calculate blocks
-        let elems_per_block = match dtype {
+        let _elems_per_block = match dtype {
             DataType::Q4_0
             | DataType::Q4_1
             | DataType::Q5_0
@@ -1566,7 +1934,7 @@ impl LlamaModel {
         };
 
         // Total elements in the tensor
-        let total_elems = in_size * out_size * n_experts;
+        let _total_elems = in_size * out_size * n_experts;
 
         // For F32/F16/BF16, we can directly index
         if matches!(dtype, DataType::F32 | DataType::F16 | DataType::BF16) {
@@ -1666,7 +2034,7 @@ impl LlamaModel {
         let dtype = expert_tensor.dtype;
         let bytes = expert_tensor.bytes();
 
-        let elems_per_block = match dtype {
+        let _elems_per_block = match dtype {
             DataType::Q4_0
             | DataType::Q4_1
             | DataType::Q5_0
@@ -1782,7 +2150,7 @@ impl LlamaModel {
         // For K-quant formats (256 elements per block), dequantize in chunks
         // that are cache-friendly and process multiple rows at once
 
-        let elems_per_block = match dtype {
+        let _elems_per_block = match dtype {
             DataType::Q4_0
             | DataType::Q4_1
             | DataType::Q5_0
@@ -2961,6 +3329,13 @@ impl LlamaModel {
         // Use tiled GEMM for batch prefill (>= 8 tokens) on non-MLA models
         const TILED_THRESHOLD: usize = 8;
         let use_tiled = tokens.len() >= TILED_THRESHOLD && !uses_mla;
+        eprintln!(
+            "[forward_pooled_with_threads] tokens={} is_decode={} uses_mla={} use_tiled={}",
+            tokens.len(),
+            is_decode,
+            uses_mla,
+            use_tiled
+        );
 
         // Get config values for MLA fallback
         let n_heads = self.config.n_heads;
@@ -3073,6 +3448,13 @@ impl LlamaModel {
         // Use tiled GEMM for batch prefill (>= 8 tokens) on non-MLA models
         const TILED_THRESHOLD: usize = 8;
         let use_tiled = tokens.len() >= TILED_THRESHOLD && !uses_mla;
+        eprintln!(
+            "[forward_pooled_with_threads] tokens={} is_decode={} uses_mla={} use_tiled={}",
+            tokens.len(),
+            is_decode,
+            uses_mla,
+            use_tiled
+        );
 
         // Get config values for MLA fallback
         let n_heads = self.config.n_heads;
@@ -3160,21 +3542,27 @@ impl LlamaModel {
         kv_cache: &mut crate::inference::KVCache,
         buffers: &mut crate::cpu::CpuWorkBuffers,
     ) -> Option<Vec<f32>> {
+        eprintln!("[forward_pooled_batch_tiled] n_tokens={}", tokens.len());
         use std::time::{Duration, Instant};
 
         let hidden_size = self.config.hidden_size;
         let vocab_size = self.config.vocab_size;
         let n_tokens = tokens.len();
 
+        eprintln!(
+            "[forward_pooled_batch_tiled] hidden_size={} vocab_size={}",
+            hidden_size, vocab_size
+        );
+
         // Profiling
-        let time_embedding;
+        let _time_embedding;
         let mut time_norm = std::time::Duration::new(0, 0);
         let mut time_qkv = std::time::Duration::new(0, 0);
         let mut time_rope = std::time::Duration::new(0, 0);
         let mut time_attention = std::time::Duration::new(0, 0);
         let mut time_wo = std::time::Duration::new(0, 0);
         let mut time_ffn = std::time::Duration::new(0, 0);
-        let time_output;
+        let _time_output;
         let mut time_quant = std::time::Duration::new(0, 0);
         let mut time_gemm = std::time::Duration::new(0, 0);
 
@@ -3184,16 +3572,51 @@ impl LlamaModel {
         let batch_hidden_len = n_tokens * hidden_size;
         buffers.batch_hidden[..batch_hidden_len].fill(0.0);
         for (i, &token) in tokens.iter().enumerate() {
-            self.embedding_lookup_into(
-                token,
-                &mut buffers.batch_hidden
-                    [i * hidden_size..(i + 1) * hidden_size],
-            )?;
+            if self
+                .embedding_lookup_into(
+                    token,
+                    &mut buffers.batch_hidden
+                        [i * hidden_size..(i + 1) * hidden_size],
+                )
+                .is_none()
+            {
+                eprintln!(
+                    "[forward_pooled_batch_tiled] Embedding lookup failed for token {} at index {}",
+                    token, i
+                );
+                return None;
+            }
         }
-        time_embedding = start.elapsed();
+        _time_embedding = start.elapsed();
+        eprintln!(
+            "[forward_pooled_batch_tiled] Embedding lookup complete for {} tokens",
+            n_tokens
+        );
 
         // Step 2: Process each layer
         for (layer_idx, layer) in self.layers.iter().enumerate() {
+            if layer_idx < 5 || layer_idx % 10 == 0 {
+                eprintln!(
+                    "[forward_pooled_batch_tiled] Processing layer {} is_ssm={}",
+                    layer_idx,
+                    layer.is_ssm()
+                );
+            }
+            // Debug: show config and buffer sizes for attention layers
+            if layer_idx == 3 {
+                eprintln!(
+                    "[forward_pooled_batch_tiled] config: n_heads={} head_dim={} n_kv_heads={}",
+                    self.config.n_heads,
+                    self.config.head_dim,
+                    self.config.n_kv_heads
+                );
+                eprintln!(
+                    "[forward_pooled_batch_tiled] buffers: q_buffer.len={} k_buffer.len={} v_buffer.len={}",
+                    buffers.q_buffer.len(),
+                    buffers.k_buffer.len(),
+                    buffers.v_buffer.len()
+                );
+            }
             // Save pre-norm values for residual connection (use pre-allocated buffer)
             let residual_len = n_tokens * hidden_size;
             buffers.batch_residual[..residual_len]
@@ -3215,140 +3638,116 @@ impl LlamaModel {
             }
             time_norm += start.elapsed();
 
-            // Check if this is a Mamba/SSM layer - skip attention for these
+            // Check if this is a Mamba/SSM layer - use token-by-token processing
             if layer.is_ssm() {
-                // Mamba/SSM layers: skip attention, go directly to FFN
-                // Restore residual (no attention output)
-                buffers.batch_hidden[..residual_len]
-                    .copy_from_slice(&buffers.batch_residual[..residual_len]);
-
-                // FFN norm
+                // SSM/GDN layers require sequential token processing
+                // Process each token using the single-token SSM implementation
                 let start = Instant::now();
-                let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
-                for i in 0..n_tokens {
+                for token_idx in 0..n_tokens {
+                    // Save original hidden for residual connection
+                    let original_hidden: Vec<f32> = buffers.batch_hidden
+                        [token_idx * hidden_size
+                            ..(token_idx + 1) * hidden_size]
+                        .to_vec();
+
+                    // Apply attention norm to token
+                    let attn_norm_offset = layer_idx * 2 * hidden_size;
                     self.apply_rms_norm_predequant(
-                        &buffers.batch_hidden
-                            [i * hidden_size..(i + 1) * hidden_size],
+                        &original_hidden,
                         &buffers.norm_weights
-                            [ffn_norm_offset..ffn_norm_offset + hidden_size],
+                            [attn_norm_offset..attn_norm_offset + hidden_size],
                         &mut buffers.hidden_alt,
                     );
-                    buffers.batch_hidden
-                        [i * hidden_size..(i + 1) * hidden_size]
-                        .copy_from_slice(&buffers.hidden_alt[..hidden_size]);
-                }
-                time_norm += start.elapsed();
 
-                // FFN projection using tiled GEMM
-                let start = Instant::now();
-                if let (Some(w1), Some(w2), Some(w3)) =
-                    (&layer.w1, &layer.w2, &layer.w3)
-                {
-                    // After transpose: shape = [out_features, in_features] = [intermediate_size, hidden_size]
-                    // So intermediate_size = shape[0]
-                    let intermediate_size = if w1.shape.len() >= 2 {
-                        if w1.shape[1] == hidden_size {
-                            w1.shape[0]
-                        } else {
-                            w1.shape[1]
-                        }
-                    } else {
-                        w1.shape[0]
-                    };
-                    let ffn_output_len = n_tokens * intermediate_size;
+                    // Copy to single-token buffer for SSM processing
+                    buffers.hidden[..hidden_size]
+                        .copy_from_slice(&original_hidden);
 
-                    // Gate projection
-                    let inputs: Vec<&[f32]> = (0..n_tokens)
-                        .map(|i| {
-                            &buffers.batch_hidden
-                                [i * hidden_size..(i + 1) * hidden_size]
-                        })
-                        .collect();
+                    // Process using SSM implementation (reads from hidden_alt, writes to hidden)
+                    let _ = self.forward_ssm(layer, buffers);
 
-                    self.gemm_batch_prefill(
-                        &inputs,
-                        w1,
-                        &mut buffers.ffn_gate_batch[..ffn_output_len],
-                        &mut buffers.q8k_input,
-                        &mut buffers.x_padded,
-                        &mut buffers.x_padded_threads,
-                        None,
-                    );
+                    // Copy result back to batch buffer
+                    buffers.batch_hidden[token_idx * hidden_size
+                        ..(token_idx + 1) * hidden_size]
+                        .copy_from_slice(&buffers.hidden[..hidden_size]);
 
-                    // Up projection
-                    self.gemm_batch_prefill(
-                        &inputs,
-                        w3,
-                        &mut buffers.ffn_up_batch[..ffn_output_len],
-                        &mut buffers.q8k_input,
-                        &mut buffers.x_padded,
-                        &mut buffers.x_padded_threads,
-                        None,
-                    );
-
-                    // SwiGLU: gate * silu(up) for each token
-                    for t in 0..n_tokens {
-                        for i in 0..intermediate_size {
-                            let idx = t * intermediate_size + i;
-                            let silu = buffers.ffn_gate_batch[idx]
-                                / (1.0 + (-buffers.ffn_gate_batch[idx]).exp());
-                            buffers.ffn_gate_batch[idx] =
-                                silu * buffers.ffn_up_batch[idx];
-                        }
+                    // Residual connection: hidden = original_hidden + ssm_output
+                    for i in 0..hidden_size {
+                        buffers.batch_hidden[token_idx * hidden_size + i] =
+                            original_hidden[i]
+                                + buffers.batch_hidden
+                                    [token_idx * hidden_size + i];
                     }
 
-                    // Down projection
-                    let gate_inputs: Vec<&[f32]> = (0..n_tokens)
-                        .map(|t| {
-                            &buffers.ffn_gate_batch[t * intermediate_size
-                                ..(t + 1) * intermediate_size]
-                        })
-                        .collect();
+                    // SSM layers also have MoE FFN (Qwen3.6-35B style)
+                    if layer.has_moe_ffn() {
+                        let ffn_residual: Vec<f32> = buffers.batch_hidden
+                            [token_idx * hidden_size
+                                ..(token_idx + 1) * hidden_size]
+                            .to_vec();
 
-                    self.gemm_batch_prefill(
-                        &gate_inputs,
-                        w2,
-                        &mut buffers.batch_hidden,
-                        &mut buffers.q8k_input,
-                        &mut buffers.x_padded,
-                        &mut buffers.x_padded_threads,
-                        None,
-                    );
+                        // FFN norm
+                        let ffn_norm_offset =
+                            layer_idx * 2 * hidden_size + hidden_size;
+                        self.apply_rms_norm_predequant(
+                            &buffers.batch_hidden[token_idx * hidden_size
+                                ..(token_idx + 1) * hidden_size],
+                            &buffers.norm_weights[ffn_norm_offset
+                                ..ffn_norm_offset + hidden_size],
+                            &mut buffers.hidden_alt,
+                        );
 
-                    // Add residual
-                    for i in 0..residual_len {
-                        buffers.batch_hidden[i] += buffers.batch_residual[i];
-                    }
-                } else if layer.has_moe_ffn() {
-                    // MoE FFN - process tokens one by one
-                    for t in 0..n_tokens {
-                        let token_hidden = &buffers.batch_hidden
-                            [t * hidden_size..(t + 1) * hidden_size];
-                        let result = self.compute_moe_ffn(
+                        // MoE FFN
+                        let result = match self.compute_moe_ffn(
                             layer,
-                            token_hidden,
+                            &buffers.hidden_alt[..hidden_size],
                             hidden_size,
-                        )?;
-                        buffers.batch_hidden
-                            [t * hidden_size..(t + 1) * hidden_size]
-                            .copy_from_slice(&result);
+                        ) {
+                            Some(r) => r,
+                            None => {
+                                eprintln!(
+                                    "[batch prefill] compute_moe_ffn returned None at layer {} token {}",
+                                    layer_idx, token_idx
+                                );
+                                return None;
+                            }
+                        };
 
-                        // Add residual
+                        // Final residual
                         for i in 0..hidden_size {
-                            buffers.batch_hidden[t * hidden_size + i] +=
-                                buffers.batch_residual[t * hidden_size + i];
+                            buffers.batch_hidden[token_idx * hidden_size + i] =
+                                ffn_residual[i] + result[i];
                         }
                     }
                 }
                 time_ffn += start.elapsed();
-
                 continue; // Skip to next layer
             }
+
+            // Attention norm
+            let start = Instant::now();
+            let attn_norm_offset = layer_idx * 2 * hidden_size;
+            for i in 0..n_tokens {
+                self.apply_rms_norm_predequant(
+                    &buffers.batch_hidden
+                        [i * hidden_size..(i + 1) * hidden_size],
+                    &buffers.norm_weights
+                        [attn_norm_offset..attn_norm_offset + hidden_size],
+                    &mut buffers.hidden_alt,
+                );
+                buffers.batch_hidden[i * hidden_size..(i + 1) * hidden_size]
+                    .copy_from_slice(&buffers.hidden_alt[..hidden_size]);
+            }
+            time_norm += start.elapsed();
 
             // QKV projection - use tiled GEMM for batch
             // Only process fused QKV if both attn_qkv and wo exist (proper attention layer)
             // Mamba layers have attn_qkv but no wo
             if let (Some(qkv), Some(_)) = (&layer.attn_qkv, &layer.wo) {
+                eprintln!(
+                    "[forward_pooled_batch_tiled] Layer {} using fused QKV path",
+                    layer_idx
+                );
                 // attn_qkv is NOT transposed, stored as [qkv_size, hidden_size]
                 // Output dimension is shape[0], input dimension is shape[1]
                 let qkv_out_size = if qkv.shape.len() >= 2 {
@@ -3529,6 +3928,10 @@ impl LlamaModel {
                 }
                 time_wo += start.elapsed();
             } else {
+                eprintln!(
+                    "[forward_pooled_batch_tiled] Layer {} using separate Q/K/V projections",
+                    layer_idx
+                );
                 // Separate wq/wk/wv projections - use batch GEMM for each
                 // Get actual output sizes from weight tensors (may differ from config)
                 let get_out_size = |w: &Tensor, in_size: usize| -> usize {
@@ -3543,13 +3946,29 @@ impl LlamaModel {
                     }
                 };
 
-                let q_size_actual = layer
+                // Detect Q+Gate architecture (Qwen3.5-MoE attention layers)
+                // Q projection outputs Q + Gate when q_norm exists and q_out_size == 2 * n_heads * head_dim
+                let has_q_gate = layer.q_norm.is_some();
+                let q_out_size_actual = layer
                     .wq
                     .as_ref()
                     .map(|w| get_out_size(w, hidden_size))
                     .unwrap_or_else(|| {
                         self.config.n_heads * self.config.head_dim
                     });
+                eprintln!(
+                    "[forward_pooled_batch_tiled] Layer {} has_q_gate={} q_out_size_actual={}",
+                    layer_idx, has_q_gate, q_out_size_actual
+                );
+                // For Q+Gate, Q part is first half
+                let q_size = if has_q_gate
+                    && q_out_size_actual
+                        == 2 * self.config.n_heads * self.config.head_dim
+                {
+                    self.config.n_heads * self.config.head_dim
+                } else {
+                    q_out_size_actual
+                };
                 let k_size_actual = layer
                     .wk
                     .as_ref()
@@ -3573,6 +3992,11 @@ impl LlamaModel {
                         }
                     });
 
+                eprintln!(
+                    "[forward_pooled_batch_tiled] Layer {} q_size={} k_size_actual={} v_size_actual={}",
+                    layer_idx, q_size, k_size_actual, v_size_actual
+                );
+
                 let inputs: Vec<&[f32]> = (0..n_tokens)
                     .map(|i| {
                         &buffers.batch_hidden
@@ -3580,9 +4004,14 @@ impl LlamaModel {
                     })
                     .collect();
 
-                let q_output_len = n_tokens * q_size_actual;
+                let q_output_len = n_tokens * q_out_size_actual;
                 let k_output_len = n_tokens * k_size_actual;
                 let v_output_len = n_tokens * v_size_actual;
+
+                eprintln!(
+                    "[forward_pooled_batch_tiled] Layer {} q_output_len={} k_output_len={} v_output_len={}",
+                    layer_idx, q_output_len, k_output_len, v_output_len
+                );
 
                 // Batch Q/K/V projections
                 let start = Instant::now();
@@ -3624,6 +4053,10 @@ impl LlamaModel {
                     );
                 }
                 time_qkv += start.elapsed();
+                eprintln!(
+                    "[forward_pooled_batch_tiled] Layer {} Q/K/V projections complete",
+                    layer_idx
+                );
 
                 // Collect all attention outputs for batch wo projection
                 // attn_out size = n_heads * v_head_dim
@@ -3643,12 +4076,23 @@ impl LlamaModel {
                 }
 
                 // Process each token's attention (sequential due to position dependency)
+                eprintln!(
+                    "[forward_pooled_batch_tiled] Layer {} starting attention token loop for {} tokens",
+                    layer_idx, n_tokens
+                );
                 for (token_idx, pos) in (0..n_tokens).zip(kv_cache.seq_len()..)
                 {
+                    if token_idx == 0 {
+                        eprintln!(
+                            "[forward_pooled_batch_tiled] Layer {} token 0: q_size={} k_size_actual={} v_size_actual={}",
+                            layer_idx, q_size, k_size_actual, v_size_actual
+                        );
+                    }
                     // Copy Q, K, V from batch outputs
-                    buffers.q_buffer[..q_size_actual].copy_from_slice(
-                        &buffers.q_batch_output[token_idx * q_size_actual
-                            ..(token_idx + 1) * q_size_actual],
+                    // For Q+Gate, Q is the first half, Gate is the second half
+                    buffers.q_buffer[..q_size].copy_from_slice(
+                        &buffers.q_batch_output[token_idx * q_out_size_actual
+                            ..token_idx * q_out_size_actual + q_size],
                     );
                     buffers.k_buffer[..k_size_actual].copy_from_slice(
                         &buffers.k_batch_output[token_idx * k_size_actual
@@ -3659,36 +4103,176 @@ impl LlamaModel {
                             ..(token_idx + 1) * v_size_actual],
                     );
 
+                    if token_idx == 0 {
+                        eprintln!(
+                            "[forward_pooled_batch_tiled] Layer {} token 0: Q/K/V copy complete",
+                            layer_idx
+                        );
+                    }
+
+                    // Apply Q/K norms (Qwen-style) before RoPE
+                    if let Some(ref q_norm) = layer.q_norm {
+                        if token_idx == 0 {
+                            eprintln!(
+                                "[forward_pooled_batch_tiled] Layer {} token 0: Applying Q norm",
+                                layer_idx
+                            );
+                        }
+                        let norm_data: &[f32] =
+                            bytemuck::cast_slice(q_norm.bytes());
+                        for h in 0..self.config.n_heads {
+                            let start_idx = h * self.config.head_dim;
+                            let end_idx = start_idx + self.config.head_dim;
+                            let mut ss = 0.0f32;
+                            for i in start_idx..end_idx {
+                                ss += buffers.q_buffer[i] * buffers.q_buffer[i];
+                            }
+                            let rms = 1.0
+                                / (ss / self.config.head_dim as f32 + 1e-5)
+                                    .sqrt();
+                            for i in start_idx..end_idx {
+                                buffers.q_buffer[i] = buffers.q_buffer[i]
+                                    * rms
+                                    * norm_data[i - start_idx];
+                            }
+                        }
+                    }
+                    if let Some(ref k_norm) = layer.k_norm {
+                        if token_idx == 0 {
+                            eprintln!(
+                                "[forward_pooled_batch_tiled] Layer {} token 0: Applying K norm",
+                                layer_idx
+                            );
+                        }
+                        let norm_data: &[f32] =
+                            bytemuck::cast_slice(k_norm.bytes());
+                        for h in 0..self.config.n_kv_heads {
+                            let start_idx = h * self.config.head_dim;
+                            let end_idx = start_idx + self.config.head_dim;
+                            let mut ss = 0.0f32;
+                            for i in start_idx..end_idx {
+                                ss += buffers.k_buffer[i] * buffers.k_buffer[i];
+                            }
+                            let rms = 1.0
+                                / (ss / self.config.head_dim as f32 + 1e-5)
+                                    .sqrt();
+                            for i in start_idx..end_idx {
+                                buffers.k_buffer[i] = buffers.k_buffer[i]
+                                    * rms
+                                    * norm_data[i - start_idx];
+                            }
+                        }
+                    }
+
+                    if token_idx == 0 {
+                        eprintln!(
+                            "[forward_pooled_batch_tiled] Layer {} token 0: Q/K norms complete, starting RoPE",
+                            layer_idx
+                        );
+                        eprintln!(
+                            "[forward_pooled_batch_tiled] Layer {} token 0: rope_buffer.len={} q_size={} n_heads={} head_dim={}",
+                            layer_idx,
+                            buffers.rope_buffer.len(),
+                            q_size,
+                            self.config.n_heads,
+                            self.config.head_dim
+                        );
+                    }
+
                     // RoPE
                     let start = Instant::now();
-                    self.apply_rope_into(
-                        &buffers.q_buffer[..q_size_actual],
-                        pos,
-                        self.config.n_heads,
-                        self.config.head_dim,
-                        &mut buffers.rope_buffer,
-                    )?;
-                    buffers.q_buffer[..q_size_actual]
-                        .copy_from_slice(&buffers.rope_buffer[..q_size_actual]);
+
+                    // Check bounds before calling RoPE
+                    let rope_needed_size =
+                        self.config.n_heads * self.config.head_dim;
+                    if buffers.rope_buffer.len() < rope_needed_size {
+                        eprintln!(
+                            "[forward_pooled_batch_tiled] rope_buffer too small: {} < {}",
+                            buffers.rope_buffer.len(),
+                            rope_needed_size
+                        );
+                        return None;
+                    }
+
+                    if self
+                        .apply_rope_into(
+                            &buffers.q_buffer[..q_size],
+                            pos,
+                            self.config.n_heads,
+                            self.config.head_dim,
+                            &mut buffers.rope_buffer,
+                        )
+                        .is_none()
+                    {
+                        eprintln!(
+                            "[forward_pooled_batch_tiled] apply_rope_into Q failed at layer {} token {}",
+                            layer_idx, token_idx
+                        );
+                        return None;
+                    }
+                    if token_idx == 0 {
+                        eprintln!(
+                            "[forward_pooled_batch_tiled] Layer {} token 0: RoPE Q complete",
+                            layer_idx
+                        );
+                    }
+                    buffers.q_buffer[..q_size]
+                        .copy_from_slice(&buffers.rope_buffer[..q_size]);
+                    if token_idx == 0 {
+                        eprintln!(
+                            "[forward_pooled_batch_tiled] Layer {} token 0: Q buffer copy complete, preparing K RoPE",
+                            layer_idx
+                        );
+                    }
 
                     let k_head_dim = k_size_actual / self.config.n_kv_heads;
-                    self.apply_rope_into(
-                        &buffers.k_buffer[..k_size_actual],
-                        pos,
-                        self.config.n_kv_heads,
-                        k_head_dim,
-                        &mut buffers.rope_buffer,
-                    )?;
+                    if token_idx == 0 {
+                        eprintln!(
+                            "[forward_pooled_batch_tiled] Layer {} token 0: K RoPE params: k_size_actual={}, n_kv_heads={}, k_head_dim={}",
+                            layer_idx,
+                            k_size_actual,
+                            self.config.n_kv_heads,
+                            k_head_dim
+                        );
+                    }
+                    if self
+                        .apply_rope_into(
+                            &buffers.k_buffer[..k_size_actual],
+                            pos,
+                            self.config.n_kv_heads,
+                            k_head_dim,
+                            &mut buffers.rope_buffer,
+                        )
+                        .is_none()
+                    {
+                        eprintln!(
+                            "[forward_pooled_batch_tiled] apply_rope_into K failed at layer {} token {}",
+                            layer_idx, token_idx
+                        );
+                        return None;
+                    }
+                    if token_idx == 0 {
+                        eprintln!(
+                            "[forward_pooled_batch_tiled] Layer {} token 0: RoPE K complete",
+                            layer_idx
+                        );
+                    }
                     buffers.k_buffer[..k_size_actual]
                         .copy_from_slice(&buffers.rope_buffer[..k_size_actual]);
                     time_rope += start.elapsed();
 
                     // Attention - use optimized tiled flash attention
+                    if token_idx == 0 {
+                        eprintln!(
+                            "[forward_pooled_batch_tiled] Layer {} token 0: Starting flash attention",
+                            layer_idx
+                        );
+                    }
                     let start = Instant::now();
                     #[cfg(target_arch = "aarch64")]
                     {
                         crate::cpu::flash_attention_single(
-                            &buffers.q_buffer[..q_size_actual],
+                            &buffers.q_buffer[..q_size],
                             &buffers.k_buffer[..k_size_actual],
                             &buffers.v_buffer[..v_size_actual],
                             layer_idx,
@@ -3703,7 +4287,7 @@ impl LlamaModel {
                     #[cfg(not(target_arch = "aarch64"))]
                     {
                         self.attention_zero_alloc(
-                            &buffers.q_buffer[..q_size_actual],
+                            &buffers.q_buffer[..q_size],
                             &buffers.k_buffer[..k_size_actual],
                             &buffers.v_buffer[..v_size_actual],
                             layer_idx,
@@ -3717,21 +4301,63 @@ impl LlamaModel {
                     }
                     time_attention += start.elapsed();
 
+                    // Apply gate (Qwen3.5-MoE attention layers)
+                    // Gate is extracted from the second half of Q output
+                    if has_q_gate {
+                        if token_idx == 0 {
+                            eprintln!(
+                                "[forward_pooled_batch_tiled] Layer {} token 0: Applying gate, q_batch_output.len()={}, q_out_size_actual={}",
+                                layer_idx,
+                                buffers.q_batch_output.len(),
+                                q_out_size_actual
+                            );
+                        }
+                        let gate_size = q_size;
+                        for i in 0..gate_size {
+                            let gate_val = buffers.q_batch_output
+                                [token_idx * q_out_size_actual + q_size + i];
+                            let gate_sigmoid = 1.0 / (1.0 + (-gate_val).exp());
+                            buffers.attn_out[i] *= gate_sigmoid;
+                        }
+                        if token_idx == 0 {
+                            eprintln!(
+                                "[forward_pooled_batch_tiled] Layer {} token 0: Gate applied",
+                                layer_idx
+                            );
+                        }
+                    }
+
                     // Store attention output for batch wo projection
                     buffers.attn_batch_output[token_idx * attn_out_size
                         ..(token_idx + 1) * attn_out_size]
                         .copy_from_slice(&buffers.attn_out[..attn_out_size]);
                 }
 
+                eprintln!(
+                    "[forward_pooled_batch_tiled] Layer {} attention token loop complete, processing wo projection",
+                    layer_idx
+                );
+
                 // Batch wo projection
                 let start = Instant::now();
                 if let Some(ref wo) = layer.wo {
+                    eprintln!(
+                        "[forward_pooled_batch_tiled] Layer {} wo shape={:?}",
+                        layer_idx, wo.shape
+                    );
                     let attn_inputs: Vec<&[f32]> = (0..n_tokens)
                         .map(|i| {
                             &buffers.attn_batch_output
                                 [i * attn_out_size..(i + 1) * attn_out_size]
                         })
                         .collect();
+
+                    eprintln!(
+                        "[forward_pooled_batch_tiled] Layer {} attn_inputs.len()={}, batch_hidden.len()={}",
+                        layer_idx,
+                        attn_inputs.len(),
+                        buffers.batch_hidden.len()
+                    );
 
                     self.gemm_batch_prefill(
                         &attn_inputs,
@@ -3741,6 +4367,10 @@ impl LlamaModel {
                         &mut buffers.x_padded,
                         &mut buffers.x_padded_threads,
                         None,
+                    );
+                    eprintln!(
+                        "[forward_pooled_batch_tiled] Layer {} wo projection complete",
+                        layer_idx
                     );
                 } else {
                     // No wo layer (rare) - just copy attention outputs
@@ -3866,7 +4496,17 @@ impl LlamaModel {
                 }
             } else {
                 // MoE - process tokens sequentially (different experts per token)
+                eprintln!(
+                    "[forward_pooled_batch_tiled] Layer {} using MoE FFN path",
+                    layer_idx
+                );
                 for token_idx in 0..n_tokens {
+                    if token_idx == 0 {
+                        eprintln!(
+                            "[forward_pooled_batch_tiled] Layer {} token 0: Computing MoE FFN",
+                            layer_idx
+                        );
+                    }
                     self.compute_ffn_zero_alloc(
                         layer,
                         &buffers.batch_hidden[token_idx * hidden_size
@@ -3881,7 +4521,17 @@ impl LlamaModel {
                     buffers.batch_hidden[token_idx * hidden_size
                         ..(token_idx + 1) * hidden_size]
                         .copy_from_slice(&buffers.hidden_alt[..hidden_size]);
+                    if token_idx == 0 {
+                        eprintln!(
+                            "[forward_pooled_batch_tiled] Layer {} token 0: MoE FFN complete",
+                            layer_idx
+                        );
+                    }
                 }
+                eprintln!(
+                    "[forward_pooled_batch_tiled] Layer {} MoE FFN complete for all tokens",
+                    layer_idx
+                );
             }
             time_ffn += start.elapsed();
         }
@@ -3903,7 +4553,7 @@ impl LlamaModel {
             &mut buffers.q8k_input,
             &mut buffers.x_padded,
         );
-        time_output = start.elapsed();
+        _time_output = start.elapsed();
 
         // Debug timing disabled for benchmarking
         // eprintln!("\n=== Prefill Timing Breakdown ===");
@@ -4084,16 +4734,34 @@ impl LlamaModel {
             head_dim
         };
 
-        // For MLA, Q's head_dim is also different from config.head_dim
-        let q_head_dim = q_out_size / self.config.n_heads;
-
         // Update n_heads and n_kv_heads based on actual weight shapes
         let actual_n_heads = self.config.n_heads;
         let actual_n_kv_heads = k_out_size / k_head_dim;
 
+        // Detect Q+Gate architecture (Qwen3.5-MoE attention layers)
+        // Q projection outputs Q + Gate when q_norm exists and q_out_size == 2 * n_heads * head_dim
+        let has_q_gate = layer.q_norm.is_some()
+            && q_out_size == 2 * actual_n_heads * head_dim;
+        let (q_only, gate) = if has_q_gate {
+            // Split Q into Q part (first half) and Gate part (second half)
+            let q_size = actual_n_heads * head_dim;
+            let q_part = q[0..q_size].to_vec();
+            let gate_part = q[q_size..].to_vec();
+            (q_part, Some(gate_part))
+        } else {
+            (q, None)
+        };
+
+        // For MLA, Q's head_dim is also different from config.head_dim
+        let q_head_dim = if has_q_gate {
+            head_dim // Q part uses standard head_dim
+        } else {
+            q_out_size / actual_n_heads
+        };
+
         // For standard attention, apply Q/K norms (Qwen-style)
         // For MQA, norms are already applied in compute_qkv
-        let q = q;
+        let q = q_only;
         let k = k;
         if layer.wk.is_some() {
             // Standard attention - apply Q/K norms if present
@@ -4123,35 +4791,57 @@ impl LlamaModel {
 
         // 3. RoPE
         // For standard attention: apply RoPE to full Q and K
-        // For MLA: Q gets full RoPE, K only applies RoPE to the rope part
+        // For MLA non-absorbed path: Q gets RoPE on trailing dims, K gets RoPE on trailing dims
         let q_rope = if layer.attn_kv_a_mqa.is_some() {
-            // MLA: Q's head_dim is q_head_dim (192 for DeepSeek)
-            self.apply_rope(&q, pos, actual_n_heads, q_head_dim)?
+            // MLA non-absorbed path: Q has shape [key_length, n_head]
+            // RoPE is applied to the trailing qk_rope_head_dim dimensions
+            // Q layout per head: [qk_nope, qk_rope]
+            let qk_nope_head_dim =
+                self.config.key_length - self.config.qk_rope_head_dim;
+            let qk_rope_head_dim = self.config.qk_rope_head_dim;
+
+            let mut q_with_rope = Vec::with_capacity(q.len());
+            for h in 0..actual_n_heads {
+                let head_start = h * q_head_dim;
+                let nope_end = head_start + qk_nope_head_dim;
+                let rope_end = head_start + q_head_dim;
+
+                // Copy non-RoPE part unchanged
+                q_with_rope.extend_from_slice(&q[head_start..nope_end]);
+
+                // Apply RoPE to RoPE part
+                let q_rope_part = &q[nope_end..rope_end];
+                let rope_applied =
+                    self.apply_rope(q_rope_part, pos, 1, qk_rope_head_dim)?;
+                q_with_rope.extend(rope_applied);
+            }
+            q_with_rope
         } else {
             self.apply_rope(&q, pos, actual_n_heads, q_head_dim)?
         };
 
         let k_rope = if layer.attn_kv_a_mqa.is_some() {
-            // MLA: Only apply RoPE to the rope part of K
-            // K structure per head: [qk_rope_head_dim (rope), qk_nope_head_dim (non-rope)]
+            // MLA non-absorbed path: K has shape [key_length, n_kv_heads]
+            // K layout per head: [k_nope, k_pe] (RoPE on trailing dims)
+            let qk_nope_head_dim =
+                self.config.key_length - self.config.qk_rope_head_dim;
             let qk_rope_head_dim = self.config.qk_rope_head_dim;
             let key_length = self.config.key_length;
 
-            // Apply RoPE only to the rope part of each head
             let mut k_with_rope = Vec::with_capacity(k.len());
             for h in 0..actual_n_kv_heads {
                 let head_start = h * key_length;
-                let rope_end = head_start + qk_rope_head_dim;
-                let nope_end = head_start + key_length;
+                let nope_end = head_start + qk_nope_head_dim;
+                let rope_end = head_start + key_length;
 
-                // Apply RoPE to rope part
-                let k_rope_head = &k[head_start..rope_end];
+                // Copy non-RoPE part unchanged
+                k_with_rope.extend_from_slice(&k[head_start..nope_end]);
+
+                // Apply RoPE to RoPE part (trailing dims)
+                let k_rope_part = &k[nope_end..rope_end];
                 let rope_applied =
-                    self.apply_rope(k_rope_head, pos, 1, qk_rope_head_dim)?;
+                    self.apply_rope(k_rope_part, pos, 1, qk_rope_head_dim)?;
                 k_with_rope.extend(rope_applied);
-
-                // Copy non-rope part unchanged
-                k_with_rope.extend_from_slice(&k[rope_end..nope_end]);
             }
             k_with_rope
         } else {
@@ -4167,7 +4857,7 @@ impl LlamaModel {
         };
 
         // 4. Attention (use actual n_heads and head_dim)
-        let attn_out = self.attention(
+        let mut attn_out = self.attention(
             &q_rope,
             &k_rope,
             &v,
@@ -4177,6 +4867,18 @@ impl LlamaModel {
             q_head_dim,
             actual_n_kv_heads,
         )?;
+
+        // 4b. Apply gate (Qwen3.5-MoE attention layers)
+        // Gate is applied after attention, before wo projection
+        if let Some(ref gate_vec) = gate {
+            // Apply sigmoid to gate
+            let gate_sigmoid: Vec<f32> =
+                gate_vec.iter().map(|&g| 1.0 / (1.0 + (-g).exp())).collect();
+            // Multiply attention output by gate
+            for i in 0..attn_out.len().min(gate_sigmoid.len()) {
+                attn_out[i] *= gate_sigmoid[i];
+            }
+        }
 
         // 5. Output projection
         let wo = match layer.wo.as_ref() {
@@ -4217,7 +4919,8 @@ impl LlamaModel {
         Some(residual.iter().zip(ffn_out.iter()).map(|(r, f)| r + f).collect())
     }
 
-    /// Forward pass for SSM/Mamba layers (non-zero-alloc version)
+    /// Forward pass for SSM/Gated Delta Net layers (non-zero-alloc version)
+    /// Implements the Gated Delta Net algorithm used by Qwen3.6-35B
     pub fn forward_layer_ssm(
         &self,
         layer: &LlamaLayer,
@@ -4242,13 +4945,15 @@ impl LlamaModel {
         let normed =
             self.apply_rms_norm_impl(hidden, attn_norm, hidden_size)?;
 
-        // 2. SSM forward (Mamba layer)
-        // For non-zero-alloc, we need to create temporary buffers
-        // This is slow but functional
+        // Gated Delta Net dimensions
+        let d_state = self.config.ssm_state_size; // 128 (head_k_dim)
+        let n_group = self.config.ssm_group_count; // 16 (num_k_heads for q/k)
+        let dt_rank = self.config.ssm_time_step_rank; // 32 (num_v_heads)
+        let conv_kernel = self.config.ssm_conv_kernel; // 4
 
-        // SSM output projection: ssm_out
+        // d_inner is derived from ssm_out output dimension
         let ssm_out = layer.ssm_out.as_ref()?;
-        let ssm_dim = if ssm_out.shape.len() >= 2 {
+        let d_inner = if ssm_out.shape.len() >= 2 {
             if ssm_out.shape[1] == hidden_size {
                 ssm_out.shape[0]
             } else {
@@ -4258,118 +4963,224 @@ impl LlamaModel {
             ssm_out.shape[0]
         };
 
-        // Get SSM input projection
+        let head_v_dim = d_inner / dt_rank; // 4096 / 32 = 128
+
+        // conv_channels = d_inner + 2 * n_group * d_state
+        // = 4096 + 2 * 16 * 128 = 8192
+        let conv_channels = d_inner + 2 * n_group * d_state;
+
+        // 2. Input projections
         let attn_qkv = layer.attn_qkv.as_ref()?;
-        let total_dim = if attn_qkv.shape.len() >= 2 {
-            if attn_qkv.shape[1] == hidden_size {
-                attn_qkv.shape[0]
+        let qkv_mixed = self.gemv_impl(&normed, attn_qkv, conv_channels)?;
+
+        // z for gated normalization (if available)
+        let z = if let Some(ref attn_gate) = layer.attn_gate {
+            let z_dim = if attn_gate.shape.len() >= 2 {
+                if attn_gate.shape[1] == hidden_size {
+                    attn_gate.shape[0]
+                } else {
+                    attn_gate.shape[1]
+                }
             } else {
-                attn_qkv.shape[1]
-            }
+                attn_gate.shape[0]
+            };
+            Some(self.gemv_impl(&normed, attn_gate, z_dim)?)
         } else {
-            attn_qkv.shape[0]
+            None
         };
 
-        // Input projection
-        let ssm_input = self.gemv_impl(&normed, attn_qkv, total_dim)?;
-
-        // SSM conv1d (simplified for single token)
-        let ssm_conv1d = layer.ssm_conv1d.as_ref()?;
-        let conv_data: &[f32] = bytemuck::cast_slice(ssm_conv1d.bytes());
-        let conv_kernel = ssm_conv1d.shape[0];
-        let mut ssm_conv_out = vec![0.0f32; ssm_dim];
-
-        // Simplified conv1d for single token
-        for i in 0..ssm_dim.min(conv_data.len() / total_dim) {
-            let mut sum = 0.0f32;
-            for k in 0..conv_kernel {
-                let input_idx = i;
-                let weight_idx = k * total_dim + i;
-                if input_idx < ssm_input.len() && weight_idx < conv_data.len() {
-                    sum += ssm_input[input_idx] * conv_data[weight_idx];
-                }
-            }
-            ssm_conv_out[i] = sum;
-        }
-
-        // SSM alpha, beta projections
+        // 3. Gate projections
         let ssm_alpha = layer.ssm_alpha.as_ref()?;
         let ssm_beta = layer.ssm_beta.as_ref()?;
-        let time_step_rank = self.config.ssm_time_step_rank;
 
-        let mut delta = self.gemv_impl(&normed, ssm_alpha, time_step_rank)?;
-        let b = self.gemv_impl(&normed, ssm_beta, time_step_rank)?;
+        let mut alpha = self.gemv_impl(&normed, ssm_alpha, dt_rank)?;
+        let beta = self.gemv_impl(&normed, ssm_beta, dt_rank)?;
 
-        // Apply dt_bias and softplus
+        // Apply dt_bias and softplus to alpha
         let ssm_dt_bias = layer.ssm_dt_bias.as_ref()?;
         let dt_bias_data: &[f32] = bytemuck::cast_slice(ssm_dt_bias.bytes());
-        for i in 0..time_step_rank.min(dt_bias_data.len()) {
-            let x = delta[i] + dt_bias_data[i];
-            delta[i] = (1.0 + x.exp()).ln();
+        for i in 0..dt_rank.min(dt_bias_data.len()) {
+            let x = alpha[i] + dt_bias_data[i];
+            alpha[i] = (1.0 + x.exp()).ln(); // softplus
         }
 
-        // Apply sigmoid to b
-        let b: Vec<f32> = b.iter().map(|&x| 1.0 / (1.0 + (-x).exp())).collect();
-
-        // SSM A parameter
+        // SSM A parameter and gate computation
+        // ssm_a is stored as -A_log (log of -A)
+        // gate = alpha_softplus * ssm_a, then exp(gate) is the decay factor
         let ssm_a = layer.ssm_a.as_ref()?;
         let a_data: &[f32] = bytemuck::cast_slice(ssm_a.bytes());
+        let gate: Vec<f32> = (0..dt_rank)
+            .map(|i| {
+                let a_val = if i < a_data.len() { a_data[i] } else { 0.0f32 };
+                (alpha[i] * a_val).exp() // Apply exp to get decay factor
+            })
+            .collect();
 
-        // Selective scan (simplified)
-        let state_size = self.config.ssm_state_size;
-        let n_groups = self.config.ssm_group_count;
-        let ssm_inner_per_group = ssm_dim / n_groups;
+        // Apply sigmoid to beta
+        let beta: Vec<f32> =
+            beta.iter().map(|&x| 1.0 / (1.0 + (-x).exp())).collect();
 
-        let mut ssm_y = vec![0.0f32; ssm_dim];
+        // 4. Conv1d with SiLU activation
+        let ssm_conv1d = layer.ssm_conv1d.as_ref()?;
+        let conv_data: &[f32] = bytemuck::cast_slice(ssm_conv1d.bytes());
+        let mut conv_out = vec![0.0f32; conv_channels];
 
-        for g in 0..n_groups {
-            let a_val = if g < a_data.len() { a_data[g] } else { 0.0f32 };
-            let a_exp = a_val.exp();
+        // Simplified conv1d for single token (no history)
+        for i in 0..conv_channels {
+            let mut sum = 0.0f32;
+            for k in 0..conv_kernel {
+                let weight_idx = k * conv_channels + i;
+                if weight_idx < conv_data.len() && i < qkv_mixed.len() {
+                    sum += qkv_mixed[i] * conv_data[weight_idx];
+                }
+            }
+            // Apply SiLU activation: x * sigmoid(x)
+            conv_out[i] = sum * (1.0 / (1.0 + (-sum).exp()));
+        }
 
-            for s in 0..state_size.min(ssm_inner_per_group) {
-                let input_idx = g * ssm_inner_per_group + s;
-                if input_idx < ssm_dim {
-                    let b_val = if s < time_step_rank { b[s] } else { 1.0 };
-                    let x_val = ssm_conv_out[input_idx];
+        // 5. Split conv output into q_conv, k_conv, v_conv
+        // Layout: [q_conv (d_state * n_group), k_conv (d_state * n_group), v_conv (d_inner)]
+        let qk_dim = d_state * n_group; // 128 * 16 = 2048
+        let q_conv: Vec<f32> = conv_out[0..qk_dim].to_vec();
+        let k_conv: Vec<f32> = conv_out[qk_dim..2 * qk_dim].to_vec();
+        let v_conv: Vec<f32> =
+            conv_out[2 * qk_dim..2 * qk_dim + d_inner].to_vec();
 
-                    // Simplified state update (no persistent state for non-zero-alloc)
-                    let c_val = if s < time_step_rank {
-                        ssm_conv_out[ssm_dim - time_step_rank + s]
-                    } else {
-                        1.0
-                    };
-                    ssm_y[input_idx] = c_val * b_val * x_val;
+        // 6. L2 normalization on q_conv and k_conv
+        let scale = 1.0 / (d_state as f32).sqrt();
+
+        let mut q_normed = vec![0.0f32; q_conv.len()];
+        for h in 0..n_group {
+            let offset = h * d_state;
+            let mut norm = 0.0f32;
+            for i in 0..d_state {
+                norm += q_conv[offset + i] * q_conv[offset + i];
+            }
+            norm = (norm + 1e-6).sqrt();
+            for i in 0..d_state {
+                q_normed[offset + i] = q_conv[offset + i] / norm * scale;
+            }
+        }
+
+        let mut k_normed = vec![0.0f32; k_conv.len()];
+        for h in 0..n_group {
+            let offset = h * d_state;
+            let mut norm = 0.0f32;
+            for i in 0..d_state {
+                norm += k_conv[offset + i] * k_conv[offset + i];
+            }
+            norm = (norm + 1e-6).sqrt();
+            for i in 0..d_state {
+                k_normed[offset + i] = k_conv[offset + i] / norm * scale;
+            }
+        }
+
+        // 7. Gated Delta Net recurrent attention
+        // State is [head_v_dim, head_v_dim, dt_rank] = [128, 128, 32]
+        // For non-zero-alloc, use zero initial state (no persistence)
+        let mut state = vec![0.0f32; head_v_dim * head_v_dim * dt_rank];
+        let mut output = vec![0.0f32; d_inner];
+
+        for v_head in 0..dt_rank {
+            // q_head and k_head repeat for dt_rank heads (16 q/k heads vs 32 v heads)
+            let qk_head = v_head % n_group;
+            let q_offset = qk_head * d_state;
+            let k_offset = qk_head * d_state;
+            let v_offset = v_head * head_v_dim;
+            let state_offset = v_head * head_v_dim * head_v_dim;
+
+            // Get gate and beta for this head
+            let gate_val = gate[v_head]; // Already exp(gate)
+            let beta_val = beta[v_head];
+
+            // Compute delta = beta * (q ⊗ k) (outer product)
+            // delta[i][j] = beta * q[i] * k[j]
+            for i in 0..head_v_dim {
+                for j in 0..head_v_dim {
+                    let q_val = q_normed[q_offset + i];
+                    let k_val = k_normed[k_offset + j];
+                    let delta_ij = beta_val * q_val * k_val;
+
+                    // State update: state = gate * state + delta
+                    let state_idx = state_offset + i * head_v_dim + j;
+                    state[state_idx] = gate_val * state[state_idx] + delta_ij;
+                }
+            }
+
+            // Output: y = state @ v
+            // y[i] = sum_j state[i][j] * v[j]
+            for i in 0..head_v_dim {
+                let mut sum = 0.0f32;
+                for j in 0..head_v_dim {
+                    let state_idx = state_offset + i * head_v_dim + j;
+                    sum += state[state_idx] * v_conv[v_offset + j];
+                }
+                output[v_offset + i] = sum;
+            }
+        }
+
+        // 8. Apply gated normalization: norm(output) * silu(z)
+        if let Some(ref ssm_norm) = layer.ssm_norm {
+            let norm_data: &[f32] = bytemuck::cast_slice(ssm_norm.bytes());
+
+            if let Some(ref z_vec) = z {
+                // Gated RMS norm: norm(output) * silu(z)
+                let mut ss = 0.0f32;
+                for i in 0..d_inner {
+                    ss += output[i] * output[i];
+                }
+                let rms = (ss / d_inner as f32 + 1e-5).sqrt();
+
+                for i in 0..d_inner.min(norm_data.len()).min(z_vec.len()) {
+                    let z_val = z_vec[i];
+                    let silu_z = z_val * (1.0 / (1.0 + (-z_val).exp())); // SiLU = x * sigmoid(x)
+                    output[i] = (output[i] / rms * norm_data[i]) * silu_z;
+                }
+            } else {
+                // Standard RMS norm
+                let mut ss = 0.0f32;
+                for i in 0..d_inner {
+                    ss += output[i] * output[i];
+                }
+                let rms = (ss / d_inner as f32 + 1e-5).sqrt();
+                for i in 0..d_inner.min(norm_data.len()) {
+                    output[i] = output[i] / rms * norm_data[i];
                 }
             }
         }
 
-        // Apply SSM norm
-        if let Some(ref ssm_norm) = layer.ssm_norm {
-            let norm_data: &[f32] = bytemuck::cast_slice(ssm_norm.bytes());
-            let mut ss = 0.0f32;
-            for i in 0..ssm_dim.min(norm_data.len()) {
-                ss += ssm_y[i] * ssm_y[i];
-            }
-            let rms = (ss / ssm_dim as f32 + 1e-5).sqrt();
-            for i in 0..ssm_dim.min(norm_data.len()) {
-                ssm_y[i] = ssm_y[i] / rms * norm_data[i];
-            }
-        }
+        // 9. Output projection
+        let ssm_output = self.gemv_impl(&output, ssm_out, hidden_size)?;
 
-        // Output projection
-        let output = self.gemv_impl(&ssm_y, ssm_out, hidden_size)?;
+        // 10. Residual connection: residual = hidden + SSM output
+        let residual: Vec<f32> =
+            hidden.iter().zip(ssm_output.iter()).map(|(h, s)| h + s).collect();
 
-        // FFN (MoE or standard) after SSM
+        // 11. Post-attention norm (ffn_norm field contains post_attention_norm for SSM layers)
+        let ffn_norm = match layer.ffn_norm.as_ref() {
+            Some(n) => n,
+            None => {
+                eprintln!(
+                    "[forward_layer_ssm] No ffn_norm at layer {}",
+                    layer_idx
+                );
+                return Some(residual); // Return residual without FFN
+            }
+        };
+        let ffn_normed =
+            self.apply_rms_norm_impl(&residual, ffn_norm, hidden_size)?;
+
+        // 12. FFN (MoE or standard)
         let ffn_out = if layer.has_moe_ffn() {
-            self.compute_moe_ffn(layer, &output, hidden_size)?
+            self.compute_moe_ffn(layer, &ffn_normed, hidden_size)?
         } else if layer.w1.is_some() {
-            self.compute_ffn(layer, &output, hidden_size)?
+            self.compute_ffn(layer, &ffn_normed, hidden_size)?
         } else {
-            output.clone()
+            ffn_normed.clone()
         };
 
-        // Residual
-        Some(hidden.iter().zip(ffn_out.iter()).map(|(h, f)| h + f).collect())
+        // 13. Final residual: final = residual + FFN output
+        Some(residual.iter().zip(ffn_out.iter()).map(|(r, f)| r + f).collect())
     }
 
     /// Zero-allocation forward layer using pre-allocated buffers
@@ -4426,15 +5237,28 @@ impl LlamaModel {
 
         // Check if this is a Mamba/SSM layer
         if layer.is_ssm() {
+            // Save original hidden for residual connection
+            let original_hidden: Vec<f32> =
+                buffers.hidden[..hidden_size].to_vec();
+
             // Mamba/SSM layers: run SSM forward instead of attention
-            // forward_ssm handles the full SSM processing and writes to buffers.hidden
+            // forward_ssm reads from hidden_alt (normed input) and writes to hidden
             let start = Instant::now();
             self.forward_ssm(layer, buffers)?;
             time_qkv += start.elapsed();
 
+            // Residual connection: hidden = original_hidden + ssm_output
+            for i in 0..hidden_size {
+                buffers.hidden[i] = original_hidden[i] + buffers.hidden[i];
+            }
+
             // Some SSM layers also have MoE FFN (Qwen3.6-35B style)
             if layer.has_moe_ffn() {
-                // FFN norm (hidden -> hidden_alt)
+                // Save residual for FFN residual connection
+                let ffn_residual: Vec<f32> =
+                    buffers.hidden[..hidden_size].to_vec();
+
+                // FFN norm (residual -> hidden_alt)
                 let start = Instant::now();
                 let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
                 self.apply_rms_norm_predequant(
@@ -4455,9 +5279,9 @@ impl LlamaModel {
                 buffers.hidden_alt[..hidden_size].copy_from_slice(&result);
                 time_ffn += start.elapsed();
 
-                // Add residual (hidden += hidden_alt)
+                // Final residual: hidden = ffn_residual + ffn_output
                 for i in 0..hidden_size {
-                    buffers.hidden[i] += buffers.hidden_alt[i];
+                    buffers.hidden[i] = ffn_residual[i] + buffers.hidden_alt[i];
                 }
             }
 
@@ -4616,7 +5440,7 @@ impl LlamaModel {
         } else {
             // Standard separate wq/wk/wv projections
             // Get output dimensions directly from weight tensors for hybrid model support
-            let q_size = if let Some(ref wq) = layer.wq {
+            let q_out_size = if let Some(ref wq) = layer.wq {
                 if wq.shape.len() >= 2 {
                     if wq.shape[1] == hidden_size {
                         wq.shape[0]
@@ -4629,6 +5453,11 @@ impl LlamaModel {
             } else {
                 n_heads * head_dim
             };
+            // Detect Q+Gate architecture (Qwen3.5-MoE attention layers)
+            let has_q_gate =
+                layer.q_norm.is_some() && q_out_size == 2 * n_heads * head_dim;
+            let q_size =
+                if has_q_gate { n_heads * head_dim } else { q_out_size };
             let k_size = if let Some(ref wk) = layer.wk {
                 if wk.shape.len() >= 2 {
                     if wk.shape[1] == hidden_size {
@@ -4700,12 +5529,16 @@ impl LlamaModel {
                 );
 
                 // Use pre-quantized input for all projections (hybrid auto thread selection)
+                // For Q+Gate, Q output includes gate, store in qkv_buffer then extract
                 self.gemv_with_prequant(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wq.as_ref()?,
-                    &mut buffers.q_buffer[..q_size],
+                    &mut buffers.qkv_buffer[..q_out_size],
                 );
+                // Extract Q part to q_buffer
+                buffers.q_buffer[..q_size]
+                    .copy_from_slice(&buffers.qkv_buffer[..q_size]);
 
                 self.gemv_with_prequant(
                     x_q8k_blocks,
@@ -4725,11 +5558,14 @@ impl LlamaModel {
                 self.gemv_into_with_buffers_with_threads(
                     &buffers.hidden_alt[..hidden_size],
                     layer.wq.as_ref()?,
-                    &mut buffers.q_buffer[..q_size],
+                    &mut buffers.qkv_buffer[..q_out_size],
                     &mut buffers.q8k_input,
                     &mut buffers.x_padded,
                     n_threads,
                 );
+                // Extract Q part to q_buffer
+                buffers.q_buffer[..q_size]
+                    .copy_from_slice(&buffers.qkv_buffer[..q_size]);
 
                 self.gemv_into_with_buffers_with_threads(
                     &buffers.hidden_alt[..hidden_size],
@@ -4752,6 +5588,7 @@ impl LlamaModel {
             time_qkv += start.elapsed();
 
             // Apply Q/K norms (Qwen-style) before RoPE
+            // For Q+Gate, only normalize Q part (not gate)
             if let Some(ref q_norm) = layer.q_norm {
                 let norm_data: &[f32] = bytemuck::cast_slice(q_norm.bytes());
                 for h in 0..n_heads {
@@ -4786,9 +5623,10 @@ impl LlamaModel {
             }
 
             // 3. RoPE (standard path)
+            // For Q+Gate, only apply RoPE to Q part
             let start = Instant::now();
             self.apply_rope_into(
-                &buffers.q_buffer,
+                &buffers.q_buffer[..q_size],
                 pos,
                 n_heads,
                 head_dim,
@@ -4841,6 +5679,17 @@ impl LlamaModel {
                 )?;
             }
             time_attn += start.elapsed();
+
+            // Apply gate (Qwen3.5-MoE attention layers)
+            // Gate is extracted from the second half of Q output
+            if has_q_gate {
+                let gate_size = q_size;
+                for i in 0..gate_size {
+                    let gate_val = buffers.qkv_buffer[q_size + i];
+                    let gate_sigmoid = 1.0 / (1.0 + (-gate_val).exp());
+                    buffers.attn_out[i] *= gate_sigmoid;
+                }
+            }
         }
 
         // 5. Output projection (attn_out -> hidden_alt) - single-thread for decode
@@ -5151,13 +6000,26 @@ impl LlamaModel {
 
         // Check if this is a Mamba/SSM layer
         if layer.is_ssm() {
+            // Save original hidden for residual connection
+            let original_hidden: Vec<f32> =
+                buffers.hidden[..hidden_size].to_vec();
+
             // Mamba/SSM layers: run SSM forward instead of attention
-            // forward_ssm handles the full SSM processing and writes to buffers.hidden
+            // forward_ssm reads from hidden_alt (normed input) and writes to hidden
             self.forward_ssm(layer, buffers)?;
+
+            // Residual connection: hidden = original_hidden + ssm_output
+            for i in 0..hidden_size {
+                buffers.hidden[i] = original_hidden[i] + buffers.hidden[i];
+            }
 
             // Some SSM layers also have MoE FFN (Qwen3.6-35B style)
             if layer.has_moe_ffn() {
-                // FFN norm (hidden -> hidden_alt)
+                // Save residual for FFN residual connection
+                let ffn_residual: Vec<f32> =
+                    buffers.hidden[..hidden_size].to_vec();
+
+                // FFN norm (residual -> hidden_alt)
                 let ffn_norm_offset = layer_idx * 2 * hidden_size + hidden_size;
                 self.apply_rms_norm_predequant(
                     &buffers.hidden,
@@ -5174,9 +6036,9 @@ impl LlamaModel {
                 )?;
                 buffers.hidden_alt[..hidden_size].copy_from_slice(&result);
 
-                // Add residual (hidden += hidden_alt)
+                // Final residual: hidden = ffn_residual + ffn_output
                 for i in 0..hidden_size {
-                    buffers.hidden[i] += buffers.hidden_alt[i];
+                    buffers.hidden[i] = ffn_residual[i] + buffers.hidden_alt[i];
                 }
             }
 
@@ -5325,7 +6187,7 @@ impl LlamaModel {
         } else {
             // Standard separate wq/wk/wv projections
             // Get output dimensions directly from weight tensors for hybrid model support
-            let q_size = if let Some(ref wq) = layer.wq {
+            let q_out_size = if let Some(ref wq) = layer.wq {
                 if wq.shape.len() >= 2 {
                     if wq.shape[1] == hidden_size {
                         wq.shape[0]
@@ -5363,6 +6225,17 @@ impl LlamaModel {
                 }
             } else {
                 n_kv_heads * head_dim
+            };
+
+            // Detect Q+Gate architecture (Qwen3.5-MoE attention layers)
+            // Q projection outputs Q + Gate when q_norm exists and q_out_size == 2 * n_heads * head_dim
+            let has_q_gate =
+                layer.q_norm.is_some() && q_out_size == 2 * n_heads * head_dim;
+            let q_size = if has_q_gate {
+                // Q output contains Q + Gate, Q part is first half
+                n_heads * head_dim
+            } else {
+                q_out_size
             };
 
             let wq_dtype = layer.wq.as_ref()?.dtype;
@@ -5407,12 +6280,17 @@ impl LlamaModel {
 
                 // Use single-thread GEMV with vec_dot for decode (batch=1, not tiled)
                 // Tiled is only profitable for batch >= 8 (llama.cpp standard)
+                // For Q+Gate, we need to read full q_out_size, then extract Q and Gate
                 self.gemv_with_prequant_single_thread(
                     x_q8k_blocks,
                     hidden_size,
                     layer.wq.as_ref()?,
-                    &mut buffers.q_buffer[..q_size],
+                    &mut buffers.qkv_buffer[..q_out_size],
                 );
+                // Extract Q part to q_buffer
+                buffers.q_buffer[..q_size]
+                    .copy_from_slice(&buffers.qkv_buffer[..q_size]);
+                // Gate part will be extracted after attention
 
                 self.gemv_with_prequant_single_thread(
                     x_q8k_blocks,
@@ -5432,10 +6310,13 @@ impl LlamaModel {
                 self.gemv_into_with_buffers(
                     &buffers.hidden_alt,
                     layer.wq.as_ref()?,
-                    &mut buffers.q_buffer[..q_size],
+                    &mut buffers.qkv_buffer[..q_out_size],
                     &mut buffers.q8k_input,
                     &mut buffers.x_padded,
                 );
+                // Extract Q part to q_buffer
+                buffers.q_buffer[..q_size]
+                    .copy_from_slice(&buffers.qkv_buffer[..q_size]);
 
                 self.gemv_into_with_buffers(
                     &buffers.hidden_alt,
@@ -5456,6 +6337,7 @@ impl LlamaModel {
 
             // Apply Q/K norms (Qwen-style) before RoPE
             // Qwen models require normalizing Q and K per-head after projection
+            // For Q+Gate architecture, only normalize Q part (not Gate)
             if let Some(ref q_norm) = layer.q_norm {
                 let norm_data: &[f32] = bytemuck::cast_slice(q_norm.bytes());
                 for h in 0..n_heads {
@@ -5542,6 +6424,18 @@ impl LlamaModel {
                     &mut buffers.attn_out,
                     &mut buffers.kv_dequant,
                 )?;
+            }
+
+            // Apply gate (Qwen3.5-MoE attention layers)
+            // Gate is extracted from the second half of Q output
+            if has_q_gate {
+                let gate_size = n_heads * head_dim;
+                // Apply sigmoid to gate (stored in qkv_buffer after Q part)
+                for i in 0..gate_size {
+                    let gate_val = buffers.qkv_buffer[q_size + i];
+                    let gate_sigmoid = 1.0 / (1.0 + (-gate_val).exp());
+                    buffers.attn_out[i] *= gate_sigmoid;
+                }
             }
         }
 
@@ -5680,8 +6574,8 @@ impl LlamaModel {
         None
     }
 
-    /// SSM (State Space Model) forward for Mamba layers
-    /// Used by Qwen3.6-35B and other hybrid Mamba-Transformer models
+    /// SSM (Gated Delta Net) forward for hybrid Mamba-Transformer models
+    /// Used by Qwen3.6-35B and other hybrid models
     /// Reads input from buffers.hidden, writes output to buffers.hidden
     pub fn forward_ssm(
         &self,
@@ -5689,37 +6583,19 @@ impl LlamaModel {
         buffers: &mut crate::cpu::CpuWorkBuffers,
     ) -> Option<()> {
         let hidden_size = self.config.hidden_size;
-        let n_groups = self.config.ssm_group_count;
-        let state_size = self.config.ssm_state_size;
-        let time_step_rank = self.config.ssm_time_step_rank;
-        let conv_kernel = self.config.ssm_conv_kernel;
 
-        // 1. Input projection via attn_qkv
-        // attn_qkv: [hidden_size, total_dim] where total_dim = ssm_dim + other_dim
-        let attn_qkv = layer.attn_qkv.as_ref()?;
-        let total_dim = if attn_qkv.shape.len() >= 2 {
-            if attn_qkv.shape[1] == hidden_size {
-                attn_qkv.shape[0]
-            } else {
-                attn_qkv.shape[1]
-            }
-        } else {
-            attn_qkv.shape[0]
-        };
+        // Gated Delta Net dimensions
+        let d_state = self.config.ssm_state_size; // 128 (head_k_dim)
+        let n_group = self.config.ssm_group_count; // 16 (num_k_heads for q/k)
+        let dt_rank = self.config.ssm_time_step_rank; // 32 (num_v_heads)
+        let conv_kernel = self.config.ssm_conv_kernel; // 4
 
-        self.gemv_into_with_buffers(
-            &buffers.hidden[..hidden_size],
-            attn_qkv,
-            &mut buffers.ssm_input[..total_dim],
-            &mut buffers.q8k_input,
-            &mut buffers.x_padded,
-        );
-
-        // Determine SSM dimension from ssm_out tensor
-        // ssm_out: [ssm_dim, hidden_size] projects ssm_dim → hidden_size
-        let ssm_out = layer.ssm_out.as_ref()?;
-        let ssm_dim = if ssm_out.shape.len() >= 2 {
-            // ssm_out is stored transposed: shape[0] is input dim, shape[1] is output dim
+        // d_inner is derived from ssm_out output dimension
+        let ssm_out = layer.ssm_out.as_ref().or_else(|| {
+            eprintln!("[forward_ssm] Missing ssm_out");
+            None
+        })?;
+        let d_inner = if ssm_out.shape.len() >= 2 {
             if ssm_out.shape[1] == hidden_size {
                 ssm_out.shape[0]
             } else {
@@ -5729,171 +6605,243 @@ impl LlamaModel {
             ssm_out.shape[0]
         };
 
-        // 2. Causal Conv1D on the full total_dim
-        // ssm_conv1d: [conv_kernel, total_dim]
-        let ssm_conv1d = layer.ssm_conv1d.as_ref()?;
-        let conv_data: &[f32] = bytemuck::cast_slice(ssm_conv1d.bytes());
+        let head_v_dim = d_inner / dt_rank; // 4096 / 32 = 128
 
-        // Conv1D: out = conv1d_weights * input (simplified for single token)
-        let inner_per_group = total_dim / n_groups;
-        for g in 0..n_groups {
-            let offset = g * inner_per_group;
-            for i in 0..inner_per_group.min(conv_kernel) {
-                let mut sum = 0.0f32;
-                for k in 0..conv_kernel {
-                    let input_idx = offset + i;
-                    let weight_idx = k * total_dim + offset + i;
-                    if input_idx < total_dim && weight_idx < conv_data.len() {
-                        sum += buffers.ssm_input[input_idx]
-                            * conv_data[weight_idx];
-                    }
-                }
-                buffers.ssm_conv_out[offset + i] = sum;
-            }
-            // Copy remaining elements
-            for i in conv_kernel.min(inner_per_group)..inner_per_group {
-                buffers.ssm_conv_out[offset + i] =
-                    buffers.ssm_input[offset + i];
-            }
-        }
+        // conv_channels = d_inner + 2 * n_group * d_state
+        let conv_channels = d_inner + 2 * n_group * d_state; // 8192
 
-        // 3. Compute delta, B, C from projections
-        let ssm_alpha = layer.ssm_alpha.as_ref()?;
-        let ssm_beta = layer.ssm_beta.as_ref()?;
-        let ssm_a = layer.ssm_a.as_ref()?;
-        let ssm_dt_bias = layer.ssm_dt_bias.as_ref()?;
+        // 1. Input projection via attn_qkv
+        // SSM input is from hidden_alt (normed hidden), not hidden (original)
+        let attn_qkv = layer.attn_qkv.as_ref().or_else(|| {
+            eprintln!("[forward_ssm] Missing attn_qkv");
+            None
+        })?;
 
-        // Project to time_step_rank for delta and B
         self.gemv_into_with_buffers(
-            &buffers.hidden[..hidden_size],
+            &buffers.hidden_alt[..hidden_size],
+            attn_qkv,
+            &mut buffers.ssm_input[..conv_channels],
+            &mut buffers.q8k_input,
+            &mut buffers.x_padded,
+        );
+
+        // 2. Gate projections
+        let ssm_alpha = layer.ssm_alpha.as_ref().or_else(|| {
+            eprintln!("[forward_ssm] Missing ssm_alpha");
+            None
+        })?;
+        let ssm_beta = layer.ssm_beta.as_ref().or_else(|| {
+            eprintln!("[forward_ssm] Missing ssm_beta");
+            None
+        })?;
+        let ssm_dt_bias = layer.ssm_dt_bias.as_ref();
+        let ssm_a = layer.ssm_a.as_ref();
+
+        self.gemv_into_with_buffers(
+            &buffers.hidden_alt[..hidden_size],
             ssm_alpha,
-            &mut buffers.ssm_delta[..time_step_rank],
+            &mut buffers.ssm_delta[..dt_rank],
             &mut buffers.q8k_input,
             &mut buffers.x_padded,
         );
         self.gemv_into_with_buffers(
-            &buffers.hidden[..hidden_size],
+            &buffers.hidden_alt[..hidden_size],
             ssm_beta,
-            &mut buffers.ssm_b[..time_step_rank],
+            &mut buffers.ssm_b[..dt_rank],
             &mut buffers.q8k_input,
             &mut buffers.x_padded,
         );
 
-        // Add dt_bias and apply softplus to delta
-        let dt_bias_data: &[f32] = bytemuck::cast_slice(ssm_dt_bias.bytes());
-        for i in 0..time_step_rank.min(dt_bias_data.len()) {
-            let x = buffers.ssm_delta[i] + dt_bias_data[i];
-            buffers.ssm_delta[i] = (1.0 + x.exp()).ln();
+        // Process alpha and beta based on available tensors
+        if let (Some(dt_bias), Some(a)) = (ssm_dt_bias, ssm_a) {
+            // Standard GDN: apply dt_bias and softplus to alpha
+            let dt_bias_data: &[f32] = bytemuck::cast_slice(dt_bias.bytes());
+            for i in 0..dt_rank.min(dt_bias_data.len()) {
+                let x = buffers.ssm_delta[i] + dt_bias_data[i];
+                buffers.ssm_delta[i] = (1.0 + x.exp()).ln(); // softplus
+            }
+
+            // Compute gate = exp(alpha_softplus * ssm_a)
+            let a_data: &[f32] = bytemuck::cast_slice(a.bytes());
+            for i in 0..dt_rank {
+                let a_val = if i < a_data.len() { a_data[i] } else { 0.0f32 };
+                buffers.ssm_delta[i] = (buffers.ssm_delta[i] * a_val).exp(); // exp(gate)
+            }
+        } else {
+            // Qwen3.6-35B variant: alpha is already the gate (delta), just apply sigmoid
+            // beta is also direct, apply sigmoid
+            for i in 0..dt_rank {
+                buffers.ssm_delta[i] =
+                    1.0 / (1.0 + (-buffers.ssm_delta[i]).exp()); // sigmoid
+            }
         }
 
-        // Apply sigmoid to B
-        for i in 0..time_step_rank {
+        // Apply sigmoid to beta
+        for i in 0..dt_rank {
             buffers.ssm_b[i] = 1.0 / (1.0 + (-buffers.ssm_b[i]).exp());
         }
 
-        // C is derived from the last time_step_rank of ssm_conv_out (within ssm_dim)
-        let c_offset = ssm_dim.saturating_sub(time_step_rank);
-        for i in 0..time_step_rank.min(buffers.ssm_c.len()) {
-            buffers.ssm_c[i] = buffers.ssm_conv_out[c_offset + i];
+        // 3. Conv1d with SiLU activation
+        let ssm_conv1d = layer.ssm_conv1d.as_ref().or_else(|| {
+            eprintln!("[forward_ssm] Missing ssm_conv1d");
+            None
+        })?;
+        let conv_data: &[f32] = bytemuck::cast_slice(ssm_conv1d.bytes());
+
+        for i in 0..conv_channels {
+            let mut sum = 0.0f32;
+            for k in 0..conv_kernel {
+                let weight_idx = k * conv_channels + i;
+                if weight_idx < conv_data.len() && i < buffers.ssm_input.len() {
+                    sum += buffers.ssm_input[i] * conv_data[weight_idx];
+                }
+            }
+            // Apply SiLU activation: x * sigmoid(x)
+            buffers.ssm_conv_out[i] = sum * (1.0 / (1.0 + (-sum).exp()));
         }
 
-        // 4. Selective Scan (S6 algorithm) on first ssm_dim elements
-        let a_data: &[f32] = bytemuck::cast_slice(ssm_a.bytes());
+        // 4. Split conv output into q_conv, k_conv, v_conv
+        let qk_dim = d_state * n_group; // 2048
+        // q_conv at offset 0, k_conv at offset qk_dim, v_conv at offset 2*qk_dim
 
-        // Clear output (only ssm_dim elements)
-        for i in 0..ssm_dim {
+        // 5. L2 normalization on q_conv and k_conv
+        let scale = 1.0 / (d_state as f32).sqrt();
+
+        for h in 0..n_group {
+            let offset = h * d_state;
+            let mut q_norm = 0.0f32;
+            let mut k_norm = 0.0f32;
+            for i in 0..d_state {
+                q_norm += buffers.ssm_conv_out[offset + i]
+                    * buffers.ssm_conv_out[offset + i];
+                k_norm += buffers.ssm_conv_out[qk_dim + offset + i]
+                    * buffers.ssm_conv_out[qk_dim + offset + i];
+            }
+            q_norm = (q_norm + 1e-6).sqrt();
+            k_norm = (k_norm + 1e-6).sqrt();
+            // Store normalized q and k in ssm_input (reuse buffer)
+            for i in 0..d_state {
+                buffers.ssm_input[offset + i] =
+                    buffers.ssm_conv_out[offset + i] / q_norm * scale;
+                buffers.ssm_input[qk_dim + offset + i] =
+                    buffers.ssm_conv_out[qk_dim + offset + i] / k_norm * scale;
+            }
+        }
+
+        // 6. Gated Delta Net recurrent attention
+        // State is [head_v_dim, head_v_dim, dt_rank] = [128, 128, 32]
+        // Use ssm_state as state buffer (need to ensure it's large enough)
+        let _state_size = head_v_dim * head_v_dim * dt_rank;
+
+        // Clear output
+        for i in 0..d_inner {
             buffers.ssm_y[i] = 0.0;
         }
 
-        let ssm_inner_per_group = ssm_dim / n_groups;
-        for g in 0..n_groups {
-            let a_val = if g < a_data.len() { a_data[g] } else { 0.0f32 };
-            let a_exp = a_val.exp();
+        for v_head in 0..dt_rank {
+            let qk_head = v_head % n_group;
+            let q_offset = qk_head * d_state;
+            let k_offset = qk_head * d_state;
+            let v_offset = v_head * head_v_dim;
+            let state_offset = v_head * head_v_dim * head_v_dim;
 
-            let state_offset = g * state_size;
-            let input_offset = g * ssm_inner_per_group;
+            let gate_val = buffers.ssm_delta[v_head]; // gate stored in ssm_delta
+            let beta_val = buffers.ssm_b[v_head];
 
-            for s in 0..state_size.min(ssm_inner_per_group) {
-                let state_idx = state_offset + s;
-                let input_idx = input_offset + s;
+            // State update: state = gate * state + beta * (q ⊗ k)
+            for i in 0..head_v_dim {
+                for j in 0..head_v_dim {
+                    let q_val = buffers.ssm_input[q_offset + i];
+                    let k_val = buffers.ssm_input[qk_dim + k_offset + j];
+                    let delta_ij = beta_val * q_val * k_val;
 
-                if state_idx < buffers.ssm_state.len() && input_idx < ssm_dim {
-                    let b_val =
-                        if s < time_step_rank { buffers.ssm_b[s] } else { 1.0 };
-                    let x_val = buffers.ssm_conv_out[input_idx];
+                    let state_idx = state_offset + i * head_v_dim + j;
+                    if state_idx < buffers.ssm_state.len() {
+                        buffers.ssm_state[state_idx] =
+                            gate_val * buffers.ssm_state[state_idx] + delta_ij;
+                    }
+                }
+            }
 
-                    buffers.ssm_state[state_idx] =
-                        a_exp * buffers.ssm_state[state_idx] + b_val * x_val;
+            // Output: y = state @ v
+            for i in 0..head_v_dim {
+                let mut sum = 0.0f32;
+                for j in 0..head_v_dim {
+                    let state_idx = state_offset + i * head_v_dim + j;
+                    let v_idx = 2 * qk_dim + v_offset + j; // v_conv at offset 2*qk_dim
+                    if state_idx < buffers.ssm_state.len()
+                        && v_idx < buffers.ssm_conv_out.len()
+                    {
+                        sum += buffers.ssm_state[state_idx]
+                            * buffers.ssm_conv_out[v_idx];
+                    }
+                }
+                buffers.ssm_y[v_offset + i] = sum;
+            }
+        }
 
-                    let c_val =
-                        if s < time_step_rank { buffers.ssm_c[s] } else { 1.0 };
-                    buffers.ssm_y[input_idx] =
-                        c_val * buffers.ssm_state[state_idx];
+        // 7. Apply gated normalization
+        if let Some(ref ssm_norm) = layer.ssm_norm {
+            let norm_data: &[f32] = bytemuck::cast_slice(ssm_norm.bytes());
+
+            // Compute z for gated normalization
+            if let Some(ref attn_gate) = layer.attn_gate {
+                let z_dim = if attn_gate.shape.len() >= 2 {
+                    if attn_gate.shape[1] == hidden_size {
+                        attn_gate.shape[0]
+                    } else {
+                        attn_gate.shape[1]
+                    }
+                } else {
+                    attn_gate.shape[0]
+                };
+
+                self.gemv_into_with_buffers(
+                    &buffers.hidden_alt[..hidden_size],
+                    attn_gate,
+                    &mut buffers.ssm_c[..z_dim], // Use ssm_c buffer (unused in GDN) for z
+                    &mut buffers.q8k_input,
+                    &mut buffers.x_padded,
+                );
+
+                // Gated RMS norm: norm(y) * silu(z)
+                let mut ss = 0.0f32;
+                for i in 0..d_inner {
+                    ss += buffers.ssm_y[i] * buffers.ssm_y[i];
+                }
+                let rms = (ss / d_inner as f32 + 1e-5).sqrt();
+
+                for i in 0..d_inner.min(norm_data.len()).min(z_dim) {
+                    let z_val = buffers.ssm_c[i];
+                    let silu_z = z_val * (1.0 / (1.0 + (-z_val).exp()));
+                    buffers.ssm_y[i] =
+                        (buffers.ssm_y[i] / rms * norm_data[i]) * silu_z;
+                }
+            } else {
+                // Standard RMS norm
+                let mut ss = 0.0f32;
+                for i in 0..d_inner {
+                    ss += buffers.ssm_y[i] * buffers.ssm_y[i];
+                }
+                let rms = (ss / d_inner as f32 + 1e-5).sqrt();
+                for i in 0..d_inner.min(norm_data.len()) {
+                    buffers.ssm_y[i] = buffers.ssm_y[i] / rms * norm_data[i];
                 }
             }
         }
 
-        // 5. Apply SSM norm if present
-        if let Some(ref ssm_norm) = layer.ssm_norm {
-            let norm_data: &[f32] = bytemuck::cast_slice(ssm_norm.bytes());
-            let norm_size = norm_data.len();
-
-            let mut ss = 0.0f32;
-            for i in 0..ssm_dim.min(norm_size) {
-                ss += buffers.ssm_y[i] * buffers.ssm_y[i];
-            }
-            let rms = (ss / ssm_dim as f32 + 1e-5).sqrt();
-            for i in 0..ssm_dim.min(norm_size) {
-                buffers.ssm_y[i] = buffers.ssm_y[i] / rms * norm_data[i];
-            }
-        }
-
-        // 6. Output projection: ssm_dim → hidden_size
+        // 8. Output projection
         self.gemv_into_with_buffers(
-            &buffers.ssm_y[..ssm_dim],
+            &buffers.ssm_y[..d_inner],
             ssm_out,
             &mut buffers.hidden_alt[..hidden_size],
             &mut buffers.q8k_input,
             &mut buffers.x_padded,
         );
 
-        // 7. Apply attention gate if present
-        // attn_gate: After transpose, shape is [gate_dim, hidden_size]
-        // Projects hidden → gate_dim, where gate_dim = 2 * gate_hidden
-        if let Some(ref attn_gate) = layer.attn_gate {
-            let gate_out_size = if attn_gate.shape.len() >= 2 {
-                attn_gate.shape[0] // Output dimension after transpose
-            } else {
-                0
-            };
-
-            if gate_out_size > 0 {
-                self.gemv_into_with_buffers(
-                    &buffers.hidden[..hidden_size],
-                    attn_gate,
-                    &mut buffers.hidden_alt[..gate_out_size],
-                    &mut buffers.q8k_input,
-                    &mut buffers.x_padded,
-                );
-
-                // Apply gating: output = sigmoid(gate) * pass_through
-                let gate_hidden = gate_out_size / 2;
-                for i in 0..hidden_size.min(gate_hidden) {
-                    let gate = 1.0 / (1.0 + (-buffers.hidden_alt[i]).exp());
-                    buffers.hidden[i] =
-                        gate * buffers.hidden_alt[gate_hidden + i];
-                }
-            } else {
-                // Copy output to hidden
-                for i in 0..hidden_size {
-                    buffers.hidden[i] = buffers.hidden_alt[i];
-                }
-            }
-        } else {
-            // Copy output to hidden
-            for i in 0..hidden_size {
-                buffers.hidden[i] = buffers.hidden_alt[i];
-            }
+        // Copy output to hidden
+        for i in 0..hidden_size {
+            buffers.hidden[i] = buffers.hidden_alt[i];
         }
 
         Some(())

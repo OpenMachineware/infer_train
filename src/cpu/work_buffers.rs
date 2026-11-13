@@ -38,6 +38,7 @@ pub struct CpuWorkBuffers {
     pub norm_weight: Vec<f32>, // Final output norm
 
     // Batch prefill buffers (pre-allocated to avoid per-layer allocations)
+    pub batch_hidden: Vec<f32>, // Batch hidden states for prefill
     pub batch_residual: Vec<f32>,
     pub qkv_batch_output: Vec<f32>,
     pub q_batch_output: Vec<f32>,
@@ -66,6 +67,13 @@ pub struct CpuWorkBuffers {
     pub ssm_delta: Vec<f32>, // Delta parameter
     pub ssm_b: Vec<f32>,     // B parameter
     pub ssm_c: Vec<f32>,     // C parameter
+
+    // MoE FFN buffers (zero-allocation)
+    pub moe_routing_scores: Vec<f32>, // n_experts routing scores
+    pub moe_expert_indices: Vec<(usize, f32)>, // n_experts_used top-k experts with weights
+    pub moe_routed_output: Vec<f32>,           // hidden_size routed output
+    pub moe_final_output: Vec<f32>,            // hidden_size final output
+    pub moe_expert_output: Vec<f32>, // intermediate_size expert output
 
     // Config
     pub hidden_size: usize,
@@ -141,6 +149,7 @@ impl CpuWorkBuffers {
             norm_weights: Vec::with_capacity(n_layers * 2 * hidden_size),
             norm_weight: vec![0.0; hidden_size],
             // Batch prefill buffers - allocate for max_batch_size tokens
+            batch_hidden: vec![0.0; max_batch_size * hidden_size],
             batch_residual: vec![0.0; max_batch_size * hidden_size],
             qkv_batch_output: vec![
                 0.0;
@@ -188,11 +197,21 @@ impl CpuWorkBuffers {
             // ssm_inner_size can be up to 4x hidden_size (e.g., Qwen3.6: 8192 for hidden=2048)
             ssm_input: vec![0.0; hidden_size * 4],
             ssm_conv_out: vec![0.0; hidden_size * 4],
-            ssm_state: vec![0.0; 32 * 128 * 4], // n_groups * state_size * inner_size_per_group
+            ssm_state: vec![0.0; 128 * 128 * 32], // Gated Delta Net state: head_v_dim^2 * dt_rank = 128*128*32
             ssm_y: vec![0.0; hidden_size * 4],
-            ssm_delta: vec![0.0; 128], // time_step_rank
-            ssm_b: vec![0.0; 128],
-            ssm_c: vec![0.0; 128],
+            ssm_delta: vec![0.0; 128], // time_step_rank (also used for gate in GDN)
+            ssm_b: vec![0.0; 128],     // beta in GDN
+            ssm_c: vec![0.0; hidden_size * 4], // z values for gated norm (size = d_inner)
+            // MoE FFN buffers - use reasonable defaults
+            // n_experts typically up to 256, n_experts_used typically 8
+            moe_routing_scores: vec![0.0; 256], // n_experts max
+            moe_expert_indices: vec![(0, 0.0); 16], // n_experts_used max
+            moe_routed_output: vec![0.0; hidden_size],
+            moe_final_output: vec![0.0; hidden_size],
+            moe_expert_output: vec![
+                0.0;
+                intermediate_size.max(hidden_size * 2)
+            ],
             hidden_size,
             intermediate_size,
             vocab_size,
