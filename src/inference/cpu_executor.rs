@@ -243,6 +243,8 @@ impl CpuExecutor {
                     self.q_size + self.k_size + self.v_size,
                     2048,
                     model.layers.len(),
+                    self.kv_lora_rank,
+                    self.qk_rope_head_dim,
                 );
                 buffers.init_norm_weights(model);
                 self.work_buffers = Some(buffers);

@@ -120,8 +120,19 @@ impl ModelConfig {
         let eos_token_id =
             get_u64(meta, "general.tokenizer.eos_token_id").unwrap_or(2) as u32;
 
-        // Initial head_dim guess from hidden_size/n_heads (will be fixed from weights)
-        let head_dim = hidden_size / n_heads;
+        // Attention head dimensions
+        // For models with explicit key_length (like Qwen3.5/Qwen3.8), use it as head_dim
+        // For MLA (kv_lora_rank > 0), use key_length/value_length from metadata
+        // For standard attention, also try to get key_length from metadata (some models have it)
+        // If not available, will be inferred from weight shapes later
+        let key_length =
+            get_u64(&arch_meta, "attention.key_length").unwrap_or(0) as usize;
+        let value_length =
+            get_u64(&arch_meta, "attention.value_length").unwrap_or(0) as usize;
+
+        // Initial head_dim: use key_length if available, otherwise derive from hidden_size/n_heads
+        let head_dim =
+            if key_length > 0 { key_length } else { hidden_size / n_heads };
 
         // MoE parameters (DeepSeek, Qwen-MoE, etc.)
         let n_experts =
@@ -134,27 +145,10 @@ impl ModelConfig {
             get_u64(&arch_meta, "expert_feed_forward_length")
                 .unwrap_or(intermediate_size as u64) as usize;
 
-        // DeepSeek MQA parameters
+        // DeepSeek MLA parameters
         let kv_lora_rank =
             get_u64(&arch_meta, "attention.kv_lora_rank").unwrap_or(0) as usize;
 
-        // For non-MLA architectures, key_length and value_length should be 0
-        // This signals to use head_dim instead
-        // MLA is identified by kv_lora_rank > 0 (DeepSeek architecture)
-        let key_length = if kv_lora_rank > 0 {
-            get_u64(&arch_meta, "attention.key_length")
-                .unwrap_or(head_dim as u64) as usize
-        } else {
-            // Standard attention - don't use key_length from metadata
-            0
-        };
-        let value_length = if kv_lora_rank > 0 {
-            get_u64(&arch_meta, "attention.value_length")
-                .unwrap_or(head_dim as u64) as usize
-        } else {
-            // Standard attention - don't use value_length from metadata
-            0
-        };
         // qk_rope_head_dim is derived from rope_dim for DeepSeek models
         // For MLA, kv_a_mqa output = kv_lora_rank + qk_rope_head_dim
         let qk_rope_head_dim = if kv_lora_rank > 0 {

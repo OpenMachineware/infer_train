@@ -75,6 +75,11 @@ pub struct CpuWorkBuffers {
     pub moe_final_output: Vec<f32>,            // hidden_size final output
     pub moe_expert_output: Vec<f32>, // intermediate_size expert output
 
+    // MLA (Multi-head Latent Attention) buffers - zero-allocation
+    pub mla_kv_a_proj: Vec<f32>, // kv_lora_rank + qk_rope_head_dim
+    pub mla_kv_a_normed: Vec<f32>, // kv_lora_rank
+    pub mla_kv: Vec<f32>, // n_kv_heads * (qk_nope_head_dim + value_length)
+
     // Config
     pub hidden_size: usize,
     pub intermediate_size: usize,
@@ -94,6 +99,8 @@ impl CpuWorkBuffers {
         qkv_out_size: usize,
         max_seq_len: usize,
         n_layers: usize,
+        kv_lora_rank: usize,
+        qk_rope_head_dim: usize,
     ) -> Self {
         // Use max_seq_len as max batch size for prefill
         let max_batch_size = max_seq_len;
@@ -212,6 +219,20 @@ impl CpuWorkBuffers {
                 0.0;
                 intermediate_size.max(hidden_size * 2)
             ],
+            // MLA buffers - zero-allocation for DeepSeek MLA attention
+            // kv_a_proj: output of hidden @ attn_kv_a_mqa = kv_lora_rank + qk_rope_head_dim
+            mla_kv_a_proj: vec![0.0; kv_lora_rank + qk_rope_head_dim],
+            // kv_a_normed: RMSNorm output of kv_a_proj[:kv_lora_rank]
+            mla_kv_a_normed: vec![0.0; kv_lora_rank],
+            // kv: output of kv_a_normed @ attn_kv_b
+            // size = n_kv_heads * (qk_nope_head_dim + value_length)
+            // where qk_nope_head_dim = key_length - qk_rope_head_dim
+            mla_kv: vec![
+                0.0;
+                n_kv_heads
+                    * (key_length.saturating_sub(qk_rope_head_dim)
+                        + value_length)
+            ],
             hidden_size,
             intermediate_size,
             vocab_size,
@@ -287,6 +308,8 @@ struct BufferConfig {
     qkv_out_size: usize,
     max_seq_len: usize,
     n_layers: usize,
+    kv_lora_rank: usize,
+    qk_rope_head_dim: usize,
 }
 
 impl CpuWorkBuffersPool {
@@ -313,6 +336,8 @@ impl CpuWorkBuffersPool {
             qkv_out_size,
             max_seq_len: 2048,
             n_layers: model.layers.len(),
+            kv_lora_rank: config.kv_lora_rank,
+            qk_rope_head_dim: config.qk_rope_head_dim,
         };
 
         // Pre-dequantize norm weights once
@@ -379,6 +404,8 @@ impl CpuWorkBuffersPool {
                 self.config.qkv_out_size,
                 self.config.max_seq_len,
                 self.config.n_layers,
+                self.config.kv_lora_rank,
+                self.config.qk_rope_head_dim,
             );
             // Share pre-dequantized norm weights
             buffers.norm_weights = self.norm_weights.clone();
@@ -423,6 +450,8 @@ impl CpuWorkBuffersPool {
                 self.config.qkv_out_size,
                 self.config.max_seq_len,
                 self.config.n_layers,
+                self.config.kv_lora_rank,
+                self.config.qk_rope_head_dim,
             );
             buffers.norm_weights = self.norm_weights.clone();
             buffers.norm_weight = self.norm_weight.clone();

@@ -263,7 +263,7 @@ impl Backend for ArmCpuBackend {
 
                 // Compute attention scores and output
                 let scale = 1.0f32 / (*head_dim as f32).sqrt();
-                let q_size = n_heads * head_dim;
+                let _q_size = n_heads * head_dim;
 
                 // Clear output
                 for elem in output.iter_mut() {

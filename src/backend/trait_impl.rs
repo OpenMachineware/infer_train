@@ -71,6 +71,7 @@ pub struct TensorRef {
 }
 
 /// Context types for TensorRef::context_ptr
+#[allow(dead_code)]
 #[repr(usize)]
 pub enum TensorContext {
     /// No context.

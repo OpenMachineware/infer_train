@@ -200,14 +200,13 @@ pub fn flash_attention_single(
     }
 
     // Use multithreading for attention heads when beneficial
-    // Decode (batch=1) has thread overhead that hurts performance
-    // Only use multithreading for batch prefill (seq_len > 32 or many heads)
-    let use_multithread = n_heads >= 4 && seq_len > 32;
-    let n_threads = if use_multithread {
-        crate::cpu::default_n_threads().min(n_heads)
-    } else {
-        1
-    };
+    // Decode (single query) should ALWAYS use single-thread to avoid thread overhead
+    // For decode, the query length is 1 (n_q = 1), which is the key indicator
+    // Only use multithreading for batch prefill where we have many queries
+    // Since this function is for single query (flash_attention_single), always use single-thread
+    // The prefill path uses a different function (flash_attention_prefill_tiled)
+    let _use_multithread = false;
+    let n_threads = 1;
 
     if n_threads > 1 {
         // PROBLEM: Creating new Vec per thread causes cache thrashing

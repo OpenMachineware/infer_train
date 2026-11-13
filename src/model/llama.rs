@@ -5694,14 +5694,11 @@ impl LlamaModel {
 
         // 5. Output projection (attn_out -> hidden_alt) - single-thread for decode
         let start = Instant::now();
-        self.gemv_into_with_buffers_with_threads(
-            &buffers.attn_out,
-            layer.wo.as_ref()?,
-            &mut buffers.hidden_alt[..hidden_size],
-            &mut buffers.q8k_input,
-            &mut buffers.x_padded,
-            n_threads,
-        );
+        let wo = layer.wo.as_ref()?;
+
+        // Use gemv_impl for MLA models - handles column-major weights correctly
+        let wo_out = self.gemv_impl(&buffers.attn_out, wo, hidden_size)?;
+        buffers.hidden_alt[..hidden_size].copy_from_slice(&wo_out);
         time_wo += start.elapsed();
 
         // 6. Residual (hidden + hidden_alt -> hidden)

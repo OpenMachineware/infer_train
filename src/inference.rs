@@ -119,7 +119,7 @@ impl InferenceContext {
             } else {
                 config.n_kv_heads * config.head_dim
             };
-            let separate_qkv_size = q_size + k_size + v_size;
+            let _separate_qkv_size = q_size + k_size + v_size;
 
             // Find max qkv_out_size across all layers (fused QKV)
             // attn_qkv is NOT transposed, stored as [qkv_size, hidden_size]
@@ -245,6 +245,8 @@ impl InferenceContext {
                 qkv_out_size,
                 2048, // max_seq_len
                 n_layers,
+                config.kv_lora_rank,
+                config.qk_rope_head_dim,
             );
 
             // Pre-dequantize all norm weights
@@ -352,6 +354,11 @@ impl InferenceContext {
         tokens: &[u32],
         kv_cache: &mut KVCache,
     ) -> Option<Vec<f32>> {
+        eprintln!(
+            "[InferenceContext::forward_pooled] {} tokens, buffers={}",
+            tokens.len(),
+            self.cpu_buffers.is_some()
+        );
         if let Some(ref mut buffers) = self.cpu_buffers {
             self.model.forward_pooled_with_threads(
                 tokens,
@@ -360,6 +367,9 @@ impl InferenceContext {
                 &self.thread_config,
             )
         } else {
+            eprintln!(
+                "[InferenceContext::forward_pooled] Falling back to regular forward"
+            );
             self.model.forward(tokens, kv_cache)
         }
     }

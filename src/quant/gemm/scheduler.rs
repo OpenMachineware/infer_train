@@ -536,3 +536,268 @@ pub fn gemv_dispatch(
 ) -> bool {
     false
 }
+
+/// Column-major GEMV for weights stored in GGUF format.
+///
+/// GGUF stores weights as [in_features, out_features] in column-major order.
+/// This function handles that layout without pre-transposing.
+///
+/// # Arguments
+/// * `out` - Output vector [m]
+/// * `weights` - Weight matrix [in_features, out_features] (column-major)
+/// * `x` - Input vector [in_features] (FP32)
+/// * `threads` - Number of threads
+/// * `q8k_buf` - Q8_K buffer for K-quant formats
+/// * `x_padded` - Padding buffer for non-standard k
+#[cfg(target_arch = "aarch64")]
+pub fn gemv_column_major(
+    out: &mut [f32],
+    weights: &Tensor,
+    x: &[f32],
+    threads: usize,
+    q8k_buf: &mut [u8],
+    x_padded: &mut [f32],
+) -> bool {
+    let k = x.len();
+
+    let w_shape = &weights.shape;
+    if w_shape.len() != 2 {
+        eprintln!("[ERROR] Weight tensor must be 2D, got {}D", w_shape.len());
+        return false;
+    }
+
+    // Column-major: shape is [in_features, out_features] = [k, m]
+    let w_in = w_shape[0];
+    let w_out = w_shape[1];
+
+    if w_in != k {
+        eprintln!(
+            "[ERROR] Input dimension mismatch in column-major GEMV: weight in={}, input={}",
+            w_in, k
+        );
+        return false;
+    }
+
+    // Check output buffer is large enough
+    if out.len() < w_out {
+        eprintln!(
+            "[ERROR] Output buffer too small for column-major GEMV: buffer={}, required={}",
+            out.len(),
+            w_out
+        );
+        return false;
+    }
+
+    let m = w_out; // Use weight's output dimension
+
+    use crate::quant::types::QK_K;
+    let k_padded = ((k + QK_K - 1) / QK_K) * QK_K;
+    let nb = k_padded / QK_K;
+
+    // Handle padding if needed
+    if k != k_padded {
+        for i in k..k_padded {
+            x_padded[i] = 0.0;
+        }
+        x_padded[..k].copy_from_slice(x);
+    }
+    let x_padded_ref = if k != k_padded { x_padded } else { x };
+
+    // Quantize input to Q8_K
+    use crate::quant::kv_cache::quantize_row_q8_k_neon;
+    use crate::quant::types::BlockQ8K;
+
+    let x_q8k_blocks = unsafe {
+        let available = q8k_buf.len() / std::mem::size_of::<BlockQ8K>();
+        if available < nb {
+            eprintln!("[ERROR] Q8_K buffer too small: {} < {}", available, nb);
+            return false;
+        }
+        std::slice::from_raw_parts_mut(
+            q8k_buf.as_mut_ptr() as *mut BlockQ8K,
+            nb,
+        )
+    };
+
+    quantize_row_q8_k_neon(&x_padded_ref[..k_padded], x_q8k_blocks);
+
+    // Call column-major GEMV based on format
+    unsafe {
+        match weights.dtype {
+            DataType::Q4_K => {
+                use crate::quant::types::BlockQ4K;
+                let blocks: &[BlockQ4K] = std::slice::from_raw_parts(
+                    weights.bytes().as_ptr() as *const BlockQ4K,
+                    nb * m,
+                );
+                gemv_q4k_column_major(
+                    blocks,
+                    x_q8k_blocks,
+                    out,
+                    k_padded,
+                    m,
+                    threads,
+                );
+                true
+            }
+            DataType::Q5_K => {
+                use crate::quant::types::BlockQ5K;
+                let blocks: &[BlockQ5K] = std::slice::from_raw_parts(
+                    weights.bytes().as_ptr() as *const BlockQ5K,
+                    nb * m,
+                );
+                gemv_q5k_column_major(
+                    blocks,
+                    x_q8k_blocks,
+                    out,
+                    k_padded,
+                    m,
+                    threads,
+                );
+                true
+            }
+            DataType::Q6_K => {
+                use crate::quant::types::BlockQ6K;
+                let blocks: &[BlockQ6K] = std::slice::from_raw_parts(
+                    weights.bytes().as_ptr() as *const BlockQ6K,
+                    nb * m,
+                );
+                gemv_q6k_column_major(
+                    blocks,
+                    x_q8k_blocks,
+                    out,
+                    k_padded,
+                    m,
+                    threads,
+                );
+                true
+            }
+            _ => {
+                eprintln!(
+                    "[ERROR] Unsupported dtype for column-major GEMV: {:?}",
+                    weights.dtype
+                );
+                false
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub fn gemv_column_major(
+    _out: &mut [f32],
+    _weights: &Tensor,
+    _x: &[f32],
+    _threads: usize,
+    _q8k_buf: &mut [u8],
+    _x_padded: &mut [f32],
+) -> bool {
+    false
+}
+
+/// Column-major GEMV for Q4_K weights.
+/// GGUF stores weights as blocks[col * m + row] where col = input_block, row = output_row.
+#[cfg(target_arch = "aarch64")]
+unsafe fn gemv_q4k_column_major(
+    weights: &[crate::quant::types::BlockQ4K],
+    x: &[crate::quant::types::BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    _threads: usize,
+) {
+    use crate::quant::types::QK_K;
+    use crate::quant::vec_dot::arm::vec_dot_q4_k_q8_k_neon;
+
+    let nb = k / QK_K;
+
+    // Process each output row
+    for row in 0..m {
+        let mut sum = 0.0f32;
+
+        // Accumulate over input blocks
+        for col in 0..nb {
+            // Column-major indexing: block at (row, col) is at col * m + row
+            let block_idx = col * m + row;
+            let w_block = weights.get_unchecked(block_idx);
+            let x_block = x.get_unchecked(col);
+
+            // vec_dot expects slices, pass single-element slices
+            sum += vec_dot_q4_k_q8_k_neon(
+                QK_K,
+                std::slice::from_ref(w_block),
+                std::slice::from_ref(x_block),
+            );
+        }
+
+        dst[row] = sum;
+    }
+}
+
+/// Column-major GEMV for Q5_K weights.
+#[cfg(target_arch = "aarch64")]
+unsafe fn gemv_q5k_column_major(
+    weights: &[crate::quant::types::BlockQ5K],
+    x: &[crate::quant::types::BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    _threads: usize,
+) {
+    use crate::quant::types::QK_K;
+    use crate::quant::vec_dot::arm::vec_dot_q5_k_q8_k_neon;
+
+    let nb = k / QK_K;
+
+    for row in 0..m {
+        let mut sum = 0.0f32;
+
+        for col in 0..nb {
+            let block_idx = col * m + row;
+            let w_block = weights.get_unchecked(block_idx);
+            let x_block = x.get_unchecked(col);
+
+            sum += vec_dot_q5_k_q8_k_neon(
+                QK_K,
+                std::slice::from_ref(w_block),
+                std::slice::from_ref(x_block),
+            );
+        }
+
+        dst[row] = sum;
+    }
+}
+
+/// Column-major GEMV for Q6_K weights.
+#[cfg(target_arch = "aarch64")]
+unsafe fn gemv_q6k_column_major(
+    weights: &[crate::quant::types::BlockQ6K],
+    x: &[crate::quant::types::BlockQ8K],
+    dst: &mut [f32],
+    k: usize,
+    m: usize,
+    _threads: usize,
+) {
+    use crate::quant::types::QK_K;
+    use crate::quant::vec_dot::arm::vec_dot_q6_k_q8_k_neon;
+
+    let nb = k / QK_K;
+
+    for row in 0..m {
+        let mut sum = 0.0f32;
+
+        for col in 0..nb {
+            let block_idx = col * m + row;
+            let w_block = weights.get_unchecked(block_idx);
+            let x_block = x.get_unchecked(col);
+
+            sum += vec_dot_q6_k_q8_k_neon(
+                QK_K,
+                std::slice::from_ref(w_block),
+                std::slice::from_ref(x_block),
+            );
+        }
+
+        dst[row] = sum;
+    }
+}

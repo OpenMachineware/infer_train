@@ -600,7 +600,7 @@ fn create_printer(
 
 fn run_benchmark(
     config: &TestConfig,
-    ctx: &InferenceContext,
+    ctx: &mut InferenceContext,
     reps: usize,
     verbose: bool,
     no_warmup: bool,
@@ -626,9 +626,12 @@ fn run_benchmark(
             eprintln!("Warmup run...");
         }
         kv_cache.clear();
-        let _ = ctx.model.forward(&prompt_tokens, &mut kv_cache);
+        if n_prompt > 0 {
+            let _ = ctx.forward_pooled(&prompt_tokens, &mut kv_cache);
+        }
         if n_gen > 0 {
-            let _ = ctx.model.forward(&[prompt_tokens[0]], &mut kv_cache);
+            let token = if n_prompt > 0 { prompt_tokens[0] } else { 1 };
+            let _ = ctx.forward_pooled(&[token], &mut kv_cache);
         }
     }
 
@@ -645,12 +648,13 @@ fn run_benchmark(
 
         // Prefill
         if n_prompt > 0 {
-            let _ = ctx.model.forward(&prompt_tokens, &mut kv_cache);
+            let _ = ctx.forward_pooled(&prompt_tokens, &mut kv_cache);
         }
 
         // Decode
+        let decode_token = if n_prompt > 0 { prompt_tokens[0] } else { 1 };
         for _ in 0..n_gen {
-            let _ = ctx.model.forward(&[prompt_tokens[0]], &mut kv_cache);
+            let _ = ctx.forward_pooled(&[decode_token], &mut kv_cache);
         }
 
         let elapsed = start.elapsed().as_nanos() as u64;
@@ -743,7 +747,7 @@ fn main() {
         eprintln!("Loading model from: {}", args.model.display());
     }
 
-    let ctx =
+    let mut ctx =
         match InferenceContext::from_gguf(args.model.to_str().unwrap(), device)
         {
             Ok(ctx) => ctx,
@@ -817,7 +821,7 @@ fn main() {
 
         let samples = run_benchmark(
             config,
-            &ctx,
+            &mut ctx,
             args.reps,
             args.verbose,
             args.no_warmup,

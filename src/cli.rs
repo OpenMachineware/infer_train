@@ -4,7 +4,7 @@
 //! Quick CLI testing interface
 
 use infer_train::inference::{
-    Device, InferenceContext, KVCache, KVCacheFormat,
+    Device, InferenceContext, KVCache, KVCacheBase, KVCacheFormat,
 };
 use infer_train::model::GgufFile;
 use infer_train::ops::sample_token;
@@ -65,6 +65,13 @@ pub fn run(
     println!();
 
     let mut kv_cache = KVCache::new(&ctx.config, 2048, KVCacheFormat::F32);
+    eprintln!(
+        "KV cache initialized: n_layers={}, n_kv_heads={}, seq_len={}",
+        ctx.config.n_layers,
+        ctx.config.n_kv_heads,
+        kv_cache.seq_len()
+    );
+    eprintln!("KV cache capacity: {}", 2048);
 
     let input = match prompt {
         Some(p) => p.to_string(),

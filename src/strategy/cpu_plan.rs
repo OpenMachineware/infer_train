@@ -44,6 +44,8 @@ impl CpuExecutionPlan {
             qkv_out_size,
             2048, // max_seq_len
             model.layers.len(),
+            config.kv_lora_rank,
+            config.qk_rope_head_dim,
         );
 
         Self { model, buffers }
