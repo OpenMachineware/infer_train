@@ -104,11 +104,6 @@ impl DagBuilder {
 struct ModelConfig {
     n_layers: usize,
     hidden_size: usize,
-    n_heads: usize,
-    n_kv_heads: usize,
-    head_dim: usize,
-    intermediate_size: usize,
-    max_seq_len: usize,
     vocab_size: usize,
 }
 
@@ -119,19 +114,6 @@ impl ModelConfig {
                 as usize,
             hidden_size: gguf
                 .get_meta::<i64>("llama.embedding_length")
-                .unwrap_or(4096) as usize,
-            n_heads: gguf
-                .get_meta::<i64>("llama.attention.head_count")
-                .unwrap_or(32) as usize,
-            n_kv_heads: gguf
-                .get_meta::<i64>("llama.attention.head_count_kv")
-                .unwrap_or(32) as usize,
-            head_dim: 0, // computed
-            intermediate_size: gguf
-                .get_meta::<i64>("llama.feed_forward_length")
-                .unwrap_or(11008) as usize,
-            max_seq_len: gguf
-                .get_meta::<i64>("llama.context_length")
                 .unwrap_or(4096) as usize,
             vocab_size: gguf
                 .get_meta::<i64>("llama.vocab_size")
