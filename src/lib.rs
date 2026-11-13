@@ -1,29 +1,7 @@
-// SPDX-License-Identifier: Apache-2.0-or-later
-// Copyright 2026 Jia Liu
-
-// Allow unsafe operations in unsafe functions without explicit blocks (Rust 2024)
-#![allow(unsafe_op_in_unsafe_fn)]
-
-// Import objc macros for GPU barrier support (metal feature only)
-#[cfg(all(target_arch = "aarch64", feature = "metal"))]
-#[macro_use]
-extern crate objc;
-
 pub mod backend;
-pub mod buffer;
-pub mod compute;
-pub mod cpu;
-pub mod dag;
-pub mod executor;
+pub mod batcher;
 pub mod inference;
+pub mod memory;
 pub mod model;
 pub mod ops;
-pub mod orchestrator;
-pub mod platform;
-pub mod profiling;
-pub mod quant;
 pub mod strategy;
-pub mod tokenize;
-
-// Re-export commonly used types for convenience
-pub use inference::{Device, InferenceContext};

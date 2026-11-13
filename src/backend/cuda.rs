@@ -1,61 +1,79 @@
-// SPDX-License-Identifier: Apache-2.0-or-later
-// Copyright 2026 Jia Liu
+// NVIDIA CUDA 后端
 
-//! CUDA GPU backend for NVIDIA GPUs.
-//!
-//! This module is only compiled with cuda feature.
+use crate::backend::Backend;
+use crate::ops::{CoreOperator, OpError, QuantType};
 
-use super::device::{Device, DeviceId};
-use super::memory::MemoryRegionId;
-use super::operator::{Cost, Operator, OperatorResult};
-use super::trait_impl::{Backend, TensorRef};
-
-/// CUDA GPU backend.
-#[derive(Debug)]
 pub struct CudaBackend {
-    device: Device,
-    memory_region: MemoryRegionId,
+    id: usize,
 }
 
 impl CudaBackend {
-    /// Create a new CUDA backend.
-    pub fn new(memory_region: MemoryRegionId) -> Self {
-        let device = Device::detect_best();
-        Self { device, memory_region }
+    pub fn new(id: usize) -> Self {
+        Self { id }
     }
 }
 
 impl Backend for CudaBackend {
+    fn id(&self) -> usize {
+        self.id
+    }
     fn name(&self) -> &str {
-        "CUDA GPU"
+        "cuda"
     }
 
-    fn device(&self) -> &Device {
-        &self.device
+    fn available_memory(&self) -> usize {
+        // TODO: 实际检测显存
+        24 * 1024 * 1024 * 1024 // 24GB
     }
 
-    fn memory_region(&self) -> MemoryRegionId {
-        self.memory_region
+    fn supports_op(&self, op: &CoreOperator) -> bool {
+        match op {
+            CoreOperator::RmsNorm { .. } => true,
+            CoreOperator::Linear { quant_type, .. } => {
+                matches!(
+                    quant_type,
+                    QuantType::Q4_0
+                        | QuantType::Q4_1
+                        | QuantType::Q5_0
+                        | QuantType::Q5_1
+                        | QuantType::Q8_0
+                        | QuantType::Q8_1
+                        | QuantType::Q4_K
+                        | QuantType::Q5_K
+                        | QuantType::Q6_K
+                        | QuantType::Q8_K
+                )
+            }
+            CoreOperator::Rope { .. } => true,
+            CoreOperator::FlashAttention { .. } => true,
+            CoreOperator::SwiGLU { .. } => true,
+            CoreOperator::MoERouter { .. } => true,
+            CoreOperator::MoEExpert { .. } => true,
+        }
     }
 
-    fn available_memory(&self) -> u64 {
-        self.device.memory_size()
-    }
-
-    fn supports_operator(&self, _op: &dyn Operator) -> bool {
-        true
+    fn supports_quant(&self, quant: QuantType) -> bool {
+        matches!(
+            quant,
+            QuantType::Q4_0
+                | QuantType::Q4_1
+                | QuantType::Q5_0
+                | QuantType::Q5_1
+                | QuantType::Q8_0
+                | QuantType::Q8_1
+                | QuantType::Q4_K
+                | QuantType::Q5_K
+                | QuantType::Q6_K
+                | QuantType::Q8_K
+        )
     }
 
     fn execute(
         &self,
-        _op: &dyn Operator,
-        _inputs: &[TensorRef],
-        _outputs: &mut [TensorRef],
-    ) -> OperatorResult<()> {
-        Ok(())
-    }
-
-    fn estimate_cost(&self, _op: &dyn Operator) -> Cost {
-        Cost::zero()
+        op: &CoreOperator,
+        _inputs: &[&[f32]],
+        _outputs: &mut [&mut [f32]],
+    ) -> Result<(), OpError> {
+        Err(OpError::NotImplemented(format!("{:?} on CUDA", op)))
     }
 }

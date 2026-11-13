@@ -1,53 +1,65 @@
-// SPDX-License-Identifier: Apache-2.0-or-later
-// Copyright 2026 Jia Liu
+// 算子定义 + 类型特征表
 
-// Operator implementations organized by platform
+/// 量化类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum QuantType {
+    F32,
+    F16,
+    BF16,
+    Q4_0,
+    Q4_1,
+    Q5_0,
+    Q5_1,
+    Q8_0,
+    Q8_1,
+    Q2_K,
+    Q3_K,
+    Q4_K,
+    Q5_K,
+    Q6_K,
+    Q8_K,
+}
 
-// Platform-specific modules
-pub mod arm;
-pub mod common;
-pub mod cuda;
-pub mod metal;
-pub mod x86;
+/// 核心算子
+#[derive(Debug, Clone)]
+pub enum CoreOperator {
+    /// RMS 归一化
+    RmsNorm { hidden_size: usize, eps: f32 },
 
-// Existing operator modules
-pub mod activation_tables;
-pub mod attention;
-pub mod attention_fused;
-pub mod binary;
-pub mod conv;
-pub mod dup;
-pub mod gelu;
-pub mod linear;
-pub mod moe;
-pub mod rms_norm;
-pub mod rms_norm_op;
-pub mod rope;
-pub mod sampling;
-pub mod scalar;
-pub mod silu;
-pub mod softmax;
-pub mod swiglu_op;
-pub mod tensor;
+    /// 线性层（支持量化）
+    Linear { in_features: usize, out_features: usize, quant_type: QuantType },
 
-// Re-exports
-pub use attention::*;
-// Explicit exports from binary to avoid FloatType conflict with dup
-pub use binary::{
-    AddOp, BinaryOp, DivOp, MulOp, SubOp, add_f16, add_f16_f32,
-    add_f16_f32_to_f32, add_f32, binary_broadcast_scalar, binary_scalar,
-    div_f16, div_f32, mul_f16, mul_f16_f32, mul_f16_f32_to_f32, mul_f32,
-    sub_f16, sub_f32,
-};
-pub use conv::*;
-// Explicit exports from dup to avoid FloatType conflict with binary
-pub use dup::{dup, dup_f16_to_f32, dup_f32_to_f16, dup_same};
-pub use gelu::*;
-pub use moe::*;
-pub use rms_norm::*;
-pub use rope::*;
-pub use sampling::*;
-pub use scalar::*;
-pub use silu::*;
-pub use softmax::*;
-pub use tensor::*;
+    /// RoPE 位置编码
+    Rope { head_dim: usize, max_seq_len: usize },
+
+    /// Flash Attention
+    FlashAttention {
+        n_heads: usize,
+        n_kv_heads: usize,
+        head_dim: usize,
+        max_seq_len: usize,
+    },
+
+    /// SwiGLU 激活
+    SwiGLU { hidden_size: usize, intermediate_size: usize },
+
+    /// MoE 路由
+    MoERouter { n_experts: usize, top_k: usize },
+
+    /// MoE 专家
+    MoEExpert {
+        expert_id: usize,
+        in_features: usize,
+        out_features: usize,
+        quant_type: QuantType,
+    },
+}
+
+/// 算子执行错误
+#[derive(Debug)]
+pub enum OpError {
+    NotImplemented(String),
+    InvalidInput(String),
+    DeviceError(String),
+}

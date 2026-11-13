@@ -1,45 +1,51 @@
-// SPDX-License-Identifier: Apache-2.0-or-later
-// Copyright 2026 Jia Liu
+// Backend trait 定义
 
-//! Backend abstraction for unified execution across devices.
-//!
-//! This module provides a hardware-agnostic compute interface supporting:
-//! - ARM CPU (NEON)
-//! - x86 CPU (AVX2/AVX512)
-//! - RISC-V CPU (V extension)
-//! - Apple Metal
-//! - NVIDIA CUDA
-//! - AMD ROCm
+pub mod arm;
+pub mod cuda;
+pub mod metal;
 
-mod device;
-mod memory;
-pub mod operator;
-mod trait_impl;
+use crate::ops::{CoreOperator, OpError, QuantType};
 
-pub use device::{Device, DeviceId, DeviceInfo, DeviceType};
-pub use memory::{
-    Bandwidth, MemoryLink, MemoryRegion, MemoryRegionId, MemoryTopology,
-    TransferType,
-};
-pub use operator::{
-    CoreOperator, Cost, Operator, OperatorId, OperatorResult, QuantType,
-};
+/// Backend ID 类型
+pub type BackendId = usize;
 
-#[cfg(target_arch = "aarch64")]
-pub use arm::ArmCpuBackend;
+/// Backend trait
+pub trait Backend: Send + Sync {
+    /// 后端标识
+    fn id(&self) -> usize;
+    fn name(&self) -> &str;
 
-#[cfg(all(target_arch = "aarch64", feature = "metal"))]
-pub use metal::MetalBackend;
-pub use trait_impl::{Backend, BackendRegistry, DataType, TensorRef};
+    /// 内存信息
+    fn available_memory(&self) -> usize;
 
-#[cfg(target_arch = "aarch64")]
-mod arm;
+    /// 能力查询
+    fn supports_op(&self, op: &CoreOperator) -> bool;
+    fn supports_quant(&self, quant: QuantType) -> bool;
 
-#[cfg(target_arch = "x86_64")]
-mod x86;
+    /// 执行算子
+    fn execute(
+        &self,
+        op: &CoreOperator,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+    ) -> Result<(), OpError>;
+}
 
-#[cfg(all(target_arch = "aarch64", feature = "metal"))]
-mod metal;
+/// Backend 注册表
+pub struct BackendRegistry {
+    backends: Vec<Box<dyn Backend>>,
+}
 
-#[cfg(feature = "cuda")]
-mod cuda;
+impl BackendRegistry {
+    pub fn new() -> Self {
+        Self { backends: Vec::new() }
+    }
+
+    pub fn register(&mut self, backend: Box<dyn Backend>) {
+        self.backends.push(backend);
+    }
+
+    pub fn find(&self, op: &CoreOperator) -> Option<&dyn Backend> {
+        self.backends.iter().find(|b| b.supports_op(op)).map(|b| b.as_ref())
+    }
+}
