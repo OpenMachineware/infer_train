@@ -4,7 +4,7 @@
 // Linear operator with quantization support
 
 use crate::backend::operator::{Operator, OperatorId, OperatorResult};
-use crate::memory::RequestScratch;
+use crate::cpu::CpuWorkBuffers;
 use crate::model::tensor::DataType;
 use std::fmt;
 
@@ -43,7 +43,7 @@ impl LinearOp {
         x_q8k: &[crate::quant::types::BlockQ8K],
         weights_bytes: &[u8],
         output: &mut [f32],
-        _scratch: &mut RequestScratch,
+        _buffers: &mut CpuWorkBuffers,
     ) -> OperatorResult<()> {
         use crate::quant::matmul::k_quant::{
             matmul_q4_k_q8_k_hybrid, matmul_q5_k_q8_k_hybrid,
@@ -133,7 +133,7 @@ impl LinearOp {
     #[cfg(target_arch = "aarch64")]
     pub fn quantize_input<'a>(
         input: &[f32],
-        scratch: &'a mut RequestScratch,
+        buffers: &'a mut CpuWorkBuffers,
     ) -> &'a [crate::quant::types::BlockQ8K] {
         use crate::model::llama::LlamaModel;
         use crate::quant::types::{BlockQ8K, QK_K};
@@ -143,10 +143,10 @@ impl LinearOp {
         let nb = in_size_padded / QK_K;
 
         // Get quantization buffer
-        let x_padded = &mut scratch.x_padded[..in_size_padded];
+        let x_padded = &mut buffers.x_padded[..in_size_padded];
         let q8k_blocks = unsafe {
             std::slice::from_raw_parts_mut(
-                scratch.q8k_input.as_mut_ptr() as *mut BlockQ8K,
+                buffers.q8k_input.as_mut_ptr() as *mut BlockQ8K,
                 nb,
             )
         };

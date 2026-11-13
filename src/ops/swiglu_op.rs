@@ -4,7 +4,7 @@
 // SwiGLU activation operator
 
 use crate::backend::operator::{Operator, OperatorId};
-use crate::memory::RequestScratch;
+use crate::cpu::CpuWorkBuffers;
 use std::fmt;
 
 /// SwiGLU activation operator
@@ -30,7 +30,7 @@ impl SwiGLUOp {
         &self,
         gate: &mut [f32],
         up: &[f32],
-        _scratch: &mut RequestScratch,
+        _buffers: &mut CpuWorkBuffers,
     ) {
         debug_assert_eq!(gate.len(), self.intermediate_size);
         debug_assert_eq!(up.len(), self.intermediate_size);

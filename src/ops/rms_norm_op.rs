@@ -4,7 +4,7 @@
 // RMS Norm operator
 
 use crate::backend::operator::{Operator, OperatorId};
-use crate::memory::RequestScratch;
+use crate::cpu::CpuWorkBuffers;
 use std::fmt;
 
 /// RMS Norm operator
@@ -31,7 +31,7 @@ impl RmsNormOp {
         input: &[f32],
         weight: &[f32],
         output: &mut [f32],
-        _scratch: &mut RequestScratch,
+        _buffers: &mut CpuWorkBuffers,
     ) {
         debug_assert_eq!(input.len(), self.hidden_size);
         debug_assert_eq!(weight.len(), self.hidden_size);
