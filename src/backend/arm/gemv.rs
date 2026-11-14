@@ -104,6 +104,27 @@ pub fn gemv_q5_k(
     }
 }
 
+// Q6_K GEMV
+pub fn gemv_q6_k(
+    weights: &[BlockQ6_K],
+    input: &[BlockQ8_K],
+    output: &mut [f32],
+    out_features: usize,
+    in_features: usize,
+) {
+    let blocks_per_row = in_features / QK_K;
+
+    assert_eq!(weights.len(), out_features * blocks_per_row);
+    assert_eq!(input.len(), blocks_per_row);
+    assert_eq!(output.len(), out_features);
+
+    for row in 0..out_features {
+        let weight_row =
+            &weights[row * blocks_per_row..(row + 1) * blocks_per_row];
+        output[row] = vec_dot_q6_k_q8_k(weight_row, input);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

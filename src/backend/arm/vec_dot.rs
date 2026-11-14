@@ -328,6 +328,38 @@ pub fn vec_dot_q5_k_q8_k(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
     sums.iter().sum()
 }
 
+// Q6_K x Q8_K dot product
+pub fn vec_dot_q6_k_q8_k(x: &[BlockQ6_K], y: &[BlockQ8_K]) -> f32 {
+    let nb = x.len();
+    assert_eq!(nb, y.len());
+
+    let mut sum = 0.0f32;
+
+    for i in 0..nb {
+        let d = y[i].d * fp16_to_fp32(x[i].d);
+        let mut isum = 0i32;
+
+        // Process 16 blocks of 16 elements each
+        for j in 0..16 {
+            for k in 0..8 {
+                // Combine lower 4 bits and upper 2 bits
+                let lower4 = x[i].ql[j * 8 + k] as i32;
+                let upper2 =
+                    (x[i].qh[j * 4 + k / 2] >> (4 * (k % 2))) as i32 & 0x03;
+                let v = lower4 | (upper2 << 4);
+
+                isum += v * y[i].qs[j * 16 + k] as i32 * x[i].scales[j] as i32;
+                isum +=
+                    v * y[i].qs[j * 16 + k + 8] as i32 * x[i].scales[j] as i32;
+            }
+        }
+
+        sum += d * isum as f32;
+    }
+
+    sum
+}
+
 // Public interface
 #[cfg(target_arch = "aarch64")]
 pub fn vec_dot_f32(x: &[f32], y: &[f32]) -> f32 {

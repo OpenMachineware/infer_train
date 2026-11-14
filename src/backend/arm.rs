@@ -244,6 +244,32 @@ impl Backend for ArmCpuBackend {
                         Ok(())
                     }
 
+                    QuantType::Q6_K => {
+                        let blocks_per_row = (*in_features + QK_K - 1) / QK_K;
+                        let weights = unsafe {
+                            std::slice::from_raw_parts(
+                                inputs[0].data as *const BlockQ6_K,
+                                *out_features * blocks_per_row,
+                            )
+                        };
+
+                        let input = unsafe {
+                            std::slice::from_raw_parts(
+                                inputs[1].data as *const BlockQ8_K,
+                                blocks_per_row,
+                            )
+                        };
+
+                        gemv::gemv_q6_k(
+                            weights,
+                            input,
+                            output,
+                            *out_features,
+                            *in_features,
+                        );
+                        Ok(())
+                    }
+
                     _ => Err(OpError::NotImplemented(format!(
                         "Linear with quant type {:?}",
                         quant_type
