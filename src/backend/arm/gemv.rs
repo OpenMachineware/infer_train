@@ -21,7 +21,8 @@ pub fn gemv_q4_0(
     assert_eq!(output.len(), out_features);
 
     for row in 0..out_features {
-        let weight_row = &weights[row * blocks_per_row..(row + 1) * blocks_per_row];
+        let weight_row =
+            &weights[row * blocks_per_row..(row + 1) * blocks_per_row];
         output[row] = vec_dot_q4_0_q8_0(weight_row, input);
     }
 }
@@ -41,7 +42,8 @@ pub fn gemv_q8_0(
     assert_eq!(output.len(), out_features);
 
     for row in 0..out_features {
-        let weight_row = &weights[row * blocks_per_row..(row + 1) * blocks_per_row];
+        let weight_row =
+            &weights[row * blocks_per_row..(row + 1) * blocks_per_row];
         let mut sum = 0.0f32;
 
         for (w, x) in weight_row.iter().zip(input.iter()) {
@@ -75,7 +77,8 @@ pub fn gemv_q4_k(
     assert_eq!(output.len(), out_features);
 
     for row in 0..out_features {
-        let weight_row = &weights[row * blocks_per_row..(row + 1) * blocks_per_row];
+        let weight_row =
+            &weights[row * blocks_per_row..(row + 1) * blocks_per_row];
         output[row] = vec_dot_q4_k_q8_k(weight_row, input);
     }
 }
@@ -95,7 +98,8 @@ pub fn gemv_q5_k(
     assert_eq!(output.len(), out_features);
 
     for row in 0..out_features {
-        let weight_row = &weights[row * blocks_per_row..(row + 1) * blocks_per_row];
+        let weight_row =
+            &weights[row * blocks_per_row..(row + 1) * blocks_per_row];
         output[row] = vec_dot_q5_k_q8_k(weight_row, input);
     }
 }
@@ -114,10 +118,7 @@ mod tests {
         let mut input = Vec::with_capacity(blocks_per_row);
 
         for _i in 0..out_features * blocks_per_row {
-            weights.push(BlockQ4_0 {
-                d: fp32_to_fp16(0.1),
-                qs: [0x88; 16],
-            });
+            weights.push(BlockQ4_0 { d: fp32_to_fp16(0.1), qs: [0x88; 16] });
         }
 
         for _i in 0..blocks_per_row {

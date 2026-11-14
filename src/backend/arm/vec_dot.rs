@@ -30,14 +30,46 @@ pub unsafe fn vec_dot_f32_neon(x: &[f32], y: &[f32]) -> f32 {
 
     let mut i = 0;
     while i < np {
-        sum0 = vmlaq_f32(sum0, vld1q_f32(x.as_ptr().add(i)), vld1q_f32(y.as_ptr().add(i)));
-        sum1 = vmlaq_f32(sum1, vld1q_f32(x.as_ptr().add(i + 4)), vld1q_f32(y.as_ptr().add(i + 4)));
-        sum2 = vmlaq_f32(sum2, vld1q_f32(x.as_ptr().add(i + 8)), vld1q_f32(y.as_ptr().add(i + 8)));
-        sum3 = vmlaq_f32(sum3, vld1q_f32(x.as_ptr().add(i + 12)), vld1q_f32(y.as_ptr().add(i + 12)));
-        sum4 = vmlaq_f32(sum4, vld1q_f32(x.as_ptr().add(i + 16)), vld1q_f32(y.as_ptr().add(i + 16)));
-        sum5 = vmlaq_f32(sum5, vld1q_f32(x.as_ptr().add(i + 20)), vld1q_f32(y.as_ptr().add(i + 20)));
-        sum6 = vmlaq_f32(sum6, vld1q_f32(x.as_ptr().add(i + 24)), vld1q_f32(y.as_ptr().add(i + 24)));
-        sum7 = vmlaq_f32(sum7, vld1q_f32(x.as_ptr().add(i + 28)), vld1q_f32(y.as_ptr().add(i + 28)));
+        sum0 = vmlaq_f32(
+            sum0,
+            vld1q_f32(x.as_ptr().add(i)),
+            vld1q_f32(y.as_ptr().add(i)),
+        );
+        sum1 = vmlaq_f32(
+            sum1,
+            vld1q_f32(x.as_ptr().add(i + 4)),
+            vld1q_f32(y.as_ptr().add(i + 4)),
+        );
+        sum2 = vmlaq_f32(
+            sum2,
+            vld1q_f32(x.as_ptr().add(i + 8)),
+            vld1q_f32(y.as_ptr().add(i + 8)),
+        );
+        sum3 = vmlaq_f32(
+            sum3,
+            vld1q_f32(x.as_ptr().add(i + 12)),
+            vld1q_f32(y.as_ptr().add(i + 12)),
+        );
+        sum4 = vmlaq_f32(
+            sum4,
+            vld1q_f32(x.as_ptr().add(i + 16)),
+            vld1q_f32(y.as_ptr().add(i + 16)),
+        );
+        sum5 = vmlaq_f32(
+            sum5,
+            vld1q_f32(x.as_ptr().add(i + 20)),
+            vld1q_f32(y.as_ptr().add(i + 20)),
+        );
+        sum6 = vmlaq_f32(
+            sum6,
+            vld1q_f32(x.as_ptr().add(i + 24)),
+            vld1q_f32(y.as_ptr().add(i + 24)),
+        );
+        sum7 = vmlaq_f32(
+            sum7,
+            vld1q_f32(x.as_ptr().add(i + 28)),
+            vld1q_f32(y.as_ptr().add(i + 28)),
+        );
         i += 32;
     }
 
@@ -165,16 +197,23 @@ pub fn vec_dot_q4_k_q8_k(x: &[BlockQ4_K], y: &[BlockQ8_K]) -> f32 {
         for j in 0..8 {
             let scale = scales[is] as i32;
             for l in 0..8 {
-                aux32[l] += scale * q8[j * 32 + l] as i32 * aux8[j * 32 + l] as i32;
+                aux32[l] +=
+                    scale * q8[j * 32 + l] as i32 * aux8[j * 32 + l] as i32;
             }
             for l in 0..8 {
-                aux32[l] += scale * q8[j * 32 + 8 + l] as i32 * aux8[j * 32 + 8 + l] as i32;
+                aux32[l] += scale
+                    * q8[j * 32 + 8 + l] as i32
+                    * aux8[j * 32 + 8 + l] as i32;
             }
             for l in 0..8 {
-                aux32[l] += scale * q8[j * 32 + 16 + l] as i32 * aux8[j * 32 + 16 + l] as i32;
+                aux32[l] += scale
+                    * q8[j * 32 + 16 + l] as i32
+                    * aux8[j * 32 + 16 + l] as i32;
             }
             for l in 0..8 {
-                aux32[l] += scale * q8[j * 32 + 24 + l] as i32 * aux8[j * 32 + 24 + l] as i32;
+                aux32[l] += scale
+                    * q8[j * 32 + 24 + l] as i32
+                    * aux8[j * 32 + 24 + l] as i32;
             }
             is += 1;
         }
@@ -234,11 +273,13 @@ pub fn vec_dot_q5_k_q8_k(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
         let mut m: u8 = 1;
         for j in 0..4 {
             for l in 0..32 {
-                aux8[j * 64 + l] = (q4[j * 32 + l] & 0xF) as i8 + if qh[l] & m != 0 { 16 } else { 0 };
+                aux8[j * 64 + l] = (q4[j * 32 + l] & 0xF) as i8
+                    + if qh[l] & m != 0 { 16 } else { 0 };
             }
             m <<= 1;
             for l in 0..32 {
-                aux8[j * 64 + 32 + l] = (q4[j * 32 + l] >> 4) as i8 + if qh[l] & m != 0 { 16 } else { 0 };
+                aux8[j * 64 + 32 + l] = (q4[j * 32 + l] >> 4) as i8
+                    + if qh[l] & m != 0 { 16 } else { 0 };
             }
             m <<= 1;
         }
@@ -254,16 +295,23 @@ pub fn vec_dot_q5_k_q8_k(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
         for j in 0..8 {
             let scale = scales[is] as i32;
             for l in 0..8 {
-                aux32[l] += scale * q8[j * 32 + l] as i32 * aux8[j * 32 + l] as i32;
+                aux32[l] +=
+                    scale * q8[j * 32 + l] as i32 * aux8[j * 32 + l] as i32;
             }
             for l in 0..8 {
-                aux32[l] += scale * q8[j * 32 + 8 + l] as i32 * aux8[j * 32 + 8 + l] as i32;
+                aux32[l] += scale
+                    * q8[j * 32 + 8 + l] as i32
+                    * aux8[j * 32 + 8 + l] as i32;
             }
             for l in 0..8 {
-                aux32[l] += scale * q8[j * 32 + 16 + l] as i32 * aux8[j * 32 + 16 + l] as i32;
+                aux32[l] += scale
+                    * q8[j * 32 + 16 + l] as i32
+                    * aux8[j * 32 + 16 + l] as i32;
             }
             for l in 0..8 {
-                aux32[l] += scale * q8[j * 32 + 24 + l] as i32 * aux8[j * 32 + 24 + l] as i32;
+                aux32[l] += scale
+                    * q8[j * 32 + 24 + l] as i32
+                    * aux8[j * 32 + 24 + l] as i32;
             }
             is += 1;
         }

@@ -100,7 +100,8 @@ mod tests {
 
         rms_norm_f32(&x, &weight, &mut output, 1e-5);
 
-        let output_rms = (output.iter().map(|&v| v * v).sum::<f32>() / 8.0).sqrt();
+        let output_rms =
+            (output.iter().map(|&v| v * v).sum::<f32>() / 8.0).sqrt();
         assert!((output_rms - 1.0).abs() < 0.1);
     }
 }
