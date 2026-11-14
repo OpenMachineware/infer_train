@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use infer_train::inference::SimpleModel;
 use infer_train::model::GgufFile;
 use infer_train::tokenizer::{
@@ -11,31 +11,40 @@ use std::io::{self, Write};
 
 #[derive(Parser, Debug)]
 #[command(name = "infer_train")]
-#[command(about = "Inference engine CLI")]
-struct Args {
-    /// Path to GGUF model file
-    #[arg(short, long)]
-    model: String,
+#[command(about = "Unified inference engine")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    /// Prompt to generate (if not provided, enters interactive mode)
-    #[arg(short, long)]
-    prompt: Option<String>,
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// CLI inference mode
+    Cli {
+        /// Path to GGUF model file
+        #[arg(short, long)]
+        model: String,
 
-    /// System prompt
-    #[arg(short, long, default_value = "You are a helpful assistant.")]
-    system: String,
+        /// Prompt to generate (if not provided, enters interactive mode)
+        #[arg(short, long)]
+        prompt: Option<String>,
 
-    /// Maximum tokens to generate
-    #[arg(short, long, default_value = "128")]
-    max_tokens: usize,
+        /// System prompt
+        #[arg(short, long, default_value = "You are a helpful assistant.")]
+        system: String,
 
-    /// Temperature for sampling
-    #[arg(short, long, default_value = "0.7")]
-    temperature: f32,
+        /// Maximum tokens to generate
+        #[arg(short, long, default_value = "128")]
+        max_tokens: usize,
 
-    /// Show tensor summary
-    #[arg(long)]
-    show_tensors: bool,
+        /// Temperature for sampling
+        #[arg(short, long, default_value = "0.7")]
+        temperature: f32,
+
+        /// Show tensor summary
+        #[arg(long)]
+        show_tensors: bool,
+    },
 }
 
 fn main() {
@@ -46,13 +55,40 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let args = Args::parse();
+    let cli = Cli::parse();
 
+    match cli.command {
+        Commands::Cli {
+            model,
+            prompt,
+            system,
+            max_tokens,
+            temperature,
+            show_tensors,
+        } => run_cli(
+            &model,
+            prompt.as_deref(),
+            &system,
+            max_tokens,
+            temperature,
+            show_tensors,
+        ),
+    }
+}
+
+fn run_cli(
+    model_path: &str,
+    prompt: Option<&str>,
+    system: &str,
+    max_tokens: usize,
+    temperature: f32,
+    show_tensors: bool,
+) -> Result<(), String> {
     println!("infer_train - unified inference engine");
-    println!("Loading model: {}", args.model);
+    println!("Loading model: {}", model_path);
 
     // Load GGUF file for tokenizer
-    let gguf = GgufFile::load(&args.model)?;
+    let gguf = GgufFile::load(model_path)?;
     print_model_info(&gguf);
 
     // Create tokenizer
@@ -61,7 +97,7 @@ fn run() -> Result<(), String> {
 
     // Load model with backend
     println!("\n=== Loading Model with Backend ===");
-    let model = SimpleModel::load(&args.model, tokenizer)?;
+    let model = SimpleModel::load(model_path, tokenizer)?;
 
     // Print model config
     let config = model.config();
@@ -74,7 +110,7 @@ fn run() -> Result<(), String> {
     println!("Context length: {}", config.context_length);
 
     // Show tensor summary if requested
-    if args.show_tensors {
+    if show_tensors {
         model.print_tensor_summary();
     }
 
@@ -97,22 +133,22 @@ fn run() -> Result<(), String> {
     };
 
     // Run inference loop
-    if let Some(prompt) = args.prompt {
+    if let Some(prompt) = prompt {
         run_single_prompt(
             &model,
             chat_template.as_ref(),
-            &args.system,
-            &prompt,
-            args.max_tokens,
-            args.temperature,
+            system,
+            prompt,
+            max_tokens,
+            temperature,
         )?;
     } else {
         run_interactive(
             &model,
             chat_template.as_ref(),
-            &args.system,
-            args.max_tokens,
-            args.temperature,
+            system,
+            max_tokens,
+            temperature,
         )?;
     }
 
