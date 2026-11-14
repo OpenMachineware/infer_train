@@ -74,16 +74,16 @@ fn main() {
             );
         }
     }
-    
+
     println!("\n=== FFN gate weights (L0, L1, L2) ===");
     for tensor in &gguf.tensors {
         if tensor.name == "blk.0.ffn_gate.weight" || tensor.name == "blk.1.ffn_gate.weight" || tensor.name == "blk.2.ffn_gate.weight" {
             println!("\n{}: {:?}", tensor.name, tensor.quant_type);
             println!("  dims: {:?}", tensor.dims);
-            
+
             if let Some(data) = gguf.get_tensor_data(&tensor.name) {
                 println!("  data len: {} bytes", data.len());
-                
+
                 match tensor.quant_type {
                     infer_train::types::QuantType::Q5_K => {
                         let blocks: &[infer_train::types::BlockQ5_K] = unsafe {

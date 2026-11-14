@@ -344,49 +344,64 @@ pub fn vec_dot_q6_k_q8_k(x: &[BlockQ6_K], y: &[BlockQ8_K]) -> f32 {
 
     for i in 0..nb {
         let d = y[i].d * fp16_to_fp32(x[i].d);
-        
+
         // Create aux8 array with values in range -32 to 31
         // Matches llama.cpp exactly: q4 (ql) advances by 64 per 128 output, qh advances by 32 per 128 output
         let mut aux8 = [0i8; 256];
         let q4 = &x[i].ql;
         let qh = &x[i].qh;
-        
+
         // First 128 elements: q4 uses [0..64], qh uses [0..32]
         for l in 0..32 {
-            aux8[l +  0] = ((q4[l +  0] & 0xF) | (((qh[l] >> 0) & 3) << 4)) as i8 - 32;
-            aux8[l + 32] = ((q4[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) as i8 - 32;
-            aux8[l + 64] = ((q4[l +  0] >>  4) | (((qh[l] >> 4) & 3) << 4)) as i8 - 32;
-            aux8[l + 96] = ((q4[l + 32] >>  4) | (((qh[l] >> 6) & 3) << 4)) as i8 - 32;
+            aux8[l + 0] =
+                ((q4[l + 0] & 0xF) | (((qh[l] >> 0) & 3) << 4)) as i8 - 32;
+            aux8[l + 32] =
+                ((q4[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) as i8 - 32;
+            aux8[l + 64] =
+                ((q4[l + 0] >> 4) | (((qh[l] >> 4) & 3) << 4)) as i8 - 32;
+            aux8[l + 96] =
+                ((q4[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) as i8 - 32;
         }
-        
+
         // Second 128 elements: q4 uses [64..128], qh uses [32..64]
         for l in 0..32 {
-            aux8[l + 128 +  0] = ((q4[l + 64 +  0] & 0xF) | (((qh[l + 32] >> 0) & 3) << 4)) as i8 - 32;
-            aux8[l + 128 + 32] = ((q4[l + 64 + 32] & 0xF) | (((qh[l + 32] >> 2) & 3) << 4)) as i8 - 32;
-            aux8[l + 128 + 64] = ((q4[l + 64 +  0] >>  4) | (((qh[l + 32] >> 4) & 3) << 4)) as i8 - 32;
-            aux8[l + 128 + 96] = ((q4[l + 64 + 32] >>  4) | (((qh[l + 32] >> 6) & 3) << 4)) as i8 - 32;
+            aux8[l + 128 + 0] =
+                ((q4[l + 64 + 0] & 0xF) | (((qh[l + 32] >> 0) & 3) << 4)) as i8
+                    - 32;
+            aux8[l + 128 + 32] = ((q4[l + 64 + 32] & 0xF)
+                | (((qh[l + 32] >> 2) & 3) << 4))
+                as i8
+                - 32;
+            aux8[l + 128 + 64] =
+                ((q4[l + 64 + 0] >> 4) | (((qh[l + 32] >> 4) & 3) << 4)) as i8
+                    - 32;
+            aux8[l + 128 + 96] =
+                ((q4[l + 64 + 32] >> 4) | (((qh[l + 32] >> 6) & 3) << 4)) as i8
+                    - 32;
         }
-        
+
         let q8 = &y[i].qs;
         let scales = &x[i].scales;
-        
+
         let mut aux32 = [0i32; 8];
         let mut is = 0;
         let mut a_idx = 0;
-        
+
         for _j in 0..16 {
             let scale = scales[is] as i32;
             for l in 0..8 {
-                aux32[l] += scale * q8[a_idx + l] as i32 * aux8[a_idx + l] as i32;
+                aux32[l] +=
+                    scale * q8[a_idx + l] as i32 * aux8[a_idx + l] as i32;
             }
             a_idx += 8;
             for l in 0..8 {
-                aux32[l] += scale * q8[a_idx + l] as i32 * aux8[a_idx + l] as i32;
+                aux32[l] +=
+                    scale * q8[a_idx + l] as i32 * aux8[a_idx + l] as i32;
             }
             a_idx += 8;
             is += 1;
         }
-        
+
         for l in 0..8 {
             sums[l] += d * aux32[l] as f32;
         }
@@ -524,14 +539,14 @@ mod q4k_test {
         let block_q4 = BlockQ4_K {
             d: half::f16::to_bits(half::f16::from_f32(1.0)), // scale = 1.0
             dmin: half::f16::to_bits(half::f16::from_f32(0.0)), // min scale = 0
-            scales: [0; 12], // all scales = 0
-            qs: [0; 128], // all values = 0
+            scales: [0; 12],                                 // all scales = 0
+            qs: [0; 128],                                    // all values = 0
         };
 
         // Create a simple Q8_K block
         let block_q8 = BlockQ8_K {
             d: 1.0,
-            qs: [1; 256], // all values = 1
+            qs: [1; 256],     // all values = 1
             bsums: [256; 16], // each block sum = 256 (256 ones)
         };
 
@@ -554,7 +569,7 @@ mod q4k_test {
         // Create Q8_K block
         let block_q8 = BlockQ8_K {
             d: 1.0,
-            qs: [1; 256], // all values = 1
+            qs: [1; 256],   // all values = 1
             bsums: [0; 16], // no contribution from mins
         };
 

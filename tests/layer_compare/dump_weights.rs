@@ -16,16 +16,16 @@ fn main() {
         for tensor_suffix in ["attn_q.weight", "attn_v.weight", "attn_output.weight", "ffn_down.weight"].iter() {
             println!("\n=== Layer {} {} ===", layer_idx, tensor_suffix);
             let weight_name = format!("blk.{}.{}", layer_idx, tensor_suffix);
-            
+
             if let Some(tensor) = gguf.tensors.iter().find(|t| t.name == weight_name) {
                 println!("Tensor: {}", tensor.name);
                 println!("Quant type: {:?}", tensor.quant_type);
                 println!("Dims: {:?}", tensor.dims);
-                
+
                 if let Some(data) = gguf.get_tensor_data(&tensor.name) {
                     println!("Data size: {} bytes", data.len());
                     println!("First 20 bytes: {:02x?}", &data[..20.min(data.len())]);
-                    
+
                     match tensor.quant_type {
                         QuantType::Q4_K => {
                             // Dump first few Q4_K blocks

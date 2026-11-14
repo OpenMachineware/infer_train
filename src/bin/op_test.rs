@@ -7,8 +7,8 @@
 //   2. 测性能: cargo run --release --bin op_test -- --op rms_norm --bench 1000
 //   3. 对比输出: cargo run --release --bin op_test -- --op vec_dot_q5_k --verbose
 
-use std::time::Instant;
 use clap::Parser;
+use std::time::Instant;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -93,8 +93,11 @@ fn test_rms_norm(args: &Args) {
         let elapsed = start.elapsed();
         let us_per_iter = elapsed.as_micros() as f64 / args.bench as f64;
         println!("Benchmark: {} iterations in {:?}", args.bench, elapsed);
-        println!("Per iteration: {:.2} µs ({:.2} GB/s)", us_per_iter,
-                 (size as f64 * 4.0 * 3.0) / us_per_iter / 1000.0);
+        println!(
+            "Per iteration: {:.2} µs ({:.2} GB/s)",
+            us_per_iter,
+            (size as f64 * 4.0 * 3.0) / us_per_iter / 1000.0
+        );
     }
 }
 
@@ -133,8 +136,8 @@ fn test_silu(args: &Args) {
 }
 
 fn test_quantize_q8_k(args: &Args) {
-    use infer_train::types::{BlockQ8_K, QK_K};
     use infer_train::backend::arm::quant::quantize_q8_k;
+    use infer_train::types::{BlockQ8_K, QK_K};
 
     let size = args.size;
     let nb = (size + QK_K - 1) / QK_K;
@@ -164,8 +167,10 @@ fn test_quantize_q8_k(args: &Args) {
         println!("\nVerification:");
         for i in 0..5.min(256) {
             let deq = output[0].d * (output[0].qs[i] as f32);
-            println!("  qs[{}] = {}, dequant = {:.4}, original = {:.4}",
-                     i, output[0].qs[i], deq, input[i]);
+            println!(
+                "  qs[{}] = {}, dequant = {:.4}, original = {:.4}",
+                i, output[0].qs[i], deq, input[i]
+            );
         }
     }
 
@@ -177,14 +182,19 @@ fn test_quantize_q8_k(args: &Args) {
         let elapsed = start.elapsed();
         let us_per_iter = elapsed.as_micros() as f64 / args.bench as f64;
         println!("Benchmark: {} iterations in {:?}", args.bench, elapsed);
-        println!("Per iteration: {:.2} µs ({:.2} GB/s)", us_per_iter,
-                 (size as f64 * 4.0) / us_per_iter / 1000.0);
+        println!(
+            "Per iteration: {:.2} µs ({:.2} GB/s)",
+            us_per_iter,
+            (size as f64 * 4.0) / us_per_iter / 1000.0
+        );
     }
 }
 
 fn test_vec_dot_q5_k(args: &Args) {
+    use infer_train::backend::arm::{
+        quant::quantize_q8_k, vec_dot::vec_dot_q5_k_q8_k,
+    };
     use infer_train::types::{BlockQ5_K, BlockQ8_K, QK_K, fp16_to_fp32};
-    use infer_train::backend::arm::{quant::quantize_q8_k, vec_dot::vec_dot_q5_k_q8_k};
 
     // 创建测试输入
     let input_size = QK_K; // 256
@@ -224,7 +234,11 @@ fn test_vec_dot_q5_k(args: &Args) {
         println!("Input [0..5]: {:?}", &input[..5]);
         println!("Q8_K block 0: d = {:.6}", input_q8k[0].d);
         println!("Q8_K block 0 qs [0..5]: {:?}", &input_q8k[0].qs[..5]);
-        println!("Q5_K block 0: d = {:.6}, dmin = {:.6}", fp16_to_fp32(weights[0].d), fp16_to_fp32(weights[0].dmin));
+        println!(
+            "Q5_K block 0: d = {:.6}, dmin = {:.6}",
+            fp16_to_fp32(weights[0].d),
+            fp16_to_fp32(weights[0].dmin)
+        );
     }
 
     // 计算点积
@@ -243,15 +257,20 @@ fn test_vec_dot_q5_k(args: &Args) {
         let elapsed = start.elapsed();
         let us_per_iter = elapsed.as_micros() as f64 / args.bench as f64;
         println!("Benchmark: {} iterations in {:?}", args.bench, elapsed);
-        println!("Per iteration: {:.2} µs ({:.2} GOPS)", us_per_iter,
-                 (total_size as f64 * 2.0) / us_per_iter / 1000.0);
+        println!(
+            "Per iteration: {:.2} µs ({:.2} GOPS)",
+            us_per_iter,
+            (total_size as f64 * 2.0) / us_per_iter / 1000.0
+        );
         println!("(sum = {} to prevent optimization)", sum);
     }
 }
 
 fn test_vec_dot_q6_k(args: &Args) {
+    use infer_train::backend::arm::{
+        quant::quantize_q8_k, vec_dot::vec_dot_q6_k_q8_k,
+    };
     use infer_train::types::{BlockQ6_K, BlockQ8_K, QK_K, fp16_to_fp32};
-    use infer_train::backend::arm::{quant::quantize_q8_k, vec_dot::vec_dot_q6_k_q8_k};
 
     let input_size = QK_K;
     let nb = 4;
@@ -302,8 +321,10 @@ fn test_vec_dot_q6_k(args: &Args) {
 }
 
 fn test_vec_dot_q4_k(args: &Args) {
+    use infer_train::backend::arm::{
+        quant::quantize_q8_k, vec_dot::vec_dot_q4_k_q8_k,
+    };
     use infer_train::types::{BlockQ4_K, BlockQ8_K, QK_K, fp16_to_fp32};
-    use infer_train::backend::arm::{quant::quantize_q8_k, vec_dot::vec_dot_q4_k_q8_k};
 
     let input_size = QK_K;
     let nb = 4;
@@ -366,7 +387,9 @@ fn main() {
         "vec_dot_q4_k" => test_vec_dot_q4_k(&args),
         _ => {
             eprintln!("Unknown operator: {}", args.op);
-            eprintln!("Supported: rms_norm, silu, quantize_q8_k, vec_dot_q5_k, vec_dot_q6_k, vec_dot_q4_k");
+            eprintln!(
+                "Supported: rms_norm, silu, quantize_q8_k, vec_dot_q5_k, vec_dot_q6_k, vec_dot_q4_k"
+            );
             std::process::exit(1);
         }
     }
