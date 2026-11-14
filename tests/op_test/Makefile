@@ -8,12 +8,10 @@ CXX = g++
 CXXFLAGS = -O3 -march=native -std=c++17
 
 # Include paths
-INCLUDES = -I$(LLAMA_CPP_ROOT) \
-           -I$(LLAMA_CPP_ROOT)/ggml \
-           -I$(LLAMA_CPP_ROOT)/ggml/src \
+INCLUDES = -I$(LLAMA_CPP_ROOT)/ggml/include \
            -I$(LLAMA_CPP_ROOT)/ggml/src/ggml-cpu \
-           -I$(LLAMA_CPP_ROOT)/ggml/src/ggml-cpu/arch/arm \
-           -I$(LLAMA_CPP_ROOT)/ggml/src/ggml-backend
+           -I$(LLAMA_CPP_ROOT)/ggml/src/ggml-backend \
+           -I$(LLAMA_CPP_ROOT)/ggml/src
 
 # Library paths
 LDFLAGS = -L$(LLAMA_BUILD)/ggml/src \

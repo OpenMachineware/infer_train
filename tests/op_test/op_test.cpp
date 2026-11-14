@@ -20,6 +20,7 @@ extern "C" {
 #include "ggml.h"
 #include "ggml-cpu.h"
 #include "ggml-quants.h"
+#include "quants.h"
 }
 
 // Simple command line parser
