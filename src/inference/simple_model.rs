@@ -43,6 +43,20 @@ impl ModelConfig {
 
         let prefix = format!("{}.", arch);
 
+        // Try to get vocab_size from metadata, fallback to token_embd dimensions
+        let vocab_size = gguf
+            .get_meta::<u64>(&format!("{}vocab_size", prefix))
+            .or_else(|| gguf.get_meta::<u64>("llama.vocab_size"))
+            .or_else(|| {
+                // Fallback: infer from token_embd.weight dimensions
+                // token_embd.weight shape is [hidden_size, vocab_size]
+                gguf.tensors
+                    .iter()
+                    .find(|t| t.name == "token_embd.weight")
+                    .and_then(|t| t.dims.get(1).copied())
+            })
+            .unwrap_or(32000) as usize;
+
         Self {
             n_layers: gguf
                 .get_meta::<u64>(&format!("{}block_count", prefix))
@@ -73,10 +87,7 @@ impl ModelConfig {
                 })
                 .or_else(|| gguf.get_meta::<u64>("llama.attention.head_dim"))
                 .unwrap_or(0) as usize,
-            vocab_size: gguf
-                .get_meta::<u64>(&format!("{}vocab_size", prefix))
-                .or_else(|| gguf.get_meta::<u64>("llama.vocab_size"))
-                .unwrap_or(32000) as usize,
+            vocab_size,
             intermediate_size: gguf
                 .get_meta::<u64>(&format!("{}feed_forward_length", prefix))
                 .or_else(|| gguf.get_meta::<u64>("llama.feed_forward_length"))

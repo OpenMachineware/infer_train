@@ -280,7 +280,12 @@ fn run_single_prompt(
         let tokenizer = executor.model.tokenizer();
         let tokens =
             tokenizer.encode(&prompt_text).map_err(|e| e.to_string())?;
-        println!("\nPrompt tokens: {}", tokens.len());
+        println!(
+            "\nPrompt text: {}",
+            &prompt_text.chars().take(200).collect::<String>()
+        );
+        println!("Prompt tokens: {:?}", &tokens[..tokens.len().min(20)]);
+        println!("Prompt tokens count: {}", tokens.len());
         tokens
     };
 
