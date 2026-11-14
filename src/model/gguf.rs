@@ -194,29 +194,82 @@ impl GgufFile {
 
     /// Calculate tensor size in bytes
     pub fn tensor_size(tensor: &GgufTensorInfo) -> usize {
+        use crate::types::{QK_K, QK4_0, QK8_0};
+
         let n_elements: u64 = tensor.dims.iter().product();
-        let bytes_per_element = match tensor.quant_type {
-            QuantType::F32 => 4,
-            QuantType::F16 => 2,
-            QuantType::BF16 => 2,
-            QuantType::Q4_0 => 1,
-            QuantType::Q4_1 => 1,
-            QuantType::Q5_0 => 1,
-            QuantType::Q5_1 => 1,
-            QuantType::Q8_0 => 1,
-            QuantType::Q8_1 => 1,
-            QuantType::Q2_K => 1,
-            QuantType::Q3_K => 1,
-            QuantType::Q4_K => 1,
-            QuantType::Q5_K => 1,
-            QuantType::Q6_K => 1,
-            QuantType::Q8_K => 1,
-            // IQ types and others fallback
-            _ => 1,
-        };
-        // For quantized types, block-based calculation would be needed
-        // This is a simplified version
-        (n_elements * bytes_per_element) as usize
+
+        match tensor.quant_type {
+            QuantType::F32 => (n_elements * 4) as usize,
+            QuantType::F16 | QuantType::BF16 => (n_elements * 2) as usize,
+
+            // Q4_0: 18 bytes per 32 elements
+            QuantType::Q4_0 => {
+                let n_blocks = (n_elements + QK4_0 as u64 - 1) / QK4_0 as u64;
+                (n_blocks * 18) as usize
+            }
+            // Q4_1: 20 bytes per 32 elements
+            QuantType::Q4_1 => {
+                let n_blocks = (n_elements + QK4_0 as u64 - 1) / QK4_0 as u64;
+                (n_blocks * 20) as usize
+            }
+            // Q5_0: 22 bytes per 32 elements
+            QuantType::Q5_0 => {
+                let n_blocks = (n_elements + QK4_0 as u64 - 1) / QK4_0 as u64;
+                (n_blocks * 22) as usize
+            }
+            // Q5_1: 24 bytes per 32 elements
+            QuantType::Q5_1 => {
+                let n_blocks = (n_elements + QK4_0 as u64 - 1) / QK4_0 as u64;
+                (n_blocks * 24) as usize
+            }
+            // Q8_0: 34 bytes per 32 elements
+            QuantType::Q8_0 => {
+                let n_blocks = (n_elements + QK8_0 as u64 - 1) / QK8_0 as u64;
+                (n_blocks * 34) as usize
+            }
+            // Q8_1: 36 bytes per 32 elements
+            QuantType::Q8_1 => {
+                let n_blocks = (n_elements + QK8_0 as u64 - 1) / QK8_0 as u64;
+                (n_blocks * 36) as usize
+            }
+
+            // K-quant formats (256 elements per block)
+            // Q4_K: 144 bytes per 256 elements
+            QuantType::Q4_K => {
+                let n_blocks = (n_elements + QK_K as u64 - 1) / QK_K as u64;
+                (n_blocks * 144) as usize
+            }
+            // Q5_K: 176 bytes per 256 elements
+            QuantType::Q5_K => {
+                let n_blocks = (n_elements + QK_K as u64 - 1) / QK_K as u64;
+                (n_blocks * 176) as usize
+            }
+            // Q6_K: 210 bytes per 256 elements
+            QuantType::Q6_K => {
+                let n_blocks = (n_elements + QK_K as u64 - 1) / QK_K as u64;
+                (n_blocks * 210) as usize
+            }
+            // Q8_K: 292 bytes per 256 elements
+            QuantType::Q8_K => {
+                let n_blocks = (n_elements + QK_K as u64 - 1) / QK_K as u64;
+                (n_blocks * 292) as usize
+            }
+
+            // IQ formats (256 elements per block)
+            // IQ4_XS: 136 bytes per 256 elements
+            QuantType::IQ4_XS => {
+                let n_blocks = (n_elements + QK_K as u64 - 1) / QK_K as u64;
+                (n_blocks * 136) as usize
+            }
+            // IQ4_NL: 18 bytes per 32 elements (same as Q4_0)
+            QuantType::IQ4_NL => {
+                let n_blocks = (n_elements + QK4_0 as u64 - 1) / QK4_0 as u64;
+                (n_blocks * 18) as usize
+            }
+
+            // Fallback for unsupported types
+            _ => (n_elements) as usize,
+        }
     }
 }
 

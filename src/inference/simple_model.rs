@@ -44,34 +44,34 @@ impl ModelConfig {
 
         Self {
             n_layers: gguf
-                .get_meta::<i64>(&format!("{}block_count", prefix))
-                .or_else(|| gguf.get_meta::<i64>("llama.block_count"))
+                .get_meta::<u64>(&format!("{}block_count", prefix))
+                .or_else(|| gguf.get_meta::<u64>("llama.block_count"))
                 .unwrap_or(32) as usize,
             hidden_size: gguf
-                .get_meta::<i64>(&format!("{}embedding_length", prefix))
-                .or_else(|| gguf.get_meta::<i64>("llama.embedding_length"))
+                .get_meta::<u64>(&format!("{}embedding_length", prefix))
+                .or_else(|| gguf.get_meta::<u64>("llama.embedding_length"))
                 .unwrap_or(4096) as usize,
             n_heads: gguf
-                .get_meta::<i64>(&format!("{}attention.head_count", prefix))
-                .or_else(|| gguf.get_meta::<i64>("llama.attention.head_count"))
+                .get_meta::<u64>(&format!("{}attention.head_count", prefix))
+                .or_else(|| gguf.get_meta::<u64>("llama.attention.head_count"))
                 .unwrap_or(32) as usize,
             n_kv_heads: gguf
-                .get_meta::<i64>(&format!("{}attention.head_count_kv", prefix))
+                .get_meta::<u64>(&format!("{}attention.head_count_kv", prefix))
                 .or_else(|| {
-                    gguf.get_meta::<i64>("llama.attention.head_count_kv")
+                    gguf.get_meta::<u64>("llama.attention.head_count_kv")
                 })
                 .unwrap_or(32) as usize,
             vocab_size: gguf
-                .get_meta::<i64>(&format!("{}vocab_size", prefix))
-                .or_else(|| gguf.get_meta::<i64>("llama.vocab_size"))
+                .get_meta::<u64>(&format!("{}vocab_size", prefix))
+                .or_else(|| gguf.get_meta::<u64>("llama.vocab_size"))
                 .unwrap_or(32000) as usize,
             intermediate_size: gguf
-                .get_meta::<i64>(&format!("{}feed_forward_length", prefix))
-                .or_else(|| gguf.get_meta::<i64>("llama.feed_forward_length"))
+                .get_meta::<u64>(&format!("{}feed_forward_length", prefix))
+                .or_else(|| gguf.get_meta::<u64>("llama.feed_forward_length"))
                 .unwrap_or(11008) as usize,
             context_length: gguf
-                .get_meta::<i64>(&format!("{}context_length", prefix))
-                .or_else(|| gguf.get_meta::<i64>("llama.context_length"))
+                .get_meta::<u64>(&format!("{}context_length", prefix))
+                .or_else(|| gguf.get_meta::<u64>("llama.context_length"))
                 .unwrap_or(4096) as usize,
             head_dim: 0, // Will be computed
         }
