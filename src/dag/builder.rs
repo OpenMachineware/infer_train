@@ -5,7 +5,7 @@
 
 use crate::dag::{ComputeGraph, Op};
 use crate::model::GgufFile;
-use crate::ops::QuantType;
+use crate::types::QuantType;
 
 // Build compute graph from GGUF model
 pub struct DagBuilder {

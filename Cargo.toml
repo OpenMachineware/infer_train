@@ -7,7 +7,7 @@ edition = "2024"
 name = "infer_train"
 path = "src/main.rs"
 
-# TODO: 重写 benchmark 工具
+# TODO: rewrite benchmark tool
 # [[bin]]
 # name = "infer-train-bench"
 # path = "tools/bench.rs"

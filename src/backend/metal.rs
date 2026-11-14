@@ -3,8 +3,8 @@
 
 // Apple Metal backend
 
-use crate::backend::Backend;
-use crate::ops::{CoreOperator, OpError, QuantType};
+use crate::backend::{Backend, TensorRef, TensorRefMut};
+use crate::types::{CoreOperator, OpError, QuantType};
 
 pub struct MetalBackend {
     id: usize,
@@ -25,7 +25,6 @@ impl Backend for MetalBackend {
     }
 
     fn available_memory(&self) -> usize {
-        // TODO: detect actual unified memory size
         128 * 1024 * 1024 * 1024 // 128GB (unified memory)
     }
 
@@ -74,8 +73,8 @@ impl Backend for MetalBackend {
     fn execute(
         &self,
         op: &CoreOperator,
-        _inputs: &[&[f32]],
-        _outputs: &mut [&mut [f32]],
+        _inputs: &[TensorRef],
+        _outputs: &mut [TensorRefMut],
     ) -> Result<(), OpError> {
         Err(OpError::NotImplemented(format!("{:?} on Metal", op)))
     }

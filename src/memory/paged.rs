@@ -3,7 +3,7 @@
 
 // Quantized KV cache (PagedAttention)
 
-use crate::ops::QuantType;
+use crate::types::QuantType;
 
 // Block size
 pub const BLOCK_SIZE: usize = 16;

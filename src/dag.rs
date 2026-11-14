@@ -8,7 +8,7 @@ pub mod optimizer;
 
 use std::collections::HashMap;
 
-use crate::ops::QuantType;
+use crate::types::QuantType;
 
 // Tensor identifier
 pub type TensorId = usize;

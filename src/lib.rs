@@ -7,5 +7,5 @@ pub mod dag;
 pub mod inference;
 pub mod memory;
 pub mod model;
-pub mod ops;
 pub mod strategy;
+pub mod types;

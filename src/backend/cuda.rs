@@ -3,8 +3,8 @@
 
 // NVIDIA CUDA backend
 
-use crate::backend::Backend;
-use crate::ops::{CoreOperator, OpError, QuantType};
+use crate::backend::{Backend, TensorRef, TensorRefMut};
+use crate::types::{CoreOperator, OpError, QuantType};
 
 pub struct CudaBackend {
     id: usize,
@@ -25,7 +25,6 @@ impl Backend for CudaBackend {
     }
 
     fn available_memory(&self) -> usize {
-        // TODO: detect actual VRAM
         24 * 1024 * 1024 * 1024 // 24GB
     }
 
@@ -74,8 +73,8 @@ impl Backend for CudaBackend {
     fn execute(
         &self,
         op: &CoreOperator,
-        _inputs: &[&[f32]],
-        _outputs: &mut [&mut [f32]],
+        _inputs: &[TensorRef],
+        _outputs: &mut [TensorRefMut],
     ) -> Result<(), OpError> {
         Err(OpError::NotImplemented(format!("{:?} on CUDA", op)))
     }

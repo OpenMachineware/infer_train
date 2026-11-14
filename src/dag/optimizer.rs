@@ -4,7 +4,7 @@
 // DAG optimizer for fusion and scheduling
 
 use crate::dag::{ComputeGraph, Op, TensorId};
-use crate::ops::QuantType;
+use crate::types::QuantType;
 
 // Fusion pattern: identifies sequences of ops that can be fused
 pub struct DagOptimizer {
@@ -213,7 +213,7 @@ impl DagOptimizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::QuantType;
+    use crate::types::QuantType;
 
     #[test]
     fn test_fusion_detection() {

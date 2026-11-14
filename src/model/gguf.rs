@@ -17,7 +17,7 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
-use crate::ops::QuantType;
+use crate::types::QuantType;
 
 // GGUF magic number
 const GGUF_MAGIC: u32 = 0x46554747; // "GGUF" in little-endian

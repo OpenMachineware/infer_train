@@ -3,21 +3,18 @@
 
 // RMS Normalization operator
 
-// RMS Norm: y = x * rsqrt(mean(x^2) + eps)
-// More numerically stable than LayerNorm
+#[cfg(target_arch = "aarch64")]
+use std::arch::aarch64::*;
 
 // FP32 RMS Norm (NEON optimized)
 #[cfg(target_arch = "aarch64")]
 pub fn rms_norm_f32(x: &[f32], weight: &[f32], output: &mut [f32], eps: f32) {
-    use std::arch::aarch64::*;
-
     let n = x.len();
     assert_eq!(n, weight.len());
     assert_eq!(n, output.len());
     assert_eq!(n % 4, 0);
 
     unsafe {
-        // Compute sum of squares
         let np = n & !31;
         let mut sum0 = vdupq_n_f32(0.0);
         let mut sum1 = vdupq_n_f32(0.0);
@@ -46,23 +43,19 @@ pub fn rms_norm_f32(x: &[f32], weight: &[f32], output: &mut [f32], eps: f32) {
             i += 32;
         }
 
-        // Reduce sums
         sum0 = vaddq_f32(sum0, sum1);
         sum2 = vaddq_f32(sum2, sum3);
         sum0 = vaddq_f32(sum0, sum2);
 
         let mut sum = vaddvq_f32(sum0);
 
-        // Handle leftovers
         for j in np..n {
             sum += x[j] * x[j];
         }
 
-        // Compute scale
         let mean = sum / (n as f32);
         let scale = 1.0 / (mean + eps).sqrt();
 
-        // Apply scale and weight
         i = 0;
         let scale_vec = vdupq_n_f32(scale);
         while i + 4 <= n {
@@ -74,7 +67,6 @@ pub fn rms_norm_f32(x: &[f32], weight: &[f32], output: &mut [f32], eps: f32) {
             i += 4;
         }
 
-        // Handle leftovers
         for j in i..n {
             output[j] = x[j] * scale * weight[j];
         }
@@ -108,9 +100,7 @@ mod tests {
 
         rms_norm_f32(&x, &weight, &mut output, 1e-5);
 
-        // RMS Norm normalizes to unit RMS
-        let output_rms =
-            (output.iter().map(|&v| v * v).sum::<f32>() / 8.0).sqrt();
+        let output_rms = (output.iter().map(|&v| v * v).sum::<f32>() / 8.0).sqrt();
         assert!((output_rms - 1.0).abs() < 0.1);
     }
 }
