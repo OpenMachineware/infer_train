@@ -3,7 +3,6 @@
 
 // Simple model structure for basic inference
 
-use crate::backend::Backend;
 use crate::backend::arm::ArmCpuBackend;
 use crate::model::GgufFile;
 use crate::tokenizer::Tokenizer;
@@ -143,7 +142,8 @@ impl SimpleModel {
 
     /// Get output layer weights
     pub fn get_output_weight(&self) -> Option<&[u8]> {
-        for name in &["output.weight", "lm_head.weight"] {
+        // Try different naming conventions
+        for name in &["output.weight", "lm_head.weight", "token_embd.weight"] {
             if let Some(data) = self.gguf.get_tensor_data(name) {
                 return Some(data);
             }
@@ -152,8 +152,8 @@ impl SimpleModel {
     }
 
     /// Simple token embedding lookup (returns hidden states for a single token)
-    pub fn embed_token(&self, token_id: u32) -> Option<Vec<f32>> {
-        let emb_weight = self.get_embeddings()?;
+    pub fn embed_token(&self, _token_id: u32) -> Option<Vec<f32>> {
+        let _emb_weight = self.get_embeddings()?;
         let hidden_size = self.config.hidden_size;
 
         // Assuming F32 or F16 embedding
@@ -172,6 +172,23 @@ impl SimpleModel {
 
     /// Print tensor summary
     pub fn print_tensor_summary(&self) {
+        // Print first layer tensors
+        println!("\nLayer 0 tensors:");
+        for tensor in &self.gguf.tensors {
+            if tensor.name.starts_with("blk.0.") {
+                println!("  {}: {:?}", tensor.name, tensor.quant_type);
+            }
+        }
+
+        // Print other special tensors
+        println!("\nSpecial tensors:");
+        for tensor in &self.gguf.tensors {
+            if !tensor.name.starts_with("blk.") {
+                println!("  {}: {:?}", tensor.name, tensor.quant_type);
+            }
+        }
+
+        // Group counts
         let mut groups: HashMap<String, usize> = HashMap::new();
 
         for tensor in &self.gguf.tensors {

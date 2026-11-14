@@ -4,9 +4,7 @@
 use clap::{Parser, Subcommand};
 use infer_train::inference::SimpleModel;
 use infer_train::model::GgufFile;
-use infer_train::tokenizer::{
-    ChatMessage, ChatTemplate, Tokenizer, create_tokenizer,
-};
+use infer_train::tokenizer::{ChatMessage, ChatTemplate, create_tokenizer};
 use std::io::{self, Write};
 
 #[derive(Parser, Debug)]
@@ -34,7 +32,7 @@ enum Commands {
         system: String,
 
         /// Maximum tokens to generate
-        #[arg(short, long, default_value = "128")]
+        #[arg(long, default_value = "128")]
         max_tokens: usize,
 
         /// Temperature for sampling

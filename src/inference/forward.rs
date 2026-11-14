@@ -3,7 +3,6 @@
 
 // Forward executor for CPU inference
 
-use crate::backend::Backend;
 use crate::backend::arm::ArmCpuBackend;
 use crate::inference::SimpleModel;
 use crate::types::QuantType;
@@ -42,9 +41,9 @@ impl ForwardExecutor {
     }
 
     /// Forward pass for a single token
-    pub fn forward(&self, token_id: u32) -> Result<Vec<f32>, String> {
+    pub fn forward(&mut self, token_id: u32) -> Result<Vec<f32>, String> {
         let config = self.model.config();
-        let hidden_size = config.hidden_size;
+        let _hidden_size = config.hidden_size;
 
         // 1. Embedding lookup
         let mut hidden = self.embed_token(token_id)?;
@@ -120,35 +119,119 @@ impl ForwardExecutor {
 
     /// Forward pass for a single layer
     fn forward_layer(
-        &self,
+        &mut self,
         layer_idx: usize,
         input: &[f32],
     ) -> Result<Vec<f32>, String> {
         let config = self.model.config();
-        let hidden_size = config.hidden_size;
+        let _hidden_size = config.hidden_size;
+        let _n_heads = config.n_heads;
+        let _n_kv_heads = config.n_kv_heads;
+        let _head_dim = config.head_dim();
 
-        // Simplified: just pass through with residual
+        // === Attention Block ===
+        // 1. RMS Norm before attention
+        let normed_attn = self.rms_norm(
+            input,
+            &format!("blk.{}.attn_norm.weight", layer_idx),
+            config.hidden_size,
+        )?;
+
+        // 2. QKV projections (simplified - placeholder for now)
         // Real implementation would:
-        // 1. Attention: norm -> QKV -> attention -> output
-        // 2. FFN: norm -> gate/up projection -> activation -> down projection
+        // - Q = Linear(normed_attn, attn_q.weight)
+        // - K = Linear(normed_attn, attn_k.weight)
+        // - V = Linear(normed_attn, attn_v.weight)
+        let _ = normed_attn; // Placeholder
 
-        // For now, return input (identity function)
-        // This allows testing the pipeline structure
-        Ok(input.to_vec())
+        // 3. Q/K norm (if present - DeepSeek/Qwen3 style)
+        // - Q = RMSNorm(Q, attn_q_norm.weight)
+        // - K = RMSNorm(K, attn_k_norm.weight)
+
+        // 4. Apply RoPE to Q and K
+
+        // 5. Flash Attention
+
+        // 6. Output projection
+
+        // Residual connection
+        let mut hidden: Vec<f32> = input.to_vec();
+
+        // === FFN Block ===
+        // 1. RMS Norm before FFN
+        let normed_ffn = self.rms_norm(
+            &hidden,
+            &format!("blk.{}.ffn_norm.weight", layer_idx),
+            config.hidden_size,
+        )?;
+
+        // 2. Gate and Up projections
+        // Real implementation would:
+        // - gate = Linear(normed_ffn, ffn_gate.weight)
+        // - up = Linear(normed_ffn, ffn_up.weight)
+        // - swiglu_out = SiLU(gate) * up
+        // - down = Linear(swiglu_out, ffn_down.weight)
+
+        // Residual connection (placeholder)
+        // hidden = hidden + ffn_output
+        let _ = normed_ffn; // Silence unused warning
+
+        Ok(hidden)
+    }
+
+    /// RMS normalization
+    fn rms_norm(
+        &self,
+        input: &[f32],
+        weight_name: &str,
+        size: usize,
+    ) -> Result<Vec<f32>, String> {
+        // Find weight tensor
+        let weight_data = self.model.get_tensor(weight_name);
+
+        // Create output
+        let mut output = vec![0.0f32; size];
+
+        if let Some(data) = weight_data {
+            // For F32 weight
+            if data.len() == size * 4 {
+                let weight: Vec<f32> = data
+                    .chunks_exact(4)
+                    .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+                    .collect();
+
+                // Simple RMS norm implementation
+                let eps = 1e-5f32;
+                let sum_sq: f32 = input.iter().map(|x| x * x).sum();
+                let rms = (sum_sq / size as f32 + eps).sqrt();
+
+                for (i, (inp, w)) in input.iter().zip(weight.iter()).enumerate()
+                {
+                    output[i] = inp / rms * w;
+                }
+            }
+        } else {
+            // Fallback: just normalize without weight
+            let eps = 1e-5f32;
+            let sum_sq: f32 = input.iter().map(|x| x * x).sum();
+            let rms = (sum_sq / size as f32 + eps).sqrt();
+
+            for (i, inp) in input.iter().enumerate() {
+                output[i] = inp / rms;
+            }
+        }
+
+        Ok(output)
     }
 
     /// Final layer normalization
     fn final_norm(&self, input: &[f32]) -> Result<Vec<f32>, String> {
-        // Find output norm weights
-        if let Some(_norm_weight) = self.model.get_tensor("output_norm.weight")
-        {
-            // TODO: Implement RMS norm
-        }
-        Ok(input.to_vec())
+        let config = self.model.config();
+        self.rms_norm(input, "output_norm.weight", config.hidden_size)
     }
 
     /// Output projection to logits
-    fn output_projection(&self, hidden: &[f32]) -> Result<Vec<f32>, String> {
+    fn output_projection(&self, _hidden: &[f32]) -> Result<Vec<f32>, String> {
         let config = self.model.config();
         let vocab_size = config.vocab_size;
 
@@ -197,7 +280,7 @@ impl ForwardExecutor {
 
     /// Generate tokens autoregressively
     pub fn generate(
-        &self,
+        &mut self,
         prompt_tokens: &[u32],
         max_new_tokens: usize,
         temperature: f32,

@@ -81,7 +81,7 @@ impl SpmTokenizer {
 
             // Check if it's a byte fallback token
             if vocab.is_byte_token(token) {
-                if let Some(byte) = vocab.byte_from_token(token) {
+                if let Some(_byte) = vocab.byte_from_token(token) {
                     // Insert into byte fallback trie
                     byte_fallback_trie.insert(token, id, score);
                 }
