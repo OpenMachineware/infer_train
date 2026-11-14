@@ -198,7 +198,8 @@ impl GgufFile {
         let bytes_per_element = match tensor.quant_type {
             QuantType::F32 => 4,
             QuantType::F16 => 2,
-            QuantType::Q4_0 => 1, // block-wise
+            QuantType::BF16 => 2,
+            QuantType::Q4_0 => 1,
             QuantType::Q4_1 => 1,
             QuantType::Q5_0 => 1,
             QuantType::Q5_1 => 1,
@@ -210,7 +211,8 @@ impl GgufFile {
             QuantType::Q5_K => 1,
             QuantType::Q6_K => 1,
             QuantType::Q8_K => 1,
-            QuantType::BF16 => 2,
+            // IQ types and others fallback
+            _ => 1,
         };
         // For quantized types, block-based calculation would be needed
         // This is a simplified version
@@ -544,6 +546,213 @@ impl FromGgufValue for bool {
             GgufValue::Bool(v) => Some(*v),
             _ => None,
         }
+    }
+}
+
+impl FromGgufValue for Vec<String> {
+    fn from_gguf(value: &GgufValue) -> Option<Self> {
+        match value {
+            GgufValue::Array(_, elements) => {
+                let mut result = Vec::with_capacity(elements.len());
+                for elem in elements {
+                    match elem {
+                        GgufValue::String(s) => result.push(s.clone()),
+                        _ => return None,
+                    }
+                }
+                Some(result)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl FromGgufValue for Vec<i32> {
+    fn from_gguf(value: &GgufValue) -> Option<Self> {
+        match value {
+            GgufValue::Array(_, elements) => {
+                let mut result = Vec::with_capacity(elements.len());
+                for elem in elements {
+                    match elem {
+                        GgufValue::Int32(v) => result.push(*v),
+                        GgufValue::Int64(v) => result.push(*v as i32),
+                        GgufValue::Float32(v) => result.push(*v as i32),
+                        _ => return None,
+                    }
+                }
+                Some(result)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl FromGgufValue for Vec<f32> {
+    fn from_gguf(value: &GgufValue) -> Option<Self> {
+        match value {
+            GgufValue::Array(_, elements) => {
+                let mut result = Vec::with_capacity(elements.len());
+                for elem in elements {
+                    match elem {
+                        GgufValue::Float32(v) => result.push(*v),
+                        GgufValue::Float64(v) => result.push(*v as f32),
+                        _ => return None,
+                    }
+                }
+                Some(result)
+            }
+            _ => None,
+        }
+    }
+}
+
+// Tokenizer type enum
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenizerType {
+    SPM,  // SentencePiece (LLaMA 1/2)
+    BPE,  // Byte Pair Encoding (GPT-2, LLaMA 3, Qwen)
+    WPM,  // WordPiece (BERT)
+    UGM,  // Unigram (T5)
+    RWKV, // RWKV
+}
+
+impl std::fmt::Display for TokenizerType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenizerType::SPM => write!(f, "spm"),
+            TokenizerType::BPE => write!(f, "bpe"),
+            TokenizerType::WPM => write!(f, "wpm"),
+            TokenizerType::UGM => write!(f, "ugm"),
+            TokenizerType::RWKV => write!(f, "rwkv"),
+        }
+    }
+}
+
+impl TryFrom<&str> for TokenizerType {
+    type Error = String;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s.to_lowercase().as_str() {
+            "spm" | "sentencepiece" | "llama" => Ok(TokenizerType::SPM),
+            "bpe" | "gpt2" | "gpt-2" | "llama3" | "qwen2" | "deepseek" => {
+                Ok(TokenizerType::BPE)
+            }
+            "wpm" | "wordpiece" => Ok(TokenizerType::WPM),
+            "ugm" | "unigram" => Ok(TokenizerType::UGM),
+            "rwkv" => Ok(TokenizerType::RWKV),
+            _ => Err(format!("Unknown tokenizer type: {}", s)),
+        }
+    }
+}
+
+// Tokenizer metadata extracted from GGUF
+#[derive(Debug, Clone)]
+pub struct TokenizerMetadata {
+    /// Tokenizer type (SPM, BPE, WPM, UGM, RWKV)
+    pub tokenizer_type: TokenizerType,
+    /// Token strings (indexed by token ID)
+    pub tokens: Vec<String>,
+    /// BPE merge rules (pairs of tokens to merge)
+    pub merges: Vec<(String, String)>,
+    /// Token scores (used by SPM)
+    pub scores: Vec<f32>,
+    /// BOS token ID
+    pub bos_token_id: Option<u32>,
+    /// EOS token ID
+    pub eos_token_id: Option<u32>,
+    /// UNK token ID
+    pub unk_token_id: Option<u32>,
+    /// PAD token ID
+    pub pad_token_id: Option<u32>,
+    /// Pre-tokenizer type (for models with special pre-processing)
+    pub pre: Option<String>,
+    /// Add BOS token flag
+    pub add_bos: bool,
+    /// Add EOS token flag
+    pub add_eos: bool,
+    /// Byte fallback flag (for SPM)
+    pub byte_fallback: bool,
+}
+
+impl GgufFile {
+    /// Extract tokenizer metadata from GGUF KV pairs
+    pub fn tokenizer_metadata(&self) -> Result<TokenizerMetadata, String> {
+        // Tokenizer type
+        let tokenizer_type =
+            match self.get_meta::<String>("tokenizer.ggml.model") {
+                Some(s) => TokenizerType::try_from(s.as_str())?,
+                None => return Err("Missing tokenizer.ggml.model".to_string()),
+            };
+
+        // Tokens list
+        let tokens: Vec<String> = self
+            .get_meta("tokenizer.ggml.tokens")
+            .ok_or("Missing tokenizer.ggml.tokens")?;
+
+        // BPE merges (optional, required for BPE)
+        let merges: Vec<(String, String)> = self
+            .get_meta::<Vec<String>>("tokenizer.ggml.merges")
+            .map(|v| {
+                v.iter()
+                    .filter_map(|s| {
+                        let parts: Vec<&str> = s.split(' ').collect();
+                        if parts.len() == 2 {
+                            Some((parts[0].to_string(), parts[1].to_string()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Token scores (optional)
+        let scores: Vec<f32> =
+            self.get_meta("tokenizer.ggml.scores").unwrap_or_default();
+
+        // BOS token ID
+        let bos_token_id = self.get_meta("tokenizer.ggml.bos_token_id");
+
+        // EOS token ID
+        let eos_token_id = self.get_meta("tokenizer.ggml.eos_token_id");
+
+        // UNK token ID
+        let unk_token_id = self.get_meta("tokenizer.ggml.unknown_token_id");
+
+        // PAD token ID
+        let pad_token_id = self.get_meta("tokenizer.ggml.padding_token_id");
+
+        // Pre-tokenizer type
+        let pre = self.get_meta("tokenizer.ggml.pre");
+
+        // Add BOS flag (default true for SPM/BPE)
+        let add_bos = self.get_meta("tokenizer.ggml.add_bos_token").unwrap_or(
+            matches!(tokenizer_type, TokenizerType::SPM | TokenizerType::BPE),
+        );
+
+        // Add EOS flag (default true for SPM, false for BPE)
+        let add_eos = self
+            .get_meta("tokenizer.ggml.add_eos_token")
+            .unwrap_or(matches!(tokenizer_type, TokenizerType::SPM));
+
+        // Byte fallback (SPM only)
+        let byte_fallback =
+            self.get_meta("tokenizer.ggml.byte_fallback").unwrap_or(false);
+
+        Ok(TokenizerMetadata {
+            tokenizer_type,
+            tokens,
+            merges,
+            scores,
+            bos_token_id,
+            eos_token_id,
+            unk_token_id,
+            pad_token_id,
+            pre,
+            add_bos,
+            add_eos,
+            byte_fallback,
+        })
     }
 }
 

@@ -8,4 +8,5 @@ pub mod inference;
 pub mod memory;
 pub mod model;
 pub mod strategy;
+pub mod tokenizer;
 pub mod types;

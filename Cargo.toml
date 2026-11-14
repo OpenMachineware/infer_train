@@ -7,6 +7,10 @@ edition = "2024"
 name = "infer_train"
 path = "src/main.rs"
 
+[[bin]]
+name = "test_tokenizer"
+path = "tools/test_tokenizer.rs"
+
 # TODO: rewrite benchmark tool
 # [[bin]]
 # name = "infer-train-bench"

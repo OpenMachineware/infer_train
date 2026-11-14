@@ -166,6 +166,8 @@ impl From<QuantType> for TensorType {
             QuantType::Q5_K => TensorType::Q5_K,
             QuantType::Q6_K => TensorType::Q6_K,
             QuantType::Q8_K => TensorType::Q8_K,
+            // IQ types fallback to Q4_0 for now
+            _ => TensorType::Q4_0,
         }
     }
 }
