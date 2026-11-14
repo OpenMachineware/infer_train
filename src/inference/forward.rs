@@ -52,7 +52,7 @@ impl ForwardExecutor {
         // 1. Embedding lookup
         let mut hidden = self.embed_token(token_id)?;
 
-        if true {
+        if false {
             // Always print embedding stats for debugging
             let min = hidden.iter().cloned().fold(f32::INFINITY, f32::min);
             let max = hidden.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
@@ -74,7 +74,7 @@ impl ForwardExecutor {
         // 4. Output projection
         let logits = self.output_projection(&hidden)?;
 
-        if true {
+        if false {
             let min = logits.iter().cloned().fold(f32::INFINITY, f32::min);
             let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             eprintln!(
@@ -517,19 +517,46 @@ impl ForwardExecutor {
         let mut output = vec![0.0f32; n_heads * head_dim];
 
         if let Some(data) = weight_data {
-            if data.len() == n_heads * head_dim * 4 {
-                let weight: Vec<f32> = data
+            // Check if weight is F32 format
+            let weight: Vec<f32> = if data.len() == n_heads * head_dim * 4 {
+                // Per-head weights
+                data.chunks_exact(4)
+                    .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+                    .collect()
+            } else if data.len() == head_dim * 4 {
+                // Shared weight across all heads
+                let shared_weight: Vec<f32> = data
                     .chunks_exact(4)
                     .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
                     .collect();
+                // Repeat for all heads
+                shared_weight.repeat(n_heads)
+            } else if data.len() == head_dim * 2 {
+                // F16 format, shared weight
+                let shared_weight: Vec<f32> = data
+                    .chunks_exact(2)
+                    .map(|chunk| {
+                        half::f16::from_le_bytes(chunk.try_into().unwrap())
+                            .to_f32()
+                    })
+                    .collect();
+                shared_weight.repeat(n_heads)
+            } else {
+                // Unknown format, just return input
+                eprintln!(
+                    "[Warning] Unknown weight format for {}: len={}",
+                    weight_name,
+                    data.len()
+                );
+                output.copy_from_slice(input);
+                return Ok(output);
+            };
 
-                for h in 0..n_heads {
-                    let in_slice = &input[h * head_dim..(h + 1) * head_dim];
-                    let w_slice = &weight[h * head_dim..(h + 1) * head_dim];
-                    let out_slice =
-                        &mut output[h * head_dim..(h + 1) * head_dim];
-                    rms_norm_f32(in_slice, w_slice, out_slice, 1e-5);
-                }
+            for h in 0..n_heads {
+                let in_slice = &input[h * head_dim..(h + 1) * head_dim];
+                let w_slice = &weight[h * head_dim..(h + 1) * head_dim];
+                let out_slice = &mut output[h * head_dim..(h + 1) * head_dim];
+                rms_norm_f32(in_slice, w_slice, out_slice, 1e-5);
             }
         } else {
             // Fallback: no norm
@@ -1090,7 +1117,7 @@ impl ForwardExecutor {
             match self.forward(tokens[tokens.len() - 1]) {
                 Ok(logits) => {
                     // Debug: check logits
-                    if true {
+                    if false {
                         let max_logit = logits
                             .iter()
                             .cloned()

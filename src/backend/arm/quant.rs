@@ -11,6 +11,7 @@ use crate::types::{BlockQ8_0, BlockQ8_K, QK_K, QK8_0};
 
 /// Quantize FP32 vector to Q8_K format
 /// Q8_K is used as input format for vec_dot with K-quant weights
+/// Matches llama.cpp's quantize_row_q8_K_ref exactly
 pub fn quantize_row_q8_k(x: &[f32], y: &mut [BlockQ8_K]) {
     assert!(x.len() % QK_K == 0);
     let nb = x.len() / QK_K;
@@ -18,12 +19,14 @@ pub fn quantize_row_q8_k(x: &[f32], y: &mut [BlockQ8_K]) {
     for i in 0..nb {
         let x_block = &x[i * QK_K..(i + 1) * QK_K];
 
-        // Find max absolute value
+        // Find max absolute value and the actual max (could be negative)
         let mut amax = 0.0f32;
+        let mut max = 0.0f32;
         for &val in x_block {
             let abs_val = val.abs();
             if abs_val > amax {
                 amax = abs_val;
+                max = val;
             }
         }
 
@@ -35,13 +38,13 @@ pub fn quantize_row_q8_k(x: &[f32], y: &mut [BlockQ8_K]) {
             continue;
         }
 
-        // Calculate scale (use -127 instead of -128 for better accuracy)
-        let iscale = -127.0 / amax;
-        let scale = 1.0 / iscale;
+        // Calculate inverse scale: -127/max (matches llama.cpp)
+        // This preserves the sign of max in the scale
+        let iscale = -127.0 / max;
 
         // Quantize values
         for j in 0..QK_K {
-            let v = (x_block[j] * iscale).round() as i32;
+            let v = (iscale * x_block[j]).round() as i32;
             y[i].qs[j] = v.min(127).max(-128) as i8;
         }
 
@@ -54,11 +57,13 @@ pub fn quantize_row_q8_k(x: &[f32], y: &mut [BlockQ8_K]) {
             y[i].bsums[j] = sum as i16;
         }
 
-        y[i].d = scale;
+        // Scale is 1/iscale = -max/127
+        y[i].d = 1.0 / iscale;
     }
 }
 
 /// Quantize FP32 to Q8_K (NEON optimized version)
+/// Matches llama.cpp's quantize_row_q8_K_ref
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 pub unsafe fn quantize_row_q8_k_neon(x: &[f32], y: &mut [BlockQ8_K]) {
@@ -68,14 +73,18 @@ pub unsafe fn quantize_row_q8_k_neon(x: &[f32], y: &mut [BlockQ8_K]) {
     for i in 0..nb {
         let x_ptr = unsafe { x.as_ptr().add(i * QK_K) };
 
-        // Find max absolute value across all 256 elements
+        // Find max absolute value and the actual max (could be negative)
         let mut max_vals = std::arch::aarch64::vdupq_n_f32(0.0);
+        let mut max_raw = std::arch::aarch64::vdupq_n_f32(0.0);
+
         for j in 0..64 {
             let v = unsafe { std::arch::aarch64::vld1q_f32(x_ptr.add(j * 4)) };
-            max_vals = std::arch::aarch64::vmaxq_f32(
-                max_vals,
-                std::arch::aarch64::vabsq_f32(v),
-            );
+            let abs_v = std::arch::aarch64::vabsq_f32(v);
+
+            // Compare: if abs_v > max_vals, select v for max_raw
+            let gt = std::arch::aarch64::vcgtq_f32(abs_v, max_vals);
+            max_vals = std::arch::aarch64::vbslq_f32(gt, abs_v, max_vals);
+            max_raw = std::arch::aarch64::vbslq_f32(gt, v, max_raw);
         }
 
         let amax = std::arch::aarch64::vmaxvq_f32(max_vals);
@@ -87,10 +96,19 @@ pub unsafe fn quantize_row_q8_k_neon(x: &[f32], y: &mut [BlockQ8_K]) {
             continue;
         }
 
-        // Calculate scale
-        let iscale = -127.0 / amax;
-        let scale = 1.0 / iscale;
-        y[i].d = scale;
+        // Find the actual max value (the one with max absolute value)
+        // We need to compare each element's absolute value with amax
+        let mut max = 0.0f32;
+        for j in 0..256 {
+            if x_ptr.add(j).read_unaligned().abs() == amax {
+                max = x_ptr.add(j).read_unaligned();
+                break;
+            }
+        }
+
+        // Calculate inverse scale: -127/max
+        let iscale = -127.0 / max;
+        y[i].d = 1.0 / iscale;
 
         let iscale_vec = std::arch::aarch64::vdupq_n_f32(iscale);
 
