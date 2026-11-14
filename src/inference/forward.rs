@@ -4,7 +4,7 @@
 // Forward executor for CPU inference
 
 use crate::backend::arm::{
-    dequant::dequant_q6_k, flash_attn::flash_attn_f32, gemv, quant,
+    flash_attn::flash_attn_f32, gemv, quant,
     rms_norm::rms_norm_f32, rope::rope_f32,
 };
 use crate::inference::SimpleModel;
@@ -42,7 +42,7 @@ impl ForwardExecutor {
     /// Forward pass for a single token
     pub fn forward(&mut self, token_id: u32) -> Result<Vec<f32>, String> {
         let config = self.model.config();
-        let hidden_size = config.hidden_size;
+        let _hidden_size = config.hidden_size;
 
         eprintln!(
             "\n=== Forward token {} at position {} ===",

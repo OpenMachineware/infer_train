@@ -290,9 +290,9 @@ fn test_vec_dot_q6_k(args: &Args) {
 
     if args.bench > 0 {
         let start = Instant::now();
-        let mut sum = 0.0f32;
+        let mut _sum = 0.0f32;
         for _ in 0..args.bench {
-            sum += vec_dot_q6_k_q8_k(&weights, &input_q8k);
+            _sum += vec_dot_q6_k_q8_k(&weights, &input_q8k);
         }
         let elapsed = start.elapsed();
         let us_per_iter = elapsed.as_micros() as f64 / args.bench as f64;
@@ -320,7 +320,7 @@ fn test_vec_dot_q4_k(args: &Args) {
     for b in &mut weights {
         b.d = half::f16::to_bits(half::f16::from_f32(0.001));
         b.dmin = half::f16::to_bits(half::f16::from_f32(0.01));
-        for i in 0..144 {
+        for i in 0..128 {
             b.qs[i] = 0x88;
         }
         for i in 0..12 {
@@ -343,9 +343,9 @@ fn test_vec_dot_q4_k(args: &Args) {
 
     if args.bench > 0 {
         let start = Instant::now();
-        let mut sum = 0.0f32;
+        let mut _sum = 0.0f32;
         for _ in 0..args.bench {
-            sum += vec_dot_q4_k_q8_k(&weights, &input_q8k);
+            _sum += vec_dot_q4_k_q8_k(&weights, &input_q8k);
         }
         let elapsed = start.elapsed();
         let us_per_iter = elapsed.as_micros() as f64 / args.bench as f64;

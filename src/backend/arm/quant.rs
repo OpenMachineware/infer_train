@@ -100,9 +100,11 @@ pub unsafe fn quantize_row_q8_k_neon(x: &[f32], y: &mut [BlockQ8_K]) {
         // We need to compare each element's absolute value with amax
         let mut max = 0.0f32;
         for j in 0..256 {
-            if x_ptr.add(j).read_unaligned().abs() == amax {
-                max = x_ptr.add(j).read_unaligned();
-                break;
+            unsafe {
+                if x_ptr.add(j).read_unaligned().abs() == amax {
+                    max = x_ptr.add(j).read_unaligned();
+                    break;
+                }
             }
         }
 
