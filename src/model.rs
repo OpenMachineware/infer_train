@@ -6,5 +6,6 @@
 pub mod gguf;
 
 pub use gguf::GgufFile;
+pub use gguf::GgufValue;
 pub use gguf::TokenizerMetadata;
 pub use gguf::TokenizerType;

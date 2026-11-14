@@ -35,6 +35,23 @@ fn main() {
     println!("Byte fallback: {:?}", meta.byte_fallback);
     println!("Pre: {:?}", meta.pre);
 
+    // Show chat template related KV pairs
+    println!("\nChat Template related KV pairs:");
+    for (key, value) in &gguf.kv {
+        let key_lower = key.to_lowercase();
+        if key_lower.contains("chat") || key_lower.contains("template") {
+            match value {
+                infer_train::model::GgufValue::String(s) => {
+                    println!("  {}:", key);
+                    for (i, line) in s.lines().enumerate() {
+                        println!("    {}: {}", i, line);
+                    }
+                }
+                _ => println!("  {}: {:?}", key, value),
+            }
+        }
+    }
+
     // Create tokenizer
     let tokenizer = create_tokenizer(meta).expect("Failed to create tokenizer");
     println!("\nTokenizer created successfully!");

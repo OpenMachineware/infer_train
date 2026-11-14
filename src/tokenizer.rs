@@ -4,9 +4,11 @@
 // Tokenizer module
 
 pub mod bpe;
+pub mod chat_template;
 pub mod spm;
 pub mod vocab;
 
+pub use chat_template::{ChatMessage, ChatTemplate};
 pub use vocab::Vocab;
 
 use crate::model::gguf::TokenizerMetadata;
