@@ -2,6 +2,7 @@
 // Copyright 2026 Jia Liu
 
 use clap::Parser;
+use infer_train::inference::SimpleModel;
 use infer_train::model::GgufFile;
 use infer_train::tokenizer::{
     ChatMessage, ChatTemplate, Tokenizer, create_tokenizer,
@@ -31,6 +32,10 @@ struct Args {
     /// Temperature for sampling
     #[arg(short, long, default_value = "0.7")]
     temperature: f32,
+
+    /// Show tensor summary
+    #[arg(long)]
+    show_tensors: bool,
 }
 
 fn main() {
@@ -46,17 +51,32 @@ fn run() -> Result<(), String> {
     println!("infer_train - unified inference engine");
     println!("Loading model: {}", args.model);
 
-    // Load GGUF file
+    // Load GGUF file for tokenizer
     let gguf = GgufFile::load(&args.model)?;
-
-    // Print model info
     print_model_info(&gguf);
 
     // Create tokenizer
     let meta = gguf.tokenizer_metadata()?;
     let tokenizer = create_tokenizer(meta).map_err(|e| e.to_string())?;
 
-    println!("\nTokenizer created: vocab_size={}", tokenizer.vocab_size());
+    // Load model with backend
+    println!("\n=== Loading Model with Backend ===");
+    let model = SimpleModel::load(&args.model, tokenizer)?;
+
+    // Print model config
+    let config = model.config();
+    println!("Layers: {}", config.n_layers);
+    println!("Hidden size: {}", config.hidden_size);
+    println!("Heads: {} (KV: {})", config.n_heads, config.n_kv_heads);
+    println!("Head dim: {}", config.head_dim());
+    println!("Vocab size: {}", config.vocab_size);
+    println!("Intermediate: {}", config.intermediate_size);
+    println!("Context length: {}", config.context_length);
+
+    // Show tensor summary if requested
+    if args.show_tensors {
+        model.print_tensor_summary();
+    }
 
     // Get chat template
     let chat_template_str = gguf.kv.iter().find_map(|(key, value)| {
@@ -78,9 +98,8 @@ fn run() -> Result<(), String> {
 
     // Run inference loop
     if let Some(prompt) = args.prompt {
-        // Single prompt mode
         run_single_prompt(
-            &tokenizer,
+            &model,
             chat_template.as_ref(),
             &args.system,
             &prompt,
@@ -88,9 +107,8 @@ fn run() -> Result<(), String> {
             args.temperature,
         )?;
     } else {
-        // Interactive mode
         run_interactive(
-            &tokenizer,
+            &model,
             chat_template.as_ref(),
             &args.system,
             args.max_tokens,
@@ -136,7 +154,7 @@ fn print_model_info(gguf: &GgufFile) {
 }
 
 fn run_single_prompt(
-    tokenizer: &Box<dyn Tokenizer>,
+    model: &SimpleModel,
     chat_template: Option<&ChatTemplate>,
     system: &str,
     prompt: &str,
@@ -162,12 +180,12 @@ fn run_single_prompt(
         }
         rendered
     } else {
-        // Fallback: simple format
         format!("System: {}\nUser: {}\nAssistant:", system, prompt)
     };
 
     // Tokenize
     println!("\n=== Tokenization ===");
+    let tokenizer = model.tokenizer();
     let tokens = tokenizer.encode(&prompt_text).map_err(|e| e.to_string())?;
     println!(
         "Prompt tokens: {} (first 20: {:?})",
@@ -180,33 +198,44 @@ fn run_single_prompt(
         tokenizer.decode_skip_special(&tokens).map_err(|e| e.to_string())?;
     println!("Decoded length: {} chars", decoded.len());
 
-    // Show encoding/decoding match
     if prompt_text == decoded {
         println!("✓ Perfect encode/decode match");
     } else {
         println!("⚠ Encode/decode mismatch");
-        // Show first difference
-        for (i, (a, b)) in prompt_text.chars().zip(decoded.chars()).enumerate()
-        {
-            if a != b {
-                println!(
-                    "  First diff at char {}: expected '{}' (U+{:04X}), got '{}' (U+{:04X})",
-                    i, a, a as u32, b, b as u32
-                );
-                break;
-            }
-        }
     }
 
-    println!("\n=== Inference ===");
-    println!("Note: Full inference not yet implemented in this CLI.");
-    println!("The tokenizer and chat template pipeline is working correctly.");
+    // Show embedding lookup
+    println!("\n=== Embedding Layer ===");
+    if let Some(_emb) = model.get_embeddings() {
+        println!("✓ Embedding weights found");
+        // Test embedding lookup for first token
+        if let Some(_hidden) = model.embed_token(tokens[0]) {
+            println!(
+                "✓ Embedding lookup works (hidden_size: {})",
+                model.config().hidden_size
+            );
+        }
+    } else {
+        println!("✗ No embedding weights found");
+    }
+
+    // Show output layer
+    println!("\n=== Output Layer ===");
+    if let Some(_output) = model.get_output_weight() {
+        println!("✓ Output weights found");
+    } else {
+        println!("✗ No output weights found");
+    }
+
+    println!("\n=== Inference Status ===");
+    println!("Model loaded and ready for inference.");
+    println!("Full forward pass requires additional implementation.");
 
     Ok(())
 }
 
 fn run_interactive(
-    tokenizer: &Box<dyn Tokenizer>,
+    model: &SimpleModel,
     chat_template: Option<&ChatTemplate>,
     system: &str,
     _max_tokens: usize,
@@ -214,12 +243,16 @@ fn run_interactive(
 ) -> Result<(), String> {
     println!("\n=== Interactive Mode ===");
     println!("System: {}", system);
-    println!("Type 'quit' to exit, 'clear' to clear history.\n");
+    println!(
+        "Type 'quit' to exit, 'clear' to clear history, 'info' for model info.\n"
+    );
 
     let mut history: Vec<ChatMessage> = vec![ChatMessage {
         role: "system".to_string(),
         content: system.to_string(),
     }];
+
+    let tokenizer = model.tokenizer();
 
     loop {
         print!("User: ");
@@ -238,6 +271,11 @@ fn run_interactive(
                 content: system.to_string(),
             }];
             println!("History cleared.\n");
+            continue;
+        }
+        if input == "info" {
+            println!("Model config: {:?}", model.config());
+            model.print_tensor_summary();
             continue;
         }
 
