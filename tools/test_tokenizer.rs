@@ -62,4 +62,10 @@ fn main() {
     // Decode back
     let decoded = tokenizer.decode(&tokens).expect("Failed to decode");
     println!("Decoded: '{}'", decoded);
+
+    // Decode skip special
+    let decoded_skip = tokenizer
+        .decode_skip_special(&tokens)
+        .expect("Failed to decode skip special");
+    println!("Decoded (skip special): '{}'", decoded_skip);
 }

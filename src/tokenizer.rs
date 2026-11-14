@@ -55,6 +55,12 @@ pub trait Tokenizer: Send + Sync {
     // Decode token IDs to text
     fn decode(&self, tokens: &[TokenId]) -> Result<String, TokenizerError>;
 
+    // Decode token IDs to text, skipping special tokens (BOS, EOS, PAD, etc.)
+    fn decode_skip_special(
+        &self,
+        tokens: &[TokenId],
+    ) -> Result<String, TokenizerError>;
+
     // Get vocabulary size
     fn vocab_size(&self) -> usize;
 

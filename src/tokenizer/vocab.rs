@@ -173,6 +173,37 @@ impl Vocab {
         }
     }
 
+    // Check if token is a special/control token (BOS, EOS, PAD, etc.)
+    pub fn is_special_token(&self, token: &str) -> bool {
+        // Special tokens are typically:
+        // - <|...|> format (like <|startoftext|>, <|endoftext|>)
+        // - <｜...｜> format (like <｜begin▁of▁sentence｜>)
+        // - <...> format that's not a byte token
+        // - Control characters
+        if token.starts_with("<|") || token.starts_with("<｜") {
+            return true;
+        }
+        // Check if it's a control token
+        if let Some(&id) = self.token_to_id.get(token) {
+            if Some(id) == self.bos_token_id
+                || Some(id) == self.eos_token_id
+                || Some(id) == self.pad_token_id
+                || Some(id) == self.unk_token_id
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    // Check if token ID is a special token
+    pub fn is_special_token_id(&self, id: TokenId) -> bool {
+        Some(id) == self.bos_token_id
+            || Some(id) == self.eos_token_id
+            || Some(id) == self.pad_token_id
+            || Some(id) == self.unk_token_id
+    }
+
     // Get byte value from byte token
     pub fn byte_from_token(&self, token: &str) -> Option<u8> {
         if self.is_byte_token(token) {

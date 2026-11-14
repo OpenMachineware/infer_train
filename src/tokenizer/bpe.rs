@@ -29,7 +29,10 @@ impl BpeTokenizer {
         let mut result = Vec::new();
         let mut current = String::new();
 
-        for ch in text.chars() {
+        // Handle leading space specially
+        let mut chars = text.chars().peekable();
+
+        while let Some(ch) = chars.next() {
             if ch == ' ' {
                 // GPT-2 style: space becomes Ġ (U+0120) at start of next token
                 // Flush current token first
@@ -52,15 +55,47 @@ impl BpeTokenizer {
                 }
                 // Tab becomes separate token
                 result.push('\u{0125}'.to_string());
-            } else if ch.is_alphanumeric() || ch == '\'' || ch == '-' {
-                // Letters, numbers, apostrophes, hyphens continue the current token
+            } else if ch.is_alphanumeric()
+                || ch == '\''
+                || ch == '-'
+                || ch == '_'
+            {
+                // Letters, numbers, apostrophes, hyphens, underscores continue the current token
                 current.push(ch);
             } else {
-                // Other punctuation - flush current and start new
-                if !current.is_empty() {
-                    result.push(std::mem::take(&mut current));
+                // Check for contractions (GPT-2 style): 's, 't, 're, 've, 'm, 'll, 'd
+                if ch == '\'' && !current.is_empty() {
+                    // Look ahead for common contractions
+                    let rest: String = chars.clone().take(3).collect();
+                    if rest.starts_with('s')
+                        || rest.starts_with('t')
+                        || rest.starts_with('m')
+                        || rest.starts_with('d')
+                    {
+                        current.push(ch);
+                        current.push(chars.next().unwrap()); // consume the letter
+                    } else if rest.starts_with("re")
+                        || rest.starts_with("ve")
+                        || rest.starts_with("ll")
+                    {
+                        current.push(ch);
+                        for _ in 0..2 {
+                            if let Some(c) = chars.next() {
+                                current.push(c);
+                            }
+                        }
+                    } else {
+                        // Not a contraction, treat as punctuation
+                        result.push(std::mem::take(&mut current));
+                        result.push(ch.to_string());
+                    }
+                } else {
+                    // Other punctuation - flush current and start new
+                    if !current.is_empty() {
+                        result.push(std::mem::take(&mut current));
+                    }
+                    result.push(ch.to_string());
                 }
-                result.push(ch.to_string());
             }
         }
 
@@ -198,6 +233,34 @@ impl Tokenizer for BpeTokenizer {
                 // Use UNK token for unknown IDs
                 if let Some(unk_token) = self.vocab.id_to_token(unk) {
                     result.push_str(&self.decode_token(unk_token));
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn decode_skip_special(
+        &self,
+        tokens: &[TokenId],
+    ) -> Result<String, TokenizerError> {
+        let mut result = String::new();
+
+        for &id in tokens {
+            // Skip special tokens (BOS, EOS, PAD, etc.)
+            if self.vocab.is_special_token_id(id) {
+                continue;
+            }
+
+            if let Some(token) = self.vocab.id_to_token(id) {
+                // Handle byte fallback tokens like <0xNN>
+                if self.vocab.is_byte_token(token) {
+                    if let Some(byte) = self.vocab.byte_from_token(token) {
+                        result.push(byte as char);
+                    }
+                } else if !self.vocab.is_special_token(token) {
+                    // Decode using GPT-2 byte decoding
+                    result.push_str(&self.decode_token(token));
                 }
             }
         }
