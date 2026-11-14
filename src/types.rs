@@ -92,6 +92,17 @@ pub struct BlockQ8_K {
     pub bsums: [i16; 16], // Block sums
 }
 
+// IQ4_XS super-block: 256 values in 136 bytes
+// Uses non-linear quantization with grid lookup
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BlockIQ4XS {
+    pub d: u16,            // FP16 super-block scale
+    pub scales_h: u16,     // High bits of scales
+    pub scales_l: [u8; 4], // Low bits of scales (QK_K/64 = 256/64 = 4)
+    pub qs: [u8; 128],     // 4-bit quantized values (QK_K/2 = 256/2 = 128)
+}
+
 // Quantization type (ggml_type values)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]

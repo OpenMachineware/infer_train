@@ -172,19 +172,55 @@ impl SimpleModel {
 
     /// Print tensor summary
     pub fn print_tensor_summary(&self) {
-        // Print first layer tensors
+        // Print first layer tensors with dimensions
         println!("\nLayer 0 tensors:");
         for tensor in &self.gguf.tensors {
             if tensor.name.starts_with("blk.0.") {
-                println!("  {}: {:?}", tensor.name, tensor.quant_type);
+                println!(
+                    "  {}: {:?}, dims={:?}",
+                    tensor.name, tensor.quant_type, tensor.dims
+                );
             }
         }
 
-        // Print other special tensors
+        // Print other special tensors with dimensions
         println!("\nSpecial tensors:");
         for tensor in &self.gguf.tensors {
             if !tensor.name.starts_with("blk.") {
-                println!("  {}: {:?}", tensor.name, tensor.quant_type);
+                println!(
+                    "  {}: {:?}, dims={:?}",
+                    tensor.name, tensor.quant_type, tensor.dims
+                );
+            }
+        }
+
+        // Print weight dimension analysis for key tensors
+        println!("\n=== Weight Dimension Analysis ===");
+        let key_patterns = [
+            "blk.0.attn_q.weight",
+            "blk.0.attn_k.weight",
+            "blk.0.attn_v.weight",
+            "blk.0.attn_output.weight",
+            "blk.0.ffn_gate.weight",
+            "blk.0.ffn_up.weight",
+            "blk.0.ffn_down.weight",
+            "output.weight",
+        ];
+
+        for pattern in &key_patterns {
+            if let Some(tensor) =
+                self.gguf.tensors.iter().find(|t| t.name == *pattern)
+            {
+                println!(
+                    "  {}: dims={:?} (format: [dim0, dim1, ...])",
+                    pattern, tensor.dims
+                );
+                if tensor.dims.len() == 2 {
+                    println!(
+                        "    -> Assuming [out_features, in_features] = [{}, {}]",
+                        tensor.dims[0], tensor.dims[1]
+                    );
+                }
             }
         }
 

@@ -89,6 +89,9 @@ fn run_cli(
     let gguf = GgufFile::load(model_path)?;
     print_model_info(&gguf);
 
+    // Print weight dimensions for verification
+    print_weight_dimensions(&gguf);
+
     // Create tokenizer
     let meta = gguf.tokenizer_metadata()?;
     let tokenizer = create_tokenizer(meta).map_err(|e| e.to_string())?;
@@ -184,6 +187,63 @@ fn print_model_info(gguf: &GgufFile) {
     println!("\nQuantization types:");
     for (qname, count) in &quant_counts {
         println!("  {}: {} tensors", qname, count);
+    }
+}
+
+fn print_weight_dimensions(gguf: &GgufFile) {
+    println!("\n=== Weight Dimension Analysis ===");
+
+    // Key weight patterns to check
+    let key_patterns = [
+        "blk.0.attn_q.weight",
+        "blk.0.attn_k.weight",
+        "blk.0.attn_v.weight",
+        "blk.0.attn_output.weight",
+        "blk.0.ffn_gate.weight",
+        "blk.0.ffn_up.weight",
+        "blk.0.ffn_down.weight",
+        "output.weight",
+        "token_embd.weight",
+    ];
+
+    for pattern in &key_patterns {
+        if let Some(tensor) = gguf.tensors.iter().find(|t| t.name == *pattern) {
+            println!(
+                "  {}: dims={:?} (format: [dim0, dim1, ...])",
+                pattern, tensor.dims
+            );
+            if tensor.dims.len() == 2 {
+                println!(
+                    "    -> Memory layout: [{}, {}]",
+                    tensor.dims[0], tensor.dims[1]
+                );
+            } else if tensor.dims.len() == 1 {
+                println!("    -> Vector: [{}]", tensor.dims[0]);
+            }
+        }
+    }
+
+    // Check if weights are transposed by comparing with model config
+    if let Some(attn_q) =
+        gguf.tensors.iter().find(|t| t.name == "blk.0.attn_q.weight")
+    {
+        if let Some(ffn_gate) =
+            gguf.tensors.iter().find(|t| t.name == "blk.0.ffn_gate.weight")
+        {
+            println!("\n  Transposition Analysis:");
+            if attn_q.dims.len() == 2 {
+                println!(
+                    "    attn_q: [{}, {}] - if dim[0] < dim[1], likely transposed",
+                    attn_q.dims[0], attn_q.dims[1]
+                );
+            }
+            if ffn_gate.dims.len() == 2 {
+                println!(
+                    "    ffn_gate: [{}, {}] - if dim[0] > dim[1], likely normal",
+                    ffn_gate.dims[0], ffn_gate.dims[1]
+                );
+            }
+        }
     }
 }
 

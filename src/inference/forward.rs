@@ -526,6 +526,35 @@ impl ForwardExecutor {
                     );
                 }
             }
+            QuantType::IQ4_XS => {
+                // IQ4_XS: 256 elements per block, uses non-linear quantization
+                let nb = (in_features + QK_K - 1) / QK_K;
+
+                let mut input_q8k: Vec<BlockQ8_K> =
+                    vec![unsafe { std::mem::zeroed() }; nb];
+                crate::backend::arm::quant::quantize_q8_k(
+                    input,
+                    &mut input_q8k,
+                );
+
+                let blocks_per_row = nb;
+
+                let weights: &[BlockIQ4XS] = unsafe {
+                    std::slice::from_raw_parts(
+                        weight_data.as_ptr() as *const BlockIQ4XS,
+                        out_features * blocks_per_row,
+                    )
+                };
+
+                for i in 0..out_features {
+                    let row_blocks =
+                        &weights[i * blocks_per_row..(i + 1) * blocks_per_row];
+                    output[i] =
+                        crate::backend::arm::vec_dot::vec_dot_iq4_xs_q8_k(
+                            row_blocks, &input_q8k,
+                        );
+                }
+            }
             QuantType::Q4_0 => {
                 // Q4_0: 32 elements per block
                 let nb = (in_features + QK8_0 - 1) / QK8_0;

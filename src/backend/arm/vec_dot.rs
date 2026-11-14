@@ -360,6 +360,51 @@ pub fn vec_dot_q6_k_q8_k(x: &[BlockQ6_K], y: &[BlockQ8_K]) -> f32 {
     sum
 }
 
+// IQ4_XS uses non-linear 4-bit quantization with a lookup table
+// The KVALUES_IQ4NL_I8 table maps 4-bit indices to signed values
+const KVALUES_IQ4NL_I8: [i8; 16] =
+    [0, 1, 2, 3, 4, 5, 6, 7, -8, -7, -6, -5, -4, -3, -2, -1];
+
+pub fn vec_dot_iq4_xs_q8_k(x: &[BlockIQ4XS], y: &[BlockQ8_K]) -> f32 {
+    let nb = x.len();
+    assert_eq!(nb, y.len());
+
+    let mut sum = 0.0f32;
+
+    for ibl in 0..nb {
+        let mut sumi = 0i64;
+
+        // Process 4 sub-blocks of 64 elements each
+        for ib in 0..4 {
+            // Extract scales for this sub-block
+            let ls = ((x[ibl].scales_l[ib] & 0x0F) as i32
+                | (((x[ibl].scales_h as i32) >> (ib * 4)) & 0x30))
+                - 32;
+
+            // Process 64 elements in this sub-block
+            for j in 0..32 {
+                // Get 4-bit values from packed bytes
+                let v0_idx = (x[ibl].qs[ib * 32 + j] & 0x0F) as usize;
+                let v1_idx = (x[ibl].qs[ib * 32 + j] >> 4) as usize;
+
+                // Look up the non-linear quantized values
+                let v0 = KVALUES_IQ4NL_I8[v0_idx] as i64;
+                let v1 = KVALUES_IQ4NL_I8[v1_idx] as i64;
+
+                // Multiply with Q8 values and accumulate
+                let q8_0 = y[ibl].qs[ib * 64 + j] as i64;
+                let q8_1 = y[ibl].qs[ib * 64 + j + 32] as i64;
+
+                sumi += (v0 * q8_0 + v1 * q8_1) * ls as i64;
+            }
+        }
+
+        sum += fp16_to_fp32(x[ibl].d) * y[ibl].d * sumi as f32;
+    }
+
+    sum
+}
+
 // Public interface
 #[cfg(target_arch = "aarch64")]
 pub fn vec_dot_f32(x: &[f32], y: &[f32]) -> f32 {
