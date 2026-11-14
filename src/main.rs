@@ -2,7 +2,7 @@
 // Copyright 2026 Jia Liu
 
 use clap::{Parser, Subcommand};
-use infer_train::inference::SimpleModel;
+use infer_train::inference::{ForwardExecutor, SimpleModel};
 use infer_train::model::GgufFile;
 use infer_train::tokenizer::{ChatMessage, ChatTemplate, create_tokenizer};
 use std::io::{self, Write};
@@ -133,7 +133,7 @@ fn run_cli(
     // Run inference loop
     if let Some(prompt) = prompt {
         run_single_prompt(
-            &model,
+            model,
             chat_template.as_ref(),
             system,
             prompt,
@@ -142,7 +142,7 @@ fn run_cli(
         )?;
     } else {
         run_interactive(
-            &model,
+            model,
             chat_template.as_ref(),
             system,
             max_tokens,
@@ -188,12 +188,12 @@ fn print_model_info(gguf: &GgufFile) {
 }
 
 fn run_single_prompt(
-    model: &SimpleModel,
+    model: SimpleModel,
     chat_template: Option<&ChatTemplate>,
     system: &str,
     prompt: &str,
-    _max_tokens: usize,
-    _temperature: f32,
+    max_tokens: usize,
+    temperature: f32,
 ) -> Result<(), String> {
     println!("\n=== Processing Prompt ===");
     println!("System: {}", system);
@@ -207,73 +207,45 @@ fn run_single_prompt(
 
     // Apply chat template
     let prompt_text = if let Some(ct) = chat_template {
-        let rendered = ct.apply(&messages)?;
-        println!("\n=== Chat Template Result ===");
-        for (i, line) in rendered.lines().enumerate() {
-            println!("{:3}: {}", i, line);
-        }
-        rendered
+        ct.apply(&messages)?
     } else {
         format!("System: {}\nUser: {}\nAssistant:", system, prompt)
     };
 
-    // Tokenize
-    println!("\n=== Tokenization ===");
-    let tokenizer = model.tokenizer();
-    let tokens = tokenizer.encode(&prompt_text).map_err(|e| e.to_string())?;
-    println!(
-        "Prompt tokens: {} (first 20: {:?})",
-        tokens.len(),
-        &tokens[..tokens.len().min(20)]
-    );
+    // Create forward executor first (takes ownership of model)
+    let mut executor = ForwardExecutor::new(model);
 
-    // Decode to verify
-    let decoded =
-        tokenizer.decode_skip_special(&tokens).map_err(|e| e.to_string())?;
-    println!("Decoded length: {} chars", decoded.len());
+    // Get tokenizer and tokenize
+    let tokens = {
+        let tokenizer = executor.model.tokenizer();
+        let tokens =
+            tokenizer.encode(&prompt_text).map_err(|e| e.to_string())?;
+        println!("\nPrompt tokens: {}", tokens.len());
+        tokens
+    };
 
-    if prompt_text == decoded {
-        println!("✓ Perfect encode/decode match");
-    } else {
-        println!("⚠ Encode/decode mismatch");
-    }
+    // Generate (mutable borrow)
+    println!("\n=== Generating ===");
+    let output_tokens = executor.generate(&tokens, max_tokens, temperature);
 
-    // Show embedding lookup
-    println!("\n=== Embedding Layer ===");
-    if let Some(_emb) = model.get_embeddings() {
-        println!("✓ Embedding weights found");
-        // Test embedding lookup for first token
-        if let Some(_hidden) = model.embed_token(tokens[0]) {
-            println!(
-                "✓ Embedding lookup works (hidden_size: {})",
-                model.config().hidden_size
-            );
-        }
-    } else {
-        println!("✗ No embedding weights found");
-    }
+    // Decode after mutable borrow ends
+    let new_tokens = &output_tokens[tokens.len()..];
+    let new_text = {
+        let tokenizer = executor.model.tokenizer();
+        tokenizer.decode(new_tokens).map_err(|e| e.to_string())?
+    };
 
-    // Show output layer
-    println!("\n=== Output Layer ===");
-    if let Some(_output) = model.get_output_weight() {
-        println!("✓ Output weights found");
-    } else {
-        println!("✗ No output weights found");
-    }
-
-    println!("\n=== Inference Status ===");
-    println!("Model loaded and ready for inference.");
-    println!("Full forward pass requires additional implementation.");
+    println!("\nAssistant: {}", new_text);
 
     Ok(())
 }
 
 fn run_interactive(
-    model: &SimpleModel,
+    model: SimpleModel,
     chat_template: Option<&ChatTemplate>,
     system: &str,
-    _max_tokens: usize,
-    _temperature: f32,
+    max_tokens: usize,
+    temperature: f32,
 ) -> Result<(), String> {
     println!("\n=== Interactive Mode ===");
     println!("System: {}", system);
@@ -281,12 +253,12 @@ fn run_interactive(
         "Type 'quit' to exit, 'clear' to clear history, 'info' for model info.\n"
     );
 
+    let mut executor = ForwardExecutor::new(model);
+
     let mut history: Vec<ChatMessage> = vec![ChatMessage {
         role: "system".to_string(),
         content: system.to_string(),
     }];
-
-    let tokenizer = model.tokenizer();
 
     loop {
         print!("User: ");
@@ -304,12 +276,17 @@ fn run_interactive(
                 role: "system".to_string(),
                 content: system.to_string(),
             }];
+            // Reset executor (clears KV cache)
+            executor.seq_pos = 0;
+            for layer in 0..executor.model.config().n_layers {
+                executor.kv_cache_k[layer].fill(0.0);
+                executor.kv_cache_v[layer].fill(0.0);
+            }
             println!("History cleared.\n");
             continue;
         }
         if input == "info" {
-            println!("Model config: {:?}", model.config());
-            model.print_tensor_summary();
+            println!("Model config: {:?}", executor.model.config());
             continue;
         }
 
@@ -336,17 +313,27 @@ fn run_interactive(
         };
 
         // Tokenize
-        let tokens =
-            tokenizer.encode(&prompt_text).map_err(|e| e.to_string())?;
-        println!("Tokens: {}", tokens.len());
+        let tokens = {
+            let tokenizer = executor.model.tokenizer();
+            tokenizer.encode(&prompt_text).map_err(|e| e.to_string())?
+        };
 
-        // TODO: Run actual inference here
-        println!("Assistant: [Inference not implemented yet]\n");
+        // Generate
+        let output_tokens = executor.generate(&tokens, max_tokens, temperature);
 
-        // Add placeholder response to history
+        // Decode new tokens
+        let new_tokens = &output_tokens[tokens.len()..];
+        let response = {
+            let tokenizer = executor.model.tokenizer();
+            tokenizer.decode(new_tokens).map_err(|e| e.to_string())?
+        };
+
+        println!("Assistant: {}\n", response);
+
+        // Add response to history
         history.push(ChatMessage {
             role: "assistant".to_string(),
-            content: "[placeholder]".to_string(),
+            content: response,
         });
     }
 

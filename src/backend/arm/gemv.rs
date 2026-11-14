@@ -125,6 +125,59 @@ pub fn gemv_q6_k(
     }
 }
 
+// ============================================================================
+// Transposed GEMV for GGUF weight layout
+// GGUF stores weights as [in_features, out_features] (transposed)
+// For decode: output[j] = Σ_i weight[i,j] * input[i]
+//
+// IMPORTANT: For quantized formats, the transposed layout is NOT compatible
+// with standard vec_dot operations. GGUF uses a different storage scheme where
+// weights are stored row-by-row for each output feature, but dims show the
+// transposed shape. The actual memory layout is [out_features][in_features].
+// ============================================================================
+
+/// Helper function to compute vec_dot for a single block pair
+/// This is used by transposed GEMV when input is quantized block-by-block
+#[cfg(target_arch = "aarch64")]
+pub fn vec_dot_q4_0_q8_0_single(x: &BlockQ4_0, y: &BlockQ8_0) -> f32 {
+    unsafe { vec_dot_q4_0_q8_0_neon(&[*x], &[*y]) }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub fn vec_dot_q4_0_q8_0_single(x: &BlockQ4_0, y: &BlockQ8_0) -> f32 {
+    vec_dot_q4_0_q8_0(&[*x], &[*y])
+}
+
+/// Single block Q8_0 vec_dot
+pub fn vec_dot_q8_0_single(x: &BlockQ8_0, y: &BlockQ8_0) -> f32 {
+    let dx = fp16_to_fp32(x.d);
+    let dy = fp16_to_fp32(y.d);
+    let mut dot = 0i32;
+    for i in 0..32 {
+        dot += (x.qs[i] as i32) * (y.qs[i] as i32);
+    }
+    (dot as f32) * dx * dy
+}
+
+/// Single block Q4_K vec_dot
+pub fn vec_dot_q4_k_q8_k_single(x: &BlockQ4_K, y: &BlockQ8_K) -> f32 {
+    vec_dot_q4_k_q8_k(&[*x], &[*y])
+}
+
+/// Single block Q5_K vec_dot
+pub fn vec_dot_q5_k_q8_k_single(x: &BlockQ5_K, y: &BlockQ8_K) -> f32 {
+    vec_dot_q5_k_q8_k(&[*x], &[*y])
+}
+
+/// Single block Q6_K vec_dot
+pub fn vec_dot_q6_k_q8_k_single(x: &BlockQ6_K, y: &BlockQ8_K) -> f32 {
+    vec_dot_q6_k_q8_k(&[*x], &[*y])
+}
+
+// Note: Transposed GEMV for quantized weights requires different storage format.
+// The current GGUF format stores weights as [out_features][in_features] in memory,
+// but reports dims as [in_features, out_features]. Standard GEMV works correctly.
+
 #[cfg(test)]
 mod tests {
     use super::*;
