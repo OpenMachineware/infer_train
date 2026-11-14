@@ -44,8 +44,24 @@ impl ForwardExecutor {
         let config = self.model.config();
         let hidden_size = config.hidden_size;
 
+        eprintln!(
+            "\n=== Forward token {} at position {} ===",
+            token_id, self.seq_pos
+        );
+
         // 1. Embedding lookup
         let mut hidden = self.embed_token(token_id)?;
+
+        if true {
+            // Always print embedding stats for debugging
+            let min = hidden.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max = hidden.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let sum: f32 = hidden.iter().sum();
+            eprintln!(
+                "[Embedding] token={} min={:.4} max={:.4} sum={:.4}",
+                token_id, min, max, sum
+            );
+        }
 
         // 2. Process each layer
         for layer_idx in 0..config.n_layers {
@@ -57,6 +73,28 @@ impl ForwardExecutor {
 
         // 4. Output projection
         let logits = self.output_projection(&hidden)?;
+
+        if true {
+            let min = logits.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            eprintln!(
+                "[Logits] seq_pos={} min={:.4} max={:.4} len={}",
+                self.seq_pos,
+                min,
+                max,
+                logits.len()
+            );
+
+            // Find top-5 tokens
+            let mut indexed: Vec<(usize, f32)> =
+                logits.iter().cloned().enumerate().collect();
+            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            eprintln!(
+                "[Top-5 tokens] seq_pos={}: {:?}",
+                self.seq_pos,
+                &indexed[..5]
+            );
+        }
 
         // Increment sequence position
         self.seq_pos += 1;
@@ -94,18 +132,50 @@ impl ForwardExecutor {
                     .collect())
             }
             QuantType::F16 => {
-                let offset = (token_id as usize) * hidden_size * 2;
-                if offset + hidden_size * 2 > emb_data.len() {
+                // F16 embedding: shape is [hidden_size, vocab_size]
+                // Need to read by columns (stride access)
+                let n_vocab = emb_data.len() / (hidden_size * 2);
+                eprintln!(
+                    "[Embed] n_vocab={} hidden_size={}",
+                    n_vocab, hidden_size
+                );
+                let mut embedding = vec![0.0f32; hidden_size];
+                for h in 0..hidden_size {
+                    let offset = h * n_vocab * 2 + (token_id as usize) * 2;
+                    if offset + 2 > emb_data.len() {
+                        return Err(format!(
+                            "Token {} out of range at h={}",
+                            token_id, h
+                        ));
+                    }
+                    let bytes = &emb_data[offset..offset + 2];
+                    embedding[h] =
+                        half::f16::from_le_bytes(bytes.try_into().unwrap())
+                            .to_f32();
+                }
+                Ok(embedding)
+            }
+            QuantType::Q4_K => {
+                // Q4_K: 256 elements per block, 144 bytes per block
+                let nb = (hidden_size + QK_K - 1) / QK_K;
+                let block_size = std::mem::size_of::<BlockQ4_K>();
+                let row_offset = (token_id as usize) * nb * block_size;
+
+                if row_offset + nb * block_size > emb_data.len() {
                     return Err(format!("Token {} out of range", token_id));
                 }
-                let bytes = &emb_data[offset..offset + hidden_size * 2];
-                Ok(bytes
-                    .chunks_exact(2)
-                    .map(|chunk| {
-                        half::f16::from_le_bytes(chunk.try_into().unwrap())
-                            .to_f32()
-                    })
-                    .collect())
+
+                let mut embedding = vec![0.0f32; hidden_size];
+                let block_data = &emb_data[row_offset..];
+
+                // Dequantize each block
+                crate::backend::arm::dequant::dequant_q4_k(
+                    block_data,
+                    &mut embedding,
+                    nb * QK_K,
+                );
+
+                Ok(embedding)
             }
             QuantType::Q6_K => {
                 // Q6_K: 256 elements per block, 210 bytes per block
@@ -125,7 +195,7 @@ impl ForwardExecutor {
                     let block_offset = i * block_size;
                     let block_bytes =
                         &block_data[block_offset..block_offset + block_size];
-                    let dequant = dequant_q6_k(
+                    let _dequant = crate::backend::arm::dequant::dequant_q6_k(
                         block_bytes,
                         &mut embedding[i * QK_K..],
                         QK_K.min(hidden_size - i * QK_K),
@@ -153,6 +223,13 @@ impl ForwardExecutor {
         let n_kv_heads = config.n_kv_heads;
         let head_dim = config.head_dim();
 
+        // Debug: print input stats
+        if self.seq_pos == 0 {
+            let min = input.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max = input.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            eprintln!("[L{}-input] min={:.4} max={:.4}", layer_idx, min, max);
+        }
+
         // === Attention Block ===
         // 1. RMS Norm before attention
         let normed_attn = self.rms_norm(
@@ -167,6 +244,17 @@ impl ForwardExecutor {
             &format!("blk.{}.attn_q.weight", layer_idx),
             n_heads * head_dim,
         )?;
+
+        if self.seq_pos == 0 {
+            let min = q.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max = q.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let sum: f32 = q.iter().sum();
+            eprintln!(
+                "[L{}-Q] min={:.4} max={:.4} sum={:.4}",
+                layer_idx, min, max, sum
+            );
+        }
+
         let k = self.linear(
             &normed_attn,
             &format!("blk.{}.attn_k.weight", layer_idx),
@@ -179,40 +267,66 @@ impl ForwardExecutor {
         )?;
 
         // 3. Q/K norm (Qwen3 has Q norm)
-        let q = self.rms_norm_per_head(
+        let q_normed = self.rms_norm_per_head(
             &q,
             &format!("blk.{}.attn_q_norm.weight", layer_idx),
             n_heads,
             head_dim,
         )?;
-        let k = self.rms_norm_per_head(
+        let k_normed = self.rms_norm_per_head(
             &k,
             &format!("blk.{}.attn_k_norm.weight", layer_idx),
             n_kv_heads,
             head_dim,
         )?;
 
+        if layer_idx == 0 && self.seq_pos == 0 {
+            let q_min = q.iter().cloned().fold(f32::INFINITY, f32::min);
+            let q_max = q.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let qn_min = q_normed.iter().cloned().fold(f32::INFINITY, f32::min);
+            let qn_max =
+                q_normed.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            eprintln!(
+                "[L0-Q_norm] before: [{:.4}, {:.4}] after: [{:.4}, {:.4}]",
+                q_min, q_max, qn_min, qn_max
+            );
+        }
+
         // 4. Apply RoPE to Q and K
-        let mut q_rope = q.clone();
-        let mut k_rope = k.clone();
+        let freq_base = config.rope_freq_base;
+        let mut q_rope = q_normed.clone();
+        let mut k_rope = k_normed.clone();
         for h in 0..n_heads {
             rope_f32(
-                &q[h * head_dim..(h + 1) * head_dim],
+                &q_normed[h * head_dim..(h + 1) * head_dim],
                 &mut q_rope[h * head_dim..(h + 1) * head_dim],
                 self.seq_pos,
                 head_dim,
                 head_dim,
-                10000.0,
+                freq_base,
             );
         }
         for h in 0..n_kv_heads {
             rope_f32(
-                &k[h * head_dim..(h + 1) * head_dim],
+                &k_normed[h * head_dim..(h + 1) * head_dim],
                 &mut k_rope[h * head_dim..(h + 1) * head_dim],
                 self.seq_pos,
                 head_dim,
                 head_dim,
-                10000.0,
+                freq_base,
+            );
+        }
+
+        if layer_idx == 0 && self.seq_pos == 0 {
+            let qr_min = q_rope.iter().cloned().fold(f32::INFINITY, f32::min);
+            let qr_max =
+                q_rope.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let kr_min = k_rope.iter().cloned().fold(f32::INFINITY, f32::min);
+            let kr_max =
+                k_rope.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            eprintln!(
+                "[L0-RoPE] q_rope: [{:.4}, {:.4}] k_rope: [{:.4}, {:.4}] freq_base={}",
+                qr_min, qr_max, kr_min, kr_max, freq_base
             );
         }
 
@@ -228,6 +342,13 @@ impl ForwardExecutor {
                 .copy_from_slice(&v[src_offset..src_offset + head_dim]);
         }
 
+        if layer_idx == 0 && self.seq_pos <= 2 {
+            eprintln!(
+                "[L{}-KV] pos={} wrote {} floats to KV cache",
+                layer_idx, self.seq_pos, head_dim
+            );
+        }
+
         // 6. Flash Attention
         let mut attn_output = vec![0.0f32; n_heads * head_dim];
         for h in 0..n_heads {
@@ -240,6 +361,21 @@ impl ForwardExecutor {
             // Get K and V up to current position
             let k_slice = &k_cache[..(self.seq_pos + 1) * head_dim];
             let v_slice = &v_cache[..(self.seq_pos + 1) * head_dim];
+
+            if layer_idx == 0
+                && h == 0
+                && (self.seq_pos <= 2 || self.seq_pos == 37)
+            {
+                eprintln!(
+                    "[L{}-Attn] h={} n_kv={} seq_pos={} k_len={} v_len={}",
+                    layer_idx,
+                    h,
+                    n_kv_heads,
+                    self.seq_pos,
+                    k_slice.len(),
+                    v_slice.len()
+                );
+            }
 
             flash_attn_f32(
                 &q_rope[h * head_dim..(h + 1) * head_dim],
@@ -259,6 +395,16 @@ impl ForwardExecutor {
             &format!("blk.{}.attn_output.weight", layer_idx),
             hidden_size,
         )?;
+
+        if self.seq_pos == 0 {
+            let min = attn_out.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max =
+                attn_out.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            eprintln!(
+                "[L{}-attn_out] min={:.4} max={:.4}",
+                layer_idx, min, max
+            );
+        }
 
         // Residual connection
         let hidden: Vec<f32> =
@@ -301,6 +447,12 @@ impl ForwardExecutor {
         // Residual connection
         let output: Vec<f32> =
             hidden.iter().zip(ffn_out.iter()).map(|(a, b)| a + b).collect();
+
+        if self.seq_pos == 0 {
+            let min = output.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max = output.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            eprintln!("[L{}-output] min={:.4} max={:.4}", layer_idx, min, max);
+        }
 
         Ok(output)
     }
@@ -388,8 +540,8 @@ impl ForwardExecutor {
     }
 
     /// Linear layer (GEMV) with quantized weights
-    /// GGUF stores weights as [in_features, out_features] in dims,
-    /// but the actual memory layout is [out_features][in_features]
+    /// GGUF stores weights as dims = [in_features, out_features] in row-major order
+    /// Each row of output has blocks_per_row blocks, stored contiguously
     fn linear(
         &self,
         input: &[f32],
@@ -415,9 +567,20 @@ impl ForwardExecutor {
         // Create output
         let mut output = vec![0.0f32; out_features];
 
+        // Verify dimensions match expected format
+        // GGUF format: dims = [in_features, out_features]
+        if self.seq_pos == 0 && weight_name.contains("blk.0") {
+            eprintln!(
+                "[Linear:{}] dims={:?} in={} out={}",
+                weight_name, tensor.dims, in_features, out_features
+            );
+        }
+
         match tensor.quant_type {
             QuantType::F16 => {
-                // For F16, use transposed matmul
+                // F16 weights stored row-major: W[out_features, in_features]
+                // dims = [in_features, out_features], but memory is row-major
+                // output[i] = sum_j input[j] * W[i, j]
                 let weights_f32: Vec<f32> = weight_data
                     .chunks_exact(2)
                     .map(|chunk| {
@@ -426,11 +589,11 @@ impl ForwardExecutor {
                     })
                     .collect();
 
-                // output[i] = sum_j input[j] * weights[j * out_features + i]
+                // Row-major access: each output row is contiguous
                 for i in 0..out_features {
                     let mut sum = 0.0f32;
                     for j in 0..in_features {
-                        let w_idx = j * out_features + i;
+                        let w_idx = i * in_features + j;
                         if w_idx < weights_f32.len() {
                             sum += input[j] * weights_f32[w_idx];
                         }
@@ -439,7 +602,7 @@ impl ForwardExecutor {
                 }
             }
             QuantType::Q6_K => {
-                // Q6_K: 256 elements per block
+                // Q6_K: 256 elements per block, row-major storage
                 let nb = (in_features + QK_K - 1) / QK_K;
 
                 // Quantize input to Q8_K
@@ -450,10 +613,8 @@ impl ForwardExecutor {
                     &mut input_q8k,
                 );
 
-                // Number of blocks per row
+                // Row-major: each output row has nb blocks
                 let blocks_per_row = nb;
-
-                // Get weight blocks
                 let weights: &[BlockQ6_K] = unsafe {
                     std::slice::from_raw_parts(
                         weight_data.as_ptr() as *const BlockQ6_K,
@@ -461,7 +622,6 @@ impl ForwardExecutor {
                     )
                 };
 
-                // Perform GEMV
                 for i in 0..out_features {
                     let row_blocks =
                         &weights[i * blocks_per_row..(i + 1) * blocks_per_row];
@@ -471,7 +631,7 @@ impl ForwardExecutor {
                 }
             }
             QuantType::Q5_K => {
-                // Q5_K: 256 elements per block
+                // Q5_K: 256 elements per block, row-major storage
                 let nb = (in_features + QK_K - 1) / QK_K;
 
                 let mut input_q8k: Vec<BlockQ8_K> =
@@ -481,8 +641,8 @@ impl ForwardExecutor {
                     &mut input_q8k,
                 );
 
+                // Row-major: each output row has nb blocks
                 let blocks_per_row = nb;
-
                 let weights: &[BlockQ5_K] = unsafe {
                     std::slice::from_raw_parts(
                         weight_data.as_ptr() as *const BlockQ5_K,
@@ -499,7 +659,7 @@ impl ForwardExecutor {
                 }
             }
             QuantType::Q4_K => {
-                // Q4_K: 256 elements per block
+                // Q4_K: 256 elements per block, row-major storage
                 let nb = (in_features + QK_K - 1) / QK_K;
 
                 let mut input_q8k: Vec<BlockQ8_K> =
@@ -509,8 +669,8 @@ impl ForwardExecutor {
                     &mut input_q8k,
                 );
 
+                // Row-major: each output row has nb blocks
                 let blocks_per_row = nb;
-
                 let weights: &[BlockQ4_K] = unsafe {
                     std::slice::from_raw_parts(
                         weight_data.as_ptr() as *const BlockQ4_K,
@@ -640,6 +800,7 @@ impl ForwardExecutor {
     fn output_projection(&self, hidden: &[f32]) -> Result<Vec<f32>, String> {
         let config = self.model.config();
         let vocab_size = config.vocab_size;
+        let hidden_size = hidden.len();
 
         // Find output weights (try different names, including tied embeddings)
         let (output_tensor, output_data) = if let Some(tensor) =
@@ -670,46 +831,149 @@ impl ForwardExecutor {
         let in_features = hidden.len();
         let mut logits = vec![0.0f32; vocab_size];
 
+        // Detect weight format
+        // Shape [hidden_size, vocab_size] -> need transposed GEMV
+        // Shape [vocab_size, hidden_size] -> normal GEMV
+        let is_transposed = output_tensor.dims.len() == 2
+            && output_tensor.dims[0] as usize == hidden_size;
+
+        eprintln!(
+            "[Output] shape={:?} is_transposed={}",
+            output_tensor.dims, is_transposed
+        );
+
         match output_tensor.quant_type {
             QuantType::Q6_K => {
-                let nb = (in_features + QK_K - 1) / QK_K;
-                let weights: &[BlockQ6_K] = unsafe {
-                    std::slice::from_raw_parts(
-                        output_data.as_ptr() as *const BlockQ6_K,
-                        vocab_size * nb,
-                    )
-                };
+                if is_transposed {
+                    // Shape is [hidden_size, vocab_size]
+                    // For quantized transposed GEMV, need to dequantize the whole weight
+                    // This is slow but correct
+                    let total_blocks = (output_tensor.dims[0] as usize
+                        * output_tensor.dims[1] as usize
+                        + QK_K
+                        - 1)
+                        / QK_K;
+                    let block_size = std::mem::size_of::<BlockQ6_K>();
 
-                let mut input_q8k = vec![unsafe { std::mem::zeroed() }; nb];
-                quant::quantize_row_q8_k(hidden, &mut input_q8k);
+                    // Dequantize all weights
+                    let total_elems = output_tensor.dims[0] as usize
+                        * output_tensor.dims[1] as usize;
+                    let mut weights_f32 = vec![0.0f32; total_elems];
 
-                gemv::gemv_q6_k(
-                    weights,
-                    &input_q8k,
-                    &mut logits,
-                    vocab_size,
-                    in_features,
-                );
+                    for block_idx in 0..total_blocks {
+                        let start_elem = block_idx * QK_K;
+                        let offset = block_idx * block_size;
+                        let remaining =
+                            total_elems.saturating_sub(start_elem).min(QK_K);
+                        if offset + block_size <= output_data.len()
+                            && remaining > 0
+                        {
+                            let block_bytes =
+                                &output_data[offset..offset + block_size];
+                            let _dequant =
+                                crate::backend::arm::dequant::dequant_q6_k(
+                                    block_bytes,
+                                    &mut weights_f32[start_elem..],
+                                    remaining,
+                                );
+                        }
+                    }
+
+                    // Compute logits
+                    let vocab_size_usize = vocab_size;
+                    for v in 0..vocab_size_usize {
+                        let mut sum = 0.0f32;
+                        for h in 0..hidden_size {
+                            sum += hidden[h]
+                                * weights_f32[h * vocab_size_usize + v];
+                        }
+                        logits[v] = sum;
+                    }
+                } else {
+                    // Normal GEMV: shape is [vocab_size, hidden_size]
+                    let nb = (in_features + QK_K - 1) / QK_K;
+                    let weights: &[BlockQ6_K] = unsafe {
+                        std::slice::from_raw_parts(
+                            output_data.as_ptr() as *const BlockQ6_K,
+                            vocab_size * nb,
+                        )
+                    };
+
+                    let mut input_q8k = vec![unsafe { std::mem::zeroed() }; nb];
+                    quant::quantize_row_q8_k(hidden, &mut input_q8k);
+
+                    gemv::gemv_q6_k(
+                        weights,
+                        &input_q8k,
+                        &mut logits,
+                        vocab_size,
+                        in_features,
+                    );
+                }
             }
             QuantType::Q4_K => {
-                let nb = (in_features + QK_K - 1) / QK_K;
-                let weights: &[BlockQ4_K] = unsafe {
-                    std::slice::from_raw_parts(
-                        output_data.as_ptr() as *const BlockQ4_K,
-                        vocab_size * nb,
-                    )
-                };
+                if is_transposed {
+                    // Shape is [hidden_size, vocab_size]
+                    // Need dequantize and compute transposed GEMV
+                    let total_blocks = (output_tensor.dims[0] as usize
+                        * output_tensor.dims[1] as usize
+                        + QK_K
+                        - 1)
+                        / QK_K;
+                    let block_size = std::mem::size_of::<BlockQ4_K>();
 
-                let mut input_q8k = vec![unsafe { std::mem::zeroed() }; nb];
-                quant::quantize_row_q8_k(hidden, &mut input_q8k);
+                    let total_elems = output_tensor.dims[0] as usize
+                        * output_tensor.dims[1] as usize;
+                    let mut weights_f32 = vec![0.0f32; total_elems];
 
-                gemv::gemv_q4_k(
-                    weights,
-                    &input_q8k,
-                    &mut logits,
-                    vocab_size,
-                    in_features,
-                );
+                    for block_idx in 0..total_blocks {
+                        let start_elem = block_idx * QK_K;
+                        let offset = block_idx * block_size;
+                        let remaining =
+                            total_elems.saturating_sub(start_elem).min(QK_K);
+                        if offset + block_size <= output_data.len()
+                            && remaining > 0
+                        {
+                            crate::backend::arm::dequant::dequant_q4_k(
+                                &output_data[offset..offset + block_size],
+                                &mut weights_f32[start_elem..],
+                                remaining,
+                            );
+                        }
+                    }
+
+                    // Compute logits: hidden @ W = logits
+                    // W[h, v] = weights_f32[h * vocab_size + v]
+                    let vocab_size_usize = vocab_size;
+                    for v in 0..vocab_size_usize {
+                        let mut sum = 0.0f32;
+                        for h in 0..hidden_size {
+                            sum += hidden[h]
+                                * weights_f32[h * vocab_size_usize + v];
+                        }
+                        logits[v] = sum;
+                    }
+                } else {
+                    // Normal GEMV: shape is [vocab_size, hidden_size]
+                    let nb = (in_features + QK_K - 1) / QK_K;
+                    let weights: &[BlockQ4_K] = unsafe {
+                        std::slice::from_raw_parts(
+                            output_data.as_ptr() as *const BlockQ4_K,
+                            vocab_size * nb,
+                        )
+                    };
+
+                    let mut input_q8k = vec![unsafe { std::mem::zeroed() }; nb];
+                    quant::quantize_row_q8_k(hidden, &mut input_q8k);
+
+                    gemv::gemv_q4_k(
+                        weights,
+                        &input_q8k,
+                        &mut logits,
+                        vocab_size,
+                        in_features,
+                    );
+                }
             }
             QuantType::Q5_K => {
                 let nb = (in_features + QK_K - 1) / QK_K;
@@ -806,12 +1070,27 @@ impl ForwardExecutor {
 
         println!("Generating {} new tokens...", max_new_tokens);
 
+        // 1. Prefill: process all prompt tokens except the last one
+        // The last token will be processed in decode phase
+        println!("Prefilling {} tokens...", tokens.len() - 1);
+        for (i, &token) in tokens[..tokens.len() - 1].iter().enumerate() {
+            match self.forward(token) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Prefill error at token {}: {}", i, e);
+                    return tokens;
+                }
+            }
+        }
+        println!("Prefill complete. seq_pos={}", self.seq_pos);
+
+        // 2. Generate new tokens (including processing the last prompt token)
         for i in 0..max_new_tokens {
             // Forward pass for last token
             match self.forward(tokens[tokens.len() - 1]) {
                 Ok(logits) => {
                     // Debug: check logits
-                    if i == 0 {
+                    if true {
                         let max_logit = logits
                             .iter()
                             .cloned()
@@ -821,9 +1100,15 @@ impl ForwardExecutor {
                             .cloned()
                             .fold(f32::INFINITY, f32::min);
                         println!(
-                            "Logits range: [{:.4}, {:.4}]",
-                            min_logit, max_logit
+                            "Decode {} logits: [{:.4}, {:.4}]",
+                            i, min_logit, max_logit
                         );
+
+                        // Find top-5 tokens
+                        let mut indexed: Vec<(usize, f32)> =
+                            logits.iter().cloned().enumerate().collect();
+                        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+                        println!("  Top-5: {:?}", &indexed[..5]);
                     }
                     let next_token = self.sample(&logits, temperature);
                     println!("  Token {}: {}", i, next_token);

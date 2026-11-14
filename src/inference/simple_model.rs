@@ -31,6 +31,7 @@ pub struct ModelConfig {
     pub vocab_size: usize,
     pub intermediate_size: usize,
     pub context_length: usize,
+    pub rope_freq_base: f32,
 }
 
 impl ModelConfig {
@@ -61,6 +62,17 @@ impl ModelConfig {
                     gguf.get_meta::<u64>("llama.attention.head_count_kv")
                 })
                 .unwrap_or(32) as usize,
+            head_dim: gguf
+                .get_meta::<u64>(&format!("{}attention.key_length", prefix))
+                .or_else(|| gguf.get_meta::<u64>("llama.attention.key_length"))
+                .or_else(|| {
+                    gguf.get_meta::<u64>(&format!(
+                        "{}attention.head_dim",
+                        prefix
+                    ))
+                })
+                .or_else(|| gguf.get_meta::<u64>("llama.attention.head_dim"))
+                .unwrap_or(0) as usize,
             vocab_size: gguf
                 .get_meta::<u64>(&format!("{}vocab_size", prefix))
                 .or_else(|| gguf.get_meta::<u64>("llama.vocab_size"))
@@ -73,7 +85,14 @@ impl ModelConfig {
                 .get_meta::<u64>(&format!("{}context_length", prefix))
                 .or_else(|| gguf.get_meta::<u64>("llama.context_length"))
                 .unwrap_or(4096) as usize,
-            head_dim: 0, // Will be computed
+            rope_freq_base: gguf
+                .get_meta::<f32>(&format!("{}rope.freq_base", prefix))
+                .or_else(|| gguf.get_meta::<f32>("llama.rope.freq_base"))
+                .or_else(|| {
+                    gguf.get_meta::<f32>(&format!("{}rope_base", prefix))
+                })
+                .or_else(|| gguf.get_meta::<f32>("llama.rope_base"))
+                .unwrap_or(10000.0),
         }
     }
 
@@ -81,6 +100,8 @@ impl ModelConfig {
         if self.head_dim > 0 {
             self.head_dim
         } else {
+            // Fallback: infer from Q weight shape
+            // This should not happen if GGUF has key_length metadata
             self.hidden_size / self.n_heads
         }
     }
