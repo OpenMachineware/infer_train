@@ -4,7 +4,9 @@
 // Inference engine
 
 pub mod engine;
+pub mod forward;
 pub mod simple_model;
 
 pub use engine::InferenceEngine;
+pub use forward::ForwardExecutor;
 pub use simple_model::{ModelConfig, SimpleModel};

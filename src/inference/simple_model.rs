@@ -12,13 +12,13 @@ use std::collections::HashMap;
 /// Simple model holding weights and config
 pub struct SimpleModel {
     /// GGUF file reference
-    gguf: GgufFile,
+    pub gguf: GgufFile,
     /// Tokenizer
-    tokenizer: Box<dyn Tokenizer>,
+    pub tokenizer: Box<dyn Tokenizer>,
     /// Model config
-    config: ModelConfig,
+    pub config: ModelConfig,
     /// CPU backend
-    backend: ArmCpuBackend,
+    pub backend: ArmCpuBackend,
 }
 
 /// Model configuration
