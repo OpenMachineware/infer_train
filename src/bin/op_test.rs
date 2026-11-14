@@ -183,7 +183,7 @@ fn test_quantize_q8_k(args: &Args) {
 }
 
 fn test_vec_dot_q5_k(args: &Args) {
-    use infer_train::types::{BlockQ5_K, BlockQ8_K, QK_K};
+    use infer_train::types::{BlockQ5_K, BlockQ8_K, QK_K, fp16_to_fp32};
     use infer_train::backend::arm::{quant::quantize_q8_k, vec_dot::vec_dot_q5_k_q8_k};
 
     // 创建测试输入
@@ -202,8 +202,8 @@ fn test_vec_dot_q5_k(args: &Args) {
     let mut weights: Vec<BlockQ5_K> = vec![unsafe { std::mem::zeroed() }; nb];
     // 填充一些值
     for b in &mut weights {
-        b.d = 0.001; // scale
-        b.dmin = 0.01; // min scale
+        b.d = half::f16::to_bits(half::f16::from_f32(0.001)); // scale
+        b.dmin = half::f16::to_bits(half::f16::from_f32(0.01)); // min scale
         // qs: 低4位和高4位各存储一个值
         for i in 0..128 {
             b.qs[i] = 0x88; // 低4位=8, 高4位=8
@@ -224,7 +224,7 @@ fn test_vec_dot_q5_k(args: &Args) {
         println!("Input [0..5]: {:?}", &input[..5]);
         println!("Q8_K block 0: d = {:.6}", input_q8k[0].d);
         println!("Q8_K block 0 qs [0..5]: {:?}", &input_q8k[0].qs[..5]);
-        println!("Q5_K block 0: d = {:.6}, dmin = {:.6}", weights[0].d, weights[0].dmin);
+        println!("Q5_K block 0: d = {:.6}, dmin = {:.6}", fp16_to_fp32(weights[0].d), fp16_to_fp32(weights[0].dmin));
     }
 
     // 计算点积
@@ -250,7 +250,7 @@ fn test_vec_dot_q5_k(args: &Args) {
 }
 
 fn test_vec_dot_q6_k(args: &Args) {
-    use infer_train::types::{BlockQ6_K, BlockQ8_K, QK_K};
+    use infer_train::types::{BlockQ6_K, BlockQ8_K, QK_K, fp16_to_fp32};
     use infer_train::backend::arm::{quant::quantize_q8_k, vec_dot::vec_dot_q6_k_q8_k};
 
     let input_size = QK_K;
@@ -266,7 +266,7 @@ fn test_vec_dot_q6_k(args: &Args) {
     // 创建假的Q6_K权重
     let mut weights: Vec<BlockQ6_K> = vec![unsafe { std::mem::zeroed() }; nb];
     for b in &mut weights {
-        b.d = 0.001;
+        b.d = half::f16::to_bits(half::f16::from_f32(0.001));
         for i in 0..128 {
             b.ql[i] = 32; // 中等值
         }
@@ -279,7 +279,7 @@ fn test_vec_dot_q6_k(args: &Args) {
         println!("=== vec_dot Q6_K x Q8_K ===");
         println!("Input size: {} ({} blocks)", total_size, nb);
         println!("Q8_K block 0: d = {:.6}", input_q8k[0].d);
-        println!("Q6_K block 0: d = {:.6}", weights[0].d);
+        println!("Q6_K block 0: d = {:.6}", fp16_to_fp32(weights[0].d));
     }
 
     let result = vec_dot_q6_k_q8_k(&weights, &input_q8k);
@@ -302,7 +302,7 @@ fn test_vec_dot_q6_k(args: &Args) {
 }
 
 fn test_vec_dot_q4_k(args: &Args) {
-    use infer_train::types::{BlockQ4_K, BlockQ8_K, QK_K};
+    use infer_train::types::{BlockQ4_K, BlockQ8_K, QK_K, fp16_to_fp32};
     use infer_train::backend::arm::{quant::quantize_q8_k, vec_dot::vec_dot_q4_k_q8_k};
 
     let input_size = QK_K;
@@ -318,8 +318,8 @@ fn test_vec_dot_q4_k(args: &Args) {
     // 创建假的Q4_K权重
     let mut weights: Vec<BlockQ4_K> = vec![unsafe { std::mem::zeroed() }; nb];
     for b in &mut weights {
-        b.d = 0.001;
-        b.dmin = 0.01;
+        b.d = half::f16::to_bits(half::f16::from_f32(0.001));
+        b.dmin = half::f16::to_bits(half::f16::from_f32(0.01));
         for i in 0..144 {
             b.qs[i] = 0x88;
         }
@@ -332,7 +332,7 @@ fn test_vec_dot_q4_k(args: &Args) {
         println!("=== vec_dot Q4_K x Q8_K ===");
         println!("Input size: {} ({} blocks)", total_size, nb);
         println!("Q8_K block 0: d = {:.6}", input_q8k[0].d);
-        println!("Q4_K block 0: d = {:.6}", weights[0].d);
+        println!("Q4_K block 0: d = {:.6}", fp16_to_fp32(weights[0].d));
     }
 
     let result = vec_dot_q4_k_q8_k(&weights, &input_q8k);

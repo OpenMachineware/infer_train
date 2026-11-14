@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 //
-// 通用算子测试框架 - llama.cpp版本
-// 编译: g++ -O3 -march=native -o op_test_cpp op_test.cpp -I../llama.cpp-1.0.0 -I../llama.cpp-1.0.0/ggml -I../llama.cpp-1.0.0/ggml/src -I../llama.cpp-1.0.0/ggml/src/ggml-cpu -L../llama.cpp-1.0.0/build/ggml/src -lggml -lggml-base -lggml-cpu
-// 用法:
-//   1. 看输出: ./op_test_cpp --op rms_norm --verbose
-//   2. 测性能: ./op_test_cpp --op rms_norm --bench 1000
+// Universal operator test framework - llama.cpp version
+// Build: make
+// Usage:
+//   1. View output: ./op_test_cpp --op rms_norm --verbose
+//   2. Benchmark: ./op_test_cpp --op rms_norm --bench 1000
 
 #include <cstdio>
 #include <cstdlib>
@@ -22,7 +22,7 @@ extern "C" {
 #include "ggml-quants.h"
 }
 
-// 简单的命令行解析
+// Simple command line parser
 struct Args {
     const char* op = "rms_norm";
     bool verbose = false;
@@ -63,7 +63,7 @@ void test_rms_norm(const Args& args) {
     auto weight = generate_input(size, args.seed + 1);
     std::vector<float> output(size);
 
-    // 计算RMS
+    // Compute RMS
     float sum_sq = 0;
     for (int i = 0; i < size; i++) {
         sum_sq += input[i] * input[i];
@@ -86,7 +86,7 @@ void test_rms_norm(const Args& args) {
         }
     }
 
-    // 执行RMS norm
+    // Execute RMS norm
     const float eps = 1e-5f;
     ggml_vec_norm_f32(size, &scale, input.data());
     scale = 1.0f / (scale + eps);
@@ -113,7 +113,7 @@ void test_rms_norm(const Args& args) {
         printf("Output RMS (should be ~1.0 with weight=1): %.4f\n", out_rms);
     }
 
-    // 性能测试
+    // Benchmark
     if (args.bench > 0) {
         auto start = std::chrono::high_resolution_clock::now();
         for (int iter = 0; iter < args.bench; iter++) {
@@ -187,7 +187,7 @@ void test_quantize_q8_k(const Args& args) {
     int total_size = nb * QK_K;
 
     auto input = generate_input(total_size, args.seed);
-    // 放大范围
+    // Expand range
     for (auto& v : input) {
         v *= 10.0f;
     }
@@ -206,7 +206,7 @@ void test_quantize_q8_k(const Args& args) {
         }
     }
 
-    // 执行量化
+    // Execute quantization
     quantize_row_q8_K_ref(input.data(), output.data(), total_size);
 
     if (args.verbose) {
@@ -221,7 +221,7 @@ void test_quantize_q8_k(const Args& args) {
             printf("%d%s", (int)output[0].bsums[i], i < 3 ? ", " : "]\n");
         }
 
-        // 验证
+        // Verification
         printf("\nVerification:\n");
         for (int i = 0; i < 5; i++) {
             float deq = output[0].d * output[0].qs[i];
@@ -254,11 +254,11 @@ void test_vec_dot_q5_k(const Args& args) {
         v *= 5.0f;
     }
 
-    // 量化输入到Q8_K
+    // Quantize input to Q8_K
     std::vector<block_q8_K> input_q8k(nb);
     quantize_row_q8_K_ref(input.data(), input_q8k.data(), total_size);
 
-    // 创建假的Q5_K权重
+    // Create dummy Q5_K weights
     std::vector<block_q5_K> weights(nb);
     memset(weights.data(), 0, nb * sizeof(block_q5_K));
 
@@ -289,7 +289,7 @@ void test_vec_dot_q5_k(const Args& args) {
                GGML_FP16_TO_FP32(weights[0].d), GGML_FP16_TO_FP32(weights[0].dmin));
     }
 
-    // 计算点积
+    // Compute dot product
     float result;
     ggml_vec_dot_q5_K_q8_k(total_size, &result, 0, weights.data(), 0, input_q8k.data(), 0, 1);
 
