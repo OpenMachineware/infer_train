@@ -141,6 +141,14 @@ impl Vocab {
         self.id_to_token.len()
     }
 
+    // Iterate over all tokens (id, token)
+    pub fn tokens_iter(&self) -> impl Iterator<Item = (TokenId, &str)> {
+        self.id_to_token
+            .iter()
+            .enumerate()
+            .map(|(id, token)| (id as TokenId, token.as_str()))
+    }
+
     // Get pre-tokenizer type
     pub fn pre(&self) -> Option<&str> {
         self.pre.as_deref()

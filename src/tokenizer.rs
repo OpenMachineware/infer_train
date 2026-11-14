@@ -4,6 +4,7 @@
 // Tokenizer module
 
 pub mod bpe;
+pub mod spm;
 pub mod vocab;
 
 pub use vocab::Vocab;
@@ -96,7 +97,7 @@ pub fn create_tokenizer(
         }
         TokenizerType::SPM => {
             let vocab = Vocab::new(meta)?;
-            Ok(Box::new(bpe::BpeTokenizer::new(vocab)))
+            Ok(Box::new(spm::SpmTokenizer::new(vocab)))
         }
         _ => Err(TokenizerError::TokenizationFailed(format!(
             "Unsupported tokenizer type: {:?}",

@@ -35,37 +35,44 @@ fn main() {
     println!("Byte fallback: {:?}", meta.byte_fallback);
     println!("Pre: {:?}", meta.pre);
 
-    // Show first 10 tokens
-    println!("\nFirst 10 tokens:");
-    for (i, token) in meta.tokens.iter().take(10).enumerate() {
-        println!("  {} -> '{}'", i, token);
-    }
-
-    // Show first 5 merges
-    if !meta.merges.is_empty() {
-        println!("\nFirst 5 merges:");
-        for (t1, t2) in meta.merges.iter().take(5) {
-            println!("  '{}' + '{}' -> '{}{}'", t1, t2, t1, t2);
-        }
-    }
-
     // Create tokenizer
     let tokenizer = create_tokenizer(meta).expect("Failed to create tokenizer");
     println!("\nTokenizer created successfully!");
 
-    // Test encoding
-    let text = "Hello, world!";
-    println!("\nEncoding: '{}'", text);
-    let tokens = tokenizer.encode(text).expect("Failed to encode");
-    println!("Tokens: {:?}", tokens);
+    // Test various text types
+    let test_texts = [
+        "Hello, world!",
+        "你好世界",
+        "Hello 你好 World 世界",
+        "测试123test",
+        "这是一个很长的中文句子，用来测试tokenizer对长文本的处理能力。",
+        "The quick brown fox jumps over the lazy dog.",
+        "日本語テスト",
+        "한국어 테스트",
+        "🎉🎊🎁", // emoji
+    ];
 
-    // Decode back
-    let decoded = tokenizer.decode(&tokens).expect("Failed to decode");
-    println!("Decoded: '{}'", decoded);
+    println!("\n=== Comprehensive tests ===");
+    let mut all_passed = true;
+    for text in &test_texts {
+        println!("\nText: '{}'", text);
+        let tokens = tokenizer.encode(text).expect("Failed to encode");
+        println!("Tokens: {:?}", tokens);
+        let decoded =
+            tokenizer.decode_skip_special(&tokens).expect("Failed to decode");
+        println!("Decoded: '{}'", decoded);
+        if text == &decoded {
+            println!("✓ Perfect match!");
+        } else {
+            println!("✗ Mismatch!");
+            all_passed = false;
+        }
+    }
 
-    // Decode skip special
-    let decoded_skip = tokenizer
-        .decode_skip_special(&tokens)
-        .expect("Failed to decode skip special");
-    println!("Decoded (skip special): '{}'", decoded_skip);
+    if all_passed {
+        println!("\n=== All tests passed! ===");
+    } else {
+        println!("\n=== Some tests failed! ===");
+        std::process::exit(1);
+    }
 }
