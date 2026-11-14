@@ -1,7 +1,7 @@
-# 操作符测试 Makefile
-# 编译llama.cpp版本的测试
+# Operator test Makefile
+# Build llama.cpp version of the test
 
-LLAMA_CPP_ROOT = ../llama.cpp-1.0.0
+LLAMA_CPP_ROOT = ../../llama.cpp-1.0.0
 LLAMA_BUILD = $(LLAMA_CPP_ROOT)/build
 
 CXX = g++
@@ -32,7 +32,7 @@ $(TARGET): op_test.cpp
 clean:
 	rm -f $(TARGET)
 
-# 测试示例
+# Test examples
 test-rms: $(TARGET)
 	./$(TARGET) --op rms_norm --verbose
 	./$(TARGET) --op rms_norm --bench 1000

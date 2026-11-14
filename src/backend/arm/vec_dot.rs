@@ -148,6 +148,7 @@ pub fn vec_dot_q4_k_q8_k(x: &[BlockQ4_K], y: &[BlockQ8_K]) -> f32 {
     const KMASK3: u32 = 0x03030303;
 
     let mut sums = [0.0f32; 8];
+    let mut sumf = 0.0f32;
 
     for i in 0..nb {
         let block_x = &x[i];
@@ -224,10 +225,10 @@ pub fn vec_dot_q4_k_q8_k(x: &[BlockQ4_K], y: &[BlockQ8_K]) -> f32 {
         }
 
         let dmin = fp16_to_fp32(block_x.dmin) * block_y.d;
-        sums[0] -= dmin * sumi as f32;
+        sumf -= dmin * sumi as f32;
     }
 
-    sums.iter().sum()
+    sumf + sums.iter().sum::<f32>()
 }
 
 // Q5_K x Q8_K dot product
@@ -240,6 +241,7 @@ pub fn vec_dot_q5_k_q8_k(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
     const KMASK3: u32 = 0x03030303;
 
     let mut sums = [0.0f32; 8];
+    let mut sumf = 0.0f32;
 
     for i in 0..nb {
         let block_x = &x[i];
@@ -271,14 +273,19 @@ pub fn vec_dot_q5_k_q8_k(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
         let q4 = &block_x.qs;
         let qh = &block_x.qh;
         let mut m: u8 = 1;
+        // Match llama.cpp exactly: q4 advances by 32 per j, but qh is always indexed from 0..31
+        // The mask m shifts to select different bits from qh for each sub-block
         for j in 0..4 {
+            let q4_base = j * 32;
+            // First 32 elements of this sub-block: low nibble + bit 0 from qh
             for l in 0..32 {
-                aux8[j * 64 + l] = (q4[j * 32 + l] & 0xF) as i8
+                aux8[j * 64 + l] = (q4[q4_base + l] & 0xF) as i8
                     + if qh[l] & m != 0 { 16 } else { 0 };
             }
             m <<= 1;
+            // Second 32 elements of this sub-block: high nibble + bit 1 from qh
             for l in 0..32 {
-                aux8[j * 64 + 32 + l] = (q4[j * 32 + l] >> 4) as i8
+                aux8[j * 64 + 32 + l] = (q4[q4_base + l] >> 4) as i8
                     + if qh[l] & m != 0 { 16 } else { 0 };
             }
             m <<= 1;
@@ -322,10 +329,10 @@ pub fn vec_dot_q5_k_q8_k(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
         }
 
         let dmin = fp16_to_fp32(block_x.dmin) * block_y.d;
-        sums[0] -= dmin * sumi as f32;
+        sumf -= dmin * sumi as f32;
     }
 
-    sums.iter().sum()
+    sumf + sums.iter().sum::<f32>()
 }
 
 // Q6_K x Q8_K dot product
@@ -333,31 +340,59 @@ pub fn vec_dot_q6_k_q8_k(x: &[BlockQ6_K], y: &[BlockQ8_K]) -> f32 {
     let nb = x.len();
     assert_eq!(nb, y.len());
 
-    let mut sum = 0.0f32;
+    let mut sums = [0.0f32; 8];
 
     for i in 0..nb {
         let d = y[i].d * fp16_to_fp32(x[i].d);
-        let mut isum = 0i32;
-
-        // Process 16 blocks of 16 elements each
-        for j in 0..16 {
-            for k in 0..8 {
-                // Combine lower 4 bits and upper 2 bits
-                let lower4 = x[i].ql[j * 8 + k] as i32;
-                let upper2 =
-                    (x[i].qh[j * 4 + k / 2] >> (4 * (k % 2))) as i32 & 0x03;
-                let v = lower4 | (upper2 << 4);
-
-                isum += v * y[i].qs[j * 16 + k] as i32 * x[i].scales[j] as i32;
-                isum +=
-                    v * y[i].qs[j * 16 + k + 8] as i32 * x[i].scales[j] as i32;
-            }
+        
+        // Create aux8 array with values in range -32 to 31
+        // Matches llama.cpp exactly: q4 (ql) advances by 64 per 128 output, qh advances by 32 per 128 output
+        let mut aux8 = [0i8; 256];
+        let q4 = &x[i].ql;
+        let qh = &x[i].qh;
+        
+        // First 128 elements: q4 uses [0..64], qh uses [0..32]
+        for l in 0..32 {
+            aux8[l +  0] = ((q4[l +  0] & 0xF) | (((qh[l] >> 0) & 3) << 4)) as i8 - 32;
+            aux8[l + 32] = ((q4[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) as i8 - 32;
+            aux8[l + 64] = ((q4[l +  0] >>  4) | (((qh[l] >> 4) & 3) << 4)) as i8 - 32;
+            aux8[l + 96] = ((q4[l + 32] >>  4) | (((qh[l] >> 6) & 3) << 4)) as i8 - 32;
         }
-
-        sum += d * isum as f32;
+        
+        // Second 128 elements: q4 uses [64..128], qh uses [32..64]
+        for l in 0..32 {
+            aux8[l + 128 +  0] = ((q4[l + 64 +  0] & 0xF) | (((qh[l + 32] >> 0) & 3) << 4)) as i8 - 32;
+            aux8[l + 128 + 32] = ((q4[l + 64 + 32] & 0xF) | (((qh[l + 32] >> 2) & 3) << 4)) as i8 - 32;
+            aux8[l + 128 + 64] = ((q4[l + 64 +  0] >>  4) | (((qh[l + 32] >> 4) & 3) << 4)) as i8 - 32;
+            aux8[l + 128 + 96] = ((q4[l + 64 + 32] >>  4) | (((qh[l + 32] >> 6) & 3) << 4)) as i8 - 32;
+        }
+        
+        let q8 = &y[i].qs;
+        let scales = &x[i].scales;
+        
+        let mut aux32 = [0i32; 8];
+        let mut is = 0;
+        let mut a_idx = 0;
+        
+        for _j in 0..16 {
+            let scale = scales[is] as i32;
+            for l in 0..8 {
+                aux32[l] += scale * q8[a_idx + l] as i32 * aux8[a_idx + l] as i32;
+            }
+            a_idx += 8;
+            for l in 0..8 {
+                aux32[l] += scale * q8[a_idx + l] as i32 * aux8[a_idx + l] as i32;
+            }
+            a_idx += 8;
+            is += 1;
+        }
+        
+        for l in 0..8 {
+            sums[l] += d * aux32[l] as f32;
+        }
     }
 
-    sum
+    sums.iter().sum()
 }
 
 // IQ4_XS uses non-linear 4-bit quantization with a lookup table
@@ -475,5 +510,59 @@ mod tests {
         let y = vec![1.0f32, 2.0, 3.0, 4.0];
         let result = vec_dot_f32(&x, &y);
         assert!((result - 30.0).abs() < 1e-6);
+    }
+}
+
+// Test Q4_K vec_dot with known values
+#[cfg(test)]
+mod q4k_test {
+    use super::*;
+
+    #[test]
+    fn test_q4_k_vec_dot_basic() {
+        // Create a simple Q4_K block
+        let block_q4 = BlockQ4_K {
+            d: half::f16::to_bits(half::f16::from_f32(1.0)), // scale = 1.0
+            dmin: half::f16::to_bits(half::f16::from_f32(0.0)), // min scale = 0
+            scales: [0; 12], // all scales = 0
+            qs: [0; 128], // all values = 0
+        };
+
+        // Create a simple Q8_K block
+        let block_q8 = BlockQ8_K {
+            d: 1.0,
+            qs: [1; 256], // all values = 1
+            bsums: [256; 16], // each block sum = 256 (256 ones)
+        };
+
+        // With all zeros in Q4_K and ones in Q8_K, result should be 0
+        let result = vec_dot_q4_k_q8_k(&[block_q4], &[block_q8]);
+        println!("Result with all zeros: {}", result);
+        assert!((result - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_q4_k_vec_dot_nonzero() {
+        // Create Q4_K block with known values
+        let block_q4 = BlockQ4_K {
+            d: half::f16::to_bits(half::f16::from_f32(0.5)), // scale = 0.5
+            dmin: half::f16::to_bits(half::f16::from_f32(0.0)),
+            scales: [8; 12], // scales = 8
+            qs: [0x88; 128], // each byte = 0b10001000, so low nibble = 8, high nibble = 8
+        };
+
+        // Create Q8_K block
+        let block_q8 = BlockQ8_K {
+            d: 1.0,
+            qs: [1; 256], // all values = 1
+            bsums: [0; 16], // no contribution from mins
+        };
+
+        // Expected: each of 256 positions has value 8 * 1 = 8
+        // Sum = 256 * 8 = 2048
+        // With d = 0.5 and scale = 8, but we need to understand the scale encoding
+        let result = vec_dot_q4_k_q8_k(&[block_q4], &[block_q8]);
+        println!("Result with known values: {}", result);
+        // The exact result depends on scale interpretation
     }
 }

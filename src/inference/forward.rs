@@ -245,13 +245,19 @@ impl ForwardExecutor {
             n_heads * head_dim,
         )?;
 
-        if self.seq_pos == 0 {
+        if self.seq_pos == 0 && (layer_idx == 0 || layer_idx == 7 || layer_idx == 8) {
             let min = q.iter().cloned().fold(f32::INFINITY, f32::min);
             let max = q.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let sum: f32 = q.iter().sum();
+
+            // Check the weight tensor type
+            let q_weight_name = format!("blk.{}.attn_q.weight", layer_idx);
+            let tensor = self.model.gguf.tensors.iter().find(|t| t.name == q_weight_name);
+            let quant_type = tensor.map(|t| format!("{:?}", t.quant_type)).unwrap_or("unknown".to_string());
+
             eprintln!(
-                "[L{}-Q] min={:.4} max={:.4} sum={:.4}",
-                layer_idx, min, max, sum
+                "[L{}-Q] min={:.4} max={:.4} sum={:.4} quant_type={}",
+                layer_idx, min, max, sum, quant_type
             );
         }
 
@@ -265,6 +271,16 @@ impl ForwardExecutor {
             &format!("blk.{}.attn_v.weight", layer_idx),
             n_kv_heads * head_dim,
         )?;
+
+        if self.seq_pos == 0 && (layer_idx == 0 || layer_idx == 7 || layer_idx == 8) {
+            let v_min = v.iter().cloned().fold(f32::INFINITY, f32::min);
+            let v_max = v.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let v_sum: f32 = v.iter().sum();
+            eprintln!(
+                "[L{}-V] min={:.4} max={:.4} sum={:.4}",
+                layer_idx, v_min, v_max, v_sum
+            );
+        }
 
         // 3. Q/K norm (Qwen3 has Q norm)
         let q_normed = self.rms_norm_per_head(
@@ -389,6 +405,16 @@ impl ForwardExecutor {
             );
         }
 
+        if self.seq_pos == 0 && (layer_idx == 0 || layer_idx == 7 || layer_idx == 8) {
+            let ao_min = attn_output.iter().cloned().fold(f32::INFINITY, f32::min);
+            let ao_max = attn_output.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let ao_sum: f32 = attn_output.iter().sum();
+            eprintln!(
+                "[L{}-attn_before_proj] min={:.4} max={:.4} sum={:.4}",
+                layer_idx, ao_min, ao_max, ao_sum
+            );
+        }
+
         // 7. Output projection
         let attn_out = self.linear(
             &attn_output,
@@ -407,8 +433,17 @@ impl ForwardExecutor {
         }
 
         // Residual connection
+        if self.seq_pos == 0 && layer_idx == 2 {
+            eprintln!("[L2-residual_debug] input_first5={:?} attn_out_first5={:?}", 
+                      &input[..5.min(input.len())], &attn_out[..5.min(attn_out.len())]);
+        }
+        
         let hidden: Vec<f32> =
             input.iter().zip(attn_out.iter()).map(|(a, b)| a + b).collect();
+        
+        if self.seq_pos == 0 && layer_idx == 2 {
+            eprintln!("[L2-residual_debug] hidden_first5={:?}", &hidden[..5.min(hidden.len())]);
+        }
 
         // === FFN Block ===
         // 1. RMS Norm before FFN
@@ -417,6 +452,21 @@ impl ForwardExecutor {
             &format!("blk.{}.ffn_norm.weight", layer_idx),
             hidden_size,
         )?;
+
+        if self.seq_pos == 0 && (layer_idx == 0 || layer_idx == 2 || layer_idx == 7) {
+            let hidden_min = hidden.iter().cloned().fold(f32::INFINITY, f32::min);
+            let hidden_max = hidden.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let normed_min = normed_ffn.iter().cloned().fold(f32::INFINITY, f32::min);
+            let normed_max = normed_ffn.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            eprintln!(
+                "[L{}-FFN-hidden_before_norm] min={:.4} max={:.4}",
+                layer_idx, hidden_min, hidden_max
+            );
+            eprintln!(
+                "[L{}-FFN-normed] min={:.4} max={:.4}",
+                layer_idx, normed_min, normed_max
+            );
+        }
 
         // 2. Gate and Up projections
         let gate = self.linear(
@@ -430,11 +480,85 @@ impl ForwardExecutor {
             config.intermediate_size,
         )?;
 
+        if self.seq_pos == 0 && (layer_idx == 0 || layer_idx == 2 || layer_idx == 7) {
+            let gate_min = gate.iter().cloned().fold(f32::INFINITY, f32::min);
+            let gate_max = gate.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let up_min = up.iter().cloned().fold(f32::INFINITY, f32::min);
+            let up_max = up.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let gate_weight_name = format!("blk.{}.ffn_gate.weight", layer_idx);
+            let up_weight_name = format!("blk.{}.ffn_up.weight", layer_idx);
+            let gate_tensor = self.model.gguf.tensors.iter().find(|t| t.name == gate_weight_name);
+            let up_tensor = self.model.gguf.tensors.iter().find(|t| t.name == up_weight_name);
+            eprintln!(
+                "[L{}-FFN-gate] min={:.4} max={:.4} quant={:?}",
+                layer_idx, gate_min, gate_max, gate_tensor.map(|t| t.quant_type)
+            );
+            eprintln!(
+                "[L{}-FFN-up] min={:.4} max={:.4} quant={:?}",
+                layer_idx, up_min, up_max, up_tensor.map(|t| t.quant_type)
+            );
+            eprintln!("[L{}-FFN-gate_first5] {:?}", layer_idx, &gate[..5.min(gate.len())]);
+            eprintln!("[L{}-FFN-up_first5] {:?}", layer_idx, &up[..5.min(up.len())]);
+            
+            // Debug: check weight scales for Q5_K
+            if layer_idx == 2 {
+                if let Some(gate_data) = self.model.get_tensor(&gate_weight_name) {
+                    let gate_blocks: &[crate::types::BlockQ5_K] = unsafe {
+                        std::slice::from_raw_parts(gate_data.as_ptr() as *const crate::types::BlockQ5_K, gate_data.len() / 176)
+                    };
+                    let first_d_f32 = crate::types::fp16_to_fp32(gate_blocks[0].d);
+                    let first_dmin_f32 = crate::types::fp16_to_fp32(gate_blocks[0].dmin);
+                    eprintln!("[L2-FFN-gate_weight] nb_blocks={} first_d={:.4} first_dmin={:.4}", 
+                              gate_blocks.len(), first_d_f32, first_dmin_f32);
+                    // Check scale distribution
+                    let scales: Vec<f32> = gate_blocks.iter().map(|b| crate::types::fp16_to_fp32(b.d)).collect();
+                    let scale_min = scales.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let scale_max = scales.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                    eprintln!("[L2-FFN-gate_weight_scales] min={:.6} max={:.6}", scale_min, scale_max);
+                }
+            }
+            
+            // Debug: check the actual normed input
+            if layer_idx == 2 {
+                eprintln!("[L2-FFN-normed_sample10] {:?}", &normed_ffn[..10.min(normed_ffn.len())]);
+                
+                // Check Q8_K quantization of this input
+                let nb = (normed_ffn.len() + crate::types::QK_K - 1) / crate::types::QK_K;
+                let mut input_q8k: Vec<crate::types::BlockQ8_K> = vec![unsafe { std::mem::zeroed() }; nb];
+                crate::backend::arm::quant::quantize_q8_k(&normed_ffn, &mut input_q8k);
+                eprintln!("[L2-FFN-input_Q8_K] first_block_d={:.4}", input_q8k[0].d);
+                
+                // Check which blocks have large scales
+                let scales: Vec<f32> = input_q8k.iter().map(|b| b.d).collect();
+                let scale_min = scales.iter().cloned().fold(f32::INFINITY, f32::min);
+                let scale_max = scales.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let large_scales: Vec<(usize, f32)> = scales.iter().enumerate()
+                    .filter(|(_, s)| s.abs() > 0.5)
+                    .map(|(i, s)| (i, *s))
+                    .collect();
+                eprintln!("[L2-FFN-input_Q8_K] scales: min={:.4} max={:.4} large_count={}", 
+                          scale_min, scale_max, large_scales.len());
+                if !large_scales.is_empty() {
+                    eprintln!("[L2-FFN-input_Q8_K] large scales: {:?}", 
+                              &large_scales[..large_scales.len().min(5)]);
+                }
+            }
+        }
+
         // 3. SwiGLU activation
         let mut ffn_hidden = vec![0.0f32; config.intermediate_size];
         crate::backend::arm::activation::silu_f32(&gate, &mut ffn_hidden);
         for i in 0..config.intermediate_size {
             ffn_hidden[i] *= up[i];
+        }
+
+        if self.seq_pos == 0 && (layer_idx == 0 || layer_idx == 2 || layer_idx == 7) {
+            let hidden_min = ffn_hidden.iter().cloned().fold(f32::INFINITY, f32::min);
+            let hidden_max = ffn_hidden.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            eprintln!(
+                "[L{}-FFN-hidden] min={:.4} max={:.4}",
+                layer_idx, hidden_min, hidden_max
+            );
         }
 
         // 4. Down projection
@@ -444,14 +568,44 @@ impl ForwardExecutor {
             hidden_size,
         )?;
 
-        // Residual connection
-        let output: Vec<f32> =
-            hidden.iter().zip(ffn_out.iter()).map(|(a, b)| a + b).collect();
+        if self.seq_pos == 0 && (layer_idx == 0 || layer_idx == 7 || layer_idx == 8) {
+            let ffn_min = ffn_out.iter().cloned().fold(f32::INFINITY, f32::min);
+            let ffn_max = ffn_out.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            eprintln!(
+                "[L{}-ffn_out] min={:.4} max={:.4}",
+                layer_idx, ffn_min, ffn_max
+            );
+        }
+
+        // Add residual
+        if self.seq_pos == 0 && (layer_idx == 0 || layer_idx == 2) {
+            let h_min = hidden.iter().cloned().fold(f32::INFINITY, f32::min);
+            let h_max = hidden.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let f_min = ffn_out.iter().cloned().fold(f32::INFINITY, f32::min);
+            let f_max = ffn_out.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            eprintln!(
+                "[L{}-residual_inputs] hidden=[{:.4}, {:.4}] ffn_out=[{:.4}, {:.4}]",
+                layer_idx, h_min, h_max, f_min, f_max
+            );
+            eprintln!(
+                "[L{}-residual_first5] hidden={:?} ffn_out={:?}",
+                layer_idx,
+                &hidden[..5.min(hidden.len())],
+                &ffn_out[..5.min(ffn_out.len())]
+            );
+        }
+
+        let output: Vec<f32> = hidden
+            .iter()
+            .zip(ffn_out.iter())
+            .map(|(a, b)| a + b)
+            .collect();
 
         if self.seq_pos == 0 {
             let min = output.iter().cloned().fold(f32::INFINITY, f32::min);
             let max = output.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             eprintln!("[L{}-output] min={:.4} max={:.4}", layer_idx, min, max);
+            eprintln!("[L{}-output_first5] {:?}", layer_idx, &output[..5.min(output.len())]);
         }
 
         Ok(output)
@@ -470,6 +624,11 @@ impl ForwardExecutor {
         // Create output
         let mut output = vec![0.0f32; size];
 
+        // Debug: compute RMS value
+        let eps = 1e-5f32;
+        let sum_sq: f32 = input.iter().map(|x| x * x).sum();
+        let rms = (sum_sq / size as f32 + eps).sqrt();
+
         if let Some(data) = weight_data {
             // For F32 weight
             if data.len() == size * 4 {
@@ -478,14 +637,17 @@ impl ForwardExecutor {
                     .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
                     .collect();
 
+                // Debug: check weight values
+                let w_min = weight.iter().cloned().fold(f32::INFINITY, f32::min);
+                let w_max = weight.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                if weight_name.contains("ffn_norm") && (weight_name.contains("blk.0") || weight_name.contains("blk.2")) && self.seq_pos == 0 {
+                    eprintln!("[{}] rms={:.4} w=[{:.4}, {:.4}]", weight_name, rms, w_min, w_max);
+                }
+
                 // Use NEON optimized RMS norm
                 rms_norm_f32(input, &weight, &mut output, 1e-5);
             } else {
                 // Fallback: just normalize without weight
-                let eps = 1e-5f32;
-                let sum_sq: f32 = input.iter().map(|x| x * x).sum();
-                let rms = (sum_sq / size as f32 + eps).sqrt();
-
                 for (i, inp) in input.iter().enumerate() {
                     output[i] = inp / rms;
                 }
