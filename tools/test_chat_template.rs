@@ -56,8 +56,26 @@ fn main() {
         println!("  {}: {}", msg.role, msg.content);
     }
 
-    let result =
-        chat_template.apply(&messages).expect("Failed to apply template");
+    let result = match chat_template.apply(&messages) {
+        Ok(r) => r,
+        Err(e) => {
+            // Print template lines around the error
+            if let Some(line_num_str) = e.split("chat:").nth(1) {
+                if let Ok(line_num) =
+                    line_num_str.trim_end_matches(')').parse::<usize>()
+                {
+                    println!("\nTemplate around line {}:", line_num);
+                    for (i, line) in template_str.lines().enumerate() {
+                        if i >= line_num.saturating_sub(5) && i <= line_num + 5
+                        {
+                            println!("{:4}: {}", i + 1, line);
+                        }
+                    }
+                }
+            }
+            panic!("Failed to apply template: {:?}", e);
+        }
+    };
 
     println!("\nResult:");
     for (i, line) in result.lines().enumerate() {

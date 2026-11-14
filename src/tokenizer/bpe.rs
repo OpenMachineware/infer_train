@@ -468,12 +468,12 @@ mod tests {
         let vocab = make_test_vocab();
         let tokenizer = BpeTokenizer::new(vocab);
 
-        // Token "Ġhello" should decode to " hello"
-        let decoded = tokenizer.decode_token("Ġhello");
+        // Test decode through the public interface
+        // Token IDs 1 and 2 should decode to " hello" and " world" respectively
+        let decoded = tokenizer.decode_skip_special(&[1]).unwrap();
         assert_eq!(decoded, " hello");
 
-        // Token "Ġworld" should decode to " world"
-        let decoded = tokenizer.decode_token("Ġworld");
+        let decoded = tokenizer.decode_skip_special(&[2]).unwrap();
         assert_eq!(decoded, " world");
     }
 
