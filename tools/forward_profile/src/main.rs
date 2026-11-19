@@ -31,6 +31,14 @@ struct Cli {
     /// Number of measurement iterations
     #[arg(long, default_value = "5")]
     iterations: usize,
+
+    /// Thread count for decode (0 = auto, llama.cpp style adaptive)
+    #[arg(long, default_value = "0")]
+    threads: usize,
+
+    /// Thread count for prefill (0 = auto, llama.cpp style adaptive)
+    #[arg(long, default_value = "0")]
+    threads_batch: usize,
 }
 
 fn main() {
@@ -159,7 +167,11 @@ fn main() {
     }
 
     // Create executor once (model already loaded above)
-    let mut executor = ForwardExecutor::new(model);
+    let mut executor = ForwardExecutor::new_with_threads(
+        model,
+        cli.threads,
+        cli.threads_batch,
+    );
     let tokens = executor
         .model
         .tokenizer()

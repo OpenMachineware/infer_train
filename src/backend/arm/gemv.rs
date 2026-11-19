@@ -4,8 +4,144 @@
 // Matrix-vector multiplication (GEMV) for decode
 
 use super::vec_dot::*;
-use crate::backend::thread_pool::{optimal_threads_no_pool, parallel_stealing};
+use crate::backend::thread_pool::{optimal_threads, parallel_stealing_raw};
 use crate::types::*;
+
+// ============================================================================
+// Work data structures for persistent thread pool
+// ============================================================================
+
+/// Work data for Q6_K mul_mat
+#[repr(C)]
+struct MulMatQ6KData {
+    weights: *const u8,
+    col_stride: usize,
+    input: *const BlockQ8_K,
+    output: *mut f32,
+    out_features: usize,
+    n_blocks: usize,
+    block_size: usize,
+    n_tokens: usize,
+}
+
+/// Work data for Q5_K mul_mat
+#[repr(C)]
+struct MulMatQ5KData {
+    weights: *const u8,
+    col_stride: usize,
+    input: *const BlockQ8_K,
+    output: *mut f32,
+    out_features: usize,
+    n_blocks: usize,
+    block_size: usize,
+    n_tokens: usize,
+}
+
+/// Work data for Q4_K mul_mat
+#[repr(C)]
+struct MulMatQ4KData {
+    weights: *const u8,
+    col_stride: usize,
+    input: *const BlockQ8_K,
+    output: *mut f32,
+    out_features: usize,
+    n_blocks: usize,
+    block_size: usize,
+    n_tokens: usize,
+}
+
+/// Work data for Q4_0 mul_mat
+#[repr(C)]
+struct MulMatQ40Data {
+    weights: *const u8,
+    col_stride: usize,
+    input: *const BlockQ8_0,
+    output: *mut f32,
+    out_features: usize,
+    n_blocks: usize,
+    block_size: usize,
+    n_tokens: usize,
+}
+
+// ============================================================================
+// Worker functions for persistent thread pool
+// ============================================================================
+
+fn mul_mat_q6_k_worker(flat_idx: usize, _tid: usize, data_ptr: *const u8) {
+    unsafe {
+        let data = &*(data_ptr as *const MulMatQ6KData);
+        let token_idx = flat_idx / data.out_features;
+        let row = flat_idx % data.out_features;
+
+        let mut sum = 0.0f32;
+        let input_start = token_idx * data.n_blocks;
+        for block_idx in 0..data.n_blocks {
+            let input_block = &*data.input.add(input_start + block_idx);
+            let offset = block_idx * data.col_stride + row * data.block_size;
+            let weight_block: &BlockQ6_K =
+                &*(data.weights.add(offset) as *const BlockQ6_K);
+            sum += vec_dot_q6_k_q8_k_single(weight_block, input_block);
+        }
+        *data.output.add(flat_idx) = sum;
+    }
+}
+
+fn mul_mat_q5_k_worker(flat_idx: usize, _tid: usize, data_ptr: *const u8) {
+    unsafe {
+        let data = &*(data_ptr as *const MulMatQ5KData);
+        let token_idx = flat_idx / data.out_features;
+        let row = flat_idx % data.out_features;
+
+        let mut sum = 0.0f32;
+        let input_start = token_idx * data.n_blocks;
+        for block_idx in 0..data.n_blocks {
+            let input_block = &*data.input.add(input_start + block_idx);
+            let offset = block_idx * data.col_stride + row * data.block_size;
+            let weight_block: &BlockQ5_K =
+                &*(data.weights.add(offset) as *const BlockQ5_K);
+            sum += vec_dot_q5_k_q8_k_single(weight_block, input_block);
+        }
+        *data.output.add(flat_idx) = sum;
+    }
+}
+
+fn mul_mat_q4_k_worker(flat_idx: usize, _tid: usize, data_ptr: *const u8) {
+    unsafe {
+        let data = &*(data_ptr as *const MulMatQ4KData);
+        let token_idx = flat_idx / data.out_features;
+        let row = flat_idx % data.out_features;
+
+        let mut sum = 0.0f32;
+        let input_start = token_idx * data.n_blocks;
+        for block_idx in 0..data.n_blocks {
+            let input_block = &*data.input.add(input_start + block_idx);
+            let offset = block_idx * data.col_stride + row * data.block_size;
+            let weight_block: &BlockQ4_K =
+                &*(data.weights.add(offset) as *const BlockQ4_K);
+            sum += vec_dot_q4_k_q8_k_single(weight_block, input_block);
+        }
+        *data.output.add(flat_idx) = sum;
+    }
+}
+
+fn mul_mat_q4_0_worker(flat_idx: usize, _tid: usize, data_ptr: *const u8) {
+    unsafe {
+        let data = &*(data_ptr as *const MulMatQ40Data);
+        let token_idx = flat_idx / data.out_features;
+        let row = flat_idx % data.out_features;
+
+        let mut sum = 0.0f32;
+        let input_start = token_idx * data.n_blocks;
+        for block_idx in 0..data.n_blocks {
+            let input_block = &*data.input.add(input_start + block_idx);
+            let offset = block_idx * data.col_stride + row * data.block_size;
+            let weight_block: &BlockQ4_0 =
+                &*(data.weights.add(offset) as *const BlockQ4_0);
+            sum += vec_dot_q4_0_q8_0_single(weight_block, input_block);
+        }
+        *data.output.add(flat_idx) = sum;
+    }
+}
 
 // Q4_0 GEMV
 pub fn gemv_q4_0(
@@ -204,7 +340,7 @@ pub fn mul_mat_q6_k(
     assert_eq!(output.len(), n_tokens * out_features);
 
     let n_threads = if n_threads == 0 {
-        optimal_threads_no_pool(out_features, n_tokens, in_features)
+        optimal_threads(out_features, n_tokens, in_features)
     } else {
         n_threads
     };
@@ -214,10 +350,10 @@ pub fn mul_mat_q6_k(
         output[i] = 0.0;
     }
 
-    // Use optimal_threads decision for both decode and prefill
+    let total_rows = n_tokens * out_features;
+
     if n_threads == 1 {
         // Single-threaded path
-        let total_rows = n_tokens * out_features;
         for flat_idx in 0..total_rows {
             let token_idx = flat_idx / out_features;
             let row = flat_idx % out_features;
@@ -235,27 +371,25 @@ pub fn mul_mat_q6_k(
             output[flat_idx] = sum;
         }
     } else {
-        // Multi-threaded path
-        let output_ptr = output.as_mut_ptr() as usize;
-        let total_rows = n_tokens * out_features;
-        parallel_stealing(total_rows, n_threads, &|flat_idx, _tid| {
-            let token_idx = flat_idx / out_features;
-            let row = flat_idx % out_features;
-
-            let mut sum = 0.0f32;
-            let input_start = token_idx * n_blocks;
-            for block_idx in 0..n_blocks {
-                let input_block = &input[input_start + block_idx];
-                let offset = block_idx * col_stride + row * block_size;
-                let weight_block: &BlockQ6_K = unsafe {
-                    &*(weights.as_ptr().add(offset) as *const BlockQ6_K)
-                };
-                sum += vec_dot_q6_k_q8_k_single(weight_block, input_block);
-            }
-            unsafe {
-                *((output_ptr as *mut f32).add(flat_idx)) = sum;
-            }
-        });
+        // Multi-threaded path using persistent thread pool
+        let data = MulMatQ6KData {
+            weights: weights.as_ptr(),
+            col_stride,
+            input: input.as_ptr(),
+            output: output.as_mut_ptr(),
+            out_features,
+            n_blocks,
+            block_size,
+            n_tokens,
+        };
+        unsafe {
+            parallel_stealing_raw(
+                total_rows,
+                n_threads,
+                mul_mat_q6_k_worker,
+                &data as *const _ as *const u8,
+            );
+        }
     }
 }
 
@@ -309,7 +443,7 @@ pub fn mul_mat_q5_k(
 
     // Thread selection based on workload
     let n_threads = if n_threads == 0 {
-        optimal_threads_no_pool(out_features, n_tokens, in_features)
+        optimal_threads(out_features, n_tokens, in_features)
     } else {
         n_threads
     };
@@ -319,10 +453,10 @@ pub fn mul_mat_q5_k(
         output[i] = 0.0;
     }
 
-    // Use optimal_threads decision for both decode and prefill
+    let total_rows = n_tokens * out_features;
+
     if n_threads == 1 {
         // Single-threaded path
-        let total_rows = n_tokens * out_features;
         for flat_idx in 0..total_rows {
             let token_idx = flat_idx / out_features;
             let row = flat_idx % out_features;
@@ -340,27 +474,25 @@ pub fn mul_mat_q5_k(
             output[flat_idx] = sum;
         }
     } else {
-        // Multi-threaded path
-        let output_ptr = output.as_mut_ptr() as usize;
-        let total_rows = n_tokens * out_features;
-        parallel_stealing(total_rows, n_threads, &|flat_idx, _tid| {
-            let token_idx = flat_idx / out_features;
-            let row = flat_idx % out_features;
-
-            let mut sum = 0.0f32;
-            let input_start = token_idx * n_blocks;
-            for block_idx in 0..n_blocks {
-                let input_block = &input[input_start + block_idx];
-                let offset = block_idx * col_stride + row * block_size;
-                let weight_block: &BlockQ5_K = unsafe {
-                    &*(weights.as_ptr().add(offset) as *const BlockQ5_K)
-                };
-                sum += vec_dot_q5_k_q8_k_single(weight_block, input_block);
-            }
-            unsafe {
-                *((output_ptr as *mut f32).add(flat_idx)) = sum;
-            }
-        });
+        // Multi-threaded path using persistent thread pool
+        let data = MulMatQ5KData {
+            weights: weights.as_ptr(),
+            col_stride,
+            input: input.as_ptr(),
+            output: output.as_mut_ptr(),
+            out_features,
+            n_blocks,
+            block_size,
+            n_tokens,
+        };
+        unsafe {
+            parallel_stealing_raw(
+                total_rows,
+                n_threads,
+                mul_mat_q5_k_worker,
+                &data as *const _ as *const u8,
+            );
+        }
     }
 }
 
@@ -404,7 +536,7 @@ pub fn mul_mat_q4_k(
     assert_eq!(output.len(), n_tokens * out_features);
 
     let n_threads = if n_threads == 0 {
-        optimal_threads_no_pool(out_features, n_tokens, in_features)
+        optimal_threads(out_features, n_tokens, in_features)
     } else {
         n_threads
     };
@@ -413,10 +545,10 @@ pub fn mul_mat_q4_k(
         output[i] = 0.0;
     }
 
-    // Use optimal_threads decision for both decode and prefill
+    let total_rows = n_tokens * out_features;
+
     if n_threads == 1 {
         // Single-threaded path
-        let total_rows = n_tokens * out_features;
         for flat_idx in 0..total_rows {
             let token_idx = flat_idx / out_features;
             let row = flat_idx % out_features;
@@ -434,27 +566,25 @@ pub fn mul_mat_q4_k(
             output[flat_idx] = sum;
         }
     } else {
-        // Multi-threaded path
-        let output_ptr = output.as_mut_ptr() as usize;
-        let total_rows = n_tokens * out_features;
-        parallel_stealing(total_rows, n_threads, &|flat_idx, _tid| {
-            let token_idx = flat_idx / out_features;
-            let row = flat_idx % out_features;
-
-            let mut sum = 0.0f32;
-            let input_start = token_idx * n_blocks;
-            for block_idx in 0..n_blocks {
-                let input_block = &input[input_start + block_idx];
-                let offset = block_idx * col_stride + row * block_size;
-                let weight_block: &BlockQ4_K = unsafe {
-                    &*(weights.as_ptr().add(offset) as *const BlockQ4_K)
-                };
-                sum += vec_dot_q4_k_q8_k_single(weight_block, input_block);
-            }
-            unsafe {
-                *((output_ptr as *mut f32).add(flat_idx)) = sum;
-            }
-        });
+        // Multi-threaded path using persistent thread pool
+        let data = MulMatQ4KData {
+            weights: weights.as_ptr(),
+            col_stride,
+            input: input.as_ptr(),
+            output: output.as_mut_ptr(),
+            out_features,
+            n_blocks,
+            block_size,
+            n_tokens,
+        };
+        unsafe {
+            parallel_stealing_raw(
+                total_rows,
+                n_threads,
+                mul_mat_q4_k_worker,
+                &data as *const _ as *const u8,
+            );
+        }
     }
 }
 
@@ -498,7 +628,7 @@ pub fn mul_mat_q4_0(
     assert_eq!(output.len(), n_tokens * out_features);
 
     let n_threads = if n_threads == 0 {
-        optimal_threads_no_pool(out_features, n_tokens, in_features)
+        optimal_threads(out_features, n_tokens, in_features)
     } else {
         n_threads
     };
@@ -507,10 +637,10 @@ pub fn mul_mat_q4_0(
         output[i] = 0.0;
     }
 
-    // Use optimal_threads decision for both decode and prefill
+    let total_rows = n_tokens * out_features;
+
     if n_threads == 1 {
         // Single-threaded path
-        let total_rows = n_tokens * out_features;
         for flat_idx in 0..total_rows {
             let token_idx = flat_idx / out_features;
             let row = flat_idx % out_features;
@@ -528,27 +658,25 @@ pub fn mul_mat_q4_0(
             output[flat_idx] = sum;
         }
     } else {
-        // Multi-threaded path
-        let output_ptr = output.as_mut_ptr() as usize;
-        let total_rows = n_tokens * out_features;
-        parallel_stealing(total_rows, n_threads, &|flat_idx, _tid| {
-            let token_idx = flat_idx / out_features;
-            let row = flat_idx % out_features;
-
-            let mut sum = 0.0f32;
-            let input_start = token_idx * n_blocks;
-            for block_idx in 0..n_blocks {
-                let input_block = &input[input_start + block_idx];
-                let offset = block_idx * col_stride + row * block_size;
-                let weight_block: &BlockQ4_0 = unsafe {
-                    &*(weights.as_ptr().add(offset) as *const BlockQ4_0)
-                };
-                sum += vec_dot_q4_0_q8_0_single(weight_block, input_block);
-            }
-            unsafe {
-                *((output_ptr as *mut f32).add(flat_idx)) = sum;
-            }
-        });
+        // Multi-threaded path using persistent thread pool
+        let data = MulMatQ40Data {
+            weights: weights.as_ptr(),
+            col_stride,
+            input: input.as_ptr(),
+            output: output.as_mut_ptr(),
+            out_features,
+            n_blocks,
+            block_size,
+            n_tokens,
+        };
+        unsafe {
+            parallel_stealing_raw(
+                total_rows,
+                n_threads,
+                mul_mat_q4_0_worker,
+                &data as *const _ as *const u8,
+            );
+        }
     }
 }
 

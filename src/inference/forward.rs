@@ -64,6 +64,10 @@ pub struct ForwardExecutor {
     pub seq_pos: usize,
     /// Pre-allocated quantized input buffer
     quant_buf: QuantizedInput,
+    /// Thread count for decode (n_tokens=1), 0 = auto
+    pub n_threads: usize,
+    /// Thread count for prefill (n_tokens>1), 0 = auto
+    pub n_threads_batch: usize,
 }
 
 /// Layer trace for debugging
@@ -94,7 +98,21 @@ pub struct ForwardTrace {
 }
 
 impl ForwardExecutor {
+    /// Create with default thread settings (auto)
     pub fn new(model: SimpleModel) -> Self {
+        Self::new_with_threads(model, 0, 0)
+    }
+
+    /// Create with specified thread counts
+    ///
+    /// # Arguments
+    /// * `n_threads` - Thread count for decode (n_tokens=1), 0 = auto
+    /// * `n_threads_batch` - Thread count for prefill (n_tokens>1), 0 = auto
+    pub fn new_with_threads(
+        model: SimpleModel,
+        n_threads: usize,
+        n_threads_batch: usize,
+    ) -> Self {
         let config = model.config().clone();
         let n_layers = config.n_layers;
         let n_kv_heads = config.n_kv_heads;
@@ -113,6 +131,8 @@ impl ForwardExecutor {
             kv_capacity: INITIAL_CAPACITY,
             seq_pos: 0,
             quant_buf: QuantizedInput::new(),
+            n_threads,
+            n_threads_batch,
         }
     }
 
@@ -137,6 +157,13 @@ impl ForwardExecutor {
 
             self.kv_capacity = new_capacity;
         }
+    }
+
+    /// Get thread count for current operation
+    /// - n_tokens = 1: decode, use n_threads
+    /// - n_tokens > 1: prefill, use n_threads_batch
+    pub fn get_n_threads(&self, n_tokens: usize) -> usize {
+        if n_tokens <= 1 { self.n_threads } else { self.n_threads_batch }
     }
 
     /// Reset executor state for a new inference run
@@ -603,7 +630,7 @@ impl ForwardExecutor {
                         &mut output,
                         out_features,
                         in_features,
-                        0,
+                        self.n_threads,
                     );
                 }
             }
@@ -616,7 +643,7 @@ impl ForwardExecutor {
                         &mut output,
                         out_features,
                         in_features,
-                        0,
+                        self.n_threads,
                     );
                 }
             }
@@ -629,7 +656,7 @@ impl ForwardExecutor {
                         &mut output,
                         out_features,
                         in_features,
-                        0,
+                        self.n_threads,
                     );
                 }
             }
@@ -642,7 +669,7 @@ impl ForwardExecutor {
                         &mut output,
                         out_features,
                         in_features,
-                        0,
+                        self.n_threads,
                     );
                 }
             }
@@ -837,7 +864,7 @@ impl ForwardExecutor {
                     &mut output,
                     out_features,
                     in_features,
-                    0, // auto threads
+                    self.n_threads,
                 );
             }
             QuantType::Q5_K => {
@@ -856,7 +883,7 @@ impl ForwardExecutor {
                     &mut output,
                     out_features,
                     in_features,
-                    0,
+                    self.n_threads,
                 );
             }
             QuantType::Q4_K => {
@@ -875,7 +902,7 @@ impl ForwardExecutor {
                     &mut output,
                     out_features,
                     in_features,
-                    0,
+                    self.n_threads,
                 );
             }
             QuantType::IQ4_XS => {
@@ -918,7 +945,7 @@ impl ForwardExecutor {
                     &mut output,
                     out_features,
                     in_features,
-                    0,
+                    self.n_threads,
                 );
             }
             QuantType::Q8_0 => {

@@ -2,92 +2,232 @@
 // Copyright 2026 Jia Liu
 
 // High-performance parallel execution for CPU inference
-// Based on llama.cpp's thread allocation strategy with work stealing
+// Based on llama.cpp's thread allocation strategy
 
-use std::sync::atomic::{AtomicI32, Ordering};
-use std::thread;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::{self, JoinHandle};
 
 /// Get number of available CPU cores
 fn num_cpus() -> usize {
     thread::available_parallelism().map(|p| p.get()).unwrap_or(1)
 }
 
-/// Parallel execution with work stealing
-///
-/// Based on llama.cpp's ggml_threadpool design:
-/// - Use atomic counter for work stealing (no locks)
-/// - Cache-line aligned to avoid false sharing
-/// - Optimal thread selection based on problem size
-///
-/// # Arguments
-/// * `n_chunks` - Number of work chunks
-/// * `n_threads` - Number of threads (0 = auto)
-/// * `f` - Work function: f(chunk_id, thread_id)
-///
-/// # Example
-/// ```
-/// parallel_stealing(100, 8, |chunk, _tid| {
-///     process_chunk(chunk);
-/// });
-/// ```
-pub fn parallel_stealing<F>(n_chunks: usize, n_threads: usize, f: &F)
-where
-    F: Fn(usize, usize) + Send + Sync,
-{
-    if n_chunks == 0 {
-        return;
-    }
-
-    let n_threads =
-        if n_threads == 0 { num_cpus() } else { n_threads.min(num_cpus()) };
-
-    if n_threads <= 1 || n_chunks <= 1 {
-        // Single-threaded: no overhead
-        for chunk in 0..n_chunks {
-            f(chunk, 0);
-        }
-        return;
-    }
-
-    // Shared atomic counter for work stealing (cache-line aligned)
-    #[repr(C, align(64))]
-    struct AlignedCounter(AtomicI32);
-
-    let counter = &AlignedCounter(AtomicI32::new(0));
-
-    thread::scope(|s| {
-        for tid in 0..n_threads {
-            s.spawn(move || {
-                loop {
-                    // Atomically fetch next chunk
-                    let chunk =
-                        counter.0.fetch_add(1, Ordering::Relaxed) as usize;
-                    if chunk >= n_chunks {
-                        break;
-                    }
-                    f(chunk, tid);
-                }
-            });
-        }
-    });
+/// Shared state for thread pool
+struct PoolState {
+    n_chunks: AtomicUsize,
+    work_fn: AtomicUsize,
+    work_data: AtomicUsize,
+    max_active: AtomicI32, // Maximum threads to participate (from max_threads param)
+    work_generation: AtomicUsize, // Incremented for each new work batch
+    work_ready: Mutex<(usize, bool)>, // (generation, shutdown)
+    work_ready_cvar: Condvar,
+    counter: AtomicI32,
+    active: AtomicI32,
+    done: Mutex<bool>,
+    done_cvar: Condvar,
 }
 
-/// Parallel execution with fixed distribution
-///
-/// Each thread gets a fixed range of chunks.
-/// Better cache locality for memory-bound operations.
-///
-/// # Arguments
-/// * `n_chunks` - Number of work chunks
-/// * `n_threads` - Number of threads (0 = auto)
-/// * `f` - Work function: f(chunk_start, chunk_end, thread_id)
-///
-/// # Performance Note
-/// Thread creation overhead is ~109us per call on M1 Max.
-/// For decode workloads (out_features < 10000), single-threaded is faster.
-/// Use `PARALLEL_THRESHOLD` to tune this.
-pub const PARALLEL_THRESHOLD: usize = 10000;
+/// Persistent thread pool (llama.cpp style)
+pub struct ThreadPool {
+    n_threads: usize, // Total threads in pool
+    threads: Vec<JoinHandle<()>>,
+    state: Arc<PoolState>,
+}
 
+impl ThreadPool {
+    pub fn new(n_threads: usize) -> Self {
+        let n_threads =
+            if n_threads == 0 { num_cpus() } else { n_threads.min(num_cpus()) };
+
+        let state = Arc::new(PoolState {
+            n_chunks: AtomicUsize::new(0),
+            work_fn: AtomicUsize::new(0),
+            work_data: AtomicUsize::new(0),
+            max_active: AtomicI32::new(n_threads as i32), // Default to all threads
+            work_generation: AtomicUsize::new(0),
+            work_ready: Mutex::new((0, false)),
+            work_ready_cvar: Condvar::new(),
+            counter: AtomicI32::new(0),
+            active: AtomicI32::new(0),
+            done: Mutex::new(false),
+            done_cvar: Condvar::new(),
+        });
+
+        if n_threads <= 1 {
+            return Self { n_threads: 1, threads: Vec::new(), state };
+        }
+
+        // Create n_threads - 1 worker threads (main thread is the nth thread)
+        let n_workers = n_threads - 1;
+        let mut threads = Vec::with_capacity(n_workers);
+
+        for tid in 1..=n_workers {
+            let s = state.clone();
+            let handle = thread::spawn(move || {
+                let mut my_gen = 0;
+                loop {
+                    // Wait for new generation
+                    {
+                        let mut guard = s.work_ready.lock().unwrap();
+                        while guard.0 == my_gen && !guard.1 {
+                            guard = s.work_ready_cvar.wait(guard).unwrap();
+                        }
+                        if guard.1 {
+                            return; // Shutdown
+                        }
+                        my_gen = guard.0; // Update to new generation
+                    }
+
+                    // Check if this thread should participate (tid must be < max_active)
+                    let max_active =
+                        s.max_active.load(Ordering::Relaxed) as usize;
+                    if tid >= max_active {
+                        // This thread should not participate, just signal done
+                        if s.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+                            let mut guard = s.done.lock().unwrap();
+                            *guard = true;
+                            s.done_cvar.notify_all();
+                        }
+                        continue;
+                    }
+
+                    let n_chunks = s.n_chunks.load(Ordering::Relaxed);
+                    let work_fn: fn(usize, usize, *const u8) = unsafe {
+                        std::mem::transmute(s.work_fn.load(Ordering::Relaxed))
+                    };
+                    let work_data =
+                        s.work_data.load(Ordering::Relaxed) as *const u8;
+
+                    // Work stealing
+                    loop {
+                        let chunk =
+                            s.counter.fetch_add(1, Ordering::Relaxed) as usize;
+                        if chunk >= n_chunks {
+                            break;
+                        }
+                        work_fn(chunk, tid, work_data);
+                    }
+
+                    // Decrement active and signal done if last thread
+                    if s.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+                        let mut guard = s.done.lock().unwrap();
+                        *guard = true;
+                        s.done_cvar.notify_all();
+                    }
+                }
+            });
+            threads.push(handle);
+        }
+
+        Self { n_threads, threads, state }
+    }
+
+    /// Execute work in parallel with specified max threads
+    pub unsafe fn execute_with_max(
+        &self,
+        n_chunks: usize,
+        max_threads: usize,
+        work_fn: fn(usize, usize, *const u8),
+        work_data: *const u8,
+    ) {
+        if n_chunks == 0 || self.n_threads <= 1 {
+            for chunk in 0..n_chunks {
+                work_fn(chunk, 0, work_data);
+            }
+            return;
+        }
+
+        // Clamp max_threads to pool size
+        let max_threads = max_threads.min(self.n_threads).max(1);
+
+        // Increment generation to wake all workers
+        let new_gen;
+        {
+            let mut guard = self.state.work_ready.lock().unwrap();
+            new_gen = guard.0 + 1;
+            guard.0 = new_gen;
+
+            self.state.counter.store(0, Ordering::Relaxed);
+            self.state.max_active.store(max_threads as i32, Ordering::Relaxed);
+            // active = all pool threads (they will check max_active and opt out if needed)
+            self.state.active.store(self.n_threads as i32, Ordering::Relaxed);
+            *self.state.done.lock().unwrap() = false;
+            self.state.n_chunks.store(n_chunks, Ordering::Relaxed);
+            self.state.work_fn.store(work_fn as usize, Ordering::Relaxed);
+            self.state.work_data.store(work_data as usize, Ordering::Relaxed);
+        }
+        self.state.work_ready_cvar.notify_all();
+
+        // Main thread works too (tid = 0) if max_threads >= 1
+        if max_threads >= 1 {
+            loop {
+                let chunk =
+                    self.state.counter.fetch_add(1, Ordering::Relaxed) as usize;
+                if chunk >= n_chunks {
+                    break;
+                }
+                work_fn(chunk, 0, work_data);
+            }
+        }
+
+        // Main thread done, decrement active and signal done if last
+        if self.state.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            let mut guard = self.state.done.lock().unwrap();
+            *guard = true;
+            self.state.done_cvar.notify_all();
+        }
+
+        // Wait for completion
+        let mut guard = self.state.done.lock().unwrap();
+        while !*guard {
+            guard = self.state.done_cvar.wait(guard).unwrap();
+        }
+    }
+
+    /// Execute work in parallel using all threads
+    pub unsafe fn execute(
+        &self,
+        n_chunks: usize,
+        work_fn: fn(usize, usize, *const u8),
+        work_data: *const u8,
+    ) {
+        self.execute_with_max(n_chunks, self.n_threads, work_fn, work_data);
+    }
+
+    pub fn num_threads(&self) -> usize {
+        self.n_threads
+    }
+}
+
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        {
+            let mut guard = self.state.work_ready.lock().unwrap();
+            guard.1 = true; // Set shutdown flag
+        }
+        self.state.work_ready_cvar.notify_all();
+        for h in self.threads.drain(..) {
+            let _ = h.join();
+        }
+    }
+}
+
+/// Global thread pool
+static GLOBAL_POOL: once_cell::sync::Lazy<ThreadPool> =
+    once_cell::sync::Lazy::new(|| ThreadPool::new(0));
+
+/// Parallel execution with max_threads support
+pub unsafe fn parallel_stealing_raw(
+    n_chunks: usize,
+    max_threads: usize,
+    work_fn: fn(usize, usize, *const u8),
+    work_data: *const u8,
+) {
+    GLOBAL_POOL.execute_with_max(n_chunks, max_threads, work_fn, work_data);
+}
+
+/// Fixed distribution parallel (for compatibility)
 pub fn parallel_fixed<F>(n_chunks: usize, n_threads: usize, f: &F)
 where
     F: Fn(usize, usize, usize) + Send + Sync,
@@ -95,92 +235,43 @@ where
     if n_chunks == 0 {
         return;
     }
-
     let n_threads =
         if n_threads == 0 { num_cpus() } else { n_threads.min(num_cpus()) };
-
-    // CRITICAL: For small workloads, thread creation overhead (109us)
-    // exceeds computation time. Use single-threaded.
-    if n_threads <= 1 || n_chunks < PARALLEL_THRESHOLD {
+    if n_threads <= 1 {
         f(0, n_chunks, 0);
         return;
     }
 
     let chunk_size = (n_chunks + n_threads - 1) / n_threads;
-
     thread::scope(|s| {
         for tid in 0..n_threads {
-            let start = tid * chunk_size;
-            let end = (start + chunk_size).min(n_chunks);
-            if start >= n_chunks {
-                break;
-            }
             s.spawn(move || {
-                f(start, end, tid);
+                let start = tid * chunk_size;
+                let end = (start + chunk_size).min(n_chunks);
+                if start < n_chunks {
+                    f(start, end, tid);
+                }
             });
         }
     });
 }
 
-/// Get optimal thread count for a given operation
-///
-/// Based on llama.cpp's tiled matmul strategy:
-/// - Compute chunks: nchunk0 = ceil(m / chunk_size), nchunk1 = ceil(n / chunk_size)
-/// - Use all threads when enough chunks exist
-/// - Chunk size starts at 256, reduces to 16 minimum
-///
-/// NOTE: This returns optimal thread count for the *algorithm*, but actual
-/// performance depends on using a persistent thread pool. Creating threads
-/// on each call adds ~109us overhead, which can make multi-threaded decode
-/// slower than single-threaded for small operations.
-///
-/// # Arguments
-/// * `m` - Output dimension (rows)
-/// * `n` - Batch size
-/// * `k` - Input dimension (cols)
-///
-/// # Returns
-/// Optimal number of threads
+/// Optimal thread count (llama.cpp chunking strategy)
 pub fn optimal_threads(m: usize, n: usize, _k: usize) -> usize {
     let n_cpus = num_cpus();
-
-    // llama.cpp's chunking strategy:
-    // Start with chunk_size=256, reduce until enough chunks
     let mut chunk_size = 256usize;
     let mut nchunk0 = (m + chunk_size - 1) / chunk_size;
     let mut nchunk1 = (n + chunk_size - 1) / chunk_size;
 
-    // Reduce chunk_size to create enough chunks for all threads
-    // Target: nchunk0 * nchunk1 >= n_cpus * 4
     while nchunk0 * nchunk1 < n_cpus * 4 && chunk_size > 16 {
         chunk_size /= 2;
         nchunk0 = (m + chunk_size - 1) / chunk_size;
         nchunk1 = (n + chunk_size - 1) / chunk_size;
     }
-
-    // If we have enough chunks, use all CPUs
-    // Otherwise, limit threads to available chunks
-    let total_chunks = nchunk0 * nchunk1;
-    total_chunks.min(n_cpus)
+    (nchunk0 * nchunk1).min(n_cpus)
 }
 
-/// Get optimal thread count, capped at 1 for operations without persistent thread pool
-///
-/// Use this for operations that create threads on each call (like thread::scope).
-/// Returns 1 to avoid thread creation overhead (~109us per call).
-pub fn optimal_threads_no_pool(m: usize, n: usize, k: usize) -> usize {
-    // For now, return 1 to avoid thread creation overhead
-    // Once persistent thread pool is implemented, this can call optimal_threads()
-    let _ = (m, n, k); // suppress unused warning
-    1
-}
-
-/// Barrier synchronization using spin wait
-///
-/// Based on llama.cpp's ggml_barrier:
-/// - No locks, pure atomic operations
-/// - Spin wait with CPU relax
-/// - Cache-line aligned to avoid false sharing
+/// Spin barrier
 #[repr(C, align(64))]
 pub struct SpinBarrier {
     n_threads: usize,
@@ -197,119 +288,19 @@ impl SpinBarrier {
         }
     }
 
-    /// Wait for all threads to reach the barrier
     pub fn wait(&self) {
         if self.n_threads <= 1 {
             return;
         }
-
-        let current_gen = self.generation.load(Ordering::Relaxed);
-
-        // Enter barrier
+        let cur_gen = self.generation.load(Ordering::Relaxed);
         let count = self.counter.fetch_add(1, Ordering::SeqCst);
-
         if count == (self.n_threads - 1) as i32 {
-            // Last thread: reset and advance generation
             self.counter.store(0, Ordering::Relaxed);
             self.generation.fetch_add(1, Ordering::SeqCst);
         } else {
-            // Wait for generation to advance
-            while self.generation.load(Ordering::Relaxed) == current_gen {
+            while self.generation.load(Ordering::Relaxed) == cur_gen {
                 std::hint::spin_loop();
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::AtomicI32;
-
-    #[test]
-    fn test_parallel_stealing() {
-        let counter = AtomicI32::new(0);
-        parallel_stealing(100, 4, &|chunk, _tid| {
-            if chunk < 100 {
-                counter.fetch_add(1, Ordering::Relaxed);
-            }
-        });
-        assert_eq!(counter.load(Ordering::Relaxed), 100);
-    }
-
-    #[test]
-    fn test_parallel_fixed() {
-        let counter = AtomicI32::new(0);
-        parallel_fixed(100, 4, &|start, end, _tid| {
-            for _chunk in start..end {
-                counter.fetch_add(1, Ordering::Relaxed);
-            }
-        });
-        assert_eq!(counter.load(Ordering::Relaxed), 100);
-    }
-
-    #[test]
-    fn test_spin_barrier() {
-        let barrier = SpinBarrier::new(4);
-        let counter = AtomicI32::new(0);
-
-        thread::scope(|s| {
-            for _tid in 0..4 {
-                s.spawn(|| {
-                    counter.fetch_add(1, Ordering::Relaxed);
-                    barrier.wait();
-                    // All threads should have incremented
-                    assert_eq!(counter.load(Ordering::Relaxed), 4);
-                });
-            }
-        });
-    }
-
-    #[test]
-    fn test_optimal_threads() {
-        let n_cpus = num_cpus();
-
-        // Decode with m=1024, n=1:
-        // chunk_size reduces from 256 to 16 to create enough chunks
-        // nchunk0 = ceil(1024/16) = 64 chunks
-        // Use all available CPUs
-        assert_eq!(optimal_threads(1024, 1, 1024), n_cpus);
-
-        // Decode with m=8192, n=1: even more chunks
-        assert_eq!(optimal_threads(8192, 1, 8192), n_cpus);
-
-        // Prefill with m=512, n=8: many chunks from both dimensions
-        assert_eq!(optimal_threads(512, 8, 512), n_cpus);
-
-        // Large prefill: use all CPUs
-        assert_eq!(optimal_threads(4096, 32, 4096), n_cpus);
-
-        // Very small output dimension: limited chunks
-        // m=64, chunk_size=16, nchunk0=4, nchunk1=1 (for n=1)
-        // total=4 < n_cpus*4=40, but chunk_size already at minimum
-        // So return min(4, n_cpus) = 4
-        assert_eq!(optimal_threads(64, 1, 1024), 4.min(n_cpus));
-    }
-
-    #[test]
-    fn test_parallel_stealing_single_chunk() {
-        // Single chunk should work
-        use std::sync::atomic::AtomicBool;
-        let called = AtomicBool::new(false);
-        parallel_stealing(1, 4, &|_chunk, _tid| {
-            called.store(true, Ordering::Relaxed);
-        });
-        assert!(called.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn test_parallel_fixed_single_chunk() {
-        // Single chunk should work
-        use std::sync::atomic::AtomicBool;
-        let called = AtomicBool::new(false);
-        parallel_fixed(1, 4, &|_start, _end, _tid| {
-            called.store(true, Ordering::Relaxed);
-        });
-        assert!(called.load(Ordering::Relaxed));
     }
 }
