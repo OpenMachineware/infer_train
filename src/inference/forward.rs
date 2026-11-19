@@ -9,14 +9,61 @@ use crate::backend::arm::{
 use crate::inference::SimpleModel;
 use crate::types::*;
 
+/// Quantized input storage with pre-allocated buffer
+pub struct QuantizedInput {
+    /// Q8_0 format blocks (for Q4_0, Q5_0, Q8_0 weights)
+    pub q8_0: Vec<BlockQ8_0>,
+    /// Q8_K format blocks (for Q4_K, Q5_K, Q6_K, Q8_K, IQ4_XS weights)
+    pub q8_k: Vec<BlockQ8_K>,
+    /// Current active format
+    pub active: QuantFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum QuantFormat {
+    None,
+    Q8_0,
+    Q8_K,
+}
+
+impl QuantizedInput {
+    pub fn new() -> Self {
+        Self { q8_0: Vec::new(), q8_k: Vec::new(), active: QuantFormat::None }
+    }
+
+    /// Resize buffers for given input size
+    pub fn resize(&mut self, in_features: usize, format: QuantFormat) {
+        match format {
+            QuantFormat::Q8_0 => {
+                let nb = (in_features + QK8_0 - 1) / QK8_0;
+                if self.q8_0.len() != nb {
+                    self.q8_0.resize(nb, BlockQ8_0 { d: 0, qs: [0; QK8_0] });
+                }
+            }
+            QuantFormat::Q8_K => {
+                let nb = (in_features + QK_K - 1) / QK_K;
+                if self.q8_k.len() != nb {
+                    self.q8_k.resize(nb, unsafe { std::mem::zeroed() });
+                }
+            }
+            QuantFormat::None => {}
+        }
+        self.active = format;
+    }
+}
+
 /// Forward executor for single-token generation
 pub struct ForwardExecutor {
     pub model: SimpleModel,
     /// KV cache: [layer][seq_pos][head][dim] for key and value
     pub kv_cache_k: Vec<Vec<f32>>,
     pub kv_cache_v: Vec<Vec<f32>>,
+    /// Current KV cache capacity (in tokens)
+    kv_capacity: usize,
     /// Current sequence position
     pub seq_pos: usize,
+    /// Pre-allocated quantized input buffer
+    quant_buf: QuantizedInput,
 }
 
 /// Layer trace for debugging
@@ -52,21 +99,70 @@ impl ForwardExecutor {
         let n_layers = config.n_layers;
         let n_kv_heads = config.n_kv_heads;
         let head_dim = config.head_dim();
-        let context_length = config.context_length;
+        let _context_length = config.context_length;
 
-        // Initialize KV cache
-        let kv_size = n_kv_heads * head_dim * context_length;
+        // Initialize KV cache with small initial capacity (512 tokens)
+        // Will grow dynamically as needed
+        const INITIAL_CAPACITY: usize = 512;
+        let kv_size = n_kv_heads * head_dim * INITIAL_CAPACITY;
 
         Self {
             model,
             kv_cache_k: vec![vec![0.0f32; kv_size]; n_layers],
             kv_cache_v: vec![vec![0.0f32; kv_size]; n_layers],
+            kv_capacity: INITIAL_CAPACITY,
             seq_pos: 0,
+            quant_buf: QuantizedInput::new(),
         }
+    }
+
+    /// Ensure KV cache has enough capacity for the current sequence position
+    fn ensure_kv_capacity(&mut self) {
+        let config = self.model.config();
+        let n_kv_heads = config.n_kv_heads;
+        let head_dim = config.head_dim();
+        let context_length = config.context_length;
+
+        // Check if we need to grow
+        if self.seq_pos >= self.kv_capacity {
+            // Double capacity, but don't exceed context_length
+            let new_capacity = (self.kv_capacity * 2).min(context_length);
+            let new_kv_size = n_kv_heads * head_dim * new_capacity;
+
+            // Resize each layer's cache
+            for layer in 0..self.kv_cache_k.len() {
+                self.kv_cache_k[layer].resize(new_kv_size, 0.0);
+                self.kv_cache_v[layer].resize(new_kv_size, 0.0);
+            }
+
+            self.kv_capacity = new_capacity;
+        }
+    }
+
+    /// Reset executor state for a new inference run
+    /// Clears KV cache and resets sequence position
+    pub fn reset(&mut self) {
+        // Clear only used portion of KV cache
+        let config = self.model.config();
+        let n_kv_heads = config.n_kv_heads;
+        let head_dim = config.head_dim();
+        let used_size =
+            n_kv_heads * head_dim * self.seq_pos.min(self.kv_capacity);
+
+        for layer in 0..self.kv_cache_k.len() {
+            for i in 0..used_size {
+                self.kv_cache_k[layer][i] = 0.0;
+                self.kv_cache_v[layer][i] = 0.0;
+            }
+        }
+        self.seq_pos = 0;
     }
 
     /// Forward pass for a single token
     pub fn forward(&mut self, token_id: u32) -> Result<Vec<f32>, String> {
+        // Ensure KV cache has enough capacity
+        self.ensure_kv_capacity();
+
         let config = self.model.config();
 
         // 1. Embedding lookup
@@ -74,7 +170,7 @@ impl ForwardExecutor {
 
         // 2. Process each layer
         for layer_idx in 0..config.n_layers {
-            hidden = self.forward_layer(layer_idx, &hidden)?;
+            hidden = self.forward_layer(&hidden, layer_idx)?;
         }
 
         // 3. Final norm
@@ -217,10 +313,10 @@ impl ForwardExecutor {
     /// Forward pass for a single layer
     pub fn forward_layer(
         &mut self,
-        layer_idx: usize,
         input: &[f32],
+        layer_idx: usize,
     ) -> Result<Vec<f32>, String> {
-        let config = self.model.config();
+        let config = self.model.config().clone();
         let hidden_size = config.hidden_size;
         let n_heads = config.n_heads;
         let n_kv_heads = config.n_kv_heads;
@@ -234,24 +330,65 @@ impl ForwardExecutor {
             hidden_size,
         )?;
 
-        // 2. QKV projections
-        let q = self.linear(
-            &normed_attn,
+        // 2. Pre-quantize normed_attn for QKV projections (shared input)
+        // Use pre-allocated buffer to avoid repeated Vec allocation
+        let quant_type = self
+            .get_weight_quant_type(&format!("blk.{}.attn_q.weight", layer_idx));
+        let (qkv_q8_0, qkv_q8_k, in_features) = match quant_type {
+            QuantType::Q4_0 | QuantType::Q5_0 | QuantType::Q8_0 => {
+                let nb = (normed_attn.len() + QK8_0 - 1) / QK8_0;
+                self.quant_buf.resize(normed_attn.len(), QuantFormat::Q8_0);
+                crate::backend::arm::quant::quantize_q8_0(
+                    &normed_attn,
+                    &mut self.quant_buf.q8_0,
+                );
+                (Some(&self.quant_buf.q8_0 as &[BlockQ8_0]), None, nb * QK8_0)
+            }
+            QuantType::Q4_K
+            | QuantType::Q5_K
+            | QuantType::Q6_K
+            | QuantType::Q8_K
+            | QuantType::IQ4_XS => {
+                let nb = (normed_attn.len() + QK_K - 1) / QK_K;
+                self.quant_buf.resize(normed_attn.len(), QuantFormat::Q8_K);
+                crate::backend::arm::quant::quantize_q8_k(
+                    &normed_attn,
+                    &mut self.quant_buf.q8_k,
+                );
+                (None, Some(&self.quant_buf.q8_k as &[BlockQ8_K]), nb * QK_K)
+            }
+            _ => {
+                return Err(format!(
+                    "Unsupported quantization type: {:?}",
+                    quant_type
+                ));
+            }
+        };
+
+        // 3. QKV projections using pre-quantized input
+        let q = self.linear_quantized_inner(
+            qkv_q8_0,
+            qkv_q8_k,
+            in_features,
             &format!("blk.{}.attn_q.weight", layer_idx),
             n_heads * head_dim,
         )?;
-        let k = self.linear(
-            &normed_attn,
+        let k = self.linear_quantized_inner(
+            qkv_q8_0,
+            qkv_q8_k,
+            in_features,
             &format!("blk.{}.attn_k.weight", layer_idx),
             n_kv_heads * head_dim,
         )?;
-        let v = self.linear(
-            &normed_attn,
+        let v = self.linear_quantized_inner(
+            qkv_q8_0,
+            qkv_q8_k,
+            in_features,
             &format!("blk.{}.attn_v.weight", layer_idx),
             n_kv_heads * head_dim,
         )?;
 
-        // 3. Q/K norm (RMS norm per head, then multiply by shared weight)
+        // 4. Q/K norm (RMS norm per head, then multiply by shared weight)
         // llama.cpp: ggml_rms_norm per row (each head) then ggml_mul
         let q_normed = self.qk_norm(
             &q,
@@ -266,20 +403,7 @@ impl ForwardExecutor {
             head_dim,
         )?;
 
-        log::debug!(
-            "L{} Q normed: [{:.4}, {:.4}]",
-            layer_idx,
-            q_normed.iter().cloned().fold(f32::INFINITY, f32::min),
-            q_normed.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
-        );
-        log::debug!(
-            "L{} K normed: [{:.4}, {:.4}]",
-            layer_idx,
-            k_normed.iter().cloned().fold(f32::INFINITY, f32::min),
-            k_normed.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
-        );
-
-        // 4. Apply RoPE to Q and K
+        // 5. Apply RoPE to Q and K
         let freq_base = config.rope_freq_base;
         let mut q_rope = q_normed.clone();
         let mut k_rope = k_normed.clone();
@@ -304,26 +428,26 @@ impl ForwardExecutor {
             );
         }
 
-        // 5. Update KV cache
+        // 6. Update KV cache
         let kv_head_offset = self.seq_pos * head_dim;
+        let kv_capacity = self.kv_capacity; // Use actual capacity, not max context_length
         for h in 0..n_kv_heads {
             let src_offset = h * head_dim;
-            let dst_offset =
-                h * config.context_length * head_dim + kv_head_offset;
+            let dst_offset = h * kv_capacity * head_dim + kv_head_offset;
             self.kv_cache_k[layer_idx][dst_offset..dst_offset + head_dim]
                 .copy_from_slice(&k_rope[src_offset..src_offset + head_dim]);
             self.kv_cache_v[layer_idx][dst_offset..dst_offset + head_dim]
                 .copy_from_slice(&v[src_offset..src_offset + head_dim]);
         }
 
-        // 6. Flash Attention
+        // 7. Flash Attention
         let mut attn_output = vec![0.0f32; n_heads * head_dim];
         for h in 0..n_heads {
             let kv_head_idx = h * n_kv_heads / n_heads;
             let k_cache = &self.kv_cache_k[layer_idx]
-                [kv_head_idx * config.context_length * head_dim..];
+                [kv_head_idx * kv_capacity * head_dim..];
             let v_cache = &self.kv_cache_v[layer_idx]
-                [kv_head_idx * config.context_length * head_dim..];
+                [kv_head_idx * kv_capacity * head_dim..];
 
             let k_slice = &k_cache[..(self.seq_pos + 1) * head_dim];
             let v_slice = &v_cache[..(self.seq_pos + 1) * head_dim];
@@ -340,7 +464,7 @@ impl ForwardExecutor {
             );
         }
 
-        // 7. Output projection
+        // 8. Output projection
         let attn_out = self.linear(
             &attn_output,
             &format!("blk.{}.attn_output.weight", layer_idx),
@@ -359,26 +483,66 @@ impl ForwardExecutor {
             hidden_size,
         )?;
 
-        // 2. Gate and Up projections
-        let gate = self.linear(
-            &normed_ffn,
+        // 2. Pre-quantize normed_ffn for gate/up projections (shared input)
+        let quant_type = self.get_weight_quant_type(&format!(
+            "blk.{}.ffn_gate.weight",
+            layer_idx
+        ));
+        let (gate_up_q8_0, gate_up_q8_k, ffn_in_features) = match quant_type {
+            QuantType::Q4_0 | QuantType::Q5_0 | QuantType::Q8_0 => {
+                let nb = (normed_ffn.len() + QK8_0 - 1) / QK8_0;
+                self.quant_buf.resize(normed_ffn.len(), QuantFormat::Q8_0);
+                crate::backend::arm::quant::quantize_q8_0(
+                    &normed_ffn,
+                    &mut self.quant_buf.q8_0,
+                );
+                (Some(&self.quant_buf.q8_0 as &[BlockQ8_0]), None, nb * QK8_0)
+            }
+            QuantType::Q4_K
+            | QuantType::Q5_K
+            | QuantType::Q6_K
+            | QuantType::Q8_K
+            | QuantType::IQ4_XS => {
+                let nb = (normed_ffn.len() + QK_K - 1) / QK_K;
+                self.quant_buf.resize(normed_ffn.len(), QuantFormat::Q8_K);
+                crate::backend::arm::quant::quantize_q8_k(
+                    &normed_ffn,
+                    &mut self.quant_buf.q8_k,
+                );
+                (None, Some(&self.quant_buf.q8_k as &[BlockQ8_K]), nb * QK_K)
+            }
+            _ => {
+                return Err(format!(
+                    "Unsupported quantization type: {:?}",
+                    quant_type
+                ));
+            }
+        };
+
+        // 3. Gate and Up projections using pre-quantized input
+        let gate = self.linear_quantized_inner(
+            gate_up_q8_0,
+            gate_up_q8_k,
+            ffn_in_features,
             &format!("blk.{}.ffn_gate.weight", layer_idx),
             config.intermediate_size,
         )?;
-        let up = self.linear(
-            &normed_ffn,
+        let up = self.linear_quantized_inner(
+            gate_up_q8_0,
+            gate_up_q8_k,
+            ffn_in_features,
             &format!("blk.{}.ffn_up.weight", layer_idx),
             config.intermediate_size,
         )?;
 
-        // 3. SwiGLU activation
+        // 4. SwiGLU activation
         let mut ffn_hidden = vec![0.0f32; config.intermediate_size];
         crate::backend::arm::activation::silu_f32(&gate, &mut ffn_hidden);
         for i in 0..config.intermediate_size {
             ffn_hidden[i] *= up[i];
         }
 
-        // 4. Down projection
+        // 5. Down projection
         let ffn_out = self.linear(
             &ffn_hidden,
             &format!("blk.{}.ffn_down.weight", layer_idx),
@@ -388,6 +552,126 @@ impl ForwardExecutor {
         // Add residual
         let output: Vec<f32> =
             hidden.iter().zip(ffn_out.iter()).map(|(a, b)| a + b).collect();
+
+        Ok(output)
+    }
+
+    /// Get the quantization type of a weight tensor
+    fn get_weight_quant_type(&self, weight_name: &str) -> QuantType {
+        self.model
+            .gguf
+            .tensors
+            .iter()
+            .find(|t| t.name == weight_name)
+            .map(|t| t.quant_type)
+            .unwrap_or(QuantType::F32)
+    }
+
+    /// Inner implementation for linear with quantized input
+    fn linear_quantized_inner(
+        &self,
+        q8_0: Option<&[BlockQ8_0]>,
+        q8_k: Option<&[BlockQ8_K]>,
+        in_features: usize,
+        weight_name: &str,
+        out_features: usize,
+    ) -> Result<Vec<f32>, String> {
+        let tensor = self
+            .model
+            .gguf
+            .tensors
+            .iter()
+            .find(|t| t.name == weight_name)
+            .ok_or(format!("Weight '{}' not found", weight_name))?;
+
+        let weight_data = self
+            .model
+            .get_tensor(weight_name)
+            .ok_or(format!("Weight data '{}' not found", weight_name))?;
+
+        let nb1 = tensor.strides.get(1).copied().unwrap_or(0) as usize;
+
+        let mut output = vec![0.0f32; out_features];
+
+        match tensor.quant_type {
+            QuantType::Q6_K => {
+                if let Some(input_q8k) = q8_k {
+                    crate::backend::arm::gemv::gemv_q6_k_transposed(
+                        weight_data,
+                        nb1,
+                        input_q8k,
+                        &mut output,
+                        out_features,
+                        in_features,
+                        0,
+                    );
+                }
+            }
+            QuantType::Q5_K => {
+                if let Some(input_q8k) = q8_k {
+                    crate::backend::arm::gemv::gemv_q5_k_transposed(
+                        weight_data,
+                        nb1,
+                        input_q8k,
+                        &mut output,
+                        out_features,
+                        in_features,
+                        0,
+                    );
+                }
+            }
+            QuantType::Q4_K => {
+                if let Some(input_q8k) = q8_k {
+                    crate::backend::arm::gemv::gemv_q4_k_transposed(
+                        weight_data,
+                        nb1,
+                        input_q8k,
+                        &mut output,
+                        out_features,
+                        in_features,
+                        0,
+                    );
+                }
+            }
+            QuantType::Q4_0 => {
+                if let Some(input_q80) = q8_0 {
+                    crate::backend::arm::gemv::gemv_q4_0_transposed(
+                        weight_data,
+                        nb1,
+                        input_q80,
+                        &mut output,
+                        out_features,
+                        in_features,
+                        0,
+                    );
+                }
+            }
+            QuantType::IQ4_XS => {
+                if let Some(input_q8k) = q8_k {
+                    let nb = (in_features + QK_K - 1) / QK_K;
+                    for i in 0..out_features {
+                        let col_offset = i * nb1;
+                        let col_blocks: &[BlockIQ4XS] = unsafe {
+                            std::slice::from_raw_parts(
+                                weight_data.as_ptr().add(col_offset)
+                                    as *const BlockIQ4XS,
+                                nb,
+                            )
+                        };
+                        output[i] =
+                            crate::backend::arm::vec_dot::vec_dot_iq4_xs_q8_k(
+                                col_blocks, input_q8k,
+                            );
+                    }
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "Unsupported quantization type for linear_quantized: {:?}",
+                    tensor.quant_type
+                ));
+            }
+        }
 
         Ok(output)
     }
@@ -545,21 +829,16 @@ impl ForwardExecutor {
                     &mut input_q8k,
                 );
 
-                // Column i starts at byte offset i * nb1
-                // Each column has nb blocks (ne[0] / block_elements)
-                for i in 0..out_features {
-                    let col_offset = i * nb1;
-                    let col_blocks: &[BlockQ6_K] = unsafe {
-                        std::slice::from_raw_parts(
-                            weight_data.as_ptr().add(col_offset)
-                                as *const BlockQ6_K,
-                            nb,
-                        )
-                    };
-                    output[i] = crate::backend::arm::vec_dot::vec_dot_q6_k_q8_k(
-                        col_blocks, &input_q8k,
-                    );
-                }
+                // Use multi-threaded transposed GEMV
+                crate::backend::arm::gemv::gemv_q6_k_transposed(
+                    weight_data,
+                    nb1,
+                    &input_q8k,
+                    &mut output,
+                    out_features,
+                    in_features,
+                    0, // auto threads
+                );
             }
             QuantType::Q5_K => {
                 let nb = (in_features + QK_K - 1) / QK_K;
@@ -570,20 +849,15 @@ impl ForwardExecutor {
                     &mut input_q8k,
                 );
 
-                // Column i starts at byte offset i * nb1
-                for i in 0..out_features {
-                    let col_offset = i * nb1;
-                    let col_blocks: &[BlockQ5_K] = unsafe {
-                        std::slice::from_raw_parts(
-                            weight_data.as_ptr().add(col_offset)
-                                as *const BlockQ5_K,
-                            nb,
-                        )
-                    };
-                    output[i] = crate::backend::arm::vec_dot::vec_dot_q5_k_q8_k(
-                        col_blocks, &input_q8k,
-                    );
-                }
+                crate::backend::arm::gemv::gemv_q5_k_transposed(
+                    weight_data,
+                    nb1,
+                    &input_q8k,
+                    &mut output,
+                    out_features,
+                    in_features,
+                    0,
+                );
             }
             QuantType::Q4_K => {
                 let nb = (in_features + QK_K - 1) / QK_K;
@@ -594,19 +868,15 @@ impl ForwardExecutor {
                     &mut input_q8k,
                 );
 
-                for i in 0..out_features {
-                    let col_offset = i * nb1;
-                    let col_blocks: &[BlockQ4_K] = unsafe {
-                        std::slice::from_raw_parts(
-                            weight_data.as_ptr().add(col_offset)
-                                as *const BlockQ4_K,
-                            nb,
-                        )
-                    };
-                    output[i] = crate::backend::arm::vec_dot::vec_dot_q4_k_q8_k(
-                        col_blocks, &input_q8k,
-                    );
-                }
+                crate::backend::arm::gemv::gemv_q4_k_transposed(
+                    weight_data,
+                    nb1,
+                    &input_q8k,
+                    &mut output,
+                    out_features,
+                    in_features,
+                    0,
+                );
             }
             QuantType::IQ4_XS => {
                 let nb = (in_features + QK_K - 1) / QK_K;
@@ -641,21 +911,15 @@ impl ForwardExecutor {
                     &mut input_q80,
                 );
 
-                let nb1 = tensor.strides[1] as usize;
-
-                for i in 0..out_features {
-                    let col_offset = i * nb1;
-                    let col_blocks: &[BlockQ4_0] = unsafe {
-                        std::slice::from_raw_parts(
-                            weight_data.as_ptr().add(col_offset)
-                                as *const BlockQ4_0,
-                            nb,
-                        )
-                    };
-                    output[i] = crate::backend::arm::vec_dot::vec_dot_q4_0_q8_0(
-                        col_blocks, &input_q80,
-                    );
-                }
+                crate::backend::arm::gemv::gemv_q4_0_transposed(
+                    weight_data,
+                    nb1,
+                    &input_q80,
+                    &mut output,
+                    out_features,
+                    in_features,
+                    0,
+                );
             }
             QuantType::Q8_0 => {
                 let nb = (in_features + QK8_0 - 1) / QK8_0;
@@ -924,7 +1188,7 @@ impl ForwardExecutor {
         // 2. Process each layer with tracing
         for layer_idx in 0..config.n_layers {
             let (hidden_after, trace) =
-                self.forward_layer_with_trace(layer_idx, &hidden)?;
+                self.forward_layer_with_trace(&hidden, layer_idx)?;
             layer_traces.push(trace);
             hidden = hidden_after;
         }
@@ -951,10 +1215,10 @@ impl ForwardExecutor {
     /// Forward pass for a single layer with tracing
     fn forward_layer_with_trace(
         &mut self,
-        layer_idx: usize,
         input: &[f32],
+        layer_idx: usize,
     ) -> Result<(Vec<f32>, LayerTrace), String> {
-        let config = self.model.config();
+        let config = self.model.config().clone();
         let hidden_size = config.hidden_size;
         let n_heads = config.n_heads;
         let n_kv_heads = config.n_kv_heads;
@@ -970,24 +1234,65 @@ impl ForwardExecutor {
             hidden_size,
         )?;
 
-        // 2. QKV projections
-        let q = self.linear(
-            &normed_attn,
+        // 2. Pre-quantize normed_attn for QKV projections (shared input)
+        // Use pre-allocated buffer to avoid repeated Vec allocation
+        let quant_type = self
+            .get_weight_quant_type(&format!("blk.{}.attn_q.weight", layer_idx));
+        let (qkv_q8_0, qkv_q8_k, in_features) = match quant_type {
+            QuantType::Q4_0 | QuantType::Q5_0 | QuantType::Q8_0 => {
+                let nb = (normed_attn.len() + QK8_0 - 1) / QK8_0;
+                self.quant_buf.resize(normed_attn.len(), QuantFormat::Q8_0);
+                crate::backend::arm::quant::quantize_q8_0(
+                    &normed_attn,
+                    &mut self.quant_buf.q8_0,
+                );
+                (Some(&self.quant_buf.q8_0 as &[BlockQ8_0]), None, nb * QK8_0)
+            }
+            QuantType::Q4_K
+            | QuantType::Q5_K
+            | QuantType::Q6_K
+            | QuantType::Q8_K
+            | QuantType::IQ4_XS => {
+                let nb = (normed_attn.len() + QK_K - 1) / QK_K;
+                self.quant_buf.resize(normed_attn.len(), QuantFormat::Q8_K);
+                crate::backend::arm::quant::quantize_q8_k(
+                    &normed_attn,
+                    &mut self.quant_buf.q8_k,
+                );
+                (None, Some(&self.quant_buf.q8_k as &[BlockQ8_K]), nb * QK_K)
+            }
+            _ => {
+                return Err(format!(
+                    "Unsupported quantization type: {:?}",
+                    quant_type
+                ));
+            }
+        };
+
+        // 3. QKV projections using pre-quantized input
+        let q = self.linear_quantized_inner(
+            qkv_q8_0,
+            qkv_q8_k,
+            in_features,
             &format!("blk.{}.attn_q.weight", layer_idx),
             n_heads * head_dim,
         )?;
-        let k = self.linear(
-            &normed_attn,
+        let k = self.linear_quantized_inner(
+            qkv_q8_0,
+            qkv_q8_k,
+            in_features,
             &format!("blk.{}.attn_k.weight", layer_idx),
             n_kv_heads * head_dim,
         )?;
-        let v = self.linear(
-            &normed_attn,
+        let v = self.linear_quantized_inner(
+            qkv_q8_0,
+            qkv_q8_k,
+            in_features,
             &format!("blk.{}.attn_v.weight", layer_idx),
             n_kv_heads * head_dim,
         )?;
 
-        // 3. Q/K norm
+        // 4. Q/K norm
         let q_normed = self.qk_norm(
             &q,
             &format!("blk.{}.attn_q_norm.weight", layer_idx),
@@ -1001,7 +1306,7 @@ impl ForwardExecutor {
             head_dim,
         )?;
 
-        // 4. Apply RoPE to Q and K
+        // 5. Apply RoPE to Q and K
         let freq_base = config.rope_freq_base;
         let mut q_rope = q_normed.clone();
         let mut k_rope = k_normed.clone();
@@ -1026,26 +1331,26 @@ impl ForwardExecutor {
             );
         }
 
-        // 5. Update KV cache
+        // 6. Update KV cache
         let kv_head_offset = self.seq_pos * head_dim;
+        let kv_capacity = self.kv_capacity; // Use actual capacity, not max context_length
         for h in 0..n_kv_heads {
             let src_offset = h * head_dim;
-            let dst_offset =
-                h * config.context_length * head_dim + kv_head_offset;
+            let dst_offset = h * kv_capacity * head_dim + kv_head_offset;
             self.kv_cache_k[layer_idx][dst_offset..dst_offset + head_dim]
                 .copy_from_slice(&k_rope[src_offset..src_offset + head_dim]);
             self.kv_cache_v[layer_idx][dst_offset..dst_offset + head_dim]
                 .copy_from_slice(&v[src_offset..src_offset + head_dim]);
         }
 
-        // 6. Flash Attention
+        // 7. Flash Attention
         let mut attn_output = vec![0.0f32; n_heads * head_dim];
         for h in 0..n_heads {
             let kv_head_idx = h * n_kv_heads / n_heads;
             let k_cache = &self.kv_cache_k[layer_idx]
-                [kv_head_idx * config.context_length * head_dim..];
+                [kv_head_idx * kv_capacity * head_dim..];
             let v_cache = &self.kv_cache_v[layer_idx]
-                [kv_head_idx * config.context_length * head_dim..];
+                [kv_head_idx * kv_capacity * head_dim..];
 
             let k_slice = &k_cache[..(self.seq_pos + 1) * head_dim];
             let v_slice = &v_cache[..(self.seq_pos + 1) * head_dim];
@@ -1062,7 +1367,7 @@ impl ForwardExecutor {
             );
         }
 
-        // 7. Output projection
+        // 8. Output projection
         let attn_out = self.linear(
             &attn_output,
             &format!("blk.{}.attn_output.weight", layer_idx),
@@ -1081,26 +1386,67 @@ impl ForwardExecutor {
             hidden_size,
         )?;
 
-        // 2. Gate and Up projections
-        let gate = self.linear(
-            &normed_ffn,
+        // 2. Pre-quantize normed_ffn for gate/up projections (shared input)
+        // Use pre-allocated buffer to avoid repeated Vec allocation
+        let quant_type = self.get_weight_quant_type(&format!(
+            "blk.{}.ffn_gate.weight",
+            layer_idx
+        ));
+        let (gate_up_q8_0, gate_up_q8_k, ffn_in_features) = match quant_type {
+            QuantType::Q4_0 | QuantType::Q5_0 | QuantType::Q8_0 => {
+                let nb = (normed_ffn.len() + QK8_0 - 1) / QK8_0;
+                self.quant_buf.resize(normed_ffn.len(), QuantFormat::Q8_0);
+                crate::backend::arm::quant::quantize_q8_0(
+                    &normed_ffn,
+                    &mut self.quant_buf.q8_0,
+                );
+                (Some(&self.quant_buf.q8_0 as &[BlockQ8_0]), None, nb * QK8_0)
+            }
+            QuantType::Q4_K
+            | QuantType::Q5_K
+            | QuantType::Q6_K
+            | QuantType::Q8_K
+            | QuantType::IQ4_XS => {
+                let nb = (normed_ffn.len() + QK_K - 1) / QK_K;
+                self.quant_buf.resize(normed_ffn.len(), QuantFormat::Q8_K);
+                crate::backend::arm::quant::quantize_q8_k(
+                    &normed_ffn,
+                    &mut self.quant_buf.q8_k,
+                );
+                (None, Some(&self.quant_buf.q8_k as &[BlockQ8_K]), nb * QK_K)
+            }
+            _ => {
+                return Err(format!(
+                    "Unsupported quantization type: {:?}",
+                    quant_type
+                ));
+            }
+        };
+
+        // 3. Gate and Up projections using pre-quantized input
+        let gate = self.linear_quantized_inner(
+            gate_up_q8_0,
+            gate_up_q8_k,
+            ffn_in_features,
             &format!("blk.{}.ffn_gate.weight", layer_idx),
             config.intermediate_size,
         )?;
-        let up = self.linear(
-            &normed_ffn,
+        let up = self.linear_quantized_inner(
+            gate_up_q8_0,
+            gate_up_q8_k,
+            ffn_in_features,
             &format!("blk.{}.ffn_up.weight", layer_idx),
             config.intermediate_size,
         )?;
 
-        // 3. SwiGLU activation
+        // 4. SwiGLU activation
         let mut ffn_hidden = vec![0.0f32; config.intermediate_size];
         crate::backend::arm::activation::silu_f32(&gate, &mut ffn_hidden);
         for i in 0..config.intermediate_size {
             ffn_hidden[i] *= up[i];
         }
 
-        // 4. Down projection
+        // 5. Down projection
         let ffn_out = self.linear(
             &ffn_hidden,
             &format!("blk.{}.ffn_down.weight", layer_idx),

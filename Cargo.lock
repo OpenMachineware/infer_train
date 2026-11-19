@@ -340,6 +340,7 @@ dependencies = [
  "log",
  "minijinja",
  "rand",
+ "rayon",
  "serde",
  "serde_json",
 ]

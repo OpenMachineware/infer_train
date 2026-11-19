@@ -6,6 +6,7 @@
 pub mod arm;
 pub mod cuda;
 pub mod metal;
+pub mod thread_pool;
 
 use crate::types::{CoreOperator, OpError, QuantType};
 

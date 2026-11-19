@@ -164,6 +164,7 @@ impl Backend for ArmCpuBackend {
                             output,
                             *out_features,
                             *in_features,
+                            0, // auto thread count
                         );
                         Ok(())
                     }
@@ -190,6 +191,7 @@ impl Backend for ArmCpuBackend {
                             output,
                             *out_features,
                             *in_features,
+                            0, // auto thread count
                         );
                         Ok(())
                     }
@@ -216,6 +218,7 @@ impl Backend for ArmCpuBackend {
                             output,
                             *out_features,
                             *in_features,
+                            0, // auto thread count
                         );
                         Ok(())
                     }
@@ -242,6 +245,7 @@ impl Backend for ArmCpuBackend {
                             output,
                             *out_features,
                             *in_features,
+                            0, // auto thread count
                         );
                         Ok(())
                     }
@@ -268,6 +272,7 @@ impl Backend for ArmCpuBackend {
                             output,
                             *out_features,
                             *in_features,
+                            0, // auto thread count
                         );
                         Ok(())
                     }
