@@ -106,6 +106,21 @@ enum CompareMode {
         #[arg(long, default_value = "10")]
         top_n: usize,
     },
+
+    /// Detailed trace with layer-by-layer output
+    Trace {
+        /// Token IDs (comma separated)
+        #[arg(short, long)]
+        tokens: String,
+
+        /// Show only first N layers (0 = all)
+        #[arg(long, default_value = "0")]
+        layers: usize,
+
+        /// Show first N values per tensor
+        #[arg(long, default_value = "5")]
+        values: usize,
+    },
 }
 
 fn main() {
@@ -158,6 +173,15 @@ fn main() {
                 &cli.model,
                 parse_tokens(Some(tokens)),
                 top_n,
+                cli.verbose,
+            );
+        }
+        CompareMode::Trace { tokens, layers, values } => {
+            trace_detailed(
+                &cli.model,
+                parse_tokens(Some(tokens)),
+                layers,
+                values,
                 cli.verbose,
             );
         }
@@ -429,5 +453,288 @@ fn compare_prefill(
         let logits = executor.forward(last_token).expect("Forward failed");
         print_stats("Final Logits", &logits);
         print_top_tokens(&logits, top_n, executor.model.tokenizer());
+    }
+}
+
+fn trace_detailed(
+    model_path: &str,
+    tokens: Vec<u32>,
+    max_layers: usize,
+    n_values: usize,
+    verbose: bool,
+) {
+    println!("\n=== Detailed Layer Trace ===");
+    println!("Tokens: {:?}", tokens);
+
+    let gguf = GgufFile::load(model_path).expect("Failed to load model");
+    let tokenizer = create_tokenizer(
+        gguf.tokenizer_metadata().expect("Failed to get metadata"),
+    )
+    .expect("Failed to create tokenizer");
+    let model =
+        SimpleModel::load(model_path, tokenizer).expect("Failed to load model");
+    let config = model.config();
+
+    if verbose {
+        println!(
+            "\nModel: {} layers, hidden={}, n_heads={}, n_kv_heads={}",
+            config.n_layers,
+            config.hidden_size,
+            config.n_heads,
+            config.n_kv_heads
+        );
+
+        // Print tensor info for first layer
+        println!("\n=== First Layer Tensor Info ===");
+        for name in &[
+            "blk.0.attn_q.weight",
+            "blk.0.attn_k.weight",
+            "blk.0.attn_v.weight",
+        ] {
+            if let Some(tensor) = gguf.tensors.iter().find(|t| &t.name == name)
+            {
+                println!(
+                    "{}: dims={:?}, strides={:?}, quant={:?}",
+                    name, tensor.dims, tensor.strides, tensor.quant_type
+                );
+            }
+        }
+
+        // Print FFN weight tensor info
+        println!("\n=== FFN Weight Tensor Info ===");
+        for layer in 0..config.n_layers.min(4) {
+            println!("\nLayer {}:", layer);
+            for name in &[
+                format!("blk.{}.ffn_gate.weight", layer),
+                format!("blk.{}.ffn_up.weight", layer),
+                format!("blk.{}.ffn_down.weight", layer),
+            ] {
+                if let Some(tensor) =
+                    gguf.tensors.iter().find(|t| &t.name == name)
+                {
+                    println!(
+                        "{}: dims={:?}, strides={:?}, quant={:?}",
+                        name, tensor.dims, tensor.strides, tensor.quant_type
+                    );
+                    // Expected: dims=[in_features, out_features] = [1024, 3072] for gate/up
+                    // strides[1] should be bytes per column
+                }
+            }
+        }
+
+        // Print FFN norm weight ranges
+        println!("\n=== FFN Norm Weight Ranges ===");
+        for layer in 0..config.n_layers.min(4) {
+            let name = format!("blk.{}.ffn_norm.weight", layer);
+            if let Some(data) = model.get_tensor(&name) {
+                println!("{}: data_len={}", name, data.len());
+                if data.len() == config.hidden_size * 4 {
+                    let weights: Vec<f32> = data
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                        .collect();
+                    let min =
+                        weights.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let max = weights
+                        .iter()
+                        .cloned()
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    println!("  range: min={:.4}, max={:.4}", min, max);
+                } else if data.len() == config.hidden_size * 2 {
+                    // F16 weights
+                    let weights: Vec<f32> = data
+                        .chunks_exact(2)
+                        .map(|c| {
+                            half::f16::from_le_bytes([c[0], c[1]]).to_f32()
+                        })
+                        .collect();
+                    let min =
+                        weights.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let max = weights
+                        .iter()
+                        .cloned()
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    println!("  (F16) range: min={:.4}, max={:.4}", min, max);
+                }
+            } else {
+                println!("{}: NOT FOUND", name);
+            }
+        }
+
+        // Print Q/K norm weight ranges
+        println!("\n=== Q/K Norm Weight Ranges ===");
+        for name in &["blk.0.attn_q_norm.weight", "blk.0.attn_k_norm.weight"] {
+            if let Some(data) = model.get_tensor(name) {
+                if data.len() == 512 {
+                    // F32: 128 * 4
+                    let weights: Vec<f32> = data
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                        .collect();
+                    let min =
+                        weights.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let max = weights
+                        .iter()
+                        .cloned()
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    println!("{}: min={:.4}, max={:.4}", name, min, max);
+                }
+            }
+        }
+
+        // Check last layer too
+        println!("\n=== Last Layer Q/K Norm Weights ===");
+        let last_layer = config.n_layers - 1;
+        for name in &[
+            format!("blk.{}.attn_q_norm.weight", last_layer),
+            format!("blk.{}.attn_k_norm.weight", last_layer),
+        ] {
+            if let Some(data) = model.get_tensor(name) {
+                if data.len() == 512 {
+                    let weights: Vec<f32> = data
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                        .collect();
+                    let min =
+                        weights.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let max = weights
+                        .iter()
+                        .cloned()
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    println!("{}: min={:.4}, max={:.4}", name, min, max);
+                }
+            }
+        }
+
+        // Check all K norm weight ranges
+        println!("\n=== All K Norm Weight Ranges ===");
+        for layer in 0..config.n_layers {
+            let name = format!("blk.{}.attn_k_norm.weight", layer);
+            if let Some(data) = model.get_tensor(&name) {
+                if data.len() == 512 {
+                    let weights: Vec<f32> = data
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                        .collect();
+                    let min =
+                        weights.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let max = weights
+                        .iter()
+                        .cloned()
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    print!("L{:02}: [{:.2}, {:.2}]  ", layer, min, max);
+                    if (layer + 1) % 4 == 0 {
+                        println!();
+                    }
+                }
+            }
+        }
+        println!();
+
+        // Check output tensor
+        println!("\n=== Output Projection ===");
+        for name in &[
+            "output.weight",
+            "lm_head.weight",
+            "output_norm.weight",
+            "token_embd.weight",
+        ] {
+            if let Some(tensor) = gguf.tensors.iter().find(|t| &t.name == name)
+            {
+                println!(
+                    "{}: dims={:?}, strides={:?}, quant={:?}",
+                    name, tensor.dims, tensor.strides, tensor.quant_type
+                );
+            }
+        }
+    }
+
+    let mut executor = ForwardExecutor::new(model);
+
+    // Prefill all tokens except the last one
+    println!("\n=== Prefill Phase ===");
+    for (i, token) in
+        tokens[..tokens.len().saturating_sub(1)].iter().enumerate()
+    {
+        let _ = executor.forward(*token).expect("Forward failed");
+        println!(
+            "Token {} (id={}): prefill complete, seq_pos={}",
+            i, token, executor.seq_pos
+        );
+    }
+
+    // Process last token with tracing
+    if let Some(&last_token) = tokens.last() {
+        println!("\n=== Tracing Last Token (id={}) ===", last_token);
+        let trace =
+            executor.forward_with_trace(last_token).expect("Trace failed");
+
+        // Print embedding
+        print_stats("Embedding", &trace.embedding);
+        if verbose {
+            println!(
+                "  First {} values: {:?}",
+                n_values,
+                &trace.embedding[..n_values.min(trace.embedding.len())]
+            );
+        }
+
+        // Print layer traces
+        let layers_to_show = if max_layers == 0 {
+            trace.layer_traces.len()
+        } else {
+            max_layers.min(trace.layer_traces.len())
+        };
+
+        for trace_layer in trace.layer_traces.iter().take(layers_to_show) {
+            println!("\n=== Layer {} ===", trace_layer.layer_idx);
+
+            print_stats("  Hidden (before)", &trace_layer.hidden_before);
+            print_stats("  Hidden (after)", &trace_layer.hidden_after);
+            print_stats("  Q normed", &trace_layer.q_normed);
+            print_stats("  K normed", &trace_layer.k_normed);
+            print_stats("  Attn output", &trace_layer.attn_output);
+
+            // FFN intermediate outputs
+            print_stats("  FFN normed", &trace_layer.ffn_normed);
+            print_stats("  FFN gate", &trace_layer.ffn_gate);
+            print_stats("  FFN up", &trace_layer.ffn_up);
+            print_stats("  FFN hidden (SiLU*up)", &trace_layer.ffn_hidden);
+            print_stats("  FFN output", &trace_layer.ffn_output);
+
+            if verbose {
+                println!(
+                    "    Q normed first {}: {:?}",
+                    n_values,
+                    &trace_layer.q_normed
+                        [..n_values.min(trace_layer.q_normed.len())]
+                );
+                println!(
+                    "    K normed first {}: {:?}",
+                    n_values,
+                    &trace_layer.k_normed
+                        [..n_values.min(trace_layer.k_normed.len())]
+                );
+                println!(
+                    "    FFN hidden first {}: {:?}",
+                    n_values,
+                    &trace_layer.ffn_hidden
+                        [..n_values.min(trace_layer.ffn_hidden.len())]
+                );
+            }
+        }
+
+        if trace.layer_traces.len() > layers_to_show {
+            println!(
+                "\n... {} more layers",
+                trace.layer_traces.len() - layers_to_show
+            );
+        }
+
+        // Print final output
+        println!("\n=== Final Output ===");
+        print_stats("Final Hidden", &trace.final_hidden);
+        print_stats("Logits", &trace.logits);
+        print_top_tokens(&trace.logits, 10, executor.model.tokenizer());
     }
 }

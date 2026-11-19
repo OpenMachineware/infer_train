@@ -19,6 +19,33 @@ pub struct ForwardExecutor {
     pub seq_pos: usize,
 }
 
+/// Layer trace for debugging
+#[derive(Debug, Clone)]
+pub struct LayerTrace {
+    pub layer_idx: usize,
+    pub hidden_before: Vec<f32>,
+    pub hidden_after: Vec<f32>,
+    pub q_normed: Vec<f32>,
+    pub k_normed: Vec<f32>,
+    pub attn_output: Vec<f32>,
+    pub ffn_output: Vec<f32>,
+    // FFN intermediate outputs for debugging
+    pub ffn_normed: Vec<f32>,
+    pub ffn_gate: Vec<f32>,
+    pub ffn_up: Vec<f32>,
+    pub ffn_hidden: Vec<f32>,
+}
+
+/// Full forward trace for debugging
+#[derive(Debug, Clone)]
+pub struct ForwardTrace {
+    pub token_id: u32,
+    pub embedding: Vec<f32>,
+    pub layer_traces: Vec<LayerTrace>,
+    pub final_hidden: Vec<f32>,
+    pub logits: Vec<f32>,
+}
+
 impl ForwardExecutor {
     pub fn new(model: SimpleModel) -> Self {
         let config = model.config().clone();
@@ -880,5 +907,225 @@ impl ForwardExecutor {
         }
 
         tokens
+    }
+
+    /// Forward pass with detailed tracing for debugging
+    pub fn forward_with_trace(
+        &mut self,
+        token_id: u32,
+    ) -> Result<ForwardTrace, String> {
+        let config = self.model.config();
+        let mut layer_traces = Vec::new();
+
+        // 1. Embedding lookup
+        let mut hidden = self.embed_token(token_id)?;
+        let embedding = hidden.clone();
+
+        // 2. Process each layer with tracing
+        for layer_idx in 0..config.n_layers {
+            let (hidden_after, trace) =
+                self.forward_layer_with_trace(layer_idx, &hidden)?;
+            layer_traces.push(trace);
+            hidden = hidden_after;
+        }
+
+        // 3. Final norm
+        let final_hidden = self.final_norm(&hidden)?;
+        hidden = final_hidden.clone();
+
+        // 4. Output projection
+        let logits = self.output_projection(&hidden)?;
+
+        // Increment sequence position
+        self.seq_pos += 1;
+
+        Ok(ForwardTrace {
+            token_id,
+            embedding,
+            layer_traces,
+            final_hidden,
+            logits,
+        })
+    }
+
+    /// Forward pass for a single layer with tracing
+    fn forward_layer_with_trace(
+        &mut self,
+        layer_idx: usize,
+        input: &[f32],
+    ) -> Result<(Vec<f32>, LayerTrace), String> {
+        let config = self.model.config();
+        let hidden_size = config.hidden_size;
+        let n_heads = config.n_heads;
+        let n_kv_heads = config.n_kv_heads;
+        let head_dim = config.head_dim();
+
+        let hidden_before = input.to_vec();
+
+        // === Attention Block ===
+        // 1. RMS Norm before attention
+        let normed_attn = self.rms_norm(
+            input,
+            &format!("blk.{}.attn_norm.weight", layer_idx),
+            hidden_size,
+        )?;
+
+        // 2. QKV projections
+        let q = self.linear(
+            &normed_attn,
+            &format!("blk.{}.attn_q.weight", layer_idx),
+            n_heads * head_dim,
+        )?;
+        let k = self.linear(
+            &normed_attn,
+            &format!("blk.{}.attn_k.weight", layer_idx),
+            n_kv_heads * head_dim,
+        )?;
+        let v = self.linear(
+            &normed_attn,
+            &format!("blk.{}.attn_v.weight", layer_idx),
+            n_kv_heads * head_dim,
+        )?;
+
+        // 3. Q/K norm
+        let q_normed = self.qk_norm(
+            &q,
+            &format!("blk.{}.attn_q_norm.weight", layer_idx),
+            n_heads,
+            head_dim,
+        )?;
+        let k_normed = self.qk_norm(
+            &k,
+            &format!("blk.{}.attn_k_norm.weight", layer_idx),
+            n_kv_heads,
+            head_dim,
+        )?;
+
+        // 4. Apply RoPE to Q and K
+        let freq_base = config.rope_freq_base;
+        let mut q_rope = q_normed.clone();
+        let mut k_rope = k_normed.clone();
+        for h in 0..n_heads {
+            rope_f32(
+                &q_normed[h * head_dim..(h + 1) * head_dim],
+                &mut q_rope[h * head_dim..(h + 1) * head_dim],
+                self.seq_pos,
+                head_dim,
+                head_dim,
+                freq_base,
+            );
+        }
+        for h in 0..n_kv_heads {
+            rope_f32(
+                &k_normed[h * head_dim..(h + 1) * head_dim],
+                &mut k_rope[h * head_dim..(h + 1) * head_dim],
+                self.seq_pos,
+                head_dim,
+                head_dim,
+                freq_base,
+            );
+        }
+
+        // 5. Update KV cache
+        let kv_head_offset = self.seq_pos * head_dim;
+        for h in 0..n_kv_heads {
+            let src_offset = h * head_dim;
+            let dst_offset =
+                h * config.context_length * head_dim + kv_head_offset;
+            self.kv_cache_k[layer_idx][dst_offset..dst_offset + head_dim]
+                .copy_from_slice(&k_rope[src_offset..src_offset + head_dim]);
+            self.kv_cache_v[layer_idx][dst_offset..dst_offset + head_dim]
+                .copy_from_slice(&v[src_offset..src_offset + head_dim]);
+        }
+
+        // 6. Flash Attention
+        let mut attn_output = vec![0.0f32; n_heads * head_dim];
+        for h in 0..n_heads {
+            let kv_head_idx = h * n_kv_heads / n_heads;
+            let k_cache = &self.kv_cache_k[layer_idx]
+                [kv_head_idx * config.context_length * head_dim..];
+            let v_cache = &self.kv_cache_v[layer_idx]
+                [kv_head_idx * config.context_length * head_dim..];
+
+            let k_slice = &k_cache[..(self.seq_pos + 1) * head_dim];
+            let v_slice = &v_cache[..(self.seq_pos + 1) * head_dim];
+
+            flash_attn_f32(
+                &q_rope[h * head_dim..(h + 1) * head_dim],
+                k_slice,
+                v_slice,
+                None,
+                &mut attn_output[h * head_dim..(h + 1) * head_dim],
+                head_dim,
+                self.seq_pos + 1,
+                1.0 / (head_dim as f32).sqrt(),
+            );
+        }
+
+        // 7. Output projection
+        let attn_out = self.linear(
+            &attn_output,
+            &format!("blk.{}.attn_output.weight", layer_idx),
+            hidden_size,
+        )?;
+
+        // Residual connection
+        let hidden: Vec<f32> =
+            input.iter().zip(attn_out.iter()).map(|(a, b)| a + b).collect();
+
+        // === FFN Block ===
+        // 1. RMS Norm before FFN
+        let normed_ffn = self.rms_norm(
+            &hidden,
+            &format!("blk.{}.ffn_norm.weight", layer_idx),
+            hidden_size,
+        )?;
+
+        // 2. Gate and Up projections
+        let gate = self.linear(
+            &normed_ffn,
+            &format!("blk.{}.ffn_gate.weight", layer_idx),
+            config.intermediate_size,
+        )?;
+        let up = self.linear(
+            &normed_ffn,
+            &format!("blk.{}.ffn_up.weight", layer_idx),
+            config.intermediate_size,
+        )?;
+
+        // 3. SwiGLU activation
+        let mut ffn_hidden = vec![0.0f32; config.intermediate_size];
+        crate::backend::arm::activation::silu_f32(&gate, &mut ffn_hidden);
+        for i in 0..config.intermediate_size {
+            ffn_hidden[i] *= up[i];
+        }
+
+        // 4. Down projection
+        let ffn_out = self.linear(
+            &ffn_hidden,
+            &format!("blk.{}.ffn_down.weight", layer_idx),
+            hidden_size,
+        )?;
+
+        // Residual connection
+        let output: Vec<f32> =
+            hidden.iter().zip(ffn_out.iter()).map(|(a, b)| a + b).collect();
+
+        Ok((
+            output.clone(),
+            LayerTrace {
+                layer_idx,
+                hidden_before,
+                hidden_after: output,
+                q_normed,
+                k_normed,
+                attn_output,
+                ffn_output: ffn_out,
+                ffn_normed: normed_ffn,
+                ffn_gate: gate,
+                ffn_up: up,
+                ffn_hidden,
+            },
+        ))
     }
 }

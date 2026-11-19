@@ -3,10 +3,36 @@
 
 // Vector dot product operators
 
+#![allow(asm_sub_register)]
+#![allow(unsafe_op_in_unsafe_fn)]
+
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
 
 use crate::types::*;
+
+/// Manual vdotq_s32 implementation using native SDOT instruction
+/// vdotq_s32 is unstable in Rust, so we use inline assembly
+/// SDOT computes: result[i] = acc[i] + sum(a[4*i..4*i+4] * b[4*i..4*i+4]) for i in 0..4
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn vdotq_s32_manual(
+    acc: int32x4_t,
+    a: int8x16_t,
+    b: int8x16_t,
+) -> int32x4_t {
+    use std::arch::asm;
+
+    let mut result = acc;
+    asm!(
+        "sdot {0}.4s, {1}.16b, {2}.16b",
+        inout(vreg) result,
+        in(vreg) a,
+        in(vreg) b,
+        options(pure, nomem, preserves_flags)
+    );
+    result
+}
 
 // FP32 dot product (NEON optimized)
 #[cfg(target_arch = "aarch64")]
@@ -448,10 +474,18 @@ pub fn vec_dot_q5_k_q8_k_single(x: &BlockQ5_K, y: &BlockQ8_K) -> f32 {
     sumf + sums.iter().sum::<f32>()
 }
 
-// Q5_K x Q8_K dot product (matching llama.cpp exactly)
-pub fn vec_dot_q5_k_q8_k(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
+/// Q5_K × Q8_K vector dot product (NEON implementation)
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon,dotprod")]
+#[allow(unsafe_op_in_unsafe_fn)]
+pub unsafe fn vec_dot_q5_k_q8_k_neon(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
     let nb = x.len();
     assert_eq!(nb, y.len());
+
+    let m4b = vdupq_n_u8(0xF);
+    let mone = vdupq_n_u8(1);
+    let mtwo = vdupq_n_u8(2);
+    let mzero = vdupq_n_s32(0);
 
     const KMASK1: u32 = 0x3f3f3f3f;
     const KMASK2: u32 = 0x0f0f0f0f;
@@ -460,18 +494,23 @@ pub fn vec_dot_q5_k_q8_k(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
     let mut sumf = 0.0f32;
 
     for i in 0..nb {
-        let block_x = &x[i];
-        let block_y = &y[i];
+        let d = y[i].d * fp16_to_fp32(x[i].d);
+        let dmin = y[i].d * fp16_to_fp32(x[i].dmin);
 
-        // Step 1: Decode scales and mins (same as before)
-        let mut utmp: [u32; 4] = [0; 4];
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                block_x.scales.as_ptr(),
-                utmp.as_mut_ptr() as *mut u8,
-                12,
-            );
-        }
+        // Calculate min correction using bsums
+        // vpaddq_s16: pairwise add of adjacent elements
+        let q8sums = vpaddq_s16(
+            vld1q_s16(y[i].bsums.as_ptr()),
+            vld1q_s16(y[i].bsums.as_ptr().add(8)),
+        );
+
+        // Decode scales and mins
+        let mut utmp = [0u32; 4];
+        std::ptr::copy_nonoverlapping(
+            x[i].scales.as_ptr(),
+            utmp.as_mut_ptr() as *mut u8,
+            12,
+        );
 
         utmp[3] = ((utmp[2] >> 4) & KMASK2) | (((utmp[1] >> 6) & KMASK3) << 4);
         let uaux = utmp[1] & KMASK1;
@@ -479,99 +518,61 @@ pub fn vec_dot_q5_k_q8_k(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
         utmp[2] = uaux;
         utmp[0] &= KMASK1;
 
-        let scales: [u8; 8] = unsafe {
-            std::slice::from_raw_parts(utmp[0..2].as_ptr() as *const u8, 8)
-                .try_into()
-                .unwrap()
-        };
-        let mins: [u8; 8] = unsafe {
-            std::slice::from_raw_parts(utmp[2..4].as_ptr() as *const u8, 8)
-                .try_into()
-                .unwrap()
-        };
+        let mins8 = vld1_u8((utmp.as_ptr() as *const u8).add(8));
+        let mins = vreinterpretq_s16_u16(vmovl_u8(mins8));
 
-        // Step 2: Compute sumi_mins (matching llama.cpp's vpaddq_s16)
-        // vpaddq_s16(vld1q_s16(bsums[0..8]), vld1q_s16(bsums[8..16]))
-        // pairs adjacent elements: [bsums[0]+bsums[1], bsums[2]+bsums[3], ..., bsums[8]+bsums[9], ..., bsums[14]+bsums[15]]
-        let mut sumi_mins = 0i32;
-        for j in 0..8 {
-            // mins[0] * (bsums[0]+bsums[1]), mins[1] * (bsums[2]+bsums[3]), ...
-            // mins[4] * (bsums[8]+bsums[9]), ...
-            let idx = j * 2;
-            let bsum_pair = if j < 4 {
-                block_y.bsums[idx] as i32 + block_y.bsums[idx + 1] as i32
-            } else {
-                let idx = (j - 4) * 2 + 8;
-                block_y.bsums[idx] as i32 + block_y.bsums[idx + 1] as i32
-            };
-            sumi_mins += bsum_pair * mins[j] as i32;
+        let prod = vaddq_s32(
+            vmull_s16(vget_low_s16(q8sums), vget_low_s16(mins)),
+            vmull_s16(vget_high_s16(q8sums), vget_high_s16(mins)),
+        );
+        let sumi_mins = vaddvq_s32(prod);
+
+        let scales: [u8; 16] = std::mem::transmute(utmp);
+        let mut scale_idx = 0;
+
+        let q5 = x[i].qs.as_ptr();
+        let qh = x[i].qh.as_ptr();
+        let q8 = y[i].qs.as_ptr();
+
+        let mut qhbits = vld1q_u8_x2(qh);
+
+        let mut sumi = 0i32;
+
+        for j in 0..(QK_K / 64) {
+            let q5bits = vld1q_u8_x2(q5.add(j * 32));
+            let q8bytes = vld1q_s8_x4(q8.add(j * 64));
+
+            // Process 4 blocks of 16 elements
+            let q5h_0 = vshlq_n_u8(vandq_u8(mone, qhbits.0), 4);
+            let q5h_1 = vshlq_n_u8(vandq_u8(mone, qhbits.1), 4);
+            let q5h_2 = vshlq_n_u8(vandq_u8(mtwo, qhbits.0), 3);
+            let q5h_3 = vshlq_n_u8(vandq_u8(mtwo, qhbits.1), 3);
+
+            // Update qhbits for next iteration (shift right by 2 bits)
+            qhbits.0 = vshrq_n_u8(qhbits.0, 2);
+            qhbits.1 = vshrq_n_u8(qhbits.1, 2);
+
+            let q5bytes_0 =
+                vreinterpretq_s8_u8(vorrq_u8(vandq_u8(q5bits.0, m4b), q5h_0));
+            let q5bytes_1 =
+                vreinterpretq_s8_u8(vorrq_u8(vandq_u8(q5bits.1, m4b), q5h_1));
+            let q5bytes_2 =
+                vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(q5bits.0, 4), q5h_2));
+            let q5bytes_3 =
+                vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(q5bits.1, 4), q5h_3));
+
+            sumi += vaddvq_s32(vaddq_s32(
+                vdotq_s32_manual(mzero, q5bytes_0, q8bytes.0),
+                vdotq_s32_manual(mzero, q5bytes_1, q8bytes.1),
+            )) * scales[scale_idx] as i32;
+            scale_idx += 1;
+
+            sumi += vaddvq_s32(vaddq_s32(
+                vdotq_s32_manual(mzero, q5bytes_2, q8bytes.2),
+                vdotq_s32_manual(mzero, q5bytes_3, q8bytes.3),
+            )) * scales[scale_idx] as i32;
+            scale_idx += 1;
         }
-
-        // Step 3: Unpack Q5_K quantized values to int8
-        // Match llama.cpp exactly
-        let mut aux8 = [0i8; 256];
-        let q4 = &block_x.qs;
-        let qh = &block_x.qh;
-
-        // qh pointer is FIXED for all 4 iterations (matching llama.cpp's hm pointer)
-        // q4 pointer advances by 32 each iteration
-        let mut m: u8 = 1;
-        let mut q4_offset = 0;
-        let mut aux8_offset = 0;
-
-        for _j in 0..4 {
-            // Lower 4 bits - qh always from index 0
-            for l in 0..32 {
-                aux8[aux8_offset + l] = (q4[q4_offset + l] & 0xF) as i8
-                    + if qh[l] & m != 0 { 16 } else { 0 };
-            }
-            aux8_offset += 32;
-            m <<= 1;
-            // Upper 4 bits
-            for l in 0..32 {
-                aux8[aux8_offset + l] = (q4[q4_offset + l] >> 4) as i8
-                    + if qh[l] & m != 0 { 16 } else { 0 };
-            }
-            aux8_offset += 32;
-            m <<= 1;
-            q4_offset += 32; // q4 advances by 32 each iteration (128 bytes total for 4 iterations)
-        }
-
-        // Step 4: Compute sumi (dot product with scales)
-        // llama.cpp processes in groups of 64 elements, each with 2 scales
-        let mut sumi = 0i64;
-        let q8 = &block_y.qs;
-        let a = &aux8[..];
-        let mut is = 0;
-        let mut offset = 0;
-
-        for _j in 0..4 {
-            // First 32 elements with scale[0]
-            let scale1 = scales[is] as i64;
-            is += 1;
-
-            let mut sum1 = 0i64;
-            for l in 0..32 {
-                sum1 += q8[offset + l] as i64 * a[offset + l] as i64;
-            }
-            sumi += scale1 * sum1;
-
-            // Second 32 elements with scale[1]
-            let scale2 = scales[is] as i64;
-            is += 1;
-
-            let mut sum2 = 0i64;
-            for l in 0..32 {
-                sum2 += q8[offset + 32 + l] as i64 * a[offset + 32 + l] as i64;
-            }
-            sumi += scale2 * sum2;
-
-            offset += 64;
-        }
-
-        // Step 5: Final result
-        let d = fp16_to_fp32(block_x.d) * block_y.d;
-        let dmin = fp16_to_fp32(block_x.dmin) * block_y.d;
 
         sumf += d * sumi as f32 - dmin * sumi_mins as f32;
     }
@@ -794,6 +795,11 @@ pub fn vec_dot_f32(x: &[f32], y: &[f32]) -> f32 {
 #[cfg(target_arch = "aarch64")]
 pub fn vec_dot_q4_0_q8_0(x: &[BlockQ4_0], y: &[BlockQ8_0]) -> f32 {
     unsafe { vec_dot_q4_0_q8_0_neon(x, y) }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn vec_dot_q5_k_q8_k(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
+    unsafe { vec_dot_q5_k_q8_k_neon(x, y) }
 }
 
 #[cfg(not(target_arch = "aarch64"))]
