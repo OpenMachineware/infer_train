@@ -419,12 +419,12 @@ fn compare_prefill(
 
     let mut executor = ForwardExecutor::new(model);
 
-    // Prefill all tokens
-    for token in &tokens {
+    // Prefill all tokens except the last one
+    for token in &tokens[..tokens.len().saturating_sub(1)] {
         let _ = executor.forward(*token).expect("Forward failed");
     }
 
-    // Last token logits
+    // Process last token and get logits
     if let Some(&last_token) = tokens.last() {
         let logits = executor.forward(last_token).expect("Forward failed");
         print_stats("Final Logits", &logits);
