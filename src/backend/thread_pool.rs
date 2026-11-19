@@ -124,9 +124,15 @@ where
 
 /// Get optimal thread count for a given operation
 ///
-/// Based on llama.cpp's thread allocation strategy:
-/// - Decode (n=1): memory-bound GEMV, use single thread to avoid overhead
-/// - Prefill (n>=8): compute-bound GEMM, use all threads
+/// Based on llama.cpp's tiled matmul strategy:
+/// - Compute chunks: nchunk0 = ceil(m / chunk_size), nchunk1 = ceil(n / chunk_size)
+/// - Use all threads when enough chunks exist
+/// - Chunk size starts at 256, reduces to 16 minimum
+///
+/// NOTE: This returns optimal thread count for the *algorithm*, but actual
+/// performance depends on using a persistent thread pool. Creating threads
+/// on each call adds ~109us overhead, which can make multi-threaded decode
+/// slower than single-threaded for small operations.
 ///
 /// # Arguments
 /// * `m` - Output dimension (rows)
@@ -135,30 +141,38 @@ where
 ///
 /// # Returns
 /// Optimal number of threads
-pub fn optimal_threads(m: usize, n: usize, k: usize) -> usize {
+pub fn optimal_threads(m: usize, n: usize, _k: usize) -> usize {
     let n_cpus = num_cpus();
 
-    // Decode (n=1): memory-bound GEMV
-    // CRITICAL: Single-thread is faster due to:
-    // 1. Thread creation overhead (~109us) exceeds GEMV time
-    // 2. Memory-bound: threads compete for memory bandwidth
-    // 3. Cache thrashing: multiple threads evict each other's cache
-    if n == 1 {
-        return 1;
+    // llama.cpp's chunking strategy:
+    // Start with chunk_size=256, reduce until enough chunks
+    let mut chunk_size = 256usize;
+    let mut nchunk0 = (m + chunk_size - 1) / chunk_size;
+    let mut nchunk1 = (n + chunk_size - 1) / chunk_size;
+
+    // Reduce chunk_size to create enough chunks for all threads
+    // Target: nchunk0 * nchunk1 >= n_cpus * 4
+    while nchunk0 * nchunk1 < n_cpus * 4 && chunk_size > 16 {
+        chunk_size /= 2;
+        nchunk0 = (m + chunk_size - 1) / chunk_size;
+        nchunk1 = (n + chunk_size - 1) / chunk_size;
     }
 
-    // Prefill (n>=8): compute-bound GEMM
-    // Use more threads with 2D tiling
-    let flops = m.saturating_mul(n).saturating_mul(k);
-    if flops < 10_000_000 {
-        // Small matrix: fewer threads
-        return 4.min(n_cpus);
-    } else if flops < 100_000_000 {
-        return n_cpus.min(6);
-    } else {
-        // Large matrix: use all threads
-        return n_cpus;
-    }
+    // If we have enough chunks, use all CPUs
+    // Otherwise, limit threads to available chunks
+    let total_chunks = nchunk0 * nchunk1;
+    total_chunks.min(n_cpus)
+}
+
+/// Get optimal thread count, capped at 1 for operations without persistent thread pool
+///
+/// Use this for operations that create threads on each call (like thread::scope).
+/// Returns 1 to avoid thread creation overhead (~109us per call).
+pub fn optimal_threads_no_pool(m: usize, n: usize, k: usize) -> usize {
+    // For now, return 1 to avoid thread creation overhead
+    // Once persistent thread pool is implemented, this can call optimal_threads()
+    let _ = (m, n, k); // suppress unused warning
+    1
 }
 
 /// Barrier synchronization using spin wait
@@ -253,18 +267,28 @@ mod tests {
 
     #[test]
     fn test_optimal_threads() {
-        // Small decode: 4 threads max
-        assert_eq!(optimal_threads(1024, 1, 1024), 4);
+        let n_cpus = num_cpus();
 
-        // Large decode: 8 threads max
-        assert!(optimal_threads(8192, 1, 8192) >= 8);
+        // Decode with m=1024, n=1:
+        // chunk_size reduces from 256 to 16 to create enough chunks
+        // nchunk0 = ceil(1024/16) = 64 chunks
+        // Use all available CPUs
+        assert_eq!(optimal_threads(1024, 1, 1024), n_cpus);
 
-        // Small prefill: 4 threads
-        assert_eq!(optimal_threads(512, 8, 512), 4);
+        // Decode with m=8192, n=1: even more chunks
+        assert_eq!(optimal_threads(8192, 1, 8192), n_cpus);
+
+        // Prefill with m=512, n=8: many chunks from both dimensions
+        assert_eq!(optimal_threads(512, 8, 512), n_cpus);
 
         // Large prefill: use all CPUs
-        let n_cpus = num_cpus();
         assert_eq!(optimal_threads(4096, 32, 4096), n_cpus);
+
+        // Very small output dimension: limited chunks
+        // m=64, chunk_size=16, nchunk0=4, nchunk1=1 (for n=1)
+        // total=4 < n_cpus*4=40, but chunk_size already at minimum
+        // So return min(4, n_cpus) = 4
+        assert_eq!(optimal_threads(64, 1, 1024), 4.min(n_cpus));
     }
 
     #[test]

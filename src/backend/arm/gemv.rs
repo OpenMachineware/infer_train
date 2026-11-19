@@ -4,7 +4,7 @@
 // Matrix-vector multiplication (GEMV) for decode
 
 use super::vec_dot::*;
-use crate::backend::thread_pool::{optimal_threads, parallel_stealing};
+use crate::backend::thread_pool::{optimal_threads_no_pool, parallel_stealing};
 use crate::types::*;
 
 // Q4_0 GEMV
@@ -204,7 +204,7 @@ pub fn mul_mat_q6_k(
     assert_eq!(output.len(), n_tokens * out_features);
 
     let n_threads = if n_threads == 0 {
-        optimal_threads(out_features, n_tokens, in_features)
+        optimal_threads_no_pool(out_features, n_tokens, in_features)
     } else {
         n_threads
     };
@@ -214,23 +214,28 @@ pub fn mul_mat_q6_k(
         output[i] = 0.0;
     }
 
-    if n_tokens == 1 {
-        // Decode: single-threaded
-        let input_blocks = &input[..n_blocks];
-        for row in 0..out_features {
+    // Use optimal_threads decision for both decode and prefill
+    if n_threads == 1 {
+        // Single-threaded path
+        let total_rows = n_tokens * out_features;
+        for flat_idx in 0..total_rows {
+            let token_idx = flat_idx / out_features;
+            let row = flat_idx % out_features;
+
             let mut sum = 0.0f32;
+            let input_start = token_idx * n_blocks;
             for block_idx in 0..n_blocks {
-                let input_block = &input_blocks[block_idx];
+                let input_block = &input[input_start + block_idx];
                 let offset = block_idx * col_stride + row * block_size;
                 let weight_block: &BlockQ6_K = unsafe {
                     &*(weights.as_ptr().add(offset) as *const BlockQ6_K)
                 };
                 sum += vec_dot_q6_k_q8_k_single(weight_block, input_block);
             }
-            output[row] = sum;
+            output[flat_idx] = sum;
         }
     } else {
-        // Prefill: multi-threaded
+        // Multi-threaded path
         let output_ptr = output.as_mut_ptr() as usize;
         let total_rows = n_tokens * out_features;
         parallel_stealing(total_rows, n_threads, &|flat_idx, _tid| {
@@ -304,7 +309,7 @@ pub fn mul_mat_q5_k(
 
     // Thread selection based on workload
     let n_threads = if n_threads == 0 {
-        optimal_threads(out_features, n_tokens, in_features)
+        optimal_threads_no_pool(out_features, n_tokens, in_features)
     } else {
         n_threads
     };
@@ -314,24 +319,28 @@ pub fn mul_mat_q5_k(
         output[i] = 0.0;
     }
 
-    if n_tokens == 1 {
-        // Decode path: single token, single thread
-        let input_blocks = &input[..n_blocks];
-        let out_row = &mut output[..out_features];
-        for row in 0..out_features {
+    // Use optimal_threads decision for both decode and prefill
+    if n_threads == 1 {
+        // Single-threaded path
+        let total_rows = n_tokens * out_features;
+        for flat_idx in 0..total_rows {
+            let token_idx = flat_idx / out_features;
+            let row = flat_idx % out_features;
+
             let mut sum = 0.0f32;
+            let input_start = token_idx * n_blocks;
             for block_idx in 0..n_blocks {
-                let input_block = &input_blocks[block_idx];
+                let input_block = &input[input_start + block_idx];
                 let offset = block_idx * col_stride + row * block_size;
                 let weight_block: &BlockQ5_K = unsafe {
                     &*(weights.as_ptr().add(offset) as *const BlockQ5_K)
                 };
                 sum += vec_dot_q5_k_q8_k_single(weight_block, input_block);
             }
-            out_row[row] = sum;
+            output[flat_idx] = sum;
         }
     } else {
-        // Prefill path: batch tokens, multi-threaded
+        // Multi-threaded path
         let output_ptr = output.as_mut_ptr() as usize;
         let total_rows = n_tokens * out_features;
         parallel_stealing(total_rows, n_threads, &|flat_idx, _tid| {
@@ -395,7 +404,7 @@ pub fn mul_mat_q4_k(
     assert_eq!(output.len(), n_tokens * out_features);
 
     let n_threads = if n_threads == 0 {
-        optimal_threads(out_features, n_tokens, in_features)
+        optimal_threads_no_pool(out_features, n_tokens, in_features)
     } else {
         n_threads
     };
@@ -404,21 +413,28 @@ pub fn mul_mat_q4_k(
         output[i] = 0.0;
     }
 
-    if n_tokens == 1 {
-        let input_blocks = &input[..n_blocks];
-        for row in 0..out_features {
+    // Use optimal_threads decision for both decode and prefill
+    if n_threads == 1 {
+        // Single-threaded path
+        let total_rows = n_tokens * out_features;
+        for flat_idx in 0..total_rows {
+            let token_idx = flat_idx / out_features;
+            let row = flat_idx % out_features;
+
             let mut sum = 0.0f32;
+            let input_start = token_idx * n_blocks;
             for block_idx in 0..n_blocks {
-                let input_block = &input_blocks[block_idx];
+                let input_block = &input[input_start + block_idx];
                 let offset = block_idx * col_stride + row * block_size;
                 let weight_block: &BlockQ4_K = unsafe {
                     &*(weights.as_ptr().add(offset) as *const BlockQ4_K)
                 };
                 sum += vec_dot_q4_k_q8_k_single(weight_block, input_block);
             }
-            output[row] = sum;
+            output[flat_idx] = sum;
         }
     } else {
+        // Multi-threaded path
         let output_ptr = output.as_mut_ptr() as usize;
         let total_rows = n_tokens * out_features;
         parallel_stealing(total_rows, n_threads, &|flat_idx, _tid| {
@@ -482,7 +498,7 @@ pub fn mul_mat_q4_0(
     assert_eq!(output.len(), n_tokens * out_features);
 
     let n_threads = if n_threads == 0 {
-        optimal_threads(out_features, n_tokens, in_features)
+        optimal_threads_no_pool(out_features, n_tokens, in_features)
     } else {
         n_threads
     };
@@ -491,21 +507,28 @@ pub fn mul_mat_q4_0(
         output[i] = 0.0;
     }
 
-    if n_tokens == 1 {
-        let input_blocks = &input[..n_blocks];
-        for row in 0..out_features {
+    // Use optimal_threads decision for both decode and prefill
+    if n_threads == 1 {
+        // Single-threaded path
+        let total_rows = n_tokens * out_features;
+        for flat_idx in 0..total_rows {
+            let token_idx = flat_idx / out_features;
+            let row = flat_idx % out_features;
+
             let mut sum = 0.0f32;
+            let input_start = token_idx * n_blocks;
             for block_idx in 0..n_blocks {
-                let input_block = &input_blocks[block_idx];
+                let input_block = &input[input_start + block_idx];
                 let offset = block_idx * col_stride + row * block_size;
                 let weight_block: &BlockQ4_0 = unsafe {
                     &*(weights.as_ptr().add(offset) as *const BlockQ4_0)
                 };
                 sum += vec_dot_q4_0_q8_0_single(weight_block, input_block);
             }
-            output[row] = sum;
+            output[flat_idx] = sum;
         }
     } else {
+        // Multi-threaded path
         let output_ptr = output.as_mut_ptr() as usize;
         let total_rows = n_tokens * out_features;
         parallel_stealing(total_rows, n_threads, &|flat_idx, _tid| {
@@ -574,7 +597,7 @@ mod tests {
 
         let mut output = vec![0.0f32; out_features];
 
-        gemv_q4_0(&weights, &input, &mut output, out_features, in_features);
+        gemv_q4_0(&weights, &input, &mut output, out_features, in_features, 0);
 
         for &v in &output {
             assert!(v.abs() < 1.0);
