@@ -23,6 +23,10 @@ path = "tools/tokenize_compare.rs"
 name = "op_test"
 path = "tests/op_test/op_test.rs"
 
+[[bin]]
+name = "perf_compare"
+path = "tools/perf_compare/src/main.rs"
+
 [features]
 default = []
 metal = []
@@ -43,6 +47,7 @@ log = { version = "0.4", features = ["release_max_level_off"] }
 minijinja = "2.0"
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [dev-dependencies]
 approx = "0.5"
