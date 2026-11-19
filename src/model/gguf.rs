@@ -17,6 +17,8 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
+use memmap2::Mmap;
+
 use crate::types::QuantType;
 
 // GGUF magic number
@@ -87,7 +89,14 @@ pub struct GgufFile {
     pub kv: HashMap<String, GgufValue>,
     pub tensors: Vec<GgufTensorInfo>,
     pub data_offset: u64,
+    /// Memory-mapped tensor data (avoids copying entire model into heap)
+    /// File is kept open to maintain the mmap
+    #[cfg(target_os = "macos")]
+    pub data: Mmap,
+    #[cfg(not(target_os = "macos"))]
     pub data: Vec<u8>,
+    #[cfg(target_os = "macos")]
+    _file: Option<File>,
 }
 
 impl GgufFile {
@@ -96,11 +105,131 @@ impl GgufFile {
         let path = path.as_ref();
         let file = File::open(path)
             .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
-        let mut reader = BufReader::new(file);
-        Self::parse(&mut reader)
+
+        #[cfg(target_os = "macos")]
+        {
+            // Parse header using BufReader
+            let mut reader = BufReader::new(&file);
+            let (version, alignment, kv, tensors, data_offset) =
+                Self::parse_header(&mut reader)?;
+
+            // Create mmap for tensor data
+            let mmap = unsafe { Mmap::map(&file) }
+                .map_err(|e| format!("Failed to mmap file: {}", e))?;
+
+            Ok(GgufFile {
+                version,
+                alignment,
+                kv,
+                tensors,
+                data_offset,
+                data: mmap,
+                _file: Some(file),
+            })
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut reader = BufReader::new(file);
+            Self::parse(&mut reader)
+        }
     }
 
-    /// Parse GGUF from reader
+    /// Parse header only (for mmap implementation)
+    fn parse_header<R: Read + Seek>(
+        reader: &mut R,
+    ) -> Result<
+        (u32, u64, HashMap<String, GgufValue>, Vec<GgufTensorInfo>, u64),
+        String,
+    > {
+        // 1. Magic
+        let magic = read_u32(reader)?;
+        if magic != GGUF_MAGIC {
+            return Err(format!(
+                "Invalid GGUF magic: expected 0x{:08x}, got 0x{:08x}",
+                GGUF_MAGIC, magic
+            ));
+        }
+
+        // 2. Version
+        let version = read_u32(reader)?;
+
+        // 3. Number of tensors
+        let n_tensors = read_i64(reader)? as usize;
+
+        // 4. Number of KV pairs
+        let n_kv = read_i64(reader)? as usize;
+
+        // 5. Parse KV pairs
+        let mut kv = HashMap::with_capacity(n_kv);
+        for _ in 0..n_kv {
+            let key = read_string(reader)?;
+            let value = read_value(reader)?;
+            kv.insert(key, value);
+        }
+
+        // Get alignment from metadata
+        let alignment = match kv.get("general.alignment") {
+            Some(GgufValue::Uint32(v)) => *v as u64,
+            Some(GgufValue::Int32(v)) => *v as u64,
+            Some(GgufValue::Uint64(v)) => *v,
+            Some(GgufValue::Int64(v)) => *v as u64,
+            _ => GGUF_DEFAULT_ALIGNMENT,
+        };
+
+        // 6. Parse tensor info
+        let mut tensors = Vec::with_capacity(n_tensors);
+        for _ in 0..n_tensors {
+            let name = read_string(reader)?;
+            let n_dims = read_u32(reader)? as usize;
+            let mut dims = Vec::with_capacity(n_dims);
+            for _ in 0..n_dims {
+                dims.push(read_i64(reader)? as u64);
+            }
+            let quant_type = read_quant_type(reader)?;
+            let offset = read_u64(reader)?;
+
+            // Calculate strides (GGML nb[] array)
+            let block_size = quant_type.block_size() as u64;
+            let block_elements = quant_type.block_elements() as u64;
+
+            let mut strides = Vec::with_capacity(n_dims);
+            if dims.is_empty() {
+                strides.push(block_size);
+            } else {
+                strides.push(block_size);
+                for i in 1..n_dims {
+                    let prev_dim = dims[i - 1];
+                    let stride = if block_elements > 1 {
+                        strides[i - 1]
+                            * ((prev_dim + block_elements - 1) / block_elements)
+                    } else {
+                        strides[i - 1] * prev_dim
+                    };
+                    strides.push(stride);
+                }
+            }
+
+            tensors.push(GgufTensorInfo {
+                name,
+                dims,
+                quant_type,
+                offset,
+                strides,
+            });
+        }
+
+        // Calculate data offset (aligned)
+        let current_pos = reader
+            .stream_position()
+            .map_err(|e| format!("Stream position error: {}", e))?;
+        let data_offset = align_to(current_pos, alignment);
+
+        Ok((version, alignment, kv, tensors, data_offset))
+    }
+
+    /// Parse GGUF from reader (non-macOS fallback)
+    #[cfg(not(target_os = "macos"))]
     pub fn parse<R: Read + Seek>(reader: &mut R) -> Result<Self, String> {
         // 1. Magic
         let magic = read_u32(reader)?;
@@ -208,7 +337,16 @@ impl GgufFile {
             .read_exact(&mut data)
             .map_err(|e| format!("Read tensor data error: {}", e))?;
 
-        Ok(GgufFile { version, alignment, kv, tensors, data_offset, data })
+        Ok(GgufFile {
+            version,
+            alignment,
+            kv,
+            tensors,
+            data_offset,
+            data,
+            #[cfg(target_os = "macos")]
+            _file: None,
+        })
     }
 
     /// Get a metadata value by key
@@ -220,24 +358,42 @@ impl GgufFile {
     pub fn get_tensor_data(&self, name: &str) -> Option<&[u8]> {
         for tensor in &self.tensors {
             if tensor.name == name {
-                // GGUF tensor offset is relative to the start of tensor data section
-                let start = tensor.offset as usize;
                 let size = Self::tensor_size(tensor);
 
-                // Debug: check bounds
-                if start + size > self.data.len() {
-                    eprintln!(
-                        "[GGUF-ERROR] Tensor {} offset {} + size {} exceeds data len {}",
-                        tensor.name,
-                        tensor.offset,
-                        size,
-                        self.data.len()
-                    );
-                    return None;
+                #[cfg(target_os = "macos")]
+                {
+                    // For mmap: data is the entire file, so add data_offset
+                    let start =
+                        tensor.offset as usize + self.data_offset as usize;
+                    if start + size > self.data.len() {
+                        eprintln!(
+                            "[GGUF-ERROR] Tensor {} offset {} + size {} exceeds data len {}",
+                            tensor.name,
+                            start,
+                            size,
+                            self.data.len()
+                        );
+                        return None;
+                    }
+                    return Some(&self.data[start..start + size]);
                 }
 
-                let result = &self.data[start..start + size];
-                return Some(result);
+                #[cfg(not(target_os = "macos"))]
+                {
+                    // For Vec<u8>: data is just tensor data section, offset is relative
+                    let start = tensor.offset as usize;
+                    if start + size > self.data.len() {
+                        eprintln!(
+                            "[GGUF-ERROR] Tensor {} offset {} + size {} exceeds data len {}",
+                            tensor.name,
+                            tensor.offset,
+                            size,
+                            self.data.len()
+                        );
+                        return None;
+                    }
+                    return Some(&self.data[start..start + size]);
+                }
             }
         }
         None
