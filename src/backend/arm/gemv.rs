@@ -208,76 +208,51 @@ pub fn gemv_q6_k_transposed(
     assert_eq!(input.len(), n_blocks);
     assert_eq!(output.len(), out_features);
 
+    // Use optimal_threads for decode (n=1), or all threads for prefill
+    let n_threads = if n_threads == 0 {
+        optimal_threads(out_features, 1, in_features)
+    } else {
+        n_threads
+    };
+
     // Clear output first
     for row in 0..out_features {
         output[row] = 0.0;
     }
 
-    // Calculate interleave factor from stride
-    // For Q6_K: stride[1] / block_size gives the interleave factor
-    const DEFAULT_INTERLEAVE: usize = 4;
-    let interleave = if col_stride >= block_size {
-        col_stride / block_size
-    } else {
-        DEFAULT_INTERLEAVE
-    };
-
-    // Process output rows in groups of INTERLEAVE
-    // This ensures we access contiguous weight blocks, improving cache utilization
-    let n_row_groups = (out_features + interleave - 1) / interleave;
-
-    // CRITICAL: For decode, use single-threaded
-    // Thread creation overhead exceeds GEMV time for small matrices
-    if n_threads <= 1 {
-        // Single-threaded path
-        for row_group in 0..n_row_groups {
-            let row_start = row_group * interleave;
-            let row_end = (row_start + interleave).min(out_features);
-            let n_rows = row_end - row_start;
-
-            for block_idx in 0..n_blocks {
-                let input_block = &input[block_idx];
-                let base_offset =
-                    block_idx * col_stride + row_start * block_size;
-
-                for i in 0..n_rows {
-                    let row = row_start + i;
-                    let offset = base_offset + i * block_size;
-                    let weight_block: &BlockQ6_K = unsafe {
-                        &*(weights.as_ptr().add(offset) as *const BlockQ6_K)
-                    };
-                    output[row] +=
-                        vec_dot_q6_k_q8_k_single(weight_block, input_block);
-                }
-            }
-        }
-    } else {
-        // Multi-threaded: parallelize over row groups
+    // Multi-threaded path
+    if n_threads > 1 {
         let output_ptr = output.as_mut_ptr() as usize;
-        parallel_stealing(n_row_groups, n_threads, &|row_group, _tid| {
-            let row_start = row_group * interleave;
-            let row_end = (row_start + interleave).min(out_features);
-            let n_rows = row_end - row_start;
+        parallel_stealing(out_features, n_threads, &|row, _tid| {
+            let mut sum = 0.0f32;
 
             for block_idx in 0..n_blocks {
                 let input_block = &input[block_idx];
-                let base_offset =
-                    block_idx * col_stride + row_start * block_size;
+                let offset = block_idx * col_stride + row * block_size;
+                let weight_block: &BlockQ6_K = unsafe {
+                    &*(weights.as_ptr().add(offset) as *const BlockQ6_K)
+                };
+                sum += vec_dot_q6_k_q8_k_single(weight_block, input_block);
+            }
 
-                for i in 0..n_rows {
-                    let row = row_start + i;
-                    let offset = base_offset + i * block_size;
-                    let weight_block: &BlockQ6_K = unsafe {
-                        &*(weights.as_ptr().add(offset) as *const BlockQ6_K)
-                    };
-                    let dot =
-                        vec_dot_q6_k_q8_k_single(weight_block, input_block);
-                    unsafe {
-                        *((output_ptr as *mut f32).add(row)) += dot;
-                    }
-                }
+            unsafe {
+                *((output_ptr as *mut f32).add(row)) = sum;
             }
         });
+    } else {
+        // Single-threaded path
+        for row in 0..out_features {
+            let mut sum = 0.0f32;
+            for block_idx in 0..n_blocks {
+                let input_block = &input[block_idx];
+                let offset = block_idx * col_stride + row * block_size;
+                let weight_block: &BlockQ6_K = unsafe {
+                    &*(weights.as_ptr().add(offset) as *const BlockQ6_K)
+                };
+                sum += vec_dot_q6_k_q8_k_single(weight_block, input_block);
+            }
+            output[row] = sum;
+        }
     }
 }
 
@@ -293,8 +268,8 @@ pub fn gemv_q6_k_transposed(
 /// - Iterate over all in_blocks, accessing weight at [group_idx][block][within_group]
 ///
 /// Thread strategy:
-/// - Decode (batch=1): memory-bound, single-threaded to avoid thread overhead
-/// - Prefill (batch>1): compute-bound, multi-threaded for parallel GEMM
+/// - Decode (batch=1): Use optimal_threads() for memory-bound GEMV
+/// - Prefill (batch>1): Use all threads for compute-bound GEMM
 pub fn gemv_q5_k_transposed(
     weights: &[u8],
     col_stride: usize,
@@ -310,21 +285,15 @@ pub fn gemv_q5_k_transposed(
     assert_eq!(input.len(), n_blocks);
     assert_eq!(output.len(), out_features);
 
-    // CRITICAL: For decode, use single-threaded
-    // Thread creation overhead (~109us) exceeds GEMV time for small matrices
-    // Only use multi-threading for prefill (indicated by n_threads > 1)
-    if n_threads <= 1 {
-        process_q5_k_gemv(
-            weights,
-            input,
-            output,
-            n_blocks,
-            block_size,
-            col_stride,
-            out_features,
-        );
+    // Use optimal_threads for decode (n=1), or all threads for prefill
+    let n_threads = if n_threads == 0 {
+        optimal_threads(out_features, 1, in_features)
     } else {
-        // Multi-threaded for prefill: parallelize over output rows
+        n_threads
+    };
+
+    // Multi-threaded path for better performance
+    if n_threads > 1 {
         let output_ptr = output.as_mut_ptr() as usize;
         parallel_stealing(out_features, n_threads, &|row, _tid| {
             let mut sum = 0.0f32;
@@ -432,78 +401,59 @@ pub fn gemv_q4_k_transposed(
     assert_eq!(input.len(), n_blocks);
     assert_eq!(output.len(), out_features);
 
+    // Use optimal_threads for decode (n=1), or all threads for prefill
+    let n_threads = if n_threads == 0 {
+        optimal_threads(out_features, 1, in_features)
+    } else {
+        n_threads
+    };
+
     // Clear output
     for row in 0..out_features {
         output[row] = 0.0;
     }
 
-    // Calculate interleave factor from stride
-    const DEFAULT_INTERLEAVE: usize = 4;
-    let interleave = if col_stride >= block_size {
-        col_stride / block_size
-    } else {
-        DEFAULT_INTERLEAVE
-    };
-
-    let n_row_groups = (out_features + interleave - 1) / interleave;
-
-    // CRITICAL: For decode, use single-threaded
-    if n_threads <= 1 {
-        for row_group in 0..n_row_groups {
-            let row_start = row_group * interleave;
-            let row_end = (row_start + interleave).min(out_features);
-            let n_rows = row_end - row_start;
-
-            for block_idx in 0..n_blocks {
-                let input_block = &input[block_idx];
-                let base_offset =
-                    block_idx * col_stride + row_start * block_size;
-
-                for i in 0..n_rows {
-                    let row = row_start + i;
-                    let offset = base_offset + i * block_size;
-                    let weight_block: &BlockQ4_K = unsafe {
-                        &*(weights.as_ptr().add(offset) as *const BlockQ4_K)
-                    };
-                    output[row] +=
-                        vec_dot_q4_k_q8_k_single(weight_block, input_block);
-                }
-            }
-        }
-    } else {
+    // Multi-threaded path
+    if n_threads > 1 {
         let output_ptr = output.as_mut_ptr() as usize;
-        parallel_stealing(n_row_groups, n_threads, &|row_group, _tid| {
-            let row_start = row_group * interleave;
-            let row_end = (row_start + interleave).min(out_features);
-            let n_rows = row_end - row_start;
+        parallel_stealing(out_features, n_threads, &|row, _tid| {
+            let mut sum = 0.0f32;
 
             for block_idx in 0..n_blocks {
                 let input_block = &input[block_idx];
-                let base_offset =
-                    block_idx * col_stride + row_start * block_size;
+                let offset = block_idx * col_stride + row * block_size;
+                let weight_block: &BlockQ4_K = unsafe {
+                    &*(weights.as_ptr().add(offset) as *const BlockQ4_K)
+                };
+                sum += vec_dot_q4_k_q8_k_single(weight_block, input_block);
+            }
 
-                for i in 0..n_rows {
-                    let row = row_start + i;
-                    let offset = base_offset + i * block_size;
-                    let weight_block: &BlockQ4_K = unsafe {
-                        &*(weights.as_ptr().add(offset) as *const BlockQ4_K)
-                    };
-                    let dot =
-                        vec_dot_q4_k_q8_k_single(weight_block, input_block);
-                    unsafe {
-                        *((output_ptr as *mut f32).add(row)) += dot;
-                    }
-                }
+            unsafe {
+                *((output_ptr as *mut f32).add(row)) = sum;
             }
         });
+    } else {
+        // Single-threaded path
+        for row in 0..out_features {
+            let mut sum = 0.0f32;
+            for block_idx in 0..n_blocks {
+                let input_block = &input[block_idx];
+                let offset = block_idx * col_stride + row * block_size;
+                let weight_block: &BlockQ4_K = unsafe {
+                    &*(weights.as_ptr().add(offset) as *const BlockQ4_K)
+                };
+                sum += vec_dot_q4_k_q8_k_single(weight_block, input_block);
+            }
+            output[row] = sum;
+        }
     }
 }
 
 /// Transposed GEMV for Q4_0 weights with interleaved layout optimization
 ///
 /// Thread strategy:
-/// - Decode (batch=1): memory-bound, single-threaded
-/// - Prefill (batch>1): compute-bound, multi-threaded
+/// - Decode (batch=1): Use optimal_threads for memory-bound GEMV
+/// - Prefill (batch>1): Use all threads for compute-bound GEMM
 pub fn gemv_q4_0_transposed(
     weights: &[u8],
     col_stride: usize,
@@ -519,70 +469,51 @@ pub fn gemv_q4_0_transposed(
     assert_eq!(input.len(), n_blocks);
     assert_eq!(output.len(), out_features);
 
+    // Use optimal_threads for decode (n=1), or all threads for prefill
+    let n_threads = if n_threads == 0 {
+        optimal_threads(out_features, 1, in_features)
+    } else {
+        n_threads
+    };
+
     // Clear output
     for row in 0..out_features {
         output[row] = 0.0;
     }
 
-    // Calculate interleave factor from stride
-    const DEFAULT_INTERLEAVE: usize = 4;
-    let interleave = if col_stride >= block_size {
-        col_stride / block_size
-    } else {
-        DEFAULT_INTERLEAVE
-    };
-
-    let n_row_groups = (out_features + interleave - 1) / interleave;
-
-    // CRITICAL: For decode, use single-threaded
-    if n_threads <= 1 {
-        for row_group in 0..n_row_groups {
-            let row_start = row_group * interleave;
-            let row_end = (row_start + interleave).min(out_features);
-            let n_rows = row_end - row_start;
-
-            for block_idx in 0..n_blocks {
-                let input_block = &input[block_idx];
-                let base_offset =
-                    block_idx * col_stride + row_start * block_size;
-
-                for i in 0..n_rows {
-                    let row = row_start + i;
-                    let offset = base_offset + i * block_size;
-                    let weight_block: &BlockQ4_0 = unsafe {
-                        &*(weights.as_ptr().add(offset) as *const BlockQ4_0)
-                    };
-                    output[row] +=
-                        vec_dot_q4_0_q8_0_single(weight_block, input_block);
-                }
-            }
-        }
-    } else {
+    // Multi-threaded path
+    if n_threads > 1 {
         let output_ptr = output.as_mut_ptr() as usize;
-        parallel_stealing(n_row_groups, n_threads, &|row_group, _tid| {
-            let row_start = row_group * interleave;
-            let row_end = (row_start + interleave).min(out_features);
-            let n_rows = row_end - row_start;
+        parallel_stealing(out_features, n_threads, &|row, _tid| {
+            let mut sum = 0.0f32;
 
             for block_idx in 0..n_blocks {
                 let input_block = &input[block_idx];
-                let base_offset =
-                    block_idx * col_stride + row_start * block_size;
+                let offset = block_idx * col_stride + row * block_size;
+                let weight_block: &BlockQ4_0 = unsafe {
+                    &*(weights.as_ptr().add(offset) as *const BlockQ4_0)
+                };
+                sum += vec_dot_q4_0_q8_0_single(weight_block, input_block);
+            }
 
-                for i in 0..n_rows {
-                    let row = row_start + i;
-                    let offset = base_offset + i * block_size;
-                    let weight_block: &BlockQ4_0 = unsafe {
-                        &*(weights.as_ptr().add(offset) as *const BlockQ4_0)
-                    };
-                    let dot =
-                        vec_dot_q4_0_q8_0_single(weight_block, input_block);
-                    unsafe {
-                        *((output_ptr as *mut f32).add(row)) += dot;
-                    }
-                }
+            unsafe {
+                *((output_ptr as *mut f32).add(row)) = sum;
             }
         });
+    } else {
+        // Single-threaded path
+        for row in 0..out_features {
+            let mut sum = 0.0f32;
+            for block_idx in 0..n_blocks {
+                let input_block = &input[block_idx];
+                let offset = block_idx * col_stride + row * block_size;
+                let weight_block: &BlockQ4_0 = unsafe {
+                    &*(weights.as_ptr().add(offset) as *const BlockQ4_0)
+                };
+                sum += vec_dot_q4_0_q8_0_single(weight_block, input_block);
+            }
+            output[row] = sum;
+        }
     }
 }
 

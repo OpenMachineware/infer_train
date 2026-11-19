@@ -125,8 +125,8 @@ where
 /// Get optimal thread count for a given operation
 ///
 /// Based on llama.cpp's thread allocation strategy:
-/// - Decode (n=1): memory-bound GEMV, limit threads for cache efficiency
-/// - Prefill (n>=8): compute-bound GEMM, use more threads
+/// - Decode (n=1): memory-bound GEMV, use single thread to avoid overhead
+/// - Prefill (n>=8): compute-bound GEMM, use all threads
 ///
 /// # Arguments
 /// * `m` - Output dimension (rows)
@@ -139,16 +139,12 @@ pub fn optimal_threads(m: usize, n: usize, k: usize) -> usize {
     let n_cpus = num_cpus();
 
     // Decode (n=1): memory-bound GEMV
-    // Limit threads for cache efficiency
+    // CRITICAL: Single-thread is faster due to:
+    // 1. Thread creation overhead (~109us) exceeds GEMV time
+    // 2. Memory-bound: threads compete for memory bandwidth
+    // 3. Cache thrashing: multiple threads evict each other's cache
     if n == 1 {
-        if m < 4096 {
-            // Small decode: use fewer threads to avoid cache thrashing
-            return 4.min(n_cpus);
-        } else if m < 8192 {
-            return 6.min(n_cpus);
-        } else {
-            return 8.min(n_cpus);
-        }
+        return 1;
     }
 
     // Prefill (n>=8): compute-bound GEMM
