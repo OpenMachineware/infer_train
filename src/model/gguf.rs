@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek};
 use std::path::Path;
 
 use memmap2::Mmap;

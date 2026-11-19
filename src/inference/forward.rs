@@ -20,6 +20,7 @@ pub struct QuantizedInput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(non_camel_case_types)]
 pub enum QuantFormat {
     None,
     Q8_0,

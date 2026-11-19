@@ -199,7 +199,7 @@ fn main() {
     let mut prefill_times = Vec::new();
     println!("Tokens: {} ({:?})", tokens.len(), tokens);
 
-    for iter in 0..cli.iterations {
+    for _iter in 0..cli.iterations {
         executor.reset(); // Reset KV cache for each iteration
 
         let start = Instant::now();
@@ -223,7 +223,7 @@ fn main() {
     println!("\n=== Decode Profile ===");
     let mut decode_times = Vec::new();
 
-    for iter in 0..cli.iterations {
+    for _iter in 0..cli.iterations {
         executor.reset(); // Reset KV cache for each iteration
 
         // Prefill first

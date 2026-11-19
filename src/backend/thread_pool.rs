@@ -4,7 +4,7 @@
 // High-performance parallel execution for CPU inference
 // Based on llama.cpp's thread allocation strategy
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -19,7 +19,6 @@ struct PoolState {
     work_fn: AtomicUsize,
     work_data: AtomicUsize,
     max_active: AtomicI32, // Maximum threads to participate (from max_threads param)
-    work_generation: AtomicUsize, // Incremented for each new work batch
     work_ready: Mutex<(usize, bool)>, // (generation, shutdown)
     work_ready_cvar: Condvar,
     counter: AtomicI32,
@@ -45,7 +44,6 @@ impl ThreadPool {
             work_fn: AtomicUsize::new(0),
             work_data: AtomicUsize::new(0),
             max_active: AtomicI32::new(n_threads as i32), // Default to all threads
-            work_generation: AtomicUsize::new(0),
             work_ready: Mutex::new((0, false)),
             work_ready_cvar: Condvar::new(),
             counter: AtomicI32::new(0),
@@ -192,7 +190,9 @@ impl ThreadPool {
         work_fn: fn(usize, usize, *const u8),
         work_data: *const u8,
     ) {
-        self.execute_with_max(n_chunks, self.n_threads, work_fn, work_data);
+        unsafe {
+            self.execute_with_max(n_chunks, self.n_threads, work_fn, work_data)
+        }
     }
 
     pub fn num_threads(&self) -> usize {
@@ -224,7 +224,9 @@ pub unsafe fn parallel_stealing_raw(
     work_fn: fn(usize, usize, *const u8),
     work_data: *const u8,
 ) {
-    GLOBAL_POOL.execute_with_max(n_chunks, max_threads, work_fn, work_data);
+    unsafe {
+        GLOBAL_POOL.execute_with_max(n_chunks, max_threads, work_fn, work_data)
+    }
 }
 
 /// Fixed distribution parallel (for compatibility)
