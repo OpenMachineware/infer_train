@@ -341,6 +341,7 @@ dependencies = [
  "minijinja",
  "rand",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -93,12 +93,13 @@ fn read_data_file(path: &str) -> TestData {
 }
 
 fn generate_input(size: usize, seed: u64) -> Vec<f32> {
-    // Simple pseudo-random generation
-    let mut state = seed;
+    // Use mt19937 to match llama.cpp's std::mt19937
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+    let mut rng = StdRng::seed_from_u64(seed);
     let mut result = Vec::with_capacity(size);
     for _ in 0..size {
-        state = state.wrapping_mul(1103515245).wrapping_add(12345);
-        let val = ((state >> 16) as i32 as f32) / 32768.0; // -1.0 to 1.0
+        let val = rng.gen_range(-1.0f32..1.0f32);
         result.push(val);
     }
     result

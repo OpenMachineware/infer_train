@@ -149,8 +149,6 @@ impl SimpleModel {
         let config = ModelConfig::from_gguf(&gguf);
         let backend = ArmCpuBackend::new(0);
 
-        println!("Model config: {:?}", config);
-
         Ok(Self { gguf, tokenizer, config, backend })
     }
 

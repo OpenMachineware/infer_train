@@ -246,74 +246,93 @@ fn run_llama_cpp(
         .output()
         .expect("Failed to run llama-cli");
 
-    let _stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}\n{}", stdout, stderr);
 
     // Parse llama.cpp output for metrics
-    // llama.cpp outputs something like:
-    // "prefill time = 123.45 ms / 10 tokens"
-    // "decode time = 234.56 ms / 32 tokens"
+    // New format: "[ Prompt: X t/s | Generation: Y t/s ]"
+    // Old format: "prompt eval time = 123.45 ms / 10 tokens"
 
-    let mut prefill_time_ms = 0.0f64;
+    let mut prefill_tps = 0.0f64;
+    let mut decode_tps = 0.0f64;
     let mut prefill_tokens = 0usize;
-    let mut decode_time_ms = 0.0f64;
-    let mut decode_tokens = 0usize;
+    let mut decode_tokens_found = 0usize;
 
-    // Parse from stderr (llama.cpp logs there)
-    for line in stderr.lines() {
-        // Look for timing info
-        if line.contains("eval time") || line.contains("prompt eval time") {
-            // Example: "prompt eval time = 123.45 ms / 10 tokens (81.23 tokens per second)"
-            if let Some(time_str) = extract_number_before(line, " ms") {
-                prefill_time_ms = time_str;
+    for line in combined.lines() {
+        // New format: "[ Prompt: X t/s | Generation: Y t/s ]"
+        if line.contains("Prompt:") && line.contains("Generation:") {
+            // Extract prompt tps
+            if let Some(pos) = line.find("Prompt:") {
+                let after = &line[pos + 7..];
+                if let Some(end) = after.find("t/s") {
+                    let num_str = after[..end].trim();
+                    if let Ok(n) = num_str.parse::<f64>() {
+                        prefill_tps = n;
+                    }
+                }
             }
+            // Extract generation tps
+            if let Some(pos) = line.find("Generation:") {
+                let after = &line[pos + 11..];
+                if let Some(end) = after.find("t/s") {
+                    let num_str = after[..end].trim();
+                    if let Ok(n) = num_str.parse::<f64>() {
+                        decode_tps = n;
+                    }
+                }
+            }
+        }
+        // Old format fallback
+        if line.contains("prompt eval time") {
             if let Some(tokens_str) =
                 extract_number_after(line, "/ ", " tokens")
             {
                 prefill_tokens = tokens_str;
             }
         }
-        if line.contains("generation eval time") || line.contains("eval time") {
-            if line.contains("tokens per second") {
-                if let Some(time_str) = extract_number_before(line, " ms") {
-                    if decode_time_ms == 0.0 {
-                        decode_time_ms = time_str;
-                    }
-                }
-                if let Some(tokens_str) =
-                    extract_number_after(line, "/ ", " tokens")
-                {
-                    if decode_tokens == 0 {
-                        decode_tokens = tokens_str;
-                    }
-                }
+        if line.contains("generation eval time") {
+            if let Some(tokens_str) =
+                extract_number_after(line, "/ ", " tokens")
+            {
+                decode_tokens_found = tokens_str;
             }
         }
     }
 
-    // Fallback: estimate from stdout token count
+    // Estimate prefill tokens from prompt (rough approximation)
     if prefill_tokens == 0 {
         prefill_tokens = prompt.split_whitespace().count();
     }
 
-    let memory_mb = 0.0; // Would need ps to get memory
+    let decode_tokens = if decode_tokens_found > 0 {
+        decode_tokens_found
+    } else {
+        decode_tokens
+    };
+
+    // Calculate times from tps
+    let prefill_time_ms = if prefill_tps > 0.0 {
+        prefill_tokens as f64 / prefill_tps * 1000.0
+    } else {
+        0.0
+    };
+    let decode_time_ms = if decode_tps > 0.0 {
+        decode_tokens as f64 / decode_tps * 1000.0
+    } else {
+        0.0
+    };
+
+    let memory_mb = 0.0;
 
     PerfMetrics {
         name: "llama.cpp".to_string(),
         prefill_time_ms,
         prefill_tokens,
-        prefill_tps: if prefill_time_ms > 0.0 {
-            prefill_tokens as f64 / (prefill_time_ms / 1000.0)
-        } else {
-            0.0
-        },
+        prefill_tps,
         decode_time_ms,
         decode_tokens,
-        decode_tps: if decode_time_ms > 0.0 {
-            decode_tokens as f64 / (decode_time_ms / 1000.0)
-        } else {
-            0.0
-        },
+        decode_tps,
         total_time_ms: prefill_time_ms + decode_time_ms,
         total_tps: if prefill_time_ms + decode_time_ms > 0.0 {
             (prefill_tokens + decode_tokens) as f64
@@ -323,19 +342,6 @@ fn run_llama_cpp(
         },
         memory_mb,
     }
-}
-
-fn extract_number_before(s: &str, suffix: &str) -> Option<f64> {
-    if let Some(pos) = s.find(suffix) {
-        let before = &s[..pos];
-        // Find the last number in before
-        for word in before.split_whitespace().rev() {
-            if let Ok(n) = word.parse::<f64>() {
-                return Some(n);
-            }
-        }
-    }
-    None
 }
 
 fn extract_number_after(s: &str, prefix: &str, suffix: &str) -> Option<usize> {
