@@ -187,6 +187,72 @@ impl TryFrom<i32> for QuantType {
     }
 }
 
+impl QuantType {
+    /// Get the size of one block in bytes (ggml_type_size)
+    pub fn block_size(&self) -> usize {
+        match self {
+            QuantType::F32 => 4,
+            QuantType::F16 | QuantType::BF16 => 2,
+            QuantType::Q4_0 => std::mem::size_of::<BlockQ4_0>(),
+            QuantType::Q4_1 => std::mem::size_of::<BlockQ4_1>(),
+            QuantType::Q5_0 => 22, // 2 + 2 + 16 + 2 extra = 22 bytes (not defined struct)
+            QuantType::Q5_1 => 24, // 2 + 2 + 16 + 4 extra = 24 bytes (not defined struct)
+            QuantType::Q8_0 => std::mem::size_of::<BlockQ8_0>(),
+            QuantType::Q4_K => std::mem::size_of::<BlockQ4_K>(),
+            QuantType::Q5_K => std::mem::size_of::<BlockQ5_K>(),
+            QuantType::Q6_K => std::mem::size_of::<BlockQ6_K>(),
+            QuantType::Q8_K => std::mem::size_of::<BlockQ8_K>(),
+            QuantType::I8 => 1,
+            QuantType::I16 => 2,
+            QuantType::I32 => 4,
+            QuantType::I64 => 8,
+            QuantType::F64 => 8,
+            // For types without defined blocks, use approximate sizes
+            QuantType::Q2_K | QuantType::Q3_K => 210, // Same as Q6_K
+            // IQ formats: use actual block sizes
+            QuantType::IQ4_XS => std::mem::size_of::<BlockIQ4XS>(), // 136 bytes
+            QuantType::IQ2_XXS | QuantType::IQ2_XS | QuantType::IQ3_XXS => 2, // TODO: verify
+            QuantType::IQ1_S
+            | QuantType::IQ4_NL
+            | QuantType::IQ3_S
+            | QuantType::IQ2_S
+            | QuantType::IQ1_M => 210,
+            _ => 1,
+        }
+    }
+
+    /// Get the number of elements per block (ggml_blck_size)
+    pub fn block_elements(&self) -> usize {
+        match self {
+            QuantType::F32 | QuantType::F16 | QuantType::BF16 => 1,
+            QuantType::Q4_0 | QuantType::Q4_1 => QK4_0,
+            QuantType::Q5_0 | QuantType::Q5_1 => QK5_0,
+            QuantType::Q8_0 | QuantType::Q8_1 => QK8_0,
+            QuantType::Q2_K
+            | QuantType::Q3_K
+            | QuantType::Q4_K
+            | QuantType::Q5_K
+            | QuantType::Q6_K
+            | QuantType::Q8_K => QK_K,
+            QuantType::IQ2_XXS
+            | QuantType::IQ2_XS
+            | QuantType::IQ3_XXS
+            | QuantType::IQ1_S
+            | QuantType::IQ4_NL
+            | QuantType::IQ3_S
+            | QuantType::IQ2_S
+            | QuantType::IQ4_XS
+            | QuantType::IQ1_M => QK_K,
+            QuantType::I8
+            | QuantType::I16
+            | QuantType::I32
+            | QuantType::I64
+            | QuantType::F64 => 1,
+            _ => 1,
+        }
+    }
+}
+
 // Core operators
 #[derive(Debug, Clone)]
 pub enum CoreOperator {
@@ -197,7 +263,7 @@ pub enum CoreOperator {
     Linear { in_features: usize, out_features: usize, quant_type: QuantType },
 
     /// RoPE positional encoding
-    Rope { head_dim: usize, max_seq_len: usize },
+    Rope { head_dim: usize, max_seq_len: usize, freq_base: f32 },
 
     /// Flash Attention
     FlashAttention {

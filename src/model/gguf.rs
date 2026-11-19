@@ -73,6 +73,10 @@ pub struct GgufTensorInfo {
     pub dims: Vec<u64>,
     pub quant_type: QuantType,
     pub offset: u64,
+    /// Strides in bytes for each dimension (GGML nb[] array)
+    /// strides[0] = block size
+    /// strides[i] = strides[i-1] * (dims[i-1] / block_elements)
+    pub strides: Vec<u64>,
 }
 
 // Parsed GGUF file
@@ -145,7 +149,39 @@ impl GgufFile {
             let quant_type = read_quant_type(reader)?;
             let offset = read_u64(reader)?;
 
-            tensors.push(GgufTensorInfo { name, dims, quant_type, offset });
+            // Calculate strides (GGML nb[] array)
+            // nb[0] = block_size
+            // nb[i] = nb[i-1] * (ne[i-1] / blck_size) for quantized, or nb[i-1] * ne[i-1] for f32/f16
+            let block_size = quant_type.block_size() as u64;
+            let block_elements = quant_type.block_elements() as u64;
+
+            let mut strides = Vec::with_capacity(n_dims);
+            if dims.is_empty() {
+                strides.push(block_size);
+            } else {
+                strides.push(block_size);
+                for i in 1..n_dims {
+                    // For quantized types: nb[i] = nb[i-1] * ceil(ne[i-1] / blck_size)
+                    // For unquantized: nb[i] = nb[i-1] * ne[i-1]
+                    let prev_dim = dims[i - 1];
+                    let stride = if block_elements > 1 {
+                        // Quantized: need to account for block alignment
+                        strides[i - 1]
+                            * ((prev_dim + block_elements - 1) / block_elements)
+                    } else {
+                        strides[i - 1] * prev_dim
+                    };
+                    strides.push(stride);
+                }
+            }
+
+            tensors.push(GgufTensorInfo {
+                name,
+                dims,
+                quant_type,
+                offset,
+                strides,
+            });
         }
 
         // Calculate data offset (aligned)
@@ -184,9 +220,24 @@ impl GgufFile {
     pub fn get_tensor_data(&self, name: &str) -> Option<&[u8]> {
         for tensor in &self.tensors {
             if tensor.name == name {
+                // GGUF tensor offset is relative to the start of tensor data section
                 let start = tensor.offset as usize;
                 let size = Self::tensor_size(tensor);
-                return Some(&self.data[start..start + size]);
+
+                // Debug: check bounds
+                if start + size > self.data.len() {
+                    eprintln!(
+                        "[GGUF-ERROR] Tensor {} offset {} + size {} exceeds data len {}",
+                        tensor.name,
+                        tensor.offset,
+                        size,
+                        self.data.len()
+                    );
+                    return None;
+                }
+
+                let result = &self.data[start..start + size];
+                return Some(result);
             }
         }
         None
@@ -659,6 +710,30 @@ impl FromGgufValue for Vec<f32> {
     }
 }
 
+impl FromGgufValue for Vec<u8> {
+    fn from_gguf(value: &GgufValue) -> Option<Self> {
+        match value {
+            GgufValue::Array(_, elements) => {
+                let mut result = Vec::with_capacity(elements.len());
+                for elem in elements {
+                    match elem {
+                        GgufValue::Uint8(v) => result.push(*v),
+                        GgufValue::Int32(v) if *v >= 0 && *v <= 255 => {
+                            result.push(*v as u8)
+                        }
+                        GgufValue::Uint32(v) if *v <= 255 => {
+                            result.push(*v as u8)
+                        }
+                        _ => return None,
+                    }
+                }
+                Some(result)
+            }
+            _ => None,
+        }
+    }
+}
+
 // Tokenizer type enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenizerType {
@@ -698,6 +773,31 @@ impl TryFrom<&str> for TokenizerType {
     }
 }
 
+// Token type from GGUF (matches llama.cpp)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenType {
+    Normal = 1,
+    Unknown = 2,
+    Control = 3,
+    UserDefined = 4,
+    Unused = 5,
+    Byte = 6,
+}
+
+impl TokenType {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => TokenType::Normal,
+            2 => TokenType::Unknown,
+            3 => TokenType::Control,
+            4 => TokenType::UserDefined,
+            5 => TokenType::Unused,
+            6 => TokenType::Byte,
+            _ => TokenType::Normal,
+        }
+    }
+}
+
 // Tokenizer metadata extracted from GGUF
 #[derive(Debug, Clone)]
 pub struct TokenizerMetadata {
@@ -705,6 +805,8 @@ pub struct TokenizerMetadata {
     pub tokenizer_type: TokenizerType,
     /// Token strings (indexed by token ID)
     pub tokens: Vec<String>,
+    /// Token types (indexed by token ID)
+    pub token_types: Vec<TokenType>,
     /// BPE merge rules (pairs of tokens to merge)
     pub merges: Vec<(String, String)>,
     /// Token scores (used by SPM)
@@ -792,9 +894,19 @@ impl GgufFile {
         let byte_fallback =
             self.get_meta("tokenizer.ggml.byte_fallback").unwrap_or(false);
 
+        // Token types (optional, identifies special tokens)
+        let token_types: Vec<TokenType> = self
+            .get_meta::<Vec<u8>>("tokenizer.ggml.token_type")
+            .map(|v| v.iter().map(|&t| TokenType::from_u8(t)).collect())
+            .unwrap_or_else(|| {
+                // Default all tokens to Normal
+                vec![TokenType::Normal; tokens.len()]
+            });
+
         Ok(TokenizerMetadata {
             tokenizer_type,
             tokens,
+            token_types,
             merges,
             scores,
             bos_token_id,

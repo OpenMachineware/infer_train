@@ -279,7 +279,7 @@ impl Backend for ArmCpuBackend {
                 }
             }
 
-            CoreOperator::Rope { head_dim, max_seq_len: _ } => {
+            CoreOperator::Rope { head_dim, max_seq_len: _, freq_base } => {
                 if inputs.len() != 1 || outputs.len() != 1 {
                     return Err(OpError::InvalidInput(
                         "Rope requires 1 input and 1 output".into(),
@@ -297,7 +297,7 @@ impl Backend for ArmCpuBackend {
                     )
                 };
 
-                rope::rope_f32(x, output, 0, *head_dim, *head_dim, 10000.0);
+                rope::rope_f32(x, output, 0, *head_dim, *head_dim, *freq_base);
                 Ok(())
             }
 

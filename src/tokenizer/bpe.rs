@@ -11,6 +11,13 @@
 
 use crate::tokenizer::{TokenId, Tokenizer, TokenizerError, Vocab};
 
+// Fragment for special token handling
+#[derive(Clone)]
+enum Fragment {
+    Text(String),
+    Special(TokenId),
+}
+
 // BPE tokenizer
 pub struct BpeTokenizer {
     vocab: Vocab,
@@ -22,10 +29,80 @@ impl BpeTokenizer {
         Self { vocab }
     }
 
+    // Split text into fragments, extracting special tokens first
+    // This follows llama.cpp's tokenizer_st_partition approach
+    fn split_special_tokens(&self, text: &str) -> Vec<Fragment> {
+        let mut fragments = vec![Fragment::Text(text.to_string())];
+
+        // Process each special token (sorted by length, longest first)
+        for &special_id in self.vocab.special_tokens() {
+            if let Some(special_token) = self.vocab.id_to_token(special_id) {
+                let mut new_fragments = Vec::new();
+
+                for fragment in fragments {
+                    match fragment {
+                        Fragment::Text(t) => {
+                            // Split text by this special token
+                            let mut last_end = 0;
+                            for (start, _) in t.match_indices(special_token) {
+                                // Add text before the match
+                                if start > last_end {
+                                    new_fragments.push(Fragment::Text(
+                                        t[last_end..start].to_string(),
+                                    ));
+                                }
+                                // Add the special token
+                                new_fragments
+                                    .push(Fragment::Special(special_id));
+                                last_end = start + special_token.len();
+                            }
+                            // Add remaining text
+                            if last_end < t.len() {
+                                new_fragments.push(Fragment::Text(
+                                    t[last_end..].to_string(),
+                                ));
+                            }
+                        }
+                        Fragment::Special(_) => new_fragments.push(fragment),
+                    }
+                }
+
+                fragments = new_fragments;
+            }
+        }
+
+        fragments
+    }
+
     // Pre-tokenize text into initial chunks
     // Following llama.cpp's llama_tokenize approach
     // GPT-2 style: convert leading space to Ġ (U+0120)
     fn pre_tokenize(&self, text: &str) -> Vec<String> {
+        // First, split by special tokens
+        let fragments = self.split_special_tokens(text);
+
+        let mut result = Vec::new();
+
+        for fragment in fragments {
+            match fragment {
+                Fragment::Text(t) => {
+                    // Regular pre-tokenization for text
+                    result.extend(self.pre_tokenize_text(&t));
+                }
+                Fragment::Special(id) => {
+                    // Special tokens are kept as-is
+                    if let Some(token) = self.vocab.id_to_token(id) {
+                        result.push(token.to_string());
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    // Pre-tokenize regular text (without special tokens)
+    fn pre_tokenize_text(&self, text: &str) -> Vec<String> {
         let mut result = Vec::new();
         let mut current = String::new();
 
@@ -287,8 +364,17 @@ impl Tokenizer for BpeTokenizer {
 
         // Encode each chunk
         for chunk in chunks {
-            let token_ids = self.encode_chunk(&chunk);
-            result.extend(token_ids);
+            // Check if this is a special token
+            if self.vocab.is_special_token(&chunk) {
+                // Special tokens are encoded directly
+                if let Some(id) = self.vocab.token_to_id(&chunk) {
+                    result.push(id);
+                }
+            } else {
+                // Regular text - apply BPE
+                let token_ids = self.encode_chunk(&chunk);
+                result.extend(token_ids);
+            }
         }
 
         // Add EOS token if configured
@@ -404,6 +490,7 @@ impl Tokenizer for BpeTokenizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::gguf::TokenType;
     use crate::model::{TokenizerMetadata, TokenizerType};
 
     fn make_test_vocab() -> Vocab {
@@ -424,6 +511,7 @@ mod tests {
                 "Ġhello".to_string(),
                 "Ġworld".to_string(),
             ],
+            token_types: vec![TokenType::Normal; 13],
             merges: vec![
                 ("h".to_string(), "e".to_string()),
                 ("l".to_string(), "l".to_string()),

@@ -1,41 +1,99 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
-//
-// 通用算子测试框架 - Rust版本
-// 用法:
-//   1. 看输出: cargo run --release --bin op_test -- --op rms_norm --verbose
-//   2. 测性能: cargo run --release --bin op_test -- --op rms_norm --bench 1000
-//   3. 对比输出: cargo run --release --bin op_test -- --op vec_dot_q5_k --verbose
+
+// Generic operator test framework - Rust version
+// Usage:
+//   1. View output: cargo run --release --bin op_test -- --op rms_norm --verbose
+//   2. Benchmark: cargo run --release --bin op_test -- --op rms_norm --bench 1000
+//   3. Read from data file: cargo run --release --bin op_test -- --data /tmp/test.bin -v
 
 use clap::Parser;
+use std::fs::File;
+use std::io::Read;
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// 算子名称: rms_norm, silu, vec_dot_q5_k, vec_dot_q6_k, vec_dot_q4_k, quantize_q8_k
+    /// Operator name: rms_norm, silu, vec_dot_q5_k, vec_dot_q6_k, vec_dot_q4_k, quantize_q8_k
     #[arg(short, long)]
-    op: String,
+    op: Option<String>,
 
-    /// 打印详细输出
+    /// Read test data from file (used when comparing with llama.cpp)
+    #[arg(short, long)]
+    data: Option<String>,
+
+    /// Verbose output
     #[arg(short, long)]
     verbose: bool,
 
-    /// 性能测试循环次数
+    /// Number of benchmark iterations
     #[arg(short, long, default_value = "0")]
     bench: u32,
 
-    /// 输入大小 (对于需要size的算子)
+    /// Input size (for operators that need size)
     #[arg(short, long, default_value = "1024")]
     size: usize,
 
-    /// 种子 (用于生成随机输入)
+    /// Random seed (for generating random input)
     #[arg(short, long, default_value = "42")]
     seed: u64,
 }
 
+/// Test data read from file
+struct TestData {
+    op: String,
+    size: usize,
+    seed: u64,
+    input: Vec<f32>,
+    weight: Vec<f32>,
+}
+
+fn read_data_file(path: &str) -> TestData {
+    let mut file = File::open(path).expect("Failed to open data file");
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).expect("Failed to read data file");
+
+    let mut offset = 0;
+
+    // Read header
+    let op_len = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap())
+        as usize;
+    offset += 4;
+    let size = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap())
+        as usize;
+    offset += 4;
+    let seed = u64::from_le_bytes(buf[offset..offset + 8].try_into().unwrap());
+    offset += 8;
+
+    // Read op name
+    let op = String::from_utf8(buf[offset..offset + op_len].to_vec())
+        .expect("Invalid op name");
+    offset += op_len;
+
+    // Read input
+    let mut input = Vec::with_capacity(size);
+    for _ in 0..size {
+        let val =
+            f32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
+        input.push(val);
+        offset += 4;
+    }
+
+    // Read weight
+    let mut weight = Vec::with_capacity(size);
+    for _ in 0..size {
+        let val =
+            f32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
+        weight.push(val);
+        offset += 4;
+    }
+
+    TestData { op, size, seed, input, weight }
+}
+
 fn generate_input(size: usize, seed: u64) -> Vec<f32> {
-    // 简单的伪随机生成
+    // Simple pseudo-random generation
     let mut state = seed;
     let mut result = Vec::with_capacity(size);
     for _ in 0..size {
@@ -54,7 +112,7 @@ fn test_rms_norm(args: &Args) {
     let weight = generate_input(size, args.seed + 1);
     let mut output = vec![0.0f32; size];
 
-    // 计算参考值
+    // Compute reference value
     let eps = 1e-5f32;
     let sum_sq: f32 = input.iter().map(|x| x * x).sum();
     let rms = (sum_sq / size as f32 + eps).sqrt();
@@ -69,7 +127,7 @@ fn test_rms_norm(args: &Args) {
         println!("Weight [0..5]: {:?}", &weight[..5.min(size)]);
     }
 
-    // 单次执行看输出
+    // Single execution to view output
     rms_norm_f32(&input, &weight, &mut output, eps);
 
     if args.verbose {
@@ -78,13 +136,13 @@ fn test_rms_norm(args: &Args) {
         let out_max = output.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         println!("Output range: [{:.4}, {:.4}]", out_min, out_max);
 
-        // 验证输出RMS ≈ 1.0 (当weight=1时)
+        // Verify output RMS ≈ 1.0 (when weight=1)
         let out_sum_sq: f32 = output.iter().map(|x| x * x).sum();
         let out_rms = (out_sum_sq / size as f32).sqrt();
         println!("Output RMS (should be ~1.0 with weight=1): {:.4}", out_rms);
     }
 
-    // 性能测试
+    // Performance test
     if args.bench > 0 {
         let start = Instant::now();
         for _ in 0..args.bench {
@@ -142,7 +200,7 @@ fn test_quantize_q8_k(args: &Args) {
     let size = args.size;
     let nb = (size + QK_K - 1) / QK_K;
     let input = generate_input(size, args.seed);
-    // 放大范围
+    // Scale up range
     let input: Vec<f32> = input.iter().map(|&x| x * 10.0).collect();
     let mut output: Vec<BlockQ8_K> = vec![unsafe { std::mem::zeroed() }; nb];
 
@@ -163,7 +221,7 @@ fn test_quantize_q8_k(args: &Args) {
         println!("  qs [0..10]: {:?}", &output[0].qs[..10.min(256)]);
         println!("  bsums [0..4]: {:?}", &output[0].bsums[..4.min(16)]);
 
-        // 验证: dequant = d * qs
+        // Verify: dequant = d * qs
         println!("\nVerification:");
         for i in 0..5.min(256) {
             let deq = output[0].d * (output[0].qs[i] as f32);
@@ -196,35 +254,35 @@ fn test_vec_dot_q5_k(args: &Args) {
     };
     use infer_train::types::{BlockQ5_K, BlockQ8_K, QK_K, fp16_to_fp32};
 
-    // 创建测试输入
+    // Create test input
     let input_size = QK_K; // 256
     let nb = 4; // 4 blocks = 1024 elements
     let total_size = input_size * nb;
 
     let input = generate_input(total_size, args.seed);
-    let input: Vec<f32> = input.iter().map(|&x| x * 5.0).collect(); // 放大范围
+    let input: Vec<f32> = input.iter().map(|&x| x * 5.0).collect(); // Scale up range
 
-    // 量化输入到Q8_K
+    // Quantize input to Q8_K
     let mut input_q8k: Vec<BlockQ8_K> = vec![unsafe { std::mem::zeroed() }; nb];
     quantize_q8_k(&input, &mut input_q8k);
 
-    // 创建假的Q5_K权重 (需要正确的格式)
+    // Create fake Q5_K weights (need correct format)
     let mut weights: Vec<BlockQ5_K> = vec![unsafe { std::mem::zeroed() }; nb];
-    // 填充一些值
+    // Fill with some values
     for b in &mut weights {
         b.d = half::f16::to_bits(half::f16::from_f32(0.001)); // scale
         b.dmin = half::f16::to_bits(half::f16::from_f32(0.01)); // min scale
-        // qs: 低4位和高4位各存储一个值
+        // qs: low 4 bits and high 4 bits each store a value
         for i in 0..128 {
-            b.qs[i] = 0x88; // 低4位=8, 高4位=8
+            b.qs[i] = 0x88; // low 4 bits = 8, high 4 bits = 8
         }
-        // qh: 高位存储
+        // qh: high bit storage
         for i in 0..32 {
             b.qh[i] = 0;
         }
-        // scales: 子块scale
+        // scales: sub-block scales
         for i in 0..12 {
-            b.scales[i] = 32; // 中等scale
+            b.scales[i] = 32; // medium scale
         }
     }
 
@@ -241,7 +299,7 @@ fn test_vec_dot_q5_k(args: &Args) {
         );
     }
 
-    // 计算点积
+    // Compute dot product
     let result = vec_dot_q5_k_q8_k(&weights, &input_q8k);
 
     if args.verbose {
@@ -282,12 +340,12 @@ fn test_vec_dot_q6_k(args: &Args) {
     let mut input_q8k: Vec<BlockQ8_K> = vec![unsafe { std::mem::zeroed() }; nb];
     quantize_q8_k(&input, &mut input_q8k);
 
-    // 创建假的Q6_K权重
+    // Create fake Q6_K weights
     let mut weights: Vec<BlockQ6_K> = vec![unsafe { std::mem::zeroed() }; nb];
     for b in &mut weights {
         b.d = half::f16::to_bits(half::f16::from_f32(0.001));
         for i in 0..128 {
-            b.ql[i] = 32; // 中等值
+            b.ql[i] = 32; // medium value
         }
         for i in 0..64 {
             b.qh[i] = 0;
@@ -336,7 +394,7 @@ fn test_vec_dot_q4_k(args: &Args) {
     let mut input_q8k: Vec<BlockQ8_K> = vec![unsafe { std::mem::zeroed() }; nb];
     quantize_q8_k(&input, &mut input_q8k);
 
-    // 创建假的Q4_K权重
+    // Create fake Q4_K weights
     let mut weights: Vec<BlockQ4_K> = vec![unsafe { std::mem::zeroed() }; nb];
     for b in &mut weights {
         b.d = half::f16::to_bits(half::f16::from_f32(0.001));
@@ -378,19 +436,95 @@ fn test_vec_dot_q4_k(args: &Args) {
 fn main() {
     let args = Args::parse();
 
-    match args.op.as_str() {
-        "rms_norm" => test_rms_norm(&args),
-        "silu" => test_silu(&args),
-        "quantize_q8_k" => test_quantize_q8_k(&args),
-        "vec_dot_q5_k" => test_vec_dot_q5_k(&args),
-        "vec_dot_q6_k" => test_vec_dot_q6_k(&args),
-        "vec_dot_q4_k" => test_vec_dot_q4_k(&args),
-        _ => {
-            eprintln!("Unknown operator: {}", args.op);
-            eprintln!(
-                "Supported: rms_norm, silu, quantize_q8_k, vec_dot_q5_k, vec_dot_q6_k, vec_dot_q4_k"
-            );
-            std::process::exit(1);
+    // If data file specified, read from file
+    if let Some(data_path) = &args.data {
+        let data = read_data_file(data_path);
+
+        // Create new Args using data read from file
+        let file_args = Args {
+            op: Some(data.op.clone()),
+            data: args.data.clone(),
+            verbose: args.verbose,
+            bench: args.bench,
+            size: data.size,
+            seed: data.seed,
+        };
+
+        println!("Operator: {}, size: {}", data.op, data.size);
+
+        match data.op.as_str() {
+            "rms_norm" => {
+                test_rms_norm_with_data(&file_args, &data.input, &data.weight)
+            }
+            _ => {
+                eprintln!("Unknown operator from data file: {}", data.op);
+                std::process::exit(1);
+            }
         }
+        return;
+    }
+
+    // Original logic: run based on --op parameter
+    if let Some(op) = &args.op {
+        match op.as_str() {
+            "rms_norm" => test_rms_norm(&args),
+            "silu" => test_silu(&args),
+            "quantize_q8_k" => test_quantize_q8_k(&args),
+            "vec_dot_q5_k" => test_vec_dot_q5_k(&args),
+            "vec_dot_q6_k" => test_vec_dot_q6_k(&args),
+            "vec_dot_q4_k" => test_vec_dot_q4_k(&args),
+            _ => {
+                eprintln!("Unknown operator: {}", op);
+                eprintln!(
+                    "Supported: rms_norm, silu, quantize_q8_k, vec_dot_q5_k, vec_dot_q6_k, vec_dot_q4_k"
+                );
+                std::process::exit(1);
+            }
+        }
+    } else {
+        eprintln!("Need to specify --op or --data");
+        std::process::exit(1);
+    }
+}
+
+/// Test rms_norm using data read from file
+fn test_rms_norm_with_data(args: &Args, input: &[f32], weight: &[f32]) {
+    use infer_train::backend::arm::rms_norm::rms_norm_f32;
+
+    let size = args.size;
+    let mut output = vec![0.0f32; size];
+    let eps = 1e-5f32;
+
+    if args.verbose {
+        println!("=== RMS Norm ===");
+        println!("Size: {}", size);
+        println!("Input [0..5]: {:?}", &input[..5.min(size)]);
+        println!("Weight [0..5]: {:?}", &weight[..5.min(size)]);
+    }
+
+    // Single execution to view output
+    rms_norm_f32(input, weight, &mut output, eps);
+
+    if args.verbose {
+        println!("Output [0..5]: {:?}", &output[..5.min(size)]);
+        let out_min = output.iter().cloned().fold(f32::INFINITY, f32::min);
+        let out_max = output.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        println!("Output range: [{:.4}, {:.4}]", out_min, out_max);
+    }
+
+    // Performance test
+    if args.bench > 0 {
+        let start = Instant::now();
+        for _ in 0..args.bench {
+            rms_norm_f32(input, weight, &mut output, eps);
+        }
+        let elapsed = start.elapsed();
+        let us_per_iter = elapsed.as_micros() as f64 / args.bench as f64;
+        println!("Benchmark: {} iterations in {:?}", args.bench, elapsed);
+        println!(
+            "Per iteration: {:.2} µs ({:.2} GB/s)",
+            us_per_iter,
+            (size as f64 * 4.0 * 3.0) / us_per_iter / 1000.0
+        );
     }
 }

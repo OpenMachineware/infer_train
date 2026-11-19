@@ -32,6 +32,7 @@ pub struct ModelConfig {
     pub intermediate_size: usize,
     pub context_length: usize,
     pub rope_freq_base: f32,
+    pub rms_norm_eps: f32,
 }
 
 impl ModelConfig {
@@ -104,6 +105,26 @@ impl ModelConfig {
                 })
                 .or_else(|| gguf.get_meta::<f32>("llama.rope_base"))
                 .unwrap_or(10000.0),
+            rms_norm_eps: gguf
+                .get_meta::<f32>(&format!(
+                    "{}attention.layer_norm_rms_epsilon",
+                    prefix
+                ))
+                .or_else(|| {
+                    gguf.get_meta::<f32>(
+                        "llama.attention.layer_norm_rms_epsilon",
+                    )
+                })
+                .or_else(|| {
+                    gguf.get_meta::<f32>(&format!(
+                        "{}attention.layer_norm_epsilon",
+                        prefix
+                    ))
+                })
+                .or_else(|| {
+                    gguf.get_meta::<f32>("llama.attention.layer_norm_epsilon")
+                })
+                .unwrap_or(1e-6),
         }
     }
 
@@ -183,18 +204,60 @@ impl SimpleModel {
         None
     }
 
-    /// Simple token embedding lookup (returns hidden states for a single token)
-    pub fn embed_token(&self, _token_id: u32) -> Option<Vec<f32>> {
-        let _emb_weight = self.get_embeddings()?;
+    /// Token embedding lookup (returns hidden states for a single token)
+    pub fn embed_token(&self, token_id: u32) -> Option<Vec<f32>> {
+        let emb_data = self.get_embeddings()?;
         let hidden_size = self.config.hidden_size;
 
-        // Assuming F32 or F16 embedding
-        // For now, just return zeros as placeholder
-        // Real implementation would:
-        // 1. Find embedding tensor and its type
-        // 2. Extract row for token_id
-        // 3. Convert to f32
-        Some(vec![0.0f32; hidden_size])
+        // Find embedding tensor info to get quantization type
+        let emb_tensor =
+            self.gguf.tensors.iter().find(|t| t.name == "token_embd.weight")?;
+
+        match emb_tensor.quant_type {
+            crate::types::QuantType::F32 => {
+                let offset = (token_id as usize) * hidden_size * 4;
+                if offset + hidden_size * 4 > emb_data.len() {
+                    return None;
+                }
+                let bytes = &emb_data[offset..offset + hidden_size * 4];
+                Some(
+                    bytes
+                        .chunks_exact(4)
+                        .map(|chunk| {
+                            f32::from_le_bytes(chunk.try_into().unwrap())
+                        })
+                        .collect(),
+                )
+            }
+            crate::types::QuantType::Q6_K => {
+                use crate::types::{BlockQ6_K, QK_K};
+                let nb = (hidden_size + QK_K - 1) / QK_K;
+                let block_size = std::mem::size_of::<BlockQ6_K>();
+                let row_offset = (token_id as usize) * nb * block_size;
+
+                if row_offset + nb * block_size > emb_data.len() {
+                    return None;
+                }
+
+                let mut embedding = vec![0.0f32; hidden_size];
+                let block_data =
+                    &emb_data[row_offset..row_offset + nb * block_size];
+
+                for i in 0..nb {
+                    let block_offset = i * block_size;
+                    let block_bytes =
+                        &block_data[block_offset..block_offset + block_size];
+                    crate::backend::arm::dequant::dequant_q6_k(
+                        block_bytes,
+                        &mut embedding[i * QK_K..],
+                        QK_K.min(hidden_size - i * QK_K),
+                    );
+                }
+
+                Some(embedding)
+            }
+            _ => None, // Unsupported quantization type
+        }
     }
 
     /// List all tensor names

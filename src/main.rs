@@ -42,10 +42,21 @@ enum Commands {
         /// Show tensor summary
         #[arg(long)]
         show_tensors: bool,
+
+        /// Disable chat template, use raw prompt directly
+        #[arg(long)]
+        no_chat_template: bool,
     },
 }
 
 fn main() {
+    // Initialize logger (only in debug-log feature)
+    #[cfg(feature = "debug-log")]
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("debug"),
+    )
+    .init();
+
     if let Err(e) = run() {
         eprintln!("Error: {}", e);
         std::process::exit(1);
@@ -63,6 +74,7 @@ fn run() -> Result<(), String> {
             max_tokens,
             temperature,
             show_tensors,
+            no_chat_template,
         } => run_cli(
             &model,
             prompt.as_deref(),
@@ -70,6 +82,7 @@ fn run() -> Result<(), String> {
             max_tokens,
             temperature,
             show_tensors,
+            no_chat_template,
         ),
     }
 }
@@ -81,6 +94,7 @@ fn run_cli(
     max_tokens: usize,
     temperature: f32,
     show_tensors: bool,
+    no_chat_template: bool,
 ) -> Result<(), String> {
     println!("infer_train - unified inference engine");
     println!("Loading model: {}", model_path);
@@ -142,6 +156,7 @@ fn run_cli(
             prompt,
             max_tokens,
             temperature,
+            no_chat_template,
         )?;
     } else {
         run_interactive(
@@ -254,21 +269,31 @@ fn run_single_prompt(
     prompt: &str,
     max_tokens: usize,
     temperature: f32,
+    no_chat_template: bool,
 ) -> Result<(), String> {
     println!("\n=== Processing Prompt ===");
     println!("System: {}", system);
     println!("User: {}", prompt);
 
-    // Create messages
-    let messages = vec![
-        ChatMessage { role: "system".to_string(), content: system.to_string() },
-        ChatMessage { role: "user".to_string(), content: prompt.to_string() },
-    ];
-
-    // Apply chat template
-    let prompt_text = if let Some(ct) = chat_template {
-        ct.apply(&messages)?
+    // Apply chat template or use raw prompt
+    let prompt_text = if no_chat_template {
+        // Raw prompt mode: use prompt directly without chat template
+        prompt.to_string()
+    } else if let Some(ct) = chat_template {
+        // Apply chat template with system + user messages
+        let messages = vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: system.to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: prompt.to_string(),
+            },
+        ];
+        ct.apply_with_options(&messages, true)?
     } else {
+        // No chat template available, use simple format
         format!("System: {}\nUser: {}\nAssistant:", system, prompt)
     };
 
@@ -280,12 +305,10 @@ fn run_single_prompt(
         let tokenizer = executor.model.tokenizer();
         let tokens =
             tokenizer.encode(&prompt_text).map_err(|e| e.to_string())?;
-        println!(
-            "\nPrompt text: {}",
-            &prompt_text.chars().take(200).collect::<String>()
-        );
-        println!("Prompt tokens: {:?}", &tokens[..tokens.len().min(20)]);
-        println!("Prompt tokens count: {}", tokens.len());
+        eprintln!("\n=== Full prompt text ===");
+        eprintln!("{}", prompt_text);
+        eprintln!("=== End prompt text ===");
+        eprintln!("Prompt tokens count: {}", tokens.len());
         tokens
     };
 
@@ -367,7 +390,7 @@ fn run_interactive(
 
         // Apply chat template
         let prompt_text = if let Some(ct) = chat_template {
-            ct.apply(&history)?
+            ct.apply_with_options(&history, true)?
         } else {
             let mut s = String::new();
             for msg in &history {

@@ -155,9 +155,17 @@ pub fn vec_dot_q4_k_q8_k(x: &[BlockQ4_K], y: &[BlockQ8_K]) -> f32 {
         let block_y = &y[i];
 
         let mut utmp: [u32; 4] = [0; 4];
-        utmp[0..3].copy_from_slice(unsafe {
-            std::slice::from_raw_parts(block_x.scales.as_ptr() as *const u32, 3)
-        });
+        // Copy scales bytes to utmp - use byte-by-byte copy to avoid alignment issues
+        // The scales array is 12 bytes, we need to interpret it as 3 uint32s
+        // On little-endian systems, this should work correctly
+        let scales_bytes = &block_x.scales;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                scales_bytes.as_ptr(),
+                utmp.as_mut_ptr() as *mut u8,
+                12,
+            );
+        }
 
         utmp[3] = ((utmp[2] >> 4) & KMASK2) | (((utmp[1] >> 6) & KMASK3) << 4);
         let uaux = utmp[1] & KMASK1;
@@ -194,9 +202,8 @@ pub fn vec_dot_q4_k_q8_k(x: &[BlockQ4_K], y: &[BlockQ8_K]) -> f32 {
 
         let mut aux32 = [0i32; 8];
         let q8 = &block_y.qs;
-        let mut is = 0;
         for j in 0..8 {
-            let scale = scales[is] as i32;
+            let scale = scales[j] as i32;
             for l in 0..8 {
                 aux32[l] +=
                     scale * q8[j * 32 + l] as i32 * aux8[j * 32 + l] as i32;
@@ -216,7 +223,6 @@ pub fn vec_dot_q4_k_q8_k(x: &[BlockQ4_K], y: &[BlockQ8_K]) -> f32 {
                     * q8[j * 32 + 24 + l] as i32
                     * aux8[j * 32 + 24 + l] as i32;
             }
-            is += 1;
         }
 
         let d = fp16_to_fp32(block_x.d) * block_y.d;
@@ -231,7 +237,218 @@ pub fn vec_dot_q4_k_q8_k(x: &[BlockQ4_K], y: &[BlockQ8_K]) -> f32 {
     sumf + sums.iter().sum::<f32>()
 }
 
-// Q5_K x Q8_K dot product
+// Q4_K x Q8_K dot product for a single block pair
+pub fn vec_dot_q4_k_q8_k_single(x: &BlockQ4_K, y: &BlockQ8_K) -> f32 {
+    const KMASK1: u32 = 0x3f3f3f3f;
+    const KMASK2: u32 = 0x0f0f0f0f;
+    const KMASK3: u32 = 0x03030303;
+
+    let mut sums = [0.0f32; 8];
+    let mut sumf = 0.0f32;
+
+    let mut utmp: [u32; 4] = [0; 4];
+    // Copy scales bytes to utmp - use byte-by-byte copy to avoid alignment issues
+    let scales_bytes = &x.scales;
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            scales_bytes.as_ptr(),
+            utmp.as_mut_ptr() as *mut u8,
+            12,
+        );
+    }
+
+    utmp[3] = ((utmp[2] >> 4) & KMASK2) | (((utmp[1] >> 6) & KMASK3) << 4);
+    let uaux = utmp[1] & KMASK1;
+    utmp[1] = (utmp[2] & KMASK2) | (((utmp[0] >> 6) & KMASK3) << 4);
+    utmp[2] = uaux;
+    utmp[0] &= KMASK1;
+
+    let scales: [u8; 8] = unsafe {
+        std::slice::from_raw_parts(utmp[0..2].as_ptr() as *const u8, 8)
+            .try_into()
+            .unwrap()
+    };
+    let mins: [u8; 8] = unsafe {
+        std::slice::from_raw_parts(utmp[2..4].as_ptr() as *const u8, 8)
+            .try_into()
+            .unwrap()
+    };
+
+    let mut aux8 = [0i8; 256];
+    let q4 = &x.qs;
+    for j in 0..4 {
+        for l in 0..32 {
+            aux8[j * 64 + l] = (q4[j * 32 + l] & 0xF) as i8;
+        }
+        for l in 0..32 {
+            aux8[j * 64 + 32 + l] = (q4[j * 32 + l] >> 4) as i8;
+        }
+    }
+
+    let mut sumi = 0i32;
+    for j in 0..16 {
+        sumi += y.bsums[j] as i32 * mins[j / 2] as i32;
+    }
+
+    let mut aux32 = [0i32; 8];
+    let q8 = &y.qs;
+    let mut is = 0;
+    for j in 0..8 {
+        let scale = scales[is] as i32;
+        for l in 0..8 {
+            aux32[l] += scale * q8[j * 32 + l] as i32 * aux8[j * 32 + l] as i32;
+        }
+        for l in 0..8 {
+            aux32[l] +=
+                scale * q8[j * 32 + 8 + l] as i32 * aux8[j * 32 + 8 + l] as i32;
+        }
+        for l in 0..8 {
+            aux32[l] += scale
+                * q8[j * 32 + 16 + l] as i32
+                * aux8[j * 32 + 16 + l] as i32;
+        }
+        for l in 0..8 {
+            aux32[l] += scale
+                * q8[j * 32 + 24 + l] as i32
+                * aux8[j * 32 + 24 + l] as i32;
+        }
+        is += 1;
+    }
+
+    let d = fp16_to_fp32(x.d) * y.d;
+    for l in 0..8 {
+        sums[l] += d * aux32[l] as f32;
+    }
+
+    let dmin = fp16_to_fp32(x.dmin) * y.d;
+    sumf -= dmin * sumi as f32;
+
+    sumf + sums.iter().sum::<f32>()
+}
+
+// Q5_K x Q8_K dot product for a single block pair
+pub fn vec_dot_q5_k_q8_k_single(x: &BlockQ5_K, y: &BlockQ8_K) -> f32 {
+    const KMASK1: u32 = 0x3f3f3f3f;
+    const KMASK2: u32 = 0x0f0f0f0f;
+    const KMASK3: u32 = 0x03030303;
+
+    let mut sums = [0.0f32; 8];
+    let mut sumf = 0.0f32;
+
+    // Step 1: Unpack Q5_K quantized values to int8
+    let mut aux8 = [0i8; 256];
+    let q4 = &x.qs;
+    let qh = &x.qh;
+    let mut m: u8 = 1;
+    let mut q4_offset = 0;
+
+    for j in 0..4 {
+        let base = j * 64;
+        // Lower 4 bits
+        for l in 0..32 {
+            aux8[base + l] = (q4[q4_offset + l] & 0xF) as i8
+                + if qh[l] & m != 0 { 16 } else { 0 };
+        }
+        m <<= 1;
+        // Upper 4 bits
+        for l in 0..32 {
+            aux8[base + 32 + l] = (q4[q4_offset + l] >> 4) as i8
+                + if qh[l] & m != 0 { 16 } else { 0 };
+        }
+        m <<= 1;
+        q4_offset += 32;
+    }
+
+    // Step 2: Decode scales and mins
+    let mut utmp: [u32; 4] = [0; 4];
+    // Copy scales bytes to utmp - use byte-by-byte copy to avoid alignment issues
+    let scales_bytes = &x.scales;
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            scales_bytes.as_ptr(),
+            utmp.as_mut_ptr() as *mut u8,
+            12,
+        );
+    }
+
+    utmp[3] = ((utmp[2] >> 4) & KMASK2) | (((utmp[1] >> 6) & KMASK3) << 4);
+    let uaux = utmp[1] & KMASK1;
+    utmp[1] = (utmp[2] & KMASK2) | (((utmp[0] >> 6) & KMASK3) << 4);
+    utmp[2] = uaux;
+    utmp[0] &= KMASK1;
+
+    let scales: [u8; 8] = unsafe {
+        std::slice::from_raw_parts(utmp[0..2].as_ptr() as *const u8, 8)
+            .try_into()
+            .unwrap()
+    };
+    let mins: [u8; 8] = unsafe {
+        std::slice::from_raw_parts(utmp[2..4].as_ptr() as *const u8, 8)
+            .try_into()
+            .unwrap()
+    };
+
+    // Step 3: Compute sum of min terms
+    let mut sumi = 0i32;
+    for j in 0..16 {
+        sumi += y.bsums[j] as i32 * mins[j / 2] as i32;
+    }
+
+    // Step 4: Compute aux32
+    let mut aux32 = [0i32; 8];
+    let q8 = &y.qs;
+    let a = &aux8[..];
+    let mut is = 0;
+    let mut q8_idx = 0;
+    let mut a_idx = 0;
+
+    for _j in 0..8 {
+        let scale = scales[is] as i32;
+        is += 1;
+
+        // 4 inner loops of 8 elements each
+        for l in 0..8 {
+            let aux16 = q8[q8_idx + l] as i32 * a[a_idx + l] as i32;
+            aux32[l] += scale * aux16;
+        }
+        q8_idx += 8;
+        a_idx += 8;
+
+        for l in 0..8 {
+            let aux16 = q8[q8_idx + l] as i32 * a[a_idx + l] as i32;
+            aux32[l] += scale * aux16;
+        }
+        q8_idx += 8;
+        a_idx += 8;
+
+        for l in 0..8 {
+            let aux16 = q8[q8_idx + l] as i32 * a[a_idx + l] as i32;
+            aux32[l] += scale * aux16;
+        }
+        q8_idx += 8;
+        a_idx += 8;
+
+        for l in 0..8 {
+            let aux16 = q8[q8_idx + l] as i32 * a[a_idx + l] as i32;
+            aux32[l] += scale * aux16;
+        }
+        q8_idx += 8;
+        a_idx += 8;
+    }
+
+    // Step 5: Apply final scale
+    let d = fp16_to_fp32(x.d) * y.d;
+    for l in 0..8 {
+        sums[l] += d * aux32[l] as f32;
+    }
+
+    let dmin = fp16_to_fp32(x.dmin) * y.d;
+    sumf -= dmin * sumi as f32;
+
+    sumf + sums.iter().sum::<f32>()
+}
+
+// Q5_K x Q8_K dot product (matching llama.cpp exactly)
 pub fn vec_dot_q5_k_q8_k(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
     let nb = x.len();
     assert_eq!(nb, y.len());
@@ -240,17 +457,21 @@ pub fn vec_dot_q5_k_q8_k(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
     const KMASK2: u32 = 0x0f0f0f0f;
     const KMASK3: u32 = 0x03030303;
 
-    let mut sums = [0.0f32; 8];
     let mut sumf = 0.0f32;
 
     for i in 0..nb {
         let block_x = &x[i];
         let block_y = &y[i];
 
+        // Step 1: Decode scales and mins (same as before)
         let mut utmp: [u32; 4] = [0; 4];
-        utmp[0..3].copy_from_slice(unsafe {
-            std::slice::from_raw_parts(block_x.scales.as_ptr() as *const u32, 3)
-        });
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                block_x.scales.as_ptr(),
+                utmp.as_mut_ptr() as *mut u8,
+                12,
+            );
+        }
 
         utmp[3] = ((utmp[2] >> 4) & KMASK2) | (((utmp[1] >> 6) & KMASK3) << 4);
         let uaux = utmp[1] & KMASK1;
@@ -269,70 +490,93 @@ pub fn vec_dot_q5_k_q8_k(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
                 .unwrap()
         };
 
+        // Step 2: Compute sumi_mins (matching llama.cpp's vpaddq_s16)
+        // vpaddq_s16(vld1q_s16(bsums[0..8]), vld1q_s16(bsums[8..16]))
+        // pairs adjacent elements: [bsums[0]+bsums[1], bsums[2]+bsums[3], ..., bsums[8]+bsums[9], ..., bsums[14]+bsums[15]]
+        let mut sumi_mins = 0i32;
+        for j in 0..8 {
+            // mins[0] * (bsums[0]+bsums[1]), mins[1] * (bsums[2]+bsums[3]), ...
+            // mins[4] * (bsums[8]+bsums[9]), ...
+            let idx = j * 2;
+            let bsum_pair = if j < 4 {
+                block_y.bsums[idx] as i32 + block_y.bsums[idx + 1] as i32
+            } else {
+                let idx = (j - 4) * 2 + 8;
+                block_y.bsums[idx] as i32 + block_y.bsums[idx + 1] as i32
+            };
+            sumi_mins += bsum_pair * mins[j] as i32;
+        }
+
+        // Step 3: Unpack Q5_K quantized values to int8
+        // Match llama.cpp exactly
         let mut aux8 = [0i8; 256];
         let q4 = &block_x.qs;
         let qh = &block_x.qh;
+
+        // qh pointer is FIXED for all 4 iterations (matching llama.cpp's hm pointer)
+        // q4 pointer advances by 32 each iteration
         let mut m: u8 = 1;
-        // Match llama.cpp exactly: q4 advances by 32 per j, but qh is always indexed from 0..31
-        // The mask m shifts to select different bits from qh for each sub-block
-        for j in 0..4 {
-            let q4_base = j * 32;
-            // First 32 elements of this sub-block: low nibble + bit 0 from qh
+        let mut q4_offset = 0;
+        let mut aux8_offset = 0;
+
+        for _j in 0..4 {
+            // Lower 4 bits - qh always from index 0
             for l in 0..32 {
-                aux8[j * 64 + l] = (q4[q4_base + l] & 0xF) as i8
+                aux8[aux8_offset + l] = (q4[q4_offset + l] & 0xF) as i8
                     + if qh[l] & m != 0 { 16 } else { 0 };
             }
+            aux8_offset += 32;
             m <<= 1;
-            // Second 32 elements of this sub-block: high nibble + bit 1 from qh
+            // Upper 4 bits
             for l in 0..32 {
-                aux8[j * 64 + 32 + l] = (q4[q4_base + l] >> 4) as i8
+                aux8[aux8_offset + l] = (q4[q4_offset + l] >> 4) as i8
                     + if qh[l] & m != 0 { 16 } else { 0 };
             }
+            aux8_offset += 32;
             m <<= 1;
+            q4_offset += 32; // q4 advances by 32 each iteration (128 bytes total for 4 iterations)
         }
 
-        let mut sumi = 0i32;
-        for j in 0..16 {
-            sumi += block_y.bsums[j] as i32 * mins[j / 2] as i32;
-        }
-
-        let mut aux32 = [0i32; 8];
+        // Step 4: Compute sumi (dot product with scales)
+        // llama.cpp processes in groups of 64 elements, each with 2 scales
+        let mut sumi = 0i64;
         let q8 = &block_y.qs;
+        let a = &aux8[..];
         let mut is = 0;
-        for j in 0..8 {
-            let scale = scales[is] as i32;
-            for l in 0..8 {
-                aux32[l] +=
-                    scale * q8[j * 32 + l] as i32 * aux8[j * 32 + l] as i32;
-            }
-            for l in 0..8 {
-                aux32[l] += scale
-                    * q8[j * 32 + 8 + l] as i32
-                    * aux8[j * 32 + 8 + l] as i32;
-            }
-            for l in 0..8 {
-                aux32[l] += scale
-                    * q8[j * 32 + 16 + l] as i32
-                    * aux8[j * 32 + 16 + l] as i32;
-            }
-            for l in 0..8 {
-                aux32[l] += scale
-                    * q8[j * 32 + 24 + l] as i32
-                    * aux8[j * 32 + 24 + l] as i32;
-            }
+        let mut offset = 0;
+
+        for _j in 0..4 {
+            // First 32 elements with scale[0]
+            let scale1 = scales[is] as i64;
             is += 1;
+
+            let mut sum1 = 0i64;
+            for l in 0..32 {
+                sum1 += q8[offset + l] as i64 * a[offset + l] as i64;
+            }
+            sumi += scale1 * sum1;
+
+            // Second 32 elements with scale[1]
+            let scale2 = scales[is] as i64;
+            is += 1;
+
+            let mut sum2 = 0i64;
+            for l in 0..32 {
+                sum2 += q8[offset + 32 + l] as i64 * a[offset + 32 + l] as i64;
+            }
+            sumi += scale2 * sum2;
+
+            offset += 64;
         }
 
+        // Step 5: Final result
         let d = fp16_to_fp32(block_x.d) * block_y.d;
-        for l in 0..8 {
-            sums[l] += d * aux32[l] as f32;
-        }
-
         let dmin = fp16_to_fp32(block_x.dmin) * block_y.d;
-        sumf -= dmin * sumi as f32;
+
+        sumf += d * sumi as f32 - dmin * sumi_mins as f32;
     }
 
-    sumf + sums.iter().sum::<f32>()
+    sumf
 }
 
 // Q6_K x Q8_K dot product
@@ -408,6 +652,69 @@ pub fn vec_dot_q6_k_q8_k(x: &[BlockQ6_K], y: &[BlockQ8_K]) -> f32 {
     }
 
     sums.iter().sum()
+}
+
+// Q6_K x Q8_K dot product for a single block pair
+pub fn vec_dot_q6_k_q8_k_single(x: &BlockQ6_K, y: &BlockQ8_K) -> f32 {
+    let d = y.d * fp16_to_fp32(x.d);
+
+    // Create aux8 array with values in range -32 to 31
+    let mut aux8 = [0i8; 256];
+    let q4 = &x.ql;
+    let qh = &x.qh;
+
+    // First 128 elements: q4 uses [0..64], qh uses [0..32]
+    for l in 0..32 {
+        aux8[l + 0] =
+            ((q4[l + 0] & 0xF) | (((qh[l] >> 0) & 3) << 4)) as i8 - 32;
+        aux8[l + 32] =
+            ((q4[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) as i8 - 32;
+        aux8[l + 64] =
+            ((q4[l + 0] >> 4) | (((qh[l] >> 4) & 3) << 4)) as i8 - 32;
+        aux8[l + 96] =
+            ((q4[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) as i8 - 32;
+    }
+
+    // Second 128 elements: q4 uses [64..128], qh uses [32..64]
+    for l in 0..32 {
+        aux8[l + 128 + 0] = ((q4[l + 64 + 0] & 0xF)
+            | (((qh[l + 32] >> 0) & 3) << 4)) as i8
+            - 32;
+        aux8[l + 128 + 32] =
+            ((q4[l + 64 + 32] & 0xF) | (((qh[l + 32] >> 2) & 3) << 4)) as i8
+                - 32;
+        aux8[l + 128 + 64] =
+            ((q4[l + 64 + 0] >> 4) | (((qh[l + 32] >> 4) & 3) << 4)) as i8 - 32;
+        aux8[l + 128 + 96] =
+            ((q4[l + 64 + 32] >> 4) | (((qh[l + 32] >> 6) & 3) << 4)) as i8
+                - 32;
+    }
+
+    let q8 = &y.qs;
+    let scales = &x.scales;
+
+    let mut aux32 = [0i32; 8];
+    let mut is = 0;
+    let mut a_idx = 0;
+
+    for _j in 0..16 {
+        let scale = scales[is] as i32;
+        for l in 0..8 {
+            aux32[l] += scale * q8[a_idx + l] as i32 * aux8[a_idx + l] as i32;
+        }
+        a_idx += 8;
+        for l in 0..8 {
+            aux32[l] += scale * q8[a_idx + l] as i32 * aux8[a_idx + l] as i32;
+        }
+        a_idx += 8;
+        is += 1;
+    }
+
+    let mut sum = 0.0f32;
+    for l in 0..8 {
+        sum += d * aux32[l] as f32;
+    }
+    sum
 }
 
 // IQ4_XS uses non-linear 4-bit quantization with a lookup table

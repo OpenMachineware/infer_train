@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::model::gguf::TokenizerMetadata;
+use crate::model::gguf::{TokenType, TokenizerMetadata};
 use crate::tokenizer::{TokenId, TokenizerError};
 
 // Vocabulary structure with bidirectional mapping
@@ -14,12 +14,16 @@ pub struct Vocab {
     id_to_token: Vec<String>,
     // Token string -> Token ID
     token_to_id: HashMap<String, TokenId>,
+    // Token types
+    token_types: Vec<TokenType>,
     // Token scores (optional, used by SPM)
     scores: Vec<f32>,
     // BPE merge rules: (token1, token2) -> merged_token
     merges: HashMap<(String, String), String>,
     // Merge priority: (token1, token2) -> rank
     merge_ranks: HashMap<(String, String), usize>,
+    // Special tokens sorted by length (longest first)
+    special_tokens: Vec<TokenId>,
     // BOS token ID
     bos_token_id: Option<TokenId>,
     // EOS token ID
@@ -69,12 +73,42 @@ impl Vocab {
             merges.insert((t1.clone(), t2.clone()), merged);
         }
 
+        // Collect special tokens (Control, UserDefined, Unknown)
+        // Sorted by length (longest first) for greedy matching
+        let mut special_tokens: Vec<TokenId> = meta
+            .tokens
+            .iter()
+            .enumerate()
+            .filter(|(id, _)| {
+                meta.token_types
+                    .get(*id)
+                    .map(|&t| {
+                        t == TokenType::Control
+                            || t == TokenType::UserDefined
+                            || t == TokenType::Unknown
+                    })
+                    .unwrap_or(false)
+            })
+            .map(|(id, _)| id as TokenId)
+            .collect();
+
+        // Sort by token length (longest first)
+        special_tokens.sort_by(|a, b| {
+            let len_a =
+                id_to_token.get(*a as usize).map(|s| s.len()).unwrap_or(0);
+            let len_b =
+                id_to_token.get(*b as usize).map(|s| s.len()).unwrap_or(0);
+            len_b.cmp(&len_a)
+        });
+
         Ok(Self {
             id_to_token,
             token_to_id,
+            token_types: meta.token_types,
             scores: meta.scores,
             merges,
             merge_ranks,
+            special_tokens,
             bos_token_id: meta.bos_token_id,
             eos_token_id: meta.eos_token_id,
             unk_token_id: meta.unk_token_id,
@@ -170,7 +204,7 @@ impl Vocab {
         pairs
     }
 
-    // Check if token is a special token (byte fallback)
+    // Check if token is a byte token
     pub fn is_byte_token(&self, token: &str) -> bool {
         // Byte tokens are typically <0xNN> format
         if token.starts_with('<') && token.ends_with('>') && token.len() == 6 {
@@ -181,35 +215,34 @@ impl Vocab {
         }
     }
 
-    // Check if token is a special/control token (BOS, EOS, PAD, etc.)
+    // Get special tokens list (sorted by length, longest first)
+    pub fn special_tokens(&self) -> &[TokenId] {
+        &self.special_tokens
+    }
+
+    // Get token type
+    pub fn token_type(&self, id: TokenId) -> TokenType {
+        self.token_types.get(id as usize).copied().unwrap_or(TokenType::Normal)
+    }
+
+    // Check if token is a special/control token
     pub fn is_special_token(&self, token: &str) -> bool {
-        // Special tokens are typically:
-        // - <|...|> format (like <|startoftext|>, <|endoftext|>)
-        // - <｜...｜> format (like <｜begin▁of▁sentence｜>)
-        // - <...> format that's not a byte token
-        // - Control characters
-        if token.starts_with("<|") || token.starts_with("<｜") {
-            return true;
-        }
-        // Check if it's a control token
         if let Some(&id) = self.token_to_id.get(token) {
-            if Some(id) == self.bos_token_id
-                || Some(id) == self.eos_token_id
-                || Some(id) == self.pad_token_id
-                || Some(id) == self.unk_token_id
-            {
-                return true;
-            }
+            let tt = self.token_type(id);
+            tt == TokenType::Control
+                || tt == TokenType::UserDefined
+                || tt == TokenType::Unknown
+        } else {
+            false
         }
-        false
     }
 
     // Check if token ID is a special token
     pub fn is_special_token_id(&self, id: TokenId) -> bool {
-        Some(id) == self.bos_token_id
-            || Some(id) == self.eos_token_id
-            || Some(id) == self.pad_token_id
-            || Some(id) == self.unk_token_id
+        let tt = self.token_type(id);
+        tt == TokenType::Control
+            || tt == TokenType::UserDefined
+            || tt == TokenType::Unknown
     }
 
     // Get byte value from byte token

@@ -22,22 +22,28 @@ pub fn rope_f32(
     for h in 0..n_heads {
         let offset = h * head_dim;
 
-        for i in (0..n_dims).step_by(2) {
-            let idx = offset + i;
-            if idx + 1 >= n {
+        // NEOX style: rotate pairs (i, i + n_dims/2)
+        // This is the standard for modern LLMs like Qwen, LLaMA, etc.
+        let half_n_dims = n_dims / 2;
+        for i in 0..half_n_dims {
+            let idx0 = offset + i;
+            let idx1 = offset + i + half_n_dims;
+            if idx1 >= n {
                 break;
             }
 
-            let dim = i as f32;
-            let theta = pos as f32 * freq_base.powf(-dim / n_dims as f32);
+            // Standard RoPE: freq = freq_base^(-2*i/n_dims)
+            let freq_dim = i as f32;
+            let freq = freq_base.powf(-2.0 * freq_dim / n_dims as f32);
+            let theta = pos as f32 * freq;
             let cos_theta = theta.cos();
             let sin_theta = theta.sin();
 
-            let x0 = x[idx];
-            let x1 = x[idx + 1];
+            let x0 = x[idx0];
+            let x1 = x[idx1];
 
-            output[idx] = x0 * cos_theta - x1 * sin_theta;
-            output[idx + 1] = x0 * sin_theta + x1 * cos_theta;
+            output[idx0] = x0 * cos_theta - x1 * sin_theta;
+            output[idx1] = x0 * sin_theta + x1 * cos_theta;
         }
     }
 }

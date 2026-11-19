@@ -8,23 +8,27 @@ name = "infer_train"
 path = "src/main.rs"
 
 [[bin]]
-name = "test_tokenizer"
-path = "tools/test_tokenizer.rs"
+name = "layer_compare"
+path = "tools/layer_compare.rs"
 
 [[bin]]
-name = "test_chat_template"
-path = "tools/test_chat_template.rs"
+name = "op_compare"
+path = "tools/op_compare.rs"
 
-# TODO: rewrite benchmark tool
-# [[bin]]
-# name = "infer-train-bench"
-# path = "tools/bench.rs"
+[[bin]]
+name = "tokenize_compare"
+path = "tools/tokenize_compare.rs"
+
+[[bin]]
+name = "op_test"
+path = "tests/op_test/op_test.rs"
 
 [features]
 default = []
 metal = []
 cuda = []
 rocm = []
+debug-log = ["env_logger"]
 
 [profile.release]
 opt-level = 3
@@ -33,7 +37,9 @@ codegen-units = 1
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+env_logger = { version = "0.11", optional = true }
 half = { version = "2.4", features = ["num-traits"] }
+log = { version = "0.4", features = ["release_max_level_off"] }
 minijinja = "2.0"
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
@@ -41,7 +47,3 @@ serde = { version = "1.0", features = ["derive"] }
 [dev-dependencies]
 approx = "0.5"
 criterion = "0.5"
-
-[[bin]]
-name = "op_test"
-path = "tests/op_test/op_test.rs"
