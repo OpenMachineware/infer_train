@@ -50,7 +50,7 @@ unsafe fn vmmlaq_s32_manual(
 
     let mut result = acc;
     asm!(
-        "mmla {0}.4s, {1}.16b, {2}.16b",
+        "smmla {0}.4s, {1}.16b, {2}.16b",
         inout(vreg) result,
         in(vreg) a,
         in(vreg) b,

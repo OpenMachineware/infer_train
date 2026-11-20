@@ -276,13 +276,13 @@ impl SimpleModel {
             }
         }
 
-        // Print other special tensors with dimensions
-        println!("\nSpecial tensors:");
+        // Print special tensors with strides
+        println!("\nSpecial tensors (with strides):");
         for tensor in &self.gguf.tensors {
             if !tensor.name.starts_with("blk.") {
                 println!(
-                    "  {}: {:?}, dims={:?}",
-                    tensor.name, tensor.quant_type, tensor.dims
+                    "  {}: {:?}, dims={:?}, strides={:?}",
+                    tensor.name, tensor.quant_type, tensor.dims, tensor.strides
                 );
             }
         }
@@ -317,26 +317,25 @@ impl SimpleModel {
             }
         }
 
-        // Group counts
-        let mut groups: HashMap<String, usize> = HashMap::new();
+        // Group by quantization type
+        let mut quant_groups: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
 
         for tensor in &self.gguf.tensors {
-            // Extract layer prefix
-            let prefix = if tensor.name.starts_with("blk.") {
-                let parts: Vec<&str> = tensor.name.split('.').take(2).collect();
-                parts.join(".")
-            } else if tensor.name.contains('.') {
-                tensor.name.split('.').next().unwrap_or("other").to_string()
-            } else {
-                "other".to_string()
-            };
-
-            *groups.entry(prefix).or_insert(0) += 1;
+            let qname = format!("{:?}", tensor.quant_type);
+            quant_groups.entry(qname).or_default().push(tensor.name.clone());
         }
 
-        println!("\nTensor groups:");
-        for (prefix, count) in groups.iter() {
-            println!("  {}: {} tensors", prefix, count);
+        println!("\nTensors by quantization type:");
+        for qtype in &["Q4_K", "Q5_K", "Q6_K", "IQ4_XS", "F32"] {
+            if let Some(tensors) = quant_groups.get(*qtype) {
+                println!("  {}: {} tensors", qtype, tensors.len());
+                if tensors.len() <= 25 {
+                    for t in tensors {
+                        println!("    - {}", t);
+                    }
+                }
+            }
         }
     }
 }

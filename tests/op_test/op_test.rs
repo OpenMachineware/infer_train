@@ -454,9 +454,12 @@ fn main() {
         println!("Operator: {}, size: {}", data.op, data.size);
 
         match data.op.as_str() {
-            "rms_norm" => {
-                test_rms_norm_with_data(&file_args, &data.input, &data.weight)
-            }
+            "rms_norm" => test_rms_norm(&file_args),
+            "silu" => test_silu(&file_args),
+            "quantize_q8_k" => test_quantize_q8_k(&file_args),
+            "vec_dot_q5_k" => test_vec_dot_q5_k(&file_args),
+            "vec_dot_q6_k" => test_vec_dot_q6_k(&file_args),
+            "vec_dot_q4_k" => test_vec_dot_q4_k(&file_args),
             _ => {
                 eprintln!("Unknown operator from data file: {}", data.op);
                 std::process::exit(1);

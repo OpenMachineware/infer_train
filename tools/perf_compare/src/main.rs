@@ -233,16 +233,22 @@ fn run_llama_cpp(
     decode_tokens: usize,
 ) -> PerfMetrics {
     // Build command
+    // Use -ngl 0 to disable GPU offload for fair CPU-only comparison
+    // Use -f to read prompt from file for batch mode (avoids interactive overhead)
+    let prompt_file = "/tmp/perf_compare_prompt.txt";
+    std::fs::write(prompt_file, prompt).expect("Failed to write prompt file");
+
     let output = Command::new(llama_cli)
         .arg("-m")
         .arg(model_path)
-        .arg("-p")
-        .arg(prompt)
+        .arg("-f")
+        .arg(prompt_file)
         .arg("-n")
         .arg(decode_tokens.to_string())
+        .arg("-ngl")
+        .arg("0") // Disable GPU for CPU-only comparison
         .arg("--temp")
         .arg("0")
-        .arg("--no-display-prompt")
         .output()
         .expect("Failed to run llama-cli");
 
@@ -261,7 +267,11 @@ fn run_llama_cpp(
 
     for line in combined.lines() {
         // New format: "[ Prompt: X t/s | Generation: Y t/s ]"
-        if line.contains("Prompt:") && line.contains("Generation:") {
+        // Only match lines that start with "[" and contain both metrics
+        if line.trim().starts_with('[')
+            && line.contains("Prompt:")
+            && line.contains("Generation:")
+        {
             // Extract prompt tps
             if let Some(pos) = line.find("Prompt:") {
                 let after = &line[pos + 7..];
