@@ -99,7 +99,7 @@ fn chunked_mul_mat_q5_k_worker(chunk: usize, _tid: usize, data: *const u8) {
             );
 
             // Process all rows in this chunk (contiguous memory access!)
-            let mut tmp = [0.0f32; 16]; // Max chunk_size
+            let mut tmp = [0.0f32; 64]; // Max chunk_size
             for (i, row) in (start_row..end_row).enumerate() {
                 let row_offset = row * data.col_stride;
                 let weight_row = std::slice::from_raw_parts(
@@ -140,7 +140,7 @@ fn chunked_mul_mat_q4_k_worker(chunk: usize, _tid: usize, data: *const u8) {
             );
 
             // Process all rows in this chunk (contiguous memory access!)
-            let mut tmp = [0.0f32; 16]; // Max chunk_size
+            let mut tmp = [0.0f32; 64]; // Max chunk_size
             for (i, row) in (start_row..end_row).enumerate() {
                 let row_offset = row * data.col_stride;
                 let weight_row = std::slice::from_raw_parts(
@@ -151,6 +151,43 @@ fn chunked_mul_mat_q4_k_worker(chunk: usize, _tid: usize, data: *const u8) {
             }
 
             // Write results
+            let dst_offset = token_idx * data.out_features + start_row;
+            for i in 0..(end_row - start_row) {
+                *data.output.add(dst_offset + i) = tmp[i];
+            }
+        }
+    }
+}
+
+/// Worker for chunked Q6_K: each chunk is a contiguous block of rows
+fn chunked_mul_mat_q6_k_worker(chunk: usize, _tid: usize, data: *const u8) {
+    unsafe {
+        let data = &*(data as *const ChunkedMulMatData);
+        let chunk_size = data.chunk_size;
+
+        let start_row = chunk * chunk_size;
+        if start_row >= data.out_features {
+            return;
+        }
+        let end_row = (start_row + chunk_size).min(data.out_features);
+
+        for token_idx in 0..data.n_tokens {
+            let input_start = token_idx * data.n_blocks;
+            let input_row = std::slice::from_raw_parts(
+                data.input.add(input_start),
+                data.n_blocks,
+            );
+
+            let mut tmp = [0.0f32; 64]; // Max chunk_size
+            for (i, row) in (start_row..end_row).enumerate() {
+                let row_offset = row * data.col_stride;
+                let weight_row = std::slice::from_raw_parts(
+                    data.weights.add(row_offset) as *const BlockQ6_K,
+                    data.n_blocks,
+                );
+                tmp[i] = vec_dot_q6_k_q8_k(weight_row, input_row);
+            }
+
             let dst_offset = token_idx * data.out_features + start_row;
             for i in 0..(end_row - start_row) {
                 *data.output.add(dst_offset + i) = tmp[i];
@@ -419,7 +456,13 @@ pub fn mul_mat_q6_k(
     assert_eq!(input.len(), n_tokens * n_blocks);
     assert_eq!(output.len(), n_tokens * out_features);
 
-    let n_threads = if n_threads == 0 { optimal_threads() } else { n_threads };
+    // For decode (n_tokens=1), use single-thread to avoid synchronization overhead
+    // Memory-bound operations don't benefit from multi-threading
+    let n_threads = if n_tokens == 1 {
+        1
+    } else {
+        if n_threads == 0 { optimal_threads() } else { n_threads }
+    };
 
     for i in 0..output.len() {
         output[i] = 0.0;
@@ -474,42 +517,28 @@ pub fn mul_mat_q6_k(
             }
         }
     } else {
-        // Multi-threaded: parallelize over chunks of output rows
-        use rayon::prelude::*;
-
+        // Multi-threaded: use persistent thread pool with work-stealing
         let chunk_size = 64;
         let n_chunks = (out_features + chunk_size - 1) / chunk_size;
 
-        // Convert to usize for Send+Sync, convert back in closure
-        let output_ptr = output.as_mut_ptr() as usize;
+        let data = ChunkedMulMatData {
+            weights: weights.as_ptr(),
+            col_stride,
+            input: input.as_ptr(),
+            output: output.as_mut_ptr(),
+            out_features,
+            n_blocks,
+            n_tokens,
+            chunk_size,
+        };
 
-        for token_idx in 0..n_tokens {
-            let input_start = token_idx * n_blocks;
-            let input_row = &input[input_start..input_start + n_blocks];
-
-            (0..n_chunks).into_par_iter().for_each(|chunk_id| {
-                let start_row = chunk_id * chunk_size;
-                let end_row = (start_row + chunk_size).min(out_features);
-
-                for row in start_row..end_row {
-                    let row_offset = row * col_stride;
-                    let weight_row = unsafe {
-                        std::slice::from_raw_parts(
-                            weights.as_ptr().add(row_offset)
-                                as *const BlockQ6_K,
-                            n_blocks,
-                        )
-                    };
-                    let result = vec_dot_q6_k_q8_k(weight_row, input_row);
-                    let dst_idx = token_idx * out_features + row;
-                    unsafe {
-                        std::ptr::write(
-                            (output_ptr as *mut f32).add(dst_idx),
-                            result,
-                        );
-                    }
-                }
-            });
+        unsafe {
+            parallel_stealing_raw(
+                n_chunks,
+                n_threads,
+                chunked_mul_mat_q6_k_worker,
+                &data as *const _ as *const u8,
+            );
         }
     }
 }
@@ -562,7 +591,12 @@ pub fn mul_mat_q5_k(
     assert_eq!(input.len(), n_tokens * n_blocks);
     assert_eq!(output.len(), n_tokens * out_features);
 
-    let n_threads = if n_threads == 0 { optimal_threads() } else { n_threads };
+    // For decode (n_tokens=1), use single-thread to avoid synchronization overhead
+    let n_threads = if n_tokens == 1 {
+        1
+    } else {
+        if n_threads == 0 { optimal_threads() } else { n_threads }
+    };
 
     for i in 0..output.len() {
         output[i] = 0.0;
@@ -623,44 +657,28 @@ pub fn mul_mat_q5_k(
             }
         }
     } else {
-        // Multi-threaded: parallelize over chunks of output rows
-        // Use llama.cpp style chunking: 64 rows per chunk with work stealing
-        use rayon::prelude::*;
-
-        let chunk_size = 64; // Match llama.cpp's decode chunk size
+        // Multi-threaded: use persistent thread pool with work-stealing
+        let chunk_size = 64;
         let n_chunks = (out_features + chunk_size - 1) / chunk_size;
 
-        // Convert to usize for Send+Sync, convert back in closure
-        let output_ptr = output.as_mut_ptr() as usize;
+        let data = ChunkedMulMatData {
+            weights: weights.as_ptr(),
+            col_stride,
+            input: input.as_ptr(),
+            output: output.as_mut_ptr(),
+            out_features,
+            n_blocks,
+            n_tokens,
+            chunk_size,
+        };
 
-        for token_idx in 0..n_tokens {
-            let input_start = token_idx * n_blocks;
-            let input_row = &input[input_start..input_start + n_blocks];
-
-            // Parallelize over chunks
-            (0..n_chunks).into_par_iter().for_each(|chunk_id| {
-                let start_row = chunk_id * chunk_size;
-                let end_row = (start_row + chunk_size).min(out_features);
-
-                for row in start_row..end_row {
-                    let row_offset = row * col_stride;
-                    let weight_row = unsafe {
-                        std::slice::from_raw_parts(
-                            weights.as_ptr().add(row_offset)
-                                as *const BlockQ5_K,
-                            n_blocks,
-                        )
-                    };
-                    let result = vec_dot_q5_k_q8_k(weight_row, input_row);
-                    let dst_idx = token_idx * out_features + row;
-                    unsafe {
-                        std::ptr::write(
-                            (output_ptr as *mut f32).add(dst_idx),
-                            result,
-                        );
-                    }
-                }
-            });
+        unsafe {
+            parallel_stealing_raw(
+                n_chunks,
+                n_threads,
+                chunked_mul_mat_q5_k_worker,
+                &data as *const _ as *const u8,
+            );
         }
     }
 }
@@ -704,7 +722,12 @@ pub fn mul_mat_q4_k(
     assert_eq!(input.len(), n_tokens * n_blocks);
     assert_eq!(output.len(), n_tokens * out_features);
 
-    let n_threads = if n_threads == 0 { optimal_threads() } else { n_threads };
+    // For decode (n_tokens=1), use single-thread to avoid synchronization overhead
+    let n_threads = if n_tokens == 1 {
+        1
+    } else {
+        if n_threads == 0 { optimal_threads() } else { n_threads }
+    };
 
     for i in 0..output.len() {
         output[i] = 0.0;
@@ -759,42 +782,28 @@ pub fn mul_mat_q4_k(
             }
         }
     } else {
-        // Multi-threaded: parallelize over chunks of output rows
-        use rayon::prelude::*;
-
+        // Multi-threaded: use persistent thread pool with work-stealing
         let chunk_size = 64;
         let n_chunks = (out_features + chunk_size - 1) / chunk_size;
 
-        // Convert to usize for Send+Sync, convert back in closure
-        let output_ptr = output.as_mut_ptr() as usize;
+        let data = ChunkedMulMatData {
+            weights: weights.as_ptr(),
+            col_stride,
+            input: input.as_ptr(),
+            output: output.as_mut_ptr(),
+            out_features,
+            n_blocks,
+            n_tokens,
+            chunk_size,
+        };
 
-        for token_idx in 0..n_tokens {
-            let input_start = token_idx * n_blocks;
-            let input_row = &input[input_start..input_start + n_blocks];
-
-            (0..n_chunks).into_par_iter().for_each(|chunk_id| {
-                let start_row = chunk_id * chunk_size;
-                let end_row = (start_row + chunk_size).min(out_features);
-
-                for row in start_row..end_row {
-                    let row_offset = row * col_stride;
-                    let weight_row = unsafe {
-                        std::slice::from_raw_parts(
-                            weights.as_ptr().add(row_offset)
-                                as *const BlockQ4_K,
-                            n_blocks,
-                        )
-                    };
-                    let result = vec_dot_q4_k_q8_k(weight_row, input_row);
-                    let dst_idx = token_idx * out_features + row;
-                    unsafe {
-                        std::ptr::write(
-                            (output_ptr as *mut f32).add(dst_idx),
-                            result,
-                        );
-                    }
-                }
-            });
+        unsafe {
+            parallel_stealing_raw(
+                n_chunks,
+                n_threads,
+                chunked_mul_mat_q4_k_worker,
+                &data as *const _ as *const u8,
+            );
         }
     }
 }
