@@ -8,5 +8,5 @@ pub mod forward;
 pub mod simple_model;
 
 pub use engine::InferenceEngine;
-pub use forward::{ForwardExecutor, ForwardTrace, LayerTrace};
+pub use forward::ForwardExecutor;
 pub use simple_model::{ModelConfig, SimpleModel};

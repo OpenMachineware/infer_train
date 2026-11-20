@@ -308,7 +308,8 @@ fn compare_logits(
 
     // Last token logits
     if let Some(&last_token) = tokens.last() {
-        let logits = executor.forward(last_token).expect("Forward failed");
+        let logits =
+            executor.forward(last_token).expect("Forward failed").to_vec();
         print_stats("Logits", &logits);
         print_top_tokens(&logits, top_n, executor.model.tokenizer());
     }
@@ -410,7 +411,7 @@ fn trace_single_token(model_path: &str, token_id: u32, verbose: bool) {
     let model2 =
         SimpleModel::load(model_path, tok2).expect("Failed to load model");
     let mut executor = ForwardExecutor::new(model2);
-    let logits = executor.forward(token_id).expect("Forward failed");
+    let logits = executor.forward(token_id).expect("Forward failed").to_vec();
 
     print_stats("Logits", &logits);
     print_top_tokens(&logits, 10, executor.model.tokenizer());
@@ -450,7 +451,8 @@ fn compare_prefill(
 
     // Process last token and get logits
     if let Some(&last_token) = tokens.last() {
-        let logits = executor.forward(last_token).expect("Forward failed");
+        let logits =
+            executor.forward(last_token).expect("Forward failed").to_vec();
         print_stats("Final Logits", &logits);
         print_top_tokens(&logits, top_n, executor.model.tokenizer());
     }
@@ -663,78 +665,12 @@ fn trace_detailed(
         );
     }
 
-    // Process last token with tracing
+    // Final forward to get logits
     if let Some(&last_token) = tokens.last() {
-        println!("\n=== Tracing Last Token (id={}) ===", last_token);
-        let trace =
-            executor.forward_with_trace(last_token).expect("Trace failed");
-
-        // Print embedding
-        print_stats("Embedding", &trace.embedding);
-        if verbose {
-            println!(
-                "  First {} values: {:?}",
-                n_values,
-                &trace.embedding[..n_values.min(trace.embedding.len())]
-            );
-        }
-
-        // Print layer traces
-        let layers_to_show = if max_layers == 0 {
-            trace.layer_traces.len()
-        } else {
-            max_layers.min(trace.layer_traces.len())
-        };
-
-        for trace_layer in trace.layer_traces.iter().take(layers_to_show) {
-            println!("\n=== Layer {} ===", trace_layer.layer_idx);
-
-            print_stats("  Hidden (before)", &trace_layer.hidden_before);
-            print_stats("  Hidden (after)", &trace_layer.hidden_after);
-            print_stats("  Q normed", &trace_layer.q_normed);
-            print_stats("  K normed", &trace_layer.k_normed);
-            print_stats("  Attn output", &trace_layer.attn_output);
-
-            // FFN intermediate outputs
-            print_stats("  FFN normed", &trace_layer.ffn_normed);
-            print_stats("  FFN gate", &trace_layer.ffn_gate);
-            print_stats("  FFN up", &trace_layer.ffn_up);
-            print_stats("  FFN hidden (SiLU*up)", &trace_layer.ffn_hidden);
-            print_stats("  FFN output", &trace_layer.ffn_output);
-
-            if verbose {
-                println!(
-                    "    Q normed first {}: {:?}",
-                    n_values,
-                    &trace_layer.q_normed
-                        [..n_values.min(trace_layer.q_normed.len())]
-                );
-                println!(
-                    "    K normed first {}: {:?}",
-                    n_values,
-                    &trace_layer.k_normed
-                        [..n_values.min(trace_layer.k_normed.len())]
-                );
-                println!(
-                    "    FFN hidden first {}: {:?}",
-                    n_values,
-                    &trace_layer.ffn_hidden
-                        [..n_values.min(trace_layer.ffn_hidden.len())]
-                );
-            }
-        }
-
-        if trace.layer_traces.len() > layers_to_show {
-            println!(
-                "\n... {} more layers",
-                trace.layer_traces.len() - layers_to_show
-            );
-        }
-
-        // Print final output
+        let logits =
+            executor.forward(last_token).expect("Forward failed").to_vec();
         println!("\n=== Final Output ===");
-        print_stats("Final Hidden", &trace.final_hidden);
-        print_stats("Logits", &trace.logits);
-        print_top_tokens(&trace.logits, 10, executor.model.tokenizer());
+        print_stats("Logits", &logits);
+        print_top_tokens(&logits, 10, executor.model.tokenizer());
     }
 }
