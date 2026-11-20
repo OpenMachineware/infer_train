@@ -67,28 +67,39 @@ struct MulMatQ40Data {
 // Worker functions for persistent thread pool
 // ============================================================================
 
-fn mul_mat_q6_k_worker(flat_idx: usize, _tid: usize, data_ptr: *const u8) {
+fn mul_mat_q6_k_block_worker(
+    block_idx: usize,
+    _tid: usize,
+    data_ptr: *const u8,
+) {
+    const BLCK_0: usize = 16;
     unsafe {
         let data = &*(data_ptr as *const MulMatQ6KData);
-        let token_idx = flat_idx / data.out_features;
-        let row = flat_idx % data.out_features;
+        let start_row = block_idx * BLCK_0;
+        let end_row = (start_row + BLCK_0).min(data.out_features);
 
-        let input_start = token_idx * data.n_blocks;
+        for token_idx in 0..data.n_tokens {
+            let input_start = token_idx * data.n_blocks;
+            let input_row = std::slice::from_raw_parts(
+                data.input.add(input_start),
+                data.n_blocks,
+            );
 
-        // Contiguous layout: blocks stored consecutively per row
-        // Use batch vec_dot for efficiency
-        let row_offset = row * data.col_stride;
-        let weight_row = std::slice::from_raw_parts(
-            data.weights.add(row_offset) as *const BlockQ6_K,
-            data.n_blocks,
-        );
-        let input_row = std::slice::from_raw_parts(
-            data.input.add(input_start),
-            data.n_blocks,
-        );
+            let mut tmp = [0.0f32; BLCK_0];
+            for ir0 in start_row..end_row {
+                let row_offset = ir0 * data.col_stride;
+                let weight_row = std::slice::from_raw_parts(
+                    data.weights.add(row_offset) as *const BlockQ6_K,
+                    data.n_blocks,
+                );
+                tmp[ir0 - start_row] = vec_dot_q6_k_q8_k(weight_row, input_row);
+            }
 
-        let sum = vec_dot_q6_k_q8_k(weight_row, input_row);
-        *data.output.add(flat_idx) = sum;
+            let dst_offset = token_idx * data.out_features + start_row;
+            for i in 0..(end_row - start_row) {
+                *data.output.add(dst_offset + i) = tmp[i];
+            }
+        }
     }
 }
 
@@ -328,34 +339,40 @@ pub fn mul_mat_q6_k(
         n_threads
     };
 
-    // Clear output
     for i in 0..output.len() {
         output[i] = 0.0;
     }
 
-    let total_rows = n_tokens * out_features;
+    const BLCK_0: usize = 16;
+    let n_blocks_output = (out_features + BLCK_0 - 1) / BLCK_0;
 
     if n_threads == 1 {
-        // Single-threaded path
-        for flat_idx in 0..total_rows {
-            let token_idx = flat_idx / out_features;
-            let row = flat_idx % out_features;
-
-            // Use batch vec_dot for efficiency
-            let input_start = token_idx * n_blocks;
-            let row_offset = row * col_stride;
-            let (weight_row, input_row) = unsafe {
-                let weight_row = std::slice::from_raw_parts(
-                    weights.as_ptr().add(row_offset) as *const BlockQ6_K,
-                    n_blocks,
-                );
+        for iir0 in (0..out_features).step_by(BLCK_0) {
+            let ir0_end = (iir0 + BLCK_0).min(out_features);
+            for token_idx in 0..n_tokens {
+                let input_start = token_idx * n_blocks;
                 let input_row = &input[input_start..input_start + n_blocks];
-                (weight_row, input_row)
-            };
-            output[flat_idx] = vec_dot_q6_k_q8_k(weight_row, input_row);
+
+                let mut tmp = [0.0f32; BLCK_0];
+                for ir0 in iir0..ir0_end {
+                    let row_offset = ir0 * col_stride;
+                    let weight_row = unsafe {
+                        std::slice::from_raw_parts(
+                            weights.as_ptr().add(row_offset)
+                                as *const BlockQ6_K,
+                            n_blocks,
+                        )
+                    };
+                    tmp[ir0 - iir0] = vec_dot_q6_k_q8_k(weight_row, input_row);
+                }
+
+                let dst_offset = token_idx * out_features + iir0;
+                for i in 0..(ir0_end - iir0) {
+                    output[dst_offset + i] = tmp[i];
+                }
+            }
         }
     } else {
-        // Multi-threaded path using persistent thread pool
         let data = MulMatQ6KData {
             weights: weights.as_ptr(),
             col_stride,
@@ -368,9 +385,9 @@ pub fn mul_mat_q6_k(
         };
         unsafe {
             parallel_stealing_raw(
-                total_rows,
+                n_blocks_output,
                 n_threads,
-                mul_mat_q6_k_worker,
+                mul_mat_q6_k_block_worker,
                 &data as *const _ as *const u8,
             );
         }
@@ -412,8 +429,8 @@ pub fn gemv_q6_k_transposed(
 pub fn mul_mat_q5_k(
     weights: &[u8],
     col_stride: usize,
-    input: &[BlockQ8_K], // [n_tokens * n_blocks]
-    output: &mut [f32],  // [n_tokens * out_features]
+    input: &[BlockQ8_K],
+    output: &mut [f32],
     out_features: usize,
     in_features: usize,
     n_tokens: usize,
@@ -425,41 +442,46 @@ pub fn mul_mat_q5_k(
     assert_eq!(input.len(), n_tokens * n_blocks);
     assert_eq!(output.len(), n_tokens * out_features);
 
-    // Thread selection based on workload
     let n_threads = if n_threads == 0 {
         optimal_threads(out_features, n_tokens, in_features)
     } else {
         n_threads
     };
 
-    // Clear output
     for i in 0..output.len() {
         output[i] = 0.0;
     }
 
     let total_rows = n_tokens * out_features;
+    const BLCK_0: usize = 16;
 
     if n_threads == 1 {
-        // Single-threaded path
-        for flat_idx in 0..total_rows {
-            let token_idx = flat_idx / out_features;
-            let row = flat_idx % out_features;
-
-            // Use batch vec_dot for efficiency
-            let input_start = token_idx * n_blocks;
-            let row_offset = row * col_stride;
-            let (weight_row, input_row) = unsafe {
-                let weight_row = std::slice::from_raw_parts(
-                    weights.as_ptr().add(row_offset) as *const BlockQ5_K,
-                    n_blocks,
-                );
+        for iir0 in (0..out_features).step_by(BLCK_0) {
+            let ir0_end = (iir0 + BLCK_0).min(out_features);
+            for token_idx in 0..n_tokens {
+                let input_start = token_idx * n_blocks;
                 let input_row = &input[input_start..input_start + n_blocks];
-                (weight_row, input_row)
-            };
-            output[flat_idx] = vec_dot_q5_k_q8_k(weight_row, input_row);
+
+                let mut tmp = [0.0f32; BLCK_0];
+                for ir0 in iir0..ir0_end {
+                    let row_offset = ir0 * col_stride;
+                    let weight_row = unsafe {
+                        std::slice::from_raw_parts(
+                            weights.as_ptr().add(row_offset)
+                                as *const BlockQ5_K,
+                            n_blocks,
+                        )
+                    };
+                    tmp[ir0 - iir0] = vec_dot_q5_k_q8_k(weight_row, input_row);
+                }
+
+                let dst_offset = token_idx * out_features + iir0;
+                for i in 0..(ir0_end - iir0) {
+                    output[dst_offset + i] = tmp[i];
+                }
+            }
         }
     } else {
-        // Multi-threaded path using persistent thread pool
         let data = MulMatQ5KData {
             weights: weights.as_ptr(),
             col_stride,
@@ -531,28 +553,35 @@ pub fn mul_mat_q4_k(
     }
 
     let total_rows = n_tokens * out_features;
+    const BLCK_0: usize = 16;
 
     if n_threads == 1 {
-        // Single-threaded path
-        for flat_idx in 0..total_rows {
-            let token_idx = flat_idx / out_features;
-            let row = flat_idx % out_features;
-
-            // Use batch vec_dot for efficiency
-            let input_start = token_idx * n_blocks;
-            let row_offset = row * col_stride;
-            let (weight_row, input_row) = unsafe {
-                let weight_row = std::slice::from_raw_parts(
-                    weights.as_ptr().add(row_offset) as *const BlockQ4_K,
-                    n_blocks,
-                );
+        for iir0 in (0..out_features).step_by(BLCK_0) {
+            let ir0_end = (iir0 + BLCK_0).min(out_features);
+            for token_idx in 0..n_tokens {
+                let input_start = token_idx * n_blocks;
                 let input_row = &input[input_start..input_start + n_blocks];
-                (weight_row, input_row)
-            };
-            output[flat_idx] = vec_dot_q4_k_q8_k(weight_row, input_row);
+
+                let mut tmp = [0.0f32; BLCK_0];
+                for ir0 in iir0..ir0_end {
+                    let row_offset = ir0 * col_stride;
+                    let weight_row = unsafe {
+                        std::slice::from_raw_parts(
+                            weights.as_ptr().add(row_offset)
+                                as *const BlockQ4_K,
+                            n_blocks,
+                        )
+                    };
+                    tmp[ir0 - iir0] = vec_dot_q4_k_q8_k(weight_row, input_row);
+                }
+
+                let dst_offset = token_idx * out_features + iir0;
+                for i in 0..(ir0_end - iir0) {
+                    output[dst_offset + i] = tmp[i];
+                }
+            }
         }
     } else {
-        // Multi-threaded path using persistent thread pool
         let data = MulMatQ4KData {
             weights: weights.as_ptr(),
             col_stride,
@@ -624,28 +653,35 @@ pub fn mul_mat_q4_0(
     }
 
     let total_rows = n_tokens * out_features;
+    const BLCK_0: usize = 16;
 
     if n_threads == 1 {
-        // Single-threaded path
-        for flat_idx in 0..total_rows {
-            let token_idx = flat_idx / out_features;
-            let row = flat_idx % out_features;
-
-            // Use batch vec_dot for efficiency
-            let input_start = token_idx * n_blocks;
-            let row_offset = row * col_stride;
-            let (weight_row, input_row) = unsafe {
-                let weight_row = std::slice::from_raw_parts(
-                    weights.as_ptr().add(row_offset) as *const BlockQ4_0,
-                    n_blocks,
-                );
+        for iir0 in (0..out_features).step_by(BLCK_0) {
+            let ir0_end = (iir0 + BLCK_0).min(out_features);
+            for token_idx in 0..n_tokens {
+                let input_start = token_idx * n_blocks;
                 let input_row = &input[input_start..input_start + n_blocks];
-                (weight_row, input_row)
-            };
-            output[flat_idx] = vec_dot_q4_0_q8_0(weight_row, input_row);
+
+                let mut tmp = [0.0f32; BLCK_0];
+                for ir0 in iir0..ir0_end {
+                    let row_offset = ir0 * col_stride;
+                    let weight_row = unsafe {
+                        std::slice::from_raw_parts(
+                            weights.as_ptr().add(row_offset)
+                                as *const BlockQ4_0,
+                            n_blocks,
+                        )
+                    };
+                    tmp[ir0 - iir0] = vec_dot_q4_0_q8_0(weight_row, input_row);
+                }
+
+                let dst_offset = token_idx * out_features + iir0;
+                for i in 0..(ir0_end - iir0) {
+                    output[dst_offset + i] = tmp[i];
+                }
+            }
         }
     } else {
-        // Multi-threaded path using persistent thread pool
         let data = MulMatQ40Data {
             weights: weights.as_ptr(),
             col_stride,
