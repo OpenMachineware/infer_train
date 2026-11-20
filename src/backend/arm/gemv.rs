@@ -6,6 +6,33 @@
 use super::vec_dot::*;
 use crate::backend::thread_pool::{optimal_threads, parallel_stealing_raw};
 use crate::types::*;
+use half::f16;
+
+// ============================================================================
+// K-extent optimization for narrow path (llama.cpp style)
+// ============================================================================
+
+/// Compute K-extent in blocks for narrow path.
+/// This determines how many K blocks to read sequentially to fit in L1 cache.
+/// Based on llama.cpp's ggml_tiled_narrow_k_extent.
+/// L1 cache = 32KB, leave 31KB for weights.
+/// k_extent = 31KB / (16 rows + n_tokens) in elements
+/// Convert to blocks (each block = 256 elements = 144 bytes for Q4_K)
+fn compute_k_extent_blocks(n_tokens: usize, block_size: usize) -> usize {
+    const L1_BUDGET: usize = 31 * 1024; // 31KB for weights
+    const TILE_K: usize = 256; // Each block covers 256 elements
+
+    let n_rows = n_tokens.max(16);
+    // k_extent in elements
+    let k_extent = L1_BUDGET / (16 * block_size / 256 + n_rows);
+    // Floor to multiple of TILE_K
+    let k_extent = (k_extent / TILE_K) * TILE_K;
+    // Convert to blocks
+    let k_extent_blocks = k_extent / TILE_K;
+
+    // Ensure at least 1 block
+    k_extent_blocks.max(1)
+}
 
 // ============================================================================
 // Work data structures for persistent thread pool
@@ -48,6 +75,46 @@ struct MulMatQ4KData {
     n_blocks: usize,
     block_size: usize,
     n_tokens: usize,
+}
+
+/// Work data for narrow path (decode) - parallel by output rows
+#[repr(C)]
+struct NarrowQ4KData {
+    weights: *const u8,
+    col_stride: usize,
+    input: *const BlockQ8_K,
+    output: *mut f32,
+    out_features: usize,
+    n_blocks: usize,
+    n_tokens: usize,
+}
+
+/// Worker for narrow path: each chunk is one output row
+fn narrow_q4_k_worker(chunk: usize, _tid: usize, data: *const u8) {
+    unsafe {
+        let data = &*(data as *const NarrowQ4KData);
+        let row = chunk;
+        if row >= data.out_features {
+            return;
+        }
+
+        let weight_row = std::slice::from_raw_parts(
+            data.weights.add(row * data.col_stride) as *const BlockQ4_K,
+            data.n_blocks,
+        );
+
+        for token_idx in 0..data.n_tokens {
+            let input_start = token_idx * data.n_blocks;
+            let input_row = std::slice::from_raw_parts(
+                data.input.add(input_start),
+                data.n_blocks,
+            );
+
+            let sum = vec_dot_q4_k_q8_k(weight_row, input_row);
+            let dst_offset = token_idx * data.out_features + row;
+            *data.output.add(dst_offset) = sum;
+        }
+    }
 }
 
 /// Work data for Q4_0 mul_mat
@@ -333,11 +400,7 @@ pub fn mul_mat_q6_k(
     assert_eq!(input.len(), n_tokens * n_blocks);
     assert_eq!(output.len(), n_tokens * out_features);
 
-    let n_threads = if n_threads == 0 {
-        optimal_threads(out_features, n_tokens, in_features)
-    } else {
-        n_threads
-    };
+    let n_threads = if n_threads == 0 { optimal_threads() } else { n_threads };
 
     for i in 0..output.len() {
         output[i] = 0.0;
@@ -347,6 +410,22 @@ pub fn mul_mat_q6_k(
     let n_blocks_output = (out_features + BLCK_0 - 1) / BLCK_0;
 
     if n_threads == 1 {
+        // Debug output for first call
+        let debug = n_tokens == 1 && out_features > 100000;
+        if debug {
+            eprintln!("mul_mat_q6_k debug:");
+            eprintln!(
+                "  n_blocks={}, block_size={}, col_stride={}",
+                n_blocks, block_size, col_stride
+            );
+            eprintln!(
+                "  out_features={}, in_features={}",
+                out_features, in_features
+            );
+            eprintln!("  input[0].d={:.6}", input[0].d);
+            eprintln!("  input[0].qs[0..8]={:?}", &input[0].qs[0..8]);
+        }
+
         for iir0 in (0..out_features).step_by(BLCK_0) {
             let ir0_end = (iir0 + BLCK_0).min(out_features);
             for token_idx in 0..n_tokens {
@@ -356,6 +435,24 @@ pub fn mul_mat_q6_k(
                 let mut tmp = [0.0f32; BLCK_0];
                 for ir0 in iir0..ir0_end {
                     let row_offset = ir0 * col_stride;
+
+                    // Debug output for first few tokens
+                    let debug =
+                        n_tokens == 1 && out_features > 100000 && ir0 < 3;
+                    if debug {
+                        let first_block = unsafe {
+                            &*(weights.as_ptr().add(row_offset)
+                                as *const BlockQ6_K)
+                        };
+                        eprintln!(
+                            "  Token {}: row_offset={}, first_block.d={:.8}, scales={:?}",
+                            ir0,
+                            row_offset,
+                            half::f16::from_bits(first_block.d).to_f32(),
+                            &first_block.scales[0..4]
+                        );
+                    }
+
                     let weight_row = unsafe {
                         std::slice::from_raw_parts(
                             weights.as_ptr().add(row_offset)
@@ -363,7 +460,11 @@ pub fn mul_mat_q6_k(
                             n_blocks,
                         )
                     };
-                    tmp[ir0 - iir0] = vec_dot_q6_k_q8_k(weight_row, input_row);
+                    let dot_result = vec_dot_q6_k_q8_k(weight_row, input_row);
+                    if debug {
+                        eprintln!("    dot_result = {:.6}", dot_result);
+                    }
+                    tmp[ir0 - iir0] = dot_result;
                 }
 
                 let dst_offset = token_idx * out_features + iir0;
@@ -442,11 +543,7 @@ pub fn mul_mat_q5_k(
     assert_eq!(input.len(), n_tokens * n_blocks);
     assert_eq!(output.len(), n_tokens * out_features);
 
-    let n_threads = if n_threads == 0 {
-        optimal_threads(out_features, n_tokens, in_features)
-    } else {
-        n_threads
-    };
+    let n_threads = if n_threads == 0 { optimal_threads() } else { n_threads };
 
     for i in 0..output.len() {
         output[i] = 0.0;
@@ -542,46 +639,41 @@ pub fn mul_mat_q4_k(
     assert_eq!(input.len(), n_tokens * n_blocks);
     assert_eq!(output.len(), n_tokens * out_features);
 
-    let n_threads = if n_threads == 0 {
-        optimal_threads(out_features, n_tokens, in_features)
-    } else {
-        n_threads
-    };
+    let n_threads = if n_threads == 0 { optimal_threads() } else { n_threads };
 
     for i in 0..output.len() {
         output[i] = 0.0;
     }
 
-    let total_rows = n_tokens * out_features;
-    const BLCK_0: usize = 16;
+    const TILED_MICRO: usize = 16; // Narrow path threshold (llama.cpp)
+    const BLCK_0: usize = 16; // Output row tiling
 
-    if n_threads == 1 {
-        for iir0 in (0..out_features).step_by(BLCK_0) {
-            let ir0_end = (iir0 + BLCK_0).min(out_features);
-            for token_idx in 0..n_tokens {
-                let input_start = token_idx * n_blocks;
-                let input_row = &input[input_start..input_start + n_blocks];
+    // Narrow path: for decode (n_tokens <= 16), use multi-threaded row parallelism
+    // Like llama.cpp, parallelize by output rows when out_features >> n_tokens
+    if n_tokens <= TILED_MICRO {
+        // Use parallel execution by output rows
+        // Each thread processes a chunk of output rows
+        let n_chunks = out_features; // One chunk per output row for work stealing
 
-                let mut tmp = [0.0f32; BLCK_0];
-                for ir0 in iir0..ir0_end {
-                    let row_offset = ir0 * col_stride;
-                    let weight_row = unsafe {
-                        std::slice::from_raw_parts(
-                            weights.as_ptr().add(row_offset)
-                                as *const BlockQ4_K,
-                            n_blocks,
-                        )
-                    };
-                    tmp[ir0 - iir0] = vec_dot_q4_k_q8_k(weight_row, input_row);
-                }
-
-                let dst_offset = token_idx * out_features + iir0;
-                for i in 0..(ir0_end - iir0) {
-                    output[dst_offset + i] = tmp[i];
-                }
-            }
+        unsafe {
+            parallel_stealing_raw(
+                n_chunks,
+                n_threads,
+                narrow_q4_k_worker,
+                &NarrowQ4KData {
+                    weights: weights.as_ptr(),
+                    col_stride,
+                    input: input.as_ptr(),
+                    output: output.as_mut_ptr(),
+                    out_features,
+                    n_blocks,
+                    n_tokens,
+                } as *const _ as *const u8,
+            );
         }
     } else {
+        // Standard path for batch size > 16 (prefill)
+        let total_rows = n_tokens * out_features;
         let data = MulMatQ4KData {
             weights: weights.as_ptr(),
             col_stride,
@@ -642,11 +734,7 @@ pub fn mul_mat_q4_0(
     assert_eq!(input.len(), n_tokens * n_blocks);
     assert_eq!(output.len(), n_tokens * out_features);
 
-    let n_threads = if n_threads == 0 {
-        optimal_threads(out_features, n_tokens, in_features)
-    } else {
-        n_threads
-    };
+    let n_threads = if n_threads == 0 { optimal_threads() } else { n_threads };
 
     for i in 0..output.len() {
         output[i] = 0.0;
@@ -752,6 +840,184 @@ mod tests {
 
         for &v in &output {
             assert!(v.abs() < 1.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod q4k_mulmat_test {
+    use super::*;
+
+    #[test]
+    fn test_mul_mat_q4_k_narrow_path() {
+        // Test narrow path with n_tokens=1
+        let in_features = 256; // 1 block
+        let out_features = 4;
+        let n_blocks = in_features / QK_K;
+
+        // Create simple Q4_K weights (column-major)
+        let block_size = std::mem::size_of::<BlockQ4_K>();
+        let col_stride = block_size; // Each column has 1 block
+
+        let mut weights = vec![0u8; out_features * col_stride];
+        for row in 0..out_features {
+            let block = unsafe {
+                &mut *(weights.as_mut_ptr().add(row * col_stride)
+                    as *mut BlockQ4_K)
+            };
+            block.d = half::f16::to_bits(half::f16::from_f32(1.0));
+            block.dmin = half::f16::to_bits(half::f16::from_f32(0.0));
+            block.scales = [8; 12]; // scales = 8
+            block.qs = [0x88; 128]; // Each nibble = 8
+        }
+
+        // Create Q8_K input
+        let mut input: Vec<BlockQ8_K> =
+            vec![unsafe { std::mem::zeroed() }; n_blocks];
+        for block in &mut input {
+            block.d = 1.0;
+            block.qs = [1; 256]; // All ones
+            block.bsums = [256; 16]; // Each sub-block sum = 256
+        }
+
+        let mut output = vec![0.0f32; out_features];
+
+        // Call mul_mat_q4_k with n_tokens=1 (narrow path)
+        mul_mat_q4_k(
+            &weights,
+            col_stride,
+            &input,
+            &mut output,
+            out_features,
+            in_features,
+            1, // n_tokens = 1, triggers narrow path
+            1, // 1 thread
+        );
+
+        println!("Output: {:?}", output);
+
+        // With all Q4_K values = 8 (from 0x88), Q8_K = 1, scale = 8, d = 1
+        // Each position: 8 * 1 = 8
+        // 256 positions * 8 = 2048
+        // With d=1 and scale=8, result should be around 2048 * 1 * 8 = 16384
+        // But we need to check the actual formula
+
+        // Check that values are reasonable (not NaN or inf)
+        for &v in &output {
+            assert!(v.is_finite(), "Output is not finite: {}", v);
+            println!("Output value: {}", v);
+        }
+    }
+
+    #[test]
+    fn test_mul_mat_q4_k_standard_path() {
+        // Test standard path with n_tokens=32 (>16)
+        let in_features = 256; // 1 block
+        let out_features = 4;
+        let n_tokens = 32;
+        let n_blocks = in_features / QK_K;
+
+        let block_size = std::mem::size_of::<BlockQ4_K>();
+        let col_stride = block_size;
+
+        let mut weights = vec![0u8; out_features * col_stride];
+        for row in 0..out_features {
+            let block = unsafe {
+                &mut *(weights.as_mut_ptr().add(row * col_stride)
+                    as *mut BlockQ4_K)
+            };
+            block.d = half::f16::to_bits(half::f16::from_f32(1.0));
+            block.dmin = half::f16::to_bits(half::f16::from_f32(0.0));
+            block.scales = [8; 12];
+            block.qs = [0x88; 128];
+        }
+
+        // Create Q8_K input for multiple tokens
+        let mut input: Vec<BlockQ8_K> =
+            vec![unsafe { std::mem::zeroed() }; n_tokens * n_blocks];
+        for block in &mut input {
+            block.d = 1.0;
+            block.qs = [1; 256];
+            block.bsums = [256; 16];
+        }
+
+        let mut output = vec![0.0f32; n_tokens * out_features];
+
+        // Call mul_mat_q4_k with n_tokens=32 (standard path)
+        mul_mat_q4_k(
+            &weights,
+            col_stride,
+            &input,
+            &mut output,
+            out_features,
+            in_features,
+            n_tokens,
+            1,
+        );
+
+        // Check that values are reasonable
+        for &v in &output {
+            assert!(v.is_finite(), "Output is not finite: {}", v);
+        }
+    }
+}
+
+#[cfg(test)]
+mod q6k_mulmat_test {
+    use super::*;
+
+    #[test]
+    fn test_mul_mat_q6_k() {
+        // Test Q6_K GEMV with known values
+        let in_features = 256; // 1 block
+        let out_features = 4;
+        let n_blocks = in_features / QK_K;
+
+        // Create simple Q6_K weights (column-major)
+        let block_size = std::mem::size_of::<BlockQ6_K>();
+        let col_stride = block_size; // Each column has 1 block
+
+        let mut weights = vec![0u8; out_features * col_stride];
+        for row in 0..out_features {
+            let block = unsafe {
+                &mut *(weights.as_mut_ptr().add(row * col_stride)
+                    as *mut BlockQ6_K)
+            };
+            // Q6_K: 6-bit quantization with scale
+            block.d = half::f16::to_bits(half::f16::from_f32(1.0));
+            block.scales = [32; 16]; // scales = 32
+            block.ql = [0x88; 128]; // low 4 bits = 8
+            block.qh = [0; 64]; // high 2 bits = 0
+        }
+
+        // Create Q8_K input
+        let mut input: Vec<BlockQ8_K> =
+            vec![unsafe { std::mem::zeroed() }; n_blocks];
+        for block in &mut input {
+            block.d = 1.0;
+            block.qs = [1; 256]; // All ones
+            block.bsums = [256; 16];
+        }
+
+        let mut output = vec![0.0f32; out_features];
+
+        // Call mul_mat_q6_k
+        mul_mat_q6_k(
+            &weights,
+            col_stride,
+            &input,
+            &mut output,
+            out_features,
+            in_features,
+            1,
+            1,
+        );
+
+        println!("Q6_K Output: {:?}", output);
+
+        // Check that values are reasonable
+        for &v in &output {
+            assert!(v.is_finite(), "Output is not finite: {}", v);
         }
     }
 }

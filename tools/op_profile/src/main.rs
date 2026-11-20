@@ -226,6 +226,7 @@ fn benchmark_vec_dot(iters: usize) {
 
 fn benchmark_gemv(iters: usize) {
     use infer_train::backend::arm::gemv::*;
+    use infer_train::backend::arm::vec_dot::*;
     use infer_train::types::*;
 
     println!("--- GEMV (Matrix-Vector Multiplication) ---\n");
@@ -258,26 +259,39 @@ fn benchmark_gemv(iters: usize) {
             .collect();
         let mut output = vec![0.0f32; out_features];
 
+        // Convert weights to bytes for mul_mat_q4_k
+        let weights_bytes = unsafe {
+            std::slice::from_raw_parts(
+                weights.as_ptr() as *const u8,
+                weights.len() * std::mem::size_of::<BlockQ4_K>(),
+            )
+        };
+        let col_stride = nb * std::mem::size_of::<BlockQ4_K>();
+
         // Warmup
         for _ in 0..5 {
-            gemv_q4_k(
-                &weights,
+            mul_mat_q4_k(
+                weights_bytes,
+                col_stride,
                 &input,
                 &mut output,
                 out_features,
                 in_features,
+                1,
                 0,
             );
         }
 
         let start = Instant::now();
         for _ in 0..iters {
-            gemv_q4_k(
-                &weights,
+            mul_mat_q4_k(
+                weights_bytes,
+                col_stride,
                 &input,
                 &mut output,
                 out_features,
                 in_features,
+                1,
                 0,
             );
         }
@@ -328,21 +342,114 @@ fn benchmark_gemv(iters: usize) {
         vec![BlockQ8_K { d: 1.0, qs: [1; 256], bsums: [0; 16] }; nb];
     let mut output = vec![0.0f32; out_features];
 
+    // Convert weights to bytes for mul_mat_q4_k
+    let weights_bytes = unsafe {
+        std::slice::from_raw_parts(
+            weights.as_ptr() as *const u8,
+            weights.len() * std::mem::size_of::<BlockQ4_K>(),
+        )
+    };
+    let col_stride = nb * std::mem::size_of::<BlockQ4_K>();
+
+    // Warmup to initialize thread pool
+    for _ in 0..10 {
+        mul_mat_q4_k(
+            weights_bytes,
+            col_stride,
+            &input,
+            &mut output,
+            out_features,
+            in_features,
+            1,
+            8,
+        );
+    }
+
     for &n_threads in &[1, 2, 4, 8] {
         let start = Instant::now();
         for _ in 0..iters {
-            gemv_q4_k(
-                &weights,
+            mul_mat_q4_k(
+                weights_bytes,
+                col_stride,
                 &input,
                 &mut output,
                 out_features,
                 in_features,
+                1,
                 n_threads,
             );
         }
         let time = start.elapsed();
         let avg_us = time.as_micros() as f64 / iters as f64;
-        println!("{} threads: {:7.2} us", n_threads, avg_us);
+        println!("{} threads (persistent pool): {:7.2} us", n_threads, avg_us);
+    }
+
+    // Test with std::thread::scope
+    println!("\n--- GEMV with std::thread::scope ---\n");
+    for &n_threads in &[1, 2, 4, 8] {
+        let start = Instant::now();
+        for _ in 0..iters {
+            if n_threads == 1 {
+                // Single thread: just run sequentially
+                for row_block in 0..((out_features + 15) / 16) {
+                    let start_row = row_block * 16;
+                    let end_row = (start_row + 16).min(out_features);
+                    for row in start_row..end_row {
+                        let row_offset = row * col_stride;
+                        let weight_row = unsafe {
+                            std::slice::from_raw_parts(
+                                weights_bytes.as_ptr().add(row_offset)
+                                    as *const BlockQ4_K,
+                                nb,
+                            )
+                        };
+                        output[row] = vec_dot_q4_k_q8_k(weight_row, &input);
+                    }
+                }
+            } else {
+                let output_ptr = output.as_mut_ptr() as usize;
+                let weights_ptr = weights_bytes.as_ptr() as usize;
+                let input_ptr = input.as_ptr() as usize;
+                std::thread::scope(|s| {
+                    let chunk_size = (out_features + n_threads - 1) / n_threads;
+                    for tid in 0..n_threads {
+                        let start_row = tid * chunk_size;
+                        let end_row =
+                            (start_row + chunk_size).min(out_features);
+                        if start_row >= out_features {
+                            break;
+                        }
+                        s.spawn(move || {
+                            for row in start_row..end_row {
+                                let row_offset = row * col_stride;
+                                let weight_row = unsafe {
+                                    std::slice::from_raw_parts(
+                                        (weights_ptr + row_offset)
+                                            as *const BlockQ4_K,
+                                        nb,
+                                    )
+                                };
+                                let input_slice = unsafe {
+                                    std::slice::from_raw_parts(
+                                        input_ptr as *const BlockQ8_K,
+                                        nb,
+                                    )
+                                };
+                                let result =
+                                    vec_dot_q4_k_q8_k(weight_row, input_slice);
+                                unsafe {
+                                    *((output_ptr as *mut f32).add(row)) =
+                                        result;
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+        }
+        let time = start.elapsed();
+        let avg_us = time.as_micros() as f64 / iters as f64;
+        println!("{} threads (scoped): {:7.2} us", n_threads, avg_us);
     }
 }
 
