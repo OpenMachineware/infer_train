@@ -969,12 +969,9 @@ impl ForwardExecutor {
                             nb,
                         )
                     };
-                    for (w, x) in col_blocks.iter().zip(input_q80.iter()) {
-                        output[i] +=
-                            crate::backend::arm::gemv::vec_dot_q8_0_single(
-                                w, x,
-                            );
-                    }
+                    output[i] = crate::backend::arm::vec_dot::vec_dot_q8_0(
+                        col_blocks, &input_q80,
+                    );
                 }
             }
             _ => {

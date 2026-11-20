@@ -543,6 +543,53 @@ pub fn vec_dot_q4_0_q8_0(x: &[BlockQ4_0], y: &[BlockQ8_0]) -> f32 {
     unsafe { vec_dot_q4_0_q8_0_neon(x, y) }
 }
 
+/// Q8_0 x Q8_0 batch vector dot product (NEON optimized)
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+pub unsafe fn vec_dot_q8_0_neon(x: &[BlockQ8_0], y: &[BlockQ8_0]) -> f32 {
+    let nb = x.len();
+    assert_eq!(nb, y.len());
+
+    let mut sum = 0.0f32;
+    for i in 0..nb {
+        let x_i = x.get_unchecked(i);
+        let y_i = y.get_unchecked(i);
+
+        let dx = fp16_to_fp32(x_i.d);
+        let dy = fp16_to_fp32(y_i.d);
+
+        let mut dot = 0i32;
+        for j in 0..32 {
+            dot += (x_i.qs[j] as i32) * (y_i.qs[j] as i32);
+        }
+        sum += (dot as f32) * dx * dy;
+    }
+    sum
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn vec_dot_q8_0(x: &[BlockQ8_0], y: &[BlockQ8_0]) -> f32 {
+    unsafe { vec_dot_q8_0_neon(x, y) }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub fn vec_dot_q8_0(x: &[BlockQ8_0], y: &[BlockQ8_0]) -> f32 {
+    let nb = x.len();
+    let mut sum = 0.0f32;
+    for i in 0..nb {
+        let x_i = &x[i];
+        let y_i = &y[i];
+        let dx = fp16_to_fp32(x_i.d);
+        let dy = fp16_to_fp32(y_i.d);
+        let mut dot = 0i32;
+        for j in 0..32 {
+            dot += (x_i.qs[j] as i32) * (y_i.qs[j] as i32);
+        }
+        sum += (dot as f32) * dx * dy;
+    }
+    sum
+}
+
 #[cfg(target_arch = "aarch64")]
 pub fn vec_dot_q4_k_q8_k(x: &[BlockQ4_K], y: &[BlockQ8_K]) -> f32 {
     unsafe { vec_dot_q4_k_q8_k_neon(x, y) }

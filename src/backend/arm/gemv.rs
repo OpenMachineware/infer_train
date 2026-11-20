@@ -73,15 +73,21 @@ fn mul_mat_q6_k_worker(flat_idx: usize, _tid: usize, data_ptr: *const u8) {
         let token_idx = flat_idx / data.out_features;
         let row = flat_idx % data.out_features;
 
-        let mut sum = 0.0f32;
         let input_start = token_idx * data.n_blocks;
-        for block_idx in 0..data.n_blocks {
-            let input_block = &*data.input.add(input_start + block_idx);
-            let offset = block_idx * data.col_stride + row * data.block_size;
-            let weight_block: &BlockQ6_K =
-                &*(data.weights.add(offset) as *const BlockQ6_K);
-            sum += vec_dot_q6_k_q8_k_single(weight_block, input_block);
-        }
+
+        // Contiguous layout: blocks stored consecutively per row
+        // Use batch vec_dot for efficiency
+        let row_offset = row * data.col_stride;
+        let weight_row = std::slice::from_raw_parts(
+            data.weights.add(row_offset) as *const BlockQ6_K,
+            data.n_blocks,
+        );
+        let input_row = std::slice::from_raw_parts(
+            data.input.add(input_start),
+            data.n_blocks,
+        );
+
+        let sum = vec_dot_q6_k_q8_k(weight_row, input_row);
         *data.output.add(flat_idx) = sum;
     }
 }
@@ -92,15 +98,19 @@ fn mul_mat_q5_k_worker(flat_idx: usize, _tid: usize, data_ptr: *const u8) {
         let token_idx = flat_idx / data.out_features;
         let row = flat_idx % data.out_features;
 
-        let mut sum = 0.0f32;
         let input_start = token_idx * data.n_blocks;
-        for block_idx in 0..data.n_blocks {
-            let input_block = &*data.input.add(input_start + block_idx);
-            let offset = block_idx * data.col_stride + row * data.block_size;
-            let weight_block: &BlockQ5_K =
-                &*(data.weights.add(offset) as *const BlockQ5_K);
-            sum += vec_dot_q5_k_q8_k_single(weight_block, input_block);
-        }
+
+        let row_offset = row * data.col_stride;
+        let weight_row = std::slice::from_raw_parts(
+            data.weights.add(row_offset) as *const BlockQ5_K,
+            data.n_blocks,
+        );
+        let input_row = std::slice::from_raw_parts(
+            data.input.add(input_start),
+            data.n_blocks,
+        );
+
+        let sum = vec_dot_q5_k_q8_k(weight_row, input_row);
         *data.output.add(flat_idx) = sum;
     }
 }
@@ -111,15 +121,19 @@ fn mul_mat_q4_k_worker(flat_idx: usize, _tid: usize, data_ptr: *const u8) {
         let token_idx = flat_idx / data.out_features;
         let row = flat_idx % data.out_features;
 
-        let mut sum = 0.0f32;
         let input_start = token_idx * data.n_blocks;
-        for block_idx in 0..data.n_blocks {
-            let input_block = &*data.input.add(input_start + block_idx);
-            let offset = block_idx * data.col_stride + row * data.block_size;
-            let weight_block: &BlockQ4_K =
-                &*(data.weights.add(offset) as *const BlockQ4_K);
-            sum += vec_dot_q4_k_q8_k_single(weight_block, input_block);
-        }
+
+        let row_offset = row * data.col_stride;
+        let weight_row = std::slice::from_raw_parts(
+            data.weights.add(row_offset) as *const BlockQ4_K,
+            data.n_blocks,
+        );
+        let input_row = std::slice::from_raw_parts(
+            data.input.add(input_start),
+            data.n_blocks,
+        );
+
+        let sum = vec_dot_q4_k_q8_k(weight_row, input_row);
         *data.output.add(flat_idx) = sum;
     }
 }
@@ -130,15 +144,19 @@ fn mul_mat_q4_0_worker(flat_idx: usize, _tid: usize, data_ptr: *const u8) {
         let token_idx = flat_idx / data.out_features;
         let row = flat_idx % data.out_features;
 
-        let mut sum = 0.0f32;
         let input_start = token_idx * data.n_blocks;
-        for block_idx in 0..data.n_blocks {
-            let input_block = &*data.input.add(input_start + block_idx);
-            let offset = block_idx * data.col_stride + row * data.block_size;
-            let weight_block: &BlockQ4_0 =
-                &*(data.weights.add(offset) as *const BlockQ4_0);
-            sum += vec_dot_q4_0_q8_0_single(weight_block, input_block);
-        }
+
+        let row_offset = row * data.col_stride;
+        let weight_row = std::slice::from_raw_parts(
+            data.weights.add(row_offset) as *const BlockQ4_0,
+            data.n_blocks,
+        );
+        let input_row = std::slice::from_raw_parts(
+            data.input.add(input_start),
+            data.n_blocks,
+        );
+
+        let sum = vec_dot_q4_0_q8_0(weight_row, input_row);
         *data.output.add(flat_idx) = sum;
     }
 }
@@ -278,44 +296,6 @@ pub fn gemv_q6_k(
 // transposed shape. The actual memory layout is [out_features][in_features].
 // ============================================================================
 
-/// Helper function to compute vec_dot for a single block pair
-/// This is used by transposed GEMV when input is quantized block-by-block
-#[cfg(target_arch = "aarch64")]
-pub fn vec_dot_q4_0_q8_0_single(x: &BlockQ4_0, y: &BlockQ8_0) -> f32 {
-    unsafe { vec_dot_q4_0_q8_0_neon(&[*x], &[*y]) }
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-pub fn vec_dot_q4_0_q8_0_single(x: &BlockQ4_0, y: &BlockQ8_0) -> f32 {
-    vec_dot_q4_0_q8_0(&[*x], &[*y])
-}
-
-/// Single block Q8_0 vec_dot
-pub fn vec_dot_q8_0_single(x: &BlockQ8_0, y: &BlockQ8_0) -> f32 {
-    let dx = fp16_to_fp32(x.d);
-    let dy = fp16_to_fp32(y.d);
-    let mut dot = 0i32;
-    for i in 0..32 {
-        dot += (x.qs[i] as i32) * (y.qs[i] as i32);
-    }
-    (dot as f32) * dx * dy
-}
-
-/// Single block Q4_K vec_dot
-pub fn vec_dot_q4_k_q8_k_single(x: &BlockQ4_K, y: &BlockQ8_K) -> f32 {
-    vec_dot_q4_k_q8_k(&[*x], &[*y])
-}
-
-/// Single block Q5_K vec_dot
-pub fn vec_dot_q5_k_q8_k_single(x: &BlockQ5_K, y: &BlockQ8_K) -> f32 {
-    vec_dot_q5_k_q8_k(&[*x], &[*y])
-}
-
-/// Single block Q6_K vec_dot
-pub fn vec_dot_q6_k_q8_k_single(x: &BlockQ6_K, y: &BlockQ8_K) -> f32 {
-    vec_dot_q6_k_q8_k(&[*x], &[*y])
-}
-
 // Transposed GEMV functions for GGUF weight layout
 // GGUF stores weights transposed: weight[i, j] at position i * col_stride + j
 // For decode: output[j] = Σ_i weight[i, j] * input[i]
@@ -323,6 +303,9 @@ pub fn vec_dot_q6_k_q8_k_single(x: &BlockQ6_K, y: &BlockQ8_K) -> f32 {
 /// Unified matrix multiplication for Q6_K weights
 ///
 /// Handles both decode (n_tokens=1) and prefill (n_tokens>1).
+/// GGUF memory layout for weights [ne0, ne1] = [in_features, out_features]:
+/// - Each output channel is stored contiguously as n_blocks blocks
+/// - col_stride = nb[1] = bytes per output channel = block_size * n_blocks
 pub fn mul_mat_q6_k(
     weights: &[u8],
     col_stride: usize,
@@ -358,17 +341,18 @@ pub fn mul_mat_q6_k(
             let token_idx = flat_idx / out_features;
             let row = flat_idx % out_features;
 
-            let mut sum = 0.0f32;
+            // Use batch vec_dot for efficiency
             let input_start = token_idx * n_blocks;
-            for block_idx in 0..n_blocks {
-                let input_block = &input[input_start + block_idx];
-                let offset = block_idx * col_stride + row * block_size;
-                let weight_block: &BlockQ6_K = unsafe {
-                    &*(weights.as_ptr().add(offset) as *const BlockQ6_K)
-                };
-                sum += vec_dot_q6_k_q8_k_single(weight_block, input_block);
-            }
-            output[flat_idx] = sum;
+            let row_offset = row * col_stride;
+            let (weight_row, input_row) = unsafe {
+                let weight_row = std::slice::from_raw_parts(
+                    weights.as_ptr().add(row_offset) as *const BlockQ6_K,
+                    n_blocks,
+                );
+                let input_row = &input[input_start..input_start + n_blocks];
+                (weight_row, input_row)
+            };
+            output[flat_idx] = vec_dot_q6_k_q8_k(weight_row, input_row);
         }
     } else {
         // Multi-threaded path using persistent thread pool
@@ -418,9 +402,9 @@ pub fn gemv_q6_k_transposed(
 /// Unified matrix multiplication for Q5_K weights
 ///
 /// Handles both decode (n_tokens=1) and prefill (n_tokens>1).
-/// GGUF memory layout for weights [ne0, ne1] = [out, in]:
-/// - Weight blocks stored as: [in_blocks][out_rows]
-/// - col_stride = bytes for all output rows per input block
+/// GGUF memory layout for weights [ne0, ne1] = [in_features, out_features]:
+/// - Each output channel is stored contiguously as n_blocks blocks
+/// - col_stride = nb[1] = bytes per output channel = block_size * n_blocks
 ///
 /// Thread strategy:
 /// - Decode (n_tokens=1): Single-threaded (memory-bound)
@@ -461,17 +445,18 @@ pub fn mul_mat_q5_k(
             let token_idx = flat_idx / out_features;
             let row = flat_idx % out_features;
 
-            let mut sum = 0.0f32;
+            // Use batch vec_dot for efficiency
             let input_start = token_idx * n_blocks;
-            for block_idx in 0..n_blocks {
-                let input_block = &input[input_start + block_idx];
-                let offset = block_idx * col_stride + row * block_size;
-                let weight_block: &BlockQ5_K = unsafe {
-                    &*(weights.as_ptr().add(offset) as *const BlockQ5_K)
-                };
-                sum += vec_dot_q5_k_q8_k_single(weight_block, input_block);
-            }
-            output[flat_idx] = sum;
+            let row_offset = row * col_stride;
+            let (weight_row, input_row) = unsafe {
+                let weight_row = std::slice::from_raw_parts(
+                    weights.as_ptr().add(row_offset) as *const BlockQ5_K,
+                    n_blocks,
+                );
+                let input_row = &input[input_start..input_start + n_blocks];
+                (weight_row, input_row)
+            };
+            output[flat_idx] = vec_dot_q5_k_q8_k(weight_row, input_row);
         }
     } else {
         // Multi-threaded path using persistent thread pool
@@ -553,17 +538,18 @@ pub fn mul_mat_q4_k(
             let token_idx = flat_idx / out_features;
             let row = flat_idx % out_features;
 
-            let mut sum = 0.0f32;
+            // Use batch vec_dot for efficiency
             let input_start = token_idx * n_blocks;
-            for block_idx in 0..n_blocks {
-                let input_block = &input[input_start + block_idx];
-                let offset = block_idx * col_stride + row * block_size;
-                let weight_block: &BlockQ4_K = unsafe {
-                    &*(weights.as_ptr().add(offset) as *const BlockQ4_K)
-                };
-                sum += vec_dot_q4_k_q8_k_single(weight_block, input_block);
-            }
-            output[flat_idx] = sum;
+            let row_offset = row * col_stride;
+            let (weight_row, input_row) = unsafe {
+                let weight_row = std::slice::from_raw_parts(
+                    weights.as_ptr().add(row_offset) as *const BlockQ4_K,
+                    n_blocks,
+                );
+                let input_row = &input[input_start..input_start + n_blocks];
+                (weight_row, input_row)
+            };
+            output[flat_idx] = vec_dot_q4_k_q8_k(weight_row, input_row);
         }
     } else {
         // Multi-threaded path using persistent thread pool
@@ -645,17 +631,18 @@ pub fn mul_mat_q4_0(
             let token_idx = flat_idx / out_features;
             let row = flat_idx % out_features;
 
-            let mut sum = 0.0f32;
+            // Use batch vec_dot for efficiency
             let input_start = token_idx * n_blocks;
-            for block_idx in 0..n_blocks {
-                let input_block = &input[input_start + block_idx];
-                let offset = block_idx * col_stride + row * block_size;
-                let weight_block: &BlockQ4_0 = unsafe {
-                    &*(weights.as_ptr().add(offset) as *const BlockQ4_0)
-                };
-                sum += vec_dot_q4_0_q8_0_single(weight_block, input_block);
-            }
-            output[flat_idx] = sum;
+            let row_offset = row * col_stride;
+            let (weight_row, input_row) = unsafe {
+                let weight_row = std::slice::from_raw_parts(
+                    weights.as_ptr().add(row_offset) as *const BlockQ4_0,
+                    n_blocks,
+                );
+                let input_row = &input[input_start..input_start + n_blocks];
+                (weight_row, input_row)
+            };
+            output[flat_idx] = vec_dot_q4_0_q8_0(weight_row, input_row);
         }
     } else {
         // Multi-threaded path using persistent thread pool
