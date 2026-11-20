@@ -70,7 +70,7 @@ pub struct ForwardExecutor {
 
 impl ForwardExecutor {
     pub fn new(model: SimpleModel) -> Self {
-        Self::new_with_threads(model, 0, 0)
+        Self::new_with_threads(model, 0, 0) // Use optimal_threads() for decode
     }
 
     pub fn new_with_threads(
@@ -791,33 +791,23 @@ impl ForwardExecutor {
     ) -> Vec<u32> {
         let mut tokens = prompt_tokens.to_vec();
 
-        let mut logits: Option<Vec<f32>> = None;
         for (i, &token) in tokens.iter().enumerate() {
-            match self.forward(token) {
-                Ok(l) => logits = Some(l.to_vec()),
-                Err(e) => {
-                    eprintln!("Prefill error at token {}: {}", i, e);
-                    return tokens;
-                }
+            if self.forward(token).is_err() {
+                eprintln!("Prefill error at token {}", i);
+                return tokens;
             }
         }
 
-        for i in 0..max_new_tokens {
-            let logits = match logits.take() {
-                Some(l) => l,
-                None => {
-                    match self.forward(tokens.last().copied().unwrap_or(0)) {
-                        Ok(l) => l.to_vec(),
-                        Err(e) => {
-                            eprintln!("Forward error at step {}: {}", i, e);
-                            break;
-                        }
-                    }
-                }
+        for _ in 0..max_new_tokens {
+            let next_token = {
+                let logits = &self.logits_buf;
+                self.sample(logits, temperature)
             };
-
-            let next_token = self.sample(&logits, temperature);
             tokens.push(next_token);
+
+            if self.forward(next_token).is_err() {
+                break;
+            }
         }
 
         tokens
