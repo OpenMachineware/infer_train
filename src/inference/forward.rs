@@ -1031,72 +1031,62 @@ impl ForwardExecutor {
             QuantType::Q6_K => {
                 // GGUF stores weights column-major: dims [hidden_size, vocab_size]
                 // Each column is one token's embedding for output projection
-                // Use strides to access columns directly
+                // Use batched GEMV instead of per-column vec_dot for efficiency
                 let nb = (in_features + QK_K - 1) / QK_K;
                 let nb1 = output_tensor.strides[1] as usize; // column stride in bytes
 
                 let mut input_q8k = vec![unsafe { std::mem::zeroed() }; nb];
                 quant::quantize_row_q8_k(hidden, &mut input_q8k);
 
-                for v in 0..vocab_size {
-                    let col_offset = v * nb1;
-                    let col_blocks: &[BlockQ6_K] = unsafe {
-                        std::slice::from_raw_parts(
-                            output_data.as_ptr().add(col_offset)
-                                as *const BlockQ6_K,
-                            nb,
-                        )
-                    };
-                    logits[v] = crate::backend::arm::vec_dot::vec_dot_q6_k_q8_k(
-                        col_blocks, &input_q8k,
-                    );
-                }
+                crate::backend::arm::gemv::gemv_q6_k_transposed(
+                    output_data,
+                    nb1,
+                    &input_q8k,
+                    &mut logits,
+                    vocab_size,
+                    in_features,
+                    0, // auto-detect thread count
+                );
             }
             QuantType::Q4_K => {
                 // GGUF stores weights column-major: dims [hidden_size, vocab_size]
                 // Each column is one token's embedding for output projection
+                // Use batched GEMV instead of per-column vec_dot for efficiency
                 let nb = (in_features + QK_K - 1) / QK_K;
                 let nb1 = output_tensor.strides[1] as usize; // column stride in bytes
 
                 let mut input_q8k = vec![unsafe { std::mem::zeroed() }; nb];
                 quant::quantize_row_q8_k(hidden, &mut input_q8k);
 
-                for v in 0..vocab_size {
-                    let col_offset = v * nb1;
-                    let col_blocks: &[BlockQ4_K] = unsafe {
-                        std::slice::from_raw_parts(
-                            output_data.as_ptr().add(col_offset)
-                                as *const BlockQ4_K,
-                            nb,
-                        )
-                    };
-                    logits[v] = crate::backend::arm::vec_dot::vec_dot_q4_k_q8_k(
-                        col_blocks, &input_q8k,
-                    );
-                }
+                crate::backend::arm::gemv::gemv_q4_k_transposed(
+                    output_data,
+                    nb1,
+                    &input_q8k,
+                    &mut logits,
+                    vocab_size,
+                    in_features,
+                    0, // auto-detect thread count
+                );
             }
             QuantType::Q5_K => {
                 // GGUF stores weights column-major: dims [hidden_size, vocab_size]
                 // Each column is one token's embedding for output projection
+                // Use batched GEMV instead of per-column vec_dot for efficiency
                 let nb = (in_features + QK_K - 1) / QK_K;
                 let nb1 = output_tensor.strides[1] as usize; // column stride in bytes
 
                 let mut input_q8k = vec![unsafe { std::mem::zeroed() }; nb];
                 quant::quantize_row_q8_k(hidden, &mut input_q8k);
 
-                for v in 0..vocab_size {
-                    let col_offset = v * nb1;
-                    let col_blocks: &[BlockQ5_K] = unsafe {
-                        std::slice::from_raw_parts(
-                            output_data.as_ptr().add(col_offset)
-                                as *const BlockQ5_K,
-                            nb,
-                        )
-                    };
-                    logits[v] = crate::backend::arm::vec_dot::vec_dot_q5_k_q8_k(
-                        col_blocks, &input_q8k,
-                    );
-                }
+                crate::backend::arm::gemv::gemv_q5_k_transposed(
+                    output_data,
+                    nb1,
+                    &input_q8k,
+                    &mut logits,
+                    vocab_size,
+                    in_features,
+                    0, // auto-detect thread count
+                );
             }
             QuantType::F16 => {
                 // GGUF stores weights column-major: dims [hidden_size, vocab_size]
