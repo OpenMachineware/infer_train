@@ -196,6 +196,7 @@ impl ForwardExecutor {
         // 1. Embedding lookup
         let mut hidden = self.embed_token(token_id)?;
 
+        // Debug: print embedding stats for first token
         // 2. Process each layer
         for layer_idx in 0..config.n_layers {
             hidden = self.forward_layer(&hidden, layer_idx)?;
@@ -1159,10 +1160,15 @@ impl ForwardExecutor {
 
         println!("Generating {} new tokens...", max_new_tokens);
 
-        println!("Prefilling {} tokens...", tokens.len() - 1);
-        for (i, &token) in tokens[..tokens.len() - 1].iter().enumerate() {
+        // Prefill: process all prompt tokens
+        // The last prompt token's logits will be used for the first generation
+        println!("Prefilling {} tokens...", tokens.len());
+        let mut logits = None;
+        for (i, &token) in tokens.iter().enumerate() {
             match self.forward(token) {
-                Ok(_) => {}
+                Ok(l) => {
+                    logits = Some(l);
+                }
                 Err(e) => {
                     eprintln!("Prefill error at token {}: {}", i, e);
                     return tokens;
@@ -1171,18 +1177,25 @@ impl ForwardExecutor {
         }
         println!("Prefill complete. seq_pos={}", self.seq_pos);
 
+        // Generation loop
         for i in 0..max_new_tokens {
-            match self.forward(tokens[tokens.len() - 1]) {
-                Ok(logits) => {
-                    let next_token = self.sample(&logits, temperature);
-                    println!("  Token {}: {}", i, next_token);
-                    tokens.push(next_token);
+            let logits = match logits.take() {
+                Some(l) => l,
+                None => {
+                    // After first iteration, we need to forward the last token
+                    match self.forward(tokens.last().copied().unwrap_or(0)) {
+                        Ok(l) => l,
+                        Err(e) => {
+                            eprintln!("Forward error at step {}: {}", i, e);
+                            break;
+                        }
+                    }
                 }
-                Err(e) => {
-                    eprintln!("Forward error at step {}: {}", i, e);
-                    break;
-                }
-            }
+            };
+
+            let next_token = self.sample(&logits, temperature);
+            println!("  Token {}: {}", i, next_token);
+            tokens.push(next_token);
         }
 
         tokens
