@@ -4,7 +4,10 @@
 // Forward executor for CPU inference
 
 use crate::backend::arm::{
-    flash_attn::flash_attn_f32, quant, rms_norm::rms_norm_f32, rope::rope_f32,
+    flash_attn::flash_attn_f32,
+    quant,
+    rms_norm::rms_norm_f32,
+    rope::{rope_f32, rope_f32_inplace},
 };
 use crate::inference::SimpleModel;
 use crate::types::*;
@@ -65,6 +68,12 @@ pub struct ForwardExecutor {
     pub seq_pos: usize,
     /// Pre-allocated quantized input buffer
     quant_buf: QuantizedInput,
+    /// Compute arena for zero-allocation temporary buffers
+    arena: crate::memory::ComputeArena,
+    /// Pre-allocated hidden buffer for layer-to-layer passing
+    hidden_buf: Vec<f32>,
+    /// Pre-allocated logits buffer for output
+    logits_buf: Vec<f32>,
     /// Thread count for decode (n_tokens=1), 0 = auto
     pub n_threads: usize,
     /// Thread count for prefill (n_tokens>1), 0 = auto
@@ -125,6 +134,22 @@ impl ForwardExecutor {
         const INITIAL_CAPACITY: usize = 512;
         let kv_size = n_kv_heads * head_dim * INITIAL_CAPACITY;
 
+        // Calculate work buffer size for arena
+        let work_size = crate::memory::calculate_work_size(
+            config.hidden_size,
+            config.intermediate_size,
+            config.n_heads,
+            config.n_kv_heads,
+            head_dim,
+            config.vocab_size,
+            n_layers,
+        );
+        let arena = crate::memory::ComputeArena::new(work_size);
+
+        // Pre-allocate output buffers
+        let hidden_buf = vec![0.0f32; config.hidden_size];
+        let logits_buf = vec![0.0f32; config.vocab_size];
+
         Self {
             model,
             kv_cache_k: vec![vec![0.0f32; kv_size]; n_layers],
@@ -132,6 +157,9 @@ impl ForwardExecutor {
             kv_capacity: INITIAL_CAPACITY,
             seq_pos: 0,
             quant_buf: QuantizedInput::new(),
+            arena,
+            hidden_buf,
+            logits_buf,
             n_threads,
             n_threads_batch,
         }
@@ -187,31 +215,119 @@ impl ForwardExecutor {
     }
 
     /// Forward pass for a single token
-    pub fn forward(&mut self, token_id: u32) -> Result<Vec<f32>, String> {
+    /// Forward pass for a single token
+    ///
+    /// Returns a reference to the logits buffer (zero-allocation).
+    /// The reference is valid until the next forward call.
+    pub fn forward(&mut self, token_id: u32) -> Result<&[f32], String> {
+        // Reset arena for new forward pass
+        self.arena.reset();
+
         // Ensure KV cache has enough capacity
         self.ensure_kv_capacity();
 
         let config = self.model.config();
 
-        // 1. Embedding lookup
-        let mut hidden = self.embed_token(token_id)?;
+        // 1. Embedding lookup into hidden_buf
+        {
+            let emb_tensor = self
+                .model
+                .gguf
+                .tensors
+                .iter()
+                .find(|t| t.name == "token_embd.weight")
+                .ok_or("Embedding tensor not found")?;
 
-        // Debug: print embedding stats for first token
-        // 2. Process each layer
-        for layer_idx in 0..config.n_layers {
-            hidden = self.forward_layer(&hidden, layer_idx)?;
+            let emb_data =
+                self.model.get_embeddings().ok_or("No embedding weights")?;
+
+            let hidden_size = config.hidden_size;
+
+            match emb_tensor.quant_type {
+                QuantType::F32 => {
+                    let nb1 = emb_tensor.strides[1] as usize;
+                    let col_offset = (token_id as usize) * nb1;
+
+                    for h in 0..hidden_size {
+                        let offset = col_offset + h * 4;
+                        if offset + 4 > emb_data.len() {
+                            return Err(format!(
+                                "Token {} out of range",
+                                token_id
+                            ));
+                        }
+                        self.hidden_buf[h] = f32::from_le_bytes(
+                            emb_data[offset..offset + 4].try_into().unwrap(),
+                        );
+                    }
+                }
+                QuantType::F16 => {
+                    let nb1 = emb_tensor.strides[1] as usize;
+                    let col_offset = (token_id as usize) * nb1;
+
+                    for h in 0..hidden_size {
+                        let offset = col_offset + h * 2;
+                        if offset + 2 > emb_data.len() {
+                            return Err(format!(
+                                "Token {} out of range",
+                                token_id
+                            ));
+                        }
+                        self.hidden_buf[h] = half::f16::from_le_bytes(
+                            emb_data[offset..offset + 2].try_into().unwrap(),
+                        )
+                        .to_f32();
+                    }
+                }
+                QuantType::Q6_K => {
+                    // Q6_K embedding: each column is hidden_size elements
+                    // hidden_size = 1024 = 4 * QK_K (256)
+                    let nb = hidden_size / 256; // number of blocks per column
+                    let block_size = std::mem::size_of::<BlockQ6_K>();
+                    let col_offset = (token_id as usize) * nb * block_size;
+
+                    for block_idx in 0..nb {
+                        let h_base = block_idx * 256;
+                        let block: &BlockQ6_K = unsafe {
+                            &*(emb_data
+                                .as_ptr()
+                                .add(col_offset + block_idx * block_size)
+                                as *const BlockQ6_K)
+                        };
+
+                        let block_vals =
+                            crate::backend::arm::dequant::dequantize_q6_k_block(
+                                block,
+                            );
+                        for h in 0..256 {
+                            self.hidden_buf[h_base + h] = block_vals[h];
+                        }
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "Unsupported embedding quantization: {:?}",
+                        emb_tensor.quant_type
+                    ));
+                }
+            }
         }
 
-        // 3. Final norm
-        hidden = self.final_norm(&hidden)?;
+        // 2. Process each layer in-place
+        for layer_idx in 0..config.n_layers {
+            self.forward_layer_inplace(layer_idx)?;
+        }
 
-        // 4. Output projection
-        let logits = self.output_projection(&hidden)?;
+        // 3. Final norm in-place
+        self.final_norm_inplace()?;
+
+        // 4. Output projection into logits_buf
+        self.output_projection_inplace()?;
 
         // Increment sequence position
         self.seq_pos += 1;
 
-        Ok(logits)
+        Ok(&self.logits_buf)
     }
 
     /// Public method for getting embedding (for debugging)
@@ -337,6 +453,114 @@ impl ForwardExecutor {
                 emb_tensor.quant_type
             )),
         }
+    }
+
+    /// Embedding lookup into provided buffer (zero-allocation version)
+    fn embed_token_into(
+        &self,
+        token_id: u32,
+        output: &mut [f32],
+    ) -> Result<(), String> {
+        let config = self.model.config();
+        let hidden_size = config.hidden_size;
+
+        if output.len() != hidden_size {
+            return Err(format!(
+                "Output buffer size {} != hidden_size {}",
+                output.len(),
+                hidden_size
+            ));
+        }
+
+        let emb_tensor = self
+            .model
+            .gguf
+            .tensors
+            .iter()
+            .find(|t| t.name == "token_embd.weight")
+            .ok_or("Embedding tensor not found")?;
+
+        let emb_data =
+            self.model.get_embeddings().ok_or("No embedding weights")?;
+
+        match emb_tensor.quant_type {
+            QuantType::F32 => {
+                let nb1 = emb_tensor.strides[1] as usize;
+                let col_offset = (token_id as usize) * nb1;
+
+                for h in 0..hidden_size {
+                    let offset = col_offset + h * 4;
+                    if offset + 4 > emb_data.len() {
+                        return Err(format!("Token {} out of range", token_id));
+                    }
+                    output[h] = f32::from_le_bytes(
+                        emb_data[offset..offset + 4].try_into().unwrap(),
+                    );
+                }
+            }
+            QuantType::F16 => {
+                let nb1 = emb_tensor.strides[1] as usize;
+                let col_offset = (token_id as usize) * nb1;
+
+                for h in 0..hidden_size {
+                    let offset = col_offset + h * 2;
+                    if offset + 2 > emb_data.len() {
+                        return Err(format!(
+                            "Token {} out of range at h={}",
+                            token_id, h
+                        ));
+                    }
+                    let bytes = &emb_data[offset..offset + 2];
+                    output[h] =
+                        half::f16::from_le_bytes(bytes.try_into().unwrap())
+                            .to_f32();
+                }
+            }
+            QuantType::Q4_K => {
+                let nb = (hidden_size + QK_K - 1) / QK_K;
+                let nb1 = emb_tensor.strides[1] as usize;
+                let col_offset = (token_id as usize) * nb1;
+
+                if col_offset + nb * std::mem::size_of::<BlockQ4_K>()
+                    > emb_data.len()
+                {
+                    return Err(format!("Token {} out of range", token_id));
+                }
+
+                let col_data = &emb_data[col_offset..];
+                crate::backend::arm::dequant::dequant_q4_k(
+                    col_data,
+                    output,
+                    nb * QK_K,
+                );
+            }
+            QuantType::Q6_K => {
+                let nb = (hidden_size + QK_K - 1) / QK_K;
+                let nb1 = emb_tensor.strides[1] as usize;
+                let col_offset = (token_id as usize) * nb1;
+
+                if col_offset + nb * std::mem::size_of::<BlockQ6_K>()
+                    > emb_data.len()
+                {
+                    return Err(format!("Token {} out of range", token_id));
+                }
+
+                let col_data = &emb_data[col_offset..];
+                crate::backend::arm::dequant::dequant_q6_k(
+                    col_data,
+                    output,
+                    nb * QK_K,
+                );
+            }
+            _ => {
+                return Err(format!(
+                    "Unsupported embedding quantization: {:?}",
+                    emb_tensor.quant_type
+                ));
+            }
+        }
+
+        Ok(())
     }
 
     /// Forward pass for a single layer
@@ -585,6 +809,249 @@ impl ForwardExecutor {
         Ok(output)
     }
 
+    /// Forward pass for a single layer in-place (zero-allocation version)
+    fn forward_layer_inplace(
+        &mut self,
+        layer_idx: usize,
+    ) -> Result<(), String> {
+        // Reset arena at the start of each layer
+        // This allows reuse of memory across layers
+        self.arena.reset();
+
+        let config = self.model.config().clone();
+        let hidden_size = config.hidden_size;
+        let n_heads = config.n_heads;
+        let n_kv_heads = config.n_kv_heads;
+        let head_dim = config.head_dim();
+
+        // === Attention Block ===
+        // 1. RMS Norm before attention - use arena for temp buffer
+        let normed_attn: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
+        self.rms_norm_into(
+            &self.hidden_buf,
+            &format!("blk.{}.attn_norm.weight", layer_idx),
+            normed_attn,
+        )?;
+
+        // 2. Pre-quantize normed_attn for QKV projections (shared input)
+        let quant_type = self
+            .get_weight_quant_type(&format!("blk.{}.attn_q.weight", layer_idx));
+        let (qkv_q8_0, qkv_q8_k, in_features) = match quant_type {
+            QuantType::Q4_0 | QuantType::Q5_0 | QuantType::Q8_0 => {
+                let nb = (normed_attn.len() + QK8_0 - 1) / QK8_0;
+                self.quant_buf.resize(normed_attn.len(), QuantFormat::Q8_0);
+                crate::backend::arm::quant::quantize_q8_0(
+                    normed_attn,
+                    &mut self.quant_buf.q8_0,
+                );
+                (Some(&self.quant_buf.q8_0 as &[BlockQ8_0]), None, nb * QK8_0)
+            }
+            QuantType::Q4_K
+            | QuantType::Q5_K
+            | QuantType::Q6_K
+            | QuantType::Q8_K
+            | QuantType::IQ4_XS => {
+                let nb = (normed_attn.len() + QK_K - 1) / QK_K;
+                self.quant_buf.resize(normed_attn.len(), QuantFormat::Q8_K);
+                crate::backend::arm::quant::quantize_q8_k(
+                    normed_attn,
+                    &mut self.quant_buf.q8_k,
+                );
+                (None, Some(&self.quant_buf.q8_k as &[BlockQ8_K]), nb * QK_K)
+            }
+            _ => {
+                return Err(format!(
+                    "Unsupported quantization type: {:?}",
+                    quant_type
+                ));
+            }
+        };
+
+        // 3. QKV projections - use arena for temp buffers
+        let q: &mut [f32] = self.arena.alloc_zeroed(n_heads * head_dim);
+        let k: &mut [f32] = self.arena.alloc_zeroed(n_kv_heads * head_dim);
+        let v: &mut [f32] = self.arena.alloc_zeroed(n_kv_heads * head_dim);
+
+        self.linear_quantized_into(
+            qkv_q8_0,
+            qkv_q8_k,
+            in_features,
+            &format!("blk.{}.attn_q.weight", layer_idx),
+            q,
+        )?;
+        self.linear_quantized_into(
+            qkv_q8_0,
+            qkv_q8_k,
+            in_features,
+            &format!("blk.{}.attn_k.weight", layer_idx),
+            k,
+        )?;
+        self.linear_quantized_into(
+            qkv_q8_0,
+            qkv_q8_k,
+            in_features,
+            &format!("blk.{}.attn_v.weight", layer_idx),
+            v,
+        )?;
+
+        // 4. Q/K norm (RMS norm per head)
+        let q_normed: &mut [f32] = self.arena.alloc_zeroed(n_heads * head_dim);
+        let k_normed: &mut [f32] =
+            self.arena.alloc_zeroed(n_kv_heads * head_dim);
+
+        self.qk_norm_into(
+            q,
+            &format!("blk.{}.attn_q_norm.weight", layer_idx),
+            n_heads,
+            head_dim,
+            q_normed,
+        )?;
+        self.qk_norm_into(
+            k,
+            &format!("blk.{}.attn_k_norm.weight", layer_idx),
+            n_kv_heads,
+            head_dim,
+            k_normed,
+        )?;
+
+        // 5. Apply RoPE to Q and K (in-place on normed buffers)
+        let freq_base = config.rope_freq_base;
+        rope_f32_inplace(q_normed, self.seq_pos, head_dim, head_dim, freq_base);
+        rope_f32_inplace(k_normed, self.seq_pos, head_dim, head_dim, freq_base);
+
+        // 6. Update KV cache
+        let kv_head_offset = self.seq_pos * head_dim;
+        let kv_capacity = self.kv_capacity;
+        for h in 0..n_kv_heads {
+            let src_offset = h * head_dim;
+            let dst_offset = h * kv_capacity * head_dim + kv_head_offset;
+            self.kv_cache_k[layer_idx][dst_offset..dst_offset + head_dim]
+                .copy_from_slice(&k_normed[src_offset..src_offset + head_dim]);
+            self.kv_cache_v[layer_idx][dst_offset..dst_offset + head_dim]
+                .copy_from_slice(&v[src_offset..src_offset + head_dim]);
+        }
+
+        // 7. Flash Attention - use arena for output
+        let attn_output: &mut [f32] =
+            self.arena.alloc_zeroed(n_heads * head_dim);
+        for h in 0..n_heads {
+            let kv_head_idx = h * n_kv_heads / n_heads;
+            let k_cache = &self.kv_cache_k[layer_idx]
+                [kv_head_idx * kv_capacity * head_dim..];
+            let v_cache = &self.kv_cache_v[layer_idx]
+                [kv_head_idx * kv_capacity * head_dim..];
+
+            let k_slice = &k_cache[..(self.seq_pos + 1) * head_dim];
+            let v_slice = &v_cache[..(self.seq_pos + 1) * head_dim];
+
+            flash_attn_f32(
+                &q_normed[h * head_dim..(h + 1) * head_dim],
+                k_slice,
+                v_slice,
+                None,
+                &mut attn_output[h * head_dim..(h + 1) * head_dim],
+                head_dim,
+                self.seq_pos + 1,
+                1.0 / (head_dim as f32).sqrt(),
+            );
+        }
+
+        // 8. Output projection - write to arena temp, then add residual to hidden_buf
+        let attn_out: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
+        self.linear_into(
+            attn_output,
+            &format!("blk.{}.attn_output.weight", layer_idx),
+            attn_out,
+        )?;
+
+        // Residual connection: hidden_buf = hidden_buf + attn_out
+        for i in 0..hidden_size {
+            self.hidden_buf[i] += attn_out[i];
+        }
+
+        // === FFN Block ===
+        // 1. RMS Norm before FFN - use arena temp
+        let normed_ffn: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
+        self.rms_norm_into(
+            &self.hidden_buf,
+            &format!("blk.{}.ffn_norm.weight", layer_idx),
+            normed_ffn,
+        )?;
+
+        // 2. Pre-quantize normed_ffn for gate/up projections
+        let (gate_up_q8_0, gate_up_q8_k, ffn_in_features) = match quant_type {
+            QuantType::Q4_0 | QuantType::Q5_0 | QuantType::Q8_0 => {
+                let nb = (normed_ffn.len() + QK8_0 - 1) / QK8_0;
+                self.quant_buf.resize(normed_ffn.len(), QuantFormat::Q8_0);
+                crate::backend::arm::quant::quantize_q8_0(
+                    normed_ffn,
+                    &mut self.quant_buf.q8_0,
+                );
+                (Some(&self.quant_buf.q8_0 as &[BlockQ8_0]), None, nb * QK8_0)
+            }
+            QuantType::Q4_K
+            | QuantType::Q5_K
+            | QuantType::Q6_K
+            | QuantType::Q8_K
+            | QuantType::IQ4_XS => {
+                let nb = (normed_ffn.len() + QK_K - 1) / QK_K;
+                self.quant_buf.resize(normed_ffn.len(), QuantFormat::Q8_K);
+                crate::backend::arm::quant::quantize_q8_k(
+                    normed_ffn,
+                    &mut self.quant_buf.q8_k,
+                );
+                (None, Some(&self.quant_buf.q8_k as &[BlockQ8_K]), nb * QK_K)
+            }
+            _ => {
+                return Err(format!(
+                    "Unsupported quantization type: {:?}",
+                    quant_type
+                ));
+            }
+        };
+
+        // 3. Gate and Up projections - use arena
+        let gate: &mut [f32] =
+            self.arena.alloc_zeroed(config.intermediate_size);
+        let up: &mut [f32] = self.arena.alloc_zeroed(config.intermediate_size);
+
+        self.linear_quantized_into(
+            gate_up_q8_0,
+            gate_up_q8_k,
+            ffn_in_features,
+            &format!("blk.{}.ffn_gate.weight", layer_idx),
+            gate,
+        )?;
+        self.linear_quantized_into(
+            gate_up_q8_0,
+            gate_up_q8_k,
+            ffn_in_features,
+            &format!("blk.{}.ffn_up.weight", layer_idx),
+            up,
+        )?;
+
+        // 4. SwiGLU activation - in-place on gate buffer
+        crate::backend::arm::activation::silu_f32_inplace(gate);
+        for i in 0..config.intermediate_size {
+            gate[i] *= up[i];
+        }
+
+        // 5. Down projection - use arena temp
+        let ffn_out: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
+        self.linear_into(
+            gate,
+            &format!("blk.{}.ffn_down.weight", layer_idx),
+            ffn_out,
+        )?;
+
+        // Add residual: hidden_buf = hidden_buf + ffn_out
+        for i in 0..hidden_size {
+            self.hidden_buf[i] += ffn_out[i];
+        }
+
+        Ok(())
+    }
+
     /// Get the quantization type of a weight tensor
     fn get_weight_quant_type(&self, weight_name: &str) -> QuantType {
         self.model
@@ -742,6 +1209,43 @@ impl ForwardExecutor {
         Ok(output)
     }
 
+    /// RMS norm writing to provided output buffer (zero-allocation version)
+    fn rms_norm_into(
+        &self,
+        input: &[f32],
+        weight_name: &str,
+        output: &mut [f32],
+    ) -> Result<(), String> {
+        let size = input.len();
+        let config = self.model.config();
+        let eps = config.rms_norm_eps;
+        let weight_data = self.model.get_tensor(weight_name);
+
+        let sum_sq: f32 = input.iter().map(|x| x * x).sum();
+        let rms = (sum_sq / size as f32 + eps).sqrt();
+
+        if let Some(data) = weight_data {
+            if data.len() == size * 4 {
+                let weight: Vec<f32> = data
+                    .chunks_exact(4)
+                    .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+                    .collect();
+
+                rms_norm_f32(input, &weight, output, eps);
+            } else {
+                for (i, inp) in input.iter().enumerate() {
+                    output[i] = inp / rms;
+                }
+            }
+        } else {
+            for (i, inp) in input.iter().enumerate() {
+                output[i] = inp / rms;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Q/K norm: RMS norm per head, then multiply by shared weight
     /// llama.cpp: ggml_rms_norm computes RMS per row (each head separately)
     /// Input shape: [n_heads, head_dim], weight shape: [head_dim] (broadcast)
@@ -800,6 +1304,58 @@ impl ForwardExecutor {
         }
 
         Ok(output)
+    }
+
+    /// Q/K norm writing to provided output buffer (zero-allocation version)
+    fn qk_norm_into(
+        &self,
+        input: &[f32],
+        weight_name: &str,
+        n_heads: usize,
+        head_dim: usize,
+        output: &mut [f32],
+    ) -> Result<(), String> {
+        let eps = self.model.config.rms_norm_eps;
+
+        // Weight is shared across heads: [head_dim]
+        let weight_data = self.model.get_tensor(weight_name);
+        let shared_weight: Vec<f32> = if let Some(data) = weight_data {
+            if data.len() == head_dim * 4 {
+                data.chunks_exact(4)
+                    .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+                    .collect()
+            } else if data.len() == head_dim * 2 {
+                data.chunks_exact(2)
+                    .map(|chunk| {
+                        half::f16::from_le_bytes(chunk.try_into().unwrap())
+                            .to_f32()
+                    })
+                    .collect()
+            } else {
+                output.copy_from_slice(input);
+                return Ok(());
+            }
+        } else {
+            output.copy_from_slice(input);
+            return Ok(());
+        };
+
+        // Per-head RMS norm
+        for h in 0..n_heads {
+            let head_start = h * head_dim;
+            let head_input = &input[head_start..head_start + head_dim];
+
+            let ss: f32 =
+                head_input.iter().map(|x| x * x).sum::<f32>() / head_dim as f32;
+            let scale = 1.0f32 / (ss + eps).sqrt();
+
+            for d in 0..head_dim {
+                output[head_start + d] =
+                    head_input[d] * scale * shared_weight[d];
+            }
+        }
+
+        Ok(())
     }
 
     /// Linear layer (GEMV) with quantized weights
@@ -986,10 +1542,338 @@ impl ForwardExecutor {
         Ok(output)
     }
 
+    /// Linear layer writing to provided output buffer (zero-allocation version)
+    /// Quantizes input internally
+    fn linear_into(
+        &self,
+        input: &[f32],
+        weight_name: &str,
+        output: &mut [f32],
+    ) -> Result<(), String> {
+        let in_features = input.len();
+        let out_features = output.len();
+
+        let tensor = self
+            .model
+            .gguf
+            .tensors
+            .iter()
+            .find(|t| t.name == weight_name)
+            .ok_or(format!("Weight '{}' not found", weight_name))?;
+
+        let weight_data = self
+            .model
+            .get_tensor(weight_name)
+            .ok_or(format!("Weight data '{}' not found", weight_name))?;
+
+        let nb1 = tensor.strides.get(1).copied().unwrap_or(0) as usize;
+
+        match tensor.quant_type {
+            QuantType::F16 => {
+                let stride_f16 = nb1 / 2;
+                for i in 0..out_features {
+                    let col_offset = i * stride_f16;
+                    let mut sum = 0.0f32;
+                    for j in 0..in_features {
+                        let f16_val = half::f16::from_le_bytes([
+                            weight_data[(col_offset + j) * 2],
+                            weight_data[(col_offset + j) * 2 + 1],
+                        ]);
+                        sum += f16_val.to_f32() * input[j];
+                    }
+                    output[i] = sum;
+                }
+            }
+            QuantType::Q6_K => {
+                let nb = (in_features + QK_K - 1) / QK_K;
+                let mut input_q8k: Vec<BlockQ8_K> =
+                    vec![unsafe { std::mem::zeroed() }; nb];
+                crate::backend::arm::quant::quantize_q8_k(
+                    input,
+                    &mut input_q8k,
+                );
+
+                crate::backend::arm::gemv::gemv_q6_k_transposed(
+                    weight_data,
+                    nb1,
+                    &input_q8k,
+                    output,
+                    out_features,
+                    in_features,
+                    self.n_threads,
+                );
+            }
+            QuantType::Q5_K => {
+                let nb = (in_features + QK_K - 1) / QK_K;
+                let mut input_q8k: Vec<BlockQ8_K> =
+                    vec![unsafe { std::mem::zeroed() }; nb];
+                crate::backend::arm::quant::quantize_q8_k(
+                    input,
+                    &mut input_q8k,
+                );
+
+                crate::backend::arm::gemv::gemv_q5_k_transposed(
+                    weight_data,
+                    nb1,
+                    &input_q8k,
+                    output,
+                    out_features,
+                    in_features,
+                    self.n_threads,
+                );
+            }
+            QuantType::Q4_K => {
+                let nb = (in_features + QK_K - 1) / QK_K;
+                let mut input_q8k: Vec<BlockQ8_K> =
+                    vec![unsafe { std::mem::zeroed() }; nb];
+                crate::backend::arm::quant::quantize_q8_k(
+                    input,
+                    &mut input_q8k,
+                );
+
+                crate::backend::arm::gemv::gemv_q4_k_transposed(
+                    weight_data,
+                    nb1,
+                    &input_q8k,
+                    output,
+                    out_features,
+                    in_features,
+                    self.n_threads,
+                );
+            }
+            QuantType::Q4_0 => {
+                let nb = (in_features + QK4_0 - 1) / QK4_0;
+                let mut input_q80: Vec<BlockQ8_0> =
+                    vec![BlockQ8_0 { d: 0, qs: [0; QK8_0] }; nb];
+                crate::backend::arm::quant::quantize_q8_0(
+                    input,
+                    &mut input_q80,
+                );
+
+                crate::backend::arm::gemv::gemv_q4_0_transposed(
+                    weight_data,
+                    nb1,
+                    &input_q80,
+                    output,
+                    out_features,
+                    in_features,
+                    self.n_threads,
+                );
+            }
+            QuantType::Q8_0 => {
+                let nb = (in_features + QK8_0 - 1) / QK8_0;
+                let mut input_q80: Vec<BlockQ8_0> =
+                    vec![BlockQ8_0 { d: 0, qs: [0; QK8_0] }; nb];
+                crate::backend::arm::quant::quantize_q8_0(
+                    input,
+                    &mut input_q80,
+                );
+
+                for i in 0..out_features {
+                    let col_offset = i * nb1;
+                    let col_blocks: &[BlockQ8_0] = unsafe {
+                        std::slice::from_raw_parts(
+                            weight_data.as_ptr().add(col_offset)
+                                as *const BlockQ8_0,
+                            nb,
+                        )
+                    };
+                    output[i] = crate::backend::arm::vec_dot::vec_dot_q8_0(
+                        col_blocks, &input_q80,
+                    );
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "Unsupported quantization type for linear_into: {:?}",
+                    tensor.quant_type
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Linear layer with pre-quantized input (zero-allocation version)
+    /// Used when input is already quantized (shared across multiple projections)
+    fn linear_quantized_into(
+        &self,
+        input_q8_0: Option<&[BlockQ8_0]>,
+        input_q8_k: Option<&[BlockQ8_K]>,
+        in_features: usize,
+        weight_name: &str,
+        output: &mut [f32],
+    ) -> Result<(), String> {
+        let out_features = output.len();
+
+        let tensor = self
+            .model
+            .gguf
+            .tensors
+            .iter()
+            .find(|t| t.name == weight_name)
+            .ok_or(format!("Weight '{}' not found", weight_name))?;
+
+        let weight_data = self
+            .model
+            .get_tensor(weight_name)
+            .ok_or(format!("Weight data '{}' not found", weight_name))?;
+
+        let nb1 = tensor.strides.get(1).copied().unwrap_or(0) as usize;
+
+        match tensor.quant_type {
+            QuantType::Q6_K => {
+                let input_q8k = input_q8_k.ok_or("Expected Q8_K input")?;
+                crate::backend::arm::gemv::gemv_q6_k_transposed(
+                    weight_data,
+                    nb1,
+                    input_q8k,
+                    output,
+                    out_features,
+                    in_features,
+                    self.n_threads,
+                );
+            }
+            QuantType::Q5_K => {
+                let input_q8k = input_q8_k.ok_or("Expected Q8_K input")?;
+                crate::backend::arm::gemv::gemv_q5_k_transposed(
+                    weight_data,
+                    nb1,
+                    input_q8k,
+                    output,
+                    out_features,
+                    in_features,
+                    self.n_threads,
+                );
+            }
+            QuantType::Q4_K => {
+                let input_q8k = input_q8_k.ok_or("Expected Q8_K input")?;
+                crate::backend::arm::gemv::gemv_q4_k_transposed(
+                    weight_data,
+                    nb1,
+                    input_q8k,
+                    output,
+                    out_features,
+                    in_features,
+                    self.n_threads,
+                );
+            }
+            QuantType::IQ4_XS => {
+                let input_q8k = input_q8_k.ok_or("Expected Q8_K input")?;
+                let nb = (in_features + QK_K - 1) / QK_K;
+                for i in 0..out_features {
+                    let col_offset = i * nb1;
+                    let col_blocks: &[BlockIQ4XS] = unsafe {
+                        std::slice::from_raw_parts(
+                            weight_data.as_ptr().add(col_offset)
+                                as *const BlockIQ4XS,
+                            nb,
+                        )
+                    };
+                    output[i] =
+                        crate::backend::arm::vec_dot::vec_dot_iq4_xs_q8_k(
+                            col_blocks, input_q8k,
+                        );
+                }
+            }
+            QuantType::Q4_0 => {
+                let input_q80 = input_q8_0.ok_or("Expected Q8_0 input")?;
+                crate::backend::arm::gemv::gemv_q4_0_transposed(
+                    weight_data,
+                    nb1,
+                    input_q80,
+                    output,
+                    out_features,
+                    in_features,
+                    self.n_threads,
+                );
+            }
+            QuantType::Q8_0 => {
+                let input_q80 = input_q8_0.ok_or("Expected Q8_0 input")?;
+                let nb = (in_features + QK8_0 - 1) / QK8_0;
+                for i in 0..out_features {
+                    let col_offset = i * nb1;
+                    let col_blocks: &[BlockQ8_0] = unsafe {
+                        std::slice::from_raw_parts(
+                            weight_data.as_ptr().add(col_offset)
+                                as *const BlockQ8_0,
+                            nb,
+                        )
+                    };
+                    output[i] = crate::backend::arm::vec_dot::vec_dot_q8_0(
+                        col_blocks, input_q80,
+                    );
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "Unsupported quantization type for linear_quantized_into: {:?}",
+                    tensor.quant_type
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Final layer normalization
     pub fn final_norm(&self, input: &[f32]) -> Result<Vec<f32>, String> {
         let config = self.model.config();
         self.rms_norm(input, "output_norm.weight", config.hidden_size)
+    }
+
+    /// Final normalization in-place (zero-allocation version)
+    fn final_norm_inplace(&mut self) -> Result<(), String> {
+        let config = self.model.config();
+        let hidden_size = config.hidden_size;
+
+        // Get norm weight
+        let norm_weight = self
+            .model
+            .gguf
+            .tensors
+            .iter()
+            .find(|t| t.name == "output_norm.weight")
+            .ok_or("output_norm.weight not found")?;
+
+        let weight_data = self
+            .model
+            .get_tensor("output_norm.weight")
+            .ok_or("output_norm weight data not found")?;
+
+        // Dequantize weight if needed
+        let weight: Vec<f32> = match norm_weight.quant_type {
+            QuantType::F32 => weight_data
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+                .take(hidden_size)
+                .collect(),
+            QuantType::F16 => weight_data
+                .chunks_exact(2)
+                .map(|chunk| {
+                    half::f16::from_le_bytes(chunk.try_into().unwrap()).to_f32()
+                })
+                .take(hidden_size)
+                .collect(),
+            _ => {
+                return Err(format!(
+                    "Unsupported norm weight quant: {:?}",
+                    norm_weight.quant_type
+                ));
+            }
+        };
+
+        // Compute RMS norm in-place
+        let epsilon = 1e-6f32;
+        let ss: f32 = self.hidden_buf.iter().map(|x| x * x).sum::<f32>()
+            / hidden_size as f32;
+        let inv_rms = 1.0 / (ss + epsilon).sqrt();
+
+        for i in 0..hidden_size {
+            self.hidden_buf[i] = self.hidden_buf[i] * inv_rms * weight[i];
+        }
+
+        Ok(())
     }
 
     /// Output projection to logits
@@ -1117,6 +2001,127 @@ impl ForwardExecutor {
         Ok(logits)
     }
 
+    /// Output projection in-place (zero-allocation version)
+    fn output_projection_inplace(&mut self) -> Result<(), String> {
+        let config = self.model.config();
+        let vocab_size = config.vocab_size;
+        let hidden_size = self.hidden_buf.len();
+
+        let (output_tensor, output_data) = if let Some(tensor) =
+            self.model.gguf.tensors.iter().find(|t| {
+                t.name == "output.weight" || t.name == "lm_head.weight"
+            }) {
+            let data = self
+                .model
+                .get_tensor(&tensor.name)
+                .ok_or("Output weight data not found")?;
+            (tensor, data)
+        } else {
+            let tensor = self
+                .model
+                .gguf
+                .tensors
+                .iter()
+                .find(|t| t.name == "token_embd.weight")
+                .ok_or("No output or embedding weights found")?;
+            let data = self
+                .model
+                .get_tensor(&tensor.name)
+                .ok_or("Embedding weight data not found")?;
+            (tensor, data)
+        };
+
+        // Zero logits buffer
+        self.logits_buf.fill(0.0);
+
+        match output_tensor.quant_type {
+            QuantType::Q6_K => {
+                let nb = (hidden_size + QK_K - 1) / QK_K;
+                let nb1 = output_tensor.strides[1] as usize;
+
+                // Quantize input to Q8_K using pre-allocated buffer
+                self.quant_buf.resize(hidden_size, QuantFormat::Q8_K);
+                quant::quantize_row_q8_k(
+                    &self.hidden_buf,
+                    &mut self.quant_buf.q8_k,
+                );
+
+                crate::backend::arm::gemv::gemv_q6_k_transposed(
+                    output_data,
+                    nb1,
+                    &self.quant_buf.q8_k,
+                    &mut self.logits_buf,
+                    vocab_size,
+                    hidden_size,
+                    self.n_threads,
+                );
+            }
+            QuantType::Q4_K => {
+                let nb = (hidden_size + QK_K - 1) / QK_K;
+                let nb1 = output_tensor.strides[1] as usize;
+
+                self.quant_buf.resize(hidden_size, QuantFormat::Q8_K);
+                quant::quantize_row_q8_k(
+                    &self.hidden_buf,
+                    &mut self.quant_buf.q8_k,
+                );
+
+                crate::backend::arm::gemv::gemv_q4_k_transposed(
+                    output_data,
+                    nb1,
+                    &self.quant_buf.q8_k,
+                    &mut self.logits_buf,
+                    vocab_size,
+                    hidden_size,
+                    self.n_threads,
+                );
+            }
+            QuantType::Q5_K => {
+                let nb = (hidden_size + QK_K - 1) / QK_K;
+                let nb1 = output_tensor.strides[1] as usize;
+
+                self.quant_buf.resize(hidden_size, QuantFormat::Q8_K);
+                quant::quantize_row_q8_k(
+                    &self.hidden_buf,
+                    &mut self.quant_buf.q8_k,
+                );
+
+                crate::backend::arm::gemv::gemv_q5_k_transposed(
+                    output_data,
+                    nb1,
+                    &self.quant_buf.q8_k,
+                    &mut self.logits_buf,
+                    vocab_size,
+                    hidden_size,
+                    self.n_threads,
+                );
+            }
+            QuantType::F16 => {
+                let nb1 = output_tensor.strides[1] as usize / 2;
+
+                for v in 0..vocab_size {
+                    let mut sum = 0.0f32;
+                    for h in 0..hidden_size {
+                        let f16_val = half::f16::from_le_bytes([
+                            output_data[(v * nb1 + h) * 2],
+                            output_data[(v * nb1 + h) * 2 + 1],
+                        ]);
+                        sum += self.hidden_buf[h] * f16_val.to_f32();
+                    }
+                    self.logits_buf[v] = sum;
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "Unsupported output quantization: {:?}",
+                    output_tensor.quant_type
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Sample next token from logits
     pub fn sample(&self, logits: &[f32], temperature: f32) -> u32 {
         use rand::Rng;
@@ -1163,11 +2168,12 @@ impl ForwardExecutor {
         // Prefill: process all prompt tokens
         // The last prompt token's logits will be used for the first generation
         println!("Prefilling {} tokens...", tokens.len());
-        let mut logits = None;
+        let mut logits: Option<Vec<f32>> = None;
         for (i, &token) in tokens.iter().enumerate() {
             match self.forward(token) {
                 Ok(l) => {
-                    logits = Some(l);
+                    // Copy logits to break the borrow
+                    logits = Some(l.to_vec());
                 }
                 Err(e) => {
                     eprintln!("Prefill error at token {}: {}", i, e);
@@ -1175,7 +2181,8 @@ impl ForwardExecutor {
                 }
             }
         }
-        println!("Prefill complete. seq_pos={}", self.seq_pos);
+        let seq_pos_after_prefill = self.seq_pos;
+        println!("Prefill complete. seq_pos={}", seq_pos_after_prefill);
 
         // Generation loop
         for i in 0..max_new_tokens {
@@ -1184,7 +2191,7 @@ impl ForwardExecutor {
                 None => {
                     // After first iteration, we need to forward the last token
                     match self.forward(tokens.last().copied().unwrap_or(0)) {
-                        Ok(l) => l,
+                        Ok(l) => l.to_vec(),
                         Err(e) => {
                             eprintln!("Forward error at step {}: {}", i, e);
                             break;

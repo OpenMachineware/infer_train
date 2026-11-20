@@ -15,6 +15,14 @@ pub fn silu_f32(x: &[f32], output: &mut [f32]) {
     }
 }
 
+/// In-place SiLU activation
+#[cfg(target_arch = "aarch64")]
+pub fn silu_f32_inplace(x: &mut [f32]) {
+    for i in 0..x.len() {
+        x[i] = x[i] / (1.0 + (-x[i]).exp());
+    }
+}
+
 /// Fused SwiGLU: output = silu(gate) * up
 #[cfg(target_arch = "aarch64")]
 pub fn swiglu_f32(gate: &[f32], up: &[f32], output: &mut [f32]) {
@@ -36,6 +44,13 @@ pub fn silu_f32(x: &[f32], output: &mut [f32]) {
 
     for i in 0..n {
         output[i] = x[i] / (1.0 + (-x[i]).exp());
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub fn silu_f32_inplace(x: &mut [f32]) {
+    for i in 0..x.len() {
+        x[i] = x[i] / (1.0 + (-x[i]).exp());
     }
 }
 
