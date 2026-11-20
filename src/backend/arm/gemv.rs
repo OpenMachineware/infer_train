@@ -474,24 +474,41 @@ pub fn mul_mat_q6_k(
             }
         }
     } else {
-        // Multi-threaded: parallelize over output rows
+        // Multi-threaded: parallelize over chunks of output rows
         use rayon::prelude::*;
 
+        let chunk_size = 64;
+        let n_chunks = (out_features + chunk_size - 1) / chunk_size;
+
+        // Convert to usize for Send+Sync, convert back in closure
+        let output_ptr = output.as_mut_ptr() as usize;
+
         for token_idx in 0..n_tokens {
-            let token_output = &mut output
-                [token_idx * out_features..(token_idx + 1) * out_features];
             let input_start = token_idx * n_blocks;
             let input_row = &input[input_start..input_start + n_blocks];
 
-            token_output.par_iter_mut().enumerate().for_each(|(row, out)| {
-                let row_offset = row * col_stride;
-                let weight_row = unsafe {
-                    std::slice::from_raw_parts(
-                        weights.as_ptr().add(row_offset) as *const BlockQ6_K,
-                        n_blocks,
-                    )
-                };
-                *out = vec_dot_q6_k_q8_k(weight_row, input_row);
+            (0..n_chunks).into_par_iter().for_each(|chunk_id| {
+                let start_row = chunk_id * chunk_size;
+                let end_row = (start_row + chunk_size).min(out_features);
+
+                for row in start_row..end_row {
+                    let row_offset = row * col_stride;
+                    let weight_row = unsafe {
+                        std::slice::from_raw_parts(
+                            weights.as_ptr().add(row_offset)
+                                as *const BlockQ6_K,
+                            n_blocks,
+                        )
+                    };
+                    let result = vec_dot_q6_k_q8_k(weight_row, input_row);
+                    let dst_idx = token_idx * out_features + row;
+                    unsafe {
+                        std::ptr::write(
+                            (output_ptr as *mut f32).add(dst_idx),
+                            result,
+                        );
+                    }
+                }
             });
         }
     }
@@ -606,27 +623,43 @@ pub fn mul_mat_q5_k(
             }
         }
     } else {
-        // Multi-threaded: parallelize over output rows
-        // K-extent still applies: each thread processes K in chunks
+        // Multi-threaded: parallelize over chunks of output rows
+        // Use llama.cpp style chunking: 64 rows per chunk with work stealing
         use rayon::prelude::*;
 
+        let chunk_size = 64; // Match llama.cpp's decode chunk size
+        let n_chunks = (out_features + chunk_size - 1) / chunk_size;
+
+        // Convert to usize for Send+Sync, convert back in closure
+        let output_ptr = output.as_mut_ptr() as usize;
+
         for token_idx in 0..n_tokens {
-            let token_output = &mut output
-                [token_idx * out_features..(token_idx + 1) * out_features];
             let input_start = token_idx * n_blocks;
             let input_row = &input[input_start..input_start + n_blocks];
 
-            // Parallelize over rows, each row does full K
-            // (K-extent optimization is less effective with MT due to cache sharing)
-            token_output.par_iter_mut().enumerate().for_each(|(row, out)| {
-                let row_offset = row * col_stride;
-                let weight_row = unsafe {
-                    std::slice::from_raw_parts(
-                        weights.as_ptr().add(row_offset) as *const BlockQ5_K,
-                        n_blocks,
-                    )
-                };
-                *out = vec_dot_q5_k_q8_k(weight_row, input_row);
+            // Parallelize over chunks
+            (0..n_chunks).into_par_iter().for_each(|chunk_id| {
+                let start_row = chunk_id * chunk_size;
+                let end_row = (start_row + chunk_size).min(out_features);
+
+                for row in start_row..end_row {
+                    let row_offset = row * col_stride;
+                    let weight_row = unsafe {
+                        std::slice::from_raw_parts(
+                            weights.as_ptr().add(row_offset)
+                                as *const BlockQ5_K,
+                            n_blocks,
+                        )
+                    };
+                    let result = vec_dot_q5_k_q8_k(weight_row, input_row);
+                    let dst_idx = token_idx * out_features + row;
+                    unsafe {
+                        std::ptr::write(
+                            (output_ptr as *mut f32).add(dst_idx),
+                            result,
+                        );
+                    }
+                }
             });
         }
     }
@@ -726,24 +759,41 @@ pub fn mul_mat_q4_k(
             }
         }
     } else {
-        // Multi-threaded: parallelize over output rows
+        // Multi-threaded: parallelize over chunks of output rows
         use rayon::prelude::*;
 
+        let chunk_size = 64;
+        let n_chunks = (out_features + chunk_size - 1) / chunk_size;
+
+        // Convert to usize for Send+Sync, convert back in closure
+        let output_ptr = output.as_mut_ptr() as usize;
+
         for token_idx in 0..n_tokens {
-            let token_output = &mut output
-                [token_idx * out_features..(token_idx + 1) * out_features];
             let input_start = token_idx * n_blocks;
             let input_row = &input[input_start..input_start + n_blocks];
 
-            token_output.par_iter_mut().enumerate().for_each(|(row, out)| {
-                let row_offset = row * col_stride;
-                let weight_row = unsafe {
-                    std::slice::from_raw_parts(
-                        weights.as_ptr().add(row_offset) as *const BlockQ4_K,
-                        n_blocks,
-                    )
-                };
-                *out = vec_dot_q4_k_q8_k(weight_row, input_row);
+            (0..n_chunks).into_par_iter().for_each(|chunk_id| {
+                let start_row = chunk_id * chunk_size;
+                let end_row = (start_row + chunk_size).min(out_features);
+
+                for row in start_row..end_row {
+                    let row_offset = row * col_stride;
+                    let weight_row = unsafe {
+                        std::slice::from_raw_parts(
+                            weights.as_ptr().add(row_offset)
+                                as *const BlockQ4_K,
+                            n_blocks,
+                        )
+                    };
+                    let result = vec_dot_q4_k_q8_k(weight_row, input_row);
+                    let dst_idx = token_idx * out_features + row;
+                    unsafe {
+                        std::ptr::write(
+                            (output_ptr as *mut f32).add(dst_idx),
+                            result,
+                        );
+                    }
+                }
             });
         }
     }
