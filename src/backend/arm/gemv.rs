@@ -220,6 +220,7 @@ pub fn mul_mat_q5_k(
 
 /// Q4_K transposed GEMV
 /// Dispatch based on batch size: vec_dot for decode (n<8), tiled for prefill (n>=8)
+/// Note: Tiled path disabled for now due to scales encoding complexity
 pub fn mul_mat_q4_k(
     weights: &[u8],
     col_stride: usize,
@@ -230,36 +231,20 @@ pub fn mul_mat_q4_k(
     n_tokens: usize,
     n_threads: usize,
 ) {
-    // TODO: Q4_K tiled has issues, use vec_dot for now
-    // if n_tokens < 8 {
-    {
-        // Decode path: use simple loop
-        mul_mat_q4_k_vec_dot(
-            weights,
-            col_stride,
-            input,
-            output,
-            out_features,
-            in_features,
-            n_tokens,
-        );
-    }
-    // } else {
-    //     // Prefill path: use tiled
-    //     super::tiled::mul_mat_q4_k_tiled(
-    //         weights,
-    //         col_stride,
-    //         input,
-    //         output,
-    //         out_features,
-    //         in_features,
-    //         n_tokens,
-    //     );
-    // }
+    // Always use vec_dot for now - tiled needs correct scales handling
+    mul_mat_q4_k_vec_dot(
+        weights,
+        col_stride,
+        input,
+        output,
+        out_features,
+        in_features,
+        n_tokens,
+    );
 }
 
 /// Q4_K vec_dot path for decode
-fn mul_mat_q4_k_vec_dot(
+pub fn mul_mat_q4_k_vec_dot(
     weights: &[u8],
     col_stride: usize,
     input: &[BlockQ8_K],

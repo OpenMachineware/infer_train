@@ -1478,6 +1478,11 @@ fn compute_k_extent_blocks(n_tokens: usize, block_size: usize) -> usize {
 // ============================================================================
 
 /// Unpack Q4_K weight blocks into TiledTileSrc0
+///
+/// Q4_K layout: 128 bytes of qs store 256 4-bit values
+/// - qs[0..32]: low nibbles -> subblock 0, high nibbles -> subblock 1
+/// - qs[32..64]: low nibbles -> subblock 2, high nibbles -> subblock 3
+/// - etc.
 pub fn tiled_unpack_src0_q4_k(
     weights: &[u8],
     col_stride: usize,
@@ -1488,6 +1493,7 @@ pub fn tiled_unpack_src0_q4_k(
     blocks_per_row: usize,
 ) {
     const NB: usize = 8; // Q4_K has 32-element subblocks, 8 per 256
+    const SUBBLK: usize = 32;
     const BLOCK_SIZE: usize = std::mem::size_of::<BlockQ4_K>();
 
     for slab in 0..num_k {
@@ -1513,24 +1519,27 @@ pub fn tiled_unpack_src0_q4_k(
                 tile.mins[s_off + s] = mins[s];
             }
 
-            // Extract 4-bit codes - simple nibble unpack
+            // Extract 4-bit codes
+            // Q4_K layout: qs[0..32] -> subblocks 0 and 1 (low and high nibbles)
+            //              qs[32..64] -> subblocks 2 and 3
+            //              etc.
             let q = &mut tile.q[q_off..q_off + TILED_TILE_K];
-            let qs_ptr = x.qs.as_ptr();
-            let q_ptr = q.as_mut_ptr();
 
-            // Unpack 4-bit nibbles: each byte in qs becomes two bytes in q
-            // qs[0..32] -> q[0..32] (low nibbles), q[32..64] (high nibbles)
-            // etc.
-            for chunk in 0..4 {
-                let src_off = chunk * 32;
-                let lo_off = chunk * 64;
-                let hi_off = lo_off + 32;
-                unsafe {
-                    tiled_unpk_nib4_neon(
-                        qs_ptr.add(src_off),
-                        q_ptr.add(lo_off),
-                        q_ptr.add(hi_off),
-                    );
+            for j in 0..4 {
+                let src_off = j * 32;
+                let lo_subblk = j * 2;
+                let hi_subblk = j * 2 + 1;
+
+                // Unpack low nibbles -> subblock lo_subblk
+                for i in 0..32 {
+                    let byte = x.qs[src_off + i];
+                    q[lo_subblk * SUBBLK + i] = byte & 0x0F;
+                }
+
+                // Unpack high nibbles -> subblock hi_subblk
+                for i in 0..32 {
+                    let byte = x.qs[src_off + i];
+                    q[hi_subblk * SUBBLK + i] = (byte >> 4) & 0x0F;
                 }
             }
         }
