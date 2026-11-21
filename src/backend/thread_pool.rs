@@ -13,6 +13,17 @@ fn num_cpus() -> usize {
     thread::available_parallelism().map(|p| p.get()).unwrap_or(1)
 }
 
+/// Get optimal thread count for inference
+/// Can be overridden with INFER_N_THREADS environment variable
+pub fn optimal_threads() -> usize {
+    if let Ok(n) = std::env::var("INFER_N_THREADS") {
+        if let Ok(n) = n.parse::<usize>() {
+            return n;
+        }
+    }
+    num_cpus()
+}
+
 /// Shared state for thread pool
 struct PoolState {
     n_chunks: AtomicUsize,
@@ -261,12 +272,6 @@ where
             });
         }
     });
-}
-
-/// Get optimal thread count (fixed at hardware concurrency, like llama.cpp)
-/// llama.cpp uses a fixed thread count determined at startup, not dynamically adjusted
-pub fn optimal_threads() -> usize {
-    num_cpus()
 }
 
 /// Spin barrier

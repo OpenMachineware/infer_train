@@ -4,7 +4,7 @@
 // Simple model structure for basic inference
 
 use crate::backend::arm::ArmCpuBackend;
-use crate::model::GgufFile;
+use crate::model::{GgufFile, GgufTensorInfo};
 use crate::tokenizer::Tokenizer;
 use std::collections::HashMap;
 
@@ -18,6 +18,8 @@ pub struct SimpleModel {
     pub config: ModelConfig,
     /// CPU backend
     pub backend: ArmCpuBackend,
+    /// Tensor name to index mapping (avoids O(n) lookup)
+    tensor_index: HashMap<String, usize>,
 }
 
 /// Model configuration
@@ -149,7 +151,15 @@ impl SimpleModel {
         let config = ModelConfig::from_gguf(&gguf);
         let backend = ArmCpuBackend::new(0);
 
-        Ok(Self { gguf, tokenizer, config, backend })
+        // Build tensor name to index mapping
+        let tensor_index: HashMap<String, usize> = gguf
+            .tensors
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.name.clone(), i))
+            .collect();
+
+        Ok(Self { gguf, tokenizer, config, backend, tensor_index })
     }
 
     /// Get tokenizer
@@ -162,9 +172,20 @@ impl SimpleModel {
         &self.config
     }
 
-    /// Get tensor data by name
+    /// Get tensor data by name (O(1) lookup)
     pub fn get_tensor(&self, name: &str) -> Option<&[u8]> {
-        self.gguf.get_tensor_data(name)
+        let idx = self.tensor_index.get(name)?;
+        let tensor = self.gguf.tensors.get(*idx)?;
+        let size = GgufFile::tensor_size(tensor);
+
+        let start = self.gguf.data_offset as usize + tensor.offset as usize;
+        Some(&self.gguf.data[start..start + size])
+    }
+
+    /// Get tensor metadata by name (O(1) lookup)
+    pub fn get_tensor_meta(&self, name: &str) -> Option<&GgufTensorInfo> {
+        let idx = self.tensor_index.get(name)?;
+        self.gguf.tensors.get(*idx)
     }
 
     /// Find tensor by prefix search

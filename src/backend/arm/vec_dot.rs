@@ -16,7 +16,7 @@ use crate::types::*;
 /// SDOT computes: result[i] = acc[i] + sum(a[4*i..4*i+4] * b[4*i..4*i+4]) for i in 0..4
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon,dotprod")]
-unsafe fn vdotq_s32_manual(
+pub(crate) unsafe fn vdotq_s32_manual(
     acc: int32x4_t,
     a: int8x16_t,
     b: int8x16_t,
@@ -32,6 +32,20 @@ unsafe fn vdotq_s32_manual(
         options(pure, nomem, preserves_flags)
     );
     result
+}
+
+/// Prefetch for read with L1 locality
+/// Equivalent to __builtin_prefetch(ptr, 0, 1) in C
+/// PRFM (Prefetch Memory) instruction with PLDL1KEEP policy
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn prefetch_read_l1(ptr: *const u8) {
+    use std::arch::asm;
+    asm!(
+        "prfm pldl1keep, [{0}]",
+        in(reg) ptr,
+        options(nomem, preserves_flags)
+    );
 }
 
 /// Manual vmmlaq_s32 implementation using native MMLA (i8mm) instruction
@@ -207,6 +221,12 @@ pub unsafe fn vec_dot_q4_k_q8_k_neon(x: &[BlockQ4_K], y: &[BlockQ8_K]) -> f32 {
     let mut sum = 0.0f32;
 
     for i in 0..nb {
+        // Prefetch next block for L1 cache
+        if i + 1 < nb {
+            prefetch_read_l1(x[i + 1].qs.as_ptr());
+            prefetch_read_l1(y[i + 1].qs.as_ptr() as *const u8);
+        }
+
         let x_i = x.get_unchecked(i);
         let y_i = y.get_unchecked(i);
 
@@ -315,6 +335,12 @@ pub unsafe fn vec_dot_q5_k_q8_k_neon(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
     let mut sumf = 0.0f32;
 
     for i in 0..nb {
+        // Prefetch next block for L1 cache
+        if i + 1 < nb {
+            prefetch_read_l1(x[i + 1].qs.as_ptr());
+            prefetch_read_l1(y[i + 1].qs.as_ptr() as *const u8);
+        }
+
         let d = y[i].d * fp16_to_fp32(x[i].d);
         let dmin = y[i].d * fp16_to_fp32(x[i].dmin);
 
@@ -402,6 +428,8 @@ pub unsafe fn vec_dot_q5_k_q8_k_neon(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
 }
 
 /// Q6_K × Q8_K vector dot product (NEON implementation)
+/// Uses delayed 32-subtraction optimization from llama.cpp:
+/// Instead of (q6 - 32) * q8, compute q6 * q8 first, then subtract 32 * sum(q8) * scale at the end
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon,dotprod")]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -411,12 +439,17 @@ pub unsafe fn vec_dot_q6_k_q8_k_neon(x: &[BlockQ6_K], y: &[BlockQ8_K]) -> f32 {
 
     let m4b = vdupq_n_u8(0x0F);
     let m2b = vdupq_n_u8(0x03);
-    let m32 = vdupq_n_s8(32); // For subtracting 32
     let vzero = vdupq_n_s32(0);
 
     let mut sum = 0.0f32;
 
     for i in 0..nb {
+        // Prefetch next block for L1 cache
+        if i + 1 < nb {
+            prefetch_read_l1(x[i + 1].ql.as_ptr());
+            prefetch_read_l1(y[i + 1].qs.as_ptr() as *const u8);
+        }
+
         let d = y[i].d * fp16_to_fp32(x[i].d);
 
         let ql = x[i].ql.as_ptr();
@@ -432,8 +465,7 @@ pub unsafe fn vec_dot_q6_k_q8_k_neon(x: &[BlockQ6_K], y: &[BlockQ8_K]) -> f32 {
             let ql_bits = vld1q_u8_x4(ql.add(j * 64));
 
             // Extract high 2 bits for each of 8 blocks (16 elements each)
-            // Combine with low 4 bits, then subtract 32 to get signed values
-            // q6 value = ((ql bits) | ((qh 2-bit value) << 4)) - 32
+            // Combine with low 4 bits (without subtracting 32 - optimization from llama.cpp)
             let q6h_0 = vshlq_n_u8(vandq_u8(m2b, qh_bits.0), 4);
             let q6h_1 = vshlq_n_u8(vandq_u8(m2b, qh_bits.1), 4);
             let q6h_2 = vshlq_n_u8(vandq_u8(m2b, vshrq_n_u8(qh_bits.0, 2)), 4);
@@ -443,45 +475,29 @@ pub unsafe fn vec_dot_q6_k_q8_k_neon(x: &[BlockQ6_K], y: &[BlockQ8_K]) -> f32 {
             let q6h_6 = vshlq_n_u8(vandq_u8(m2b, vshrq_n_u8(qh_bits.0, 6)), 4);
             let q6h_7 = vshlq_n_u8(vandq_u8(m2b, vshrq_n_u8(qh_bits.1, 6)), 4);
 
-            // Combine and subtract 32
-            let q6bytes_0 = vsubq_s8(
-                vreinterpretq_s8_u8(vorrq_u8(vandq_u8(ql_bits.0, m4b), q6h_0)),
-                m32,
-            );
-            let q6bytes_1 = vsubq_s8(
-                vreinterpretq_s8_u8(vorrq_u8(vandq_u8(ql_bits.1, m4b), q6h_1)),
-                m32,
-            );
-            let q6bytes_2 = vsubq_s8(
-                vreinterpretq_s8_u8(vorrq_u8(vandq_u8(ql_bits.2, m4b), q6h_2)),
-                m32,
-            );
-            let q6bytes_3 = vsubq_s8(
-                vreinterpretq_s8_u8(vorrq_u8(vandq_u8(ql_bits.3, m4b), q6h_3)),
-                m32,
-            );
-            let q6bytes_4 = vsubq_s8(
-                vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(ql_bits.0, 4), q6h_4)),
-                m32,
-            );
-            let q6bytes_5 = vsubq_s8(
-                vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(ql_bits.1, 4), q6h_5)),
-                m32,
-            );
-            let q6bytes_6 = vsubq_s8(
-                vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(ql_bits.2, 4), q6h_6)),
-                m32,
-            );
-            let q6bytes_7 = vsubq_s8(
-                vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(ql_bits.3, 4), q6h_7)),
-                m32,
-            );
+            // Combine WITHOUT subtracting 32 (delayed optimization)
+            let q6bytes_0 =
+                vreinterpretq_s8_u8(vorrq_u8(vandq_u8(ql_bits.0, m4b), q6h_0));
+            let q6bytes_1 =
+                vreinterpretq_s8_u8(vorrq_u8(vandq_u8(ql_bits.1, m4b), q6h_1));
+            let q6bytes_2 =
+                vreinterpretq_s8_u8(vorrq_u8(vandq_u8(ql_bits.2, m4b), q6h_2));
+            let q6bytes_3 =
+                vreinterpretq_s8_u8(vorrq_u8(vandq_u8(ql_bits.3, m4b), q6h_3));
+            let q6bytes_4 =
+                vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(ql_bits.0, 4), q6h_4));
+            let q6bytes_5 =
+                vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(ql_bits.1, 4), q6h_5));
+            let q6bytes_6 =
+                vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(ql_bits.2, 4), q6h_6));
+            let q6bytes_7 =
+                vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(ql_bits.3, 4), q6h_7));
 
             // Load q8 in two 64-byte chunks (128 bytes total per iteration)
             let q8bytes_lo = vld1q_s8_x4(q8.add(j * 128));
             let q8bytes_hi = vld1q_s8_x4(q8.add(j * 128 + 64));
 
-            // Dot products with scales (q6 values are already signed -32..31)
+            // Dot products with scales
             let scale_idx = j * 8;
             isum +=
                 vaddvq_s32(vdotq_s32_manual(vzero, q6bytes_0, q8bytes_lo.0))
@@ -509,7 +525,31 @@ pub unsafe fn vec_dot_q6_k_q8_k_neon(x: &[BlockQ6_K], y: &[BlockQ8_K]) -> f32 {
                     * *scales.add(scale_idx + 7) as i32;
         }
 
-        sum += d * isum as f32;
+        // Compute bias correction using pre-computed block sums (bsums) with SIMD
+        // The original formula: sum((q6_unpacked - 32) * q8 * scale)
+        // = sum(q6_unpacked * q8 * scale) - 32 * sum(q8 * scale)
+        // = isum - 32 * sum(bsums[k] * scales[k])
+        // NEON doesn't have int16 dot product, so use vmull_s16 + vaddq_s32
+        let q8sums = vld1q_s16_x2(y[i].bsums.as_ptr());
+        let scales_vec = vld1q_s8(x[i].scales.as_ptr());
+        let q6scales_0 = vmovl_s8(vget_low_s8(scales_vec));
+        let q6scales_1 = vmovl_s8(vget_high_s8(scales_vec));
+
+        // Compute dot products in two halves
+        let prod_0 = vaddq_s32(
+            vaddq_s32(
+                vmull_s16(vget_low_s16(q8sums.0), vget_low_s16(q6scales_0)),
+                vmull_s16(vget_high_s16(q8sums.0), vget_high_s16(q6scales_0)),
+            ),
+            vaddq_s32(
+                vmull_s16(vget_low_s16(q8sums.1), vget_low_s16(q6scales_1)),
+                vmull_s16(vget_high_s16(q8sums.1), vget_high_s16(q6scales_1)),
+            ),
+        );
+        let isum_mins = vaddvq_s32(prod_0);
+
+        // Apply bias correction: isum - 32 * isum_mins
+        sum += d * (isum - 32 * isum_mins) as f32;
     }
 
     sum

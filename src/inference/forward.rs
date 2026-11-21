@@ -52,6 +52,39 @@ impl QuantizedInput {
     }
 }
 
+/// Pre-computed layer weight names (avoids format! in hot path)
+struct LayerWeightNames {
+    attn_norm: String,
+    attn_q: String,
+    attn_k: String,
+    attn_v: String,
+    attn_q_norm: String,
+    attn_k_norm: String,
+    attn_output: String,
+    ffn_norm: String,
+    ffn_gate: String,
+    ffn_up: String,
+    ffn_down: String,
+}
+
+impl LayerWeightNames {
+    fn new(layer_idx: usize) -> Self {
+        Self {
+            attn_norm: format!("blk.{}.attn_norm.weight", layer_idx),
+            attn_q: format!("blk.{}.attn_q.weight", layer_idx),
+            attn_k: format!("blk.{}.attn_k.weight", layer_idx),
+            attn_v: format!("blk.{}.attn_v.weight", layer_idx),
+            attn_q_norm: format!("blk.{}.attn_q_norm.weight", layer_idx),
+            attn_k_norm: format!("blk.{}.attn_k_norm.weight", layer_idx),
+            attn_output: format!("blk.{}.attn_output.weight", layer_idx),
+            ffn_norm: format!("blk.{}.ffn_norm.weight", layer_idx),
+            ffn_gate: format!("blk.{}.ffn_gate.weight", layer_idx),
+            ffn_up: format!("blk.{}.ffn_up.weight", layer_idx),
+            ffn_down: format!("blk.{}.ffn_down.weight", layer_idx),
+        }
+    }
+}
+
 /// Forward executor for single-token generation
 pub struct ForwardExecutor {
     pub model: SimpleModel,
@@ -66,6 +99,8 @@ pub struct ForwardExecutor {
     logits_buf: Vec<f32>,
     pub n_threads: usize,
     pub n_threads_batch: usize,
+    /// Pre-computed weight names for each layer
+    layer_weights: Vec<LayerWeightNames>,
 }
 
 impl ForwardExecutor {
@@ -90,30 +125,34 @@ impl ForwardExecutor {
             config.n_layers,
         );
 
-        let kv_cache_k = vec![
+        // Start with small capacity, expand on demand
+        let initial_capacity = 512.min(config.context_length);
+        let kv_cache_k =
             vec![
-                0.0f32;
-                config.n_kv_heads
-                    * config.context_length
-                    * config.head_dim()
+                vec![
+                    0.0f32;
+                    config.n_kv_heads * initial_capacity * config.head_dim()
+                ];
+                config.n_layers
             ];
-            config.n_layers
-        ];
-        let kv_cache_v = vec![
+        let kv_cache_v =
             vec![
-                0.0f32;
-                config.n_kv_heads
-                    * config.context_length
-                    * config.head_dim()
+                vec![
+                    0.0f32;
+                    config.n_kv_heads * initial_capacity * config.head_dim()
+                ];
+                config.n_layers
             ];
-            config.n_layers
-        ];
+
+        // Pre-compute layer weight names
+        let layer_weights: Vec<LayerWeightNames> =
+            (0..config.n_layers).map(LayerWeightNames::new).collect();
 
         Self {
             model,
             kv_cache_k,
             kv_cache_v,
-            kv_capacity: config.context_length,
+            kv_capacity: initial_capacity,
             seq_pos: 0,
             quant_buf: QuantizedInput::new(),
             arena: crate::memory::ComputeArena::new(work_size),
@@ -121,6 +160,7 @@ impl ForwardExecutor {
             logits_buf: vec![0.0f32; config.vocab_size],
             n_threads,
             n_threads_batch,
+            layer_weights,
         }
     }
 
@@ -256,17 +296,15 @@ impl ForwardExecutor {
         let n_kv_heads = config.n_kv_heads;
         let head_dim = config.head_dim();
 
+        // Use pre-computed weight names
+        let weights = &self.layer_weights[layer_idx];
+
         // Attention norm
         let normed_attn: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
-        self.rms_norm(
-            &self.hidden_buf,
-            &format!("blk.{}.attn_norm.weight", layer_idx),
-            normed_attn,
-        )?;
+        self.rms_norm(&self.hidden_buf, &weights.attn_norm, normed_attn)?;
 
         // Quantize input for projections
-        let quant_type = self
-            .get_weight_quant_type(&format!("blk.{}.attn_q.weight", layer_idx));
+        let quant_type = self.get_weight_quant_type(&weights.attn_q);
         let normed_len = normed_attn.len();
         let quant_format =
             quantize_input_to(normed_attn, quant_type, &mut self.quant_buf)?;
@@ -281,44 +319,17 @@ impl ForwardExecutor {
         let k: &mut [f32] = self.arena.alloc_zeroed(n_kv_heads * head_dim);
         let v: &mut [f32] = self.arena.alloc_zeroed(n_kv_heads * head_dim);
 
-        self.linear_quantized(
-            quant_format,
-            in_features,
-            &format!("blk.{}.attn_q.weight", layer_idx),
-            q,
-        )?;
-        self.linear_quantized(
-            quant_format,
-            in_features,
-            &format!("blk.{}.attn_k.weight", layer_idx),
-            k,
-        )?;
-        self.linear_quantized(
-            quant_format,
-            in_features,
-            &format!("blk.{}.attn_v.weight", layer_idx),
-            v,
-        )?;
+        self.linear_quantized(quant_format, in_features, &weights.attn_q, q)?;
+        self.linear_quantized(quant_format, in_features, &weights.attn_k, k)?;
+        self.linear_quantized(quant_format, in_features, &weights.attn_v, v)?;
 
         // Q/K norm
         let q_normed: &mut [f32] = self.arena.alloc_zeroed(n_heads * head_dim);
         let k_normed: &mut [f32] =
             self.arena.alloc_zeroed(n_kv_heads * head_dim);
 
-        self.qk_norm(
-            q,
-            &format!("blk.{}.attn_q_norm.weight", layer_idx),
-            n_heads,
-            head_dim,
-            q_normed,
-        )?;
-        self.qk_norm(
-            k,
-            &format!("blk.{}.attn_k_norm.weight", layer_idx),
-            n_kv_heads,
-            head_dim,
-            k_normed,
-        )?;
+        self.qk_norm(q, &weights.attn_q_norm, n_heads, head_dim, q_normed)?;
+        self.qk_norm(k, &weights.attn_k_norm, n_kv_heads, head_dim, k_normed)?;
 
         // RoPE
         rope_f32_inplace(
@@ -371,11 +382,7 @@ impl ForwardExecutor {
 
         // Output projection
         let attn_out: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
-        self.linear(
-            attn_output,
-            &format!("blk.{}.attn_output.weight", layer_idx),
-            attn_out,
-        )?;
+        self.linear(attn_output, &weights.attn_output, attn_out)?;
 
         // Residual
         for i in 0..hidden_size {
@@ -384,11 +391,7 @@ impl ForwardExecutor {
 
         // FFN norm
         let normed_ffn: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
-        self.rms_norm(
-            &self.hidden_buf,
-            &format!("blk.{}.ffn_norm.weight", layer_idx),
-            normed_ffn,
-        )?;
+        self.rms_norm(&self.hidden_buf, &weights.ffn_norm, normed_ffn)?;
 
         // Quantize FFN input
         let ffn_normed_len = normed_ffn.len();
@@ -408,13 +411,13 @@ impl ForwardExecutor {
         self.linear_quantized(
             ffn_quant_format,
             ffn_in_features,
-            &format!("blk.{}.ffn_gate.weight", layer_idx),
+            &weights.ffn_gate,
             gate,
         )?;
         self.linear_quantized(
             ffn_quant_format,
             ffn_in_features,
-            &format!("blk.{}.ffn_up.weight", layer_idx),
+            &weights.ffn_up,
             up,
         )?;
 
@@ -426,11 +429,7 @@ impl ForwardExecutor {
 
         // Down projection
         let ffn_out: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
-        self.linear(
-            gate,
-            &format!("blk.{}.ffn_down.weight", layer_idx),
-            ffn_out,
-        )?;
+        self.linear(gate, &weights.ffn_down, ffn_out)?;
 
         // Residual
         for i in 0..hidden_size {
@@ -455,11 +454,22 @@ impl ForwardExecutor {
 
         if let Some(data) = weight_data {
             if data.len() == size * 4 {
-                let weight: Vec<f32> = data
-                    .chunks_exact(4)
-                    .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
-                    .collect();
-                rms_norm_f32(input, &weight, output, eps);
+                // F32 weight - directly cast bytes to f32 slice
+                let weight: &[f32] = unsafe {
+                    std::slice::from_raw_parts(
+                        data.as_ptr() as *const f32,
+                        size,
+                    )
+                };
+                rms_norm_f32(input, weight, output, eps);
+            } else if data.len() == size * 2 {
+                // F16 weight - need to convert (but no allocation)
+                let scale = 1.0 / rms;
+                for (i, chunk) in data.chunks_exact(2).enumerate() {
+                    let w =
+                        half::f16::from_le_bytes([chunk[0], chunk[1]]).to_f32();
+                    output[i] = input[i] * scale * w;
+                }
             } else {
                 for (i, inp) in input.iter().enumerate() {
                     output[i] = inp / rms;
@@ -484,37 +494,53 @@ impl ForwardExecutor {
         let eps = self.model.config().rms_norm_eps;
         let weight_data = self.model.get_tensor(weight_name);
 
-        let shared_weight: Vec<f32> = if let Some(data) = weight_data {
+        if let Some(data) = weight_data {
             if data.len() == head_dim * 4 {
-                data.chunks_exact(4)
-                    .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
-                    .collect()
+                // F32 weight - directly cast bytes to f32 slice
+                let shared_weight: &[f32] = unsafe {
+                    std::slice::from_raw_parts(
+                        data.as_ptr() as *const f32,
+                        head_dim,
+                    )
+                };
+
+                for h in 0..n_heads {
+                    let head_start = h * head_dim;
+                    let head_input = &input[head_start..head_start + head_dim];
+                    let ss: f32 = head_input.iter().map(|x| x * x).sum::<f32>()
+                        / head_dim as f32;
+                    let scale = 1.0f32 / (ss + eps).sqrt();
+                    for d in 0..head_dim {
+                        output[head_start + d] =
+                            head_input[d] * scale * shared_weight[d];
+                    }
+                }
             } else if data.len() == head_dim * 2 {
-                data.chunks_exact(2)
-                    .map(|chunk| {
-                        half::f16::from_le_bytes(chunk.try_into().unwrap())
-                            .to_f32()
-                    })
-                    .collect()
+                // F16 weight
+                let shared_weight_f16: &[half::f16] = unsafe {
+                    std::slice::from_raw_parts(
+                        data.as_ptr() as *const half::f16,
+                        head_dim,
+                    )
+                };
+
+                for h in 0..n_heads {
+                    let head_start = h * head_dim;
+                    let head_input = &input[head_start..head_start + head_dim];
+                    let ss: f32 = head_input.iter().map(|x| x * x).sum::<f32>()
+                        / head_dim as f32;
+                    let scale = 1.0f32 / (ss + eps).sqrt();
+                    for d in 0..head_dim {
+                        output[head_start + d] = head_input[d]
+                            * scale
+                            * shared_weight_f16[d].to_f32();
+                    }
+                }
             } else {
                 output.copy_from_slice(input);
-                return Ok(());
             }
         } else {
             output.copy_from_slice(input);
-            return Ok(());
-        };
-
-        for h in 0..n_heads {
-            let head_start = h * head_dim;
-            let head_input = &input[head_start..head_start + head_dim];
-            let ss: f32 =
-                head_input.iter().map(|x| x * x).sum::<f32>() / head_dim as f32;
-            let scale = 1.0f32 / (ss + eps).sqrt();
-            for d in 0..head_dim {
-                output[head_start + d] =
-                    head_input[d] * scale * shared_weight[d];
-            }
         }
         Ok(())
     }
@@ -527,10 +553,7 @@ impl ForwardExecutor {
     ) -> Result<(), String> {
         let tensor = self
             .model
-            .gguf
-            .tensors
-            .iter()
-            .find(|t| t.name == weight_name)
+            .get_tensor_meta(weight_name)
             .ok_or(format!("Weight '{}' not found", weight_name))?;
 
         let weight_data = self
@@ -559,10 +582,7 @@ impl ForwardExecutor {
     ) -> Result<(), String> {
         let tensor = self
             .model
-            .gguf
-            .tensors
-            .iter()
-            .find(|t| t.name == weight_name)
+            .get_tensor_meta(weight_name)
             .ok_or(format!("Weight '{}' not found", weight_name))?;
 
         let weight_data = self
@@ -624,10 +644,7 @@ fn quantize_input_to(
 impl ForwardExecutor {
     fn get_weight_quant_type(&self, weight_name: &str) -> QuantType {
         self.model
-            .gguf
-            .tensors
-            .iter()
-            .find(|t| t.name == weight_name)
+            .get_tensor_meta(weight_name)
             .map(|t| t.quant_type)
             .unwrap_or(QuantType::F32)
     }
@@ -638,10 +655,7 @@ impl ForwardExecutor {
 
         let norm_weight = self
             .model
-            .gguf
-            .tensors
-            .iter()
-            .find(|t| t.name == "output_norm.weight")
+            .get_tensor_meta("output_norm.weight")
             .ok_or("output_norm.weight not found")?;
 
         let weight_data = self
@@ -649,28 +663,36 @@ impl ForwardExecutor {
             .get_tensor("output_norm.weight")
             .ok_or("output_norm weight data not found")?;
 
-        let weight: Vec<f32> = match norm_weight.quant_type {
-            QuantType::F32 => weight_data
-                .chunks_exact(4)
-                .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
-                .take(hidden_size)
-                .collect(),
-            QuantType::F16 => weight_data
-                .chunks_exact(2)
-                .map(|chunk| {
-                    half::f16::from_le_bytes(chunk.try_into().unwrap()).to_f32()
-                })
-                .take(hidden_size)
-                .collect(),
+        match norm_weight.quant_type {
+            QuantType::F32 => {
+                // F32 weight - directly cast bytes to f32 slice
+                let weight: &[f32] = unsafe {
+                    std::slice::from_raw_parts(
+                        weight_data.as_ptr() as *const f32,
+                        hidden_size,
+                    )
+                };
+                rms_norm_f32(
+                    &self.hidden_buf.clone(),
+                    weight,
+                    &mut self.hidden_buf,
+                    config.rms_norm_eps,
+                );
+            }
+            QuantType::F16 => {
+                // F16 weight - process without allocation
+                let eps = config.rms_norm_eps;
+                let sum_sq: f32 = self.hidden_buf.iter().map(|x| x * x).sum();
+                let rms = (sum_sq / hidden_size as f32 + eps).sqrt();
+                let scale = 1.0 / rms;
+                for (i, chunk) in weight_data.chunks_exact(2).enumerate() {
+                    let w =
+                        half::f16::from_le_bytes([chunk[0], chunk[1]]).to_f32();
+                    self.hidden_buf[i] *= scale * w;
+                }
+            }
             _ => return Err("Unsupported norm quant type".into()),
-        };
-
-        rms_norm_f32(
-            &self.hidden_buf.clone(),
-            &weight,
-            &mut self.hidden_buf,
-            config.rms_norm_eps,
-        );
+        }
         Ok(())
     }
 
@@ -678,31 +700,18 @@ impl ForwardExecutor {
         let config = self.model.config();
         let hidden_size = self.hidden_buf.len();
 
-        let (output_tensor, output_data) = if let Some(tensor) =
-            self.model.gguf.tensors.iter().find(|t| {
-                t.name == "output.weight" || t.name == "lm_head.weight"
-            }) {
-            (
-                tensor,
-                self.model
-                    .get_tensor(&tensor.name)
-                    .ok_or("Output weight data not found")?,
-            )
-        } else {
-            let tensor = self
-                .model
-                .gguf
-                .tensors
-                .iter()
-                .find(|t| t.name == "token_embd.weight")
-                .ok_or("No output or embedding weights found")?;
-            (
-                tensor,
-                self.model
-                    .get_tensor(&tensor.name)
-                    .ok_or("Embedding weight data not found")?,
-            )
-        };
+        // Try output.weight or lm_head.weight, fallback to token_embd.weight
+        let output_tensor = self
+            .model
+            .get_tensor_meta("output.weight")
+            .or_else(|| self.model.get_tensor_meta("lm_head.weight"))
+            .or_else(|| self.model.get_tensor_meta("token_embd.weight"))
+            .ok_or("No output or embedding weights found")?;
+
+        let output_data = self
+            .model
+            .get_tensor(&output_tensor.name)
+            .ok_or("Output weight data not found")?;
 
         self.logits_buf.fill(0.0);
         let stride = output_tensor.strides[1] as usize;
