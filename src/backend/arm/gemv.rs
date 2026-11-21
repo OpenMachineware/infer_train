@@ -253,6 +253,45 @@ pub fn mul_mat_q4_k(
     }
 }
 
+/// IQ4_XS transposed GEMV (no tiled version, use vec_dot)
+pub fn mul_mat_iq4_xs(
+    weights: &[u8],
+    col_stride: usize,
+    input: &[BlockQ8_K],
+    output: &mut [f32],
+    out_features: usize,
+    in_features: usize,
+    n_tokens: usize,
+    _n_threads: usize,
+) {
+    use super::vec_dot::vec_dot_iq4_xs_q8_k;
+    use crate::types::BlockIQ4XS;
+
+    let n_blocks = in_features / QK_K;
+
+    assert_eq!(input.len(), n_tokens * n_blocks);
+    assert_eq!(output.len(), n_tokens * out_features);
+
+    output.fill(0.0);
+
+    for token_idx in 0..n_tokens {
+        let input_start = token_idx * n_blocks;
+        let input_row = &input[input_start..input_start + n_blocks];
+
+        for row in 0..out_features {
+            let row_offset = row * col_stride;
+            let weight_row = unsafe {
+                std::slice::from_raw_parts(
+                    weights.as_ptr().add(row_offset) as *const BlockIQ4XS,
+                    n_blocks,
+                )
+            };
+            output[token_idx * out_features + row] =
+                vec_dot_iq4_xs_q8_k(weight_row, input_row);
+        }
+    }
+}
+
 /// Q5_K transposed GEMV using vec_dot (decode path, memory-bound)
 /// Multi-threaded for large matrices, single-thread for small
 pub fn mul_mat_q5_k_vec_dot(

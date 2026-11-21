@@ -154,6 +154,15 @@ pub struct ForwardExecutor {
     pub n_threads_batch: usize,
     /// Pre-computed weight names for each layer
     layer_weights: Vec<LayerWeightNames>,
+    /// Pre-allocated batch buffers (avoid arena allocation during forward_layer_batch)
+    batch_q: Vec<f32>,
+    batch_k: Vec<f32>,
+    batch_v: Vec<f32>,
+    batch_q_normed: Vec<f32>,
+    batch_k_normed: Vec<f32>,
+    batch_attn_output: Vec<f32>,
+    batch_gate: Vec<f32>,
+    batch_up: Vec<f32>,
 }
 
 impl ForwardExecutor {
@@ -201,6 +210,23 @@ impl ForwardExecutor {
         let layer_weights: Vec<LayerWeightNames> =
             (0..config.n_layers).map(LayerWeightNames::new).collect();
 
+        // Pre-allocate batch buffers for max batch size
+        let max_batch = 64;
+        let batch_q =
+            vec![0.0f32; max_batch * config.n_heads * config.head_dim()];
+        let batch_k =
+            vec![0.0f32; max_batch * config.n_kv_heads * config.head_dim()];
+        let batch_v =
+            vec![0.0f32; max_batch * config.n_kv_heads * config.head_dim()];
+        let batch_q_normed =
+            vec![0.0f32; max_batch * config.n_heads * config.head_dim()];
+        let batch_k_normed =
+            vec![0.0f32; max_batch * config.n_kv_heads * config.head_dim()];
+        let batch_attn_output =
+            vec![0.0f32; max_batch * config.n_heads * config.head_dim()];
+        let batch_gate = vec![0.0f32; max_batch * config.intermediate_size];
+        let batch_up = vec![0.0f32; max_batch * config.intermediate_size];
+
         Self {
             model,
             kv_cache_k,
@@ -216,6 +242,14 @@ impl ForwardExecutor {
             n_threads,
             n_threads_batch,
             layer_weights,
+            batch_q,
+            batch_k,
+            batch_v,
+            batch_q_normed,
+            batch_k_normed,
+            batch_attn_output,
+            batch_gate,
+            batch_up,
         }
     }
 
@@ -731,13 +765,84 @@ impl ForwardExecutor {
         let n_heads = config.n_heads;
         let n_kv_heads = config.n_kv_heads;
         let head_dim = config.head_dim();
+        let intermediate_size = config.intermediate_size;
 
         // Clone weight names to avoid borrow conflicts with mutable self calls
         let weights = self.layer_weights[layer_idx].clone();
 
+        // Take ownership of batch buffers to avoid borrow conflicts
+        // We'll put them back at the end
+        let mut batch_q = std::mem::take(&mut self.batch_q);
+        let mut batch_k = std::mem::take(&mut self.batch_k);
+        let mut batch_v = std::mem::take(&mut self.batch_v);
+        let mut batch_q_normed = std::mem::take(&mut self.batch_q_normed);
+        let mut batch_k_normed = std::mem::take(&mut self.batch_k_normed);
+        let mut batch_attn_output = std::mem::take(&mut self.batch_attn_output);
+        let mut batch_gate = std::mem::take(&mut self.batch_gate);
+        let mut batch_up = std::mem::take(&mut self.batch_up);
+
+        // Resize buffers if needed and get slices
+        let q_len = n_tokens * n_heads * head_dim;
+        let k_len = n_tokens * n_kv_heads * head_dim;
+        let v_len = n_tokens * n_kv_heads * head_dim;
+        let gate_len = n_tokens * intermediate_size;
+
+        if batch_q.len() < q_len {
+            batch_q.resize(q_len, 0.0);
+        }
+        if batch_k.len() < k_len {
+            batch_k.resize(k_len, 0.0);
+        }
+        if batch_v.len() < v_len {
+            batch_v.resize(v_len, 0.0);
+        }
+        if batch_q_normed.len() < q_len {
+            batch_q_normed.resize(q_len, 0.0);
+        }
+        if batch_k_normed.len() < k_len {
+            batch_k_normed.resize(k_len, 0.0);
+        }
+        if batch_attn_output.len() < q_len {
+            batch_attn_output.resize(q_len, 0.0);
+        }
+        if batch_gate.len() < gate_len {
+            batch_gate.resize(gate_len, 0.0);
+        }
+        if batch_up.len() < gate_len {
+            batch_up.resize(gate_len, 0.0);
+        }
+
+        // Zero out buffers for this batch
+        batch_q[..q_len].fill(0.0);
+        batch_k[..k_len].fill(0.0);
+        batch_v[..v_len].fill(0.0);
+        batch_q_normed[..q_len].fill(0.0);
+        batch_k_normed[..k_len].fill(0.0);
+        batch_attn_output[..q_len].fill(0.0);
+        batch_gate[..gate_len].fill(0.0);
+        batch_up[..gate_len].fill(0.0);
+
+        // Get slices (now we own the Vecs, so no borrow conflict)
+        let q = &mut batch_q[..q_len];
+        let k = &mut batch_k[..k_len];
+        let v = &mut batch_v[..v_len];
+        let q_normed = &mut batch_q_normed[..q_len];
+        let k_normed = &mut batch_k_normed[..k_len];
+        let attn_output = &mut batch_attn_output[..q_len];
+        let gate = &mut batch_gate[..gate_len];
+        let up = &mut batch_up[..gate_len];
+
+        // Use local Vec for transient data to avoid arena borrow conflict
+        let mut normed_attn_vec = vec![0.0f32; n_tokens * hidden_size];
+        let mut attn_out_vec = vec![0.0f32; n_tokens * hidden_size];
+        let mut normed_ffn_vec = vec![0.0f32; n_tokens * hidden_size];
+        let mut ffn_out_vec = vec![0.0f32; n_tokens * hidden_size];
+        let normed_attn = &mut normed_attn_vec[..];
+        let attn_out = &mut attn_out_vec[..];
+        let normed_ffn = &mut normed_ffn_vec[..];
+        let ffn_out = &mut ffn_out_vec[..];
+
         // Batch attention norm
-        let normed_attn: &mut [f32] =
-            self.arena.alloc_zeroed(n_tokens * hidden_size);
         self.rms_norm_batch(
             &self.hidden_buf_batch,
             &weights.attn_norm,
@@ -757,13 +862,6 @@ impl ForwardExecutor {
         let in_features = hidden_size;
 
         // Batch QKV projections using tiled GEMV
-        let q: &mut [f32] =
-            self.arena.alloc_zeroed(n_tokens * n_heads * head_dim);
-        let k: &mut [f32] =
-            self.arena.alloc_zeroed(n_tokens * n_kv_heads * head_dim);
-        let v: &mut [f32] =
-            self.arena.alloc_zeroed(n_tokens * n_kv_heads * head_dim);
-
         self.linear_quantized_batch(
             quant_format,
             in_features,
@@ -787,11 +885,6 @@ impl ForwardExecutor {
         )?;
 
         // Batch Q/K norm
-        let q_normed: &mut [f32] =
-            self.arena.alloc_zeroed(n_tokens * n_heads * head_dim);
-        let k_normed: &mut [f32] =
-            self.arena.alloc_zeroed(n_tokens * n_kv_heads * head_dim);
-
         self.qk_norm_batch(
             q,
             &weights.attn_q_norm,
@@ -852,8 +945,6 @@ impl ForwardExecutor {
         }
 
         // Batch attention (simplified: process each token)
-        let attn_output: &mut [f32] =
-            self.arena.alloc_zeroed(n_tokens * n_heads * head_dim);
         for token_idx in 0..n_tokens {
             let cur_pos = self.seq_pos + token_idx + 1;
             for h in 0..n_heads {
@@ -879,8 +970,6 @@ impl ForwardExecutor {
         }
 
         // Batch output projection
-        let attn_out: &mut [f32] =
-            self.arena.alloc_zeroed(n_tokens * hidden_size);
         self.linear_batch(
             attn_output,
             n_tokens,
@@ -894,8 +983,6 @@ impl ForwardExecutor {
         }
 
         // Batch FFN norm
-        let normed_ffn: &mut [f32] =
-            self.arena.alloc_zeroed(n_tokens * hidden_size);
         self.rms_norm_batch(
             &self.hidden_buf_batch,
             &weights.ffn_norm,
@@ -913,11 +1000,6 @@ impl ForwardExecutor {
         )?;
 
         // Batch Gate/Up projections
-        let gate: &mut [f32] =
-            self.arena.alloc_zeroed(n_tokens * config.intermediate_size);
-        let up: &mut [f32] =
-            self.arena.alloc_zeroed(n_tokens * config.intermediate_size);
-
         self.linear_quantized_batch(
             ffn_quant_format,
             hidden_size,
@@ -935,19 +1017,27 @@ impl ForwardExecutor {
 
         // Batch SwiGLU
         silu_f32_inplace(gate);
-        for i in 0..n_tokens * config.intermediate_size {
+        for i in 0..n_tokens * intermediate_size {
             gate[i] *= up[i];
         }
 
         // Batch Down projection
-        let ffn_out: &mut [f32] =
-            self.arena.alloc_zeroed(n_tokens * hidden_size);
         self.linear_batch(gate, n_tokens, &weights.ffn_down, ffn_out)?;
 
         // Batch residual
         for i in 0..n_tokens * hidden_size {
             self.hidden_buf_batch[i] += ffn_out[i];
         }
+
+        // Put back batch buffers
+        self.batch_q = batch_q;
+        self.batch_k = batch_k;
+        self.batch_v = batch_v;
+        self.batch_q_normed = batch_q_normed;
+        self.batch_k_normed = batch_k_normed;
+        self.batch_attn_output = batch_attn_output;
+        self.batch_gate = batch_gate;
+        self.batch_up = batch_up;
 
         Ok(())
     }
@@ -1314,6 +1404,19 @@ impl ForwardExecutor {
                         );
                         Ok(())
                     }
+                    QuantType::IQ4_XS => {
+                        gemv::mul_mat_iq4_xs(
+                            weight_data,
+                            stride,
+                            &self.quant_buf_batch.q8_k,
+                            output,
+                            out_features,
+                            in_features,
+                            n_tokens,
+                            self.n_threads_batch,
+                        );
+                        Ok(())
+                    }
                     _ => Err(format!(
                         "Unsupported weight type for Q8_K batch: {:?}",
                         tensor.quant_type
@@ -1325,9 +1428,9 @@ impl ForwardExecutor {
     }
 
     /// Batch linear with F32 input
-    /// Handles quantized weights by quantizing input into a local buffer
+    /// Uses pre-allocated quant_buf_batch to avoid temporary allocation
     fn linear_batch(
-        &self,
+        &mut self,
         input: &[f32],
         n_tokens: usize,
         weight_name: &str,
@@ -1369,26 +1472,30 @@ impl ForwardExecutor {
                 Ok(())
             }
             QuantType::Q5_K | QuantType::Q6_K | QuantType::Q4_K => {
-                // Quantize input into local buffer
+                // Use pre-allocated batch buffer
                 let nb_per_token = (in_features + QK_K - 1) / QK_K;
-                let mut q8_k_local = vec![
-                    unsafe { std::mem::zeroed() };
-                    n_tokens * nb_per_token
-                ];
+                self.quant_buf_batch.resize(
+                    n_tokens,
+                    in_features,
+                    QuantFormat::Q8_K,
+                );
+
                 for token_idx in 0..n_tokens {
                     let in_start = token_idx * in_features;
                     let out_start = token_idx * nb_per_token;
                     quant::quantize_q8_k(
                         &input[in_start..in_start + in_features],
-                        &mut q8_k_local[out_start..out_start + nb_per_token],
+                        &mut self.quant_buf_batch.q8_k
+                            [out_start..out_start + nb_per_token],
                     );
                 }
+
                 match tensor.quant_type {
                     QuantType::Q5_K => {
                         gemv::mul_mat_q5_k(
                             weight_data,
                             stride,
-                            &q8_k_local,
+                            &self.quant_buf_batch.q8_k,
                             output,
                             out_features,
                             in_features,
@@ -1401,7 +1508,7 @@ impl ForwardExecutor {
                         gemv::mul_mat_q6_k(
                             weight_data,
                             stride,
-                            &q8_k_local,
+                            &self.quant_buf_batch.q8_k,
                             output,
                             out_features,
                             in_features,
@@ -1414,7 +1521,7 @@ impl ForwardExecutor {
                         gemv::mul_mat_q4_k(
                             weight_data,
                             stride,
-                            &q8_k_local,
+                            &self.quant_buf_batch.q8_k,
                             output,
                             out_features,
                             in_features,
@@ -1427,23 +1534,28 @@ impl ForwardExecutor {
                 }
             }
             QuantType::Q4_0 | QuantType::Q8_0 => {
+                // Use pre-allocated batch buffer
                 let nb_per_token = (in_features + QK8_0 - 1) / QK8_0;
-                let mut q8_0_local = vec![
-                    BlockQ8_0 { d: 0, qs: [0; QK8_0] };
-                    n_tokens * nb_per_token
-                ];
+                self.quant_buf_batch.resize(
+                    n_tokens,
+                    in_features,
+                    QuantFormat::Q8_0,
+                );
+
                 for token_idx in 0..n_tokens {
                     let in_start = token_idx * in_features;
                     let out_start = token_idx * nb_per_token;
                     quant::quantize_q8_0(
                         &input[in_start..in_start + in_features],
-                        &mut q8_0_local[out_start..out_start + nb_per_token],
+                        &mut self.quant_buf_batch.q8_0
+                            [out_start..out_start + nb_per_token],
                     );
                 }
+
                 gemv::mul_mat_q4_0(
                     weight_data,
                     stride,
-                    &q8_0_local,
+                    &self.quant_buf_batch.q8_0,
                     output,
                     out_features,
                     in_features,
