@@ -141,38 +141,63 @@ pub fn calculate_work_size(
     vocab_size: usize,
     _n_layers: usize,
 ) -> usize {
+    // Default to support batch size up to 64 tokens
+    calculate_work_size_batch(
+        hidden_size,
+        intermediate_size,
+        n_heads,
+        n_kv_heads,
+        head_dim,
+        vocab_size,
+        64, // max_batch_size
+    )
+}
+
+pub fn calculate_work_size_batch(
+    hidden_size: usize,
+    intermediate_size: usize,
+    n_heads: usize,
+    n_kv_heads: usize,
+    head_dim: usize,
+    vocab_size: usize,
+    max_batch_size: usize,
+) -> usize {
     use std::mem::size_of;
 
     // Size of Q8_K block for quantized input
     let q8k_block_size = size_of::<crate::types::BlockQ8_K>();
     let qk_k = crate::types::QK_K;
 
+    // Batch factor for prefill
+    let batch = max_batch_size.max(1);
+
     // Quantized input buffer (shared for all linear ops)
     let nb = (hidden_size + qk_k - 1) / qk_k;
-    let quant_input_size = nb * q8k_block_size;
+    let quant_input_size = nb * q8k_block_size * batch;
 
-    // Attention stage buffers
-    let q_size = n_heads * head_dim * size_of::<f32>();
-    let k_size = n_kv_heads * head_dim * size_of::<f32>();
-    let v_size = n_kv_heads * head_dim * size_of::<f32>();
-    let q_normed_size = n_heads * head_dim * size_of::<f32>();
-    let k_normed_size = n_kv_heads * head_dim * size_of::<f32>();
-    let attn_output_size = n_heads * head_dim * size_of::<f32>();
-    let attn_out_size = hidden_size * size_of::<f32>(); // output projection result
+    // Attention stage buffers (batched)
+    let q_size = batch * n_heads * head_dim * size_of::<f32>();
+    let k_size = batch * n_kv_heads * head_dim * size_of::<f32>();
+    let v_size = batch * n_kv_heads * head_dim * size_of::<f32>();
+    let q_normed_size = batch * n_heads * head_dim * size_of::<f32>();
+    let k_normed_size = batch * n_kv_heads * head_dim * size_of::<f32>();
+    let attn_output_size = batch * n_heads * head_dim * size_of::<f32>();
+    let attn_out_size = batch * hidden_size * size_of::<f32>(); // output projection result
 
-    // FFN stage buffers
-    let gate_size = intermediate_size * size_of::<f32>();
-    let up_size = intermediate_size * size_of::<f32>();
-    let ffn_out_size = hidden_size * size_of::<f32>();
+    // FFN stage buffers (batched)
+    let gate_size = batch * intermediate_size * size_of::<f32>();
+    let up_size = batch * intermediate_size * size_of::<f32>();
+    let ffn_out_size = batch * hidden_size * size_of::<f32>();
 
-    // Output projection buffer
+    // Output projection buffer (single token)
     let logits_size = vocab_size * size_of::<f32>();
 
-    // Compute total memory usage within a single forward_layer_inplace call
-    // All allocations accumulate since they're in the same function scope
-    // Attention stage: normed_attn + q + k + v + q_normed + k_normed + attn_output + attn_out
-    // FFN stage (added): normed_ffn + gate + up + ffn_out
-    let total_layer = hidden_size * size_of::<f32>()  // normed_attn
+    // Batched norm buffers
+    let normed_attn_size = batch * hidden_size * size_of::<f32>();
+    let normed_ffn_size = batch * hidden_size * size_of::<f32>();
+
+    // Compute total memory usage within a single forward_layer_batch call
+    let total_layer = normed_attn_size
         + q_size
         + k_size
         + v_size
@@ -180,15 +205,13 @@ pub fn calculate_work_size(
         + k_normed_size
         + attn_output_size
         + attn_out_size
-        + hidden_size * size_of::<f32>()  // normed_ffn
+        + normed_ffn_size
         + gate_size
         + up_size
-        + ffn_out_size;
+        + ffn_out_size
+        + logits_size;
 
-    // Add quantized input buffer and logits
-    // Add 20% safety margin for alignment
-    let total = total_layer + quant_input_size + logits_size;
-    (total * 120) / 100
+    total_layer
 }
 
 #[cfg(test)]

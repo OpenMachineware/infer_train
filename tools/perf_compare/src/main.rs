@@ -182,10 +182,12 @@ fn run_ours(
     // Get memory before
     let memory_before = get_memory_mb();
 
-    // Prefill
+    // Prefill using batch forward (more efficient)
     let prefill_start = Instant::now();
-    for &token in &tokens {
-        executor.forward(token).expect("Forward failed");
+    if prefill_tokens > 1 {
+        executor.forward_batch(&tokens).expect("Forward batch failed");
+    } else {
+        executor.forward(tokens[0]).expect("Forward failed");
     }
     let prefill_time = prefill_start.elapsed();
 
