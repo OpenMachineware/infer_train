@@ -4,7 +4,9 @@
 // Matrix-vector multiplication (GEMV) for decode
 // Uses tiled implementation from llama.cpp
 
-use super::tiled::{mul_mat_q5_k_tiled, mul_mat_q6_k_tiled};
+use super::tiled::{
+    mul_mat_q4_k_tiled, mul_mat_q5_k_tiled, mul_mat_q6_k_tiled,
+};
 use super::vec_dot::*;
 use crate::types::*;
 
@@ -216,7 +218,8 @@ pub fn mul_mat_q5_k(
     }
 }
 
-/// Q4_K transposed GEMV (no tiled version, use simple loop)
+/// Q4_K transposed GEMV
+/// Dispatch based on batch size: vec_dot for decode (n<8), tiled for prefill (n>=8)
 pub fn mul_mat_q4_k(
     weights: &[u8],
     col_stride: usize,
@@ -225,10 +228,47 @@ pub fn mul_mat_q4_k(
     out_features: usize,
     in_features: usize,
     n_tokens: usize,
-    _n_threads: usize,
+    n_threads: usize,
+) {
+    // TODO: Q4_K tiled has issues, use vec_dot for now
+    // if n_tokens < 8 {
+    {
+        // Decode path: use simple loop
+        mul_mat_q4_k_vec_dot(
+            weights,
+            col_stride,
+            input,
+            output,
+            out_features,
+            in_features,
+            n_tokens,
+        );
+    }
+    // } else {
+    //     // Prefill path: use tiled
+    //     super::tiled::mul_mat_q4_k_tiled(
+    //         weights,
+    //         col_stride,
+    //         input,
+    //         output,
+    //         out_features,
+    //         in_features,
+    //         n_tokens,
+    //     );
+    // }
+}
+
+/// Q4_K vec_dot path for decode
+fn mul_mat_q4_k_vec_dot(
+    weights: &[u8],
+    col_stride: usize,
+    input: &[BlockQ8_K],
+    output: &mut [f32],
+    out_features: usize,
+    in_features: usize,
+    n_tokens: usize,
 ) {
     let n_blocks = in_features / QK_K;
-    let block_size = std::mem::size_of::<BlockQ4_K>();
 
     assert_eq!(input.len(), n_tokens * n_blocks);
     assert_eq!(output.len(), n_tokens * out_features);

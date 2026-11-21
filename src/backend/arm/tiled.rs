@@ -1474,6 +1474,134 @@ fn compute_k_extent_blocks(n_tokens: usize, block_size: usize) -> usize {
 }
 
 // ============================================================================
+// Q4_K Tiled GEMV
+// ============================================================================
+
+/// Unpack Q4_K weight blocks into TiledTileSrc0
+pub fn tiled_unpack_src0_q4_k(
+    weights: &[u8],
+    col_stride: usize,
+    n_rows: usize,
+    tile: &mut TiledTileSrc0,
+    num_k: usize,
+    kblk_start: usize,
+    blocks_per_row: usize,
+) {
+    const NB: usize = 8; // Q4_K has 32-element subblocks, 8 per 256
+    const BLOCK_SIZE: usize = std::mem::size_of::<BlockQ4_K>();
+
+    for slab in 0..num_k {
+        for r in 0..n_rows {
+            let src_row_offset = r * col_stride;
+            let src_block_offset = (kblk_start + slab) * BLOCK_SIZE;
+            let src_ptr = unsafe {
+                weights.as_ptr().add(src_row_offset + src_block_offset)
+            };
+            let x: &BlockQ4_K = unsafe { &*(src_ptr as *const BlockQ4_K) };
+
+            let d_off = slab * TILED_MICRO + r;
+            let q_off = r * num_k * TILED_TILE_K + slab * TILED_TILE_K;
+            let s_off = r * NB * num_k + slab * NB;
+
+            tile.d[d_off] = f16::to_f32(f16::from_bits(x.d));
+            tile.dmin[d_off] = f16::to_f32(f16::from_bits(x.dmin));
+
+            // Decode scales and mins (same as Q5_K)
+            let (scales, mins) = decode_q5k_scales(&x.scales);
+            for s in 0..NB {
+                tile.scales[s_off + s] = scales[s];
+                tile.mins[s_off + s] = mins[s];
+            }
+
+            // Extract 4-bit codes - simple nibble unpack
+            let q = &mut tile.q[q_off..q_off + TILED_TILE_K];
+            let qs_ptr = x.qs.as_ptr();
+            let q_ptr = q.as_mut_ptr();
+
+            // Unpack 4-bit nibbles: each byte in qs becomes two bytes in q
+            // qs[0..32] -> q[0..32] (low nibbles), q[32..64] (high nibbles)
+            // etc.
+            for chunk in 0..4 {
+                let src_off = chunk * 32;
+                let lo_off = chunk * 64;
+                let hi_off = lo_off + 32;
+                unsafe {
+                    tiled_unpk_nib4_neon(
+                        qs_ptr.add(src_off),
+                        q_ptr.add(lo_off),
+                        q_ptr.add(hi_off),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Tiled matrix multiplication for Q4_K
+pub fn mul_mat_q4_k_tiled(
+    weights: &[u8],
+    col_stride: usize,
+    input: &[BlockQ8_K],
+    output: &mut [f32],
+    out_features: usize,
+    in_features: usize,
+    n_tokens: usize,
+) {
+    let n_blocks = in_features / QK_K;
+    let block_size = std::mem::size_of::<BlockQ4_K>();
+
+    let k_extent_blocks = compute_k_extent_blocks(n_tokens, block_size);
+
+    output.fill(0.0);
+
+    const TILE_ROWS: usize = 256;
+
+    for iir0 in (0..out_features).step_by(TILE_ROWS) {
+        let ir0_end = (iir0 + TILE_ROWS).min(out_features);
+        let window_rows = ir0_end - iir0;
+
+        for k0 in (0..n_blocks).step_by(k_extent_blocks) {
+            let k_end = (k0 + k_extent_blocks).min(n_blocks);
+            let num_k = k_end - k0;
+
+            let mut src0_tile = TiledTileSrc0::new(num_k, window_rows, 8);
+
+            tiled_unpack_src0_q4_k(
+                weights,
+                col_stride,
+                window_rows,
+                &mut src0_tile,
+                num_k,
+                k0,
+                n_blocks,
+            );
+
+            let mut src1_tile = TiledTileSrc1::new(num_k, n_tokens);
+            tiled_unpack_src1_q8_k(
+                input,
+                n_blocks,
+                n_tokens,
+                &mut src1_tile,
+                k0,
+                num_k,
+            );
+
+            // Q4_K compute is same as Q5_K (both have 8 subblocks and dmin)
+            tiled_compute_q5_k_direct(
+                &src0_tile,
+                &src1_tile,
+                window_rows,
+                n_tokens,
+                num_k,
+                output,
+                out_features,
+                iir0,
+            );
+        }
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
