@@ -12,6 +12,7 @@ pub mod quant;
 pub mod rms_norm;
 pub mod rope;
 pub mod softmax;
+pub mod tiled;
 pub mod vec_dot;
 
 use crate::backend::{Backend, TensorRef, TensorRefMut};
