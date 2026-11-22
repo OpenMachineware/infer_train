@@ -9,6 +9,7 @@ pub mod flash_attn;
 pub mod gemv;
 pub mod linear;
 pub mod quant;
+pub mod repack;
 pub mod rms_norm;
 pub mod rope;
 pub mod softmax;
@@ -160,14 +161,16 @@ impl Backend for ArmCpuBackend {
                             )
                         };
 
-                        gemv::gemv_q4_0(
-                            weights,
-                            input,
-                            output,
-                            *out_features,
-                            *in_features,
-                            0, // auto thread count
-                        );
+                        unsafe {
+                            gemv::gemv_q4_0(
+                                weights,
+                                input,
+                                output,
+                                *out_features,
+                                *in_features,
+                                0, // auto thread count
+                            );
+                        }
                         Ok(())
                     }
 
@@ -187,14 +190,16 @@ impl Backend for ArmCpuBackend {
                             )
                         };
 
-                        gemv::gemv_q8_0(
-                            weights,
-                            input,
-                            output,
-                            *out_features,
-                            *in_features,
-                            0, // auto thread count
-                        );
+                        unsafe {
+                            gemv::gemv_q8_0(
+                                weights,
+                                input,
+                                output,
+                                *out_features,
+                                *in_features,
+                                0, // auto thread count
+                            );
+                        }
                         Ok(())
                     }
 
@@ -214,14 +219,16 @@ impl Backend for ArmCpuBackend {
                             )
                         };
 
-                        gemv::gemv_q4_k(
-                            weights,
-                            input,
-                            output,
-                            *out_features,
-                            *in_features,
-                            0, // auto thread count
-                        );
+                        unsafe {
+                            gemv::gemv_q4_k(
+                                weights,
+                                input,
+                                output,
+                                *out_features,
+                                *in_features,
+                                0, // auto thread count
+                            );
+                        }
                         Ok(())
                     }
 
@@ -241,14 +248,16 @@ impl Backend for ArmCpuBackend {
                             )
                         };
 
-                        gemv::gemv_q5_k(
-                            weights,
-                            input,
-                            output,
-                            *out_features,
-                            *in_features,
-                            0, // auto thread count
-                        );
+                        unsafe {
+                            gemv::gemv_q5_k(
+                                weights,
+                                input,
+                                output,
+                                *out_features,
+                                *in_features,
+                                0, // auto thread count
+                            );
+                        }
                         Ok(())
                     }
 
@@ -268,14 +277,16 @@ impl Backend for ArmCpuBackend {
                             )
                         };
 
-                        gemv::gemv_q6_k(
-                            weights,
-                            input,
-                            output,
-                            *out_features,
-                            *in_features,
-                            0, // auto thread count
-                        );
+                        unsafe {
+                            gemv::gemv_q6_k(
+                                weights,
+                                input,
+                                output,
+                                *out_features,
+                                *in_features,
+                                0, // auto thread count
+                            );
+                        }
                         Ok(())
                     }
 

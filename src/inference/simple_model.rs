@@ -275,6 +275,33 @@ impl SimpleModel {
 
                 Some(embedding)
             }
+            crate::types::QuantType::Q5_K => {
+                use crate::types::{BlockQ5_K, QK_K};
+                let nb = (hidden_size + QK_K - 1) / QK_K;
+                let block_size = std::mem::size_of::<BlockQ5_K>();
+                let row_offset = (token_id as usize) * nb * block_size;
+
+                if row_offset + nb * block_size > emb_data.len() {
+                    return None;
+                }
+
+                let mut embedding = vec![0.0f32; hidden_size];
+                let block_data =
+                    &emb_data[row_offset..row_offset + nb * block_size];
+
+                for i in 0..nb {
+                    let block_offset = i * block_size;
+                    let block_bytes =
+                        &block_data[block_offset..block_offset + block_size];
+                    crate::backend::arm::dequant::dequant_q5_k(
+                        block_bytes,
+                        &mut embedding[i * QK_K..],
+                        QK_K.min(hidden_size - i * QK_K),
+                    );
+                }
+
+                Some(embedding)
+            }
             _ => None, // Unsupported quantization type
         }
     }
@@ -326,8 +353,8 @@ impl SimpleModel {
                 self.gguf.tensors.iter().find(|t| t.name == *pattern)
             {
                 println!(
-                    "  {}: dims={:?} (format: [dim0, dim1, ...])",
-                    pattern, tensor.dims
+                    "  {}: dims={:?}, strides={:?}, quant={:?}",
+                    pattern, tensor.dims, tensor.strides, tensor.quant_type
                 );
                 if tensor.dims.len() == 2 {
                     println!(

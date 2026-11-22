@@ -203,9 +203,8 @@ fn main() {
         executor.reset(); // Reset KV cache for each iteration
 
         let start = Instant::now();
-        for &token in &tokens {
-            let _ = executor.forward(token);
-        }
+        // Use batch forward for prefill (triggers tiled path when n_tokens >= 8)
+        let _ = executor.forward_batch(&tokens);
         let elapsed = start.elapsed();
         prefill_times.push(elapsed.as_secs_f64() * 1000.0);
     }
@@ -222,6 +221,7 @@ fn main() {
     // Profile decode
     println!("\n=== Decode Profile ===");
     let mut decode_times = Vec::new();
+    let mut last_generated: Vec<u32> = Vec::new(); // Store tokens for output verification
 
     for _iter in 0..cli.iterations {
         executor.reset(); // Reset KV cache for each iteration
@@ -233,6 +233,7 @@ fn main() {
 
         // Decode
         let mut times = Vec::new();
+        let mut generated: Vec<u32> = Vec::new();
         for _ in 0..cli.decode_tokens {
             let start = Instant::now();
             if let Ok(logits) = executor.forward(0) {
@@ -244,11 +245,21 @@ fn main() {
                     .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
                     .map(|(i, _)| i)
                     .unwrap();
-                let _ = max_idx;
+                generated.push(max_idx as u32);
             }
         }
         decode_times.extend(times);
+        last_generated = generated;
     }
+
+    // Print generated output for verification
+    let output_text: String = last_generated
+        .iter()
+        .filter_map(|&t| executor.model.tokenizer().decode(&[t]).ok())
+        .collect();
+    println!("\n=== Generated Output ===");
+    println!("Prompt: {}", cli.prompt);
+    println!("Output: {}", output_text);
 
     let avg_decode_ms: f64 =
         decode_times.iter().sum::<f64>() / decode_times.len() as f64;

@@ -221,11 +221,11 @@ pub unsafe fn vec_dot_q4_k_q8_k_neon(x: &[BlockQ4_K], y: &[BlockQ8_K]) -> f32 {
     let mut sum = 0.0f32;
 
     for i in 0..nb {
-        // Prefetch next block for L1 cache
-        if i + 1 < nb {
-            prefetch_read_l1(x[i + 1].qs.as_ptr());
-            prefetch_read_l1(y[i + 1].qs.as_ptr() as *const u8);
-        }
+        // Prefetch disabled - it doesn't help for small sequential blocks
+        // if i + 1 < nb {
+        //     prefetch_read_l1(x[i + 1].qs.as_ptr());
+        //     prefetch_read_l1(y[i + 1].qs.as_ptr() as *const u8);
+        // }
 
         let x_i = x.get_unchecked(i);
         let y_i = y.get_unchecked(i);
@@ -316,6 +316,7 @@ pub unsafe fn vec_dot_q4_k_q8_k_neon(x: &[BlockQ4_K], y: &[BlockQ8_K]) -> f32 {
 }
 
 /// Q5_K × Q8_K vector dot product (NEON implementation)
+/// Matches llama.cpp's ggml_vec_dot_q5_K_q8_K exactly.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon,dotprod")]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -335,17 +336,10 @@ pub unsafe fn vec_dot_q5_k_q8_k_neon(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
     let mut sumf = 0.0f32;
 
     for i in 0..nb {
-        // Prefetch next block for L1 cache
-        if i + 1 < nb {
-            prefetch_read_l1(x[i + 1].qs.as_ptr());
-            prefetch_read_l1(y[i + 1].qs.as_ptr() as *const u8);
-        }
-
         let d = y[i].d * fp16_to_fp32(x[i].d);
         let dmin = y[i].d * fp16_to_fp32(x[i].dmin);
 
         // Calculate min correction using bsums
-        // vpaddq_s16: pairwise add of adjacent elements
         let q8sums = vpaddq_s16(
             vld1q_s16(y[i].bsums.as_ptr()),
             vld1q_s16(y[i].bsums.as_ptr().add(8)),
@@ -374,8 +368,8 @@ pub unsafe fn vec_dot_q5_k_q8_k_neon(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
         );
         let sumi_mins = vaddvq_s32(prod);
 
-        let scales: [u8; 16] = std::mem::transmute(utmp);
-        let mut scale_idx = 0;
+        // scales pointer increments through 8 values
+        let scales = utmp.as_ptr() as *const u8;
 
         let q5 = x[i].qs.as_ptr();
         let qh = x[i].qh.as_ptr();
@@ -385,40 +379,53 @@ pub unsafe fn vec_dot_q5_k_q8_k_neon(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
 
         let mut sumi = 0i32;
 
+        // QK_K/64 = 4 iterations, each processes 64 Q5 values and 64 Q8 values
+        // But wait - QK_K=256, so QK_K/64=4. Each iteration processes 64 Q8 values.
+        // Total Q8 values: 4*64 = 256. Correct.
+        // Each iteration: 32 bytes of Q5 (64 4-bit values) + 64 bytes of Q8
+        // But Q5 has high bits in qh, so each Q5 is 5 bits -> 32 values per 16 bytes of qs + 4 bytes of qh
+        // Actually: 64 Q5 values per iteration, using 32 bytes of qs and some qh bits
         for j in 0..(QK_K / 64) {
-            let q5bits = vld1q_u8_x2(q5.add(j * 32));
-            let q8bytes = vld1q_s8_x4(q8.add(j * 64));
+            let q5bits = vld1q_u8_x2(q5.add(j * 32)); // 32 bytes = 64 4-bit values
+            let q8bytes = vld1q_s8_x4(q8.add(j * 64)); // 64 bytes = 64 int8 values
 
-            // Process 4 blocks of 16 elements
+            // Extract high bits using mone and mtwo masks
+            // q5h.val[0] = (qhbits.val[0] & 1) << 4  -- high bit for q5bytes[0]
+            // q5h.val[1] = (qhbits.val[1] & 1) << 4  -- high bit for q5bytes[1]
+            // q5h.val[2] = (qhbits.val[0] & 2) << 3  -- high bit for q5bytes[2]
+            // q5h.val[3] = (qhbits.val[1] & 2) << 3  -- high bit for q5bytes[3]
             let q5h_0 = vshlq_n_u8(vandq_u8(mone, qhbits.0), 4);
             let q5h_1 = vshlq_n_u8(vandq_u8(mone, qhbits.1), 4);
             let q5h_2 = vshlq_n_u8(vandq_u8(mtwo, qhbits.0), 3);
             let q5h_3 = vshlq_n_u8(vandq_u8(mtwo, qhbits.1), 3);
 
-            // Update qhbits for next iteration (shift right by 2 bits)
+            // Shift qhbits right by 2 for next iteration
             qhbits.0 = vshrq_n_u8(qhbits.0, 2);
             qhbits.1 = vshrq_n_u8(qhbits.1, 2);
 
+            // Combine low nibbles with high bits
             let q5bytes_0 =
                 vreinterpretq_s8_u8(vorrq_u8(vandq_u8(q5bits.0, m4b), q5h_0));
             let q5bytes_1 =
                 vreinterpretq_s8_u8(vorrq_u8(vandq_u8(q5bits.1, m4b), q5h_1));
+            // Combine high nibbles with high bits
             let q5bytes_2 =
                 vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(q5bits.0, 4), q5h_2));
             let q5bytes_3 =
                 vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(q5bits.1, 4), q5h_3));
 
+            // Dot product and scale - matches llama.cpp exactly
+            // sumi += (dot(q5bytes_0, q8bytes_0) + dot(q5bytes_1, q8bytes_1)) * scale
+            // sumi += (dot(q5bytes_2, q8bytes_2) + dot(q5bytes_3, q8bytes_3)) * scale
             sumi += vaddvq_s32(vaddq_s32(
                 vdotq_s32_manual(mzero, q5bytes_0, q8bytes.0),
                 vdotq_s32_manual(mzero, q5bytes_1, q8bytes.1),
-            )) * scales[scale_idx] as i32;
-            scale_idx += 1;
+            )) * *scales.add(j * 2) as i32;
 
             sumi += vaddvq_s32(vaddq_s32(
                 vdotq_s32_manual(mzero, q5bytes_2, q8bytes.2),
                 vdotq_s32_manual(mzero, q5bytes_3, q8bytes.3),
-            )) * scales[scale_idx] as i32;
-            scale_idx += 1;
+            )) * *scales.add(j * 2 + 1) as i32;
         }
 
         sumf += d * sumi as f32 - dmin * sumi_mins as f32;
@@ -444,11 +451,11 @@ pub unsafe fn vec_dot_q6_k_q8_k_neon(x: &[BlockQ6_K], y: &[BlockQ8_K]) -> f32 {
     let mut sum = 0.0f32;
 
     for i in 0..nb {
-        // Prefetch next block for L1 cache
-        if i + 1 < nb {
-            prefetch_read_l1(x[i + 1].ql.as_ptr());
-            prefetch_read_l1(y[i + 1].qs.as_ptr() as *const u8);
-        }
+        // Prefetch disabled - it doesn't help for small sequential blocks
+        // if i + 1 < nb {
+        //     prefetch_read_l1(x[i + 1].ql.as_ptr());
+        //     prefetch_read_l1(y[i + 1].qs.as_ptr() as *const u8);
+        // }
 
         let d = y[i].d * fp16_to_fp32(x[i].d);
 
@@ -529,24 +536,22 @@ pub unsafe fn vec_dot_q6_k_q8_k_neon(x: &[BlockQ6_K], y: &[BlockQ8_K]) -> f32 {
         // The original formula: sum((q6_unpacked - 32) * q8 * scale)
         // = sum(q6_unpacked * q8 * scale) - 32 * sum(q8 * scale)
         // = isum - 32 * sum(bsums[k] * scales[k])
-        // NEON doesn't have int16 dot product, so use vmull_s16 + vaddq_s32
-        let q8sums = vld1q_s16_x2(y[i].bsums.as_ptr());
-        let scales_vec = vld1q_s8(x[i].scales.as_ptr());
-        let q6scales_0 = vmovl_s8(vget_low_s8(scales_vec));
-        let q6scales_1 = vmovl_s8(vget_high_s8(scales_vec));
+        // bsums has 16 elements (one per 16-value block)
+        let q8sums = vld1q_s16(y[i].bsums.as_ptr()); // Load 16 x i16
+        let scales_vec = vld1q_s8(x[i].scales.as_ptr()); // Load 16 x i8
 
-        // Compute dot products in two halves
-        let prod_0 = vaddq_s32(
-            vaddq_s32(
-                vmull_s16(vget_low_s16(q8sums.0), vget_low_s16(q6scales_0)),
-                vmull_s16(vget_high_s16(q8sums.0), vget_high_s16(q6scales_0)),
-            ),
-            vaddq_s32(
-                vmull_s16(vget_low_s16(q8sums.1), vget_low_s16(q6scales_1)),
-                vmull_s16(vget_high_s16(q8sums.1), vget_high_s16(q6scales_1)),
-            ),
-        );
-        let isum_mins = vaddvq_s32(prod_0);
+        // Extend i8 -> i16 for scales
+        let scales_i16_0 = vmovl_s8(vget_low_s8(scales_vec)); // scales[0..7] as i16
+        let scales_i16_1 = vmovl_s8(vget_high_s8(scales_vec)); // scales[8..15] as i16
+
+        // Compute bsums[k] * scales[k] for k = 0..7 and k = 8..15
+        let prod_0 =
+            vmull_s16(vget_low_s16(q8sums), vget_low_s16(scales_i16_0));
+        let prod_1 =
+            vmull_s16(vget_high_s16(q8sums), vget_high_s16(scales_i16_1));
+
+        // Sum all products
+        let isum_mins = vaddvq_s32(vaddq_s32(prod_0, prod_1));
 
         // Apply bias correction: isum - 32 * isum_mins
         sum += d * (isum - 32 * isum_mins) as f32;

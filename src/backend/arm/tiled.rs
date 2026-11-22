@@ -74,6 +74,42 @@ impl TiledTileSrc0 {
         }
     }
 
+    /// Resize tile (reuses allocated memory if large enough)
+    pub fn resize(&mut self, num_k: usize, n_rows: usize) {
+        let q_size = n_rows * num_k * TILED_TILE_K;
+        let d_size = num_k * TILED_MICRO.max(n_rows);
+
+        // Ensure capacity and reset to zero
+        if self.q.len() < q_size {
+            self.q.resize(q_size, 0);
+        } else {
+            self.q[..q_size].fill(0);
+        }
+        if self.d.len() < d_size {
+            self.d.resize(d_size, 0.0);
+        } else {
+            self.d[..d_size].fill(0.0);
+        }
+        if self.dmin.len() < d_size {
+            self.dmin.resize(d_size, 0.0);
+        } else {
+            self.dmin[..d_size].fill(0.0);
+        }
+        // scales and mins are sized based on nb_per_block
+        let nb_per_block = 8; // for Q4_K/Q5_K
+        let s_size = n_rows * nb_per_block * num_k;
+        if self.scales.len() < s_size {
+            self.scales.resize(s_size, 0);
+        } else {
+            self.scales[..s_size].fill(0);
+        }
+        if self.mins.len() < s_size {
+            self.mins.resize(s_size, 0);
+        } else {
+            self.mins[..s_size].fill(0);
+        }
+    }
+
     /// Get q index for (row, slab, element)
     #[inline]
     fn q_idx(&self, row: usize, slab: usize, elem: usize) -> usize {
@@ -105,6 +141,31 @@ impl TiledTileSrc1 {
             q: vec![0i8; n_rows * num_k * TILED_TILE_K],
             bsums: vec![0i32; num_k * (TILED_TILE_K / TILED_MICRO) * bs_stride],
             d: vec![0.0f32; num_k * TILED_MICRO.max(n_rows)],
+        }
+    }
+
+    /// Resize tile (reuses allocated memory if large enough)
+    /// n_rows is stored internally from initial creation
+    pub fn resize(&mut self, num_k: usize, n_rows: usize) {
+        let bs_stride = n_rows.max(TILED_MICRO);
+        let q_size = n_rows * num_k * TILED_TILE_K;
+        let bsums_size = num_k * (TILED_TILE_K / TILED_MICRO) * bs_stride;
+        let d_size = num_k * TILED_MICRO.max(n_rows);
+
+        if self.q.len() < q_size {
+            self.q.resize(q_size, 0);
+        } else {
+            self.q[..q_size].fill(0);
+        }
+        if self.bsums.len() < bsums_size {
+            self.bsums.resize(bsums_size, 0);
+        } else {
+            self.bsums[..bsums_size].fill(0);
+        }
+        if self.d.len() < d_size {
+            self.d.resize(d_size, 0.0);
+        } else {
+            self.d[..d_size].fill(0.0);
         }
     }
 }
@@ -1345,6 +1406,11 @@ pub fn mul_mat_q5_k_tiled(
     // Process output rows in windows of TILE_ROWS
     const TILE_ROWS: usize = 256;
 
+    // Pre-allocate tiles with maximum capacity
+    let max_num_k = k_extent_blocks;
+    let mut src0_tile = TiledTileSrc0::new(max_num_k, TILE_ROWS, 8);
+    let mut src1_tile = TiledTileSrc1::new(max_num_k, n_tokens);
+
     for iir0 in (0..out_features).step_by(TILE_ROWS) {
         let ir0_end = (iir0 + TILE_ROWS).min(out_features);
         let window_rows = ir0_end - iir0;
@@ -1354,8 +1420,9 @@ pub fn mul_mat_q5_k_tiled(
             let k_end = (k0 + k_extent_blocks).min(n_blocks);
             let num_k = k_end - k0;
 
-            // Create tile for this K-chunk
-            let mut src0_tile = TiledTileSrc0::new(num_k, window_rows, 8);
+            // Reset tile sizes (reuse pre-allocated memory)
+            src0_tile.resize(num_k, window_rows);
+            src1_tile.resize(num_k, n_tokens);
 
             // Unpack weights for this K-chunk
             tiled_unpack_src0_q5_k(
@@ -1369,7 +1436,6 @@ pub fn mul_mat_q5_k_tiled(
             );
 
             // Unpack activations for this K-chunk
-            let mut src1_tile = TiledTileSrc1::new(num_k, n_tokens);
             tiled_unpack_src1_q8_k(
                 input,
                 n_blocks,
@@ -1415,6 +1481,12 @@ pub fn mul_mat_q6_k_tiled(
 
     const TILE_ROWS: usize = 256;
 
+    // Pre-allocate tiles with maximum capacity
+    let max_num_k = k_extent_blocks;
+    let mut src0_tile = TiledTileSrc0::new(max_num_k, TILE_ROWS, 16);
+    let mut src1_tile = TiledTileSrc1::new(max_num_k, n_tokens);
+    let mut partial = vec![0.0f32; TILE_ROWS * n_tokens];
+
     for iir0 in (0..out_features).step_by(TILE_ROWS) {
         let ir0_end = (iir0 + TILE_ROWS).min(out_features);
         let window_rows = ir0_end - iir0;
@@ -1423,7 +1495,9 @@ pub fn mul_mat_q6_k_tiled(
             let k_end = (k0 + k_extent_blocks).min(n_blocks);
             let num_k = k_end - k0;
 
-            let mut src0_tile = TiledTileSrc0::new(num_k, window_rows, 16);
+            // Reset tile sizes
+            src0_tile.resize(num_k, window_rows);
+            src1_tile.resize(num_k, n_tokens);
 
             tiled_unpack_src0_q6_k(
                 weights,
@@ -1435,7 +1509,6 @@ pub fn mul_mat_q6_k_tiled(
                 n_blocks,
             );
 
-            let mut src1_tile = TiledTileSrc1::new(num_k, n_tokens);
             tiled_unpack_src1_q8_k(
                 input,
                 n_blocks,
@@ -1445,7 +1518,7 @@ pub fn mul_mat_q6_k_tiled(
                 num_k,
             );
 
-            let mut partial = vec![0.0f32; window_rows * n_tokens];
+            partial.fill(0.0);
             tiled_compute_q6_k_direct(
                 &src0_tile,
                 &src1_tile,
@@ -1519,27 +1592,48 @@ pub fn tiled_unpack_src0_q4_k(
                 tile.mins[s_off + s] = mins[s];
             }
 
-            // Extract 4-bit codes
+            // Extract 4-bit codes using NEON SIMD
             // Q4_K layout: qs[0..32] -> subblocks 0 and 1 (low and high nibbles)
             //              qs[32..64] -> subblocks 2 and 3
             //              etc.
             let q = &mut tile.q[q_off..q_off + TILED_TILE_K];
 
-            for j in 0..4 {
-                let src_off = j * 32;
-                let lo_subblk = j * 2;
-                let hi_subblk = j * 2 + 1;
+            #[cfg(target_arch = "aarch64")]
+            {
+                let q_ptr = q.as_mut_ptr();
+                let qs_ptr = x.qs.as_ptr();
 
-                // Unpack low nibbles -> subblock lo_subblk
-                for i in 0..32 {
-                    let byte = x.qs[src_off + i];
-                    q[lo_subblk * SUBBLK + i] = byte & 0x0F;
+                for j in 0..4 {
+                    let src_off = j * 32;
+                    let lo_subblk = j * 2;
+                    let hi_subblk = j * 2 + 1;
+
+                    unsafe {
+                        tiled_unpk_nib4_neon(
+                            qs_ptr.add(src_off),
+                            q_ptr.add(lo_subblk * SUBBLK),
+                            q_ptr.add(hi_subblk * SUBBLK),
+                        );
+                    }
                 }
+            }
 
-                // Unpack high nibbles -> subblock hi_subblk
-                for i in 0..32 {
-                    let byte = x.qs[src_off + i];
-                    q[hi_subblk * SUBBLK + i] = (byte >> 4) & 0x0F;
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                for j in 0..4 {
+                    let src_off = j * 32;
+                    let lo_subblk = j * 2;
+                    let hi_subblk = j * 2 + 1;
+
+                    for i in 0..32 {
+                        let byte = x.qs[src_off + i];
+                        q[lo_subblk * SUBBLK + i] = byte & 0x0F;
+                    }
+
+                    for i in 0..32 {
+                        let byte = x.qs[src_off + i];
+                        q[hi_subblk * SUBBLK + i] = (byte >> 4) & 0x0F;
+                    }
                 }
             }
         }
@@ -1565,6 +1659,11 @@ pub fn mul_mat_q4_k_tiled(
 
     const TILE_ROWS: usize = 256;
 
+    // Pre-allocate tiles with maximum capacity (avoid repeated allocation)
+    let max_num_k = k_extent_blocks;
+    let mut src0_tile = TiledTileSrc0::new(max_num_k, TILE_ROWS, 8);
+    let mut src1_tile = TiledTileSrc1::new(max_num_k, n_tokens);
+
     for iir0 in (0..out_features).step_by(TILE_ROWS) {
         let ir0_end = (iir0 + TILE_ROWS).min(out_features);
         let window_rows = ir0_end - iir0;
@@ -1573,7 +1672,9 @@ pub fn mul_mat_q4_k_tiled(
             let k_end = (k0 + k_extent_blocks).min(n_blocks);
             let num_k = k_end - k0;
 
-            let mut src0_tile = TiledTileSrc0::new(num_k, window_rows, 8);
+            // Reset tile sizes (reuse pre-allocated memory)
+            src0_tile.resize(num_k, window_rows);
+            src1_tile.resize(num_k, n_tokens);
 
             tiled_unpack_src0_q4_k(
                 weights,
@@ -1585,7 +1686,6 @@ pub fn mul_mat_q4_k_tiled(
                 n_blocks,
             );
 
-            let mut src1_tile = TiledTileSrc1::new(num_k, n_tokens);
             tiled_unpack_src1_q8_k(
                 input,
                 n_blocks,
@@ -1606,6 +1706,257 @@ pub fn mul_mat_q4_k_tiled(
                 out_features,
                 iir0,
             );
+        }
+    }
+}
+
+// ============================================================================
+// IQ4_XS Tiled GEMV
+// ============================================================================
+
+/// IQ4_XS lookup table for non-linear quantization
+#[cfg(target_arch = "aarch64")]
+const KVALUES_IQ4NL_I8: [i8; 16] =
+    [-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113];
+
+/// Unpack IQ4_XS weight blocks into TiledTileSrc0
+///
+/// IQ4_XS layout:
+/// - 4 groups of 64 elements, each split into 2 halves of 32 elements
+/// - Each 32-element half has its own scale
+/// - 4-bit values use non-linear lookup table KVALUES_IQ4NL_I8
+/// - scales are encoded in scales_l and scales_h
+#[cfg(target_arch = "aarch64")]
+pub fn tiled_unpack_src0_iq4_xs(
+    weights: &[u8],
+    col_stride: usize,
+    n_rows: usize,
+    tile: &mut TiledTileSrc0,
+    num_k: usize,
+    kblk_start: usize,
+    blocks_per_row: usize,
+) {
+    use crate::types::BlockIQ4XS;
+
+    const NB: usize = 8; // IQ4_XS has 8 halves of 32 elements (4 groups * 2 halves)
+    const SUBBLK: usize = 32;
+    const BLOCK_SIZE: usize = std::mem::size_of::<BlockIQ4XS>();
+
+    for slab in 0..num_k {
+        for r in 0..n_rows {
+            let src_row_offset = r * col_stride;
+            let src_block_offset = (kblk_start + slab) * BLOCK_SIZE;
+            let src_ptr = unsafe {
+                weights.as_ptr().add(src_row_offset + src_block_offset)
+            };
+            let x: &BlockIQ4XS = unsafe { &*(src_ptr as *const BlockIQ4XS) };
+
+            let d_off = slab * TILED_MICRO + r;
+            let q_off = r * num_k * TILED_TILE_K + slab * TILED_TILE_K;
+            let s_off = r * NB * num_k + slab * NB;
+
+            // Store d (no dmin for IQ4_XS)
+            tile.d[d_off] = f16::to_f32(f16::from_bits(x.d));
+            tile.dmin[d_off] = 0.0; // IQ4_XS doesn't have dmin
+
+            // Decode scales from scales_l and scales_h
+            // Each group (64 elements) has 2 scales (ls1, ls2), so 8 scales total
+            let mut h = x.scales_h;
+            for ib in 0..4 {
+                // ls1 for first 32 elements of this group
+                let ls1 = ((x.scales_l[ib] & 0x0F) as i32
+                    | (((h as i32) << 4) & 0x30))
+                    - 32;
+                // ls2 for second 32 elements of this group
+                let ls2 = ((x.scales_l[ib] >> 4) as i32
+                    | (((h as i32) << 2) & 0x30))
+                    - 32;
+                h >>= 4;
+
+                tile.scales[s_off + ib * 2] = ls1;
+                tile.scales[s_off + ib * 2 + 1] = ls2;
+                tile.mins[s_off + ib * 2] = 0;
+                tile.mins[s_off + ib * 2 + 1] = 0;
+            }
+
+            // Extract 4-bit codes and apply lookup table
+            let q = &mut tile.q[q_off..q_off + TILED_TILE_K];
+
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                use std::arch::aarch64::*;
+
+                let values = vld1q_s8(KVALUES_IQ4NL_I8.as_ptr());
+                let m4b = vdupq_n_u8(0x0F);
+                let q_ptr = q.as_mut_ptr();
+                let qs_ptr = x.qs.as_ptr();
+
+                // Process each 64-element group (32 bytes = 64 4-bit values)
+                for ib in 0..4 {
+                    let src_off = ib * 32;
+                    let dst_off = ib * 64;
+
+                    // Load 32 bytes of 4-bit codes
+                    let q4bits = vld1q_u8_x2(qs_ptr.add(src_off));
+
+                    // Extract low and high nibbles and apply lookup table
+                    // q4b_0, q4b_1: first 32 values (use ls1 scale)
+                    // q4b_2, q4b_3: second 32 values (use ls2 scale)
+                    let q4b_0 = vqtbl1q_s8(values, vandq_u8(q4bits.0, m4b));
+                    let q4b_1 = vqtbl1q_s8(values, vshrq_n_u8(q4bits.0, 4));
+                    let q4b_2 = vqtbl1q_s8(values, vandq_u8(q4bits.1, m4b));
+                    let q4b_3 = vqtbl1q_s8(values, vshrq_n_u8(q4bits.1, 4));
+
+                    // Store results (cast u8 pointer to i8 pointer)
+                    let q_ptr_i8 = q_ptr as *mut i8;
+                    vst1q_s8(q_ptr_i8.add(dst_off), q4b_0);
+                    vst1q_s8(q_ptr_i8.add(dst_off + 16), q4b_1);
+                    vst1q_s8(q_ptr_i8.add(dst_off + 32), q4b_2);
+                    vst1q_s8(q_ptr_i8.add(dst_off + 48), q4b_3);
+                }
+            }
+
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                let kvalues = KVALUES_IQ4NL_I8;
+                for ib in 0..4 {
+                    let src_off = ib * 32;
+                    let dst_off = ib * 64;
+                    for i in 0..32 {
+                        let byte = x.qs[src_off + i];
+                        q[dst_off + i] = kvalues[(byte & 0x0F) as usize] as u8;
+                        q[dst_off + 32 + i] =
+                            kvalues[((byte >> 4) & 0x0F) as usize] as u8;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Compute dot products for IQ4_XS using unpacked tiles
+/// IQ4_XS has 8 subblocks of 32 elements (4 groups * 2 halves each)
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn tiled_compute_iq4_xs_direct(
+    src0: &TiledTileSrc0,
+    src1: &TiledTileSrc1,
+    n_rows: usize,
+    n_tokens: usize,
+    num_k: usize,
+    output: &mut [f32],
+    out_features: usize,
+    row_offset: usize,
+) {
+    const NB: usize = 8; // IQ4_XS has 8 subblocks of 32 elements
+    const SUBBLK: usize = 32;
+
+    for slab in 0..num_k {
+        let qk_off = slab * TILED_TILE_K;
+        let nb_off = slab * NB;
+
+        for r in 0..n_rows {
+            let d_off = slab * TILED_MICRO + r;
+            let weight_d = src0.d[d_off];
+
+            for t in 0..n_tokens {
+                let mut acc_val = 0.0f32;
+
+                for s in 0..NB {
+                    let scale = src0.scales[r * NB * num_k + nb_off + s] as i32;
+
+                    let w_off = r * num_k * TILED_TILE_K + qk_off + s * SUBBLK;
+                    let a_off = t * num_k * TILED_TILE_K + qk_off + s * SUBBLK;
+
+                    // Compute dot product for this 32-element subblock
+                    let mut raw = 0i64;
+                    for k in 0..SUBBLK {
+                        let w = src0.q[w_off + k] as i64;
+                        let a = src1.q[a_off + k] as i64;
+                        raw += w * a;
+                    }
+
+                    acc_val += (scale as f32) * (raw as f32);
+                }
+
+                let act_d = src1.d[slab * TILED_MICRO + t];
+                output[t * out_features + row_offset + r] +=
+                    weight_d * act_d * acc_val;
+            }
+        }
+    }
+}
+
+/// Tiled matrix multiplication for IQ4_XS
+#[cfg(target_arch = "aarch64")]
+pub fn mul_mat_iq4_xs_tiled(
+    weights: &[u8],
+    col_stride: usize,
+    input: &[BlockQ8_K],
+    output: &mut [f32],
+    out_features: usize,
+    in_features: usize,
+    n_tokens: usize,
+) {
+    use crate::types::BlockIQ4XS;
+
+    let n_blocks = in_features / QK_K;
+    let block_size = std::mem::size_of::<BlockIQ4XS>();
+
+    let k_extent_blocks = compute_k_extent_blocks(n_tokens, block_size);
+
+    output.fill(0.0);
+
+    const TILE_ROWS: usize = 256;
+    const NB: usize = 8; // IQ4_XS has 8 subblocks of 32 elements
+
+    // Pre-allocate tiles with maximum capacity
+    let max_num_k = k_extent_blocks;
+    let mut src0_tile = TiledTileSrc0::new(max_num_k, TILE_ROWS, NB);
+    let mut src1_tile = TiledTileSrc1::new(max_num_k, n_tokens);
+
+    for iir0 in (0..out_features).step_by(TILE_ROWS) {
+        let ir0_end = (iir0 + TILE_ROWS).min(out_features);
+        let window_rows = ir0_end - iir0;
+
+        for k0 in (0..n_blocks).step_by(k_extent_blocks) {
+            let k_end = (k0 + k_extent_blocks).min(n_blocks);
+            let num_k = k_end - k0;
+
+            // Reset tile sizes (reuse pre-allocated memory)
+            src0_tile.resize(num_k, window_rows);
+            src1_tile.resize(num_k, n_tokens);
+
+            tiled_unpack_src0_iq4_xs(
+                weights,
+                col_stride,
+                window_rows,
+                &mut src0_tile,
+                num_k,
+                k0,
+                n_blocks,
+            );
+
+            tiled_unpack_src1_q8_k(
+                input,
+                n_blocks,
+                n_tokens,
+                &mut src1_tile,
+                k0,
+                num_k,
+            );
+
+            unsafe {
+                tiled_compute_iq4_xs_direct(
+                    &src0_tile,
+                    &src1_tile,
+                    window_rows,
+                    n_tokens,
+                    num_k,
+                    output,
+                    out_features,
+                    iir0,
+                );
+            }
         }
     }
 }

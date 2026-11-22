@@ -4,100 +4,35 @@
 // Forward executor for CPU inference
 
 use crate::backend::arm::{
-    activation::silu_f32_inplace, flash_attn::flash_attn_f32, gemv, linear,
-    quant, rms_norm::rms_norm_f32, rope::rope_f32_inplace,
+    activation::silu_f32_inplace, flash_attn::flash_attn_f32, linear, quant,
+    rms_norm, rope::rope_f32_inplace,
 };
-use crate::inference::SimpleModel;
+use crate::inference::{
+    LayerDebugState, QuantFormat, QuantizedInput, QuantizedInputBatch,
+    SimpleModel, quantize_input_batch, quantize_input_to,
+};
 use crate::types::*;
 
-/// Quantized input storage with pre-allocated buffer
-pub struct QuantizedInput {
-    /// Q8_0 format blocks (for Q4_0, Q5_0, Q8_0 weights)
-    pub q8_0: Vec<BlockQ8_0>,
-    /// Q8_K format blocks (for Q4_K, Q5_K, Q6_K, Q8_K, IQ4_XS weights)
-    pub q8_k: Vec<BlockQ8_K>,
-    /// Current active format
-    pub active: QuantFormat,
+// Timing macro for profiling (compile with --features profile)
+#[cfg(feature = "profile")]
+macro_rules! time_op {
+    ($name:expr, $block:block) => {{
+        let start = std::time::Instant::now();
+        let result = $block;
+        log::debug!(
+            "[PROFILE] {}: {:.2} ms",
+            $name,
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+        result
+    }};
 }
 
-/// Batch quantized input for prefill: [n_tokens * n_blocks]
-pub struct QuantizedInputBatch {
-    pub q8_0: Vec<BlockQ8_0>,
-    pub q8_k: Vec<BlockQ8_K>,
-    pub active: QuantFormat,
-    pub n_tokens: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum QuantFormat {
-    None,
-    Q8_0,
-    Q8_K,
-}
-
-impl QuantizedInput {
-    pub fn new() -> Self {
-        Self { q8_0: Vec::new(), q8_k: Vec::new(), active: QuantFormat::None }
-    }
-
-    pub fn resize(&mut self, in_features: usize, format: QuantFormat) {
-        match format {
-            QuantFormat::Q8_0 => {
-                let nb = (in_features + QK8_0 - 1) / QK8_0;
-                if self.q8_0.len() != nb {
-                    self.q8_0.resize(nb, BlockQ8_0 { d: 0, qs: [0; QK8_0] });
-                }
-            }
-            QuantFormat::Q8_K => {
-                let nb = (in_features + QK_K - 1) / QK_K;
-                if self.q8_k.len() != nb {
-                    self.q8_k.resize(nb, unsafe { std::mem::zeroed() });
-                }
-            }
-            QuantFormat::None => {}
-        }
-        self.active = format;
-    }
-}
-
-impl QuantizedInputBatch {
-    pub fn new() -> Self {
-        Self {
-            q8_0: Vec::new(),
-            q8_k: Vec::new(),
-            active: QuantFormat::None,
-            n_tokens: 0,
-        }
-    }
-
-    /// Resize for batch processing: n_tokens * in_features
-    pub fn resize(
-        &mut self,
-        n_tokens: usize,
-        in_features: usize,
-        format: QuantFormat,
-    ) {
-        self.n_tokens = n_tokens;
-        match format {
-            QuantFormat::Q8_0 => {
-                let nb_per_token = (in_features + QK8_0 - 1) / QK8_0;
-                let total_nb = n_tokens * nb_per_token;
-                if self.q8_0.len() != total_nb {
-                    self.q8_0
-                        .resize(total_nb, BlockQ8_0 { d: 0, qs: [0; QK8_0] });
-                }
-            }
-            QuantFormat::Q8_K => {
-                let nb_per_token = (in_features + QK_K - 1) / QK_K;
-                let total_nb = n_tokens * nb_per_token;
-                if self.q8_k.len() != total_nb {
-                    self.q8_k.resize(total_nb, unsafe { std::mem::zeroed() });
-                }
-            }
-            QuantFormat::None => {}
-        }
-        self.active = format;
-    }
+#[cfg(not(feature = "profile"))]
+macro_rules! time_op {
+    ($name:expr, $block:block) => {
+        $block
+    };
 }
 
 /// Pre-computed layer weight names (avoids format! in hot path)
@@ -107,6 +42,9 @@ struct LayerWeightNames {
     attn_q: String,
     attn_k: String,
     attn_v: String,
+    attn_q_bias: String,
+    attn_k_bias: String,
+    attn_v_bias: String,
     attn_q_norm: String,
     attn_k_norm: String,
     attn_output: String,
@@ -123,6 +61,9 @@ impl LayerWeightNames {
             attn_q: format!("blk.{}.attn_q.weight", layer_idx),
             attn_k: format!("blk.{}.attn_k.weight", layer_idx),
             attn_v: format!("blk.{}.attn_v.weight", layer_idx),
+            attn_q_bias: format!("blk.{}.attn_q.bias", layer_idx),
+            attn_k_bias: format!("blk.{}.attn_k.bias", layer_idx),
+            attn_v_bias: format!("blk.{}.attn_v.bias", layer_idx),
             attn_q_norm: format!("blk.{}.attn_q_norm.weight", layer_idx),
             attn_k_norm: format!("blk.{}.attn_k_norm.weight", layer_idx),
             attn_output: format!("blk.{}.attn_output.weight", layer_idx),
@@ -149,7 +90,7 @@ pub struct ForwardExecutor {
     hidden_buf: Vec<f32>,
     /// Batch hidden buffer for prefill: [n_tokens * hidden_size]
     hidden_buf_batch: Vec<f32>,
-    logits_buf: Vec<f32>,
+    pub logits_buf: Vec<f32>,
     pub n_threads: usize,
     pub n_threads_batch: usize,
     /// Pre-computed weight names for each layer
@@ -163,6 +104,12 @@ pub struct ForwardExecutor {
     batch_attn_output: Vec<f32>,
     batch_gate: Vec<f32>,
     batch_up: Vec<f32>,
+    /// Repacked weights cache (interleaved format for GEMV)
+    repacked_weights: std::collections::HashMap<String, Vec<u8>>,
+    /// Debug mode: output intermediate states
+    pub debug_mode: bool,
+    /// Debug output for each layer
+    pub debug_states: Vec<LayerDebugState>,
 }
 
 impl ForwardExecutor {
@@ -227,6 +174,9 @@ impl ForwardExecutor {
         let batch_gate = vec![0.0f32; max_batch * config.intermediate_size];
         let batch_up = vec![0.0f32; max_batch * config.intermediate_size];
 
+        // Pre-repack weights to interleaved format for optimal GEMV
+        let repacked_weights = Self::repack_all_weights(&model, &layer_weights);
+
         Self {
             model,
             kv_cache_k,
@@ -250,7 +200,139 @@ impl ForwardExecutor {
             batch_attn_output,
             batch_gate,
             batch_up,
+            repacked_weights,
+            debug_mode: false,
+            debug_states: Vec::new(),
         }
+    }
+
+    /// Repack all linear layer weights to interleaved format for optimal GEMV
+    /// Handles both standard row-major and factor-4 interleaved input formats.
+    fn repack_all_weights(
+        _model: &SimpleModel,
+        _layer_weights: &[LayerWeightNames],
+    ) -> std::collections::HashMap<String, Vec<u8>> {
+        // Temporarily disabled interleaved GEMV for correctness debugging
+        std::collections::HashMap::new()
+    }
+
+    #[allow(dead_code)]
+    fn repack_all_weights_impl(
+        model: &SimpleModel,
+        layer_weights: &[LayerWeightNames],
+    ) -> std::collections::HashMap<String, Vec<u8>> {
+        use crate::types::{BlockQ4_Kx8, BlockQ5_Kx8, BlockQ6_Kx8, QK_K};
+
+        let mut repacked = std::collections::HashMap::new();
+        let hidden_size = model.config().hidden_size;
+        let intermediate_size = model.config().intermediate_size;
+        let nb_hidden = (hidden_size + QK_K - 1) / QK_K;
+        let nb_intermediate = (intermediate_size + QK_K - 1) / QK_K;
+
+        let size_block_q5_k = std::mem::size_of::<crate::types::BlockQ5_K>();
+        let size_block_q5_kx8 = std::mem::size_of::<BlockQ5_Kx8>();
+        let size_block_q6_k = std::mem::size_of::<crate::types::BlockQ6_K>();
+        let size_block_q6_kx8 = std::mem::size_of::<BlockQ6_Kx8>();
+        let size_block_q4_k = std::mem::size_of::<crate::types::BlockQ4_K>();
+        let size_block_q4_kx8 = std::mem::size_of::<BlockQ4_Kx8>();
+
+        for weights in layer_weights {
+            let linear_weights = [
+                (&weights.attn_q, nb_hidden),
+                (&weights.attn_k, nb_hidden),
+                (&weights.attn_v, nb_hidden),
+                (&weights.attn_output, nb_hidden),
+                (&weights.ffn_gate, nb_intermediate),
+                (&weights.ffn_up, nb_intermediate),
+                (&weights.ffn_down, nb_hidden),
+            ];
+
+            for (name, nb) in &linear_weights {
+                if let Some(tensor) = model.get_tensor_meta(name) {
+                    let quant_type = tensor.quant_type;
+                    if !matches!(
+                        quant_type,
+                        crate::types::QuantType::Q4_K
+                            | crate::types::QuantType::Q5_K
+                            | crate::types::QuantType::Q6_K
+                    ) {
+                        continue;
+                    }
+
+                    let weight_data = match model.get_tensor(name) {
+                        Some(d) => d,
+                        None => continue,
+                    };
+
+                    let stride =
+                        tensor.strides.get(1).copied().unwrap_or(0) as usize;
+                    let out_features =
+                        tensor.dims.get(0).copied().unwrap_or(0) as usize;
+
+                    if out_features % 8 != 0 {
+                        continue;
+                    }
+
+                    let n_row_groups = out_features / 8;
+                    let (size_block, size_block_x8) = match quant_type {
+                        crate::types::QuantType::Q4_K => {
+                            (size_block_q4_k, size_block_q4_kx8)
+                        }
+                        crate::types::QuantType::Q5_K => {
+                            (size_block_q5_k, size_block_q5_kx8)
+                        }
+                        crate::types::QuantType::Q6_K => {
+                            (size_block_q6_k, size_block_q6_kx8)
+                        }
+                        _ => continue,
+                    };
+
+                    // Skip if already factor-8 interleaved (target format)
+                    if stride == nb * size_block_x8 {
+                        continue;
+                    }
+
+                    let repacked_size = n_row_groups * nb * size_block_x8;
+                    let mut repacked_data = vec![0u8; repacked_size];
+
+                    // Repack all 8-row groups at once (entire weight matrix)
+                    match quant_type {
+                        crate::types::QuantType::Q5_K => {
+                            crate::backend::arm::repack::repack_q5_k_to_x8(
+                                weight_data,
+                                stride,
+                                &mut repacked_data,
+                                out_features,
+                                *nb,
+                            );
+                        }
+                        crate::types::QuantType::Q6_K => {
+                            crate::backend::arm::repack::repack_q6_k_to_x8(
+                                weight_data,
+                                stride,
+                                &mut repacked_data,
+                                out_features,
+                                *nb,
+                            );
+                        }
+                        crate::types::QuantType::Q4_K => {
+                            crate::backend::arm::repack::repack_q4_k_to_x8(
+                                weight_data,
+                                stride,
+                                &mut repacked_data,
+                                out_features,
+                                *nb,
+                            );
+                        }
+                        _ => {}
+                    }
+
+                    repacked.insert((*name).clone(), repacked_data);
+                }
+            }
+        }
+
+        repacked
     }
 
     fn ensure_kv_capacity(&mut self) {
@@ -344,6 +426,13 @@ impl ForwardExecutor {
         // 4. Output projection (only on last token)
         self.output_projection_batch()?;
 
+        // Copy last token's hidden state to hidden_buf for subsequent forward calls
+        let last_token_offset = (n_tokens - 1) * hidden_size;
+        self.hidden_buf[..hidden_size].copy_from_slice(
+            &self.hidden_buf_batch
+                [last_token_offset..last_token_offset + hidden_size],
+        );
+
         self.seq_pos += n_tokens;
         Ok(&self.logits_buf)
     }
@@ -425,15 +514,16 @@ impl ForwardExecutor {
                 QuantType::Q6_K => {
                     let nb = hidden_size / 256;
                     let block_size = std::mem::size_of::<BlockQ6_K>();
-                    let col_offset = (token_id as usize) * nb * block_size;
+                    let nb1 = emb_tensor.strides[1] as usize;
                     for block_idx in 0..nb {
                         let h_base = out_offset + block_idx * 256;
+                        let col_offset =
+                            (token_id as usize) * nb1 + block_idx * block_size;
                         let block: &BlockQ6_K = unsafe {
-                            &*(emb_data
-                                .as_ptr()
-                                .add(col_offset + block_idx * block_size)
+                            &*(emb_data.as_ptr().add(col_offset)
                                 as *const BlockQ6_K)
                         };
+
                         let block_vals =
                             crate::backend::arm::dequant::dequantize_q6_k_block(
                                 block,
@@ -445,13 +535,13 @@ impl ForwardExecutor {
                 QuantType::Q5_K => {
                     let nb = hidden_size / 256;
                     let block_size = std::mem::size_of::<BlockQ5_K>();
-                    let col_offset = (token_id as usize) * nb * block_size;
+                    let nb1 = emb_tensor.strides[1] as usize;
                     for block_idx in 0..nb {
                         let h_base = out_offset + block_idx * 256;
+                        let col_offset =
+                            (token_id as usize) * nb1 + block_idx * block_size;
                         let block: &BlockQ5_K = unsafe {
-                            &*(emb_data
-                                .as_ptr()
-                                .add(col_offset + block_idx * block_size)
+                            &*(emb_data.as_ptr().add(col_offset)
                                 as *const BlockQ5_K)
                         };
                         let block_vals =
@@ -535,13 +625,14 @@ impl ForwardExecutor {
             QuantType::Q6_K => {
                 let nb = hidden_size / 256;
                 let block_size = std::mem::size_of::<BlockQ6_K>();
-                let col_offset = (token_id as usize) * nb * block_size;
+                let nb1 = emb_tensor.strides[1] as usize; // stride between vocab entries
                 for block_idx in 0..nb {
                     let h_base = block_idx * 256;
+                    // For [hidden_size, vocab_size] layout, each vocab entry is stored at stride[1] intervals
+                    let col_offset =
+                        (token_id as usize) * nb1 + block_idx * block_size;
                     let block: &BlockQ6_K = unsafe {
-                        &*(emb_data
-                            .as_ptr()
-                            .add(col_offset + block_idx * block_size)
+                        &*(emb_data.as_ptr().add(col_offset)
                             as *const BlockQ6_K)
                     };
                     let block_vals =
@@ -555,13 +646,15 @@ impl ForwardExecutor {
             QuantType::Q5_K => {
                 let nb = hidden_size / 256;
                 let block_size = std::mem::size_of::<BlockQ5_K>();
-                let col_offset = (token_id as usize) * nb * block_size;
+                let nb1 = emb_tensor.strides[1] as usize; // stride between vocab entries
                 for block_idx in 0..nb {
                     let h_base = block_idx * 256;
+                    // For [hidden_size, vocab_size] layout, each vocab entry is stored at stride[1] intervals
+                    // Each vocab entry has nb blocks, but they are interleaved with other vocab entries
+                    let col_offset =
+                        (token_id as usize) * nb1 + block_idx * block_size;
                     let block: &BlockQ5_K = unsafe {
-                        &*(emb_data
-                            .as_ptr()
-                            .add(col_offset + block_idx * block_size)
+                        &*(emb_data.as_ptr().add(col_offset)
                             as *const BlockQ5_K)
                     };
                     let block_vals =
@@ -612,9 +705,17 @@ impl ForwardExecutor {
         // Use pre-computed weight names
         let weights = &self.layer_weights[layer_idx];
 
+        // Save hidden state before this layer (for debugging)
+        let hidden_before =
+            if self.debug_mode { Some(self.hidden_buf.clone()) } else { None };
+
         // Attention norm
         let normed_attn: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
         self.rms_norm(&self.hidden_buf, &weights.attn_norm, normed_attn)?;
+
+        // Save normed_attn for debugging
+        let normed_attn_debug =
+            if self.debug_mode { Some(normed_attn.to_vec()) } else { None };
 
         // Quantize input for projections
         let quant_type = self.get_weight_quant_type(&weights.attn_q);
@@ -636,42 +737,54 @@ impl ForwardExecutor {
         self.linear_quantized(quant_format, in_features, &weights.attn_k, k)?;
         self.linear_quantized(quant_format, in_features, &weights.attn_v, v)?;
 
-        // Q/K norm
-        let q_normed: &mut [f32] = self.arena.alloc_zeroed(n_heads * head_dim);
-        let k_normed: &mut [f32] =
-            self.arena.alloc_zeroed(n_kv_heads * head_dim);
+        // Save Q/K/V for debugging
+        let (q_debug, k_debug, v_debug) = if self.debug_mode {
+            (Some(q.to_vec()), Some(k.to_vec()), Some(v.to_vec()))
+        } else {
+            (None, None, None)
+        };
 
-        self.qk_norm(q, &weights.attn_q_norm, n_heads, head_dim, q_normed)?;
-        self.qk_norm(k, &weights.attn_k_norm, n_kv_heads, head_dim, k_normed)?;
+        // Add Q/K/V bias if present
+        self.add_bias(q, &weights.attn_q_bias)?;
+        self.add_bias(k, &weights.attn_k_bias)?;
+        self.add_bias(v, &weights.attn_v_bias)?;
 
+        // Note: Qwen2 does NOT use Q/K norm, directly apply RoPE after bias
         // RoPE
         rope_f32_inplace(
-            q_normed,
+            q,
             self.seq_pos,
             head_dim,
             head_dim,
             config.rope_freq_base,
         );
         rope_f32_inplace(
-            k_normed,
+            k,
             self.seq_pos,
             head_dim,
             head_dim,
             config.rope_freq_base,
         );
 
-        // KV cache update
+        // Save Q/K normed for debugging (now it's just Q/K after RoPE)
+        let (q_normed_debug, k_normed_debug) = if self.debug_mode {
+            (Some(q.to_vec()), Some(k.to_vec()))
+        } else {
+            (None, None)
+        };
+
+        // KV cache update (k is already RoPE'd)
         let kv_head_offset = self.seq_pos * head_dim;
         for h in 0..n_kv_heads {
             let src_offset = h * head_dim;
             let dst_offset = h * self.kv_capacity * head_dim + kv_head_offset;
             self.kv_cache_k[layer_idx][dst_offset..dst_offset + head_dim]
-                .copy_from_slice(&k_normed[src_offset..src_offset + head_dim]);
+                .copy_from_slice(&k[src_offset..src_offset + head_dim]);
             self.kv_cache_v[layer_idx][dst_offset..dst_offset + head_dim]
                 .copy_from_slice(&v[src_offset..src_offset + head_dim]);
         }
 
-        // Flash attention
+        // Flash attention (q is already RoPE'd)
         let attn_output: &mut [f32] =
             self.arena.alloc_zeroed(n_heads * head_dim);
         for h in 0..n_heads {
@@ -682,7 +795,7 @@ impl ForwardExecutor {
                 [kv_head_idx * self.kv_capacity * head_dim..];
 
             flash_attn_f32(
-                &q_normed[h * head_dim..(h + 1) * head_dim],
+                &q[h * head_dim..(h + 1) * head_dim],
                 &k_cache[..(self.seq_pos + 1) * head_dim],
                 &v_cache[..(self.seq_pos + 1) * head_dim],
                 None,
@@ -693,9 +806,17 @@ impl ForwardExecutor {
             );
         }
 
+        // Save attention output for debugging
+        let attn_output_debug =
+            if self.debug_mode { Some(attn_output.to_vec()) } else { None };
+
         // Output projection
         let attn_out: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
         self.linear(attn_output, &weights.attn_output, attn_out)?;
+
+        // Save attn_out for debugging
+        let attn_out_debug =
+            if self.debug_mode { Some(attn_out.to_vec()) } else { None };
 
         // Residual
         for i in 0..hidden_size {
@@ -704,12 +825,18 @@ impl ForwardExecutor {
 
         // FFN norm
         let normed_ffn: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
+
         self.rms_norm(&self.hidden_buf, &weights.ffn_norm, normed_ffn)?;
+
+        // Save FFN normed for debugging
+        let normed_ffn_debug =
+            if self.debug_mode { Some(normed_ffn.to_vec()) } else { None };
 
         // Quantize FFN input
         let ffn_normed_len = normed_ffn.len();
         let ffn_quant_format =
             quantize_input_to(normed_ffn, quant_type, &mut self.quant_buf)?;
+
         let ffn_in_features = match ffn_quant_format {
             QuantFormat::Q8_0 => ((ffn_normed_len + QK8_0 - 1) / QK8_0) * QK8_0,
             QuantFormat::Q8_K => ((ffn_normed_len + QK_K - 1) / QK_K) * QK_K,
@@ -734,19 +861,63 @@ impl ForwardExecutor {
             up,
         )?;
 
+        // Save gate and up for debugging (before SiLU)
+        let (gate_before_silu, up_debug) = if self.debug_mode {
+            (Some(gate.to_vec()), Some(up.to_vec()))
+        } else {
+            (None, None)
+        };
+
         // SwiGLU
         silu_f32_inplace(gate);
+
+        // Save gate after SiLU for debugging
+        let gate_after_silu =
+            if self.debug_mode { Some(gate.to_vec()) } else { None };
+
         for i in 0..config.intermediate_size {
             gate[i] *= up[i];
         }
+
+        // Save gate * up for debugging
+        let gate_times_up_debug =
+            if self.debug_mode { Some(gate.to_vec()) } else { None };
 
         // Down projection
         let ffn_out: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
         self.linear(gate, &weights.ffn_down, ffn_out)?;
 
+        // Save FFN output for debugging
+        let ffn_out_debug =
+            if self.debug_mode { Some(ffn_out.to_vec()) } else { None };
+
         // Residual
         for i in 0..hidden_size {
             self.hidden_buf[i] += ffn_out[i];
+        }
+
+        // Save debug state
+        if self.debug_mode {
+            let debug_state = LayerDebugState {
+                layer_idx,
+                seq_pos: self.seq_pos,
+                hidden_before: hidden_before.unwrap(),
+                hidden_after: self.hidden_buf.clone(),
+                normed_attn: normed_attn_debug.unwrap(),
+                q: q_debug.unwrap(),
+                k: k_debug.unwrap(),
+                v: v_debug.unwrap(),
+                q_normed: q_normed_debug.unwrap(),
+                k_normed: k_normed_debug.unwrap(),
+                attn_output: attn_output_debug.unwrap(),
+                attn_out: attn_out_debug.unwrap(),
+                normed_ffn: normed_ffn_debug.unwrap(),
+                gate: gate_before_silu.unwrap(),
+                up: up_debug.unwrap(),
+                gate_times_up: gate_times_up_debug.unwrap(),
+                ffn_out: ffn_out_debug.unwrap(),
+            };
+            self.debug_states.push(debug_state);
         }
 
         Ok(())
@@ -843,139 +1014,166 @@ impl ForwardExecutor {
         let ffn_out = &mut ffn_out_vec[..];
 
         // Batch attention norm
-        self.rms_norm_batch(
-            &self.hidden_buf_batch,
-            &weights.attn_norm,
-            normed_attn,
-            n_tokens,
-        )?;
+        time_op!("attn_norm", {
+            self.rms_norm_batch(
+                &self.hidden_buf_batch,
+                &weights.attn_norm,
+                normed_attn,
+                n_tokens,
+            )?;
+        });
 
         // Quantize batch input
         let quant_type = self.get_weight_quant_type(&weights.attn_q);
-        let quant_format = quantize_input_batch(
-            normed_attn,
-            hidden_size,
-            n_tokens,
-            quant_type,
-            &mut self.quant_buf_batch,
-        )?;
+        time_op!("quant", {
+            quantize_input_batch(
+                normed_attn,
+                hidden_size,
+                n_tokens,
+                quant_type,
+                &mut self.quant_buf_batch,
+            )?;
+        });
+        let quant_format = self.quant_buf_batch.active;
         let in_features = hidden_size;
 
         // Batch QKV projections using tiled GEMV
-        self.linear_quantized_batch(
-            quant_format,
-            in_features,
-            n_tokens,
-            &weights.attn_q,
-            q,
-        )?;
-        self.linear_quantized_batch(
-            quant_format,
-            in_features,
-            n_tokens,
-            &weights.attn_k,
-            k,
-        )?;
-        self.linear_quantized_batch(
-            quant_format,
-            in_features,
-            n_tokens,
-            &weights.attn_v,
-            v,
-        )?;
+        time_op!("qkv_proj", {
+            self.linear_quantized_batch(
+                quant_format,
+                in_features,
+                n_tokens,
+                &weights.attn_q,
+                q,
+            )?;
+            self.linear_quantized_batch(
+                quant_format,
+                in_features,
+                n_tokens,
+                &weights.attn_k,
+                k,
+            )?;
+            self.linear_quantized_batch(
+                quant_format,
+                in_features,
+                n_tokens,
+                &weights.attn_v,
+                v,
+            )?;
+        });
+
+        // Add Q/K/V bias if present (batch version)
+        self.add_bias_batch(q, &weights.attn_q_bias, n_tokens)?;
+        self.add_bias_batch(k, &weights.attn_k_bias, n_tokens)?;
+        self.add_bias_batch(v, &weights.attn_v_bias, n_tokens)?;
 
         // Batch Q/K norm
-        self.qk_norm_batch(
-            q,
-            &weights.attn_q_norm,
-            n_heads,
-            head_dim,
-            n_tokens,
-            q_normed,
-        )?;
-        self.qk_norm_batch(
-            k,
-            &weights.attn_k_norm,
-            n_kv_heads,
-            head_dim,
-            n_tokens,
-            k_normed,
-        )?;
+        time_op!("qk_norm", {
+            self.qk_norm_batch(
+                q,
+                &weights.attn_q_norm,
+                n_heads,
+                head_dim,
+                n_tokens,
+                q_normed,
+            )?;
+            self.qk_norm_batch(
+                k,
+                &weights.attn_k_norm,
+                n_kv_heads,
+                head_dim,
+                n_tokens,
+                k_normed,
+            )?;
+        });
 
         // Batch RoPE with position offsets
-        for token_idx in 0..n_tokens {
-            let pos = self.seq_pos + token_idx;
-            rope_f32_inplace(
-                &mut q_normed[token_idx * n_heads * head_dim
-                    ..(token_idx + 1) * n_heads * head_dim],
-                pos,
-                head_dim,
-                head_dim,
-                config.rope_freq_base,
-            );
-            rope_f32_inplace(
-                &mut k_normed[token_idx * n_kv_heads * head_dim
-                    ..(token_idx + 1) * n_kv_heads * head_dim],
-                pos,
-                head_dim,
-                head_dim,
-                config.rope_freq_base,
-            );
-        }
-
-        // Batch KV cache update
-        for token_idx in 0..n_tokens {
-            let kv_pos = self.seq_pos + token_idx;
-            let kv_offset = kv_pos * head_dim;
-            for h in 0..n_kv_heads {
-                let src_offset =
-                    token_idx * n_kv_heads * head_dim + h * head_dim;
-                let dst_offset = h * self.kv_capacity * head_dim + kv_offset;
-                self.kv_cache_k[layer_idx][dst_offset..dst_offset + head_dim]
-                    .copy_from_slice(
-                        &k_normed[src_offset..src_offset + head_dim],
-                    );
-                self.kv_cache_v[layer_idx][dst_offset..dst_offset + head_dim]
-                    .copy_from_slice(
-                        &v[token_idx * n_kv_heads * head_dim + h * head_dim
-                            ..token_idx * n_kv_heads * head_dim
-                                + (h + 1) * head_dim],
-                    );
-            }
-        }
-
-        // Batch attention (simplified: process each token)
-        for token_idx in 0..n_tokens {
-            let cur_pos = self.seq_pos + token_idx + 1;
-            for h in 0..n_heads {
-                let kv_head_idx = h * n_kv_heads / n_heads;
-                let k_cache = &self.kv_cache_k[layer_idx]
-                    [kv_head_idx * self.kv_capacity * head_dim..];
-                let v_cache = &self.kv_cache_v[layer_idx]
-                    [kv_head_idx * self.kv_capacity * head_dim..];
-                flash_attn_f32(
-                    &q_normed[token_idx * n_heads * head_dim + h * head_dim
-                        ..token_idx * n_heads * head_dim + (h + 1) * head_dim],
-                    &k_cache[..cur_pos * head_dim],
-                    &v_cache[..cur_pos * head_dim],
-                    None,
-                    &mut attn_output[token_idx * n_heads * head_dim
-                        + h * head_dim
-                        ..token_idx * n_heads * head_dim + (h + 1) * head_dim],
+        time_op!("rope", {
+            for token_idx in 0..n_tokens {
+                let pos = self.seq_pos + token_idx;
+                rope_f32_inplace(
+                    &mut q_normed[token_idx * n_heads * head_dim
+                        ..(token_idx + 1) * n_heads * head_dim],
+                    pos,
                     head_dim,
-                    cur_pos,
-                    1.0 / (head_dim as f32).sqrt(),
+                    head_dim,
+                    config.rope_freq_base,
+                );
+                rope_f32_inplace(
+                    &mut k_normed[token_idx * n_kv_heads * head_dim
+                        ..(token_idx + 1) * n_kv_heads * head_dim],
+                    pos,
+                    head_dim,
+                    head_dim,
+                    config.rope_freq_base,
                 );
             }
-        }
+        });
+
+        // Batch KV cache update
+        time_op!("kv_cache", {
+            for token_idx in 0..n_tokens {
+                let kv_pos = self.seq_pos + token_idx;
+                let kv_offset = kv_pos * head_dim;
+                for h in 0..n_kv_heads {
+                    let src_offset =
+                        token_idx * n_kv_heads * head_dim + h * head_dim;
+                    let dst_offset =
+                        h * self.kv_capacity * head_dim + kv_offset;
+                    self.kv_cache_k[layer_idx]
+                        [dst_offset..dst_offset + head_dim]
+                        .copy_from_slice(
+                            &k_normed[src_offset..src_offset + head_dim],
+                        );
+                    self.kv_cache_v[layer_idx]
+                        [dst_offset..dst_offset + head_dim]
+                        .copy_from_slice(
+                            &v[token_idx * n_kv_heads * head_dim + h * head_dim
+                                ..token_idx * n_kv_heads * head_dim
+                                    + (h + 1) * head_dim],
+                        );
+                }
+            }
+        });
+
+        // Batch attention (simplified: process each token)
+        time_op!("attention", {
+            for token_idx in 0..n_tokens {
+                let cur_pos = self.seq_pos + token_idx + 1;
+                for h in 0..n_heads {
+                    let kv_head_idx = h * n_kv_heads / n_heads;
+                    let k_cache = &self.kv_cache_k[layer_idx]
+                        [kv_head_idx * self.kv_capacity * head_dim..];
+                    let v_cache = &self.kv_cache_v[layer_idx]
+                        [kv_head_idx * self.kv_capacity * head_dim..];
+                    flash_attn_f32(
+                        &q_normed[token_idx * n_heads * head_dim + h * head_dim
+                            ..token_idx * n_heads * head_dim
+                                + (h + 1) * head_dim],
+                        &k_cache[..cur_pos * head_dim],
+                        &v_cache[..cur_pos * head_dim],
+                        None,
+                        &mut attn_output[token_idx * n_heads * head_dim
+                            + h * head_dim
+                            ..token_idx * n_heads * head_dim
+                                + (h + 1) * head_dim],
+                        head_dim,
+                        cur_pos,
+                        1.0 / (head_dim as f32).sqrt(),
+                    );
+                }
+            }
+        });
 
         // Batch output projection
-        self.linear_batch(
-            attn_output,
-            n_tokens,
-            &weights.attn_output,
-            attn_out,
-        )?;
+        time_op!("o_proj", {
+            self.linear_batch(
+                attn_output,
+                n_tokens,
+                &weights.attn_output,
+                attn_out,
+            )?;
+        });
 
         // Batch residual
         for i in 0..n_tokens * hidden_size {
@@ -983,46 +1181,57 @@ impl ForwardExecutor {
         }
 
         // Batch FFN norm
-        self.rms_norm_batch(
-            &self.hidden_buf_batch,
-            &weights.ffn_norm,
-            normed_ffn,
-            n_tokens,
-        )?;
+        time_op!("ffn_norm", {
+            self.rms_norm_batch(
+                &self.hidden_buf_batch,
+                &weights.ffn_norm,
+                normed_ffn,
+                n_tokens,
+            )?;
+        });
 
         // Quantize FFN batch input
-        let ffn_quant_format = quantize_input_batch(
-            normed_ffn,
-            hidden_size,
-            n_tokens,
-            quant_type,
-            &mut self.quant_buf_batch,
-        )?;
+        time_op!("ffn_quant", {
+            quantize_input_batch(
+                normed_ffn,
+                hidden_size,
+                n_tokens,
+                quant_type,
+                &mut self.quant_buf_batch,
+            )?;
+        });
+        let ffn_quant_format = self.quant_buf_batch.active;
 
         // Batch Gate/Up projections
-        self.linear_quantized_batch(
-            ffn_quant_format,
-            hidden_size,
-            n_tokens,
-            &weights.ffn_gate,
-            gate,
-        )?;
-        self.linear_quantized_batch(
-            ffn_quant_format,
-            hidden_size,
-            n_tokens,
-            &weights.ffn_up,
-            up,
-        )?;
+        time_op!("gate_up_proj", {
+            self.linear_quantized_batch(
+                ffn_quant_format,
+                hidden_size,
+                n_tokens,
+                &weights.ffn_gate,
+                gate,
+            )?;
+            self.linear_quantized_batch(
+                ffn_quant_format,
+                hidden_size,
+                n_tokens,
+                &weights.ffn_up,
+                up,
+            )?;
+        });
 
         // Batch SwiGLU
-        silu_f32_inplace(gate);
-        for i in 0..n_tokens * intermediate_size {
-            gate[i] *= up[i];
-        }
+        time_op!("swiglu", {
+            silu_f32_inplace(gate);
+            for i in 0..n_tokens * intermediate_size {
+                gate[i] *= up[i];
+            }
+        });
 
         // Batch Down projection
-        self.linear_batch(gate, n_tokens, &weights.ffn_down, ffn_out)?;
+        time_op!("down_proj", {
+            self.linear_batch(gate, n_tokens, &weights.ffn_down, ffn_out)?;
+        });
 
         // Batch residual
         for i in 0..n_tokens * hidden_size {
@@ -1048,42 +1257,17 @@ impl ForwardExecutor {
         weight_name: &str,
         output: &mut [f32],
     ) -> Result<(), String> {
-        let size = input.len();
         let eps = self.model.config().rms_norm_eps;
+        let tensor = self.model.get_tensor_meta(weight_name);
         let weight_data = self.model.get_tensor(weight_name);
 
-        let sum_sq: f32 = input.iter().map(|x| x * x).sum();
-        let rms = (sum_sq / size as f32 + eps).sqrt();
+        let weight_type =
+            tensor.map(|t| t.quant_type).unwrap_or(QuantType::F32);
+        let weight_bytes = weight_data
+            .as_deref()
+            .ok_or(format!("Weight '{}' not found", weight_name))?;
 
-        if let Some(data) = weight_data {
-            if data.len() == size * 4 {
-                // F32 weight - directly cast bytes to f32 slice
-                let weight: &[f32] = unsafe {
-                    std::slice::from_raw_parts(
-                        data.as_ptr() as *const f32,
-                        size,
-                    )
-                };
-                rms_norm_f32(input, weight, output, eps);
-            } else if data.len() == size * 2 {
-                // F16 weight - need to convert (but no allocation)
-                let scale = 1.0 / rms;
-                for (i, chunk) in data.chunks_exact(2).enumerate() {
-                    let w =
-                        half::f16::from_le_bytes([chunk[0], chunk[1]]).to_f32();
-                    output[i] = input[i] * scale * w;
-                }
-            } else {
-                for (i, inp) in input.iter().enumerate() {
-                    output[i] = inp / rms;
-                }
-            }
-        } else {
-            for (i, inp) in input.iter().enumerate() {
-                output[i] = inp / rms;
-            }
-        }
-        Ok(())
+        rms_norm::rms_norm(input, weight_bytes, weight_type, output, eps)
     }
 
     /// Batch RMS norm: [n_tokens * hidden_size] -> [n_tokens * hidden_size]
@@ -1094,51 +1278,24 @@ impl ForwardExecutor {
         output: &mut [f32],
         n_tokens: usize,
     ) -> Result<(), String> {
-        let hidden_size = input.len() / n_tokens;
         let eps = self.model.config().rms_norm_eps;
+        let tensor = self.model.get_tensor_meta(weight_name);
         let weight_data = self.model.get_tensor(weight_name);
 
-        // Get weight
-        let weight: Vec<f32> = if let Some(data) = weight_data {
-            if data.len() == hidden_size * 4 {
-                unsafe {
-                    std::slice::from_raw_parts(
-                        data.as_ptr() as *const f32,
-                        hidden_size,
-                    )
-                    .to_vec()
-                }
-            } else if data.len() == hidden_size * 2 {
-                data.chunks_exact(2)
-                    .map(|chunk| {
-                        half::f16::from_le_bytes([chunk[0], chunk[1]]).to_f32()
-                    })
-                    .collect()
-            } else {
-                vec![1.0; hidden_size]
-            }
-        } else {
-            vec![1.0; hidden_size]
-        };
+        let weight_type =
+            tensor.map(|t| t.quant_type).unwrap_or(QuantType::F32);
+        let weight_bytes = weight_data
+            .as_deref()
+            .ok_or(format!("Weight '{}' not found", weight_name))?;
 
-        // Process each token
-        for token_idx in 0..n_tokens {
-            let in_offset = token_idx * hidden_size;
-            let out_offset = token_idx * hidden_size;
-
-            let sum_sq: f32 = input[in_offset..in_offset + hidden_size]
-                .iter()
-                .map(|x| x * x)
-                .sum();
-            let rms = (sum_sq / hidden_size as f32 + eps).sqrt();
-            let scale = 1.0 / rms;
-
-            for h in 0..hidden_size {
-                output[out_offset + h] =
-                    input[in_offset + h] * scale * weight[h];
-            }
-        }
-        Ok(())
+        rms_norm::rms_norm_batch(
+            input,
+            weight_bytes,
+            weight_type,
+            output,
+            n_tokens,
+            eps,
+        )
     }
 
     fn qk_norm(
@@ -1150,57 +1307,24 @@ impl ForwardExecutor {
         output: &mut [f32],
     ) -> Result<(), String> {
         let eps = self.model.config().rms_norm_eps;
+        let tensor = self.model.get_tensor_meta(weight_name);
         let weight_data = self.model.get_tensor(weight_name);
 
-        if let Some(data) = weight_data {
-            if data.len() == head_dim * 4 {
-                // F32 weight - directly cast bytes to f32 slice
-                let shared_weight: &[f32] = unsafe {
-                    std::slice::from_raw_parts(
-                        data.as_ptr() as *const f32,
-                        head_dim,
-                    )
-                };
+        let weight_type =
+            tensor.map(|t| t.quant_type).unwrap_or(QuantType::F32);
+        let weight_bytes = weight_data
+            .as_deref()
+            .ok_or(format!("Weight '{}' not found", weight_name))?;
 
-                for h in 0..n_heads {
-                    let head_start = h * head_dim;
-                    let head_input = &input[head_start..head_start + head_dim];
-                    let ss: f32 = head_input.iter().map(|x| x * x).sum::<f32>()
-                        / head_dim as f32;
-                    let scale = 1.0f32 / (ss + eps).sqrt();
-                    for d in 0..head_dim {
-                        output[head_start + d] =
-                            head_input[d] * scale * shared_weight[d];
-                    }
-                }
-            } else if data.len() == head_dim * 2 {
-                // F16 weight
-                let shared_weight_f16: &[half::f16] = unsafe {
-                    std::slice::from_raw_parts(
-                        data.as_ptr() as *const half::f16,
-                        head_dim,
-                    )
-                };
-
-                for h in 0..n_heads {
-                    let head_start = h * head_dim;
-                    let head_input = &input[head_start..head_start + head_dim];
-                    let ss: f32 = head_input.iter().map(|x| x * x).sum::<f32>()
-                        / head_dim as f32;
-                    let scale = 1.0f32 / (ss + eps).sqrt();
-                    for d in 0..head_dim {
-                        output[head_start + d] = head_input[d]
-                            * scale
-                            * shared_weight_f16[d].to_f32();
-                    }
-                }
-            } else {
-                output.copy_from_slice(input);
-            }
-        } else {
-            output.copy_from_slice(input);
-        }
-        Ok(())
+        rms_norm::qk_norm(
+            input,
+            weight_bytes,
+            weight_type,
+            n_heads,
+            head_dim,
+            output,
+            eps,
+        )
     }
 
     /// Batch QK norm: [n_tokens * n_heads * head_dim] -> [n_tokens * n_heads * head_dim]
@@ -1213,40 +1337,84 @@ impl ForwardExecutor {
         n_tokens: usize,
         output: &mut [f32],
     ) -> Result<(), String> {
+        let eps = self.model.config().rms_norm_eps;
+        let tensor = self.model.get_tensor_meta(weight_name);
         let weight_data = self.model.get_tensor(weight_name);
-        let eps = 1e-5f32;
 
-        let weight: Vec<f32> = if let Some(data) = weight_data {
-            if data.len() == head_dim * 4 {
-                unsafe {
+        let weight_type =
+            tensor.map(|t| t.quant_type).unwrap_or(QuantType::F32);
+        let weight_bytes = weight_data
+            .as_deref()
+            .ok_or(format!("Weight '{}' not found", weight_name))?;
+
+        rms_norm::qk_norm_batch(
+            input,
+            weight_bytes,
+            weight_type,
+            n_heads,
+            head_dim,
+            n_tokens,
+            output,
+            eps,
+        )
+    }
+
+    /// Add bias to output if bias tensor exists
+    fn add_bias(
+        &self,
+        output: &mut [f32],
+        bias_name: &str,
+    ) -> Result<(), String> {
+        if let Some(bias_data) = self.model.get_tensor(bias_name) {
+            if bias_data.len() == output.len() * 4 {
+                // F32 bias
+                let bias: &[f32] = unsafe {
                     std::slice::from_raw_parts(
-                        data.as_ptr() as *const f32,
-                        head_dim,
+                        bias_data.as_ptr() as *const f32,
+                        output.len(),
                     )
-                    .to_vec()
+                };
+                for i in 0..output.len() {
+                    output[i] += bias[i];
                 }
-            } else if data.len() == head_dim * 2 {
-                data.chunks_exact(2)
-                    .map(|chunk| {
-                        half::f16::from_le_bytes([chunk[0], chunk[1]]).to_f32()
-                    })
-                    .collect()
-            } else {
-                vec![1.0; head_dim]
+            } else if bias_data.len() == output.len() * 2 {
+                // F16 bias
+                let bias_f16: &[half::f16] = unsafe {
+                    std::slice::from_raw_parts(
+                        bias_data.as_ptr() as *const half::f16,
+                        output.len(),
+                    )
+                };
+                for i in 0..output.len() {
+                    output[i] += bias_f16[i].to_f32();
+                }
             }
-        } else {
-            vec![1.0; head_dim]
-        };
+        }
+        Ok(())
+    }
 
-        for token_idx in 0..n_tokens {
-            for h in 0..n_heads {
-                let head_start = token_idx * n_heads * head_dim + h * head_dim;
-                let head_input = &input[head_start..head_start + head_dim];
-                let ss: f32 = head_input.iter().map(|x| x * x).sum::<f32>()
-                    / head_dim as f32;
-                let scale = 1.0f32 / (ss + eps).sqrt();
-                for d in 0..head_dim {
-                    output[head_start + d] = head_input[d] * scale * weight[d];
+    /// Add bias to output if bias tensor exists (batch version)
+    fn add_bias_batch(
+        &self,
+        output: &mut [f32],
+        bias_name: &str,
+        n_tokens: usize,
+    ) -> Result<(), String> {
+        if let Some(bias_data) = self.model.get_tensor(bias_name) {
+            let feature_size = output.len() / n_tokens;
+            if bias_data.len() == feature_size * 4 {
+                // F32 bias
+                let bias: &[f32] = unsafe {
+                    std::slice::from_raw_parts(
+                        bias_data.as_ptr() as *const f32,
+                        feature_size,
+                    )
+                };
+                for t in 0..n_tokens {
+                    let offset = t * feature_size;
+                    for i in 0..feature_size {
+                        output[offset + i] += bias[i];
+                    }
                 }
             }
         }
@@ -1300,6 +1468,8 @@ impl ForwardExecutor {
 
         let stride = tensor.strides.get(1).copied().unwrap_or(0) as usize;
 
+        // Note: Single-token path uses linear::linear_q8_k which handles repacking internally.
+        // The cached repacked weights are used in batch path (linear_quantized_batch).
         match quant_format {
             QuantFormat::Q8_0 => linear::linear_q8_0(
                 &self.quant_buf.q8_0,
@@ -1346,81 +1516,42 @@ impl ForwardExecutor {
         let out_features = output.len() / n_tokens;
 
         match quant_format {
-            QuantFormat::Q8_0 => {
-                // Use batched GEMV
-                let nb_per_token = (in_features + QK8_0 - 1) / QK8_0;
-                gemv::mul_mat_q4_0(
-                    weight_data,
-                    stride,
-                    &self.quant_buf_batch.q8_0,
-                    output,
-                    out_features,
-                    in_features,
-                    n_tokens,
-                    self.n_threads_batch,
-                );
-                Ok(())
-            }
+            QuantFormat::Q8_0 => linear::linear_q8_0_batch(
+                &self.quant_buf_batch.q8_0,
+                weight_data,
+                stride,
+                output,
+                out_features,
+                in_features,
+                n_tokens,
+                self.n_threads_batch,
+            ),
             QuantFormat::Q8_K => {
-                // Use batched GEMV with tiled path for n_tokens >= 8
-                let nb_per_token = (in_features + QK_K - 1) / QK_K;
-                match tensor.quant_type {
-                    QuantType::Q5_K => {
-                        gemv::mul_mat_q5_k(
-                            weight_data,
-                            stride,
-                            &self.quant_buf_batch.q8_k,
-                            output,
-                            out_features,
-                            in_features,
-                            n_tokens,
-                            self.n_threads_batch,
-                        );
-                        Ok(())
-                    }
-                    QuantType::Q6_K => {
-                        gemv::mul_mat_q6_k(
-                            weight_data,
-                            stride,
-                            &self.quant_buf_batch.q8_k,
-                            output,
-                            out_features,
-                            in_features,
-                            n_tokens,
-                            self.n_threads_batch,
-                        );
-                        Ok(())
-                    }
-                    QuantType::Q4_K => {
-                        gemv::mul_mat_q4_k(
-                            weight_data,
-                            stride,
-                            &self.quant_buf_batch.q8_k,
-                            output,
-                            out_features,
-                            in_features,
-                            n_tokens,
-                            self.n_threads_batch,
-                        );
-                        Ok(())
-                    }
-                    QuantType::IQ4_XS => {
-                        gemv::mul_mat_iq4_xs(
-                            weight_data,
-                            stride,
-                            &self.quant_buf_batch.q8_k,
-                            output,
-                            out_features,
-                            in_features,
-                            n_tokens,
-                            self.n_threads_batch,
-                        );
-                        Ok(())
-                    }
-                    _ => Err(format!(
-                        "Unsupported weight type for Q8_K batch: {:?}",
-                        tensor.quant_type
-                    )),
+                // Use cached repacked weights if available
+                if let Some(repacked_data) =
+                    self.repacked_weights.get(weight_name)
+                {
+                    linear::linear_q8_k_batch_repacked(
+                        &self.quant_buf_batch.q8_k,
+                        repacked_data,
+                        tensor.quant_type,
+                        output,
+                        out_features,
+                        in_features,
+                        n_tokens,
+                    )
+                } else {
+                    linear::linear_q8_k_batch(
+                        &self.quant_buf_batch.q8_k,
+                        weight_data,
+                        tensor.quant_type,
+                        stride,
+                        output,
+                        out_features,
+                        in_features,
+                        n_tokens,
+                        self.n_threads_batch,
+                    )
                 }
             }
             QuantFormat::None => Err("No quantized input available".into()),
@@ -1428,7 +1559,6 @@ impl ForwardExecutor {
     }
 
     /// Batch linear with F32 input
-    /// Uses pre-allocated quant_buf_batch to avoid temporary allocation
     fn linear_batch(
         &mut self,
         input: &[f32],
@@ -1450,195 +1580,19 @@ impl ForwardExecutor {
         let out_features = output.len() / n_tokens;
         let in_features = input.len() / n_tokens;
 
-        match tensor.quant_type {
-            QuantType::F16 => {
-                let stride_f16 = stride / 2;
-                for token_idx in 0..n_tokens {
-                    let in_start = token_idx * in_features;
-                    let out_start = token_idx * out_features;
-                    for i in 0..out_features {
-                        let col_offset = i * stride_f16;
-                        let mut sum = 0.0f32;
-                        for j in 0..in_features {
-                            let f16_val = half::f16::from_le_bytes([
-                                weight_data[(col_offset + j) * 2],
-                                weight_data[(col_offset + j) * 2 + 1],
-                            ]);
-                            sum += f16_val.to_f32() * input[in_start + j];
-                        }
-                        output[out_start + i] = sum;
-                    }
-                }
-                Ok(())
-            }
-            QuantType::Q5_K | QuantType::Q6_K | QuantType::Q4_K => {
-                // Use pre-allocated batch buffer
-                let nb_per_token = (in_features + QK_K - 1) / QK_K;
-                self.quant_buf_batch.resize(
-                    n_tokens,
-                    in_features,
-                    QuantFormat::Q8_K,
-                );
-
-                for token_idx in 0..n_tokens {
-                    let in_start = token_idx * in_features;
-                    let out_start = token_idx * nb_per_token;
-                    quant::quantize_q8_k(
-                        &input[in_start..in_start + in_features],
-                        &mut self.quant_buf_batch.q8_k
-                            [out_start..out_start + nb_per_token],
-                    );
-                }
-
-                match tensor.quant_type {
-                    QuantType::Q5_K => {
-                        gemv::mul_mat_q5_k(
-                            weight_data,
-                            stride,
-                            &self.quant_buf_batch.q8_k,
-                            output,
-                            out_features,
-                            in_features,
-                            n_tokens,
-                            self.n_threads_batch,
-                        );
-                        Ok(())
-                    }
-                    QuantType::Q6_K => {
-                        gemv::mul_mat_q6_k(
-                            weight_data,
-                            stride,
-                            &self.quant_buf_batch.q8_k,
-                            output,
-                            out_features,
-                            in_features,
-                            n_tokens,
-                            self.n_threads_batch,
-                        );
-                        Ok(())
-                    }
-                    QuantType::Q4_K => {
-                        gemv::mul_mat_q4_k(
-                            weight_data,
-                            stride,
-                            &self.quant_buf_batch.q8_k,
-                            output,
-                            out_features,
-                            in_features,
-                            n_tokens,
-                            self.n_threads_batch,
-                        );
-                        Ok(())
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            QuantType::Q4_0 | QuantType::Q8_0 => {
-                // Use pre-allocated batch buffer
-                let nb_per_token = (in_features + QK8_0 - 1) / QK8_0;
-                self.quant_buf_batch.resize(
-                    n_tokens,
-                    in_features,
-                    QuantFormat::Q8_0,
-                );
-
-                for token_idx in 0..n_tokens {
-                    let in_start = token_idx * in_features;
-                    let out_start = token_idx * nb_per_token;
-                    quant::quantize_q8_0(
-                        &input[in_start..in_start + in_features],
-                        &mut self.quant_buf_batch.q8_0
-                            [out_start..out_start + nb_per_token],
-                    );
-                }
-
-                gemv::mul_mat_q4_0(
-                    weight_data,
-                    stride,
-                    &self.quant_buf_batch.q8_0,
-                    output,
-                    out_features,
-                    in_features,
-                    n_tokens,
-                    self.n_threads_batch,
-                );
-                Ok(())
-            }
-            _ => Err(format!(
-                "Unsupported weight type for linear_batch: {:?}",
-                tensor.quant_type
-            )),
-        }
-    }
-}
-
-/// Quantize input into the provided buffer
-fn quantize_input_to(
-    input: &[f32],
-    quant_type: QuantType,
-    quant_buf: &mut QuantizedInput,
-) -> Result<QuantFormat, String> {
-    match quant_type {
-        QuantType::Q4_0 | QuantType::Q5_0 | QuantType::Q8_0 => {
-            quant_buf.resize(input.len(), QuantFormat::Q8_0);
-            quant::quantize_q8_0(input, &mut quant_buf.q8_0);
-            Ok(QuantFormat::Q8_0)
-        }
-        QuantType::Q4_K
-        | QuantType::Q5_K
-        | QuantType::Q6_K
-        | QuantType::Q8_K
-        | QuantType::IQ4_XS => {
-            quant_buf.resize(input.len(), QuantFormat::Q8_K);
-            quant::quantize_q8_k(input, &mut quant_buf.q8_k);
-            Ok(QuantFormat::Q8_K)
-        }
-        _ => Err(format!("Unsupported quant type: {:?}", quant_type)),
-    }
-}
-
-/// Batch quantize input: [n_tokens * hidden_size] -> QuantizedInputBatch
-fn quantize_input_batch(
-    input: &[f32],
-    hidden_size: usize,
-    n_tokens: usize,
-    quant_type: QuantType,
-    quant_buf: &mut QuantizedInputBatch,
-) -> Result<QuantFormat, String> {
-    match quant_type {
-        QuantType::Q4_0 | QuantType::Q5_0 | QuantType::Q8_0 => {
-            quant_buf.resize(n_tokens, hidden_size, QuantFormat::Q8_0);
-            // Quantize each token's input
-            let nb_per_token = (hidden_size + QK8_0 - 1) / QK8_0;
-            for token_idx in 0..n_tokens {
-                let in_start = token_idx * hidden_size;
-                let out_start = token_idx * nb_per_token;
-                quant::quantize_q8_0(
-                    &input[in_start..in_start + hidden_size],
-                    &mut quant_buf.q8_0[out_start..out_start + nb_per_token],
-                );
-            }
-            Ok(QuantFormat::Q8_0)
-        }
-        QuantType::Q4_K
-        | QuantType::Q5_K
-        | QuantType::Q6_K
-        | QuantType::Q8_K
-        | QuantType::IQ4_XS => {
-            quant_buf.resize(n_tokens, hidden_size, QuantFormat::Q8_K);
-            // Quantize each token's input
-            let nb_per_token = (hidden_size + QK_K - 1) / QK_K;
-            for token_idx in 0..n_tokens {
-                let in_start = token_idx * hidden_size;
-                let out_start = token_idx * nb_per_token;
-                quant::quantize_q8_k(
-                    &input[in_start..in_start + hidden_size],
-                    &mut quant_buf.q8_k[out_start..out_start + nb_per_token],
-                );
-            }
-            Ok(QuantFormat::Q8_K)
-        }
-        _ => Err(format!("Unsupported quant type for batch: {:?}", quant_type)),
+        linear::linear_f32_batch(
+            input,
+            weight_data,
+            tensor.quant_type,
+            stride,
+            output,
+            out_features,
+            in_features,
+            n_tokens,
+            self.n_threads_batch,
+            &mut self.quant_buf_batch.q8_0,
+            &mut self.quant_buf_batch.q8_k,
+        )
     }
 }
 
@@ -1652,49 +1606,25 @@ impl ForwardExecutor {
 
     fn final_norm(&mut self) -> Result<(), String> {
         let config = self.model.config();
-        let hidden_size = config.hidden_size;
+        let eps = config.rms_norm_eps;
 
-        let norm_weight = self
-            .model
-            .get_tensor_meta("output_norm.weight")
-            .ok_or("output_norm.weight not found")?;
+        let tensor = self.model.get_tensor_meta("output_norm.weight");
+        let weight_data = self.model.get_tensor("output_norm.weight");
 
-        let weight_data = self
-            .model
-            .get_tensor("output_norm.weight")
-            .ok_or("output_norm weight data not found")?;
+        let weight_type =
+            tensor.map(|t| t.quant_type).unwrap_or(QuantType::F32);
+        let weight_bytes =
+            weight_data.as_deref().ok_or("output_norm.weight not found")?;
 
-        match norm_weight.quant_type {
-            QuantType::F32 => {
-                // F32 weight - directly cast bytes to f32 slice
-                let weight: &[f32] = unsafe {
-                    std::slice::from_raw_parts(
-                        weight_data.as_ptr() as *const f32,
-                        hidden_size,
-                    )
-                };
-                rms_norm_f32(
-                    &self.hidden_buf.clone(),
-                    weight,
-                    &mut self.hidden_buf,
-                    config.rms_norm_eps,
-                );
-            }
-            QuantType::F16 => {
-                // F16 weight - process without allocation
-                let eps = config.rms_norm_eps;
-                let sum_sq: f32 = self.hidden_buf.iter().map(|x| x * x).sum();
-                let rms = (sum_sq / hidden_size as f32 + eps).sqrt();
-                let scale = 1.0 / rms;
-                for (i, chunk) in weight_data.chunks_exact(2).enumerate() {
-                    let w =
-                        half::f16::from_le_bytes([chunk[0], chunk[1]]).to_f32();
-                    self.hidden_buf[i] *= scale * w;
-                }
-            }
-            _ => return Err("Unsupported norm quant type".into()),
-        }
-        Ok(())
+        // Need to clone because rms_norm needs separate input/output
+        let input = self.hidden_buf.clone();
+        rms_norm::rms_norm(
+            &input,
+            weight_bytes,
+            weight_type,
+            &mut self.hidden_buf,
+            eps,
+        )
     }
 
     fn output_projection(&mut self) -> Result<(), String> {
@@ -1715,9 +1645,7 @@ impl ForwardExecutor {
             .ok_or("Output weight data not found")?;
 
         self.logits_buf.fill(0.0);
-        let stride = output_tensor.strides[1] as usize;
 
-        // Quantize hidden_buf
         let quant_type = output_tensor.quant_type;
         if matches!(
             quant_type,
@@ -1730,7 +1658,7 @@ impl ForwardExecutor {
                 hidden_size,
                 output_data,
                 quant_type,
-                stride,
+                0, // stride is now ignored in gemv
                 &mut self.logits_buf,
                 self.n_threads,
             )?;
@@ -1742,7 +1670,7 @@ impl ForwardExecutor {
                 hidden_size,
                 output_data,
                 quant_type,
-                stride,
+                0, // stride is now ignored
                 &mut self.logits_buf,
                 self.n_threads,
             )?;
@@ -1751,7 +1679,7 @@ impl ForwardExecutor {
                 &self.hidden_buf,
                 output_data,
                 quant_type,
-                stride,
+                0, // stride is now ignored
                 &mut self.logits_buf,
                 self.n_threads,
             )?;
@@ -1827,12 +1755,15 @@ impl ForwardExecutor {
     ) -> Vec<u32> {
         let mut tokens = prompt_tokens.to_vec();
 
+        // Enable debug mode for debugging
+        self.debug_mode = true;
+
         // Use batch forward for prefill (more efficient)
         if self.forward_batch(prompt_tokens).is_err() {
             // Fallback to single token processing if batch fails
             for (i, &token) in prompt_tokens.iter().enumerate() {
                 if self.forward(token).is_err() {
-                    eprintln!("Prefill error at token {}", i);
+                    log::error!("Prefill error at token {}", i);
                     return tokens;
                 }
             }
@@ -1841,7 +1772,8 @@ impl ForwardExecutor {
         for _ in 0..max_new_tokens {
             let next_token = {
                 let logits = &self.logits_buf;
-                self.sample(logits, temperature)
+                let token = self.sample(logits, temperature);
+                token
             };
             tokens.push(next_token);
 

@@ -1,480 +1,141 @@
 // SPDX-License-Identifier: Apache-2.0-or-later
 // Copyright 2026 Jia Liu
 
-//! Fine-grained operator profiler with comparison to llama.cpp
-//!
-//! Strategy:
-//! 1. Micro-benchmark individual operations (vec_dot, gemv, quantize)
-//! 2. Compare with llama.cpp's implementation
-//! 3. Identify exact bottleneck operations
+//! Operation-level profiling for prefill
 
 use clap::Parser;
-use std::process::Command;
 use std::time::Instant;
 
 #[derive(Parser)]
 #[command(name = "op_profile")]
-#[command(about = "Fine-grained operator profiling with llama.cpp comparison")]
 struct Cli {
     /// Model path
     #[arg(short, long)]
     model: String,
 
-    /// Number of iterations for micro-benchmarks
-    #[arg(long, default_value = "100")]
-    bench_iters: usize,
+    /// Number of tokens for prefill
+    #[arg(long, default_value = "10")]
+    tokens: usize,
 
-    /// Run vec_dot benchmark
-    #[arg(long)]
-    vec_dot: bool,
-
-    /// Run GEMV benchmark
-    #[arg(long)]
-    gemv: bool,
-
-    /// Run quantization benchmark
-    #[arg(long)]
-    quant: bool,
-
-    /// Run all benchmarks
-    #[arg(long)]
-    all: bool,
-
-    /// Compare with llama.cpp
-    #[arg(long)]
-    compare: bool,
+    /// Number of iterations
+    #[arg(long, default_value = "3")]
+    iterations: usize,
 }
 
 fn main() {
     let cli = Cli::parse();
 
-    if cli.all || !(cli.vec_dot || cli.gemv || cli.quant) {
-        // Run all benchmarks by default
-        println!("=== Operator Micro-benchmarks ===\n");
+    use infer_train::inference::ForwardExecutor;
+    use infer_train::inference::SimpleModel;
+    use infer_train::model::GgufFile;
+    use infer_train::tokenizer::create_tokenizer;
 
-        benchmark_quantization(cli.bench_iters);
-        benchmark_vec_dot(cli.bench_iters);
-        benchmark_gemv(cli.bench_iters);
+    let gguf = GgufFile::load(&cli.model).expect("Failed to load model");
+    let tokenizer = create_tokenizer(
+        gguf.tokenizer_metadata().expect("Failed to get metadata"),
+    )
+    .expect("Failed to create tokenizer");
+    let model =
+        SimpleModel::load(&cli.model, tokenizer).expect("Failed to load model");
+    let config = model.config().clone();
 
-        if cli.compare {
-            println!("\n=== llama.cpp Reference ===\n");
-            run_llama_cpp_benchmark(&cli.model);
-        }
-    } else {
-        if cli.quant {
-            benchmark_quantization(cli.bench_iters);
-        }
-        if cli.vec_dot {
-            benchmark_vec_dot(cli.bench_iters);
-        }
-        if cli.gemv {
-            benchmark_gemv(cli.bench_iters);
-        }
-    }
-}
+    println!("=== Operation Profile ===");
+    println!(
+        "Model: {} layers, hidden={}",
+        config.n_layers, config.hidden_size
+    );
+    println!("Tokens: {}", cli.tokens);
+    println!();
 
-fn fp16_to_bits(f: f32) -> u16 {
-    half::f16::from_f32(f).to_bits()
-}
+    // Create token sequence
+    let tokens: Vec<u32> = (0..cli.tokens as u32).collect();
 
-fn benchmark_quantization(iters: usize) {
-    use infer_train::backend::arm::quant::*;
-    use infer_train::types::*;
-
-    println!("--- Quantization ---\n");
-
-    // Test different sizes
-    for &n in &[512, 1024, 2048, 4096] {
-        let input: Vec<f32> = (0..n).map(|i| (i as f32 * 0.01).sin()).collect();
-
-        // Q8_0
-        let nb = (n + QK8_0 - 1) / QK8_0;
-        let mut q8_0: Vec<BlockQ8_0> =
-            vec![BlockQ8_0 { d: 0, qs: [0; 32] }; nb];
-
-        // Warmup
-        for _ in 0..10 {
-            quantize_q8_0(&input, &mut q8_0);
-        }
-
-        let start = Instant::now();
-        for _ in 0..iters {
-            quantize_q8_0(&input, &mut q8_0);
-        }
-        let time = start.elapsed();
-        let avg_us = time.as_micros() as f64 / iters as f64;
-        let throughput_gbs = (n * 4) as f64 / avg_us / 1000.0; // GB/s
-
-        println!(
-            "Q8_0  {:5} elements: {:7.2} us ({:.2} GB/s)",
-            n, avg_us, throughput_gbs
-        );
-
-        // Q8_K
-        let nb = (n + QK_K - 1) / QK_K;
-        let mut q8_k: Vec<BlockQ8_K> =
-            vec![BlockQ8_K { d: 0.0, qs: [0; 256], bsums: [0; 16] }; nb];
-
-        let start = Instant::now();
-        for _ in 0..iters {
-            quantize_q8_k(&input, &mut q8_k);
-        }
-        let time = start.elapsed();
-        let avg_us = time.as_micros() as f64 / iters as f64;
-        let throughput_gbs = (n * 4) as f64 / avg_us / 1000.0;
-
-        println!(
-            "Q8_K  {:5} elements: {:7.2} us ({:.2} GB/s)",
-            n, avg_us, throughput_gbs
-        );
-        println!();
-    }
-}
-
-fn benchmark_vec_dot(iters: usize) {
-    use infer_train::backend::arm::vec_dot::*;
-    use infer_train::types::*;
-
-    println!("--- vec_dot (single block) ---\n");
-
-    // Q4_0 vec_dot
-    let x_q4_0 = BlockQ4_0 { d: fp16_to_bits(0.1), qs: [0x88; 16] };
-    let y_q8_0 = BlockQ8_0 { d: fp16_to_bits(1.0), qs: [1; 32] };
+    let mut executor = ForwardExecutor::new(model);
 
     // Warmup
-    for _ in 0..100 {
-        let _ = vec_dot_q4_0_q8_0(&[x_q4_0], &[y_q8_0]);
-    }
+    let _ = executor.forward_batch(&tokens);
 
-    let start = Instant::now();
-    for _ in 0..iters * 10 {
-        let _ = vec_dot_q4_0_q8_0(&[x_q4_0], &[y_q8_0]);
-    }
-    let time = start.elapsed();
-    let avg_ns = time.as_nanos() as f64 / (iters * 10) as f64;
+    // Profile each iteration
+    let mut total_times = Vec::new();
 
-    println!("Q4_0 vec_dot (32 elements): {:.2} ns", avg_ns);
-
-    // Q4_K vec_dot
-    let x_q4_k = BlockQ4_K {
-        d: fp16_to_bits(0.1),
-        dmin: fp16_to_bits(0.0),
-        scales: [0; 12],
-        qs: [0x88; 128],
-    };
-    let y_q8_k = BlockQ8_K { d: 1.0f32, qs: [1; 256], bsums: [0; 16] };
-
-    let start = Instant::now();
-    for _ in 0..iters * 10 {
-        let _ = vec_dot_q4_k_q8_k(&[x_q4_k], &[y_q8_k]);
-    }
-    let time = start.elapsed();
-    let avg_ns = time.as_nanos() as f64 / (iters * 10) as f64;
-
-    println!("Q4_K vec_dot (256 elements): {:.2} ns", avg_ns);
-
-    // Q5_K vec_dot
-    let x_q5_k = BlockQ5_K {
-        d: fp16_to_bits(0.1),
-        dmin: fp16_to_bits(0.0),
-        scales: [0; 12],
-        qh: [0; 32],
-        qs: [0x88; 128],
-    };
-
-    let start = Instant::now();
-    for _ in 0..iters * 10 {
-        let _ = vec_dot_q5_k_q8_k(&[x_q5_k], &[y_q8_k]);
-    }
-    let time = start.elapsed();
-    let avg_ns = time.as_nanos() as f64 / (iters * 10) as f64;
-
-    println!("Q5_K vec_dot (256 elements): {:.2} ns", avg_ns);
-
-    // Q6_K vec_dot
-    let x_q6_k = BlockQ6_K {
-        d: fp16_to_bits(0.1),
-        ql: [0; 128],
-        qh: [0; 64],
-        scales: [0; 16],
-    };
-
-    let start = Instant::now();
-    for _ in 0..iters * 10 {
-        let _ = vec_dot_q6_k_q8_k(&[x_q6_k], &[y_q8_k]);
-    }
-    let time = start.elapsed();
-    let avg_ns = time.as_nanos() as f64 / (iters * 10) as f64;
-
-    println!("Q6_K vec_dot (256 elements): {:.2} ns", avg_ns);
-
-    // Calculate throughput
-    println!("\n--- vec_dot Throughput ---");
-    let elements = 256;
-    // Q4_K: 256 elements in avg_ns
-    let start = Instant::now();
-    for _ in 0..iters * 10 {
-        let _ = vec_dot_q4_k_q8_k(&[x_q4_k], &[y_q8_k]);
-    }
-    let time = start.elapsed();
-    let avg_ns = time.as_nanos() as f64 / (iters * 10) as f64;
-    let gops = elements as f64 / avg_ns * 1000.0; // Giga ops/sec
-
-    println!("Q4_K: {:.2} GOPS ({:.2} ns for 256 mul-adds)", gops, avg_ns);
-    println!();
-}
-
-fn benchmark_gemv(iters: usize) {
-    use infer_train::backend::arm::gemv::*;
-    use infer_train::backend::arm::vec_dot::*;
-    use infer_train::types::*;
-
-    println!("--- GEMV (Matrix-Vector Multiplication) ---\n");
-
-    // Typical sizes for Qwen3-0.6B
-    let test_cases = [
-        (1024, 2048, "Q projection"), // hidden_size -> n_heads * head_dim
-        (1024, 1024, "K/V projection"), // hidden_size -> n_kv_heads * head_dim
-        (3072, 1024, "FFN Gate/Up"),  // intermediate_size -> hidden_size
-        (1024, 3072, "FFN Down"),     // hidden_size -> intermediate_size
-    ];
-
-    for (in_features, out_features, name) in test_cases {
-        // Q4_K GEMV
-        let nb = (in_features + QK_K - 1) / QK_K;
-        let weights: Vec<BlockQ4_K> = (0..out_features * nb)
-            .map(|i| BlockQ4_K {
-                d: fp16_to_bits(0.1 + (i % 10) as f32 * 0.01),
-                dmin: fp16_to_bits(0.0),
-                scales: [((i % 16) + 1) as u8; 12],
-                qs: [((i % 256) + 1) as u8; 128],
-            })
-            .collect();
-        let input: Vec<BlockQ8_K> = (0..nb)
-            .map(|i| BlockQ8_K {
-                d: 1.0 + (i % 10) as f32 * 0.1,
-                qs: [((i % 128) + 1) as i8; 256],
-                bsums: [0; 16],
-            })
-            .collect();
-        let mut output = vec![0.0f32; out_features];
-
-        // Convert weights to bytes for mul_mat_q4_k
-        let weights_bytes = unsafe {
-            std::slice::from_raw_parts(
-                weights.as_ptr() as *const u8,
-                weights.len() * std::mem::size_of::<BlockQ4_K>(),
-            )
-        };
-        let col_stride = nb * std::mem::size_of::<BlockQ4_K>();
-
-        // Warmup
-        for _ in 0..5 {
-            mul_mat_q4_k(
-                weights_bytes,
-                col_stride,
-                &input,
-                &mut output,
-                out_features,
-                in_features,
-                1,
-                0,
-            );
-        }
-
-        let start = Instant::now();
-        for _ in 0..iters {
-            mul_mat_q4_k(
-                weights_bytes,
-                col_stride,
-                &input,
-                &mut output,
-                out_features,
-                in_features,
-                1,
-                0,
-            );
-        }
-        let time = start.elapsed();
-        let avg_us = time.as_micros() as f64 / iters as f64;
-
-        // Calculate FLOPs: 2 * M * N (multiply-add)
-        let flops = 2 * out_features * in_features;
-        let gflops = flops as f64 / avg_us / 1000.0;
-
-        println!(
-            "Q4_K GEMV {} ({}x{}): {:7.2} us ({:.2} GFLOPS)",
-            name, out_features, in_features, avg_us, gflops
-        );
-
-        // Memory bandwidth: weights + input + output
-        let weight_bytes = weights.len() * std::mem::size_of::<BlockQ4_K>();
-        let input_bytes = input.len() * std::mem::size_of::<BlockQ8_K>();
-        let output_bytes = output.len() * 4;
-        let total_bytes = weight_bytes + input_bytes + output_bytes;
-        let bandwidth_gbs = total_bytes as f64 / avg_us / 1000.0;
-
-        println!(
-            "    Memory: {:.2} MB, Bandwidth: {:.2} GB/s",
-            total_bytes as f64 / 1e6,
-            bandwidth_gbs
-        );
-    }
-
-    println!();
-
-    // Multi-threaded scaling test
-    println!("--- GEMV Threading Scaling ---\n");
-    let in_features = 2048;
-    let out_features = 1024;
-    let nb = (in_features + QK_K - 1) / QK_K;
-
-    let weights: Vec<BlockQ4_K> = vec![
-        BlockQ4_K {
-            d: fp16_to_bits(0.1),
-            dmin: fp16_to_bits(0.0),
-            scales: [0; 12],
-            qs: [0x88; 128],
-        };
-        out_features * nb
-    ];
-    let input: Vec<BlockQ8_K> =
-        vec![BlockQ8_K { d: 1.0, qs: [1; 256], bsums: [0; 16] }; nb];
-    let mut output = vec![0.0f32; out_features];
-
-    // Convert weights to bytes for mul_mat_q4_k
-    let weights_bytes = unsafe {
-        std::slice::from_raw_parts(
-            weights.as_ptr() as *const u8,
-            weights.len() * std::mem::size_of::<BlockQ4_K>(),
+    for _iter in 0..cli.iterations {
+        let gguf = GgufFile::load(&cli.model).expect("Failed to load model");
+        let tokenizer = create_tokenizer(
+            gguf.tokenizer_metadata().expect("Failed to get metadata"),
         )
-    };
-    let col_stride = nb * std::mem::size_of::<BlockQ4_K>();
+        .expect("Failed to create tokenizer");
+        let model = SimpleModel::load(&cli.model, tokenizer)
+            .expect("Failed to load model");
+        let mut exec = ForwardExecutor::new(model);
 
-    // Warmup to initialize thread pool
-    for _ in 0..10 {
-        mul_mat_q4_k(
-            weights_bytes,
-            col_stride,
-            &input,
-            &mut output,
-            out_features,
-            in_features,
-            1,
-            8,
-        );
-    }
-
-    for &n_threads in &[1, 2, 4, 8] {
         let start = Instant::now();
-        for _ in 0..iters {
-            mul_mat_q4_k(
-                weights_bytes,
-                col_stride,
-                &input,
-                &mut output,
-                out_features,
-                in_features,
-                1,
-                n_threads,
-            );
-        }
-        let time = start.elapsed();
-        let avg_us = time.as_micros() as f64 / iters as f64;
-        println!("{} threads (persistent pool): {:7.2} us", n_threads, avg_us);
+        let _ = exec.forward_batch(&tokens);
+        let elapsed = start.elapsed();
+        total_times.push(elapsed.as_millis() as f64);
     }
 
-    // Test with std::thread::scope
-    println!("\n--- GEMV with std::thread::scope ---\n");
-    for &n_threads in &[1, 2, 4, 8] {
-        let start = Instant::now();
-        for _ in 0..iters {
-            if n_threads == 1 {
-                // Single thread: just run sequentially
-                for row_block in 0..((out_features + 15) / 16) {
-                    let start_row = row_block * 16;
-                    let end_row = (start_row + 16).min(out_features);
-                    for row in start_row..end_row {
-                        let row_offset = row * col_stride;
-                        let weight_row = unsafe {
-                            std::slice::from_raw_parts(
-                                weights_bytes.as_ptr().add(row_offset)
-                                    as *const BlockQ4_K,
-                                nb,
-                            )
-                        };
-                        output[row] = vec_dot_q4_k_q8_k(weight_row, &input);
-                    }
-                }
-            } else {
-                let output_ptr = output.as_mut_ptr() as usize;
-                let weights_ptr = weights_bytes.as_ptr() as usize;
-                let input_ptr = input.as_ptr() as usize;
-                std::thread::scope(|s| {
-                    let chunk_size = (out_features + n_threads - 1) / n_threads;
-                    for tid in 0..n_threads {
-                        let start_row = tid * chunk_size;
-                        let end_row =
-                            (start_row + chunk_size).min(out_features);
-                        if start_row >= out_features {
-                            break;
-                        }
-                        s.spawn(move || {
-                            for row in start_row..end_row {
-                                let row_offset = row * col_stride;
-                                let weight_row = unsafe {
-                                    std::slice::from_raw_parts(
-                                        (weights_ptr + row_offset)
-                                            as *const BlockQ4_K,
-                                        nb,
-                                    )
-                                };
-                                let input_slice = unsafe {
-                                    std::slice::from_raw_parts(
-                                        input_ptr as *const BlockQ8_K,
-                                        nb,
-                                    )
-                                };
-                                let result =
-                                    vec_dot_q4_k_q8_k(weight_row, input_slice);
-                                unsafe {
-                                    *((output_ptr as *mut f32).add(row)) =
-                                        result;
-                                }
-                            }
-                        });
-                    }
-                });
-            }
-        }
-        let time = start.elapsed();
-        let avg_us = time.as_micros() as f64 / iters as f64;
-        println!("{} threads (scoped): {:7.2} us", n_threads, avg_us);
-    }
-}
+    let avg_total: f64 =
+        total_times.iter().sum::<f64>() / cli.iterations as f64;
+    println!(
+        "Total prefill: {:.2} ms ({:.1} t/s)",
+        avg_total,
+        cli.tokens as f64 / (avg_total / 1000.0)
+    );
+    println!();
 
-fn run_llama_cpp_benchmark(model_path: &str) {
-    // Run llama-cli with verbose output to extract per-layer timing
-    let output = Command::new("llama-cli")
-        .arg("-m")
-        .arg(model_path)
-        .arg("-p")
-        .arg("Hello")
-        .arg("-n")
-        .arg("1")
-        .arg("--temp")
-        .arg("0")
-        .arg("--verbose")
-        .output();
+    // Profile individual operations by instrumenting forward
+    println!("=== Detailed Timing ===");
 
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            println!("llama.cpp output:\n{}\n{}", stdout, stderr);
-        }
-        Err(e) => {
-            println!("Failed to run llama-cli: {}", e);
-        }
-    }
+    // Run with timing inside forward.rs requires code changes
+    // For now, break down by operation counts
+
+    let n_layers = config.n_layers;
+    let hidden = config.hidden_size;
+    let intermediate = config.intermediate_size;
+    let n_heads = config.n_heads;
+    let head_dim = config.head_dim();
+
+    println!("\nModel structure:");
+    println!("  Layers: {}", n_layers);
+    println!("  Hidden: {}", hidden);
+    println!("  Intermediate: {}", intermediate);
+    println!("  Heads: {}, head_dim: {}", n_heads, head_dim);
+
+    println!("\nPer-layer operations:");
+    println!("  GEMV: q,k,v,o (4x{}x{})", hidden, hidden);
+    println!("  GEMV: gate,up,down (3x{}x{})", hidden, intermediate);
+    println!(
+        "  Attention: {} heads, {} queries, max {} KV",
+        n_heads, cli.tokens, cli.tokens
+    );
+
+    // Estimate FLOPs
+    let gemv_flops =
+        (hidden * hidden * 4 + hidden * intermediate * 3) * 2 * n_layers;
+    let attn_flops =
+        cli.tokens * n_heads * cli.tokens * head_dim * 2 * n_layers;
+    let total_flops = gemv_flops + attn_flops;
+
+    println!("\nFLOP estimate:");
+    println!("  GEMV: {:.2e}", gemv_flops as f64);
+    println!("  Attention: {:.2e}", attn_flops as f64);
+    println!("  Total: {:.2e}", total_flops as f64);
+    println!(
+        "  Compute: {:.1} GFLOPS",
+        total_flops as f64 / (avg_total / 1000.0) / 1e9
+    );
+
+    // Estimate memory bandwidth
+    let weight_bytes = 400_000_000.0; // ~400MB for 0.6B Q4
+    let act_bytes =
+        cli.tokens * (hidden * 10 + intermediate * 2) * 4 * n_layers;
+    let total_bytes = weight_bytes + act_bytes as f64;
+
+    println!("\nMemory estimate:");
+    println!("  Weights: {:.0} MB", weight_bytes / 1e6);
+    println!("  Activations: {:.0} MB", act_bytes as f64 / 1e6);
+    println!(
+        "  Bandwidth: {:.1} GB/s",
+        total_bytes / (avg_total / 1000.0) / 1e9
+    );
 }

@@ -73,18 +73,13 @@ pub unsafe fn quantize_row_q8_k_neon(x: &[f32], y: &mut [BlockQ8_K]) {
     for i in 0..nb {
         let x_ptr = unsafe { x.as_ptr().add(i * QK_K) };
 
-        // Find max absolute value and the actual max (could be negative)
+        // Find max absolute value
         let mut max_vals = std::arch::aarch64::vdupq_n_f32(0.0);
-        let mut max_raw = std::arch::aarch64::vdupq_n_f32(0.0);
 
         for j in 0..64 {
             let v = unsafe { std::arch::aarch64::vld1q_f32(x_ptr.add(j * 4)) };
             let abs_v = std::arch::aarch64::vabsq_f32(v);
-
-            // Compare: if abs_v > max_vals, select v for max_raw
-            let gt = std::arch::aarch64::vcgtq_f32(abs_v, max_vals);
-            max_vals = std::arch::aarch64::vbslq_f32(gt, abs_v, max_vals);
-            max_raw = std::arch::aarch64::vbslq_f32(gt, v, max_raw);
+            max_vals = std::arch::aarch64::vmaxq_f32(max_vals, abs_v);
         }
 
         let amax = std::arch::aarch64::vmaxvq_f32(max_vals);
@@ -96,22 +91,10 @@ pub unsafe fn quantize_row_q8_k_neon(x: &[f32], y: &mut [BlockQ8_K]) {
             continue;
         }
 
-        // Find the actual max value (the one with max absolute value)
-        // This is needed for correct signed quantization
-        let mut _max = 0.0f32;
-        for j in 0..256 {
-            unsafe {
-                if x_ptr.add(j).read_unaligned().abs() == amax {
-                    _max = x_ptr.add(j).read_unaligned();
-                    break;
-                }
-            }
-        }
-
-        // Calculate inverse scale: -127/max (matches llama.cpp exactly)
-        // The negative sign is important for correct signed quantization
-        let iscale = -127.0 / _max;
-        y[i].d = 1.0 / iscale; // d = -max/127
+        // Scale: d = amax / 127, iscale = 127 / amax
+        // d is always positive
+        let iscale = 127.0 / amax;
+        y[i].d = amax / 127.0;
 
         let iscale_vec = std::arch::aarch64::vdupq_n_f32(iscale);
 

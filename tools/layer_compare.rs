@@ -60,6 +60,21 @@ enum CompareMode {
         tokens: Option<String>,
     },
 
+    /// Debug mode: output intermediate states for each layer
+    Debug {
+        /// Token IDs (comma separated)
+        #[arg(short, long)]
+        tokens: Option<String>,
+
+        /// Show only first N values per tensor
+        #[arg(long, default_value = "5")]
+        values: usize,
+
+        /// Show only specific layer (0 = all)
+        #[arg(long, default_value = "0")]
+        layer: usize,
+    },
+
     /// Compare final logits
     Logits {
         /// Prompt text
@@ -121,6 +136,17 @@ enum CompareMode {
         #[arg(long, default_value = "5")]
         values: usize,
     },
+
+    /// Prefill performance analysis
+    Perf {
+        /// Token IDs (comma separated)
+        #[arg(short, long)]
+        tokens: String,
+
+        /// Number of iterations
+        #[arg(long, default_value = "5")]
+        iterations: usize,
+    },
 }
 
 fn main() {
@@ -148,6 +174,15 @@ fn main() {
         }
         CompareMode::Layer { layer, tokens } => {
             compare_layer(&model, layer, parse_tokens(tokens), cli.verbose);
+        }
+        CompareMode::Debug { tokens, values, layer } => {
+            debug_layers(
+                &cli.model,
+                parse_tokens(tokens),
+                values,
+                layer,
+                cli.verbose,
+            );
         }
         CompareMode::Logits { prompt, tokens, top_n } => {
             compare_logits(
@@ -183,6 +218,13 @@ fn main() {
                 layers,
                 values,
                 cli.verbose,
+            );
+        }
+        CompareMode::Perf { tokens, iterations } => {
+            analyze_prefill_perf(
+                &cli.model,
+                parse_tokens(Some(tokens)),
+                iterations,
             );
         }
     }
@@ -541,7 +583,9 @@ fn trace_detailed(
                         .iter()
                         .cloned()
                         .fold(f32::NEG_INFINITY, f32::max);
-                    println!("  range: min={:.4}, max={:.4}", min, max);
+                    println!("  (F32) range: min={:.4}, max={:.4}", min, max);
+                    // Print first few values
+                    println!("  First 5: {:?}", &weights[..5]);
                 } else if data.len() == config.hidden_size * 2 {
                     // F16 weights
                     let weights: Vec<f32> = data
@@ -557,6 +601,8 @@ fn trace_detailed(
                         .cloned()
                         .fold(f32::NEG_INFINITY, f32::max);
                     println!("  (F16) range: min={:.4}, max={:.4}", min, max);
+                    // Print first few values
+                    println!("  First 5: {:?}", &weights[..5]);
                 }
             } else {
                 println!("{}: NOT FOUND", name);
@@ -567,6 +613,7 @@ fn trace_detailed(
         println!("\n=== Q/K Norm Weight Ranges ===");
         for name in &["blk.0.attn_q_norm.weight", "blk.0.attn_k_norm.weight"] {
             if let Some(data) = model.get_tensor(name) {
+                println!("{}: data_len={}", name, data.len());
                 if data.len() == 512 {
                     // F32: 128 * 4
                     let weights: Vec<f32> = data
@@ -579,7 +626,22 @@ fn trace_detailed(
                         .iter()
                         .cloned()
                         .fold(f32::NEG_INFINITY, f32::max);
-                    println!("{}: min={:.4}, max={:.4}", name, min, max);
+                    println!("  (F32) min={:.4}, max={:.4}", min, max);
+                } else if data.len() == 256 {
+                    // F16: 128 * 2
+                    let weights: Vec<f32> = data
+                        .chunks_exact(2)
+                        .map(|c| {
+                            half::f16::from_le_bytes([c[0], c[1]]).to_f32()
+                        })
+                        .collect();
+                    let min =
+                        weights.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let max = weights
+                        .iter()
+                        .cloned()
+                        .fold(f32::NEG_INFINITY, f32::max);
+                    println!("  (F16) min={:.4}, max={:.4}", min, max);
                 }
             }
         }
@@ -673,4 +735,214 @@ fn trace_detailed(
         print_stats("Logits", &logits);
         print_top_tokens(&logits, 10, executor.model.tokenizer());
     }
+}
+
+fn analyze_prefill_perf(model_path: &str, tokens: Vec<u32>, iterations: usize) {
+    use std::time::Instant;
+
+    println!("\n=== Prefill Performance Analysis ===");
+    println!("Tokens: {} ({:?})", tokens.len(), tokens);
+    println!("Iterations: {}", iterations);
+
+    let gguf = GgufFile::load(model_path).expect("Failed to load model");
+    let tokenizer = create_tokenizer(
+        gguf.tokenizer_metadata().expect("Failed to get metadata"),
+    )
+    .expect("Failed to create tokenizer");
+    let model =
+        SimpleModel::load(model_path, tokenizer).expect("Failed to load model");
+    let config = model.config();
+
+    println!(
+        "\nModel config: {} layers, hidden={}, heads={}",
+        config.n_layers, config.hidden_size, config.n_heads
+    );
+
+    let mut total_times = Vec::new();
+
+    for iter in 0..iterations {
+        // Reload model each iteration (can't clone)
+        let gguf = GgufFile::load(model_path).expect("Failed to load model");
+        let tokenizer = create_tokenizer(
+            gguf.tokenizer_metadata().expect("Failed to get metadata"),
+        )
+        .expect("Failed to create tokenizer");
+        let model = SimpleModel::load(model_path, tokenizer)
+            .expect("Failed to load model");
+        let mut executor = ForwardExecutor::new(model);
+
+        let start = Instant::now();
+        let _ = executor.forward_batch(&tokens).expect("Forward batch failed");
+        let elapsed = start.elapsed();
+        total_times.push(elapsed.as_millis() as f64);
+
+        if iter == 0 {
+            println!("\nFirst iteration time: {:.2} ms", elapsed.as_millis());
+        }
+    }
+
+    let avg_ms: f64 = total_times.iter().sum::<f64>() / iterations as f64;
+    let min_ms = total_times.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max_ms = total_times.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+    println!("\n=== Results ===");
+    println!("Average: {:.2} ms", avg_ms);
+    println!("Min: {:.2} ms", min_ms);
+    println!("Max: {:.2} ms", max_ms);
+    println!(
+        "Throughput: {:.1} tokens/sec",
+        tokens.len() as f64 / (avg_ms / 1000.0)
+    );
+}
+
+fn debug_layers(
+    model_path: &str,
+    tokens: Vec<u32>,
+    n_values: usize,
+    target_layer: usize,
+    verbose: bool,
+) {
+    use infer_train::inference::LayerDebugState;
+
+    println!("\n=== Debug Mode: Layer-by-Layer Trace ===");
+    println!("Tokens: {:?}", tokens);
+    println!("Values per tensor: {}", n_values);
+    if target_layer > 0 {
+        println!("Target layer: {}", target_layer);
+    }
+
+    let gguf = GgufFile::load(model_path).expect("Failed to load model");
+    let tokenizer = create_tokenizer(
+        gguf.tokenizer_metadata().expect("Failed to get metadata"),
+    )
+    .expect("Failed to create tokenizer");
+    let model =
+        SimpleModel::load(model_path, tokenizer).expect("Failed to load model");
+    let config = model.config();
+
+    if verbose {
+        println!(
+            "\nModel: {} layers, hidden={}, n_heads={}, n_kv_heads={}",
+            config.n_layers,
+            config.hidden_size,
+            config.n_heads,
+            config.n_kv_heads
+        );
+    }
+
+    // Create executor with debug mode enabled
+    let mut executor = ForwardExecutor::new(model);
+    executor.debug_mode = true;
+
+    // Process first token only (to see per-layer states)
+    let token = tokens.first().copied().unwrap_or(9707);
+    println!("\n=== Processing token {} ===", token);
+
+    let _logits = executor.forward(token).expect("Forward failed");
+
+    // Print debug states
+    println!("\n=== Layer Debug States ===");
+    for state in &executor.debug_states {
+        if target_layer > 0 && state.layer_idx != target_layer {
+            continue;
+        }
+
+        println!(
+            "\n--- Layer {} (seq_pos={}) ---",
+            state.layer_idx, state.seq_pos
+        );
+        print_debug_tensor("hidden_before", &state.hidden_before, n_values);
+        print_debug_tensor("normed_attn", &state.normed_attn, n_values);
+        print_debug_tensor("q", &state.q, n_values);
+        print_debug_tensor("k", &state.k, n_values);
+        print_debug_tensor("v", &state.v, n_values);
+        print_debug_tensor("q_normed", &state.q_normed, n_values);
+        print_debug_tensor("k_normed", &state.k_normed, n_values);
+        print_debug_tensor("attn_output", &state.attn_output, n_values);
+        print_debug_tensor("attn_out", &state.attn_out, n_values);
+        // hidden_after_attn = hidden_before + attn_out (computed for display)
+        let mut hidden_after_attn = state.hidden_before.clone();
+        for i in 0..hidden_after_attn.len() {
+            hidden_after_attn[i] += state.attn_out[i];
+        }
+        print_debug_tensor("hidden_after_attn", &hidden_after_attn, n_values);
+        print_debug_tensor("normed_ffn", &state.normed_ffn, n_values);
+        print_debug_tensor("  gate (before SiLU)", &state.gate, n_values);
+        print_debug_tensor("  up", &state.up, n_values);
+        print_debug_tensor(
+            "  gate*up (SwiGLU)",
+            &state.gate_times_up,
+            n_values,
+        );
+        print_debug_tensor("ffn_out", &state.ffn_out, n_values);
+        print_debug_tensor("hidden_after", &state.hidden_after, n_values);
+
+        // Check for NaN/Inf
+        if state.hidden_after.iter().any(|x| x.is_nan() || x.is_infinite()) {
+            println!("\n*** WARNING: NaN/Inf detected in hidden_after! ***");
+        }
+    }
+
+    // Print final logits
+    println!("\n=== Final Logits ===");
+    print_debug_tensor("logits", &executor.logits_buf, n_values);
+
+    // Print top tokens
+    let mut indexed: Vec<(usize, f32)> =
+        executor.logits_buf.iter().cloned().enumerate().collect();
+    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    println!("\nTop 5 tokens:");
+    for (i, (token_id, logit)) in indexed.iter().take(5).enumerate() {
+        let token_str = executor
+            .model
+            .tokenizer()
+            .decode(&[*token_id as u32])
+            .unwrap_or_else(|_| format!("token_{}", token_id));
+        println!(
+            "  #{}: token {} = {:?} (logit={:.4})",
+            i, token_id, token_str, logit
+        );
+    }
+}
+
+fn print_debug_tensor(name: &str, data: &[f32], n_values: usize) {
+    let min = data.iter().cloned().fold(f32::INFINITY, f32::min);
+    let max = data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let mean: f32 = data.iter().sum::<f32>() / data.len() as f32;
+
+    let has_nan = data.iter().any(|x| x.is_nan());
+    let has_inf = data.iter().any(|x| x.is_infinite());
+
+    let status = if has_nan {
+        " [NaN!]"
+    } else if has_inf {
+        " [Inf!]"
+    } else {
+        ""
+    };
+
+    print!(
+        "  {:<16}: shape={}, min={:+.4}, max={:+.4}, mean={:+.4}{}",
+        name,
+        data.len(),
+        min,
+        max,
+        mean,
+        status
+    );
+
+    if n_values > 0 {
+        print!(" [");
+        for (i, v) in data.iter().take(n_values).enumerate() {
+            if i > 0 {
+                print!(", ");
+            }
+            print!("{:+.4}", v);
+        }
+        if data.len() > n_values {
+            print!(", ...");
+        }
+        print!("]");
+    }
+    println!();
 }

@@ -49,6 +49,26 @@ pub struct BlockQ8_1 {
     pub qs: [i8; 32],
 }
 
+// Q4_0 interleaved block: 4 rows interleaved
+// Layout: 4 scales (8 bytes) + interleaved qs (32 * 4 / 2 = 64 bytes) = 72 bytes
+// qs are interleaved with 8-byte chunks
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BlockQ4_0x4 {
+    pub d: [u16; 4],  // FP16 scales for 4 blocks
+    pub qs: [u8; 64], // Interleaved 4-bit values (4 rows * 32 values / 2 bytes per value)
+}
+
+// Q4_0 interleaved block: 8 rows interleaved
+// Layout: 8 scales (16 bytes) + interleaved qs (32 * 8 / 2 = 128 bytes) = 144 bytes
+// qs layout: k * 64 + j * 8 + i where k in 0..1, j in 0..7, i in 0..7
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BlockQ4_0x8 {
+    pub d: [u16; 8],   // FP16 scales for 8 blocks
+    pub qs: [u8; 128], // Interleaved 4-bit values (8 rows * 32 values / 2 bytes per value)
+}
+
 // K-quant structures (Q2_K through Q8_K)
 // These use super-blocks of 256 values
 
@@ -101,6 +121,45 @@ pub struct BlockIQ4XS {
     pub scales_h: u16,     // High bits of scales
     pub scales_l: [u8; 4], // Low bits of scales (QK_K/64 = 256/64 = 4)
     pub qs: [u8; 128],     // 4-bit quantized values (QK_K/2 = 256/2 = 128)
+}
+
+// ============================================================================
+// Repacked block formats for interleaved GEMV (llama.cpp style)
+// These pack multiple blocks together for cache-efficient GEMV
+// ============================================================================
+
+/// Repacked Q5_K: 8 blocks interleaved
+/// Size: 16 + 16 + 96 + 256 + 1024 = 1408 bytes (8 * 176)
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BlockQ5_Kx8 {
+    pub d: [u16; 8],      // 8 scales (16 bytes)
+    pub dmin: [u16; 8],   // 8 min scales (16 bytes)
+    pub scales: [u8; 96], // Packed scales (96 bytes)
+    pub qh: [u8; 256],    // High bits for 8 blocks (256 bytes)
+    pub qs: [u8; 1024],   // Low bits for 8 blocks (1024 bytes)
+}
+
+/// Repacked Q4_K: 8 blocks interleaved
+/// Size: 16 + 16 + 96 + 1024 = 1152 bytes (8 * 144)
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BlockQ4_Kx8 {
+    pub d: [u16; 8],      // 8 scales (16 bytes)
+    pub dmin: [u16; 8],   // 8 min scales (16 bytes)
+    pub scales: [u8; 96], // Packed scales (96 bytes)
+    pub qs: [u8; 1024],   // Quantized values for 8 blocks (1024 bytes)
+}
+
+/// Repacked Q6_K: 8 blocks interleaved
+/// Size: 16 + 128 + 1024 + 512 = 1680 bytes (8 * 210)
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BlockQ6_Kx8 {
+    pub d: [u16; 8],       // 8 scales (16 bytes)
+    pub scales: [i8; 128], // 8 blocks * 16 scales (128 bytes)
+    pub ql: [u8; 1024],    // Low bits for 8 blocks (1024 bytes)
+    pub qh: [u8; 512],     // High bits for 8 blocks (512 bytes)
 }
 
 // Quantization type (ggml_type values)
