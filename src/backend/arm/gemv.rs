@@ -577,27 +577,30 @@ pub unsafe fn gemv_q5_k_transposed(
 
     // Debug output for first call
     if output.len() > 0 && out_features > 100 {
-        eprintln!(
-            "[DEBUG] gemv_q5_k_transposed: nb={}, size_block={}, row_stride={}",
-            nb, size_block_q5_k, row_stride
+        log::debug!(
+            "gemv_q5_k_transposed: nb={}, size_block={}, row_stride={}",
+            nb,
+            size_block_q5_k,
+            row_stride
         );
-        eprintln!(
-            "[DEBUG] gemv_q5_k_transposed: out_features={}, in_features={}",
-            out_features, in_features
+        log::debug!(
+            "gemv_q5_k_transposed: out_features={}, in_features={}",
+            out_features,
+            in_features
         );
 
         // Check first row
         let first_block: &crate::types::BlockQ5_K =
             &*(weight_data.as_ptr() as *const crate::types::BlockQ5_K);
-        eprintln!(
-            "[DEBUG] First weight block: d={:.4}, dmin={:.4}",
+        log::debug!(
+            "First weight block: d={:.4}, dmin={:.4}",
             half::f16::from_bits(first_block.d).to_f32(),
             half::f16::from_bits(first_block.dmin).to_f32()
         );
 
         // Check input
-        eprintln!(
-            "[DEBUG] Input first block: d={:.4}, qs[:4]={:?}",
+        log::debug!(
+            "Input first block: d={:.4}, qs[:4]={:?}",
             input[0].d,
             &input[0].qs[..4]
         );

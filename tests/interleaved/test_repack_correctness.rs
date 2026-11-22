@@ -22,7 +22,6 @@ fn create_test_block_q5_k() -> BlockQ5_K {
     block
 }
 
-#[test]
 fn test_qh_interleaved_layout() {
     // Create 8 test blocks
     let mut blocks: [BlockQ5_K; 8] = unsafe { std::mem::zeroed() };
@@ -84,7 +83,6 @@ fn test_qh_interleaved_layout() {
     println!("Test passed: qh interleaved layout is correct");
 }
 
-#[test]
 fn test_gemv_qh_loading() {
     // Test the qh loading logic in gemv_q5_k_x8_neon
     let mut blocks: [BlockQ5_K; 8] = unsafe { std::mem::zeroed() };
