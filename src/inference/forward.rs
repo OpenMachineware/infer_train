@@ -212,7 +212,8 @@ impl ForwardExecutor {
         _model: &SimpleModel,
         _layer_weights: &[LayerWeightNames],
     ) -> std::collections::HashMap<String, Vec<u8>> {
-        // Temporarily disabled interleaved GEMV for correctness debugging
+        // Temporarily disabled due to incorrect scales encoding in repack functions
+        // TODO: Fix repack_q4_k_to_x8, repack_q5_k_to_x8, repack_q6_k_to_x8
         std::collections::HashMap::new()
     }
 
@@ -1438,6 +1439,9 @@ impl ForwardExecutor {
             .ok_or(format!("Weight data '{}' not found", weight_name))?;
 
         let stride = tensor.strides.get(1).copied().unwrap_or(0) as usize;
+        let dims = &tensor.dims;
+        let in_features = dims.get(0).copied().unwrap_or(0) as usize;
+        let out_features = dims.get(1).copied().unwrap_or(0) as usize;
 
         linear::linear_f32(
             input,
@@ -1539,7 +1543,7 @@ impl ForwardExecutor {
                         out_features,
                         in_features,
                         n_tokens,
-                    )
+                    )?;
                 } else {
                     linear::linear_q8_k_batch(
                         &self.quant_buf_batch.q8_k,
@@ -1551,8 +1555,9 @@ impl ForwardExecutor {
                         in_features,
                         n_tokens,
                         self.n_threads_batch,
-                    )
+                    )?;
                 }
+                Ok(())
             }
             QuantFormat::None => Err("No quantized input available".into()),
         }
