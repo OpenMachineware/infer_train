@@ -94,13 +94,18 @@ pub struct BlockQ5_K {
 }
 
 // Q6_K super-block: 256 values in 210 bytes
+// Memory layout MUST match llama.cpp exactly:
+// offset 0: ql (128 x u8) - low bits
+// offset 128: qh (64 x u8) - high bits
+// offset 192: scales (16 x i8) - per-block scales
+// offset 208: d (ggml_half, 2 bytes) - super-block scale
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct BlockQ6_K {
-    pub ql: [u8; 128], // Low bits
-    pub qh: [u8; 64],  // High bits
-    pub scales: [i8; 16],
-    pub d: u16, // FP16 super-block scale
+    pub ql: [u8; 128],    // Low bits (offset 0)
+    pub qh: [u8; 64],     // High bits (offset 128)
+    pub scales: [i8; 16], // Per-block scales (offset 192)
+    pub d: u16,           // FP16 super-block scale (offset 208)
 }
 
 // Q8_K super-block: 256 values in 292 bytes

@@ -537,7 +537,8 @@ pub unsafe fn vec_dot_q6_k_q8_k_neon(x: &[BlockQ6_K], y: &[BlockQ8_K]) -> f32 {
         // = sum(q6_unpacked * q8 * scale) - 32 * sum(q8 * scale)
         // = isum - 32 * sum(bsums[k] * scales[k])
         // bsums has 16 elements (one per 16-value block)
-        let q8sums = vld1q_s16(y[i].bsums.as_ptr()); // Load 16 x i16
+        let q8sums_0 = vld1q_s16(y[i].bsums.as_ptr()); // Load first 8 x i16
+        let q8sums_1 = vld1q_s16(y[i].bsums.as_ptr().add(8)); // Load next 8 x i16
         let scales_vec = vld1q_s8(x[i].scales.as_ptr()); // Load 16 x i8
 
         // Extend i8 -> i16 for scales
@@ -546,12 +547,19 @@ pub unsafe fn vec_dot_q6_k_q8_k_neon(x: &[BlockQ6_K], y: &[BlockQ8_K]) -> f32 {
 
         // Compute bsums[k] * scales[k] for k = 0..7 and k = 8..15
         let prod_0 =
-            vmull_s16(vget_low_s16(q8sums), vget_low_s16(scales_i16_0));
+            vmull_s16(vget_low_s16(q8sums_0), vget_low_s16(scales_i16_0));
         let prod_1 =
-            vmull_s16(vget_high_s16(q8sums), vget_high_s16(scales_i16_1));
+            vmull_s16(vget_high_s16(q8sums_0), vget_high_s16(scales_i16_0));
+        let prod_2 =
+            vmull_s16(vget_low_s16(q8sums_1), vget_low_s16(scales_i16_1));
+        let prod_3 =
+            vmull_s16(vget_high_s16(q8sums_1), vget_high_s16(scales_i16_1));
 
         // Sum all products
-        let isum_mins = vaddvq_s32(vaddq_s32(prod_0, prod_1));
+        let isum_mins = vaddvq_s32(vaddq_s32(
+            vaddq_s32(prod_0, prod_1),
+            vaddq_s32(prod_2, prod_3),
+        ));
 
         // Apply bias correction: isum - 32 * isum_mins
         sum += d * (isum - 32 * isum_mins) as f32;

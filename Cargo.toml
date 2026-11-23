@@ -12,6 +12,18 @@ name = "layer_compare"
 path = "tools/layer_compare.rs"
 
 [[bin]]
+name = "debug_single_layer"
+path = "tools/debug_single_layer.rs"
+
+[[bin]]
+name = "list_tensors"
+path = "tools/list_tensors.rs"
+
+[[bin]]
+name = "debug_q6k_scales"
+path = "tools/debug_q6k_scales.rs"
+
+[[bin]]
 name = "op_compare"
 path = "tools/op_compare.rs"
 
@@ -120,19 +132,6 @@ path = "tests/interleaved/test_q5k_single_block.rs"
 name = "test_repack_correctness"
 path = "tests/interleaved/test_repack_correctness.rs"
 
-# Tiled tests
-[[bin]]
-name = "tiled_correctness_test"
-path = "tests/tiled/tiled_correctness_test.rs"
-
-[[bin]]
-name = "tiled_mapping_test"
-path = "tests/tiled/tiled_mapping_test.rs"
-
-[[bin]]
-name = "tiled_single_block_test"
-path = "tests/tiled/tiled_single_block_test.rs"
-
 # Unit tests
 [[bin]]
 name = "q5k_gemv_compare"
@@ -143,5 +142,48 @@ name = "test_q6k_vecdot"
 path = "tests/unit/test_q6k_vecdot.rs"
 
 [[bin]]
+name = "test_q5k_vecdot"
+path = "tests/test_q5k_vecdot.rs"
+
+[[bin]]
 name = "test_q8k_simple"
 path = "tests/unit/test_q8k_simple.rs"
+
+[[bin]]
+name = "verify_q5k"
+path = "tests/verify_q5k.rs"
+
+
+[[bin]]
+name = "check_weights"
+path = "tests/check_weights.rs"
+
+
+[[bin]]
+name = "check_q_weights"
+path = "tests/check_q_weights.rs"
+
+
+[[bin]]
+name = "check_all_scales"
+path = "tests/check_all_scales.rs"
+
+
+[[bin]]
+name = "verify_q6k_layout"
+path = "tests/verify_q6k_layout.rs"
+
+
+[[bin]]
+name = "verify_q5k_layout"
+path = "tests/verify_q5k_layout.rs"
+
+
+[[bin]]
+name = "verify_q4k_layout"
+path = "tests/verify_q4k_layout.rs"
+
+
+[[bin]]
+name = "check_q6k_bytes"
+path = "tests/check_q6k_bytes.rs"

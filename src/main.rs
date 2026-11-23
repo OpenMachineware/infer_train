@@ -316,8 +316,31 @@ fn run_single_prompt(
     println!("\n=== Generating ===");
     let output_tokens = executor.generate(&tokens, max_tokens, temperature);
 
-    // Decode after mutable borrow ends
+    // Debug: print generated tokens and logits
     let new_tokens = &output_tokens[tokens.len()..];
+    println!("Generated {} tokens: {:?}", new_tokens.len(), new_tokens);
+
+    // Print logits stats
+    let logits = &executor.logits_buf;
+    let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let min_logit = logits.iter().cloned().fold(f32::INFINITY, f32::min);
+    println!(
+        "Final logits: min={}, max={}, len={}",
+        min_logit,
+        max_logit,
+        logits.len()
+    );
+
+    // Find top 5 tokens
+    let mut sorted_logits: Vec<(usize, f32)> =
+        logits.iter().cloned().enumerate().collect();
+    sorted_logits.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    println!("Top 5 tokens:");
+    for (i, score) in sorted_logits.iter().take(5) {
+        println!("  token {}: score={:.4}", i, score);
+    }
+
+    // Decode after mutable borrow ends
     let new_text = {
         let tokenizer = executor.model.tokenizer();
         tokenizer.decode(new_tokens).map_err(|e| e.to_string())?

@@ -43,6 +43,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum CompareMode {
+    /// Auto-diagnose common issues
+    Diagnose {
+        /// Token IDs to test (comma separated)
+        #[arg(short, long)]
+        tokens: Option<String>,
+
+        /// Prompt text to test
+        #[arg(short, long)]
+        prompt: Option<String>,
+    },
+
     /// Compare embedding layer
     Embedding {
         /// Token IDs (comma separated)
@@ -169,6 +180,13 @@ fn main() {
     }
 
     match cli.mode {
+        CompareMode::Diagnose { tokens, prompt } => {
+            diagnose_model(
+                &cli.model,
+                parse_tokens_opt(&cli.model, prompt, tokens),
+                cli.verbose,
+            );
+        }
         CompareMode::Embedding { tokens } => {
             compare_embedding(&model, parse_tokens(tokens), cli.verbose);
         }
@@ -288,6 +306,242 @@ fn print_top_tokens(
             .unwrap_or_else(|_| format!("token_{}", token_id));
         println!("  #{}: token {} = {:?}", i, token_id, token_str);
         println!("        logit = {:.4}", logit);
+    }
+}
+
+/// Diagnose common issues in model inference
+fn diagnose_model(model_path: &str, tokens: Vec<u32>, verbose: bool) {
+    println!("\n╔══════════════════════════════════════════╗");
+    println!("║       Model Inference Diagnosis          ║");
+    println!("╚══════════════════════════════════════════╝\n");
+
+    let mut issues: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    let gguf = GgufFile::load(model_path).expect("Failed to load model");
+    let tokenizer = create_tokenizer(
+        gguf.tokenizer_metadata().expect("Failed to get metadata"),
+    )
+    .expect("Failed to create tokenizer");
+    let model =
+        SimpleModel::load(model_path, tokenizer).expect("Failed to load model");
+    let config = model.config();
+
+    println!(
+        "Model: {} layers, hidden={}, vocab={}",
+        config.n_layers, config.hidden_size, config.vocab_size
+    );
+
+    // ====== Check 1: Q/K Norm Weights ======
+    println!("\n--- Check 1: Q/K Norm Weights ---");
+    let q_norm_name = "blk.0.attn_q_norm.weight";
+    let k_norm_name = "blk.0.attn_k_norm.weight";
+
+    let has_q_norm = gguf.get_tensor_data(q_norm_name).is_some();
+    let has_k_norm = gguf.get_tensor_data(k_norm_name).is_some();
+
+    println!(
+        "  Q norm weight: {}",
+        if has_q_norm { "✓ Present" } else { "✗ Missing" }
+    );
+    println!(
+        "  K norm weight: {}",
+        if has_k_norm { "✓ Present" } else { "✗ Missing" }
+    );
+
+    if has_q_norm && has_k_norm {
+        println!(
+            "  Status: Q/K norm weights exist - model requires Q/K normalization"
+        );
+
+        // Check if they're actually used in forward
+        // This requires checking the ForwardExecutor code
+        println!("  Recommendation: Ensure Q/K norm is enabled in forward.rs");
+    } else if !has_q_norm && !has_k_norm {
+        println!(
+            "  Status: No Q/K norm weights - model does not use Q/K normalization"
+        );
+    } else {
+        warnings.push(format!(
+            "Inconsistent Q/K norm weights: q={}, k={}",
+            has_q_norm, has_k_norm
+        ));
+    }
+
+    // ====== Check 2: Quantization Types ======
+    println!("\n--- Check 2: Quantization Types ---");
+    let quant_types: std::collections::HashSet<String> =
+        gguf.tensors.iter().map(|t| format!("{:?}", t.quant_type)).collect();
+
+    println!("  Types used: {:?}", quant_types);
+
+    // Check if all types are supported
+    let unsupported: Vec<_> = quant_types
+        .iter()
+        .filter(|t| {
+            !matches!(
+                t.as_str(),
+                "F32"
+                    | "F16"
+                    | "Q4_0"
+                    | "Q8_0"
+                    | "Q4_K"
+                    | "Q5_K"
+                    | "Q6_K"
+                    | "IQ4_XS"
+            )
+        })
+        .collect();
+
+    if !unsupported.is_empty() {
+        issues
+            .push(format!("Unsupported quantization types: {:?}", unsupported));
+    }
+
+    // ====== Check 3: Embedding Layer ======
+    println!("\n--- Check 3: Embedding Layer ---");
+    if let Some(&first_token) = tokens.first() {
+        match model.embed_token(first_token) {
+            Some(emb) => {
+                let has_nan = emb.iter().any(|&v| v.is_nan());
+                let has_inf = emb.iter().any(|&v| v.is_infinite());
+                let all_zero = emb.iter().all(|&v| v == 0.0);
+
+                println!("  Token {} embedding stats:", first_token);
+                print_stats("    ", &emb);
+
+                if has_nan {
+                    issues.push("Embedding contains NaN values".to_string());
+                }
+                if has_inf {
+                    issues.push("Embedding contains Inf values".to_string());
+                }
+                if all_zero {
+                    issues.push("Embedding is all zeros".to_string());
+                }
+
+                if !has_nan && !has_inf && !all_zero {
+                    println!("  Status: ✓ Embedding looks normal");
+                }
+            }
+            None => {
+                issues.push(
+                    "Failed to get embedding (token not found)".to_string(),
+                );
+            }
+        }
+    }
+
+    // ====== Check 4: Forward Pass ======
+    println!("\n--- Check 4: Forward Pass ---");
+    let mut executor = ForwardExecutor::new(model);
+
+    // Prefill
+    let mut forward_ok = true;
+    for (i, &token) in tokens.iter().enumerate() {
+        match executor.forward(token) {
+            Ok(_) => {
+                if verbose {
+                    println!("  Token {} forward: ✓", i);
+                }
+            }
+            Err(e) => {
+                issues.push(format!("Forward failed at token {}: {}", i, e));
+                forward_ok = false;
+                break;
+            }
+        }
+    }
+
+    if forward_ok {
+        println!("  Status: ✓ Forward pass completed");
+
+        // Check logits
+        let logits = &executor.logits_buf;
+        let has_nan = logits.iter().any(|&v| v.is_nan());
+        let has_inf = logits.iter().any(|&v| v.is_infinite());
+        let max_logit =
+            logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let min_logit = logits.iter().cloned().fold(f32::INFINITY, f32::min);
+
+        println!("  Logits: min={:.4}, max={:.4}", min_logit, max_logit);
+
+        if has_nan {
+            issues.push("Logits contain NaN values".to_string());
+        }
+        if has_inf {
+            issues.push("Logits contain Inf values".to_string());
+        }
+        if max_logit > 100.0 || min_logit < -100.0 {
+            warnings.push(format!(
+                "Large logit range: [{:.1}, {:.1}]",
+                min_logit, max_logit
+            ));
+        }
+
+        // Print top tokens
+        print_top_tokens(logits, 5, executor.model.tokenizer());
+
+        // Decode generated tokens
+        let top_token = logits
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(i, _)| i as u32)
+            .unwrap_or(0);
+
+        match executor.model.tokenizer().decode(&[top_token]) {
+            Ok(s) => println!("\n  Top token decodes to: {:?}", s),
+            Err(_) => println!("\n  Top token {} cannot be decoded", top_token),
+        }
+    }
+
+    // ====== Check 5: KV Cache ======
+    println!("\n--- Check 5: KV Cache ---");
+    let kv_size = executor.kv_cache_k[0].len();
+    println!("  KV cache size per layer: {}", kv_size);
+
+    // Check if KV cache has been populated
+    let kv_has_data = executor.kv_cache_k[0].iter().any(|&v| v != 0.0);
+    if kv_has_data {
+        println!("  Status: ✓ KV cache populated");
+    } else {
+        warnings.push("KV cache appears empty after forward".to_string());
+    }
+
+    // ====== Summary ======
+    println!("\n╔══════════════════════════════════════════╗");
+    println!("║              Diagnosis Summary           ║");
+    println!("╚══════════════════════════════════════════╝\n");
+
+    if issues.is_empty() && warnings.is_empty() {
+        println!("✓ No issues detected!");
+        println!("\nIf output is still incorrect, check:");
+        println!("  1. Q/K norm is actually applied in forward.rs");
+        println!("  2. RoPE implementation is correct");
+        println!("  3. Attention scaling factor is correct");
+    }
+
+    if !issues.is_empty() {
+        println!("❌ Issues found ({}):", issues.len());
+        for (i, issue) in issues.iter().enumerate() {
+            println!("  {}. {}", i + 1, issue);
+        }
+    }
+
+    if !warnings.is_empty() {
+        println!("\n⚠ Warnings ({}):", warnings.len());
+        for (i, warning) in warnings.iter().enumerate() {
+            println!("  {}. {}", i + 1, warning);
+        }
+    }
+
+    // ====== Quick Fix Suggestions ======
+    if has_q_norm && has_k_norm {
+        println!("\n📌 Quick check: Q/K norm weights exist.");
+        println!("   Verify in src/inference/forward.rs that:");
+        println!("   - Line ~756: has_qk_norm is NOT set to false");
+        println!("   - Line ~1110: same for batch version");
     }
 }
 
@@ -802,8 +1056,6 @@ fn debug_layers(
     target_layer: usize,
     verbose: bool,
 ) {
-    use infer_train::inference::LayerDebugState;
-
     println!("\n=== Debug Mode: Layer-by-Layer Trace ===");
     println!("Tokens: {:?}", tokens);
     println!("Values per tensor: {}", n_values);

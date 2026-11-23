@@ -2,8 +2,7 @@
 use infer_train::backend::arm::{gemv, repack, vec_dot};
 use infer_train::types::{BlockQ5_K, BlockQ5_Kx8, BlockQ8_K, QK_K};
 
-#[test]
-fn test_gemv_vs_vec_dot() {
+fn main() {
     let nb = 4; // blocks per row
     let n_rows = 8;
 

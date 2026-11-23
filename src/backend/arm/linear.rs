@@ -4,10 +4,7 @@
 // Linear layer (GEMV) operations for CPU inference
 
 use crate::backend::arm::{gemv, quant, vec_dot};
-use crate::types::{
-    BlockQ4_Kx8, BlockQ5_Kx8, BlockQ6_Kx8, BlockQ8_0, BlockQ8_K, QK_K, QK4_0,
-    QK8_0, QuantType,
-};
+use crate::types::{BlockQ8_0, BlockQ8_K, QK_K, QK4_0, QK8_0, QuantType};
 
 /// Linear layer with F32 input (quantizes internally)
 pub fn linear_f32(
@@ -124,7 +121,7 @@ pub fn linear_f32(
         }
         _ => {
             return Err(format!(
-                "Unsupported quantization type for linear: {:?}",
+                "Unsupported quantization type for linear_f32: {:?}",
                 weight_type
             ));
         }
@@ -254,7 +251,6 @@ pub fn linear_q8_k(
 }
 
 /// Batch linear layer with pre-quantized Q8_K input
-/// Uses interleaved GEMV kernels for better performance
 pub fn linear_q8_k_batch(
     input: &[BlockQ8_K],
     weight_data: &[u8],
@@ -266,8 +262,6 @@ pub fn linear_q8_k_batch(
     n_tokens: usize,
     n_threads: usize,
 ) -> Result<(), String> {
-    let nb_per_token = (in_features + QK_K - 1) / QK_K;
-
     match weight_type {
         QuantType::Q5_K => {
             gemv::mul_mat_q5_k(
@@ -320,101 +314,6 @@ pub fn linear_q8_k_batch(
         _ => {
             return Err(format!(
                 "Unsupported quantization type for linear_q8_k_batch: {:?}",
-                weight_type
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-/// Batch linear layer with pre-quantized Q8_K input and repacked weights
-/// Uses interleaved GEMV kernels (gemv_q*_x8_neon) for better performance
-pub fn linear_q8_k_batch_repacked(
-    input: &[BlockQ8_K],
-    repacked_weights: &[u8],
-    weight_type: QuantType,
-    output: &mut [f32],
-    out_features: usize,
-    in_features: usize,
-    n_tokens: usize,
-) -> Result<(), String> {
-    let nb_per_token = (in_features + QK_K - 1) / QK_K;
-    let n_row_groups = out_features / 8;
-
-    match weight_type {
-        QuantType::Q5_K => {
-            let weights_x8: &[BlockQ5_Kx8] = unsafe {
-                std::slice::from_raw_parts(
-                    repacked_weights.as_ptr() as *const BlockQ5_Kx8,
-                    n_row_groups * nb_per_token,
-                )
-            };
-            for t in 0..n_tokens {
-                let input_slice =
-                    &input[t * nb_per_token..(t + 1) * nb_per_token];
-                let output_slice =
-                    &mut output[t * out_features..(t + 1) * out_features];
-                unsafe {
-                    gemv::gemv_q5_k_x8_neon(
-                        weights_x8,
-                        input_slice,
-                        output_slice,
-                        out_features,
-                        in_features,
-                    );
-                }
-            }
-        }
-        QuantType::Q6_K => {
-            let weights_x8: &[BlockQ6_Kx8] = unsafe {
-                std::slice::from_raw_parts(
-                    repacked_weights.as_ptr() as *const BlockQ6_Kx8,
-                    n_row_groups * nb_per_token,
-                )
-            };
-            for t in 0..n_tokens {
-                let input_slice =
-                    &input[t * nb_per_token..(t + 1) * nb_per_token];
-                let output_slice =
-                    &mut output[t * out_features..(t + 1) * out_features];
-                unsafe {
-                    gemv::gemv_q6_k_x8_neon(
-                        weights_x8,
-                        input_slice,
-                        output_slice,
-                        out_features,
-                        in_features,
-                    );
-                }
-            }
-        }
-        QuantType::Q4_K => {
-            let weights_x8: &[BlockQ4_Kx8] = unsafe {
-                std::slice::from_raw_parts(
-                    repacked_weights.as_ptr() as *const BlockQ4_Kx8,
-                    n_row_groups * nb_per_token,
-                )
-            };
-            for t in 0..n_tokens {
-                let input_slice =
-                    &input[t * nb_per_token..(t + 1) * nb_per_token];
-                let output_slice =
-                    &mut output[t * out_features..(t + 1) * out_features];
-                unsafe {
-                    gemv::gemv_q4_k_x8_neon(
-                        weights_x8,
-                        input_slice,
-                        output_slice,
-                        out_features,
-                        in_features,
-                    );
-                }
-            }
-        }
-        _ => {
-            return Err(format!(
-                "Unsupported quantization type for linear_q8_k_batch_repacked: {:?}",
                 weight_type
             ));
         }

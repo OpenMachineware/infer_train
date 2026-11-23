@@ -104,8 +104,6 @@ pub struct ForwardExecutor {
     batch_attn_output: Vec<f32>,
     batch_gate: Vec<f32>,
     batch_up: Vec<f32>,
-    /// Repacked weights cache (interleaved format for GEMV)
-    repacked_weights: std::collections::HashMap<String, Vec<u8>>,
     /// Debug mode: output intermediate states
     pub debug_mode: bool,
     /// Debug output for each layer
@@ -174,9 +172,6 @@ impl ForwardExecutor {
         let batch_gate = vec![0.0f32; max_batch * config.intermediate_size];
         let batch_up = vec![0.0f32; max_batch * config.intermediate_size];
 
-        // Pre-repack weights to interleaved format for optimal GEMV
-        let repacked_weights = Self::repack_all_weights(&model, &layer_weights);
-
         Self {
             model,
             kv_cache_k,
@@ -200,140 +195,9 @@ impl ForwardExecutor {
             batch_attn_output,
             batch_gate,
             batch_up,
-            repacked_weights,
             debug_mode: false,
             debug_states: Vec::new(),
         }
-    }
-
-    /// Repack all linear layer weights to interleaved format for optimal GEMV
-    /// Handles both standard row-major and factor-4 interleaved input formats.
-    fn repack_all_weights(
-        _model: &SimpleModel,
-        _layer_weights: &[LayerWeightNames],
-    ) -> std::collections::HashMap<String, Vec<u8>> {
-        // Temporarily disabled due to incorrect scales encoding in repack functions
-        // TODO: Fix repack_q4_k_to_x8, repack_q5_k_to_x8, repack_q6_k_to_x8
-        std::collections::HashMap::new()
-    }
-
-    #[allow(dead_code)]
-    fn repack_all_weights_impl(
-        model: &SimpleModel,
-        layer_weights: &[LayerWeightNames],
-    ) -> std::collections::HashMap<String, Vec<u8>> {
-        use crate::types::{BlockQ4_Kx8, BlockQ5_Kx8, BlockQ6_Kx8, QK_K};
-
-        let mut repacked = std::collections::HashMap::new();
-        let hidden_size = model.config().hidden_size;
-        let intermediate_size = model.config().intermediate_size;
-        let nb_hidden = (hidden_size + QK_K - 1) / QK_K;
-        let nb_intermediate = (intermediate_size + QK_K - 1) / QK_K;
-
-        let size_block_q5_k = std::mem::size_of::<crate::types::BlockQ5_K>();
-        let size_block_q5_kx8 = std::mem::size_of::<BlockQ5_Kx8>();
-        let size_block_q6_k = std::mem::size_of::<crate::types::BlockQ6_K>();
-        let size_block_q6_kx8 = std::mem::size_of::<BlockQ6_Kx8>();
-        let size_block_q4_k = std::mem::size_of::<crate::types::BlockQ4_K>();
-        let size_block_q4_kx8 = std::mem::size_of::<BlockQ4_Kx8>();
-
-        for weights in layer_weights {
-            let linear_weights = [
-                (&weights.attn_q, nb_hidden),
-                (&weights.attn_k, nb_hidden),
-                (&weights.attn_v, nb_hidden),
-                (&weights.attn_output, nb_hidden),
-                (&weights.ffn_gate, nb_intermediate),
-                (&weights.ffn_up, nb_intermediate),
-                (&weights.ffn_down, nb_hidden),
-            ];
-
-            for (name, nb) in &linear_weights {
-                if let Some(tensor) = model.get_tensor_meta(name) {
-                    let quant_type = tensor.quant_type;
-                    if !matches!(
-                        quant_type,
-                        crate::types::QuantType::Q4_K
-                            | crate::types::QuantType::Q5_K
-                            | crate::types::QuantType::Q6_K
-                    ) {
-                        continue;
-                    }
-
-                    let weight_data = match model.get_tensor(name) {
-                        Some(d) => d,
-                        None => continue,
-                    };
-
-                    let stride =
-                        tensor.strides.get(1).copied().unwrap_or(0) as usize;
-                    let out_features =
-                        tensor.dims.get(0).copied().unwrap_or(0) as usize;
-
-                    if out_features % 8 != 0 {
-                        continue;
-                    }
-
-                    let n_row_groups = out_features / 8;
-                    let (size_block, size_block_x8) = match quant_type {
-                        crate::types::QuantType::Q4_K => {
-                            (size_block_q4_k, size_block_q4_kx8)
-                        }
-                        crate::types::QuantType::Q5_K => {
-                            (size_block_q5_k, size_block_q5_kx8)
-                        }
-                        crate::types::QuantType::Q6_K => {
-                            (size_block_q6_k, size_block_q6_kx8)
-                        }
-                        _ => continue,
-                    };
-
-                    // Skip if already factor-8 interleaved (target format)
-                    if stride == nb * size_block_x8 {
-                        continue;
-                    }
-
-                    let repacked_size = n_row_groups * nb * size_block_x8;
-                    let mut repacked_data = vec![0u8; repacked_size];
-
-                    // Repack all 8-row groups at once (entire weight matrix)
-                    match quant_type {
-                        crate::types::QuantType::Q5_K => {
-                            crate::backend::arm::repack::repack_q5_k_to_x8(
-                                weight_data,
-                                stride,
-                                &mut repacked_data,
-                                out_features,
-                                *nb,
-                            );
-                        }
-                        crate::types::QuantType::Q6_K => {
-                            crate::backend::arm::repack::repack_q6_k_to_x8(
-                                weight_data,
-                                stride,
-                                &mut repacked_data,
-                                out_features,
-                                *nb,
-                            );
-                        }
-                        crate::types::QuantType::Q4_K => {
-                            crate::backend::arm::repack::repack_q4_k_to_x8(
-                                weight_data,
-                                stride,
-                                &mut repacked_data,
-                                out_features,
-                                *nb,
-                            );
-                        }
-                        _ => {}
-                    }
-
-                    repacked.insert((*name).clone(), repacked_data);
-                }
-            }
-        }
-
-        repacked
     }
 
     fn ensure_kv_capacity(&mut self) {
@@ -750,8 +614,32 @@ impl ForwardExecutor {
         self.add_bias(k, &weights.attn_k_bias)?;
         self.add_bias(v, &weights.attn_v_bias)?;
 
-        // Note: Qwen2 does NOT use Q/K norm, directly apply RoPE after bias
-        // RoPE
+        // Q/K norm (Qwen3 uses per-head RMS norm on Q and K)
+        // Check if Q/K norm weights exist by trying to get them
+        let has_qk_norm = self.model.get_tensor(&weights.attn_q_norm).is_some()
+            && self.model.get_tensor(&weights.attn_k_norm).is_some();
+
+        if self.debug_mode && layer_idx == 0 {
+            println!(
+                "DEBUG: has_qk_norm={}, q_norm_weight={}, k_norm_weight={}",
+                has_qk_norm, &weights.attn_q_norm, &weights.attn_k_norm
+            );
+        }
+
+        if has_qk_norm {
+            // Apply Q norm using temporary buffer for in-place operation
+            let q_tmp: &mut [f32] = self.arena.alloc_zeroed(n_heads * head_dim);
+            q_tmp.copy_from_slice(q);
+            self.qk_norm(q_tmp, &weights.attn_q_norm, n_heads, head_dim, q)?;
+
+            // Apply K norm using temporary buffer for in-place operation
+            let k_tmp: &mut [f32] =
+                self.arena.alloc_zeroed(n_kv_heads * head_dim);
+            k_tmp.copy_from_slice(k);
+            self.qk_norm(k_tmp, &weights.attn_k_norm, n_kv_heads, head_dim, k)?;
+        }
+
+        // RoPE (after Q/K norm if present)
         rope_f32_inplace(
             q,
             self.seq_pos,
@@ -1068,25 +956,35 @@ impl ForwardExecutor {
         self.add_bias_batch(k, &weights.attn_k_bias, n_tokens)?;
         self.add_bias_batch(v, &weights.attn_v_bias, n_tokens)?;
 
-        // Batch Q/K norm
-        time_op!("qk_norm", {
-            self.qk_norm_batch(
-                q,
-                &weights.attn_q_norm,
-                n_heads,
-                head_dim,
-                n_tokens,
-                q_normed,
-            )?;
-            self.qk_norm_batch(
-                k,
-                &weights.attn_k_norm,
-                n_kv_heads,
-                head_dim,
-                n_tokens,
-                k_normed,
-            )?;
-        });
+        // Batch Q/K norm - DISABLED to match single token path
+        // Note: Qwen3 uses Q/K norm, but we disable it for now to test if it's causing issues
+        let has_qk_norm = self.model.get_tensor(&weights.attn_q_norm).is_some()
+            && self.model.get_tensor(&weights.attn_k_norm).is_some();
+
+        if has_qk_norm {
+            time_op!("qk_norm", {
+                self.qk_norm_batch(
+                    q,
+                    &weights.attn_q_norm,
+                    n_heads,
+                    head_dim,
+                    n_tokens,
+                    q_normed,
+                )?;
+                self.qk_norm_batch(
+                    k,
+                    &weights.attn_k_norm,
+                    n_kv_heads,
+                    head_dim,
+                    n_tokens,
+                    k_normed,
+                )?;
+            });
+        } else {
+            // Copy q and k to q_normed and k_normed without norm
+            q_normed[..q.len()].copy_from_slice(q);
+            k_normed[..k.len()].copy_from_slice(k);
+        }
 
         // Batch RoPE with position offsets
         time_op!("rope", {
@@ -1472,8 +1370,7 @@ impl ForwardExecutor {
 
         let stride = tensor.strides.get(1).copied().unwrap_or(0) as usize;
 
-        // Note: Single-token path uses linear::linear_q8_k which handles repacking internally.
-        // The cached repacked weights are used in batch path (linear_quantized_batch).
+        // Note: Single-token path uses linear::linear_q8_k
         match quant_format {
             QuantFormat::Q8_0 => linear::linear_q8_0(
                 &self.quant_buf.q8_0,
@@ -1531,32 +1428,17 @@ impl ForwardExecutor {
                 self.n_threads_batch,
             ),
             QuantFormat::Q8_K => {
-                // Use cached repacked weights if available
-                if let Some(repacked_data) =
-                    self.repacked_weights.get(weight_name)
-                {
-                    linear::linear_q8_k_batch_repacked(
-                        &self.quant_buf_batch.q8_k,
-                        repacked_data,
-                        tensor.quant_type,
-                        output,
-                        out_features,
-                        in_features,
-                        n_tokens,
-                    )?;
-                } else {
-                    linear::linear_q8_k_batch(
-                        &self.quant_buf_batch.q8_k,
-                        weight_data,
-                        tensor.quant_type,
-                        stride,
-                        output,
-                        out_features,
-                        in_features,
-                        n_tokens,
-                        self.n_threads_batch,
-                    )?;
-                }
+                linear::linear_q8_k_batch(
+                    &self.quant_buf_batch.q8_k,
+                    weight_data,
+                    tensor.quant_type,
+                    stride,
+                    output,
+                    out_features,
+                    in_features,
+                    n_tokens,
+                    self.n_threads_batch,
+                )?;
                 Ok(())
             }
             QuantFormat::None => Err("No quantized input available".into()),
@@ -1651,22 +1533,89 @@ impl ForwardExecutor {
 
         self.logits_buf.fill(0.0);
 
+        // For token_embd.weight (shared weights), dims are [hidden_size, vocab_size]
+        // For output projection: logits[j] = dot(hidden, embd[:, j])
         let quant_type = output_tensor.quant_type;
+        let vocab_size =
+            output_tensor.dims.get(1).copied().unwrap_or(0) as usize;
+        let actual_hidden =
+            output_tensor.dims.get(0).copied().unwrap_or(0) as usize;
+        let nb = (actual_hidden + QK_K - 1) / QK_K;
+
         if matches!(
             quant_type,
             QuantType::Q4_K | QuantType::Q5_K | QuantType::Q6_K
         ) {
-            self.quant_buf.resize(hidden_size, QuantFormat::Q8_K);
+            // Quantize hidden state
+            self.quant_buf.resize(actual_hidden, QuantFormat::Q8_K);
             quant::quantize_q8_k(&self.hidden_buf, &mut self.quant_buf.q8_k);
-            linear::linear_q8_k(
-                &self.quant_buf.q8_k,
-                hidden_size,
-                output_data,
-                quant_type,
-                0, // stride is now ignored in gemv
-                &mut self.logits_buf,
-                self.n_threads,
-            )?;
+
+            let stride_0 =
+                output_tensor.strides.get(0).copied().unwrap_or(0) as usize;
+            let stride_1 =
+                output_tensor.strides.get(1).copied().unwrap_or(0) as usize;
+
+            // Collect blocks for each column (token) and compute dot product
+            match quant_type {
+                QuantType::Q6_K => {
+                    use crate::types::BlockQ6_K;
+                    let mut col_blocks: Vec<BlockQ6_K> =
+                        vec![unsafe { std::mem::zeroed() }; nb];
+                    for j in 0..vocab_size {
+                        for b in 0..nb {
+                            let offset = b * stride_0 + j * stride_1;
+                            col_blocks[b] = unsafe {
+                                *(output_data.as_ptr().add(offset)
+                                    as *const BlockQ6_K)
+                            };
+                        }
+                        self.logits_buf[j] =
+                            crate::backend::arm::vec_dot::vec_dot_q6_k_q8_k(
+                                &col_blocks,
+                                &self.quant_buf.q8_k,
+                            );
+                    }
+                }
+                QuantType::Q5_K => {
+                    use crate::types::BlockQ5_K;
+                    let mut col_blocks: Vec<BlockQ5_K> =
+                        vec![unsafe { std::mem::zeroed() }; nb];
+                    for j in 0..vocab_size {
+                        for b in 0..nb {
+                            let offset = b * stride_0 + j * stride_1;
+                            col_blocks[b] = unsafe {
+                                *(output_data.as_ptr().add(offset)
+                                    as *const BlockQ5_K)
+                            };
+                        }
+                        self.logits_buf[j] =
+                            crate::backend::arm::vec_dot::vec_dot_q5_k_q8_k(
+                                &col_blocks,
+                                &self.quant_buf.q8_k,
+                            );
+                    }
+                }
+                QuantType::Q4_K => {
+                    use crate::types::BlockQ4_K;
+                    let mut col_blocks: Vec<BlockQ4_K> =
+                        vec![unsafe { std::mem::zeroed() }; nb];
+                    for j in 0..vocab_size {
+                        for b in 0..nb {
+                            let offset = b * stride_0 + j * stride_1;
+                            col_blocks[b] = unsafe {
+                                *(output_data.as_ptr().add(offset)
+                                    as *const BlockQ4_K)
+                            };
+                        }
+                        self.logits_buf[j] =
+                            crate::backend::arm::vec_dot::vec_dot_q4_k_q8_k(
+                                &col_blocks,
+                                &self.quant_buf.q8_k,
+                            );
+                    }
+                }
+                _ => {}
+            }
         } else if matches!(quant_type, QuantType::Q4_0 | QuantType::Q8_0) {
             self.quant_buf.resize(hidden_size, QuantFormat::Q8_0);
             quant::quantize_q8_0(&self.hidden_buf, &mut self.quant_buf.q8_0);
@@ -1689,6 +1638,7 @@ impl ForwardExecutor {
                 self.n_threads,
             )?;
         }
+
         Ok(())
     }
 
@@ -1759,9 +1709,6 @@ impl ForwardExecutor {
         temperature: f32,
     ) -> Vec<u32> {
         let mut tokens = prompt_tokens.to_vec();
-
-        // Enable debug mode for debugging
-        self.debug_mode = true;
 
         // Use batch forward for prefill (more efficient)
         if self.forward_batch(prompt_tokens).is_err() {

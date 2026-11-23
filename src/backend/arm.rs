@@ -9,11 +9,9 @@ pub mod flash_attn;
 pub mod gemv;
 pub mod linear;
 pub mod quant;
-pub mod repack;
 pub mod rms_norm;
 pub mod rope;
 pub mod softmax;
-pub mod tiled;
 pub mod vec_dot;
 
 use crate::backend::{Backend, TensorRef, TensorRefMut};
@@ -121,180 +119,11 @@ impl Backend for ArmCpuBackend {
                 Ok(())
             }
 
-            CoreOperator::Linear { in_features, out_features, quant_type } => {
-                if inputs.len() != 2 || outputs.len() != 1 {
-                    return Err(OpError::InvalidInput(
-                        "Linear requires 2 inputs and 1 output".into(),
-                    ));
-                }
-
-                let output = unsafe {
-                    std::slice::from_raw_parts_mut(
-                        outputs[0].data as *mut f32,
-                        *out_features,
-                    )
-                };
-
-                match quant_type {
-                    QuantType::Q4_0 => {
-                        let blocks_per_row = (*in_features + QK8_0 - 1) / QK8_0;
-                        let weights = unsafe {
-                            std::slice::from_raw_parts(
-                                inputs[0].data as *const BlockQ4_0,
-                                *out_features * blocks_per_row,
-                            )
-                        };
-
-                        use crate::backend::TensorType;
-                        let input_blocks =
-                            if inputs[1].dtype == TensorType::Q8_0 {
-                                (*in_features + QK8_0 - 1) / QK8_0
-                            } else {
-                                return Err(OpError::InvalidInput(
-                                    "Linear Q4_0 requires Q8_0 input".into(),
-                                ));
-                            };
-                        let input = unsafe {
-                            std::slice::from_raw_parts(
-                                inputs[1].data as *const BlockQ8_0,
-                                input_blocks,
-                            )
-                        };
-
-                        unsafe {
-                            gemv::gemv_q4_0(
-                                weights,
-                                input,
-                                output,
-                                *out_features,
-                                *in_features,
-                                0, // auto thread count
-                            );
-                        }
-                        Ok(())
-                    }
-
-                    QuantType::Q8_0 => {
-                        let blocks_per_row = (*in_features + QK8_0 - 1) / QK8_0;
-                        let weights = unsafe {
-                            std::slice::from_raw_parts(
-                                inputs[0].data as *const BlockQ8_0,
-                                *out_features * blocks_per_row,
-                            )
-                        };
-
-                        let input = unsafe {
-                            std::slice::from_raw_parts(
-                                inputs[1].data as *const BlockQ8_0,
-                                blocks_per_row,
-                            )
-                        };
-
-                        unsafe {
-                            gemv::gemv_q8_0(
-                                weights,
-                                input,
-                                output,
-                                *out_features,
-                                *in_features,
-                                0, // auto thread count
-                            );
-                        }
-                        Ok(())
-                    }
-
-                    QuantType::Q4_K => {
-                        let blocks_per_row = (*in_features + QK_K - 1) / QK_K;
-                        let weights = unsafe {
-                            std::slice::from_raw_parts(
-                                inputs[0].data as *const BlockQ4_K,
-                                *out_features * blocks_per_row,
-                            )
-                        };
-
-                        let input = unsafe {
-                            std::slice::from_raw_parts(
-                                inputs[1].data as *const BlockQ8_K,
-                                blocks_per_row,
-                            )
-                        };
-
-                        unsafe {
-                            gemv::gemv_q4_k(
-                                weights,
-                                input,
-                                output,
-                                *out_features,
-                                *in_features,
-                                0, // auto thread count
-                            );
-                        }
-                        Ok(())
-                    }
-
-                    QuantType::Q5_K => {
-                        let blocks_per_row = (*in_features + QK_K - 1) / QK_K;
-                        let weights = unsafe {
-                            std::slice::from_raw_parts(
-                                inputs[0].data as *const BlockQ5_K,
-                                *out_features * blocks_per_row,
-                            )
-                        };
-
-                        let input = unsafe {
-                            std::slice::from_raw_parts(
-                                inputs[1].data as *const BlockQ8_K,
-                                blocks_per_row,
-                            )
-                        };
-
-                        unsafe {
-                            gemv::gemv_q5_k(
-                                weights,
-                                input,
-                                output,
-                                *out_features,
-                                *in_features,
-                                0, // auto thread count
-                            );
-                        }
-                        Ok(())
-                    }
-
-                    QuantType::Q6_K => {
-                        let blocks_per_row = (*in_features + QK_K - 1) / QK_K;
-                        let weights = unsafe {
-                            std::slice::from_raw_parts(
-                                inputs[0].data as *const BlockQ6_K,
-                                *out_features * blocks_per_row,
-                            )
-                        };
-
-                        let input = unsafe {
-                            std::slice::from_raw_parts(
-                                inputs[1].data as *const BlockQ8_K,
-                                blocks_per_row,
-                            )
-                        };
-
-                        unsafe {
-                            gemv::gemv_q6_k(
-                                weights,
-                                input,
-                                output,
-                                *out_features,
-                                *in_features,
-                                0, // auto thread count
-                            );
-                        }
-                        Ok(())
-                    }
-
-                    _ => Err(OpError::NotImplemented(format!(
-                        "Linear with quant type {:?}",
-                        quant_type
-                    ))),
-                }
+            CoreOperator::Linear { quant_type, .. } => {
+                Err(OpError::NotImplemented(format!(
+                    "Linear with quant type {:?} - use ForwardExecutor instead",
+                    quant_type
+                )))
             }
 
             CoreOperator::Rope { head_dim, max_seq_len: _, freq_base } => {
