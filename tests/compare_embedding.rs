@@ -68,7 +68,7 @@ fn compare_embedding() {
         &*(emb_data.as_ptr().add(method1_offset) as *const BlockQ6_K)
     };
     println!(
-        "  Block d = 0x{:04x} = {:.6f}",
+        "  Block d = 0x{:04x} = {:.6}",
         block1.d,
         half::f16::from_bits(block1.d).to_f32()
     );
@@ -92,7 +92,7 @@ fn compare_embedding() {
     let mean1: f32 = emb1.iter().sum::<f32>() / emb1.len() as f32;
 
     println!("\nMethod 1 embedding (token_id * stride):");
-    println!("  min={:.6f}, max={:.6f}, mean={:.6f}", min1, max1, mean1);
+    println!("  min={:.6}, max={:.6}, mean={:.6}", min1, max1, mean1);
     println!("  First 10: {:?}", &emb1[..10]);
 
     // Try method 2: direct offset without stride
@@ -110,7 +110,7 @@ fn compare_embedding() {
             &*(emb_data.as_ptr().add(method3_offset) as *const BlockQ6_K)
         };
         println!(
-            "  Block d = 0x{:04x} = {:.6f}",
+            "  Block d = 0x{:04x} = {:.6}",
             block3.d,
             half::f16::from_bits(block3.d).to_f32()
         );
@@ -131,7 +131,7 @@ fn compare_embedding() {
         let max3 = emb3.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let mean3: f32 = emb3.iter().sum::<f32>() / emb3.len() as f32;
 
-        println!("  min={:.6f}, max={:.6f}, mean={:.6f}", min3, max3, mean3);
+        println!("  min={:.6}, max={:.6}, mean={:.6}", min3, max3, mean3);
         println!("  First 10: {:?}", &emb3[..10]);
     }
 
@@ -147,7 +147,7 @@ fn compare_embedding() {
     let block0: &BlockQ6_K =
         unsafe { &*(emb_data.as_ptr() as *const BlockQ6_K) };
     println!(
-        "  Block d = 0x{:04x} = {:.6f}",
+        "  Block d = 0x{:04x} = {:.6}",
         block0.d,
         half::f16::from_bits(block0.d).to_f32()
     );
@@ -169,7 +169,7 @@ fn compare_embedding() {
     let mean0: f32 = emb0.iter().sum::<f32>() / emb0.len() as f32;
 
     println!(
-        "  Token 0 embedding: min={:.6f}, max={:.6f}, mean={:.6f}",
+        "  Token 0 embedding: min={:.6}, max={:.6}, mean={:.6}",
         min0, max0, mean0
     );
     println!("  First 10: {:?}", &emb0[..10]);

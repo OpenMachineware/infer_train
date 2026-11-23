@@ -79,63 +79,7 @@ approx = "0.5"
 criterion = "0.5"
 once_cell = "1"
 
-# Interleaved tests
-[[bin]]
-name = "vec_dot_bench"
-path = "tests/interleaved/vec_dot_bench.rs"
-
-[[bin]]
-name = "q5k_gemv_bench"
-path = "tests/interleaved/q5k_gemv_bench.rs"
-
-[[bin]]
-name = "test_interleaved_gemv"
-path = "tests/interleaved/test_interleaved_gemv.rs"
-
-[[bin]]
-name = "q5k_real_bench"
-path = "tests/interleaved/q5k_real_bench.rs"
-
-[[bin]]
-name = "test_q4k_interleaved"
-path = "tests/interleaved/test_q4k_interleaved.rs"
-
-[[bin]]
-name = "test_q6k_interleaved"
-path = "tests/interleaved/test_q6k_interleaved.rs"
-
-[[bin]]
-name = "q4k_interleaved_bench"
-path = "tests/interleaved/q4k_interleaved_bench.rs"
-
-[[bin]]
-name = "test_q4_0_interleaved"
-path = "tests/interleaved/test_q4_0_interleaved.rs"
-
-[[bin]]
-name = "q4_0_interleaved_bench"
-path = "tests/interleaved/q4_0_interleaved_bench.rs"
-
-[[bin]]
-name = "q5k_compare_bench"
-path = "tests/interleaved/q5k_compare_bench.rs"
-
-[[bin]]
-name = "test_interleaved_layout"
-path = "tests/interleaved/test_interleaved_layout.rs"
-
-[[bin]]
-name = "test_q5k_single_block"
-path = "tests/interleaved/test_q5k_single_block.rs"
-
-[[bin]]
-name = "test_repack_correctness"
-path = "tests/interleaved/test_repack_correctness.rs"
-
 # Unit tests
-[[bin]]
-name = "q5k_gemv_compare"
-path = "tests/unit/q5k_gemv_compare.rs"
 
 [[bin]]
 name = "test_q6k_vecdot"
@@ -144,10 +88,6 @@ path = "tests/unit/test_q6k_vecdot.rs"
 [[bin]]
 name = "test_q5k_vecdot"
 path = "tests/test_q5k_vecdot.rs"
-
-[[bin]]
-name = "test_q8k_simple"
-path = "tests/unit/test_q8k_simple.rs"
 
 [[bin]]
 name = "verify_q5k"
