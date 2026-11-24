@@ -814,23 +814,66 @@ impl ForwardExecutor {
             QuantFormat::None => ffn_normed_len,
         };
 
-        // Gate/Up projections
+        // Gate/Up projections - parallel execution at operator level
+        // Each GEMV is ~0.3ms, too small for internal parallelization
+        // But gate + up together is ~0.6ms, worth parallelizing
         let gate: &mut [f32] =
             self.arena.alloc_zeroed(config.intermediate_size);
         let up: &mut [f32] = self.arena.alloc_zeroed(config.intermediate_size);
 
-        self.linear_quantized(
-            ffn_quant_format,
-            ffn_in_features,
-            &weights.ffn_gate,
-            gate,
-        )?;
-        self.linear_quantized(
-            ffn_quant_format,
-            ffn_in_features,
-            &weights.ffn_up,
-            up,
-        )?;
+        if self.n_threads > 1 {
+            let gate_ptr = gate.as_mut_ptr() as usize;
+            let up_ptr = up.as_mut_ptr() as usize;
+            let intermediate_size = config.intermediate_size;
+
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    let output = unsafe {
+                        std::slice::from_raw_parts_mut(
+                            gate_ptr as *mut f32,
+                            intermediate_size,
+                        )
+                    };
+                    self.linear_quantized_with_threads(
+                        ffn_quant_format,
+                        ffn_in_features,
+                        &weights.ffn_gate,
+                        output,
+                        1,
+                    )
+                    .ok();
+                });
+                s.spawn(|| {
+                    let output = unsafe {
+                        std::slice::from_raw_parts_mut(
+                            up_ptr as *mut f32,
+                            intermediate_size,
+                        )
+                    };
+                    self.linear_quantized_with_threads(
+                        ffn_quant_format,
+                        ffn_in_features,
+                        &weights.ffn_up,
+                        output,
+                        1,
+                    )
+                    .ok();
+                });
+            });
+        } else {
+            self.linear_quantized(
+                ffn_quant_format,
+                ffn_in_features,
+                &weights.ffn_gate,
+                gate,
+            )?;
+            self.linear_quantized(
+                ffn_quant_format,
+                ffn_in_features,
+                &weights.ffn_up,
+                up,
+            )?;
+        }
 
         // Save gate and up for debugging (before SiLU)
         let (gate_before_silu, up_debug) = if self.debug_mode {
