@@ -98,31 +98,81 @@ pub unsafe fn quantize_row_q8_k_neon(x: &[f32], y: &mut [BlockQ8_K]) {
 
         let iscale_vec = std::arch::aarch64::vdupq_n_f32(iscale);
 
-        // Quantize all 256 values
-        for j in 0..64 {
-            let v = unsafe { std::arch::aarch64::vld1q_f32(x_ptr.add(j * 4)) };
-            let scaled = std::arch::aarch64::vmulq_f32(v, iscale_vec);
-            let rounded = std::arch::aarch64::vrndnq_f32(scaled);
-            let q = std::arch::aarch64::vcvtq_s32_f32(rounded);
+        // Quantize all 256 values - process in groups of 16 for efficient storage
+        for j in (0..64).step_by(4) {
+            // Load 16 floats
+            let v0 = unsafe { std::arch::aarch64::vld1q_f32(x_ptr.add(j * 4)) };
+            let v1 = unsafe {
+                std::arch::aarch64::vld1q_f32(x_ptr.add((j + 1) * 4))
+            };
+            let v2 = unsafe {
+                std::arch::aarch64::vld1q_f32(x_ptr.add((j + 2) * 4))
+            };
+            let v3 = unsafe {
+                std::arch::aarch64::vld1q_f32(x_ptr.add((j + 3) * 4))
+            };
 
-            // Clamp to [-128, 127]
-            let q_clamped = std::arch::aarch64::vminq_s32(
-                std::arch::aarch64::vmaxq_s32(
-                    q,
-                    std::arch::aarch64::vdupq_n_s32(-128),
-                ),
-                std::arch::aarch64::vdupq_n_s32(127),
+            // Scale, round, convert to int
+            let q0 = std::arch::aarch64::vcvtq_s32_f32(
+                std::arch::aarch64::vrndnq_f32(std::arch::aarch64::vmulq_f32(
+                    v0, iscale_vec,
+                )),
+            );
+            let q1 = std::arch::aarch64::vcvtq_s32_f32(
+                std::arch::aarch64::vrndnq_f32(std::arch::aarch64::vmulq_f32(
+                    v1, iscale_vec,
+                )),
+            );
+            let q2 = std::arch::aarch64::vcvtq_s32_f32(
+                std::arch::aarch64::vrndnq_f32(std::arch::aarch64::vmulq_f32(
+                    v2, iscale_vec,
+                )),
+            );
+            let q3 = std::arch::aarch64::vcvtq_s32_f32(
+                std::arch::aarch64::vrndnq_f32(std::arch::aarch64::vmulq_f32(
+                    v3, iscale_vec,
+                )),
             );
 
-            // Store as i8
-            y[i].qs[j * 4 + 0] =
-                std::arch::aarch64::vgetq_lane_s32(q_clamped, 0) as i8;
-            y[i].qs[j * 4 + 1] =
-                std::arch::aarch64::vgetq_lane_s32(q_clamped, 1) as i8;
-            y[i].qs[j * 4 + 2] =
-                std::arch::aarch64::vgetq_lane_s32(q_clamped, 2) as i8;
-            y[i].qs[j * 4 + 3] =
-                std::arch::aarch64::vgetq_lane_s32(q_clamped, 3) as i8;
+            // Clamp to [-128, 127]
+            let min_val = std::arch::aarch64::vdupq_n_s32(-128);
+            let max_val = std::arch::aarch64::vdupq_n_s32(127);
+            let q0_clamped = std::arch::aarch64::vminq_s32(
+                std::arch::aarch64::vmaxq_s32(q0, min_val),
+                max_val,
+            );
+            let q1_clamped = std::arch::aarch64::vminq_s32(
+                std::arch::aarch64::vmaxq_s32(q1, min_val),
+                max_val,
+            );
+            let q2_clamped = std::arch::aarch64::vminq_s32(
+                std::arch::aarch64::vmaxq_s32(q2, min_val),
+                max_val,
+            );
+            let q3_clamped = std::arch::aarch64::vminq_s32(
+                std::arch::aarch64::vmaxq_s32(q3, min_val),
+                max_val,
+            );
+
+            // Pack 4 x int32 -> int16, then int16 -> int8
+            // Use narrow operations for efficient packing
+            let q01 = std::arch::aarch64::vcombine_s16(
+                std::arch::aarch64::vmovn_s32(q0_clamped),
+                std::arch::aarch64::vmovn_s32(q1_clamped),
+            );
+            let q23 = std::arch::aarch64::vcombine_s16(
+                std::arch::aarch64::vmovn_s32(q2_clamped),
+                std::arch::aarch64::vmovn_s32(q3_clamped),
+            );
+
+            // Pack to int8
+            let q_16 = std::arch::aarch64::vcombine_s8(
+                std::arch::aarch64::vmovn_s16(q01),
+                std::arch::aarch64::vmovn_s16(q23),
+            );
+
+            // Store 16 int8 values at once
+            std::arch::aarch64::vst1q_s8(y[i].qs.as_mut_ptr().add(j * 4), q_16);
         }
 
         // Compute block sums using NEON
@@ -221,31 +271,80 @@ pub unsafe fn quantize_row_q8_0_neon(x: &[f32], y: &mut [BlockQ8_0]) {
         let iscale = 127.0 / amax;
         let iscale_vec = std::arch::aarch64::vdupq_n_f32(iscale);
 
-        // Quantize all 32 values
-        for j in 0..8 {
-            let v = unsafe { std::arch::aarch64::vld1q_f32(x_ptr.add(j * 4)) };
-            let scaled = std::arch::aarch64::vmulq_f32(v, iscale_vec);
-            let rounded = std::arch::aarch64::vrndnq_f32(scaled);
-            let q = std::arch::aarch64::vcvtq_s32_f32(rounded);
+        // Quantize all 32 values - process in groups of 16 for efficient storage
+        for j in (0..8).step_by(4) {
+            // Load 16 floats
+            let v0 = unsafe { std::arch::aarch64::vld1q_f32(x_ptr.add(j * 4)) };
+            let v1 = unsafe {
+                std::arch::aarch64::vld1q_f32(x_ptr.add((j + 1) * 4))
+            };
+            let v2 = unsafe {
+                std::arch::aarch64::vld1q_f32(x_ptr.add((j + 2) * 4))
+            };
+            let v3 = unsafe {
+                std::arch::aarch64::vld1q_f32(x_ptr.add((j + 3) * 4))
+            };
 
-            // Clamp to [-128, 127]
-            let q_clamped = std::arch::aarch64::vminq_s32(
-                std::arch::aarch64::vmaxq_s32(
-                    q,
-                    std::arch::aarch64::vdupq_n_s32(-128),
-                ),
-                std::arch::aarch64::vdupq_n_s32(127),
+            // Scale, round, convert to int
+            let q0 = std::arch::aarch64::vcvtq_s32_f32(
+                std::arch::aarch64::vrndnq_f32(std::arch::aarch64::vmulq_f32(
+                    v0, iscale_vec,
+                )),
+            );
+            let q1 = std::arch::aarch64::vcvtq_s32_f32(
+                std::arch::aarch64::vrndnq_f32(std::arch::aarch64::vmulq_f32(
+                    v1, iscale_vec,
+                )),
+            );
+            let q2 = std::arch::aarch64::vcvtq_s32_f32(
+                std::arch::aarch64::vrndnq_f32(std::arch::aarch64::vmulq_f32(
+                    v2, iscale_vec,
+                )),
+            );
+            let q3 = std::arch::aarch64::vcvtq_s32_f32(
+                std::arch::aarch64::vrndnq_f32(std::arch::aarch64::vmulq_f32(
+                    v3, iscale_vec,
+                )),
             );
 
-            // Store as i8
-            y[i].qs[j * 4 + 0] =
-                std::arch::aarch64::vgetq_lane_s32(q_clamped, 0) as i8;
-            y[i].qs[j * 4 + 1] =
-                std::arch::aarch64::vgetq_lane_s32(q_clamped, 1) as i8;
-            y[i].qs[j * 4 + 2] =
-                std::arch::aarch64::vgetq_lane_s32(q_clamped, 2) as i8;
-            y[i].qs[j * 4 + 3] =
-                std::arch::aarch64::vgetq_lane_s32(q_clamped, 3) as i8;
+            // Clamp to [-128, 127]
+            let min_val = std::arch::aarch64::vdupq_n_s32(-128);
+            let max_val = std::arch::aarch64::vdupq_n_s32(127);
+            let q0_clamped = std::arch::aarch64::vminq_s32(
+                std::arch::aarch64::vmaxq_s32(q0, min_val),
+                max_val,
+            );
+            let q1_clamped = std::arch::aarch64::vminq_s32(
+                std::arch::aarch64::vmaxq_s32(q1, min_val),
+                max_val,
+            );
+            let q2_clamped = std::arch::aarch64::vminq_s32(
+                std::arch::aarch64::vmaxq_s32(q2, min_val),
+                max_val,
+            );
+            let q3_clamped = std::arch::aarch64::vminq_s32(
+                std::arch::aarch64::vmaxq_s32(q3, min_val),
+                max_val,
+            );
+
+            // Pack 4 x int32 -> int16, then int16 -> int8
+            let q01 = std::arch::aarch64::vcombine_s16(
+                std::arch::aarch64::vmovn_s32(q0_clamped),
+                std::arch::aarch64::vmovn_s32(q1_clamped),
+            );
+            let q23 = std::arch::aarch64::vcombine_s16(
+                std::arch::aarch64::vmovn_s32(q2_clamped),
+                std::arch::aarch64::vmovn_s32(q3_clamped),
+            );
+
+            // Pack to int8
+            let q_16 = std::arch::aarch64::vcombine_s8(
+                std::arch::aarch64::vmovn_s16(q01),
+                std::arch::aarch64::vmovn_s16(q23),
+            );
+
+            // Store 16 int8 values at once
+            std::arch::aarch64::vst1q_s8(y[i].qs.as_mut_ptr().add(j * 4), q_16);
         }
     }
 }
