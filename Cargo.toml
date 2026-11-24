@@ -47,6 +47,10 @@ path = "tools/op_profile/src/main.rs"
 name = "forward_profile"
 path = "tools/forward_profile/src/main.rs"
 
+[[bin]]
+name = "prefill_test"
+path = "tools/prefill_test.rs"
+
 [features]
 default = []
 metal = []
@@ -127,3 +131,7 @@ path = "tests/verify_q4k_layout.rs"
 [[bin]]
 name = "check_q6k_bytes"
 path = "tests/check_q6k_bytes.rs"
+
+[[bin]]
+name = "prefill_bench"
+path = "tools/prefill_bench.rs"
