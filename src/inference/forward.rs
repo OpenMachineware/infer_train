@@ -605,14 +605,84 @@ impl ForwardExecutor {
             QuantFormat::None => normed_len,
         };
 
-        // QKV projections
+        // QKV projections - parallel execution at operator level
+        // Each GEMV is ~0.3ms, too small for internal parallelization
+        // But Q/K/V together is ~1ms, worth parallelizing at this level
         let q: &mut [f32] = self.arena.alloc_zeroed(n_heads * head_dim);
         let k: &mut [f32] = self.arena.alloc_zeroed(n_kv_heads * head_dim);
         let v: &mut [f32] = self.arena.alloc_zeroed(n_kv_heads * head_dim);
 
-        self.linear_quantized(quant_format, in_features, &weights.attn_q, q)?;
-        self.linear_quantized(quant_format, in_features, &weights.attn_k, k)?;
-        self.linear_quantized(quant_format, in_features, &weights.attn_v, v)?;
+        if self.n_threads > 1 {
+            // Parallel Q/K/V with internal parallelization disabled (n_threads=1)
+            let q_ptr = q.as_mut_ptr() as usize;
+            let k_ptr = k.as_mut_ptr() as usize;
+            let v_ptr = v.as_mut_ptr() as usize;
+            let q_len = n_heads * head_dim;
+            let k_len = n_kv_heads * head_dim;
+            let v_len = n_kv_heads * head_dim;
+
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    let output = unsafe {
+                        std::slice::from_raw_parts_mut(q_ptr as *mut f32, q_len)
+                    };
+                    self.linear_quantized_with_threads(
+                        quant_format,
+                        in_features,
+                        &weights.attn_q,
+                        output,
+                        1, // Internal parallelization disabled
+                    )
+                    .ok();
+                });
+                s.spawn(|| {
+                    let output = unsafe {
+                        std::slice::from_raw_parts_mut(k_ptr as *mut f32, k_len)
+                    };
+                    self.linear_quantized_with_threads(
+                        quant_format,
+                        in_features,
+                        &weights.attn_k,
+                        output,
+                        1, // Internal parallelization disabled
+                    )
+                    .ok();
+                });
+                s.spawn(|| {
+                    let output = unsafe {
+                        std::slice::from_raw_parts_mut(v_ptr as *mut f32, v_len)
+                    };
+                    self.linear_quantized_with_threads(
+                        quant_format,
+                        in_features,
+                        &weights.attn_v,
+                        output,
+                        1, // Internal parallelization disabled
+                    )
+                    .ok();
+                });
+            });
+        } else {
+            // Sequential fallback
+            self.linear_quantized(
+                quant_format,
+                in_features,
+                &weights.attn_q,
+                q,
+            )?;
+            self.linear_quantized(
+                quant_format,
+                in_features,
+                &weights.attn_k,
+                k,
+            )?;
+            self.linear_quantized(
+                quant_format,
+                in_features,
+                &weights.attn_v,
+                v,
+            )?;
+        }
 
         // Save Q/K/V for debugging
         let (q_debug, k_debug, v_debug) = if self.debug_mode {
@@ -1363,12 +1433,13 @@ impl ForwardExecutor {
         )
     }
 
-    fn linear_quantized(
+    fn linear_quantized_with_threads(
         &self,
         quant_format: QuantFormat,
         _in_features: usize,
         weight_name: &str,
         output: &mut [f32],
+        n_threads: usize,
     ) -> Result<(), String> {
         let tensor = self
             .model
@@ -1382,7 +1453,6 @@ impl ForwardExecutor {
 
         let stride = tensor.strides.get(1).copied().unwrap_or(0) as usize;
 
-        // Note: Single-token path uses linear::linear_q8_k
         match quant_format {
             QuantFormat::Q8_0 => linear::linear_q8_0(
                 &self.quant_buf.q8_0,
@@ -1391,7 +1461,7 @@ impl ForwardExecutor {
                 tensor.quant_type,
                 stride,
                 output,
-                self.n_threads,
+                n_threads,
             ),
             QuantFormat::Q8_K => linear::linear_q8_k(
                 &self.quant_buf.q8_k,
@@ -1400,10 +1470,26 @@ impl ForwardExecutor {
                 tensor.quant_type,
                 stride,
                 output,
-                self.n_threads,
+                n_threads,
             ),
             QuantFormat::None => Err("No quantized input available".into()),
         }
+    }
+
+    fn linear_quantized(
+        &self,
+        quant_format: QuantFormat,
+        in_features: usize,
+        weight_name: &str,
+        output: &mut [f32],
+    ) -> Result<(), String> {
+        self.linear_quantized_with_threads(
+            quant_format,
+            in_features,
+            weight_name,
+            output,
+            self.n_threads,
+        )
     }
 
     /// Batch linear with quantized input using tiled GEMV
