@@ -103,7 +103,7 @@ unsafe fn gemv_block_tiling<W, F>(
 /// GEMV for Q4_K with block-tiling
 pub unsafe fn gemv_q4_k_transposed(
     weight_data: &[u8],
-    _weight_stride: usize,
+    weight_stride: usize,
     input: &[BlockQ8_K],
     output: &mut [f32],
     out_features: usize,
@@ -111,7 +111,12 @@ pub unsafe fn gemv_q4_k_transposed(
     n_threads: usize,
 ) {
     let nb = in_features / QK_K;
-    let row_stride = nb * std::mem::size_of::<BlockQ4_K>();
+    // Use the actual stride from GGUF (handles interleaved layouts)
+    let row_stride = if weight_stride > 0 {
+        weight_stride
+    } else {
+        nb * std::mem::size_of::<BlockQ4_K>()
+    };
 
     gemv_block_tiling::<BlockQ4_K, _>(
         weight_data,
@@ -128,7 +133,7 @@ pub unsafe fn gemv_q4_k_transposed(
 /// GEMV for Q5_K with block-tiling
 pub unsafe fn gemv_q5_k_transposed(
     weight_data: &[u8],
-    _weight_stride: usize,
+    weight_stride: usize,
     input: &[BlockQ8_K],
     output: &mut [f32],
     out_features: usize,
@@ -136,7 +141,12 @@ pub unsafe fn gemv_q5_k_transposed(
     n_threads: usize,
 ) {
     let nb = in_features / QK_K;
-    let row_stride = nb * std::mem::size_of::<BlockQ5_K>();
+    // Use the actual stride from GGUF (handles interleaved layouts)
+    let row_stride = if weight_stride > 0 {
+        weight_stride
+    } else {
+        nb * std::mem::size_of::<BlockQ5_K>()
+    };
 
     gemv_block_tiling::<BlockQ5_K, _>(
         weight_data,
@@ -153,7 +163,7 @@ pub unsafe fn gemv_q5_k_transposed(
 /// GEMV for Q6_K with block-tiling
 pub unsafe fn gemv_q6_k_transposed(
     weight_data: &[u8],
-    _weight_stride: usize,
+    weight_stride: usize,
     input: &[BlockQ8_K],
     output: &mut [f32],
     out_features: usize,
@@ -161,7 +171,12 @@ pub unsafe fn gemv_q6_k_transposed(
     n_threads: usize,
 ) {
     let nb = in_features / QK_K;
-    let row_stride = nb * std::mem::size_of::<BlockQ6_K>();
+    // Use the actual stride from GGUF (handles interleaved layouts)
+    let row_stride = if weight_stride > 0 {
+        weight_stride
+    } else {
+        nb * std::mem::size_of::<BlockQ6_K>()
+    };
 
     gemv_block_tiling::<BlockQ6_K, _>(
         weight_data,
@@ -178,7 +193,7 @@ pub unsafe fn gemv_q6_k_transposed(
 /// GEMV for IQ4_XS with block-tiling
 pub unsafe fn gemv_iq4_xs_transposed(
     weight_data: &[u8],
-    _weight_stride: usize,
+    weight_stride: usize,
     input: &[BlockQ8_K],
     output: &mut [f32],
     out_features: usize,
@@ -186,7 +201,12 @@ pub unsafe fn gemv_iq4_xs_transposed(
     n_threads: usize,
 ) {
     let nb = in_features / QK_K;
-    let row_stride = nb * std::mem::size_of::<BlockIQ4XS>();
+    // Use the actual stride from GGUF (handles interleaved layouts)
+    let row_stride = if weight_stride > 0 {
+        weight_stride
+    } else {
+        nb * std::mem::size_of::<BlockIQ4XS>()
+    };
 
     gemv_block_tiling::<BlockIQ4XS, _>(
         weight_data,
