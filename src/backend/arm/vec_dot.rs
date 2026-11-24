@@ -286,6 +286,8 @@ pub unsafe fn vec_dot_q4_k_q8_k_neon(x: &[BlockQ4_K], y: &[BlockQ8_K]) -> f32 {
             let q8bytes = vld1q_s8_x2(q8);
             q8 = q8.add(32);
 
+            // Chain dot products: vdotq(vdotq(mzero, a0, b0), a1, b1)
+            // This accumulates results in the accumulator register, saving one vaddq
             let p1 = vdotq_s32_manual(
                 vdotq_s32_manual(vzero, q4l_0, q8bytes.0),
                 q4l_1,
@@ -415,16 +417,18 @@ pub unsafe fn vec_dot_q5_k_q8_k_neon(x: &[BlockQ5_K], y: &[BlockQ8_K]) -> f32 {
                 vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(q5bits.1, 4), q5h_3));
 
             // Dot product and scale - matches llama.cpp exactly
-            // sumi += (dot(q5bytes_0, q8bytes_0) + dot(q5bytes_1, q8bytes_1)) * scale
-            // sumi += (dot(q5bytes_2, q8bytes_2) + dot(q5bytes_3, q8bytes_3)) * scale
-            sumi += vaddvq_s32(vaddq_s32(
+            // Chain dot products: vdotq(vdotq(mzero, a0, b0), a1, b1)
+            // This accumulates results in the accumulator register, saving one vaddq
+            sumi += vaddvq_s32(vdotq_s32_manual(
                 vdotq_s32_manual(mzero, q5bytes_0, q8bytes.0),
-                vdotq_s32_manual(mzero, q5bytes_1, q8bytes.1),
+                q5bytes_1,
+                q8bytes.1,
             )) * *scales.add(j * 2) as i32;
 
-            sumi += vaddvq_s32(vaddq_s32(
+            sumi += vaddvq_s32(vdotq_s32_manual(
                 vdotq_s32_manual(mzero, q5bytes_2, q8bytes.2),
-                vdotq_s32_manual(mzero, q5bytes_3, q8bytes.3),
+                q5bytes_3,
+                q8bytes.3,
             )) * *scales.add(j * 2 + 1) as i32;
         }
 

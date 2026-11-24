@@ -122,6 +122,18 @@ impl ForwardExecutor {
     ) -> Self {
         let config = model.config().clone();
 
+        // Use optimal_threads() if n_threads is 0
+        let n_threads = if n_threads == 0 {
+            crate::backend::thread_pool::optimal_threads()
+        } else {
+            n_threads
+        };
+        let n_threads_batch = if n_threads_batch == 0 {
+            crate::backend::thread_pool::optimal_threads()
+        } else {
+            n_threads_batch
+        };
+
         let work_size = crate::memory::calculate_work_size(
             config.hidden_size,
             config.intermediate_size,
