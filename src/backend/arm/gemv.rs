@@ -37,35 +37,48 @@ unsafe fn gemv_block_tiling<W, F>(
     n_threads: usize,
 ) where
     W: Copy,
-    F: Fn(&[W], &[BlockQ8_K]) -> f32 + Sync,
+    F: Fn(&[W], &[BlockQ8_K]) -> f32 + Sync + Send + Copy,
 {
     if n_threads > 1 && out_features >= BLOCK_ROWS * 2 {
-        // Parallel processing with block-tiling
-        use rayon::prelude::*;
-        output.par_chunks_mut(BLOCK_ROWS).enumerate().for_each(
-            |(block_idx, out_chunk)| {
-                let row_start = block_idx * BLOCK_ROWS;
-                let row_end = (row_start + BLOCK_ROWS).min(out_features);
+        // Parallel processing using thread::scope for low overhead
+        // Use usize to store pointers (Send) and convert back in closure
+        let output_ptr = output.as_mut_ptr() as usize;
+        let weight_ptr = weight_data.as_ptr() as usize;
+        let input_ptr = input.as_ptr() as usize;
+        let input_len = input.len();
 
-                for i in row_start..row_end {
-                    let row_blocks: &[W] = std::slice::from_raw_parts(
-                        weight_data.as_ptr().add(i * row_stride) as *const W,
-                        nb,
-                    );
-                    out_chunk[i - row_start] = vec_dot(row_blocks, input);
+        std::thread::scope(|s| {
+            let chunk_size = (out_features + n_threads - 1) / n_threads;
+            for tid in 0..n_threads {
+                let start = tid * chunk_size;
+                let end = (start + chunk_size).min(out_features);
+                if start >= out_features {
+                    break;
                 }
-            },
-        );
 
-        // Handle remaining rows
-        let remaining_start = (out_features / BLOCK_ROWS) * BLOCK_ROWS;
-        for i in remaining_start..out_features {
-            let row_blocks: &[W] = std::slice::from_raw_parts(
-                weight_data.as_ptr().add(i * row_stride) as *const W,
-                nb,
-            );
-            output[i] = vec_dot(row_blocks, input);
-        }
+                s.spawn(move || {
+                    let output_ptr = output_ptr as *mut f32;
+                    let weight_ptr = weight_ptr as *const u8;
+                    let input_ptr = input_ptr as *const BlockQ8_K;
+
+                    for i in start..end {
+                        let row_blocks: &[W] = unsafe {
+                            std::slice::from_raw_parts(
+                                weight_ptr.add(i * row_stride) as *const W,
+                                nb,
+                            )
+                        };
+                        let input_slice = unsafe {
+                            std::slice::from_raw_parts(input_ptr, input_len)
+                        };
+                        unsafe {
+                            *output_ptr.add(i) =
+                                vec_dot(row_blocks, input_slice);
+                        }
+                    }
+                });
+            }
+        });
     } else {
         // Sequential processing with block-tiling
         for block_start in (0..out_features).step_by(BLOCK_ROWS) {
@@ -235,24 +248,50 @@ pub fn mul_mat_q4_k(
     };
 
     if n_threads > 1 && (n_tokens * out_features) >= 64 {
-        use rayon::prelude::*;
-        let results: Vec<f32> = (0..n_tokens * out_features)
-            .into_par_iter()
-            .map(|idx| {
-                let t = idx / out_features;
-                let i = idx % out_features;
-                let input_slice = &input[t * nb..(t + 1) * nb];
-                let row_blocks: &[BlockQ4_K] = unsafe {
-                    std::slice::from_raw_parts(
-                        weight_data.as_ptr().add(i * row_stride)
-                            as *const BlockQ4_K,
-                        nb,
-                    )
-                };
-                vec_dot_q4_k_q8_k(row_blocks, input_slice)
-            })
-            .collect();
-        output.copy_from_slice(&results);
+        // Parallel processing using thread::scope
+        let total_outputs = n_tokens * out_features;
+        let output_ptr = output.as_mut_ptr() as usize;
+        let weight_ptr = weight_data.as_ptr() as usize;
+        let input_ptr = input.as_ptr() as usize;
+
+        std::thread::scope(|s| {
+            let chunk_size = (total_outputs + n_threads - 1) / n_threads;
+            for tid in 0..n_threads {
+                let start = tid * chunk_size;
+                let end = (start + chunk_size).min(total_outputs);
+                if start >= total_outputs {
+                    break;
+                }
+
+                s.spawn(move || {
+                    let output_ptr = output_ptr as *mut f32;
+                    let weight_ptr = weight_ptr as *const u8;
+                    let input_ptr = input_ptr as *const BlockQ8_K;
+
+                    for idx in start..end {
+                        let t = idx / out_features;
+                        let i = idx % out_features;
+                        let input_slice = unsafe {
+                            std::slice::from_raw_parts(
+                                input_ptr.add(t * nb),
+                                nb,
+                            )
+                        };
+                        let row_blocks: &[BlockQ4_K] = unsafe {
+                            std::slice::from_raw_parts(
+                                weight_ptr.add(i * row_stride)
+                                    as *const BlockQ4_K,
+                                nb,
+                            )
+                        };
+                        unsafe {
+                            *output_ptr.add(idx) =
+                                vec_dot_q4_k_q8_k(row_blocks, input_slice);
+                        }
+                    }
+                });
+            }
+        });
     } else {
         for t in 0..n_tokens {
             let input_slice = &input[t * nb..(t + 1) * nb];
@@ -293,24 +332,49 @@ pub fn mul_mat_q5_k(
     };
 
     if n_threads > 1 && (n_tokens * out_features) >= 64 {
-        use rayon::prelude::*;
-        let results: Vec<f32> = (0..n_tokens * out_features)
-            .into_par_iter()
-            .map(|idx| {
-                let t = idx / out_features;
-                let i = idx % out_features;
-                let input_slice = &input[t * nb..(t + 1) * nb];
-                let row_blocks: &[BlockQ5_K] = unsafe {
-                    std::slice::from_raw_parts(
-                        weight_data.as_ptr().add(i * row_stride)
-                            as *const BlockQ5_K,
-                        nb,
-                    )
-                };
-                vec_dot_q5_k_q8_k(row_blocks, input_slice)
-            })
-            .collect();
-        output.copy_from_slice(&results);
+        let total_outputs = n_tokens * out_features;
+        let output_ptr = output.as_mut_ptr() as usize;
+        let weight_ptr = weight_data.as_ptr() as usize;
+        let input_ptr = input.as_ptr() as usize;
+
+        std::thread::scope(|s| {
+            let chunk_size = (total_outputs + n_threads - 1) / n_threads;
+            for tid in 0..n_threads {
+                let start = tid * chunk_size;
+                let end = (start + chunk_size).min(total_outputs);
+                if start >= total_outputs {
+                    break;
+                }
+
+                s.spawn(move || {
+                    let output_ptr = output_ptr as *mut f32;
+                    let weight_ptr = weight_ptr as *const u8;
+                    let input_ptr = input_ptr as *const BlockQ8_K;
+
+                    for idx in start..end {
+                        let t = idx / out_features;
+                        let i = idx % out_features;
+                        let input_slice = unsafe {
+                            std::slice::from_raw_parts(
+                                input_ptr.add(t * nb),
+                                nb,
+                            )
+                        };
+                        let row_blocks: &[BlockQ5_K] = unsafe {
+                            std::slice::from_raw_parts(
+                                weight_ptr.add(i * row_stride)
+                                    as *const BlockQ5_K,
+                                nb,
+                            )
+                        };
+                        unsafe {
+                            *output_ptr.add(idx) =
+                                vec_dot_q5_k_q8_k(row_blocks, input_slice);
+                        }
+                    }
+                });
+            }
+        });
     } else {
         for t in 0..n_tokens {
             let input_slice = &input[t * nb..(t + 1) * nb];
@@ -351,24 +415,49 @@ pub fn mul_mat_q6_k(
     };
 
     if n_threads > 1 && (n_tokens * out_features) >= 64 {
-        use rayon::prelude::*;
-        let results: Vec<f32> = (0..n_tokens * out_features)
-            .into_par_iter()
-            .map(|idx| {
-                let t = idx / out_features;
-                let i = idx % out_features;
-                let input_slice = &input[t * nb..(t + 1) * nb];
-                let row_blocks: &[BlockQ6_K] = unsafe {
-                    std::slice::from_raw_parts(
-                        weight_data.as_ptr().add(i * row_stride)
-                            as *const BlockQ6_K,
-                        nb,
-                    )
-                };
-                vec_dot_q6_k_q8_k(row_blocks, input_slice)
-            })
-            .collect();
-        output.copy_from_slice(&results);
+        let total_outputs = n_tokens * out_features;
+        let output_ptr = output.as_mut_ptr() as usize;
+        let weight_ptr = weight_data.as_ptr() as usize;
+        let input_ptr = input.as_ptr() as usize;
+
+        std::thread::scope(|s| {
+            let chunk_size = (total_outputs + n_threads - 1) / n_threads;
+            for tid in 0..n_threads {
+                let start = tid * chunk_size;
+                let end = (start + chunk_size).min(total_outputs);
+                if start >= total_outputs {
+                    break;
+                }
+
+                s.spawn(move || {
+                    let output_ptr = output_ptr as *mut f32;
+                    let weight_ptr = weight_ptr as *const u8;
+                    let input_ptr = input_ptr as *const BlockQ8_K;
+
+                    for idx in start..end {
+                        let t = idx / out_features;
+                        let i = idx % out_features;
+                        let input_slice = unsafe {
+                            std::slice::from_raw_parts(
+                                input_ptr.add(t * nb),
+                                nb,
+                            )
+                        };
+                        let row_blocks: &[BlockQ6_K] = unsafe {
+                            std::slice::from_raw_parts(
+                                weight_ptr.add(i * row_stride)
+                                    as *const BlockQ6_K,
+                                nb,
+                            )
+                        };
+                        unsafe {
+                            *output_ptr.add(idx) =
+                                vec_dot_q6_k_q8_k(row_blocks, input_slice);
+                        }
+                    }
+                });
+            }
+        });
     } else {
         for t in 0..n_tokens {
             let input_slice = &input[t * nb..(t + 1) * nb];
@@ -409,24 +498,49 @@ pub fn mul_mat_iq4_xs(
     };
 
     if n_threads > 1 && (n_tokens * out_features) >= 64 {
-        use rayon::prelude::*;
-        let results: Vec<f32> = (0..n_tokens * out_features)
-            .into_par_iter()
-            .map(|idx| {
-                let t = idx / out_features;
-                let i = idx % out_features;
-                let input_slice = &input[t * nb..(t + 1) * nb];
-                let row_blocks: &[BlockIQ4XS] = unsafe {
-                    std::slice::from_raw_parts(
-                        weight_data.as_ptr().add(i * row_stride)
-                            as *const BlockIQ4XS,
-                        nb,
-                    )
-                };
-                vec_dot_iq4_xs_q8_k(row_blocks, input_slice)
-            })
-            .collect();
-        output.copy_from_slice(&results);
+        let total_outputs = n_tokens * out_features;
+        let output_ptr = output.as_mut_ptr() as usize;
+        let weight_ptr = weight_data.as_ptr() as usize;
+        let input_ptr = input.as_ptr() as usize;
+
+        std::thread::scope(|s| {
+            let chunk_size = (total_outputs + n_threads - 1) / n_threads;
+            for tid in 0..n_threads {
+                let start = tid * chunk_size;
+                let end = (start + chunk_size).min(total_outputs);
+                if start >= total_outputs {
+                    break;
+                }
+
+                s.spawn(move || {
+                    let output_ptr = output_ptr as *mut f32;
+                    let weight_ptr = weight_ptr as *const u8;
+                    let input_ptr = input_ptr as *const BlockQ8_K;
+
+                    for idx in start..end {
+                        let t = idx / out_features;
+                        let i = idx % out_features;
+                        let input_slice = unsafe {
+                            std::slice::from_raw_parts(
+                                input_ptr.add(t * nb),
+                                nb,
+                            )
+                        };
+                        let row_blocks: &[BlockIQ4XS] = unsafe {
+                            std::slice::from_raw_parts(
+                                weight_ptr.add(i * row_stride)
+                                    as *const BlockIQ4XS,
+                                nb,
+                            )
+                        };
+                        unsafe {
+                            *output_ptr.add(idx) =
+                                vec_dot_iq4_xs_q8_k(row_blocks, input_slice);
+                        }
+                    }
+                });
+            }
+        });
     } else {
         for t in 0..n_tokens {
             let input_slice = &input[t * nb..(t + 1) * nb];
