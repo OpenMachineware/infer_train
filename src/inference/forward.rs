@@ -605,84 +605,35 @@ impl ForwardExecutor {
             QuantFormat::None => normed_len,
         };
 
-        // QKV projections - parallel execution at operator level
-        // Each GEMV is ~0.3ms, too small for internal parallelization
-        // But Q/K/V together is ~1ms, worth parallelizing at this level
+        // QKV projections - use GEMV internal parallelization (like llama.cpp)
+        // Each GEMV uses all threads with block-tiling, more efficient than
+        // operator-level parallelism with thread::scope overhead
         let q: &mut [f32] = self.arena.alloc_zeroed(n_heads * head_dim);
         let k: &mut [f32] = self.arena.alloc_zeroed(n_kv_heads * head_dim);
         let v: &mut [f32] = self.arena.alloc_zeroed(n_kv_heads * head_dim);
 
-        if self.n_threads > 1 {
-            // Parallel Q/K/V with internal parallelization disabled (n_threads=1)
-            let q_ptr = q.as_mut_ptr() as usize;
-            let k_ptr = k.as_mut_ptr() as usize;
-            let v_ptr = v.as_mut_ptr() as usize;
-            let q_len = n_heads * head_dim;
-            let k_len = n_kv_heads * head_dim;
-            let v_len = n_kv_heads * head_dim;
-
-            std::thread::scope(|s| {
-                s.spawn(|| {
-                    let output = unsafe {
-                        std::slice::from_raw_parts_mut(q_ptr as *mut f32, q_len)
-                    };
-                    self.linear_quantized_with_threads(
-                        quant_format,
-                        in_features,
-                        &weights.attn_q,
-                        output,
-                        1, // Internal parallelization disabled
-                    )
-                    .ok();
-                });
-                s.spawn(|| {
-                    let output = unsafe {
-                        std::slice::from_raw_parts_mut(k_ptr as *mut f32, k_len)
-                    };
-                    self.linear_quantized_with_threads(
-                        quant_format,
-                        in_features,
-                        &weights.attn_k,
-                        output,
-                        1, // Internal parallelization disabled
-                    )
-                    .ok();
-                });
-                s.spawn(|| {
-                    let output = unsafe {
-                        std::slice::from_raw_parts_mut(v_ptr as *mut f32, v_len)
-                    };
-                    self.linear_quantized_with_threads(
-                        quant_format,
-                        in_features,
-                        &weights.attn_v,
-                        output,
-                        1, // Internal parallelization disabled
-                    )
-                    .ok();
-                });
-            });
-        } else {
-            // Sequential fallback
-            self.linear_quantized(
-                quant_format,
-                in_features,
-                &weights.attn_q,
-                q,
-            )?;
-            self.linear_quantized(
-                quant_format,
-                in_features,
-                &weights.attn_k,
-                k,
-            )?;
-            self.linear_quantized(
-                quant_format,
-                in_features,
-                &weights.attn_v,
-                v,
-            )?;
-        }
+        // Sequential Q/K/V with GEMV internal parallelization
+        self.linear_quantized_with_threads(
+            quant_format,
+            in_features,
+            &weights.attn_q,
+            q,
+            self.n_threads, // GEMV internal parallelization
+        )?;
+        self.linear_quantized_with_threads(
+            quant_format,
+            in_features,
+            &weights.attn_k,
+            k,
+            self.n_threads,
+        )?;
+        self.linear_quantized_with_threads(
+            quant_format,
+            in_features,
+            &weights.attn_v,
+            v,
+            self.n_threads,
+        )?;
 
         // Save Q/K/V for debugging
         let (q_debug, k_debug, v_debug) = if self.debug_mode {
@@ -814,66 +765,26 @@ impl ForwardExecutor {
             QuantFormat::None => ffn_normed_len,
         };
 
-        // Gate/Up projections - parallel execution at operator level
-        // Each GEMV is ~0.3ms, too small for internal parallelization
-        // But gate + up together is ~0.6ms, worth parallelizing
+        // Gate/Up projections - use GEMV internal parallelization (like llama.cpp)
         let gate: &mut [f32] =
             self.arena.alloc_zeroed(config.intermediate_size);
         let up: &mut [f32] = self.arena.alloc_zeroed(config.intermediate_size);
 
-        if self.n_threads > 1 {
-            let gate_ptr = gate.as_mut_ptr() as usize;
-            let up_ptr = up.as_mut_ptr() as usize;
-            let intermediate_size = config.intermediate_size;
-
-            std::thread::scope(|s| {
-                s.spawn(|| {
-                    let output = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            gate_ptr as *mut f32,
-                            intermediate_size,
-                        )
-                    };
-                    self.linear_quantized_with_threads(
-                        ffn_quant_format,
-                        ffn_in_features,
-                        &weights.ffn_gate,
-                        output,
-                        1,
-                    )
-                    .ok();
-                });
-                s.spawn(|| {
-                    let output = unsafe {
-                        std::slice::from_raw_parts_mut(
-                            up_ptr as *mut f32,
-                            intermediate_size,
-                        )
-                    };
-                    self.linear_quantized_with_threads(
-                        ffn_quant_format,
-                        ffn_in_features,
-                        &weights.ffn_up,
-                        output,
-                        1,
-                    )
-                    .ok();
-                });
-            });
-        } else {
-            self.linear_quantized(
-                ffn_quant_format,
-                ffn_in_features,
-                &weights.ffn_gate,
-                gate,
-            )?;
-            self.linear_quantized(
-                ffn_quant_format,
-                ffn_in_features,
-                &weights.ffn_up,
-                up,
-            )?;
-        }
+        // Sequential gate/up with GEMV internal parallelization
+        self.linear_quantized_with_threads(
+            ffn_quant_format,
+            ffn_in_features,
+            &weights.ffn_gate,
+            gate,
+            self.n_threads,
+        )?;
+        self.linear_quantized_with_threads(
+            ffn_quant_format,
+            ffn_in_features,
+            &weights.ffn_up,
+            up,
+            self.n_threads,
+        )?;
 
         // Save gate and up for debugging (before SiLU)
         let (gate_before_silu, up_debug) = if self.debug_mode {
