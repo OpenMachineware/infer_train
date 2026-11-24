@@ -17,7 +17,9 @@ use super::vec_dot::{
 pub const QK4_0: usize = 32;
 
 // Block-tiling size from llama.cpp
-const BLOCK_ROWS: usize = 16;
+// Use 64 for decode to reduce atomic operation overhead
+// llama.cpp uses chunk_size=64 when nr1==1 (decode mode)
+const BLOCK_ROWS: usize = 64;
 
 // ============================================================================
 // Generic block-tiling GEMV implementation
@@ -25,6 +27,7 @@ const BLOCK_ROWS: usize = 16;
 
 /// Block-tiling GEMV for K-quant formats
 /// Processes weights in 16-row blocks to maximize cache locality
+/// Based on llama.cpp's ggml_compute_forward_mul_mat_one_chunk
 #[inline(always)]
 unsafe fn gemv_block_tiling<W, F>(
     weight_data: &[u8],
@@ -40,40 +43,60 @@ unsafe fn gemv_block_tiling<W, F>(
     F: Fn(&[W], &[BlockQ8_K]) -> f32 + Sync + Send + Copy,
 {
     if n_threads > 1 && out_features >= BLOCK_ROWS * 2 {
-        // Parallel processing using thread::scope for low overhead
-        // Use usize to store pointers (Send) and convert back in closure
+        // Parallel processing with dynamic work-stealing (like llama.cpp)
         let output_ptr = output.as_mut_ptr() as usize;
         let weight_ptr = weight_data.as_ptr() as usize;
         let input_ptr = input.as_ptr() as usize;
         let input_len = input.len();
 
-        std::thread::scope(|s| {
-            let chunk_size = (out_features + n_threads - 1) / n_threads;
-            for tid in 0..n_threads {
-                let start = tid * chunk_size;
-                let end = (start + chunk_size).min(out_features);
-                if start >= out_features {
-                    break;
-                }
+        let n_blocks = (out_features + BLOCK_ROWS - 1) / BLOCK_ROWS;
 
-                s.spawn(move || {
+        // Atomic counter for work-stealing
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let next_block = AtomicUsize::new(0);
+
+        std::thread::scope(|s| {
+            for _tid in 0..n_threads {
+                s.spawn(|| {
                     let output_ptr = output_ptr as *mut f32;
                     let weight_ptr = weight_ptr as *const u8;
                     let input_ptr = input_ptr as *const BlockQ8_K;
+                    let input_slice = unsafe {
+                        std::slice::from_raw_parts(input_ptr, input_len)
+                    };
 
-                    for i in start..end {
-                        let row_blocks: &[W] = unsafe {
-                            std::slice::from_raw_parts(
-                                weight_ptr.add(i * row_stride) as *const W,
-                                nb,
-                            )
-                        };
-                        let input_slice = unsafe {
-                            std::slice::from_raw_parts(input_ptr, input_len)
-                        };
-                        unsafe {
-                            *output_ptr.add(i) =
+                    // Work-stealing loop
+                    loop {
+                        let block_idx =
+                            next_block.fetch_add(1, Ordering::Relaxed);
+                        if block_idx >= n_blocks {
+                            break;
+                        }
+
+                        let row_start = block_idx * BLOCK_ROWS;
+                        let row_end =
+                            (row_start + BLOCK_ROWS).min(out_features);
+
+                        // Temporary buffer for this block (like llama.cpp's tmp[32])
+                        let mut tmp = [0.0f32; BLOCK_ROWS];
+
+                        // Process all rows in this block
+                        for i in row_start..row_end {
+                            let row_blocks: &[W] = unsafe {
+                                std::slice::from_raw_parts(
+                                    weight_ptr.add(i * row_stride) as *const W,
+                                    nb,
+                                )
+                            };
+                            tmp[i - row_start] =
                                 vec_dot(row_blocks, input_slice);
+                        }
+
+                        // Batch write to output (reduces cache pressure)
+                        for i in row_start..row_end {
+                            unsafe {
+                                *output_ptr.add(i) = tmp[i - row_start];
+                            }
                         }
                     }
                 });
@@ -84,13 +107,21 @@ unsafe fn gemv_block_tiling<W, F>(
         for block_start in (0..out_features).step_by(BLOCK_ROWS) {
             let block_end = (block_start + BLOCK_ROWS).min(out_features);
 
+            // Temporary buffer for this block
+            let mut tmp = [0.0f32; BLOCK_ROWS];
+
             // Process a block of rows together to maximize input reuse
             for i in block_start..block_end {
                 let row_blocks: &[W] = std::slice::from_raw_parts(
                     weight_data.as_ptr().add(i * row_stride) as *const W,
                     nb,
                 );
-                output[i] = vec_dot(row_blocks, input);
+                tmp[i - block_start] = vec_dot(row_blocks, input);
+            }
+
+            // Batch write to output
+            for i in block_start..block_end {
+                output[i] = tmp[i - block_start];
             }
         }
     }
