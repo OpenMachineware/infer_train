@@ -82,15 +82,14 @@ impl ThreadPool {
             let handle = thread::spawn(move || {
                 let mut my_gen = 0usize;
                 loop {
-                    // Simple spin wait (no hybrid polling for microsecond-level tasks)
-                    // For tasks < 100us, spin wait is faster than condvar
-                    while s.generation.load(Ordering::Relaxed) == my_gen
-                        && !s.shutdown.load(Ordering::Relaxed)
+                    // Spin wait with Acquire ordering to see all updates
+                    while s.generation.load(Ordering::Acquire) == my_gen
+                        && !s.shutdown.load(Ordering::Acquire)
                     {
                         std::hint::spin_loop();
                     }
 
-                    if s.shutdown.load(Ordering::Relaxed) {
+                    if s.shutdown.load(Ordering::Acquire) {
                         return;
                     }
 
@@ -99,17 +98,19 @@ impl ThreadPool {
 
                     // Check if this thread should participate
                     let max_active =
-                        s.max_active.load(Ordering::Relaxed) as usize;
+                        s.max_active.load(Ordering::Acquire) as usize;
                     if tid >= max_active {
+                        // This thread opts out - just continue to next iteration
+                        // The generation will change when next work arrives
                         continue;
                     }
 
-                    let n_chunks = s.n_chunks.load(Ordering::Relaxed);
-                    let work_fn: fn(usize, usize, *const u8) = unsafe {
-                        std::mem::transmute(s.work_fn.load(Ordering::Relaxed))
+                    let n_chunks = s.n_chunks.load(Ordering::Acquire);
+                    let work_fn: unsafe fn(usize, usize, *const u8) = unsafe {
+                        std::mem::transmute(s.work_fn.load(Ordering::Acquire))
                     };
                     let work_data =
-                        s.work_data.load(Ordering::Relaxed) as *const u8;
+                        s.work_data.load(Ordering::Acquire) as *const u8;
 
                     // Work stealing
                     loop {
@@ -118,7 +119,7 @@ impl ThreadPool {
                         if chunk >= n_chunks {
                             break;
                         }
-                        work_fn(chunk, tid, work_data);
+                        unsafe { work_fn(chunk, tid, work_data) };
                     }
 
                     // Decrement active and signal done if last thread
@@ -140,12 +141,12 @@ impl ThreadPool {
         &self,
         n_chunks: usize,
         max_threads: usize,
-        work_fn: fn(usize, usize, *const u8),
+        work_fn: unsafe fn(usize, usize, *const u8),
         work_data: *const u8,
     ) {
         if n_chunks == 0 || self.n_threads <= 1 {
             for chunk in 0..n_chunks {
-                work_fn(chunk, 0, work_data);
+                unsafe { work_fn(chunk, 0, work_data) };
             }
             return;
         }
@@ -182,7 +183,7 @@ impl ThreadPool {
                 if chunk >= n_chunks {
                     break;
                 }
-                work_fn(chunk, 0, work_data);
+                unsafe { work_fn(chunk, 0, work_data) };
             }
         }
 
@@ -204,7 +205,7 @@ impl ThreadPool {
     pub unsafe fn execute(
         &self,
         n_chunks: usize,
-        work_fn: fn(usize, usize, *const u8),
+        work_fn: unsafe fn(usize, usize, *const u8),
         work_data: *const u8,
     ) {
         unsafe {
@@ -237,7 +238,7 @@ static GLOBAL_POOL: once_cell::sync::Lazy<ThreadPool> =
 pub unsafe fn parallel_stealing_raw(
     n_chunks: usize,
     max_threads: usize,
-    work_fn: fn(usize, usize, *const u8),
+    work_fn: unsafe fn(usize, usize, *const u8),
     work_data: *const u8,
 ) {
     unsafe {
