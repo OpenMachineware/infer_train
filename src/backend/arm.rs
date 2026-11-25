@@ -7,6 +7,7 @@ pub mod activation;
 pub mod dequant;
 pub mod flash_attn;
 pub mod gemv;
+pub mod gemv_k_extent;
 pub mod linear;
 pub mod quant;
 pub mod rms_norm;
