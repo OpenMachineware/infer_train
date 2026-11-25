@@ -48,6 +48,10 @@ name = "forward_profile"
 path = "tools/forward_profile/src/main.rs"
 
 [[bin]]
+name = "op_timing"
+path = "tools/op_timing.rs"
+
+[[bin]]
 name = "prefill_test"
 path = "tools/prefill_test.rs"
 
