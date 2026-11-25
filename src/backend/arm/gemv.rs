@@ -350,76 +350,81 @@ pub fn mul_mat_q4_k(
     // Block-tiling: 16 tokens × 16 rows
     // Weight is reused 16 times in L1 cache
     if n_tokens > 1 && n_threads > 1 {
-        // Parallel block-tiling
+        // Parallel block-tiling using persistent thread pool
         let n_blk0 = (out_features + BLK_0 - 1) / BLK_0; // row blocks
         let n_blk1 = (n_tokens + BLK_1 - 1) / BLK_1; // token blocks
         let total_blocks = n_blk0 * n_blk1;
 
-        let output_ptr = output.as_mut_ptr() as usize;
-        let weight_ptr = weight_data.as_ptr() as usize;
-        let input_ptr = input.as_ptr() as usize;
+        #[repr(C)]
+        struct BlockWork {
+            output_ptr: usize,
+            weight_ptr: usize,
+            input_ptr: usize,
+            out_features: usize,
+            n_tokens: usize,
+            nb: usize,
+            row_stride: usize,
+            n_blk1: usize,
+        }
 
-        std::thread::scope(|s| {
-            let chunk_size = (total_blocks + n_threads - 1) / n_threads;
-            for tid in 0..n_threads {
-                let start = tid * chunk_size;
-                let end = (start + chunk_size).min(total_blocks);
-                if start >= total_blocks {
-                    break;
+        let work = BlockWork {
+            output_ptr: output.as_mut_ptr() as usize,
+            weight_ptr: weight_data.as_ptr() as usize,
+            input_ptr: input.as_ptr() as usize,
+            out_features,
+            n_tokens,
+            nb,
+            row_stride,
+            n_blk1,
+        };
+
+        unsafe fn block_work_fn(blk_idx: usize, _tid: usize, data: *const u8) {
+            let work = &*(data as *const BlockWork);
+            let output_ptr = work.output_ptr as *mut f32;
+            let weight_ptr = work.weight_ptr as *const u8;
+            let input_ptr = work.input_ptr as *const BlockQ8_K;
+
+            let mut tmp = [0.0f32; BLK_0];
+
+            let blk0 = blk_idx / work.n_blk1; // row block
+            let blk1 = blk_idx % work.n_blk1; // token block
+
+            let row_start = blk0 * BLK_0;
+            let row_end = (row_start + BLK_0).min(work.out_features);
+            let token_start = blk1 * BLK_1;
+            let token_end = (token_start + BLK_1).min(work.n_tokens);
+
+            for t in token_start..token_end {
+                let input_slice = std::slice::from_raw_parts(
+                    input_ptr.add(t * work.nb),
+                    work.nb,
+                );
+
+                for i_row in row_start..row_end {
+                    let row_blocks: &[BlockQ4_K] = std::slice::from_raw_parts(
+                        weight_ptr.add(i_row * work.row_stride)
+                            as *const BlockQ4_K,
+                        work.nb,
+                    );
+                    tmp[i_row - row_start] =
+                        vec_dot_q4_k_q8_k(row_blocks, input_slice);
                 }
 
-                s.spawn(move || {
-                    let output_ptr = output_ptr as *mut f32;
-                    let weight_ptr = weight_ptr as *const u8;
-                    let input_ptr = input_ptr as *const BlockQ8_K;
-
-                    // Temporary array for block results
-                    let mut tmp = [0.0f32; BLK_0];
-
-                    for blk_idx in start..end {
-                        let blk0 = blk_idx / n_blk1; // row block
-                        let blk1 = blk_idx % n_blk1; // token block
-
-                        let row_start = blk0 * BLK_0;
-                        let row_end = (row_start + BLK_0).min(out_features);
-                        let token_start = blk1 * BLK_1;
-                        let token_end = (token_start + BLK_1).min(n_tokens);
-                        let n_rows_in_block = row_end - row_start;
-
-                        // Process each token in the block
-                        for t in token_start..token_end {
-                            let input_slice = unsafe {
-                                std::slice::from_raw_parts(
-                                    input_ptr.add(t * nb),
-                                    nb,
-                                )
-                            };
-
-                            // Compute all rows in this block for this token
-                            for i_row in row_start..row_end {
-                                let row_blocks: &[BlockQ4_K] = unsafe {
-                                    std::slice::from_raw_parts(
-                                        weight_ptr.add(i_row * row_stride)
-                                            as *const BlockQ4_K,
-                                        nb,
-                                    )
-                                };
-                                tmp[i_row - row_start] =
-                                    vec_dot_q4_k_q8_k(row_blocks, input_slice);
-                            }
-
-                            // Store results for this token
-                            for i_row in row_start..row_end {
-                                unsafe {
-                                    *output_ptr.add(t * out_features + i_row) =
-                                        tmp[i_row - row_start];
-                                }
-                            }
-                        }
-                    }
-                });
+                for i_row in row_start..row_end {
+                    *output_ptr.add(t * work.out_features + i_row) =
+                        tmp[i_row - row_start];
+                }
             }
-        });
+        }
+
+        unsafe {
+            crate::backend::thread_pool::parallel_stealing_raw(
+                total_blocks,
+                n_threads,
+                block_work_fn,
+                &work as *const _ as *const u8,
+            );
+        }
     } else {
         // Sequential block-tiling
         let mut tmp = [0.0f32; BLK_0];
@@ -479,66 +484,76 @@ pub fn mul_mat_q5_k(
         let n_blk1 = (n_tokens + BLK_1 - 1) / BLK_1;
         let total_blocks = n_blk0 * n_blk1;
 
-        let output_ptr = output.as_mut_ptr() as usize;
-        let weight_ptr = weight_data.as_ptr() as usize;
-        let input_ptr = input.as_ptr() as usize;
+        #[repr(C)]
+        struct BlockWork {
+            output_ptr: usize,
+            weight_ptr: usize,
+            input_ptr: usize,
+            out_features: usize,
+            n_tokens: usize,
+            nb: usize,
+            row_stride: usize,
+            n_blk1: usize,
+        }
 
-        std::thread::scope(|s| {
-            let chunk_size = (total_blocks + n_threads - 1) / n_threads;
-            for tid in 0..n_threads {
-                let start = tid * chunk_size;
-                let end = (start + chunk_size).min(total_blocks);
-                if start >= total_blocks {
-                    break;
+        let work = BlockWork {
+            output_ptr: output.as_mut_ptr() as usize,
+            weight_ptr: weight_data.as_ptr() as usize,
+            input_ptr: input.as_ptr() as usize,
+            out_features,
+            n_tokens,
+            nb,
+            row_stride,
+            n_blk1,
+        };
+
+        unsafe fn block_work_fn(blk_idx: usize, _tid: usize, data: *const u8) {
+            let work = &*(data as *const BlockWork);
+            let output_ptr = work.output_ptr as *mut f32;
+            let weight_ptr = work.weight_ptr as *const u8;
+            let input_ptr = work.input_ptr as *const BlockQ8_K;
+
+            let mut tmp = [0.0f32; BLK_0];
+
+            let blk0 = blk_idx / work.n_blk1;
+            let blk1 = blk_idx % work.n_blk1;
+
+            let row_start = blk0 * BLK_0;
+            let row_end = (row_start + BLK_0).min(work.out_features);
+            let token_start = blk1 * BLK_1;
+            let token_end = (token_start + BLK_1).min(work.n_tokens);
+
+            for t in token_start..token_end {
+                let input_slice = std::slice::from_raw_parts(
+                    input_ptr.add(t * work.nb),
+                    work.nb,
+                );
+
+                for i_row in row_start..row_end {
+                    let row_blocks: &[BlockQ5_K] = std::slice::from_raw_parts(
+                        weight_ptr.add(i_row * work.row_stride)
+                            as *const BlockQ5_K,
+                        work.nb,
+                    );
+                    tmp[i_row - row_start] =
+                        vec_dot_q5_k_q8_k(row_blocks, input_slice);
                 }
 
-                s.spawn(move || {
-                    let output_ptr = output_ptr as *mut f32;
-                    let weight_ptr = weight_ptr as *const u8;
-                    let input_ptr = input_ptr as *const BlockQ8_K;
-
-                    let mut tmp = [0.0f32; BLK_0];
-
-                    for blk_idx in start..end {
-                        let blk0 = blk_idx / n_blk1;
-                        let blk1 = blk_idx % n_blk1;
-
-                        let row_start = blk0 * BLK_0;
-                        let row_end = (row_start + BLK_0).min(out_features);
-                        let token_start = blk1 * BLK_1;
-                        let token_end = (token_start + BLK_1).min(n_tokens);
-
-                        for t in token_start..token_end {
-                            let input_slice = unsafe {
-                                std::slice::from_raw_parts(
-                                    input_ptr.add(t * nb),
-                                    nb,
-                                )
-                            };
-
-                            for i_row in row_start..row_end {
-                                let row_blocks: &[BlockQ5_K] = unsafe {
-                                    std::slice::from_raw_parts(
-                                        weight_ptr.add(i_row * row_stride)
-                                            as *const BlockQ5_K,
-                                        nb,
-                                    )
-                                };
-                                tmp[i_row - row_start] =
-                                    vec_dot_q5_k_q8_k(row_blocks, input_slice);
-                            }
-
-                            for i_row in row_start..row_end {
-                                unsafe {
-                                    *output_ptr.add(t * out_features + i_row) =
-                                        tmp[i_row - row_start];
-                                }
-                            }
-                        }
-                    }
-                });
+                for i_row in row_start..row_end {
+                    *output_ptr.add(t * work.out_features + i_row) =
+                        tmp[i_row - row_start];
+                }
             }
-        });
+        }
+
+        unsafe {
+            crate::backend::thread_pool::parallel_stealing_raw(
+                total_blocks,
+                n_threads,
+                block_work_fn,
+                &work as *const _ as *const u8,
+            );
+        }
     } else {
         let mut tmp = [0.0f32; BLK_0];
 
@@ -597,66 +612,76 @@ pub fn mul_mat_q6_k(
         let n_blk1 = (n_tokens + BLK_1 - 1) / BLK_1;
         let total_blocks = n_blk0 * n_blk1;
 
-        let output_ptr = output.as_mut_ptr() as usize;
-        let weight_ptr = weight_data.as_ptr() as usize;
-        let input_ptr = input.as_ptr() as usize;
+        #[repr(C)]
+        struct BlockWork {
+            output_ptr: usize,
+            weight_ptr: usize,
+            input_ptr: usize,
+            out_features: usize,
+            n_tokens: usize,
+            nb: usize,
+            row_stride: usize,
+            n_blk1: usize,
+        }
 
-        std::thread::scope(|s| {
-            let chunk_size = (total_blocks + n_threads - 1) / n_threads;
-            for tid in 0..n_threads {
-                let start = tid * chunk_size;
-                let end = (start + chunk_size).min(total_blocks);
-                if start >= total_blocks {
-                    break;
+        let work = BlockWork {
+            output_ptr: output.as_mut_ptr() as usize,
+            weight_ptr: weight_data.as_ptr() as usize,
+            input_ptr: input.as_ptr() as usize,
+            out_features,
+            n_tokens,
+            nb,
+            row_stride,
+            n_blk1,
+        };
+
+        unsafe fn block_work_fn(blk_idx: usize, _tid: usize, data: *const u8) {
+            let work = &*(data as *const BlockWork);
+            let output_ptr = work.output_ptr as *mut f32;
+            let weight_ptr = work.weight_ptr as *const u8;
+            let input_ptr = work.input_ptr as *const BlockQ8_K;
+
+            let mut tmp = [0.0f32; BLK_0];
+
+            let blk0 = blk_idx / work.n_blk1;
+            let blk1 = blk_idx % work.n_blk1;
+
+            let row_start = blk0 * BLK_0;
+            let row_end = (row_start + BLK_0).min(work.out_features);
+            let token_start = blk1 * BLK_1;
+            let token_end = (token_start + BLK_1).min(work.n_tokens);
+
+            for t in token_start..token_end {
+                let input_slice = std::slice::from_raw_parts(
+                    input_ptr.add(t * work.nb),
+                    work.nb,
+                );
+
+                for i_row in row_start..row_end {
+                    let row_blocks: &[BlockQ6_K] = std::slice::from_raw_parts(
+                        weight_ptr.add(i_row * work.row_stride)
+                            as *const BlockQ6_K,
+                        work.nb,
+                    );
+                    tmp[i_row - row_start] =
+                        vec_dot_q6_k_q8_k(row_blocks, input_slice);
                 }
 
-                s.spawn(move || {
-                    let output_ptr = output_ptr as *mut f32;
-                    let weight_ptr = weight_ptr as *const u8;
-                    let input_ptr = input_ptr as *const BlockQ8_K;
-
-                    let mut tmp = [0.0f32; BLK_0];
-
-                    for blk_idx in start..end {
-                        let blk0 = blk_idx / n_blk1;
-                        let blk1 = blk_idx % n_blk1;
-
-                        let row_start = blk0 * BLK_0;
-                        let row_end = (row_start + BLK_0).min(out_features);
-                        let token_start = blk1 * BLK_1;
-                        let token_end = (token_start + BLK_1).min(n_tokens);
-
-                        for t in token_start..token_end {
-                            let input_slice = unsafe {
-                                std::slice::from_raw_parts(
-                                    input_ptr.add(t * nb),
-                                    nb,
-                                )
-                            };
-
-                            for i_row in row_start..row_end {
-                                let row_blocks: &[BlockQ6_K] = unsafe {
-                                    std::slice::from_raw_parts(
-                                        weight_ptr.add(i_row * row_stride)
-                                            as *const BlockQ6_K,
-                                        nb,
-                                    )
-                                };
-                                tmp[i_row - row_start] =
-                                    vec_dot_q6_k_q8_k(row_blocks, input_slice);
-                            }
-
-                            for i_row in row_start..row_end {
-                                unsafe {
-                                    *output_ptr.add(t * out_features + i_row) =
-                                        tmp[i_row - row_start];
-                                }
-                            }
-                        }
-                    }
-                });
+                for i_row in row_start..row_end {
+                    *output_ptr.add(t * work.out_features + i_row) =
+                        tmp[i_row - row_start];
+                }
             }
-        });
+        }
+
+        unsafe {
+            crate::backend::thread_pool::parallel_stealing_raw(
+                total_blocks,
+                n_threads,
+                block_work_fn,
+                &work as *const _ as *const u8,
+            );
+        }
     } else {
         let mut tmp = [0.0f32; BLK_0];
 
@@ -715,68 +740,76 @@ pub fn mul_mat_iq4_xs(
         let n_blk1 = (n_tokens + BLK_1 - 1) / BLK_1;
         let total_blocks = n_blk0 * n_blk1;
 
-        let output_ptr = output.as_mut_ptr() as usize;
-        let weight_ptr = weight_data.as_ptr() as usize;
-        let input_ptr = input.as_ptr() as usize;
+        #[repr(C)]
+        struct BlockWork {
+            output_ptr: usize,
+            weight_ptr: usize,
+            input_ptr: usize,
+            out_features: usize,
+            n_tokens: usize,
+            nb: usize,
+            row_stride: usize,
+            n_blk1: usize,
+        }
 
-        std::thread::scope(|s| {
-            let chunk_size = (total_blocks + n_threads - 1) / n_threads;
-            for tid in 0..n_threads {
-                let start = tid * chunk_size;
-                let end = (start + chunk_size).min(total_blocks);
-                if start >= total_blocks {
-                    break;
+        let work = BlockWork {
+            output_ptr: output.as_mut_ptr() as usize,
+            weight_ptr: weight_data.as_ptr() as usize,
+            input_ptr: input.as_ptr() as usize,
+            out_features,
+            n_tokens,
+            nb,
+            row_stride,
+            n_blk1,
+        };
+
+        unsafe fn block_work_fn(blk_idx: usize, _tid: usize, data: *const u8) {
+            let work = &*(data as *const BlockWork);
+            let output_ptr = work.output_ptr as *mut f32;
+            let weight_ptr = work.weight_ptr as *const u8;
+            let input_ptr = work.input_ptr as *const BlockQ8_K;
+
+            let mut tmp = [0.0f32; BLK_0];
+
+            let blk0 = blk_idx / work.n_blk1;
+            let blk1 = blk_idx % work.n_blk1;
+
+            let row_start = blk0 * BLK_0;
+            let row_end = (row_start + BLK_0).min(work.out_features);
+            let token_start = blk1 * BLK_1;
+            let token_end = (token_start + BLK_1).min(work.n_tokens);
+
+            for t in token_start..token_end {
+                let input_slice = std::slice::from_raw_parts(
+                    input_ptr.add(t * work.nb),
+                    work.nb,
+                );
+
+                for i_row in row_start..row_end {
+                    let row_blocks: &[BlockIQ4XS] = std::slice::from_raw_parts(
+                        weight_ptr.add(i_row * work.row_stride)
+                            as *const BlockIQ4XS,
+                        work.nb,
+                    );
+                    tmp[i_row - row_start] =
+                        vec_dot_iq4_xs_q8_k(row_blocks, input_slice);
                 }
 
-                s.spawn(move || {
-                    let output_ptr = output_ptr as *mut f32;
-                    let weight_ptr = weight_ptr as *const u8;
-                    let input_ptr = input_ptr as *const BlockQ8_K;
-
-                    let mut tmp = [0.0f32; BLK_0];
-
-                    for blk_idx in start..end {
-                        let blk0 = blk_idx / n_blk1;
-                        let blk1 = blk_idx % n_blk1;
-
-                        let row_start = blk0 * BLK_0;
-                        let row_end = (row_start + BLK_0).min(out_features);
-                        let token_start = blk1 * BLK_1;
-                        let token_end = (token_start + BLK_1).min(n_tokens);
-
-                        for t in token_start..token_end {
-                            let input_slice = unsafe {
-                                std::slice::from_raw_parts(
-                                    input_ptr.add(t * nb),
-                                    nb,
-                                )
-                            };
-
-                            for i_row in row_start..row_end {
-                                let row_blocks: &[BlockIQ4XS] = unsafe {
-                                    std::slice::from_raw_parts(
-                                        weight_ptr.add(i_row * row_stride)
-                                            as *const BlockIQ4XS,
-                                        nb,
-                                    )
-                                };
-                                tmp[i_row - row_start] = vec_dot_iq4_xs_q8_k(
-                                    row_blocks,
-                                    input_slice,
-                                );
-                            }
-
-                            for i_row in row_start..row_end {
-                                unsafe {
-                                    *output_ptr.add(t * out_features + i_row) =
-                                        tmp[i_row - row_start];
-                                }
-                            }
-                        }
-                    }
-                });
+                for i_row in row_start..row_end {
+                    *output_ptr.add(t * work.out_features + i_row) =
+                        tmp[i_row - row_start];
+                }
             }
-        });
+        }
+
+        unsafe {
+            crate::backend::thread_pool::parallel_stealing_raw(
+                total_blocks,
+                n_threads,
+                block_work_fn,
+                &work as *const _ as *const u8,
+            );
+        }
     } else {
         let mut tmp = [0.0f32; BLK_0];
 
@@ -831,66 +864,76 @@ pub fn mul_mat_q4_0(
         let n_blk1 = (n_tokens + BLK_1 - 1) / BLK_1;
         let total_blocks = n_blk0 * n_blk1;
 
-        let output_ptr = output.as_mut_ptr() as usize;
-        let weight_ptr = weight_data.as_ptr() as usize;
-        let input_ptr = input.as_ptr() as usize;
+        #[repr(C)]
+        struct BlockWork {
+            output_ptr: usize,
+            weight_ptr: usize,
+            input_ptr: usize,
+            out_features: usize,
+            n_tokens: usize,
+            nb: usize,
+            row_stride: usize,
+            n_blk1: usize,
+        }
 
-        std::thread::scope(|s| {
-            let chunk_size = (total_blocks + n_threads - 1) / n_threads;
-            for tid in 0..n_threads {
-                let start = tid * chunk_size;
-                let end = (start + chunk_size).min(total_blocks);
-                if start >= total_blocks {
-                    break;
+        let work = BlockWork {
+            output_ptr: output.as_mut_ptr() as usize,
+            weight_ptr: weight_data.as_ptr() as usize,
+            input_ptr: input.as_ptr() as usize,
+            out_features,
+            n_tokens,
+            nb,
+            row_stride,
+            n_blk1,
+        };
+
+        unsafe fn block_work_fn(blk_idx: usize, _tid: usize, data: *const u8) {
+            let work = &*(data as *const BlockWork);
+            let output_ptr = work.output_ptr as *mut f32;
+            let weight_ptr = work.weight_ptr as *const u8;
+            let input_ptr = work.input_ptr as *const BlockQ8_0;
+
+            let mut tmp = [0.0f32; BLK_0];
+
+            let blk0 = blk_idx / work.n_blk1;
+            let blk1 = blk_idx % work.n_blk1;
+
+            let row_start = blk0 * BLK_0;
+            let row_end = (row_start + BLK_0).min(work.out_features);
+            let token_start = blk1 * BLK_1;
+            let token_end = (token_start + BLK_1).min(work.n_tokens);
+
+            for t in token_start..token_end {
+                let input_slice = std::slice::from_raw_parts(
+                    input_ptr.add(t * work.nb),
+                    work.nb,
+                );
+
+                for i_row in row_start..row_end {
+                    let row_blocks: &[BlockQ4_0] = std::slice::from_raw_parts(
+                        weight_ptr.add(i_row * work.row_stride)
+                            as *const BlockQ4_0,
+                        work.nb,
+                    );
+                    tmp[i_row - row_start] =
+                        vec_dot_q4_0_q8_0(row_blocks, input_slice);
                 }
 
-                s.spawn(move || {
-                    let output_ptr = output_ptr as *mut f32;
-                    let weight_ptr = weight_ptr as *const u8;
-                    let input_ptr = input_ptr as *const BlockQ8_0;
-
-                    let mut tmp = [0.0f32; BLK_0];
-
-                    for blk_idx in start..end {
-                        let blk0 = blk_idx / n_blk1;
-                        let blk1 = blk_idx % n_blk1;
-
-                        let row_start = blk0 * BLK_0;
-                        let row_end = (row_start + BLK_0).min(out_features);
-                        let token_start = blk1 * BLK_1;
-                        let token_end = (token_start + BLK_1).min(n_tokens);
-
-                        for t in token_start..token_end {
-                            let input_slice = unsafe {
-                                std::slice::from_raw_parts(
-                                    input_ptr.add(t * nb),
-                                    nb,
-                                )
-                            };
-
-                            for i_row in row_start..row_end {
-                                let row_blocks: &[BlockQ4_0] = unsafe {
-                                    std::slice::from_raw_parts(
-                                        weight_ptr.add(i_row * row_stride)
-                                            as *const BlockQ4_0,
-                                        nb,
-                                    )
-                                };
-                                tmp[i_row - row_start] =
-                                    vec_dot_q4_0_q8_0(row_blocks, input_slice);
-                            }
-
-                            for i_row in row_start..row_end {
-                                unsafe {
-                                    *output_ptr.add(t * out_features + i_row) =
-                                        tmp[i_row - row_start];
-                                }
-                            }
-                        }
-                    }
-                });
+                for i_row in row_start..row_end {
+                    *output_ptr.add(t * work.out_features + i_row) =
+                        tmp[i_row - row_start];
+                }
             }
-        });
+        }
+
+        unsafe {
+            crate::backend::thread_pool::parallel_stealing_raw(
+                total_blocks,
+                n_threads,
+                block_work_fn,
+                &work as *const _ as *const u8,
+            );
+        }
     } else {
         let mut tmp = [0.0f32; BLK_0];
 

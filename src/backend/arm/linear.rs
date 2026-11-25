@@ -385,43 +385,51 @@ pub fn linear_f32_batch(
             quant_buf_q8_k
                 .resize(n_tokens * nb_per_token, unsafe { std::mem::zeroed() });
 
-            // Parallel quantization - each thread quantizes different tokens
-            // Matches llama.cpp's parallel quantization pattern
+            // Parallel quantization using persistent thread pool
+            // Each thread quantizes different tokens via work stealing
             if n_threads > 1 && n_tokens >= n_threads {
-                // Convert to raw pointers for thread-safe sharing
-                let input_ptr = input.as_ptr() as usize;
-                let buf_ptr = quant_buf_q8_k.as_mut_ptr() as usize;
-                let in_feat = in_features;
-                let nb = nb_per_token;
+                #[repr(C)]
+                struct QuantWork {
+                    input_ptr: usize,
+                    buf_ptr: usize,
+                    in_feat: usize,
+                    nb: usize,
+                }
 
-                std::thread::scope(|s| {
-                    let tokens_per_thread =
-                        (n_tokens + n_threads - 1) / n_threads;
-                    for tid in 0..n_threads {
-                        let token_start = tid * tokens_per_thread;
-                        let token_end =
-                            (token_start + tokens_per_thread).min(n_tokens);
-                        if token_start >= n_tokens {
-                            break;
-                        }
+                let work = QuantWork {
+                    input_ptr: input.as_ptr() as usize,
+                    buf_ptr: quant_buf_q8_k.as_mut_ptr() as usize,
+                    in_feat: in_features,
+                    nb: nb_per_token,
+                };
 
-                        s.spawn(move || {
-                            for token_idx in token_start..token_end {
-                                unsafe {
-                                    let input_slice = std::slice::from_raw_parts(
-                                        (input_ptr as *const f32).add(token_idx * in_feat),
-                                        in_feat,
-                                    );
-                                    let buf_slice = std::slice::from_raw_parts_mut(
-                                        (buf_ptr as *mut crate::types::BlockQ8_K).add(token_idx * nb),
-                                        nb,
-                                    );
-                                    quant::quantize_q8_k(input_slice, buf_slice);
-                                }
-                            }
-                        });
-                    }
-                });
+                unsafe fn quant_work_fn(
+                    token_idx: usize,
+                    _tid: usize,
+                    data: *const u8,
+                ) {
+                    let work = &*(data as *const QuantWork);
+                    let input_slice = std::slice::from_raw_parts(
+                        (work.input_ptr as *const f32)
+                            .add(token_idx * work.in_feat),
+                        work.in_feat,
+                    );
+                    let buf_slice = std::slice::from_raw_parts_mut(
+                        (work.buf_ptr as *mut crate::types::BlockQ8_K)
+                            .add(token_idx * work.nb),
+                        work.nb,
+                    );
+                    quant::quantize_q8_k(input_slice, buf_slice);
+                }
+
+                unsafe {
+                    crate::backend::thread_pool::parallel_stealing_raw(
+                        n_tokens,
+                        n_threads,
+                        quant_work_fn,
+                        &work as *const _ as *const u8,
+                    );
+                }
             } else {
                 // Sequential fallback
                 for token_idx in 0..n_tokens {
@@ -482,49 +490,50 @@ pub fn linear_f32_batch(
                 BlockQ8_0 { d: 0, qs: [0; QK8_0] },
             );
 
-            // Parallel quantization
+            // Parallel quantization using persistent thread pool
             if n_threads > 1 && n_tokens >= n_threads {
-                // Convert to raw pointers for thread-safe sharing
-                let input_ptr = input.as_ptr() as usize;
-                let buf_ptr = quant_buf_q8_0.as_mut_ptr() as usize;
-                let in_feat = in_features;
-                let nb = nb_per_token;
+                #[repr(C)]
+                struct QuantWork {
+                    input_ptr: usize,
+                    buf_ptr: usize,
+                    in_feat: usize,
+                    nb: usize,
+                }
 
-                std::thread::scope(|s| {
-                    let tokens_per_thread =
-                        (n_tokens + n_threads - 1) / n_threads;
-                    for tid in 0..n_threads {
-                        let token_start = tid * tokens_per_thread;
-                        let token_end =
-                            (token_start + tokens_per_thread).min(n_tokens);
-                        if token_start >= n_tokens {
-                            break;
-                        }
+                let work = QuantWork {
+                    input_ptr: input.as_ptr() as usize,
+                    buf_ptr: quant_buf_q8_0.as_mut_ptr() as usize,
+                    in_feat: in_features,
+                    nb: nb_per_token,
+                };
 
-                        s.spawn(move || {
-                            for token_idx in token_start..token_end {
-                                unsafe {
-                                    let input_slice =
-                                        std::slice::from_raw_parts(
-                                            (input_ptr as *const f32)
-                                                .add(token_idx * in_feat),
-                                            in_feat,
-                                        );
-                                    let buf_slice =
-                                        std::slice::from_raw_parts_mut(
-                                            (buf_ptr as *mut BlockQ8_0)
-                                                .add(token_idx * nb),
-                                            nb,
-                                        );
-                                    quant::quantize_q8_0(
-                                        input_slice,
-                                        buf_slice,
-                                    );
-                                }
-                            }
-                        });
-                    }
-                });
+                unsafe fn quant_work_fn(
+                    token_idx: usize,
+                    _tid: usize,
+                    data: *const u8,
+                ) {
+                    let work = &*(data as *const QuantWork);
+                    let input_slice = std::slice::from_raw_parts(
+                        (work.input_ptr as *const f32)
+                            .add(token_idx * work.in_feat),
+                        work.in_feat,
+                    );
+                    let buf_slice = std::slice::from_raw_parts_mut(
+                        (work.buf_ptr as *mut BlockQ8_0)
+                            .add(token_idx * work.nb),
+                        work.nb,
+                    );
+                    quant::quantize_q8_0(input_slice, buf_slice);
+                }
+
+                unsafe {
+                    crate::backend::thread_pool::parallel_stealing_raw(
+                        n_tokens,
+                        n_threads,
+                        quant_work_fn,
+                        &work as *const _ as *const u8,
+                    );
+                }
             } else {
                 // Sequential fallback
                 for token_idx in 0..n_tokens {
