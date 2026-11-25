@@ -385,13 +385,54 @@ pub fn linear_f32_batch(
             quant_buf_q8_k
                 .resize(n_tokens * nb_per_token, unsafe { std::mem::zeroed() });
 
-            for token_idx in 0..n_tokens {
-                let in_start = token_idx * in_features;
-                let out_start = token_idx * nb_per_token;
-                quant::quantize_q8_k(
-                    &input[in_start..in_start + in_features],
-                    &mut quant_buf_q8_k[out_start..out_start + nb_per_token],
-                );
+            // Parallel quantization - each thread quantizes different tokens
+            // Matches llama.cpp's parallel quantization pattern
+            if n_threads > 1 && n_tokens >= n_threads {
+                // Convert to raw pointers for thread-safe sharing
+                let input_ptr = input.as_ptr() as usize;
+                let buf_ptr = quant_buf_q8_k.as_mut_ptr() as usize;
+                let in_feat = in_features;
+                let nb = nb_per_token;
+
+                std::thread::scope(|s| {
+                    let tokens_per_thread =
+                        (n_tokens + n_threads - 1) / n_threads;
+                    for tid in 0..n_threads {
+                        let token_start = tid * tokens_per_thread;
+                        let token_end =
+                            (token_start + tokens_per_thread).min(n_tokens);
+                        if token_start >= n_tokens {
+                            break;
+                        }
+
+                        s.spawn(move || {
+                            for token_idx in token_start..token_end {
+                                unsafe {
+                                    let input_slice = std::slice::from_raw_parts(
+                                        (input_ptr as *const f32).add(token_idx * in_feat),
+                                        in_feat,
+                                    );
+                                    let buf_slice = std::slice::from_raw_parts_mut(
+                                        (buf_ptr as *mut crate::types::BlockQ8_K).add(token_idx * nb),
+                                        nb,
+                                    );
+                                    quant::quantize_q8_k(input_slice, buf_slice);
+                                }
+                            }
+                        });
+                    }
+                });
+            } else {
+                // Sequential fallback
+                for token_idx in 0..n_tokens {
+                    let in_start = token_idx * in_features;
+                    let out_start = token_idx * nb_per_token;
+                    quant::quantize_q8_k(
+                        &input[in_start..in_start + in_features],
+                        &mut quant_buf_q8_k
+                            [out_start..out_start + nb_per_token],
+                    );
+                }
             }
 
             match weight_type {
@@ -441,13 +482,60 @@ pub fn linear_f32_batch(
                 BlockQ8_0 { d: 0, qs: [0; QK8_0] },
             );
 
-            for token_idx in 0..n_tokens {
-                let in_start = token_idx * in_features;
-                let out_start = token_idx * nb_per_token;
-                quant::quantize_q8_0(
-                    &input[in_start..in_start + in_features],
-                    &mut quant_buf_q8_0[out_start..out_start + nb_per_token],
-                );
+            // Parallel quantization
+            if n_threads > 1 && n_tokens >= n_threads {
+                // Convert to raw pointers for thread-safe sharing
+                let input_ptr = input.as_ptr() as usize;
+                let buf_ptr = quant_buf_q8_0.as_mut_ptr() as usize;
+                let in_feat = in_features;
+                let nb = nb_per_token;
+
+                std::thread::scope(|s| {
+                    let tokens_per_thread =
+                        (n_tokens + n_threads - 1) / n_threads;
+                    for tid in 0..n_threads {
+                        let token_start = tid * tokens_per_thread;
+                        let token_end =
+                            (token_start + tokens_per_thread).min(n_tokens);
+                        if token_start >= n_tokens {
+                            break;
+                        }
+
+                        s.spawn(move || {
+                            for token_idx in token_start..token_end {
+                                unsafe {
+                                    let input_slice =
+                                        std::slice::from_raw_parts(
+                                            (input_ptr as *const f32)
+                                                .add(token_idx * in_feat),
+                                            in_feat,
+                                        );
+                                    let buf_slice =
+                                        std::slice::from_raw_parts_mut(
+                                            (buf_ptr as *mut BlockQ8_0)
+                                                .add(token_idx * nb),
+                                            nb,
+                                        );
+                                    quant::quantize_q8_0(
+                                        input_slice,
+                                        buf_slice,
+                                    );
+                                }
+                            }
+                        });
+                    }
+                });
+            } else {
+                // Sequential fallback
+                for token_idx in 0..n_tokens {
+                    let in_start = token_idx * in_features;
+                    let out_start = token_idx * nb_per_token;
+                    quant::quantize_q8_0(
+                        &input[in_start..in_start + in_features],
+                        &mut quant_buf_q8_0
+                            [out_start..out_start + nb_per_token],
+                    );
+                }
             }
 
             gemv::mul_mat_q4_0(
