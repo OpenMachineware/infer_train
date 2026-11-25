@@ -11,7 +11,7 @@ pub mod simple_model;
 
 pub use debug::LayerDebugState;
 pub use engine::InferenceEngine;
-pub use forward::ForwardExecutor;
+pub use forward::{ForwardExecutor, OpTiming, TimingStats};
 pub use input::{
     QuantFormat, QuantizedInput, QuantizedInputBatch, quantize_input_batch,
     quantize_input_to,

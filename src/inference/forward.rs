@@ -3,6 +3,8 @@
 
 // Forward executor for CPU inference
 
+use std::cell::RefCell;
+
 use crate::backend::arm::{
     activation::silu_f32_inplace, flash_attn::flash_attn_f32, linear, quant,
     rms_norm, rope::rope_f32_inplace,
@@ -75,6 +77,73 @@ impl LayerWeightNames {
     }
 }
 
+/// Timing statistics for an operation
+#[derive(Clone, Debug, Default)]
+pub struct OpTiming {
+    pub name: String,
+    pub count: usize,
+    pub total_us: u64,
+    pub min_us: u64,
+    pub max_us: u64,
+}
+
+impl OpTiming {
+    pub fn avg_us(&self) -> f64 {
+        if self.count == 0 {
+            0.0
+        } else {
+            self.total_us as f64 / self.count as f64
+        }
+    }
+}
+
+/// Timing statistics collector
+#[derive(Clone, Debug, Default)]
+pub struct TimingStats {
+    pub ops: std::collections::HashMap<String, OpTiming>,
+}
+
+impl TimingStats {
+    pub fn record(&mut self, name: &str, us: u64) {
+        let entry = self.ops.entry(name.to_string()).or_insert_with(|| {
+            OpTiming { name: name.to_string(), ..Default::default() }
+        });
+        entry.count += 1;
+        entry.total_us += us;
+        entry.min_us =
+            if entry.min_us == 0 { us } else { entry.min_us.min(us) };
+        entry.max_us = entry.max_us.max(us);
+    }
+
+    pub fn print_summary(&self) {
+        let mut ops: Vec<_> = self.ops.values().collect();
+        ops.sort_by(|a, b| b.total_us.cmp(&a.total_us));
+
+        println!("\n=== Operation Timing Summary ===");
+        println!(
+            "{:<30} {:>8} {:>10} {:>10} {:>10} {:>10}",
+            "Operation", "Count", "Total(ms)", "Avg(us)", "Min(us)", "Max(us)"
+        );
+        println!("{}", "-".repeat(80));
+
+        let mut total_ms = 0.0;
+        for op in ops {
+            println!(
+                "{:<30} {:>8} {:>10.2} {:>10.1} {:>10} {:>10}",
+                op.name,
+                op.count,
+                op.total_us as f64 / 1000.0,
+                op.avg_us(),
+                op.min_us,
+                op.max_us
+            );
+            total_ms += op.total_us as f64 / 1000.0;
+        }
+        println!("{}", "-".repeat(80));
+        println!("{:<30} {:>8} {:>10.2} ms", "TOTAL", "", total_ms);
+    }
+}
+
 /// Forward executor for single-token generation
 pub struct ForwardExecutor {
     pub model: SimpleModel,
@@ -108,6 +177,8 @@ pub struct ForwardExecutor {
     pub debug_mode: bool,
     /// Debug output for each layer
     pub debug_states: Vec<LayerDebugState>,
+    /// Timing statistics (enabled by enable_timing())
+    timing: RefCell<Option<TimingStats>>,
 }
 
 impl ForwardExecutor {
@@ -209,6 +280,25 @@ impl ForwardExecutor {
             batch_up,
             debug_mode: false,
             debug_states: Vec::new(),
+            timing: RefCell::new(None),
+        }
+    }
+
+    /// Enable timing collection
+    pub fn enable_timing(&self) {
+        *self.timing.borrow_mut() = Some(TimingStats::default());
+    }
+
+    /// Get timing statistics
+    pub fn timing(&self) -> Option<TimingStats> {
+        self.timing.borrow().clone()
+    }
+
+    /// Record timing for an operation
+    fn time_op(&self, name: &str, us: u64) {
+        let mut cell = self.timing.borrow_mut();
+        if let Some(ref mut timing) = *cell {
+            timing.record(name, us);
         }
     }
 
@@ -249,7 +339,9 @@ impl ForwardExecutor {
         let n_layers = self.model.config().n_layers;
 
         // 1. Embedding lookup
+        let t_emb = std::time::Instant::now();
         self.embed_token(token_id)?;
+        self.time_op("embed", t_emb.elapsed().as_micros() as u64);
 
         // 2. Process each layer
         for layer_idx in 0..n_layers {
@@ -257,10 +349,14 @@ impl ForwardExecutor {
         }
 
         // 3. Final norm
+        let t_fn = std::time::Instant::now();
         self.final_norm()?;
+        self.time_op("final_norm", t_fn.elapsed().as_micros() as u64);
 
         // 4. Output projection
+        let t_out = std::time::Instant::now();
         self.output_projection()?;
+        self.time_op("output_proj", t_out.elapsed().as_micros() as u64);
 
         self.seq_pos += 1;
         Ok(&self.logits_buf)
@@ -579,8 +675,8 @@ impl ForwardExecutor {
         let n_kv_heads = config.n_kv_heads;
         let head_dim = config.head_dim();
 
-        // Use pre-computed weight names
-        let weights = &self.layer_weights[layer_idx];
+        // Clone weights to avoid borrow conflicts with timing
+        let weights = self.layer_weights[layer_idx].clone();
 
         // Save hidden state before this layer (for debugging)
         let hidden_before =
@@ -588,7 +684,9 @@ impl ForwardExecutor {
 
         // Attention norm
         let normed_attn: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
+        let t0 = std::time::Instant::now();
         self.rms_norm(&self.hidden_buf, &weights.attn_norm, normed_attn)?;
+        self.time_op("rms_norm_attn", t0.elapsed().as_micros() as u64);
 
         // Save normed_attn for debugging
         let normed_attn_debug =
@@ -597,8 +695,11 @@ impl ForwardExecutor {
         // Quantize input for projections
         let quant_type = self.get_weight_quant_type(&weights.attn_q);
         let normed_len = normed_attn.len();
+        let t1 = std::time::Instant::now();
         let quant_format =
             quantize_input_to(normed_attn, quant_type, &mut self.quant_buf)?;
+        self.time_op("quantize_attn", t1.elapsed().as_micros() as u64);
+
         let in_features = match quant_format {
             QuantFormat::Q8_0 => ((normed_len + QK8_0 - 1) / QK8_0) * QK8_0,
             QuantFormat::Q8_K => ((normed_len + QK_K - 1) / QK_K) * QK_K,
@@ -613,6 +714,7 @@ impl ForwardExecutor {
         let v: &mut [f32] = self.arena.alloc_zeroed(n_kv_heads * head_dim);
 
         // Sequential Q/K/V with GEMV internal parallelization
+        let t2 = std::time::Instant::now();
         self.linear_quantized_with_threads(
             quant_format,
             in_features,
@@ -620,6 +722,9 @@ impl ForwardExecutor {
             q,
             self.n_threads, // GEMV internal parallelization
         )?;
+        self.time_op("gemv_q", t2.elapsed().as_micros() as u64);
+
+        let t3 = std::time::Instant::now();
         self.linear_quantized_with_threads(
             quant_format,
             in_features,
@@ -627,6 +732,9 @@ impl ForwardExecutor {
             k,
             self.n_threads,
         )?;
+        self.time_op("gemv_k", t3.elapsed().as_micros() as u64);
+
+        let t4 = std::time::Instant::now();
         self.linear_quantized_with_threads(
             quant_format,
             in_features,
@@ -634,6 +742,7 @@ impl ForwardExecutor {
             v,
             self.n_threads,
         )?;
+        self.time_op("gemv_v", t4.elapsed().as_micros() as u64);
 
         // Save Q/K/V for debugging
         let (q_debug, k_debug, v_debug) = if self.debug_mode {
@@ -659,6 +768,7 @@ impl ForwardExecutor {
             );
         }
 
+        let t_qk_norm = std::time::Instant::now();
         if has_qk_norm {
             // Apply Q norm using temporary buffer for in-place operation
             let q_tmp: &mut [f32] = self.arena.alloc_zeroed(n_heads * head_dim);
@@ -671,8 +781,10 @@ impl ForwardExecutor {
             k_tmp.copy_from_slice(k);
             self.qk_norm(k_tmp, &weights.attn_k_norm, n_kv_heads, head_dim, k)?;
         }
+        self.time_op("qk_norm", t_qk_norm.elapsed().as_micros() as u64);
 
         // RoPE (after Q/K norm if present)
+        let t_rope = std::time::Instant::now();
         rope_f32_inplace(
             q,
             self.seq_pos,
@@ -687,6 +799,7 @@ impl ForwardExecutor {
             head_dim,
             config.rope_freq_base,
         );
+        self.time_op("rope", t_rope.elapsed().as_micros() as u64);
 
         // Save Q/K normed for debugging (now it's just Q/K after RoPE)
         let (q_normed_debug, k_normed_debug) = if self.debug_mode {
@@ -696,6 +809,7 @@ impl ForwardExecutor {
         };
 
         // KV cache update (k is already RoPE'd)
+        let t_kv = std::time::Instant::now();
         let kv_head_offset = self.seq_pos * head_dim;
         for h in 0..n_kv_heads {
             let src_offset = h * head_dim;
@@ -705,8 +819,10 @@ impl ForwardExecutor {
             self.kv_cache_v[layer_idx][dst_offset..dst_offset + head_dim]
                 .copy_from_slice(&v[src_offset..src_offset + head_dim]);
         }
+        self.time_op("kv_update", t_kv.elapsed().as_micros() as u64);
 
         // Flash attention (q is already RoPE'd)
+        let t_attn = std::time::Instant::now();
         let attn_output: &mut [f32] =
             self.arena.alloc_zeroed(n_heads * head_dim);
         for h in 0..n_heads {
@@ -727,14 +843,17 @@ impl ForwardExecutor {
                 1.0 / (head_dim as f32).sqrt(),
             );
         }
+        self.time_op("flash_attn", t_attn.elapsed().as_micros() as u64);
 
         // Save attention output for debugging
         let attn_output_debug =
             if self.debug_mode { Some(attn_output.to_vec()) } else { None };
 
         // Output projection
+        let t_o = std::time::Instant::now();
         let attn_out: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
         self.linear(attn_output, &weights.attn_output, attn_out)?;
+        self.time_op("gemv_o", t_o.elapsed().as_micros() as u64);
 
         // Save attn_out for debugging
         let attn_out_debug =
@@ -746,18 +865,22 @@ impl ForwardExecutor {
         }
 
         // FFN norm
+        let t_ffn_norm = std::time::Instant::now();
         let normed_ffn: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
 
         self.rms_norm(&self.hidden_buf, &weights.ffn_norm, normed_ffn)?;
+        self.time_op("rms_norm_ffn", t_ffn_norm.elapsed().as_micros() as u64);
 
         // Save FFN normed for debugging
         let normed_ffn_debug =
             if self.debug_mode { Some(normed_ffn.to_vec()) } else { None };
 
         // Quantize FFN input
+        let t_ffn_quant = std::time::Instant::now();
         let ffn_normed_len = normed_ffn.len();
         let ffn_quant_format =
             quantize_input_to(normed_ffn, quant_type, &mut self.quant_buf)?;
+        self.time_op("quantize_ffn", t_ffn_quant.elapsed().as_micros() as u64);
 
         let ffn_in_features = match ffn_quant_format {
             QuantFormat::Q8_0 => ((ffn_normed_len + QK8_0 - 1) / QK8_0) * QK8_0,
@@ -771,6 +894,7 @@ impl ForwardExecutor {
         let up: &mut [f32] = self.arena.alloc_zeroed(config.intermediate_size);
 
         // Sequential gate/up with GEMV internal parallelization
+        let t_gate = std::time::Instant::now();
         self.linear_quantized_with_threads(
             ffn_quant_format,
             ffn_in_features,
@@ -778,6 +902,9 @@ impl ForwardExecutor {
             gate,
             self.n_threads,
         )?;
+        self.time_op("gemv_gate", t_gate.elapsed().as_micros() as u64);
+
+        let t_up = std::time::Instant::now();
         self.linear_quantized_with_threads(
             ffn_quant_format,
             ffn_in_features,
@@ -785,6 +912,7 @@ impl ForwardExecutor {
             up,
             self.n_threads,
         )?;
+        self.time_op("gemv_up", t_up.elapsed().as_micros() as u64);
 
         // Save gate and up for debugging (before SiLU)
         let (gate_before_silu, up_debug) = if self.debug_mode {
@@ -794,6 +922,7 @@ impl ForwardExecutor {
         };
 
         // SwiGLU
+        let t_swiglu = std::time::Instant::now();
         silu_f32_inplace(gate);
 
         // Save gate after SiLU for debugging
@@ -803,14 +932,17 @@ impl ForwardExecutor {
         for i in 0..config.intermediate_size {
             gate[i] *= up[i];
         }
+        self.time_op("swiglu", t_swiglu.elapsed().as_micros() as u64);
 
         // Save gate * up for debugging
         let gate_times_up_debug =
             if self.debug_mode { Some(gate.to_vec()) } else { None };
 
         // Down projection
+        let t_down = std::time::Instant::now();
         let ffn_out: &mut [f32] = self.arena.alloc_zeroed(hidden_size);
         self.linear(gate, &weights.ffn_down, ffn_out)?;
+        self.time_op("gemv_down", t_down.elapsed().as_micros() as u64);
 
         // Save FFN output for debugging
         let ffn_out_debug =
@@ -1602,72 +1734,20 @@ impl ForwardExecutor {
             self.quant_buf.resize(actual_hidden, QuantFormat::Q8_K);
             quant::quantize_q8_k(&self.hidden_buf, &mut self.quant_buf.q8_k);
 
-            let stride_0 =
-                output_tensor.strides.get(0).copied().unwrap_or(0) as usize;
+            // Use multi-threaded GEMV for output projection
+            // stride_1 is the row stride (bytes between each vocab entry)
             let stride_1 =
                 output_tensor.strides.get(1).copied().unwrap_or(0) as usize;
 
-            // Collect blocks for each column (token) and compute dot product
-            match quant_type {
-                QuantType::Q6_K => {
-                    use crate::types::BlockQ6_K;
-                    let mut col_blocks: Vec<BlockQ6_K> =
-                        vec![unsafe { std::mem::zeroed() }; nb];
-                    for j in 0..vocab_size {
-                        for b in 0..nb {
-                            let offset = b * stride_0 + j * stride_1;
-                            col_blocks[b] = unsafe {
-                                *(output_data.as_ptr().add(offset)
-                                    as *const BlockQ6_K)
-                            };
-                        }
-                        self.logits_buf[j] =
-                            crate::backend::arm::vec_dot::vec_dot_q6_k_q8_k(
-                                &col_blocks,
-                                &self.quant_buf.q8_k,
-                            );
-                    }
-                }
-                QuantType::Q5_K => {
-                    use crate::types::BlockQ5_K;
-                    let mut col_blocks: Vec<BlockQ5_K> =
-                        vec![unsafe { std::mem::zeroed() }; nb];
-                    for j in 0..vocab_size {
-                        for b in 0..nb {
-                            let offset = b * stride_0 + j * stride_1;
-                            col_blocks[b] = unsafe {
-                                *(output_data.as_ptr().add(offset)
-                                    as *const BlockQ5_K)
-                            };
-                        }
-                        self.logits_buf[j] =
-                            crate::backend::arm::vec_dot::vec_dot_q5_k_q8_k(
-                                &col_blocks,
-                                &self.quant_buf.q8_k,
-                            );
-                    }
-                }
-                QuantType::Q4_K => {
-                    use crate::types::BlockQ4_K;
-                    let mut col_blocks: Vec<BlockQ4_K> =
-                        vec![unsafe { std::mem::zeroed() }; nb];
-                    for j in 0..vocab_size {
-                        for b in 0..nb {
-                            let offset = b * stride_0 + j * stride_1;
-                            col_blocks[b] = unsafe {
-                                *(output_data.as_ptr().add(offset)
-                                    as *const BlockQ4_K)
-                            };
-                        }
-                        self.logits_buf[j] =
-                            crate::backend::arm::vec_dot::vec_dot_q4_k_q8_k(
-                                &col_blocks,
-                                &self.quant_buf.q8_k,
-                            );
-                    }
-                }
-                _ => {}
-            }
+            linear::linear_q8_k(
+                &self.quant_buf.q8_k,
+                actual_hidden,
+                output_data,
+                quant_type,
+                stride_1,
+                &mut self.logits_buf,
+                self.n_threads,
+            )?;
         } else if matches!(quant_type, QuantType::Q4_0 | QuantType::Q8_0) {
             self.quant_buf.resize(hidden_size, QuantFormat::Q8_0);
             quant::quantize_q8_0(&self.hidden_buf, &mut self.quant_buf.q8_0);
